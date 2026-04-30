@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nimbus — Cloud Dev Environment</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Header */
+    .header { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; min-height: 32px; }
+    .header h1 { font-size: 13px; font-weight: 600; color: #58a6ff; display: flex; gap: 8px; align-items: center; }
+    .header h1 span { color: #3fb950; font-weight: 400; font-family: ui-monospace, Menlo, monospace; font-size: 11px; cursor: pointer; padding: 1px 6px; border-radius: 3px; background: #161b22; border: 1px solid #30363d; transition: background 0.15s; }
+    .header h1 span:hover { background: #21262d; }
+    .header h1 span.copied { color: #3fb950; background: #0f2416; border-color: #238636; }
+    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #f85149; transition: background 0.3s; }
+    .status-dot.connected { background: #3fb950; }
+    .status-dot.connecting { background: #d29922; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Toolbar */
+    .toolbar { display: flex; align-items: center; gap: 2px; padding: 2px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .toolbar button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 3px 10px; font-size: 11px; cursor: pointer; border-radius: 4px; }
+    .toolbar button:hover { background: #30363d; }
+    .toolbar button.active { background: #388bfd26; border-color: #58a6ff; color: #58a6ff; }
+    .toolbar .sep { width: 1px; height: 16px; background: #30363d; margin: 0 4px; }
+    .toolbar .vite-status { font-size: 11px; color: #8b949e; margin-left: auto; }
+    .toolbar .vite-status.running { color: #3fb950; }
+    /* Process count button. Sits next to the layout-mode buttons. Hidden
+       (display:none) until at least one process has been seen in this
+       session so it doesn't clutter a brand-new session's toolbar. */
+    .toolbar #btnProcs { display: none; gap: 6px; align-items: center; font-family: ui-monospace, Menlo, monospace; }
+    .toolbar #btnProcs.visible { display: inline-flex; }
+    .toolbar #btnProcs.has-running { border-color: #3fb950; color: #3fb950; }
+    .toolbar #btnProcs.active { background: #388bfd26; border-color: #58a6ff; color: #58a6ff; }
+    .toolbar #btnProcs .procs-dot { width: 6px; height: 6px; border-radius: 50%; background: #6e7681; display: inline-block; }
+    .toolbar #btnProcs.has-running .procs-dot { background: #3fb950; box-shadow: 0 0 4px #3fb950; animation: pulse 1.6s ease-in-out infinite; }
+
+    /* Main panel */
+    .main { flex: 1; display: flex; overflow: hidden; }
+
+    /* Terminal panel */
+    .panel-terminal { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    #terminal-container { flex: 1; padding: 4px; overflow: hidden; min-height: 0; }
+
+    /* Process log tabs panel — lives below the xterm inside .panel-terminal.
+       Hidden entirely when no tabs are open so the xterm fills the full panel. */
+    .logs-panel { display: none; flex-direction: column; border-top: 1px solid #30363d; background: #0d1117; flex-shrink: 0; max-height: 45%; min-height: 120px; }
+    .logs-panel.active { display: flex; }
+    .logs-tabbar { display: flex; align-items: stretch; background: #161b22; border-bottom: 1px solid #30363d; overflow-x: auto; scrollbar-width: thin; flex-shrink: 0; }
+    .logs-tabbar::-webkit-scrollbar { height: 4px; }
+    .logs-tabbar::-webkit-scrollbar-thumb { background: #30363d; }
+    .logs-tab { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; font-size: 11px; color: #8b949e; border-right: 1px solid #30363d; cursor: pointer; white-space: nowrap; background: #161b22; font-family: ui-monospace, Menlo, monospace; user-select: none; max-width: 240px; flex-shrink: 0; }
+    .logs-tab:hover { background: #1c2128; color: #c9d1d9; }
+    .logs-tab.active { background: #0d1117; color: #58a6ff; box-shadow: inset 0 -2px 0 #58a6ff; }
+    .logs-tab.exited { color: #6e7681; }
+    .logs-tab.exited.failed { color: #ff7b72; }
+    .logs-tab.exited.active { color: #ff9e80; }
+    .logs-tab .logs-tab-label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+    .logs-tab .logs-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; flex-shrink: 0; box-shadow: 0 0 4px #3fb950; }
+    .logs-tab.exited .logs-tab-dot { background: #6e7681; box-shadow: none; }
+    .logs-tab.exited.failed .logs-tab-dot { background: #ff7b72; box-shadow: none; }
+    .logs-tab .logs-tab-close { color: #6e7681; font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 2px; margin-left: 2px; }
+    .logs-tab .logs-tab-close:hover { color: #f85149; background: #30363d; }
+    .logs-panel-body { flex: 1; overflow: auto; background: #0d1117; position: relative; min-height: 0; }
+    .logs-view { display: none; white-space: pre; font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace; font-size: 12px; line-height: 1.5; color: #c9d1d9; padding: 8px 10px; word-break: break-all; min-height: 100%; }
+    .logs-view.active { display: block; }
+    .logs-view .stderr { color: #ff7b72; }
+    .logs-view .binary { color: #8b949e; font-style: italic; }
+    .logs-view .banner { display: block; color: #d29922; background: #221a00; border-left: 2px solid #d29922; padding: 4px 8px; margin: 6px 0; font-family: inherit; }
+    .logs-view .banner.ok { color: #3fb950; background: #0f2416; border-left-color: #3fb950; }
+    .logs-view .banner.failed { color: #ff7b72; background: #2d0d0c; border-left-color: #ff7b72; }
+
+    /* Resize handle */
+    .resize-handle { width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0; }
+    .resize-handle:hover { background: #58a6ff; }
+
+    /* Preview panel */
+    .panel-preview { flex: 1; display: flex; flex-direction: column; background: #0d1117; overflow: hidden; min-width: 0; }
+    .panel-preview.hidden { display: none; }
+    .preview-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .preview-bar .url-bar { flex: 1; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; font-size: 11px; border-radius: 4px; font-family: monospace; }
+    .preview-bar button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; padding: 2px 4px; }
+    .preview-bar button:hover { color: #c9d1d9; }
+    #preview-frame { flex: 1; border: none; background: white; width: 100%; }
+
+    /* Footer */
+    .footer { padding: 3px 12px; background: #161b22; border-top: 1px solid #30363d; font-size: 11px; color: #8b949e; flex-shrink: 0; display: flex; justify-content: space-between; gap: 12px; }
+    .footer .stats { display: flex; gap: 10px; flex-wrap: wrap; }
+    .footer .stat-label { color: #484f58; }
+    .footer .stat-value { color: #c9d1d9; }
+    .footer .stat-value.good { color: #3fb950; }
+
+    /* Layout modes */
+    .main.terminal-only .panel-preview,
+    .main.terminal-only .resize-handle { display: none; }
+    .main.terminal-only .panel-terminal { flex: 1; }
+    .main.preview-only .panel-terminal,
+    .main.preview-only .resize-handle { display: none; }
+    .main.preview-only .panel-preview { flex: 1; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>
+      <a href="/" style="color:inherit;text-decoration:none">Nimbus</a>
+      <span id="sessionLabel" title="Session ID (shareable) — click to copy URL"></span>
+    </h1>
+    <div class="status">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Disconnected</span>
+    </div>
+  </div>
+  <div class="toolbar" id="toolbar">
+    <button id="btnTerminal" class="active" title="Terminal">Terminal</button>
+    <button id="btnPreview" title="Preview">Preview</button>
+    <button id="btnSplit" title="Split view">Split</button>
+    <div class="sep"></div>
+    <button id="btnProcs" title="Toggle process logs panel">
+      <span class="procs-dot"></span>
+      <span>Processes</span>
+      <span id="procsCount" style="color:#8b949e">0</span>
+    </button>
+    <button id="btnRefresh" title="Reload preview">&#8635;</button>
+    <span class="vite-status" id="viteStatus"></span>
+  </div>
+  <div class="main" id="mainPanel">
+    <div class="panel-terminal">
+      <div id="terminal-container"></div>
+      <div class="logs-panel" id="logsPanel">
+        <div class="logs-tabbar" id="logsTabBar"></div>
+        <div class="logs-panel-body" id="logsPanelBody"></div>
+      </div>
+    </div>
+    <div class="resize-handle" id="resizeHandle"></div>
+    <div class="panel-preview" id="previewPanel">
+      <div class="preview-bar">
+        <span style="color:#3fb950;font-size:12px">&#9679;</span>
+        <input class="url-bar" id="urlBar" value="" readonly>
+        <button id="btnReloadPreview" title="Reload">&#8635;</button>
+      </div>
+      <iframe id="preview-frame" src="about:blank"></iframe>
+    </div>
+  </div>
+  <div class="footer">
+    <div class="stats" id="statsBar">
+      <span><span class="stat-label">FS:</span> <span class="stat-value" id="stFiles">-</span></span>
+      <span><span class="stat-label">Size:</span> <span class="stat-value" id="stSize">-</span></span>
+      <span><span class="stat-label">Cache:</span> <span class="stat-value" id="stCache">-</span></span>
+      <span><span class="stat-label">Hit:</span> <span class="stat-value good" id="stHitRate">-</span></span>
+    </div>
+    <span style="color:#484f58">DO + SQLite demand-paged | esbuild-wasm | vite dev server</span>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+  <script>
+    // ── Session-aware URL helpers ──
+    // This page is served at /s/<id>/ via the asset binding. All DO-bound
+    // paths (/ws, /api/*, /preview/*) live under the same session prefix.
+    // Compute once at load time — location.pathname won't change.
+    const SESSION_PREFIX = (function() {
+      const m = location.pathname.match(/^\/s\/([a-z]{3,14}-[a-z]{3,14}-\d{4})(?:\/|$)/);
+      return m ? '/s/' + m[1] : '';
+    })();
+    const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
+                   '//' + location.host + SESSION_PREFIX + '/ws';
+    const STATS_URL = SESSION_PREFIX + '/api/stats';
+    const VITE_URL = SESSION_PREFIX + '/preview/';
+    const WORKER_URL = SESSION_PREFIX + '/worker/';
+    // The iframe starts pointing at /preview/ which handles its own
+    // "no dev server running" placeholder. When the user spawns a
+    // wrangler dev (via `wrangler dev` in the terminal), stats polling
+    // below flips this to WORKER_URL automatically.
+    const PREVIEW_URL = VITE_URL;
+
+    // Populate the URL bar with the full session preview URL so users can
+    // copy-paste it (e.g. to share just the preview with a teammate).
+    // The value is kept in sync with the iframe by applyPreviewTarget().
+    document.getElementById('urlBar').value = PREVIEW_URL;
+
+    // Update document title to include the session ID — makes tabs easy to
+    // distinguish when a user has multiple Nimbus sessions open.
+    // Also populate the session-label chip in the header; clicking it copies
+    // the full session URL to the clipboard for easy sharing.
+    if (SESSION_PREFIX) {
+      const sessionId = SESSION_PREFIX.slice(3); // strip "/s/"
+      document.title = 'Nimbus — ' + sessionId;
+      const chip = document.getElementById('sessionLabel');
+      if (chip) {
+        chip.textContent = sessionId;
+        chip.addEventListener('click', async () => {
+          const shareUrl = location.origin + SESSION_PREFIX + '/';
+          try {
+            await navigator.clipboard.writeText(shareUrl);
+            const original = chip.textContent;
+            chip.textContent = 'copied!';
+            chip.classList.add('copied');
+            setTimeout(() => { chip.textContent = original; chip.classList.remove('copied'); }, 1200);
+          } catch { /* clipboard API unavailable — silently ignore */ }
+        });
+      }
+    }
+
+    // ── Terminal setup ──
+    const term = new Terminal({
+      cursorBlink: true, cursorStyle: 'bar', fontSize: 13,
+      fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+      theme: {
+        background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff', selectionBackground: '#264f78',
+        black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+        blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
+        brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
+        brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
+      },
+      allowProposedApi: true,
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) {}
+    term.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+
+    // ── State ──
+    const dot = document.getElementById('statusDot');
+    const stText = document.getElementById('statusText');
+    const previewFrame = document.getElementById('preview-frame');
+    const previewPanel = document.getElementById('previewPanel');
+    const mainPanel = document.getElementById('mainPanel');
+    const viteStatus = document.getElementById('viteStatus');
+    let ws = null, rd = 1000, statsTimer = null;
+    let layout = 'split'; // 'terminal-only', 'preview-only', 'split'
+
+    // ── Layout controls ──
+    function setLayout(mode) {
+      layout = mode;
+      mainPanel.className = 'main' + (mode !== 'split' ? ' ' + mode : '');
+      document.getElementById('btnTerminal').classList.toggle('active', mode === 'terminal-only');
+      document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
+      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
+      setTimeout(() => fitAddon.fit(), 50);
+    }
+    document.getElementById('btnTerminal').onclick = () => setLayout('terminal-only');
+    document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
+    document.getElementById('btnSplit').onclick = () => setLayout('split');
+    document.getElementById('btnRefresh').onclick = () => reloadPreview();
+    document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
+
+    // Which preview backend the iframe currently points at. Driven by
+    // /api/stats polling: wrangler.running > vite.running > placeholder.
+    // Tracked separately from iframe.src so user reloads / hash changes
+    // don't confuse the switcher. Starts as null so the first
+    // applyPreviewTarget call always paints (even if nothing is running
+    // yet — that still wants the VITE_URL placeholder loaded).
+    let activePreview = null; // null | 'vite' | 'worker' | 'none'
+
+    function previewUrlFor(kind) {
+      return kind === 'worker' ? WORKER_URL : VITE_URL;
+    }
+
+    function applyPreviewTarget(kind) {
+      // Idempotent: only update iframe + URL bar when the backend kind
+      // actually changes. Avoids tearing down the inner app on every
+      // 5-second stats poll.
+      if (activePreview === kind) return;
+      activePreview = kind;
+      const url = previewUrlFor(kind);
+      // Always use the VITE_URL path when nothing is running — that
+      // endpoint serves the styled "no dev server" placeholder, which
+      // self-refreshes via its own polling loop.
+      previewFrame.src = url;
+      const urlBar = document.getElementById('urlBar');
+      if (urlBar) urlBar.value = url;
+      // If the user had collapsed the preview because nothing was up,
+      // surface it automatically when the first backend comes online.
+      if (kind !== 'none' && layout === 'terminal-only') setLayout('split');
+    }
+
+    function reloadPreview() {
+      // Refreshing without a running backend should re-poll the
+      // placeholder so users see dev-server status update promptly.
+      if (previewFrame.src === 'about:blank' ||
+          (!previewFrame.src.includes('/preview') && !previewFrame.src.includes('/worker'))) {
+        previewFrame.src = previewUrlFor(
+          (activePreview === 'none' || activePreview === null) ? 'vite' : activePreview
+        );
+      } else {
+        try { previewFrame.contentWindow?.location.reload(); }
+        catch { previewFrame.src = previewFrame.src; }
+      }
+    }
+
+    // ── Resize handle ──
+    let resizing = false;
+    const resizeHandle = document.getElementById('resizeHandle');
+    resizeHandle.addEventListener('mousedown', (e) => {
+      resizing = true; e.preventDefault();
+      document.body.style.cursor = 'col-resize';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!resizing) return;
+      const rect = mainPanel.getBoundingClientRect();
+      const pct = ((e.clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.max(20, Math.min(80, pct));
+      mainPanel.querySelector('.panel-terminal').style.flex = clamped + ' 0 0%';
+      mainPanel.querySelector('.panel-preview').style.flex = (100 - clamped) + ' 0 0%';
+      fitAddon.fit();
+    });
+    document.addEventListener('mouseup', () => {
+      if (resizing) { resizing = false; document.body.style.cursor = ''; fitAddon.fit(); }
+    });
+
+    // ── Status ──
+    function setStatus(s) {
+      dot.className = 'status-dot ' + s;
+      stText.textContent = s === 'connected' ? 'Connected' : s === 'connecting' ? 'Connecting...' : 'Disconnected';
+    }
+    function fmtB(b) {
+      if (b >= 1e9) return (b/1e9).toFixed(1)+' GB';
+      if (b >= 1e6) return (b/1e6).toFixed(1)+' MB';
+      if (b >= 1e3) return (b/1e3).toFixed(1)+' KB';
+      return b+' B';
+    }
+    function refreshStats() {
+      fetch(STATS_URL).then(r => r.json()).then(s => {
+        document.getElementById('stFiles').textContent = s.files + ' files, ' + s.directories + ' dirs';
+        document.getElementById('stSize').textContent = fmtB(s.usedBytes);
+        if (s.cache) {
+          document.getElementById('stCache').textContent = s.cache.entries + '/' + s.cache.maxEntries;
+          document.getElementById('stHitRate').textContent = s.cache.hitRate + '%';
+        }
+        // Pick the active preview backend: wrangler takes precedence
+        // over vite when both are running, because users only start
+        // wrangler deliberately (vs. vite which auto-starts on certain
+        // workflows). If neither is running, we still point at the
+        // vite /preview/ URL so its placeholder page renders.
+        let kind = 'none';
+        if (s.wrangler?.running) kind = 'worker';
+        else if (s.vite?.running) kind = 'vite';
+        applyPreviewTarget(kind);
+
+        if (s.wrangler?.running) {
+          viteStatus.textContent = 'worker running (' + (s.wrangler.name || '?') + ')';
+          viteStatus.className = 'vite-status running';
+        } else if (s.vite?.running) {
+          viteStatus.textContent = 'vite running (' + s.vite.root + ')';
+          viteStatus.className = 'vite-status running';
+        } else {
+          viteStatus.textContent = '';
+          viteStatus.className = 'vite-status';
+        }
+      }).catch(() => {});
+    }
+
+    // ── WebSocket ──
+    function connect() {
+      setStatus('connecting');
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => {
+        setStatus('connected'); rd = 1000;
+        ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+        refreshStats();
+        if (statsTimer) clearInterval(statsTimer);
+        statsTimer = setInterval(() => {
+          refreshStats();
+          // Keep the process count + tab state reconciled even if a
+          // spawn or exit event was dropped during a reconnect or
+          // brief network blip. /api/processes is cheap (in-memory).
+          if (typeof LogTabs !== 'undefined') LogTabs.hydrate();
+        }, 5000);
+        // Initial hydrate — DO is warm, ProcessTable populated.
+        if (typeof LogTabs !== 'undefined') LogTabs.hydrate();
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'output') {
+            term.write(msg.data);
+            // Snappy preview switch: both vite (/preview/) and wrangler
+            // (/worker/, "Worker built") emit recognisable output lines
+            // when they come online. Triggering an immediate stats
+            // refresh here shaves up to 5s off the otherwise-periodic
+            // polling interval so the iframe flips as soon as the user
+            // sees the dev-server banner in the terminal.
+            if (msg.data.includes('/preview/') ||
+                msg.data.includes('/worker/') ||
+                msg.data.includes('Worker built') ||
+                msg.data.includes('wrangler ready')) {
+              refreshStats();
+            }
+          } else if (msg.type === 'ready') {
+            refreshStats();
+          } else if (msg.type === 'hmr') {
+            // Forward HMR to preview iframe
+            if (previewFrame.contentWindow) {
+              previewFrame.contentWindow.postMessage(msg.data, '*');
+            }
+          } else if (msg.type === 'spawn') {
+            // Auto-open a log tab for EVERY process the supervisor spawns.
+            // Short-lived processes (node foo.js) immediately receive an
+            // exit event and the tab flips to "exited" — kept around for
+            // 10 min so the user can read the final output. Long-running
+            // processes stream live. Gating on longRunning made the tabs
+            // panel invisible for the most common user actions (node
+            // script.js, npm run <non-dev-script>), which defeats the
+            // whole point of the panel.
+            LogTabs.openTab(msg.pid, msg.command);
+          } else if (msg.type === 'exit') {
+            // An exit can arrive for a pid we never saw a spawn for
+            // (e.g. `node -e`, which the supervisor intentionally
+            // suppresses the spawn banner for). Surface those too so
+            // the user sees SOMETHING — we open a tab on-exit, fetch
+            // the command from /api/processes if we haven't already,
+            // and mark it exited. The ring buffer keeps the output
+            // for 10 min.
+            if (!LogTabs.hasTab(msg.pid)) {
+              LogTabs.openTab(msg.pid, msg.command || ('pid ' + msg.pid));
+            }
+            LogTabs.markExit(msg.pid, msg.code, msg.reason);
+          }
+        } catch {}
+      };
+      ws.onclose = () => {
+        setStatus('disconnected');
+        if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+        setTimeout(() => { rd = Math.min(rd*1.5, 10000); connect(); }, rd);
+      };
+      ws.onerror = () => ws.close();
+    }
+
+    term.onData(d => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'input',data:d})); });
+    window.addEventListener('resize', () => {
+      fitAddon.fit();
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+    });
+
+    // ── Process log tabs panel ─────────────────────────────────────────
+    // One tab per PID streaming `/api/logs/<pid>` over a WebSocket.
+    // Auto-opens on EVERY `{type:'spawn'}` from the main WS; manually
+    // closable via the ✕ on each tab, or collapsible via the toolbar
+    // "Processes" button. The ring buffer retains logs for 10 min
+    // post-exit, so a tab left open after a crash keeps showing the
+    // final output until the buffer expires (or the user closes it).
+    const LogTabs = (function() {
+      const panel = document.getElementById('logsPanel');
+      const tabBar = document.getElementById('logsTabBar');
+      const body = document.getElementById('logsPanelBody');
+      const btnProcs = document.getElementById('btnProcs');
+      const procsCount = document.getElementById('procsCount');
+      /** pid -> { tabEl, viewEl, ws, exited, failed, lastPainted, label } */
+      const tabs = new Map();
+      let activePid = null;
+      // User-controlled visibility. `true` = show panel when ≥1 tab open.
+      // `false` = keep panel collapsed even with tabs (toolbar button
+      // dropped down once). Defaults to true; toggled by #btnProcs.
+      let userWantsVisible = true;
+
+      // Minimal ANSI CSI stripper — the log stream passes ANSI through;
+      // we keep stderr coloring via a CSS class rather than trying to
+      // faithfully render xterm sequences inside a <pre>.
+      const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>()][^\s]?/g;
+      function stripAnsi(s) { return s.replace(ANSI_RE, ''); }
+
+      function escapeHtml(s) {
+        return s
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      // Derive a short label from the command: strip argv[0] path prefix,
+      // drop anything after the first flag-looking token, cap at ~28 chars.
+      function labelFor(command) {
+        if (!command) return '';
+        const trimmed = command.trim();
+        const parts = trimmed.split(/\s+/);
+        // Strip env-var prefixes like FOO=bar
+        let i = 0;
+        while (i < parts.length && /^[A-Z_][A-Z0-9_]*=/.test(parts[i])) i++;
+        let display = parts.slice(i, i + 3).join(' ');
+        if (display.length > 32) display = display.slice(0, 29) + '…';
+        return display || trimmed.slice(0, 32);
+      }
+
+      // Refit the xterm + push new cols/rows to the server. Called after
+      // ANY change to the panel's visibility or tab count — because the
+      // terminal's viewport just grew or shrunk and the shell needs the
+      // new size so its line-wrapping stays correct.
+      function refitTerminal() {
+        try { fitAddon.fit(); } catch {}
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      }
+
+      // Single source of truth for "should the panel be visible right
+      // now?". The panel shows iff there's ≥1 tab AND the user hasn't
+      // collapsed it. The toolbar button is visible iff we've ever seen
+      // a process (so brand-new sessions don't see a useless "0 Processes"
+      // chip), and its "active" highlight tracks panel visibility.
+      function applyVisibility() {
+        const haveTabs = tabs.size > 0;
+        const shouldShow = haveTabs && userWantsVisible;
+        const wasShown = panel.classList.contains('active');
+        if (shouldShow) panel.classList.add('active');
+        else panel.classList.remove('active');
+        if (wasShown !== shouldShow) refitTerminal();
+
+        // Running vs total — the dot pulses when ≥1 tab is running.
+        let running = 0;
+        for (const t of tabs.values()) if (!t.exited) running++;
+        procsCount.textContent = running > 0
+          ? (running === tabs.size ? String(running) : running + '/' + tabs.size)
+          : String(tabs.size);
+        btnProcs.classList.toggle('visible', haveTabs);
+        btnProcs.classList.toggle('has-running', running > 0);
+        btnProcs.classList.toggle('active', shouldShow);
+      }
+
+      // Hard cap on child nodes per view — a long-running `vite` session
+      // can produce thousands of chunks per hour; without this, the tab's
+      // DOM grows unboundedly and the browser tab eventually becomes
+      // sluggish. When over the cap we drop the oldest 20% in one go to
+      // amortize layout thrash (vs. one-at-a-time on every render).
+      const MAX_NODES_PER_VIEW = 2000;
+      const TRIM_BATCH = 400;
+
+      function appendToView(tab, el) {
+        // Pre-compute bottom-ness against the actively-rendered view (not
+        // the panel body, which might be scrolled by a different tab).
+        const view = tab.viewEl;
+        const isActive = activePid === tab.pid;
+        const atBottom = isActive &&
+          (body.scrollHeight - body.scrollTop - body.clientHeight) < 24;
+        view.appendChild(el);
+        if (view.childElementCount > MAX_NODES_PER_VIEW) {
+          // Trim oldest. DocumentFragment swap would be faster for huge
+          // drops, but TRIM_BATCH is small and this runs at most once per
+          // append so the measured cost is negligible.
+          for (let i = 0; i < TRIM_BATCH && view.firstChild; i++) {
+            view.removeChild(view.firstChild);
+          }
+        }
+        if (atBottom) body.scrollTop = body.scrollHeight;
+      }
+
+      function renderChunk(tab, chunk) {
+        const span = document.createElement('span');
+        span.textContent = stripAnsi(chunk.data);
+        if (chunk.binary) span.className = 'binary';
+        else if (chunk.stream === 'stderr') span.className = 'stderr';
+        appendToView(tab, span);
+      }
+
+      function renderBanner(tab, text, cls) {
+        const div = document.createElement('span');
+        div.className = 'banner' + (cls ? ' ' + cls : '');
+        div.textContent = text;
+        appendToView(tab, div);
+      }
+
+      function setActive(pid) {
+        activePid = pid;
+        for (const [p, t] of tabs) {
+          t.tabEl.classList.toggle('active', p === pid);
+          t.viewEl.classList.toggle('active', p === pid);
+        }
+        if (pid !== null) body.scrollTop = body.scrollHeight;
+      }
+
+      function closeTab(pid) {
+        const t = tabs.get(pid);
+        if (!t) return;
+        try { t.ws?.close(); } catch {}
+        t.tabEl.remove();
+        t.viewEl.remove();
+        tabs.delete(pid);
+        if (activePid === pid) {
+          // Pick any other open tab, or collapse.
+          const next = tabs.keys().next().value;
+          if (next !== undefined) setActive(next);
+          else activePid = null;
+        }
+        applyVisibility();
+      }
+
+      // Open the log-stream WebSocket for a tab, if it hasn't been
+      // opened already. Audit R3 / PERF-AUDIT.md: since auto-open-
+      // every-spawn landed, every short-lived `node foo.js` opened a
+      // persistent log WS that stayed alive 10 min. Every facet
+      // stdout chunk then fanned out to every idle subscriber on the
+      // DO side, competing with the shell WS for input-gate time and
+      // making typing feel laggy.
+      //
+      // We now defer the WS connection until the user actually clicks
+      // the tab. The tab strip still appears immediately on spawn
+      // (good UX — "I see you, here's your process") but the server
+      // never ships bytes to a reader nobody's reading. The 95% of
+      // short-lived processes that the user never clicks pay zero
+      // network/DO cost beyond the initial {spawn}/{exit} frames on
+      // the main WS.
+      function ensureLogWs(tab) {
+        if (tab.wsOpened) return;
+        tab.wsOpened = true;
+        // Drop the "click this tab to attach" placeholder (if any).
+        // Backlog + live chunks will repopulate the view.
+        tab.viewEl.replaceChildren();
+        const pid = tab.pid;
+        const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
+                      '//' + location.host + SESSION_PREFIX + '/api/logs/' + pid;
+        let logWs;
+        try { logWs = new WebSocket(wsUrl); } catch {
+          renderBanner(tab, '[log stream could not be opened]', 'failed');
+          return;
+        }
+        tab.ws = logWs;
+        logWs.onmessage = (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.type === 'backlog') {
+            for (const c of (msg.chunks || [])) renderChunk(tab, c);
+          } else if (msg.type === 'chunk') {
+            renderChunk(tab, msg);
+          } else if (msg.type === 'exit') {
+            markExit(pid, msg.code, msg.reason);
+          } else if (msg.type === 'notfound') {
+            // Mark exited so the server-side close doesn't emit a second
+            // "[log stream closed]" banner on top of this one.
+            tab.exited = true;
+            tab.failed = true;
+            tab.tabEl.classList.add('exited', 'failed');
+            renderBanner(tab, '[no log buffer for pid ' + pid + ' — process may have been reaped]', 'failed');
+          }
+        };
+        logWs.onclose = () => {
+          // If we haven't seen an exit yet, this is a server-side tear-down
+          // or a network blip. The UI keeps the tab open so the user can
+          // still read the backlog; reconnect would require a manual close
+          // + reopen via the shell.
+          if (!tab.exited) {
+            renderBanner(tab, '[log stream closed]', '');
+          }
+        };
+        logWs.onerror = () => {
+          renderBanner(tab, '[log stream error]', 'failed');
+        };
+      }
+
+      function openTab(pid, command) {
+        if (tabs.has(pid)) { setActive(pid); userWantsVisible = true; applyVisibility(); return; }
+
+        const label = labelFor(command);
+        const tabEl = document.createElement('div');
+        tabEl.className = 'logs-tab';
+        tabEl.title = 'pid ' + pid + ': ' + (command || '(unknown)');
+        tabEl.innerHTML =
+          '<span class="logs-tab-dot"></span>' +
+          '<span class="logs-tab-label"></span>' +
+          '<span class="logs-tab-pid" style="color:#484f58">#' + pid + '</span>' +
+          '<span class="logs-tab-close" title="Close tab (process keeps running)">✕</span>';
+        tabEl.querySelector('.logs-tab-label').textContent = label;
+        tabEl.addEventListener('click', (e) => {
+          if ((e.target).classList.contains('logs-tab-close')) return;
+          // User click: this is the signal that they want to read the
+          // log stream. Open the WS if it isn't already, then activate.
+          const t = tabs.get(pid);
+          if (t) ensureLogWs(t);
+          setActive(pid);
+        });
+        tabEl.querySelector('.logs-tab-close').addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeTab(pid);
+        });
+
+        const viewEl = document.createElement('div');
+        viewEl.className = 'logs-view';
+        viewEl.dataset.pid = String(pid);
+
+        tabBar.appendChild(tabEl);
+        body.appendChild(viewEl);
+
+        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label };
+        tabs.set(pid, tab);
+        // Placeholder until the user clicks — so the active tab doesn't
+        // look broken on auto-activate. renderBanner uses the existing
+        // `.banner` styling. Replaced by real content when the WS
+        // delivers a backlog frame (ensureLogWs → onmessage).
+        renderBanner(tab, '[click this tab to attach to the log stream]', '');
+        // Any new tab re-opens the panel if the user had collapsed it —
+        // seeing a new process spawn is a stronger signal than a stale
+        // "I don't want this right now" click. setActive is purely a
+        // UI paint here (no WS opened) so the panel and "Processes N"
+        // chip still react immediately to the spawn event.
+        userWantsVisible = true;
+        setActive(pid);
+        applyVisibility();
+      }
+
+      function markExit(pid, code, reason) {
+        const tab = tabs.get(pid);
+        if (!tab) return;
+        if (tab.exited) return; // idempotent — server + log-WS may both fire
+        tab.exited = true;
+        tab.failed = code !== 0;
+        tab.tabEl.classList.add('exited');
+        if (tab.failed) tab.tabEl.classList.add('failed');
+        // Update the dot color via the class; append the exit banner.
+        const reasonSuffix = reason ? ' (' + reason + ')' : '';
+        renderBanner(
+          tab,
+          '[process exited with code ' + code + reasonSuffix + ' — tab kept; close with ✕]',
+          code === 0 ? 'ok' : 'failed',
+        );
+        // Running-count changed; refresh toolbar badge.
+        applyVisibility();
+      }
+
+      // Restore any processes already in the DO's ring buffer / process
+      // table when the page loads. Covers two cases: (a) full page
+      // refresh mid-session — the DO's process table persists, so we
+      // should re-attach to any running process; (b) main WS reconnect
+      // after a transient network blip — same table, same goal.
+      //
+      // We open tabs for ALL state='running' processes so users see
+      // everything happening. Exited ones stay accessible via `logs
+      // <pid>` in the shell for 10 min, but we don't auto-open them
+      // here because that would clutter the UI after a handful of
+      // short-lived commands.
+      function hydrate() {
+        fetch(SESSION_PREFIX + '/api/processes', { cache: 'no-store' })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (!data?.processes) return;
+            for (const p of data.processes) {
+              if (p.state === 'running' && !tabs.has(p.pid)) {
+                openTab(p.pid, p.command);
+              } else if (p.state !== 'running' && tabs.has(p.pid)) {
+                // Server says exited; reconcile in case our main-WS
+                // exit event got dropped during reconnect.
+                markExit(p.pid, p.exitCode ?? 0, undefined);
+              }
+            }
+            applyVisibility();
+          })
+          .catch(() => {});
+      }
+
+      // Toolbar button: toggle user-facing visibility. If currently
+      // shown, a click hides; if hidden, a click re-shows. Clicking
+      // with no tabs open is a no-op (the button is hidden via CSS in
+      // that state anyway).
+      btnProcs.addEventListener('click', () => {
+        userWantsVisible = !panel.classList.contains('active');
+        applyVisibility();
+      });
+
+      return {
+        openTab, closeTab, markExit, hydrate, applyVisibility,
+        hasTab: (pid) => tabs.has(pid),
+      };
+    })();
+    // LogTabs.hydrate is invoked from ws.onopen above — the DO is warm
+    // and ProcessTable is populated by then, no arbitrary delay needed.
+
+    term.focus();
+    setLayout('split');
+    connect();
+  </script>
+</body>
+</html>

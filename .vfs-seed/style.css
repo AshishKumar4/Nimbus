@@ -1,0 +1,143 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --bg: #0a0a0f;
+  --bg-card: #12121a;
+  --bg-hover: #1a1a2e;
+  --text: #e4e4f0;
+  --text-dim: #8888a0;
+  --accent: #f97316;
+  --accent-glow: rgba(249, 115, 22, 0.15);
+  --border: #1e1e30;
+  --gradient-1: #f97316;
+  --gradient-2: #ec4899;
+  --gradient-3: #8b5cf6;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+.app { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Navbar */
+.navbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 20px 0; border-bottom: 1px solid var(--border);
+}
+.nav-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+.nav-logo { font-size: 24px; color: var(--accent); }
+.nav-links { display: flex; align-items: center; gap: 28px; }
+.nav-links a { color: var(--text-dim); text-decoration: none; font-size: 14px; font-weight: 500; transition: color 0.2s; }
+.nav-links a:hover { color: var(--text); }
+.nav-btn {
+  background: var(--accent) !important; color: #fff !important; padding: 8px 20px;
+  border-radius: 8px; font-weight: 600; transition: opacity 0.2s;
+}
+.nav-btn:hover { opacity: 0.9; }
+
+/* Hero */
+.hero { text-align: center; padding: 80px 0 60px; }
+.hero-badge {
+  display: inline-block; padding: 6px 16px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--bg-card);
+  font-size: 13px; color: var(--text-dim); margin-bottom: 24px; font-weight: 500;
+}
+.hero-title { font-size: 56px; font-weight: 800; line-height: 1.1; margin-bottom: 20px; letter-spacing: -1.5px; }
+.gradient-text {
+  background: linear-gradient(135deg, var(--gradient-1), var(--gradient-2), var(--gradient-3));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.hero-subtitle { font-size: 18px; color: var(--text-dim); max-width: 600px; margin: 0 auto 36px; line-height: 1.7; }
+.hero-actions { display: flex; justify-content: center; gap: 12px; margin-bottom: 60px; }
+.btn {
+  padding: 12px 28px; border-radius: 10px; font-size: 15px; font-weight: 600;
+  border: none; cursor: pointer; transition: all 0.2s; font-family: inherit;
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--gradient-1), var(--gradient-2));
+  color: #fff; box-shadow: 0 4px 20px var(--accent-glow);
+}
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 30px var(--accent-glow); }
+.btn-secondary { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--bg-hover); }
+
+/* Terminal */
+.hero-terminal {
+  max-width: 640px; margin: 0 auto; border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--border); background: #0d1117; text-align: left;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.terminal-header {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  background: #161b22; border-bottom: 1px solid #21262d;
+}
+.terminal-dots { display: flex; gap: 6px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.dot.red { background: #ff5f57; }
+.dot.yellow { background: #febc2e; }
+.dot.green { background: #28c840; }
+.terminal-title { font-size: 12px; color: #8b949e; font-family: 'SF Mono', monospace; }
+.terminal-body { padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.8; }
+.terminal-line { white-space: pre; }
+.terminal-line.dim { color: #8b949e; }
+.prompt { color: #3fb950; margin-right: 8px; }
+.cursor { color: #58a6ff; animation: blink 1s infinite; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* Features */
+.features { padding: 80px 0; }
+.section-title { font-size: 36px; font-weight: 800; text-align: center; margin-bottom: 12px; letter-spacing: -0.5px; }
+.section-subtitle { text-align: center; color: var(--text-dim); font-size: 16px; margin-bottom: 48px; }
+.features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.feature-card {
+  padding: 28px; border-radius: 14px; border: 1px solid var(--border);
+  background: var(--bg-card); transition: all 0.3s;
+}
+.feature-card:hover { background: var(--bg-hover); border-color: #2a2a40; transform: translateY(-2px); }
+.feature-icon { font-size: 32px; margin-bottom: 14px; }
+.feature-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.feature-card p { font-size: 14px; color: var(--text-dim); line-height: 1.6; }
+
+/* Stats */
+.stats {
+  padding: 60px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.stat-card { text-align: center; padding: 20px; }
+.stat-value {
+  font-size: 42px; font-weight: 800; letter-spacing: -1px;
+  background: linear-gradient(135deg, var(--gradient-1), var(--gradient-2));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.stat-label { font-size: 14px; color: var(--text-dim); margin-top: 4px; font-weight: 500; }
+
+/* CTA */
+.cta { padding: 80px 0; text-align: center; }
+.cta h2 { font-size: 36px; font-weight: 800; margin-bottom: 12px; }
+.cta p { color: var(--text-dim); margin-bottom: 28px; font-size: 16px; }
+.cta-code {
+  display: inline-flex; align-items: center; gap: 16px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 20px; font-family: 'SF Mono', monospace; font-size: 16px;
+}
+.cta-code code { color: var(--accent); }
+.copy-btn {
+  background: var(--bg-hover); color: var(--text-dim); border: 1px solid var(--border);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-family: inherit; font-weight: 600; transition: all 0.2s;
+}
+.copy-btn:hover { background: #2a2a40; color: var(--text); }
+
+/* Footer */
+.footer {
+  padding: 32px 0; border-top: 1px solid var(--border);
+  text-align: center; color: var(--text-dim); font-size: 13px;
+}
+.footer-brand { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 6px; }

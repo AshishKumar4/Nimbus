@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nimbus",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-01",
+  // `experimental` enables ServiceStub serialization for WorkerEntrypoint-
+  // returning-WorkerEntrypoint patterns (used by NimbusLoaderRPC to return
+  // chained stubs without serializing raw WorkerStub objects). Required
+  // for `wrangler dev` inside Nimbus to proxy env.LOADER.load() calls.
+  "compatibility_flags": ["nodejs_compat", "experimental"],
+  "vars": {
+    // Diagnostic gate for [sqlite-vfs/W2.5b] logs. Set to "1" to enable;
+    // empty/absent disables. The diag code remains in src/sqlite-vfs.ts
+    // (cheap, hot-path-clean) for future investigations.
+    "NIMBUS_DIAG_INSTALL_PIPELINE": ""
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // Invoke the Worker for all session-scoped paths so it can forward to the
+    // right Durable Object (or serve the xterm UI shell for `/s/<id>/`). The
+    // landing page at `/` is still served directly from ./public/index.html
+    // without a Worker invocation (fast path).
+    "run_worker_first": ["/s/*", "/new"]
+  },
+  "alias": {
+    "clean-git-ref": "clean-git-ref/lib/index.js",
+    "is-git-ref-name-valid": "is-git-ref-name-valid/index.js",
+    "crc-32": "crc-32",
+    "sha.js": "sha.js",
+    "pako": "pako",
+    "pify": "pify",
+    "diff": "diff",
+    "diff3": "diff3",
+    "ignore": "ignore",
+    "readable-stream": "readable-stream",
+    "simple-get": "simple-get",
+    "minimisted": "minimisted"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["NimbusSession"] }
+  ],
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ]
+}

@@ -1,0 +1,23 @@
+node_modules/
+.wrangler/
+bun.lock
+# Build-time scratch dir for scripts/bundle-plugin-react.mjs
+.cirrus-plugin-react-src/
+.cirrus-npm-cjs-src/
+
+# Internal engineering docs — never commit these to the public repo.
+# They live in workspace memory (see memory/nimbus-internal/) for our reference.
+memory/
+ARCHITECTURE.md
+AUDIT.md
+CRASH-INVESTIGATION.md
+IMPROVEMENTS.md
+NIMBUS-IN-NIMBUS-REPRO.md
+PERF-AUDIT.md
+PHASE*.md
+STABILITY-AUDIT.md
+TOP-5-NEXT.md
+WORKERD-*.md
+CIRRUS-OOM-TRACE.txt
+FINAL-*.md
+HYPOTHESIS-*.md

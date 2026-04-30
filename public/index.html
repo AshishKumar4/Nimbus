@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nimbus — A cloud dev environment at the edge</title>
+  <meta name="description" content="A cloud development environment running entirely on Cloudflare's edge. Terminal, 10 GB filesystem, npm, node, git — in your browser.">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta property="og:title" content="Nimbus">
+  <meta property="og:description" content="A cloud development environment running entirely on Cloudflare's edge.">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    /* ─────────────────────────────── Tokens ─────────────────────────────── */
+    :root {
+      --bg:        #0a0a0a;
+      --bg-2:      #111;
+      --bg-card:   #0f1011;
+      --fg:        #e6edf3;
+      --fg-dim:    #c9d1d9;
+      --muted:     #8b949e;
+      --muted-2:   #6e7681;
+      --accent:    #64ffda; /* primary — green */
+      --accent-2:  #58a6ff; /* secondary — blue */
+      --border:    #1f2428;
+      --border-2:  #30363d;
+      --code-bg:   #0d1117;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: var(--bg); color: var(--fg); }
+    body {
+      font: 15px/1.6 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(900px 420px at 15% -5%, rgba(100, 255, 218, 0.06), transparent 55%),
+        radial-gradient(800px 450px at 100% 105%, rgba(88, 166, 255, 0.04), transparent 55%);
+      background-attachment: fixed;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: #8bffe6; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+    /* ─────────────────────────────── Nav ─────────────────────────────── */
+    .nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 32px; border-bottom: 1px solid var(--border);
+      max-width: 1200px; margin: 0 auto;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 8px;
+      color: var(--fg); font-weight: 700; font-size: 15px; letter-spacing: -0.01em;
+    }
+    .brand .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent);
+      /* Tight inner glow only — no large radiating halo. */
+      box-shadow: 0 0 4px var(--accent);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+    .nav nav { display: flex; gap: 16px; align-items: center; font-size: 14px; }
+    .nav nav a { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+    .nav nav a:hover { color: var(--fg); }
+    /* GitHub pill button in header nav. Compact variant of .btn-ghost so the
+       header stays airy; matches the in-hero CTA GitHub button by using the
+       same inline SVG mark + label. */
+    .nav .btn-nav {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 7px 13px;
+      font-size: 13px; font-weight: 600; color: var(--fg);
+      background: transparent;
+      border: 1px solid var(--border-2);
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .nav .btn-nav:hover { background: var(--bg-card); border-color: var(--muted); color: var(--fg); }
+    .nav .btn-nav svg { flex-shrink: 0; }
+    .nav .btn-nav .ext {
+      font-size: 11px; color: var(--muted-2);
+      margin-left: -2px; transform: translateY(-1px);
+    }
+
+    /* ─────────────────────────────── Hero ─────────────────────────────── */
+    main { max-width: 1200px; margin: 0 auto; padding: 0 32px; }
+    .hero { padding: 72px 0 64px; text-align: center; }
+    .ascii {
+      color: var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: clamp(7px, 1.55vw, 14px);
+      line-height: 1.05;
+      letter-spacing: 0;
+      white-space: pre;
+      display: inline-block;
+      margin-bottom: 28px;
+      /* Compact inner glow — keeps the banner crisp rather than hazy. */
+      filter: drop-shadow(0 0 2px rgba(100, 255, 218, 0.35));
+      user-select: none;
+    }
+    .tagline {
+      font-size: clamp(16px, 2.2vw, 20px);
+      color: var(--fg-dim);
+      max-width: 620px;
+      margin: 0 auto 28px;
+      line-height: 1.45;
+    }
+    .tagline .accent { color: var(--accent); }
+
+    /* Badges */
+    .badges {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      justify-content: center; align-items: center;
+      list-style: none; margin: 0 auto 40px; max-width: 760px;
+    }
+    .badges li {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; color: var(--muted);
+      padding: 5px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-2);
+      border-radius: 999px;
+    }
+
+    /* CTA
+     *
+     * Matched-pair sizing: .btn-primary (filled accent) and .btn-ghost
+     * (outlined) share identical box metrics — height 44px, horizontal
+     * padding 22px, 14px font, same radius. Only surface differs.
+     * This keeps them visually balanced next to each other on the landing.
+     */
+    .cta {
+      display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+      margin: 0 auto 12px;
+    }
+    .cta form { display: inline; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      box-sizing: border-box;
+      height: 44px;
+      padding: 0 22px;
+      font-size: 14px; font-weight: 600;
+      line-height: 1; letter-spacing: 0.005em;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer; text-decoration: none;
+      transition: transform 0.1s ease, filter 0.15s ease, background 0.15s ease,
+                  border-color 0.15s ease, color 0.15s ease;
+      font-family: inherit;
+    }
+    .btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .btn svg { flex-shrink: 0; }
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+      box-shadow: 0 6px 24px -6px rgba(100, 255, 218, 0.35);
+    }
+    .btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); color: #000; }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary .arrow { transition: transform 0.18s ease; }
+    .btn-primary:hover .arrow { transform: translateX(3px); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--fg);
+      border-color: var(--border-2);
+    }
+    .btn-ghost:hover { background: var(--bg-card); border-color: var(--muted); color: var(--fg); }
+    .cta-sub {
+      font-size: 13px; color: var(--muted);
+      margin-top: 16px;
+      font-family: ui-monospace, Menlo, monospace;
+    }
+    .cta-sub .sep { color: var(--muted-2); margin: 0 6px; }
+
+    /* Snippet */
+    .snippet {
+      margin: 56px auto 0; max-width: 620px;
+      text-align: left;
+      border: 1px solid var(--border);
+      background: var(--code-bg);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 20px 48px -8px rgba(0, 0, 0, 0.5);
+    }
+    .snippet-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px;
+      background: #161b22;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px; color: var(--muted);
+    }
+    .snippet-head .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .snippet-head .dot.r { background: #ff5f57; }
+    .snippet-head .dot.y { background: #febc2e; }
+    .snippet-head .dot.g { background: #28c940; }
+    .snippet-head .title { margin-left: 8px; font-family: ui-monospace, Menlo, monospace; }
+    .snippet pre {
+      padding: 18px 20px; margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px; line-height: 1.75;
+      color: var(--fg-dim);
+      overflow-x: auto;
+    }
+    .c-prompt { color: var(--accent); user-select: none; margin-right: 10px; font-weight: 600; }
+    .c-cmd    { color: var(--accent-2); }
+    .c-op     { color: var(--muted); }
+    .c-comment { color: var(--muted-2); }
+    .c-str    { color: #a5d6ff; }
+
+    /* ─────────────────────────── Demo terminal ─────────────────────────── */
+    .demo { padding: 24px 0 96px; }
+    .terminal-frame {
+      max-width: 860px; margin: 0 auto;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 30px 80px -16px rgba(0, 0, 0, 0.55);
+    }
+    .terminal-chrome {
+      display: flex; align-items: center; gap: 8px;
+      padding: 11px 16px;
+      background: #161b22;
+      border-bottom: 1px solid var(--border);
+    }
+    .tc-dot { width: 11px; height: 11px; border-radius: 50%; }
+    .tc-dot.r { background: #ff5f57; }
+    .tc-dot.y { background: #febc2e; }
+    .tc-dot.g { background: #28c940; }
+    .tc-title {
+      margin-left: auto; margin-right: auto;
+      color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+      transform: translateX(-22px);
+    }
+    .terminal-body {
+      padding: 22px 24px;
+      min-height: 300px;
+      color: var(--fg-dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13.5px; line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .term-cursor {
+      display: inline-block; width: 8px; height: 15px;
+      background: var(--accent); vertical-align: text-bottom;
+      animation: blink 1s steps(1, end) infinite;
+      margin-left: 2px;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .term-prompt { color: var(--accent); }
+    .term-ok { color: var(--accent); }
+    .term-info { color: var(--accent-2); }
+    .term-dim { color: var(--muted); }
+
+    /* ─────────────────────────── Feature grid ─────────────────────────── */
+    .features { padding: 32px 0 96px; border-top: 1px solid var(--border); }
+    .features h2 {
+      text-align: center;
+      font-size: clamp(24px, 3vw, 32px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 56px 0 44px;
+    }
+    .features h2 .accent { color: var(--accent); }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .feature-grid article {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px 22px 20px;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .feature-grid article:hover {
+      border-color: var(--border-2);
+      transform: translateY(-2px);
+    }
+    .feature-grid article h3 {
+      font-size: 15px;
+      color: var(--accent);
+      margin-bottom: 8px;
+      font-family: ui-monospace, Menlo, monospace;
+      letter-spacing: 0.01em;
+    }
+    .feature-grid article p {
+      font-size: 14px; color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ─────────────────────────────── Footer ─────────────────────────────── */
+    footer {
+      max-width: 1200px; margin: 0 auto;
+      padding: 28px 32px 40px;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 16px;
+      font-size: 13px; color: var(--muted);
+    }
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--fg); }
+
+    /* ─────────────────────────── Responsive ─────────────────────────── */
+    @media (max-width: 640px) {
+      .nav { padding: 14px 18px; }
+      .nav nav { gap: 14px; font-size: 13px; }
+      main { padding: 0 18px; }
+      .hero { padding: 48px 0 32px; }
+      .badges li { font-size: 11px; padding: 4px 10px; }
+      .btn { height: 42px; padding: 0 18px; font-size: 13.5px; }
+      .terminal-body { font-size: 12px; padding: 16px 18px; }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      .brand .dot, .term-cursor { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="/">
+      <span class="dot"></span>
+      <span>nimbus</span>
+    </a>
+    <nav>
+      <a href="#features">Features</a>
+      <a class="btn-nav" href="https://github.com/AshishKumar4/Nimbus" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+        <span class="ext" aria-hidden="true">&#x2197;</span>
+      </a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero">
+      <pre class="ascii" aria-hidden="true">███╗   ██╗██╗███╗   ███╗██████╗ ██╗   ██╗███████╗
+████╗  ██║██║████╗ ████║██╔══██╗██║   ██║██╔════╝
+██╔██╗ ██║██║██╔████╔██║██████╔╝██║   ██║███████╗
+██║╚██╗██║██║██║╚██╔╝██║██╔══██╗██║   ██║╚════██║
+██║ ╚████║██║██║ ╚═╝ ██║██████╔╝╚██████╔╝███████║
+╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝╚═════╝  ╚═════╝ ╚══════╝</pre>
+
+      <h1 class="sr-only">Nimbus</h1>
+
+      <p class="tagline">
+        A cloud dev environment running entirely on <span class="accent">Cloudflare&rsquo;s edge</span>.
+      </p>
+
+      <ul class="badges" role="list">
+        <li>10 GB per session</li>
+        <li>Boots in seconds</li>
+        <li>Shareable URL</li>
+        <li>MIT</li>
+      </ul>
+
+      <div class="cta">
+        <form action="/new" method="POST">
+          <button type="submit" class="btn btn-primary" autofocus>
+            <span>Launch</span>
+            <span class="arrow" aria-hidden="true">&rarr;</span>
+          </button>
+        </form>
+        <a class="btn btn-ghost" href="https://github.com/AshishKumar4/Nimbus" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+      <p class="cta-sub">Fresh 10&nbsp;GB sandbox<span class="sep" aria-hidden="true">·</span>URL is shareable<span class="sep" aria-hidden="true">·</span>Boots in ~1s</p>
+
+      <!-- Snippet -->
+      <figure class="snippet">
+        <div class="snippet-head">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="title">inside your sandbox</span>
+        </div>
+        <pre><code><span class="c-prompt">$</span> <span class="c-cmd">git clone</span> <span class="c-str">https://github.com/you/your-app.git</span>
+<span class="c-prompt">$</span> <span class="c-cmd">cd</span> your-app <span class="c-op">&amp;&amp;</span> <span class="c-cmd">npm install</span>
+<span class="c-prompt">$</span> <span class="c-cmd">npm run dev</span>
+<span class="c-comment">  ➜  VITE ready — preview is live</span></code></pre>
+      </figure>
+    </section>
+
+    <!-- DEMO -->
+    <section class="demo" aria-label="Nimbus in action">
+      <div class="terminal-frame">
+        <div class="terminal-chrome">
+          <span class="tc-dot r"></span><span class="tc-dot y"></span><span class="tc-dot g"></span>
+          <span class="tc-title">nimbus — ~/app</span>
+        </div>
+        <pre class="terminal-body" id="demo-body"></pre>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section class="features" id="features">
+      <h2>Everything a dev environment needs. <span class="accent">Nothing you don&rsquo;t.</span></h2>
+      <div class="feature-grid">
+        <article>
+          <h3>real shell</h3>
+          <p>60+ Unix commands. Pipes, redirects, jobs, globs, heredocs. Not a toy &mdash; a bash-compatible interpreter.</p>
+        </article>
+        <article>
+          <h3>10 GB filesystem</h3>
+          <p>Persistent SQLite VFS inside a Durable Object. Survives reloads, device changes, and hibernation.</p>
+        </article>
+        <article>
+          <h3>npm + node</h3>
+          <p>Production installer with content-addressed cache. Node.js runs in sandboxed V8 isolates.</p>
+        </article>
+        <article>
+          <h3>git</h3>
+          <p>Full isomorphic-git over the real network. Clone, branch, commit, push &mdash; same flows you know.</p>
+        </article>
+        <article>
+          <h3>vite dev server</h3>
+          <p>In-process HMR, Tailwind, React Router basename auto-injection, runtime error overlay. No local tooling.</p>
+        </article>
+        <article>
+          <h3>shareable URLs</h3>
+          <p>Every sandbox gets a human-readable URL. Send it to a teammate &mdash; they join the same session instantly.</p>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div>MIT · Built on <a href="https://github.com/lifo-sh/lifo" target="_blank" rel="noopener">LIFO&nbsp;OS</a> · Running on Cloudflare Workers</div>
+    <div><a href="https://github.com/AshishKumar4/Nimbus" target="_blank" rel="noopener">GitHub&nbsp;↗</a></div>
+  </footer>
+
+  <script>
+    // ─────────────────────────── Typewriter demo ───────────────────────────
+    // Cycles through a canned shell session. Single-threaded, no external
+    // deps, under 50 lines. Respects prefers-reduced-motion by skipping the
+    // animation and rendering the final state immediately.
+    (function() {
+      var body = document.getElementById('demo-body');
+      if (!body) return;
+
+      var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      // Each step is one line with pre-set styling. Null step = pause.
+      // Numbers below are REAL output from running this flow inside a
+      // live Nimbus sandbox (see runtime test logs); not synthesized.
+      var script = [
+        { t: 'prompt', s: '$ ' },
+        { t: 'typing', s: 'git clone https://github.com/AshishKumar4/personal-website', delay: 35 },
+        { t: 'nl' },
+        { t: 'dim', s: 'Cloning into personal-website...' },
+        { t: 'dim', s: 'Receiving objects: 100% (173/173), 2.4 MiB | 1.2 MiB/s, done.' },
+        { t: 'prompt', s: '$ ' },
+        { t: 'typing', s: 'cd personal-website && npm install', delay: 35 },
+        { t: 'nl' },
+        { t: 'dim', s: '  resolving 96 direct deps \u2192 447 packages' },
+        { t: 'dim', s: '  writing 56,897 files in batches...' },
+        { t: 'ok',  s: 'added 447 packages in 59s' },
+        { t: 'prompt', s: '$ ' },
+        { t: 'typing', s: 'npm run dev', delay: 40 },
+        { t: 'nl' },
+        { t: 'nl' },
+        { t: 'info', s: '  VITE v5.4.19  ready in 418 ms' },
+        { t: 'nl' },
+        { t: 'ok',   s: '  \u279C  Local:   /s/bold-waterfall-4783/preview/' },
+        { t: 'ok',   s: '  \u279C  Ready \u2014 React app rendered' },
+        { t: 'prompt', s: '$ ' },
+        { t: 'cursor' },
+      ];
+
+      var i = 0, cancelled = false;
+      var cursor = '<span class="term-cursor"></span>';
+      var rendered = '';
+
+      function classFor(t) {
+        if (t === 'prompt') return 'term-prompt';
+        if (t === 'ok')     return 'term-ok';
+        if (t === 'info')   return 'term-info';
+        if (t === 'dim')    return 'term-dim';
+        return '';
+      }
+
+      function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+
+      function esc(s) {
+        return s.replace(/[&<>]/g, function(c){
+          return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;';
+        });
+      }
+
+      async function typeLine(text, delay) {
+        for (var c = 0; c < text.length; c++) {
+          if (cancelled) return;
+          rendered += esc(text.charAt(c));
+          body.innerHTML = rendered + cursor;
+          await sleep(delay);
+        }
+      }
+
+      async function run() {
+        if (reduced) {
+          // Fast-forward: render the final static state.
+          for (var k = 0; k < script.length; k++) {
+            var step = script[k];
+            if (step.t === 'cursor') continue;
+            if (step.t === 'nl') { rendered += '\n'; continue; }
+            if (step.t === 'typing') {
+              rendered += esc(step.s) + '\n';
+              continue;
+            }
+            var cls = classFor(step.t);
+            rendered += (cls ? '<span class="' + cls + '">' + esc(step.s) + '</span>' : esc(step.s));
+            if (step.t !== 'prompt') rendered += '\n';
+          }
+          body.innerHTML = rendered + cursor;
+          return;
+        }
+
+        while (!cancelled) {
+          rendered = '';
+          body.innerHTML = cursor;
+          await sleep(400);
+          for (i = 0; i < script.length; i++) {
+            if (cancelled) return;
+            var step = script[i];
+            if (step.t === 'cursor') { await sleep(1800); continue; }
+            if (step.t === 'nl') { rendered += '\n'; body.innerHTML = rendered + cursor; continue; }
+            if (step.t === 'typing') {
+              await typeLine(step.s, step.delay || 40);
+              rendered += '\n';
+              body.innerHTML = rendered + cursor;
+              await sleep(280);
+              continue;
+            }
+            var cls = classFor(step.t);
+            rendered += cls ? '<span class="' + cls + '">' + esc(step.s) + '</span>' : esc(step.s);
+            if (step.t !== 'prompt') rendered += '\n';
+            body.innerHTML = rendered + cursor;
+            await sleep(step.t === 'prompt' ? 180 : 120);
+          }
+          await sleep(2600);
+        }
+      }
+
+      // Pause animation when the tab is hidden to save CPU.
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) cancelled = true;
+        else { cancelled = false; run(); }
+      });
+
+      run();
+    })();
+  </script>
+</body>
+</html>
