@@ -1,0 +1,34 @@
+==== PROBE: perf_hooks ====
+==== TIMESTAMP: 2026-04-29T18:27:47.596Z ====
+==== SID: plucky-zebra-9078 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_23_moke0xe3.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcCA9IHJlcXVpcmUoJ3BlcmZfaG9va3MnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMocCkuc2xpY2UoMCwgMTApLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdwZXJmb3JtYW5jZS5ub3c6JywgdHlwZW9mIHAucGVyZm9ybWFuY2UgJiYgdHlwZW9mIHAucGVyZm9ybWFuY2Uubm93KTsKY29uc29sZS5sb2coJ1BlcmZvcm1hbmNlT2JzZXJ2ZXIgdHlwZW9mOicsIHR5cGVvZiBwLlBlcmZvcm1hbmNlT2JzZXJ2ZXIpOwo=' && node /tmp/p_23_moke0xe3.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_23_moke0xe3.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcCA9IHJlcXVpcmUoJ3BlcmZfaG9va3MnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMocCkuc2xpY2UoMCwgMTApLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdwZXJmb3JtYW5jZS5ub3c6JywgdHlwZW9mIHAucGVyZm9ybWFuY2UgJiYgdHlwZW9mIHAucGVyZm9ybWFuY2Uubm93KTsKY29uc29sZS5sb2coJ1BlcmZvcm1hbmNlT2JzZXJ2ZXIgdHlwZW9mOicsIHR5cGVvZiBwLlBlcmZvcm1hbmNlT2JzZXJ2ZXIpOwo=' && node /tmp/p_23_moke0xe3.js
+[facet started: pid=2 cmd="node /tmp/p_23_moke0xe3.js"]
+keys: performance
+performance.now: function
+PerformanceObserver typeof: undefined
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_23_moke0xe3.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: performance
+performance.now: function
+PerformanceObserver typeof: undefined
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1501ms (wsClosed=false) ----
+
+==== END PROBE: perf_hooks ====

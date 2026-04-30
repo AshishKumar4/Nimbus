@@ -1,0 +1,49 @@
+==== PROBE: jest ====
+==== TIMESTAMP: 2026-04-30T15:39:13.920Z ====
+==== SID: rapid-wombat-8775 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install jest ----
+user@nimbus:~$ cd app && npm install jest
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 236 resolved, 236 packuments fetched (52.9 MiB), peak in-flight=4, cache writes=1204, elapsed=6.2s
+[npm] Resolved 236 packages.
+[npm] To fetch: 236, to restore: 0, already installed: 0
+[npm] Fetching 236 packages... (path: batch-facet)
+[npm] Dispatching 236 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 236/236 packages, 4823 files, 4.8 MiB tarball bytes, peak in-flight=3, 7.0s
+[npm] Done! 236 packages, 4823 files in 13.2s
+
+added 236 packages (4823 files) in 13.2s
+user@nimbus:~/app$ 
+---- step done in 14005ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molng0ao.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdqZXN0Jyk7Y29uc29sZS5sb2coJ3R5cGVvZjonLHR5cGVvZiBtKQ==' && cd /home/user/app && node .pkgsmoke_molng0ao.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molng0ao.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdqZXN0Jyk7Y29uc29sZS5sb2coJ3R5cGVvZjonLHR5cGVvZiBtKQ==' && cd /home/user/app && node .pkgsmoke_molng0ao.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_molng0ao.js"]
+typeof: object
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_molng0ao.js) exited with code 0
+────────────────────────────────────────────────────────────
+typeof: object
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 2001ms (wsClosed=false) ----
+
+==== END PROBE: jest ====

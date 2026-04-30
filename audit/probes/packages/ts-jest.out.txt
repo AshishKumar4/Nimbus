@@ -1,0 +1,65 @@
+==== PROBE: ts-jest ====
+==== TIMESTAMP: 2026-04-29T18:35:30.350Z ====
+==== SID: regal-quartz-0818 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install ts-jest jest typescript ----
+user@nimbus:~$ cd app && npm install ts-jest jest typescript
+Installing 3 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 3 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 245 resolved, 245 packuments fetched (55.1 MiB), peak in-flight=4, cache writes=1248, elapsed=4.6s
+[npm] Resolved 245 packages.
+[npm] To fetch: 245, to restore: 0, already installed: 0
+[npm] Fetching 245 packages... (path: batch-facet)
+[npm] Dispatching 245 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 245/245 packages, 5367 files, 5.8 MiB tarball bytes, peak in-flight=3, 7.0s
+[npm] Done! 245 packages, 5367 files in 11.7s
+
+added 245 packages (5367 files) in 11.7s
+user@nimbus:~/app$ 
+---- step done in 12508ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mokeaugd.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd0cy1qZXN0Jyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDYpKQ==' && cd /home/user/app && node .pkgsmoke_mokeaugd.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mokeaugd.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd0cy1qZXN0Jyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDYpKQ==' && cd /home/user/app && node .pkgsmoke_mokeaugd.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_mokeaugd.js"]
+Error: Cannot find module './legacy/ts-jest-transformer' (from home/user/app/node_modules/ts-jest/dist)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:19:31)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1468:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_mokeaugd.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module './legacy/ts-jest-transformer' (from home/user/app/node_modules/ts-jest/dist)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:19:31)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1468:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: ts-jest ====

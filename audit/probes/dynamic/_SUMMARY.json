@@ -1,0 +1,46 @@
+[
+  {
+    "name": "dirname-filename",
+    "ok": true
+  },
+  {
+    "name": "import-meta",
+    "ok": true
+  },
+  {
+    "name": "dynamic-require-literal",
+    "ok": true
+  },
+  {
+    "name": "dynamic-require-variable",
+    "ok": true
+  },
+  {
+    "name": "require-resolve",
+    "ok": true
+  },
+  {
+    "name": "dynamic-import-literal",
+    "ok": true
+  },
+  {
+    "name": "dynamic-import-variable",
+    "ok": true
+  },
+  {
+    "name": "eval-and-Function",
+    "ok": true
+  },
+  {
+    "name": "top-level-await",
+    "ok": true
+  },
+  {
+    "name": "process-cwd-chdir",
+    "ok": true
+  },
+  {
+    "name": "globals",
+    "ok": true
+  }
+]

@@ -1,0 +1,36 @@
+==== PROBE: events ====
+==== TIMESTAMP: 2026-04-29T18:27:29.115Z ====
+==== SID: gusty-willow-4023 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_8_moke0j4q.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgRSA9IHJlcXVpcmUoJ2V2ZW50cycpOwpjb25zdCBlZSA9IG5ldyBFKCk7CmVlLm9uKCd4Jywgdj0+Y29uc29sZS5sb2coJ2dvdDonLHYpKTsKZWUuZW1pdCgneCcsIDQyKTsKY29uc29sZS5sb2coJ29uY2UgdHlwZW9mOicsIHR5cGVvZiBFLm9uY2UpOwpjb25zb2xlLmxvZygnbGlzdGVuZXJDb3VudDonLCBlZS5saXN0ZW5lckNvdW50KCd4JykpOwpjb25zb2xlLmxvZygnZ2V0RXZlbnRMaXN0ZW5lcnM6JywgdHlwZW9mIEUuZ2V0RXZlbnRMaXN0ZW5lcnMpOwo=' && node /tmp/p_8_moke0j4q.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_8_moke0j4q.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgRSA9IHJlcXVpcmUoJ2V2ZW50cycpOwpjb25zdCBlZSA9IG5ldyBFKCk7CmVlLm9uKCd4Jywgdj0+Y29uc29sZS5sb2coJ2dvdDonLHYpKTsKZWUuZW1pdCgneCcsIDQyKTsKY29uc29sZS5sb2coJ29uY2UgdHlwZW9mOicsIHR5cGVvZiBFLm9uY2UpOwpjb25zb2xlLmxvZygnbGlzdGVuZXJDb3VudDonLCBlZS5saXN0ZW5lckNvdW50KCd4JykpOwpjb25zb2xlLmxvZygnZ2V0RXZlbnRMaXN0ZW5lcnM6JywgdHlwZW9mIEUuZ2V0RXZlbnRMaXN0ZW5lcnMpOwo=' && node /tmp/p_8_moke0j4q.js
+[facet started: pid=2 cmd="node /tmp/p_8_moke0j4q.js"]
+getEventListeners: undefined
+once typeof: undefined
+listenerCount: 1
+got: 42
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_8_moke0j4q.js) exited with code 0
+────────────────────────────────────────────────────────────
+getEventListeners: undefined
+once typeof: undefined
+listenerCount: 1
+got: 42
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: events ====

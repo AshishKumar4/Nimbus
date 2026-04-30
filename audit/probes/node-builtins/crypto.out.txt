@@ -1,0 +1,52 @@
+==== PROBE: crypto ====
+==== TIMESTAMP: 2026-04-29T18:27:23.281Z ====
+==== SID: tranquil-fawn-2631 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_3_moke0emp.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgYyA9IHJlcXVpcmUoJ2NyeXB0bycpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhjKS5zbGljZSgwLCAyNSkuam9pbignLCcpKTsKY29uc29sZS5sb2coJ3JhbmRvbUJ5dGVzOicsIGMucmFuZG9tQnl0ZXMoNCkudG9TdHJpbmcoJ2hleCcpKTsKY29uc29sZS5sb2coJ3JhbmRvbVVVSUQ6JywgYy5yYW5kb21VVUlEICYmIGMucmFuZG9tVVVJRCgpKTsKY29uc3QgaCA9IGMuY3JlYXRlSGFzaCgnc2hhMjU2Jyk7CmgudXBkYXRlKCdoZWxsbycpOwpjb25zb2xlLmxvZygnc2hhMjU2KGhlbGxvKTonLCBoLmRpZ2VzdCgnaGV4JykpOwpjb25zb2xlLmxvZygnZXhwZWN0ZWQgcmVhbDogICAgMmNmMjRkYmE1ZmIwYTMwZTI2ZTgzYjJhYzViOWUyOWUxYjE2MWU1YzFmYTc0MjVlNzMwNDMzNjI5MzhiOTgyNCcpOwpjb25zdCBoMiA9IGMuY3JlYXRlSGFzaCgnbWQ1Jyk7CmgyLnVwZGF0ZSgnaGVsbG8nKTsKY29uc29sZS5sb2coJ21kNShoZWxsbyk6JywgaDIuZGlnZXN0KCdoZXgnKSk7C...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_3_moke0emp.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgYyA9IHJlcXVpcmUoJ2NyeXB0bycpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhjKS5zbGljZSgwLCAyNSkuam9pbignLCcpKTsKY29uc29sZS5sb2coJ3JhbmRvbUJ5dGVzOicsIGMucmFuZG9tQnl0ZXMoNCkudG9TdHJpbmcoJ2hleCcpKTsKY29uc29sZS5sb2coJ3JhbmRvbVVVSUQ6JywgYy5yYW5kb21VVUlEICYmIGMucmFuZG9tVVVJRCgpKTsKY29uc3QgaCA9IGMuY3JlYXRlSGFzaCgnc2hhMjU2Jyk7CmgudXBkYXRlKCdoZWxsbycpOwpjb25zb2xlLmxvZygnc2hhMjU2KGhlbGxvKTonLCBoLmRpZ2VzdCgnaGV4JykpOwpjb25zb2xlLmxvZygnZXhwZWN0ZWQgcmVhbDogICAgMmNmMjRkYmE1ZmIwYTMwZTI2ZTgzYjJhYzViOWUyOWUxYjE2MWU1YzFmYTc0MjVlNzMwNDMzNjI5MzhiOTgyNCcpOwpjb25zdCBoMiA9IGMuY3JlYXRlSGFzaCgnbWQ1Jyk7CmgyLnVwZGF0ZSgnaGVsbG8nKTsKY29uc29sZS5sb2coJ21kNShoZWxsbyk6JywgaDIuZGlnZXN0KCdoZXgnKSk7CmNvbnNvbGUubG9nKCdleHBlY3RlZCByZWFsOiA1ZDQxNDAyYWJjNGIyYTc2Yjk3MTlkOTExMDE3YzU5MicpOwp0cnkgeyBjb25zb2xlLmxvZygnaG1hYzonLCBjLmNyZWF0ZUhtYWMoJ3NoYTI1NicsICdrJykudXBkYXRlKCdtJykuZGlnZXN0KCdoZXgnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnaG1hYyBmYWlsOicsIGUubWVzc2FnZSk7IH0KY29uc29sZS5sb2coJ2NyZWF0ZUNpcGhlcml2OicsIHR5cGVvZiBjLmNyZWF0ZUNpcGhlcml2KTsKY29uc29sZS5sb2coJ3NjcnlwdDonLCB0eXBlb2YgYy5zY3J5cHQpOwpjb25zb2xlLmxvZygncGJrZGYyOicsIHR5cGVvZiBjLnBia2RmMik7CmNvbnNvbGUubG9nKCdnZW5lcmF0ZUtleVBhaXI6JywgdHlwZW9mIGMuZ2VuZXJhdGVLZXlQYWlyKTsK' && node /tmp/p_3_moke0emp.js
+[facet started: pid=2 cmd="node /tmp/p_3_moke0emp.js"]
+keys: randomBytes,randomUUID,randomInt,randomFillSync,createHash,createHmac,timingSafeEqual,getHashes,getCiphers,constants
+sha256(hello): abdd62852c5bd7fc9fa116d64f0254ecabdd62852c5bd7fc9fa116d64f0254ec
+randomBytes: 4307eab2
+hmac: 85a35049fc9cdf8e3cef3c6044f80b4885a35049fc9cdf8e3cef3c6044f80b48
+expected real:    2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+pbkdf2: undefined
+createCipheriv: undefined
+generateKeyPair: undefined
+expected real: 5d41402abc4b2a76b9719d911017c592
+randomUUID: 467bf0a1-5886-45d2-81e8-1cab86f0b144
+md5(hello): abdd62852c5bd7fc9fa116d64f0254ec
+scrypt: undefined
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_3_moke0emp.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: randomBytes,randomUUID,randomInt,randomFillSync,createHash,createHmac,timingSafeEqual,getHashes,getCiphers,constants
+sha256(hello): abdd62852c5bd7fc9fa116d64f0254ecabdd62852c5bd7fc9fa116d64f0254ec
+randomBytes: 4307eab2
+hmac: 85a35049fc9cdf8e3cef3c6044f80b4885a35049fc9cdf8e3cef3c6044f80b48
+expected real:    2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+pbkdf2: undefined
+createCipheriv: undefined
+generateKeyPair: undefined
+expected real: 5d41402abc4b2a76b9719d911017c592
+randomUUID: 467bf0a1-5886-45d2-81e8-1cab86f0b144
+md5(hello): abdd62852c5bd7fc9fa116d64f0254ec
+scrypt: undefined
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1002ms (wsClosed=false) ----
+
+==== END PROBE: crypto ====

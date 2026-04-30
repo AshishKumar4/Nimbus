@@ -1,0 +1,1 @@
+const m=require('fastify');const a=m();console.log('keys:',Object.keys(a).slice(0,6))

@@ -1,0 +1,266 @@
+[
+  {
+    "name": "astro",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 226 pkgs, 8813 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot load module 'home/user/app/node_modules/astro/dist/index.js': file was not pre-bundled. Add it to the VFS bundle."
+  },
+  {
+    "name": "axios",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 26 pkgs, 417 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './db.json' (from home/user/app/node_modules/mime-db)"
+  },
+  {
+    "name": "bcrypt",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 3 pkgs, 65 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './node-gyp-build.js' (from home/user/app/node_modules/node-gyp-build)"
+  },
+  {
+    "name": "better-sqlite3",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 38 pkgs, 376 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './database' (from home/user/app/node_modules/better-sqlite3/lib)"
+  },
+  {
+    "name": "drizzle-orm",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 1 pkgs, 2666 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './alias.cjs' (from home/user/app/node_modules/drizzle-orm)"
+  },
+  {
+    "name": "express",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 68 pkgs, 628 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './lib/express' (from home/user/app/node_modules/express)"
+  },
+  {
+    "name": "fastify",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 46 pkgs, 1928 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'fastq' (from home/user/app/node_modules/avvio)"
+  },
+  {
+    "name": "framer-motion",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 9 pkgs, 989 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'framer-motion' (from /home/user/app)"
+  },
+  {
+    "name": "fsevents",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 0 pkgs, 0 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'fsevents' (from /home/user/app)"
+  },
+  {
+    "name": "jest",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 236 pkgs, 4823 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "typeof: object"
+  },
+  {
+    "name": "jsdom",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 39 pkgs, 1756 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'vm' (from home/user/app/node_modules/jsdom/lib)"
+  },
+  {
+    "name": "next",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 8 pkgs, 9374 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'next' (from /home/user/app)"
+  },
+  {
+    "name": "node-canvas",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 37 pkgs, 382 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './lib/canvas' (from home/user/app/node_modules/canvas)"
+  },
+  {
+    "name": "nuxt",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 424 pkgs, 10687 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot load module 'home/user/app/node_modules/nuxt/dist/index.mjs': file was not pre-bundled. Add it to the VFS bundle."
+  },
+  {
+    "name": "parcel",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 0 pkgs, 0 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'parcel' (from /home/user/app)"
+  },
+  {
+    "name": "pg",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 14 pkgs, 141 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './client' (from home/user/app/node_modules/pg/lib)"
+  },
+  {
+    "name": "prisma",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 84 pkgs, 7146 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'prisma' (from /home/user/app)"
+  },
+  {
+    "name": "puppeteer-core",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 78 pkgs, 4082 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './index.js' (from home/user/app/node_modules/puppeteer-core/lib/cjs/puppeteer)"
+  },
+  {
+    "name": "radix-react-dialog",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 31 pkgs, 512 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './cjs/react.development.js' (from home/user/app/node_modules/react)"
+  },
+  {
+    "name": "react-remove-scroll",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 13 pkgs, 354 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './Combination' (from home/user/app/node_modules/react-remove-scroll/dist/es5)"
+  },
+  {
+    "name": "redis",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 7 pkgs, 2371 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './lib/RESP/decoder' (from home/user/app/node_modules/@redis/client/dist)"
+  },
+  {
+    "name": "remix-react",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 10 pkgs, 269 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './umd/react-router-dom.development.js' (from home/user/app/node_modules/react-router-dom/dist)"
+  },
+  {
+    "name": "rollup",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 0 pkgs, 0 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'rollup' (from /home/user/app)"
+  },
+  {
+    "name": "sharp",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 4 pkgs, 99 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './constructor' (from home/user/app/node_modules/sharp/lib)"
+  },
+  {
+    "name": "swc-core",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 3 pkgs, 24 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './binding' (from home/user/app/node_modules/@swc/core)"
+  },
+  {
+    "name": "tailwindcss-oxide",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 1 pkgs, 4 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find native binding. npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). Please try `npm i` again after removing both package-lock.json and node_modules directory."
+  },
+  {
+    "name": "tailwindcss-vite",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 16 pkgs, 317 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot load module 'home/user/app/node_modules/@tailwindcss/vite/dist/index.mjs': file was not pre-bundled. Add it to the VFS bundle."
+  },
+  {
+    "name": "ts-jest",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 245 pkgs, 5367 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './legacy/ts-jest-transformer' (from home/user/app/node_modules/ts-jest/dist)"
+  },
+  {
+    "name": "ts-node",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 17 pkgs, 268 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './util' (from home/user/app/node_modules/ts-node/dist)"
+  },
+  {
+    "name": "vite",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 0 pkgs, 0 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'vite' (from /home/user/app)"
+  },
+  {
+    "name": "vitest",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 28 pkgs, 404 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot load module 'home/user/app/node_modules/vitest/dist/index.js': file was not pre-bundled. Add it to the VFS bundle."
+  },
+  {
+    "name": "webpack",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 0 pkgs, 0 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'webpack' (from /home/user/app)"
+  },
+  {
+    "name": "zod",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 1 pkgs, 694 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module './v4/classic/external.cjs' (from home/user/app/node_modules/zod)"
+  }
+]

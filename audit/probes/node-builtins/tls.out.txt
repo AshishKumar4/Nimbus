@@ -1,0 +1,30 @@
+==== PROBE: tls ====
+==== TIMESTAMP: 2026-04-29T18:27:38.587Z ====
+==== SID: tranquil-basin-4820 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_16_moke0qfu.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgdCA9IHJlcXVpcmUoJ3RscycpOyBjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyh0KS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsgY29uc29sZS5sb2coJ2Nvbm5lY3QgdHlwZW9mOicsIHR5cGVvZiB0LmNvbm5lY3QpOyBjb25zb2xlLmxvZygnY3JlYXRlU2VydmVyIHR5cGVvZjonLCB0eXBlb2YgdC5jcmVhdGVTZXJ2ZXIpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ3RscyByZXF1aXJlIGZhaWxlZDonLCBlLm1lc3NhZ2UpOyB9Cg==' && node /tmp/p_16_moke0qfu.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_16_moke0qfu.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgdCA9IHJlcXVpcmUoJ3RscycpOyBjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyh0KS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsgY29uc29sZS5sb2coJ2Nvbm5lY3QgdHlwZW9mOicsIHR5cGVvZiB0LmNvbm5lY3QpOyBjb25zb2xlLmxvZygnY3JlYXRlU2VydmVyIHR5cGVvZjonLCB0eXBlb2YgdC5jcmVhdGVTZXJ2ZXIpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ3RscyByZXF1aXJlIGZhaWxlZDonLCBlLm1lc3NhZ2UpOyB9Cg==' && node /tmp/p_16_moke0qfu.js
+[facet started: pid=2 cmd="node /tmp/p_16_moke0qfu.js"]
+tls require failed: Cannot find module 'tls' (from /tmp)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_16_moke0qfu.js) exited with code 0
+────────────────────────────────────────────────────────────
+tls require failed: Cannot find module 'tls' (from /tmp)
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: tls ====

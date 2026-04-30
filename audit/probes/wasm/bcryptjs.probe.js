@@ -1,0 +1,1 @@
+const b=require('bcryptjs');const h=b.hashSync('pw',4);console.log('hash len:',h.length);console.log('verify:',b.compareSync('pw',h));

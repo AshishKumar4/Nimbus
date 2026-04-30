@@ -1,0 +1,38 @@
+==== PROBE: zlib ====
+==== TIMESTAMP: 2026-04-29T18:27:34.338Z ====
+==== SID: foggy-rose-9391 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_12_moke0n5t.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgeiA9IHJlcXVpcmUoJ3psaWInKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMoeikuc2xpY2UoMCwgMTgpLmpvaW4oJywnKSk7CnRyeSB7IGNvbnNvbGUubG9nKCdnemlwU3luYzonLCB6Lmd6aXBTeW5jKEJ1ZmZlci5mcm9tKCdoaScpKS50b1N0cmluZygnaGV4JykpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ2d6aXBTeW5jIFRIUkVXOicsIGUubWVzc2FnZSk7IH0KdHJ5IHsgY29uc29sZS5sb2coJ2RlZmxhdGVTeW5jOicsIHouZGVmbGF0ZVN5bmMoQnVmZmVyLmZyb20oJ2hpJykpLnRvU3RyaW5nKCdoZXgnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZGVmbGF0ZVN5bmMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQp6Lmd6aXAoQnVmZmVyLmZyb20oJ2hlbGxvJyksIChlcnIsIG91dCkgPT4gY29uc29sZS5sb2coJ2FzeW5jIGd6aXA6JywgZXJyP2Vyci5tZXNzYWdlOignb2sgbGVuPScrb3V0Lmxlbmd0aCkpKTsKY29uc29sZS5sb2coJ2Jyb3RsaUNvbXByZXNz...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_12_moke0n5t.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgeiA9IHJlcXVpcmUoJ3psaWInKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMoeikuc2xpY2UoMCwgMTgpLmpvaW4oJywnKSk7CnRyeSB7IGNvbnNvbGUubG9nKCdnemlwU3luYzonLCB6Lmd6aXBTeW5jKEJ1ZmZlci5mcm9tKCdoaScpKS50b1N0cmluZygnaGV4JykpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ2d6aXBTeW5jIFRIUkVXOicsIGUubWVzc2FnZSk7IH0KdHJ5IHsgY29uc29sZS5sb2coJ2RlZmxhdGVTeW5jOicsIHouZGVmbGF0ZVN5bmMoQnVmZmVyLmZyb20oJ2hpJykpLnRvU3RyaW5nKCdoZXgnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZGVmbGF0ZVN5bmMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQp6Lmd6aXAoQnVmZmVyLmZyb20oJ2hlbGxvJyksIChlcnIsIG91dCkgPT4gY29uc29sZS5sb2coJ2FzeW5jIGd6aXA6JywgZXJyP2Vyci5tZXNzYWdlOignb2sgbGVuPScrb3V0Lmxlbmd0aCkpKTsKY29uc29sZS5sb2coJ2Jyb3RsaUNvbXByZXNzU3luYyB0eXBlb2Y6JywgdHlwZW9mIHouYnJvdGxpQ29tcHJlc3NTeW5jKTsK' && node /tmp/p_12_moke0n5t.js
+[facet started: pid=2 cmd="node /tmp/p_12_moke0n5t.js"]
+keys: gzip,gunzip,deflate,inflate,gzipSync,gunzipSync,createGzip,createGunzip,createDeflate,createInflate,constants
+async gzip: ok len=25
+brotliCompressSync typeof: undefined
+deflateSync THREW: z.deflateSync is not a function
+gzipSync THREW: use async gzip()
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_12_moke0n5t.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: gzip,gunzip,deflate,inflate,gzipSync,gunzipSync,createGzip,createGunzip,createDeflate,createInflate,constants
+async gzip: ok len=25
+brotliCompressSync typeof: undefined
+deflateSync THREW: z.deflateSync is not a function
+gzipSync THREW: use async gzip()
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1000ms (wsClosed=false) ----
+
+==== END PROBE: zlib ====

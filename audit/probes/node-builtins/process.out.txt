@@ -1,0 +1,50 @@
+==== PROBE: process ====
+==== TIMESTAMP: 2026-04-29T18:27:47.616Z ====
+==== SID: polite-jackal-2074 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_24_moke0xeo.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coJ2FyZ3Y6JywgcHJvY2Vzcy5hcmd2LnNsaWNlKDAsIDMpKTsKY29uc29sZS5sb2coJ3BsYXRmb3JtOicsIHByb2Nlc3MucGxhdGZvcm0pOwpjb25zb2xlLmxvZygnYXJjaDonLCBwcm9jZXNzLmFyY2gpOwpjb25zb2xlLmxvZygndmVyc2lvbjonLCBwcm9jZXNzLnZlcnNpb24pOwpjb25zb2xlLmxvZygnY3dkOicsIHByb2Nlc3MuY3dkKCkpOwpjb25zb2xlLmxvZygnZW52IGtleXMgY291bnQ6JywgT2JqZWN0LmtleXMocHJvY2Vzcy5lbnYpLmxlbmd0aCk7CmNvbnNvbGUubG9nKCdwaWQ6JywgcHJvY2Vzcy5waWQpOwpjb25zb2xlLmxvZygnbWVtb3J5VXNhZ2U6JywgSlNPTi5zdHJpbmdpZnkocHJvY2Vzcy5tZW1vcnlVc2FnZSgpKSk7CmNvbnNvbGUubG9nKCdocnRpbWUgdHlwZW9mOicsIHR5cGVvZiBwcm9jZXNzLmhydGltZSk7CmNvbnNvbGUubG9nKCdocnRpbWUuYmlnaW50IHR5cGVvZjonLCB0eXBlb2YgcHJvY2Vzcy5ocnRpbWU/LmJpZ2ludCk7CmNvbnNvbGUubG9nKCdu...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_24_moke0xeo.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coJ2FyZ3Y6JywgcHJvY2Vzcy5hcmd2LnNsaWNlKDAsIDMpKTsKY29uc29sZS5sb2coJ3BsYXRmb3JtOicsIHByb2Nlc3MucGxhdGZvcm0pOwpjb25zb2xlLmxvZygnYXJjaDonLCBwcm9jZXNzLmFyY2gpOwpjb25zb2xlLmxvZygndmVyc2lvbjonLCBwcm9jZXNzLnZlcnNpb24pOwpjb25zb2xlLmxvZygnY3dkOicsIHByb2Nlc3MuY3dkKCkpOwpjb25zb2xlLmxvZygnZW52IGtleXMgY291bnQ6JywgT2JqZWN0LmtleXMocHJvY2Vzcy5lbnYpLmxlbmd0aCk7CmNvbnNvbGUubG9nKCdwaWQ6JywgcHJvY2Vzcy5waWQpOwpjb25zb2xlLmxvZygnbWVtb3J5VXNhZ2U6JywgSlNPTi5zdHJpbmdpZnkocHJvY2Vzcy5tZW1vcnlVc2FnZSgpKSk7CmNvbnNvbGUubG9nKCdocnRpbWUgdHlwZW9mOicsIHR5cGVvZiBwcm9jZXNzLmhydGltZSk7CmNvbnNvbGUubG9nKCdocnRpbWUuYmlnaW50IHR5cGVvZjonLCB0eXBlb2YgcHJvY2Vzcy5ocnRpbWU/LmJpZ2ludCk7CmNvbnNvbGUubG9nKCduZXh0VGljayB0eXBlb2Y6JywgdHlwZW9mIHByb2Nlc3MubmV4dFRpY2spOwo=' && node /tmp/p_24_moke0xeo.js
+[facet started: pid=2 cmd="node /tmp/p_24_moke0xeo.js"]
+arch: x64
+argv: ["node","/tmp/p_24_moke0xeo.js"]
+platform: linux
+cwd: /home/user
+version: v20.0.0
+env keys count: 16
+hrtime typeof: function
+hrtime.bigint typeof: function
+nextTick typeof: function
+memoryUsage: {"rss":0,"heapTotal":0,"heapUsed":0,"external":0,"arrayBuffers":0}
+pid: 1
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_24_moke0xeo.js) exited with code 0
+────────────────────────────────────────────────────────────
+arch: x64
+argv: ["node","/tmp/p_24_moke0xeo.js"]
+platform: linux
+cwd: /home/user
+version: v20.0.0
+env keys count: 16
+hrtime typeof: function
+hrtime.bigint typeof: function
+nextTick typeof: function
+memoryUsage: {"rss":0,"heapTotal":0,"heapUsed":0,"external":0,"arrayBuffers":0}
+pid: 1
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1502ms (wsClosed=false) ----
+
+==== END PROBE: process ====

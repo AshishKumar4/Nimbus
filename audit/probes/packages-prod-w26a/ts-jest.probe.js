@@ -1,0 +1,1 @@
+const m=require('ts-jest');console.log('typeof:',typeof m)

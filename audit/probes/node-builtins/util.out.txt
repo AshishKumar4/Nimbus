@@ -1,0 +1,54 @@
+==== PROBE: util ====
+==== TIMESTAMP: 2026-04-29T18:27:23.283Z ====
+==== SID: divine-salmon-3041 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_4_moke0emr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgdSA9IHJlcXVpcmUoJ3V0aWwnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXModSkuc2xpY2UoMCwgMjApLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdpbnNwZWN0IGJhc2ljOicsIHUuaW5zcGVjdCh7YToxLCBiOlsxLDJdfSkpOwpjb25zdCBjeWMgPSB7fTsgY3ljLnNlbGYgPSBjeWM7CnRyeSB7IGNvbnNvbGUubG9nKCdpbnNwZWN0IGN5Y2xpYzonLCB1Lmluc3BlY3QoY3ljKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnaW5zcGVjdCBjeWNsaWMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQpjb25zb2xlLmxvZygnZm9ybWF0OicsIHUuZm9ybWF0KCclcz0lZCcsICd4JywgNDIpKTsKY29uc29sZS5sb2coJ3Byb21pc2lmeSB0eXBlb2Y6JywgdHlwZW9mIHUucHJvbWlzaWZ5KTsKY29uc29sZS5sb2coJ3BhcnNlQXJncyB0eXBlb2Y6JywgdHlwZW9mIHUucGFyc2VBcmdzKTsKY29uc29sZS5sb2coJ2RlYnVnbG9nIHR5cGVvZjonLCB0eXBlb2YgdS5kZWJ1Z2xvZyk7Cg=='...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_4_moke0emr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgdSA9IHJlcXVpcmUoJ3V0aWwnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXModSkuc2xpY2UoMCwgMjApLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdpbnNwZWN0IGJhc2ljOicsIHUuaW5zcGVjdCh7YToxLCBiOlsxLDJdfSkpOwpjb25zdCBjeWMgPSB7fTsgY3ljLnNlbGYgPSBjeWM7CnRyeSB7IGNvbnNvbGUubG9nKCdpbnNwZWN0IGN5Y2xpYzonLCB1Lmluc3BlY3QoY3ljKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnaW5zcGVjdCBjeWNsaWMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQpjb25zb2xlLmxvZygnZm9ybWF0OicsIHUuZm9ybWF0KCclcz0lZCcsICd4JywgNDIpKTsKY29uc29sZS5sb2coJ3Byb21pc2lmeSB0eXBlb2Y6JywgdHlwZW9mIHUucHJvbWlzaWZ5KTsKY29uc29sZS5sb2coJ3BhcnNlQXJncyB0eXBlb2Y6JywgdHlwZW9mIHUucGFyc2VBcmdzKTsKY29uc29sZS5sb2coJ2RlYnVnbG9nIHR5cGVvZjonLCB0eXBlb2YgdS5kZWJ1Z2xvZyk7Cg==' && node /tmp/p_4_moke0emr.js
+[facet started: pid=2 cmd="node /tmp/p_4_moke0emr.js"]
+keys: inspect,format,promisify,callbackify,types,inherits,deprecate,debuglog,isDeepStrictEqual,TextEncoder,TextDecoder
+inspect basic: {
+  "a": 1,
+  "b": [
+    1,
+    2
+  ]
+}
+promisify typeof: function
+inspect cyclic: [object Object]
+parseArgs typeof: undefined
+debuglog typeof: function
+format: x=42
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_4_moke0emr.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: inspect,format,promisify,callbackify,types,inherits,deprecate,debuglog,isDeepStrictEqual,TextEncoder,TextDecoder
+inspect basic: {
+  "a": 1,
+  "b": [
+    1,
+    2
+  ]
+}
+promisify typeof: function
+inspect cyclic: [object Object]
+parseArgs typeof: undefined
+debuglog typeof: function
+format: x=42
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1000ms (wsClosed=false) ----
+
+==== END PROBE: util ====

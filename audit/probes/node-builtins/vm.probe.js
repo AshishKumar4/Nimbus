@@ -1,0 +1,1 @@
+try { const v = require('vm'); console.log('keys:', Object.keys(v).slice(0, 10).join(',')); console.log('runInNewContext typeof:', typeof v.runInNewContext); try { console.log('runInNewContext result:', v.runInNewContext('1+2')); } catch(e) { console.log('runInNewContext THREW:', e.message); } } catch(e) { console.log('vm require failed:', e.message); }

@@ -1,0 +1,44 @@
+==== PROBE: path ====
+==== TIMESTAMP: 2026-04-29T18:27:28.938Z ====
+==== SID: smart-violet-4668 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_5_moke0izu.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMocCkuc2xpY2UoMCwgMTUpLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdqb2luOicsIHAuam9pbignL2EnLCdiLy4uL2MnLCdkLnR4dCcpKTsKY29uc29sZS5sb2coJ3Jlc29sdmU6JywgcC5yZXNvbHZlKCcvYScsJy4vYicsJ2MnKSk7CmNvbnNvbGUubG9nKCdiYXNlbmFtZTonLCBwLmJhc2VuYW1lKCcvYS9iL2MudHh0JywnLnR4dCcpKTsKY29uc29sZS5sb2coJ2Rpcm5hbWU6JywgcC5kaXJuYW1lKCcvYS9iL2MudHh0JykpOwpjb25zb2xlLmxvZygnZXh0bmFtZTonLCBwLmV4dG5hbWUoJ2Zvby50YXIuZ3onKSk7CmNvbnNvbGUubG9nKCdwb3NpeD09PXBhdGg6JywgcC5wb3NpeCA9PT0gcCk7CmNvbnNvbGUubG9nKCd3aW4zMiB0eXBlb2Y6JywgdHlwZW9mIHAud2luMzIpOwo=' && node /tmp/p_5_moke0izu.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_5_moke0izu.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMocCkuc2xpY2UoMCwgMTUpLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdqb2luOicsIHAuam9pbignL2EnLCdiLy4uL2MnLCdkLnR4dCcpKTsKY29uc29sZS5sb2coJ3Jlc29sdmU6JywgcC5yZXNvbHZlKCcvYScsJy4vYicsJ2MnKSk7CmNvbnNvbGUubG9nKCdiYXNlbmFtZTonLCBwLmJhc2VuYW1lKCcvYS9iL2MudHh0JywnLnR4dCcpKTsKY29uc29sZS5sb2coJ2Rpcm5hbWU6JywgcC5kaXJuYW1lKCcvYS9iL2MudHh0JykpOwpjb25zb2xlLmxvZygnZXh0bmFtZTonLCBwLmV4dG5hbWUoJ2Zvby50YXIuZ3onKSk7CmNvbnNvbGUubG9nKCdwb3NpeD09PXBhdGg6JywgcC5wb3NpeCA9PT0gcCk7CmNvbnNvbGUubG9nKCd3aW4zMiB0eXBlb2Y6JywgdHlwZW9mIHAud2luMzIpOwo=' && node /tmp/p_5_moke0izu.js
+[facet started: pid=2 cmd="node /tmp/p_5_moke0izu.js"]
+keys: join,resolve,dirname,basename,extname,normalize,isAbsolute,relative,sep,delimiter,posix
+resolve: /a/b/c
+join: /a/c/d.txt
+win32 typeof: undefined
+dirname: /a/b
+extname: .gz
+basename: c
+posix===path: true
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_5_moke0izu.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: join,resolve,dirname,basename,extname,normalize,isAbsolute,relative,sep,delimiter,posix
+resolve: /a/b/c
+join: /a/c/d.txt
+win32 typeof: undefined
+dirname: /a/b
+extname: .gz
+basename: c
+posix===path: true
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: path ====

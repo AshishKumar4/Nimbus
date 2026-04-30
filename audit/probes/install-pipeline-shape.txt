@@ -1,0 +1,1146 @@
+
+============================================================
+SCENARIO: control-pg
+  install: npm install pg
+============================================================
+==== PROBE: w25-bugshape-control-pg ====
+==== TIMESTAMP: 2026-04-30T03:19:38.520Z ====
+==== SID: bouncy-cedar-5031 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install pg ----
+user@nimbus:~$ cd app && npm install pg
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 14 resolved, 14 packuments fetched (1.0 MiB), peak in-flight=4, cache writes=19, elapsed=0.6s
+[npm] Resolved 14 packages.
+[npm] To fetch: 14, to restore: 0, already installed: 0
+[npm] Fetching 14 packages... (path: batch-facet)
+[npm] Dispatching 14 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 14/14 packages, 141 files, 0.1 MiB tarball bytes, peak in-flight=3, 0.3s
+[npm] Done! 14 packages, 141 files in 0.9s
+
+added 14 packages (141 files) in 0.9s
+user@nimbus:~/app$ 
+---- step done in 1002ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_mokx0w0n.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJ...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_mokx0w0n.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJywgc2l6ZTogc3Quc2l6ZSB9Owp9Cgpjb25zdCB0YXJnZXRzID0gW3sicGtnIjoicGciLCJkaXJzIjpbImxpYiIsIi4iLCJsaWIvbmF0aXZlIiwibGliL2NyeXB0byJdfV07CmZvciAoY29uc3QgdCBvZiB0YXJnZXRzKSB7CiAgY29uc3QgcGtnUm9vdCA9IE5NICsgJy8nICsgdC5wa2c7CiAgY29uc29sZS5sb2coJz09PSBwa2cgJyArIHQucGtnICsgJyA9PT0nKTsKICBjb25zb2xlLmxvZygnICAgcGtnLXJvb3Q6JywgSlNPTi5zdHJpbmdpZnkoZGVlcEluZm8ocGtnUm9vdCkpKTsKICBjb25zb2xlLmxvZygnICAgcGtnLmpzb246JywgSlNPTi5zdHJpbmdpZnkoZGVlcEluZm8ocGtnUm9vdCArICcvcGFja2FnZS5qc29uJykpKTsKICBmb3IgKGNvbnN0IGQgb2YgdC5kaXJzKSB7CiAgICBjb25zdCBmdWxsID0gZCA9PT0gJy4nID8gcGtnUm9vdCA6IHBrZ1Jvb3QgKyAnLycgKyBkOwogICAgY29uc29sZS5sb2coJyAgICcgKyBkICsgJzonLCBKU09OLnN0cmluZ2lmeShkZWVwSW5mbyhmdWxsKSkpOwogIH0KICAvLyBTYW1wbGUtcmVhZCBwYWNrYWdlLmpzb24gdG8gY29uZmlybSBmaWxlcyBhcmUgbm9uLWVtcHR5IHdoZW4gcHJlc2VudAogIHRyeSB7CiAgICBjb25zdCBwa2dSYXcgPSBmcy5yZWFkRmlsZVN5bmMocGtnUm9vdCArICcvcGFja2FnZS5qc29uJywgJ3V0ZjgnKTsKICAgIGNvbnN0IHBqID0gSlNPTi5wYXJzZShwa2dSYXcpOwogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uLm5hbWU6JywgcGoubmFtZSk7CiAgICBjb25zb2xlLmxvZygnICAgcGtnLmpzb24ubWFpbjonLCBwai5tYWluKTsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbi52ZXJzaW9uOicsIHBqLnZlcnNpb24pOwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbiByZWFkIEZBSUw6JywgZS5tZXNzYWdlKTsKICB9Cn0K' && node /tmp/p_1_mokx0w0n.js
+[facet started: pid=2 cmd="node /tmp/p_1_mokx0w0n.js"]
+   pkg-root: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","esm","lib","package.json"]}
+=== pkg pg ===
+   pkg.json.main: ./lib
+   .: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","esm","lib","package.json"]}
+   lib/native: {"exists":true,"kind":"dir","count":3,"entries":["client.js","index.js","query.js"]}
+   pkg.json.name: pg
+   lib/crypto: {"exists":true,"kind":"dir","count":5,"entries":["cert-signatures.js","sasl.js","utils-legacy.js","utils-webcrypto.js","utils.js"]}
+   lib: {"exists":true,"kind":"dir","count":12,"entries":["client.js","connection-parameters.js","connection.js","crypto","defaults.js","index.js","native","query.js","result.js","stream.js","type-overrides.js","utils.js"]}
+   pkg.json.version: 8.20.0
+   pkg.json: {"exists":true,"kind":"file","size":1668}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_mokx0w0n.js) exited with code 0
+────────────────────────────────────────────────────────────
+   pkg-root: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","esm","lib","package.json"]}
+=== pkg pg ===
+   pkg.json.main: ./lib
+   .: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","esm","lib","package.json"]}
+   lib/native: {"exists":true,"kind":"dir","count":3,"entries":["client.js","index.js","query.js"]}
+   pkg.json.name: pg
+   lib/crypto: {"exists":true,"kind":"dir","count":5,"entries":["cert-signatures.js","sasl.js","utils-legacy.js","utils-webcrypto.js","utils.js"]}
+   lib: {"exists":true,"kind":"dir","count":12,"entries":["client.js","connection-parameters.js","connection.js","crypto","defaults.js","index.js","native","query.js","result.js","stream.js","type-overrides.js","utils.js"]}
+   pkg.json.version: 8.20.0
+   pkg.json: {"exists":true,"kind":"file","size":1668}
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50 ----
+user@nimbus:~/app$ find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: w25-bugshape-control-pg ====
+scenario control-pg ok=true
+
+============================================================
+SCENARIO: broken-fastify
+  install: npm install fastify
+============================================================
+==== PROBE: w25-bugshape-broken-fastify ====
+==== TIMESTAMP: 2026-04-30T03:19:44.379Z ====
+==== SID: tireless-sage-5108 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=0.7s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.0s
+[npm] Done! 46 packages, 1928 files in 1.8s
+
+added 46 packages (1928 files) in 1.8s
+user@nimbus:~/app$ 
+---- step done in 2004ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_2_mokx10jf.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJ...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_2_mokx10jf.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJywgc2l6ZTogc3Quc2l6ZSB9Owp9Cgpjb25zdCB0YXJnZXRzID0gW3sicGtnIjoiZmFzdGlmeSIsImRpcnMiOlsiLiIsImxpYiJdfSx7InBrZyI6ImF2dmlvIiwiZGlycyI6WyIuIiwibGliIl19LHsicGtnIjoiZmFzdHEiLCJkaXJzIjpbIi4iXX0seyJwa2ciOiJwaW5vIiwiZGlycyI6WyIuIiwibGliIl19LHsicGtnIjoic2VtdmVyIiwiZGlycyI6WyIuIiwiY2xhc3NlcyIsImZ1bmN0aW9ucyIsImludGVybmFsIiwicmFuZ2VzIl19LHsicGtnIjoiQGZhc3RpZnkvZXJyb3IiLCJkaXJzIjpbIi4iXX0seyJwa2ciOiJmYXN0LWpzb24tc3RyaW5naWZ5IiwiZGlycyI6WyIuIiwibGliIl19XTsKZm9yIChjb25zdCB0IG9mIHRhcmdldHMpIHsKICBjb25zdCBwa2dSb290ID0gTk0gKyAnLycgKyB0LnBrZzsKICBjb25zb2xlLmxvZygnPT09IHBrZyAnICsgdC5wa2cgKyAnID09PScpOwogIGNvbnNvbGUubG9nKCcgICBwa2ctcm9vdDonLCBKU09OLnN0cmluZ2lmeShkZWVwSW5mbyhwa2dSb290KSkpOwogIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbjonLCBKU09OLnN0cmluZ2lmeShkZWVwSW5mbyhwa2dSb290ICsgJy9wYWNrYWdlLmpzb24nKSkpOwogIGZvciAoY29uc3QgZCBvZiB0LmRpcnMpIHsKICAgIGNvbnN0IGZ1bGwgPSBkID09PSAnLicgPyBwa2dSb290IDogcGtnUm9vdCArICcvJyArIGQ7CiAgICBjb25zb2xlLmxvZygnICAgJyArIGQgKyAnOicsIEpTT04uc3RyaW5naWZ5KGRlZXBJbmZvKGZ1bGwpKSk7CiAgfQogIC8vIFNhbXBsZS1yZWFkIHBhY2thZ2UuanNvbiB0byBjb25maXJtIGZpbGVzIGFyZSBub24tZW1wdHkgd2hlbiBwcmVzZW50CiAgdHJ5IHsKICAgIGNvbnN0IHBrZ1JhdyA9IGZzLnJlYWRGaWxlU3luYyhwa2dSb290ICsgJy9wYWNrYWdlLmpzb24nLCAndXRmOCcpOwogICAgY29uc3QgcGogPSBKU09OLnBhcnNlKHBrZ1Jhdyk7CiAgICBjb25zb2xlLmxvZygnICAgcGtnLmpzb24ubmFtZTonLCBwai5uYW1lKTsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbi5tYWluOicsIHBqLm1haW4pOwogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uLnZlcnNpb246JywgcGoudmVyc2lvbik7CiAgfSBjYXRjaCAoZSkgewogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uIHJlYWQgRkFJTDonLCBlLm1lc3NhZ2UpOwogIH0KfQo=' && node /tmp/p_2_mokx10jf.js
+[facet started: pid=2 cmd="node /tmp/p_2_mokx10jf.js"]
+=== pkg fastify ===
+   .: {"exists":true,"kind":"dir","count":21,"entries":[".borp.yaml",".markdownlint-cli2.yaml",".prettierignore","GOVERNANCE.md","LICENSE","PROJECT_CHARTER.md","README.md","SECURITY.md","SPONSORS.md","build","docs","eslint.config.js","examples","fastify.d.ts","fastify.js","integration","lib","package.json","scripts","test","types"]}
+   lib: {"exists":true,"kind":"dir","count":31,"entries":["config-validator.js","content-type-parser.js","content-type.js","context.js","decorate.js","error-handler.js","error-serializer.js","error-status.js","errors.js","four-oh-four.js","handle-request.js","head-route.js","hooks.js","initial-config-validation.js","logger-factory.js","logger-pino.js","noop-set.js","plugin-override.js","plugin-utils.js","promise.js","reply.js","req-id-gen-factory.js","request.js","route.js","schema-controller.js","schemas.js","server.js","symbols.js","validation.js","warnings.js","wrap-thenable.js"]}
+   pkg.json: {"exists":true,"kind":"file","size":7124}
+   .: {"exists":true,"kind":"dir","count":10,"entries":[".gitattributes",".github","LICENSE","README.md","benchmarks","eslint.config.js","index.js","package.json","test","types"]}
+   pkg-root: {"exists":true,"kind":"dir","count":1,"entries":[".gitattributes"]}
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fast-json-stringify/lib'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/fast-json-stringify/package.json'
+=== pkg avvio ===
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/avvio/package.json'"}
+   pkg.json.main: fastify.js
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/avvio'"}
+   pkg-root: {"exists":true,"kind":"dir","count":21,"entries":[".borp.yaml",".markdownlint-cli2.yaml",".prettierignore","GOVERNANCE.md","LICENSE","PROJECT_CHARTER.md","README.md","SECURITY.md","SPONSORS.md","build","docs","eslint.config.js","examples","fastify.d.ts","fastify.js","integration","lib","package.json","scripts","test","types"]}
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/avvio'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/avvio/package.json'
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fastq/package.json'"}
+   pkg.json.version: 5.8.5
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fastq'"}
+=== pkg pino ===
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino/lib'"}
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino/package.json'"}
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fastq'"}
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/avvio/lib'"}
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino'"}
+=== pkg semver ===
+   pkg.json.name: fastify
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino'"}
+   functions: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/functions'"}
+=== pkg fastq ===
+   ranges: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/ranges'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/fastq/package.json'
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/package.json'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/semver/package.json'
+   internal: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/internal'"}
+=== pkg @fastify/error ===
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver'"}
+=== pkg fast-json-stringify ===
+   pkg.json.main: index.js
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver'"}
+   pkg-root: {"exists":true,"kind":"dir","count":10,"entries":[".gitattributes",".github","LICENSE","README.md","benchmarks","eslint.config.js","index.js","package.json","test","types"]}
+   pkg.json: {"exists":true,"kind":"file","size":1726}
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fast-json-stringify/package.json'"}
+   pkg.json.name: @fastify/error
+   pkg.json.version: 4.2.0
+   .: {"exists":true,"kind":"dir","count":1,"entries":[".gitattributes"]}
+   classes: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/classes'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/pino/package.json'
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_2_mokx10jf.js) exited with code 0
+────────────────────────────────────────────────────────────
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fastq'"}
+=== pkg pino ===
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino/lib'"}
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino/package.json'"}
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fastq'"}
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/avvio/lib'"}
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino'"}
+=== pkg semver ===
+   pkg.json.name: fastify
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/pino'"}
+   functions: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/functions'"}
+=== pkg fastq ===
+   ranges: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/ranges'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/fastq/package.json'
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/package.json'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/semver/package.json'
+   internal: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/internal'"}
+=== pkg @fastify/error ===
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver'"}
+=== pkg fast-json-stringify ===
+   pkg.json.main: index.js
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver'"}
+   pkg-root: {"exists":true,"kind":"dir","count":10,"entries":[".gitattributes",".github","LICENSE","README.md","benchmarks","eslint.config.js","index.js","package.json","test","types"]}
+   pkg.json: {"exists":true,"kind":"file","size":1726}
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/fast-json-stringify/package.json'"}
+   pkg.json.name: @fastify/error
+   pkg.json.version: 4.2.0
+   .: {"exists":true,"kind":"dir","count":1,"entries":[".gitattributes"]}
+   classes: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/semver/classes'"}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/pino/package.json'
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50 ----
+user@nimbus:~/app$ find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: w25-bugshape-broken-fastify ====
+scenario broken-fastify ok=true
+
+============================================================
+SCENARIO: broken-ts-jest
+  install: npm install ts-jest jest typescript
+============================================================
+==== PROBE: w25-bugshape-broken-ts-jest ====
+==== TIMESTAMP: 2026-04-30T03:19:51.049Z ====
+==== SID: grand-heron-5353 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install ts-jest jest typescript ----
+user@nimbus:~$ cd app && npm install ts-jest jest typescript
+Installing 3 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 3 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 245 resolved, 245 packuments fetched (55.1 MiB), peak in-flight=4, cache writes=1248, elapsed=4.5s
+[npm] Resolved 245 packages.
+[npm] To fetch: 245, to restore: 0, already installed: 0
+[npm] Fetching 245 packages... (path: batch-facet)
+[npm] Dispatching 245 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 245/245 packages, 5367 files, 5.8 MiB tarball bytes, peak in-flight=3, 7.4s
+[npm] Done! 245 packages, 5367 files in 12.0s
+
+added 245 packages (5367 files) in 12.0s
+user@nimbus:~/app$ 
+---- step done in 12514ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_3_mokx15op.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJ...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_3_mokx15op.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJywgc2l6ZTogc3Quc2l6ZSB9Owp9Cgpjb25zdCB0YXJnZXRzID0gW3sicGtnIjoidHlwZXNjcmlwdCIsImRpcnMiOlsiLiIsImxpYiIsImJpbiJdfSx7InBrZyI6InRzLWplc3QiLCJkaXJzIjpbIi4iLCJkaXN0IiwiZGlzdC9sZWdhY3kiXX0seyJwa2ciOiJqZXN0IiwiZGlycyI6WyIuIl19XTsKZm9yIChjb25zdCB0IG9mIHRhcmdldHMpIHsKICBjb25zdCBwa2dSb290ID0gTk0gKyAnLycgKyB0LnBrZzsKICBjb25zb2xlLmxvZygnPT09IHBrZyAnICsgdC5wa2cgKyAnID09PScpOwogIGNvbnNvbGUubG9nKCcgICBwa2ctcm9vdDonLCBKU09OLnN0cmluZ2lmeShkZWVwSW5mbyhwa2dSb290KSkpOwogIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbjonLCBKU09OLnN0cmluZ2lmeShkZWVwSW5mbyhwa2dSb290ICsgJy9wYWNrYWdlLmpzb24nKSkpOwogIGZvciAoY29uc3QgZCBvZiB0LmRpcnMpIHsKICAgIGNvbnN0IGZ1bGwgPSBkID09PSAnLicgPyBwa2dSb290IDogcGtnUm9vdCArICcvJyArIGQ7CiAgICBjb25zb2xlLmxvZygnICAgJyArIGQgKyAnOicsIEpTT04uc3RyaW5naWZ5KGRlZXBJbmZvKGZ1bGwpKSk7CiAgfQogIC8vIFNhbXBsZS1yZWFkIHBhY2thZ2UuanNvbiB0byBjb25maXJtIGZpbGVzIGFyZSBub24tZW1wdHkgd2hlbiBwcmVzZW50CiAgdHJ5IHsKICAgIGNvbnN0IHBrZ1JhdyA9IGZzLnJlYWRGaWxlU3luYyhwa2dSb290ICsgJy9wYWNrYWdlLmpzb24nLCAndXRmOCcpOwogICAgY29uc3QgcGogPSBKU09OLnBhcnNlKHBrZ1Jhdyk7CiAgICBjb25zb2xlLmxvZygnICAgcGtnLmpzb24ubmFtZTonLCBwai5uYW1lKTsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbi5tYWluOicsIHBqLm1haW4pOwogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uLnZlcnNpb246JywgcGoudmVyc2lvbik7CiAgfSBjYXRjaCAoZSkgewogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uIHJlYWQgRkFJTDonLCBlLm1lc3NhZ2UpOwogIH0KfQo=' && node /tmp/p_3_mokx15op.js
+[facet started: pid=2 cmd="node /tmp/p_3_mokx15op.js"]
+   bin: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript/bin'"}
+=== pkg typescript ===
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript'"}
+   pkg.json: {"exists":true,"kind":"file","size":4484}
+=== pkg jest ===
+   .: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","bin","build","package.json"]}
+   pkg-root: {"exists":true,"kind":"dir","count":15,"entries":[".lintstagedrc",".ts-jest-digest","CHANGELOG.md","CONTRIBUTING.md","LICENSE.md","README.md","TROUBLESHOOTING.md","cli.js","dist","jest-preset.js","legacy.js","package.json","preprocessor.js","presets","tsconfig.base.json"]}
+   pkg.json.version: 29.4.9
+   pkg.json.version: 30.3.0
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript'"}
+   pkg.json.name: ts-jest
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/typescript/package.json'
+   pkg.json.main: ./build/index.js
+   dist: {"exists":true,"kind":"dir","count":15,"entries":["cli","config","constants.d.ts","constants.js","index.d.ts","index.js","legacy","presets","raw-compiler-options.d.ts","raw-compiler-options.js","transformers","transpilers","types.d.ts","types.js","utils"]}
+   pkg.json: {"exists":true,"kind":"file","size":1467}
+   pkg-root: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","bin","build","package.json"]}
+   dist/legacy: {"exists":true,"kind":"dir","count":6,"entries":["compiler","config","index.d.ts","index.js","ts-jest-transformer.d.ts","ts-jest-transformer.js"]}
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript/lib'"}
+=== pkg ts-jest ===
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript/package.json'"}
+   pkg.json.main: dist/index.js
+   .: {"exists":true,"kind":"dir","count":15,"entries":[".lintstagedrc",".ts-jest-digest","CHANGELOG.md","CONTRIBUTING.md","LICENSE.md","README.md","TROUBLESHOOTING.md","cli.js","dist","jest-preset.js","legacy.js","package.json","preprocessor.js","presets","tsconfig.base.json"]}
+   pkg.json.name: jest
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_3_mokx15op.js) exited with code 0
+────────────────────────────────────────────────────────────
+   bin: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript/bin'"}
+=== pkg typescript ===
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript'"}
+   pkg.json: {"exists":true,"kind":"file","size":4484}
+=== pkg jest ===
+   .: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","bin","build","package.json"]}
+   pkg-root: {"exists":true,"kind":"dir","count":15,"entries":[".lintstagedrc",".ts-jest-digest","CHANGELOG.md","CONTRIBUTING.md","LICENSE.md","README.md","TROUBLESHOOTING.md","cli.js","dist","jest-preset.js","legacy.js","package.json","preprocessor.js","presets","tsconfig.base.json"]}
+   pkg.json.version: 29.4.9
+   pkg.json.version: 30.3.0
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript'"}
+   pkg.json.name: ts-jest
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/typescript/package.json'
+   pkg.json.main: ./build/index.js
+   dist: {"exists":true,"kind":"dir","count":15,"entries":["cli","config","constants.d.ts","constants.js","index.d.ts","index.js","legacy","presets","raw-compiler-options.d.ts","raw-compiler-options.js","transformers","transpilers","types.d.ts","types.js","utils"]}
+   pkg.json: {"exists":true,"kind":"file","size":1467}
+   pkg-root: {"exists":true,"kind":"dir","count":5,"entries":["LICENSE","README.md","bin","build","package.json"]}
+   dist/legacy: {"exists":true,"kind":"dir","count":6,"entries":["compiler","config","index.d.ts","index.js","ts-jest-transformer.d.ts","ts-jest-transformer.js"]}
+   lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript/lib'"}
+=== pkg ts-jest ===
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/typescript/package.json'"}
+   pkg.json.main: dist/index.js
+   .: {"exists":true,"kind":"dir","count":15,"entries":[".lintstagedrc",".ts-jest-digest","CHANGELOG.md","CONTRIBUTING.md","LICENSE.md","README.md","TROUBLESHOOTING.md","cli.js","dist","jest-preset.js","legacy.js","package.json","preprocessor.js","presets","tsconfig.base.json"]}
+   pkg.json.name: jest
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+---- STEP cmd: find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50 ----
+user@nimbus:~/app$ find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: w25-bugshape-broken-ts-jest ====
+scenario broken-ts-jest ok=true
+
+============================================================
+SCENARIO: broken-redis
+  install: npm install redis
+============================================================
+==== PROBE: w25-bugshape-broken-redis ====
+==== TIMESTAMP: 2026-04-30T03:20:09.158Z ====
+==== SID: mystic-cougar-5897 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install redis ----
+user@nimbus:~$ cd app && npm install redis
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 7 resolved, 7 packuments fetched (0.8 MiB), peak in-flight=4, cache writes=35, elapsed=0.1s
+[npm] Resolved 7 packages.
+[npm] To fetch: 7, to restore: 0, already installed: 0
+[npm] Fetching 7 packages... (path: batch-facet)
+[npm] Dispatching 7 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 7/7 packages, 2371 files, 0.5 MiB tarball bytes, peak in-flight=3, 0.3s
+[npm] Done! 7 packages, 2371 files in 0.5s
+
+added 7 packages (2371 files) in 0.5s
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_4_mokx1jnq.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJ...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_4_mokx1jnq.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJywgc2l6ZTogc3Quc2l6ZSB9Owp9Cgpjb25zdCB0YXJnZXRzID0gW3sicGtnIjoicmVkaXMiLCJkaXJzIjpbIi4iLCJkaXN0IiwiZGlzdC9saWIiXX0seyJwa2ciOiJAcmVkaXMvY2xpZW50IiwiZGlycyI6WyIuIiwiZGlzdCIsImRpc3QvbGliIiwiZGlzdC9saWIvUkVTUCJdfSx7InBrZyI6IkByZWRpcy9ibG9vbSIsImRpcnMiOlsiLiJdfSx7InBrZyI6ImNsdXN0ZXIta2V5LXNsb3QiLCJkaXJzIjpbIi4iXX1dOwpmb3IgKGNvbnN0IHQgb2YgdGFyZ2V0cykgewogIGNvbnN0IHBrZ1Jvb3QgPSBOTSArICcvJyArIHQucGtnOwogIGNvbnNvbGUubG9nKCc9PT0gcGtnICcgKyB0LnBrZyArICcgPT09Jyk7CiAgY29uc29sZS5sb2coJyAgIHBrZy1yb290OicsIEpTT04uc3RyaW5naWZ5KGRlZXBJbmZvKHBrZ1Jvb3QpKSk7CiAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uOicsIEpTT04uc3RyaW5naWZ5KGRlZXBJbmZvKHBrZ1Jvb3QgKyAnL3BhY2thZ2UuanNvbicpKSk7CiAgZm9yIChjb25zdCBkIG9mIHQuZGlycykgewogICAgY29uc3QgZnVsbCA9IGQgPT09ICcuJyA/IHBrZ1Jvb3QgOiBwa2dSb290ICsgJy8nICsgZDsKICAgIGNvbnNvbGUubG9nKCcgICAnICsgZCArICc6JywgSlNPTi5zdHJpbmdpZnkoZGVlcEluZm8oZnVsbCkpKTsKICB9CiAgLy8gU2FtcGxlLXJlYWQgcGFja2FnZS5qc29uIHRvIGNvbmZpcm0gZmlsZXMgYXJlIG5vbi1lbXB0eSB3aGVuIHByZXNlbnQKICB0cnkgewogICAgY29uc3QgcGtnUmF3ID0gZnMucmVhZEZpbGVTeW5jKHBrZ1Jvb3QgKyAnL3BhY2thZ2UuanNvbicsICd1dGY4Jyk7CiAgICBjb25zdCBwaiA9IEpTT04ucGFyc2UocGtnUmF3KTsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbi5uYW1lOicsIHBqLm5hbWUpOwogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uLm1haW46JywgcGoubWFpbik7CiAgICBjb25zb2xlLmxvZygnICAgcGtnLmpzb24udmVyc2lvbjonLCBwai52ZXJzaW9uKTsKICB9IGNhdGNoIChlKSB7CiAgICBjb25zb2xlLmxvZygnICAgcGtnLmpzb24gcmVhZCBGQUlMOicsIGUubWVzc2FnZSk7CiAgfQp9Cg==' && node /tmp/p_4_mokx1jnq.js
+[facet started: pid=2 cmd="node /tmp/p_4_mokx1jnq.js"]
+   pkg-root: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+=== pkg @redis/bloom ===
+   pkg.json: {"exists":true,"kind":"file","size":776}
+   pkg.json.name: @redis/client
+   .: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+=== pkg redis ===
+   dist/lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/redis/dist/lib'"}
+   pkg.json.version: 5.12.1
+=== pkg @redis/client ===
+   dist: {"exists":true,"kind":"dir","count":6,"entries":["index.d.ts","index.d.ts.map","index.js","index.js.map","lib","package.json"]}
+   pkg.json.main: ./dist/index.js
+   dist: {"exists":true,"kind":"dir","count":4,"entries":["index.d.ts","index.d.ts.map","index.js","index.js.map"]}
+   dist/lib: {"exists":true,"kind":"dir","count":21,"entries":["commander.d.ts","commander.d.ts.map","commander.js","commander.js.map","commands","errors.d.ts","errors.d.ts.map","errors.js","errors.js.map","lua-script.d.ts","lua-script.d.ts.map","lua-script.js","lua-script.js.map","multi-command.d.ts","multi-command.d.ts.map","multi-command.js","multi-command.js.map","single-entry-cache.d.ts","single-entry-cache.d.ts.map","single-entry-cache.js","single-entry-cache.js.map"]}
+   dist/lib/RESP: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/@redis/client/dist/lib/RESP'"}
+   .: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg-root: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg.json.name: redis
+   pkg-root: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg.json: {"exists":true,"kind":"file","size":1274}
+   pkg.json: {"exists":true,"kind":"file","size":1549}
+   .: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg.json.version: 1.1.2
+   pkg-root: {"exists":true,"kind":"dir","count":6,"entries":[".eslintrc","LICENSE","README.md","index.d.ts","lib","package.json"]}
+   pkg.json.name: @redis/bloom
+   pkg.json: {"exists":true,"kind":"file","size":893}
+   pkg.json.main: ./dist/index.js
+=== pkg cluster-key-slot ===
+   pkg.json.main: ./dist/lib/index.js
+   pkg.json.main: lib/index.js
+   .: {"exists":true,"kind":"dir","count":6,"entries":[".eslintrc","LICENSE","README.md","index.d.ts","lib","package.json"]}
+   pkg.json.version: 5.12.1
+   pkg.json.name: cluster-key-slot
+   pkg.json.version: 5.12.1
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_4_mokx1jnq.js) exited with code 0
+────────────────────────────────────────────────────────────
+   pkg.json.name: @redis/client
+   .: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+=== pkg redis ===
+   dist/lib: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/redis/dist/lib'"}
+   pkg.json.version: 5.12.1
+=== pkg @redis/client ===
+   dist: {"exists":true,"kind":"dir","count":6,"entries":["index.d.ts","index.d.ts.map","index.js","index.js.map","lib","package.json"]}
+   pkg.json.main: ./dist/index.js
+   dist: {"exists":true,"kind":"dir","count":4,"entries":["index.d.ts","index.d.ts.map","index.js","index.js.map"]}
+   dist/lib: {"exists":true,"kind":"dir","count":21,"entries":["commander.d.ts","commander.d.ts.map","commander.js","commander.js.map","commands","errors.d.ts","errors.d.ts.map","errors.js","errors.js.map","lua-script.d.ts","lua-script.d.ts.map","lua-script.js","lua-script.js.map","multi-command.d.ts","multi-command.d.ts.map","multi-command.js","multi-command.js.map","single-entry-cache.d.ts","single-entry-cache.d.ts.map","single-entry-cache.js","single-entry-cache.js.map"]}
+   dist/lib/RESP: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/@redis/client/dist/lib/RESP'"}
+   .: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg-root: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg.json.name: redis
+   pkg-root: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg.json: {"exists":true,"kind":"file","size":1274}
+   pkg.json: {"exists":true,"kind":"file","size":1549}
+   .: {"exists":true,"kind":"dir","count":3,"entries":["README.md","dist","package.json"]}
+   pkg.json.version: 1.1.2
+   pkg-root: {"exists":true,"kind":"dir","count":6,"entries":[".eslintrc","LICENSE","README.md","index.d.ts","lib","package.json"]}
+   pkg.json.name: @redis/bloom
+   pkg.json: {"exists":true,"kind":"file","size":893}
+   pkg.json.main: ./dist/index.js
+=== pkg cluster-key-slot ===
+   pkg.json.main: ./dist/lib/index.js
+   pkg.json.main: lib/index.js
+   .: {"exists":true,"kind":"dir","count":6,"entries":[".eslintrc","LICENSE","README.md","index.d.ts","lib","package.json"]}
+   pkg.json.version: 5.12.1
+   pkg.json.name: cluster-key-slot
+   pkg.json.version: 5.12.1
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50 ----
+user@nimbus:~/app$ find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: w25-bugshape-broken-redis ====
+scenario broken-redis ok=true
+
+============================================================
+SCENARIO: broken-framer-react18
+  install: npm install framer-motion react@18.3.1 react-dom@18.3.1
+============================================================
+==== PROBE: w25-bugshape-broken-framer-react18 ====
+==== TIMESTAMP: 2026-04-30T03:20:14.755Z ====
+==== SID: stable-gibbon-3917 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install framer-motion react@18.3.1 react-dom@18.3.1 ----
+user@nimbus:~$ cd app && npm install framer-motion react@18.3.1 react-dom@18.3.1
+Installing 3 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 3 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 9 resolved, 9 packuments fetched (30.0 MiB), peak in-flight=4, cache writes=49, elapsed=0.8s
+[npm] Resolved 9 packages.
+[npm] To fetch: 9, to restore: 0, already installed: 0
+[npm] Fetching 9 packages... (path: batch-facet)
+[npm] Dispatching 9 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 9/9 packages, 989 files, 3.1 MiB tarball bytes, peak in-flight=3, 0.6s
+[npm] Pre-bundling 6 modules... (supervisor heap 0.0 MiB)
+[npm] Done! 9 packages, 989 files in 1.5s
+
+added 9 packages (989 files) in 1.5s
+user@nimbus:~/app$ 
+---- step done in 2504ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_5_mokx1nz6.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJ...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_5_mokx1nz6.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgcGF0aCA9IHJlcXVpcmUoJ3BhdGgnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKCmZ1bmN0aW9uIGRlZXBJbmZvKHApIHsKICBsZXQgc3Q7CiAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCAoZSkgeyByZXR1cm4geyBleGlzdHM6IGZhbHNlLCBlcnJvcjogZS5tZXNzYWdlIH07IH0KICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgewogICAgbGV0IGVudHJpZXM7CiAgICB0cnkgeyBlbnRyaWVzID0gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggKGUpIHsgZW50cmllcyA9ICc8cmVhZGRpci1mYWlsOicgKyBlLm1lc3NhZ2UgKyAnPic7IH0KICAgIHJldHVybiB7IGV4aXN0czogdHJ1ZSwga2luZDogJ2RpcicsIGNvdW50OiBBcnJheS5pc0FycmF5KGVudHJpZXMpID8gZW50cmllcy5sZW5ndGggOiAtMSwgZW50cmllcyB9OwogIH0KICByZXR1cm4geyBleGlzdHM6IHRydWUsIGtpbmQ6ICdmaWxlJywgc2l6ZTogc3Quc2l6ZSB9Owp9Cgpjb25zdCB0YXJnZXRzID0gW3sicGtnIjoiZnJhbWVyLW1vdGlvbiIsImRpcnMiOlsiLiIsImRpc3QiXX0seyJwa2ciOiJyZWFjdCIsImRpcnMiOlsiLiIsImNqcyJdfSx7InBrZyI6InJlYWN0LWRvbSIsImRpcnMiOlsiLiIsImNqcyJdfSx7InBrZyI6InNjaGVkdWxlciIsImRpcnMiOlsiLiIsImNqcyJdfV07CmZvciAoY29uc3QgdCBvZiB0YXJnZXRzKSB7CiAgY29uc3QgcGtnUm9vdCA9IE5NICsgJy8nICsgdC5wa2c7CiAgY29uc29sZS5sb2coJz09PSBwa2cgJyArIHQucGtnICsgJyA9PT0nKTsKICBjb25zb2xlLmxvZygnICAgcGtnLXJvb3Q6JywgSlNPTi5zdHJpbmdpZnkoZGVlcEluZm8ocGtnUm9vdCkpKTsKICBjb25zb2xlLmxvZygnICAgcGtnLmpzb246JywgSlNPTi5zdHJpbmdpZnkoZGVlcEluZm8ocGtnUm9vdCArICcvcGFja2FnZS5qc29uJykpKTsKICBmb3IgKGNvbnN0IGQgb2YgdC5kaXJzKSB7CiAgICBjb25zdCBmdWxsID0gZCA9PT0gJy4nID8gcGtnUm9vdCA6IHBrZ1Jvb3QgKyAnLycgKyBkOwogICAgY29uc29sZS5sb2coJyAgICcgKyBkICsgJzonLCBKU09OLnN0cmluZ2lmeShkZWVwSW5mbyhmdWxsKSkpOwogIH0KICAvLyBTYW1wbGUtcmVhZCBwYWNrYWdlLmpzb24gdG8gY29uZmlybSBmaWxlcyBhcmUgbm9uLWVtcHR5IHdoZW4gcHJlc2VudAogIHRyeSB7CiAgICBjb25zdCBwa2dSYXcgPSBmcy5yZWFkRmlsZVN5bmMocGtnUm9vdCArICcvcGFja2FnZS5qc29uJywgJ3V0ZjgnKTsKICAgIGNvbnN0IHBqID0gSlNPTi5wYXJzZShwa2dSYXcpOwogICAgY29uc29sZS5sb2coJyAgIHBrZy5qc29uLm5hbWU6JywgcGoubmFtZSk7CiAgICBjb25zb2xlLmxvZygnICAgcGtnLmpzb24ubWFpbjonLCBwai5tYWluKTsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbi52ZXJzaW9uOicsIHBqLnZlcnNpb24pOwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUubG9nKCcgICBwa2cuanNvbiByZWFkIEZBSUw6JywgZS5tZXNzYWdlKTsKICB9Cn0K' && node /tmp/p_5_mokx1nz6.js
+[facet started: pid=2 cmd="node /tmp/p_5_mokx1nz6.js"]
+=== pkg framer-motion ===
+   pkg-root: {"exists":true,"kind":"dir","count":4,"entries":["LICENSE.md","README.md","dist","package.json"]}
+   pkg.json.main: dist/cjs/index.js
+   pkg.json: {"exists":true,"kind":"file","size":4716}
+   .: {"exists":true,"kind":"dir","count":4,"entries":["LICENSE.md","README.md","dist","package.json"]}
+   pkg.json.name: framer-motion
+   dist: {"exists":true,"kind":"dir","count":7,"entries":["debug.d.ts","dom-mini.d.ts","dom-mini.js","dom.js","framer-motion.js","mini.js","size-rollup-animate.js"]}
+   pkg.json: {"exists":true,"kind":"file","size":999}
+   pkg-root: {"exists":true,"kind":"dir","count":9,"entries":["LICENSE","README.md","cjs","index.js","jsx-dev-runtime.js","jsx-runtime.js","package.json","react.shared-subset.js","umd"]}
+=== pkg react ===
+   cjs: {"exists":true,"kind":"dir","count":13,"entries":["react-dom-server-legacy.browser.development.js","react-dom-server-legacy.browser.production.min.js","react-dom-server-legacy.node.development.js","react-dom-server-legacy.node.production.min.js","react-dom-server.browser.development.js","react-dom-server.browser.production.min.js","react-dom-server.node.development.js","react-dom-server.node.production.min.js","react-dom-test-utils.development.js","react-dom-test-utils.production.min.js","react-dom.development.js","react-dom.production.min.js","react-dom.profiling.min.js"]}
+   pkg.json: {"exists":true,"kind":"file","size":1353}
+   cjs: {"exists":true,"kind":"dir","count":10,"entries":["react-jsx-dev-runtime.development.js","react-jsx-dev-runtime.production.min.js","react-jsx-dev-runtime.profiling.min.js","react-jsx-runtime.development.js","react-jsx-runtime.production.min.js","react-jsx-runtime.profiling.min.js","react.development.js","react.production.min.js","react.shared-subset.development.js","react.shared-subset.production.min.js"]}
+   pkg.json.main: index.js
+   pkg.json.version: 12.38.0
+   .: {"exists":true,"kind":"dir","count":9,"entries":["LICENSE","README.md","cjs","index.js","jsx-dev-runtime.js","jsx-runtime.js","package.json","react.shared-subset.js","umd"]}
+   pkg.json.name: react
+   pkg.json.name: react-dom
+   pkg.json.version: 18.3.1
+=== pkg scheduler ===
+   pkg.json.main: index.js
+   pkg-root: {"exists":true,"kind":"dir","count":12,"entries":["LICENSE","README.md","cjs","client.js","index.js","package.json","profiling.js","server.browser.js","server.js","server.node.js","test-utils.js","umd"]}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/scheduler/package.json'
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler'"}
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler/package.json'"}
+   .: {"exists":true,"kind":"dir","count":12,"entries":["LICENSE","README.md","cjs","client.js","index.js","package.json","profiling.js","server.browser.js","server.js","server.node.js","test-utils.js","umd"]}
+   pkg.json.version: 18.3.1
+=== pkg react-dom ===
+   cjs: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler/cjs'"}
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler'"}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_5_mokx1nz6.js) exited with code 0
+────────────────────────────────────────────────────────────
+=== pkg framer-motion ===
+   pkg-root: {"exists":true,"kind":"dir","count":4,"entries":["LICENSE.md","README.md","dist","package.json"]}
+   pkg.json.main: dist/cjs/index.js
+   pkg.json: {"exists":true,"kind":"file","size":4716}
+   .: {"exists":true,"kind":"dir","count":4,"entries":["LICENSE.md","README.md","dist","package.json"]}
+   pkg.json.name: framer-motion
+   dist: {"exists":true,"kind":"dir","count":7,"entries":["debug.d.ts","dom-mini.d.ts","dom-mini.js","dom.js","framer-motion.js","mini.js","size-rollup-animate.js"]}
+   pkg.json: {"exists":true,"kind":"file","size":999}
+   pkg-root: {"exists":true,"kind":"dir","count":9,"entries":["LICENSE","README.md","cjs","index.js","jsx-dev-runtime.js","jsx-runtime.js","package.json","react.shared-subset.js","umd"]}
+=== pkg react ===
+   cjs: {"exists":true,"kind":"dir","count":13,"entries":["react-dom-server-legacy.browser.development.js","react-dom-server-legacy.browser.production.min.js","react-dom-server-legacy.node.development.js","react-dom-server-legacy.node.production.min.js","react-dom-server.browser.development.js","react-dom-server.browser.production.min.js","react-dom-server.node.development.js","react-dom-server.node.production.min.js","react-dom-test-utils.development.js","react-dom-test-utils.production.min.js","react-dom.development.js","react-dom.production.min.js","react-dom.profiling.min.js"]}
+   pkg.json: {"exists":true,"kind":"file","size":1353}
+   cjs: {"exists":true,"kind":"dir","count":10,"entries":["react-jsx-dev-runtime.development.js","react-jsx-dev-runtime.production.min.js","react-jsx-dev-runtime.profiling.min.js","react-jsx-runtime.development.js","react-jsx-runtime.production.min.js","react-jsx-runtime.profiling.min.js","react.development.js","react.production.min.js","react.shared-subset.development.js","react.shared-subset.production.min.js"]}
+   pkg.json.main: index.js
+   pkg.json.version: 12.38.0
+   .: {"exists":true,"kind":"dir","count":9,"entries":["LICENSE","README.md","cjs","index.js","jsx-dev-runtime.js","jsx-runtime.js","package.json","react.shared-subset.js","umd"]}
+   pkg.json.name: react
+   pkg.json.name: react-dom
+   pkg.json.version: 18.3.1
+=== pkg scheduler ===
+   pkg.json.main: index.js
+   pkg-root: {"exists":true,"kind":"dir","count":12,"entries":["LICENSE","README.md","cjs","client.js","index.js","package.json","profiling.js","server.browser.js","server.js","server.node.js","test-utils.js","umd"]}
+   pkg.json read FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/scheduler/package.json'
+   pkg-root: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler'"}
+   pkg.json: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler/package.json'"}
+   .: {"exists":true,"kind":"dir","count":12,"entries":["LICENSE","README.md","cjs","client.js","index.js","package.json","profiling.js","server.browser.js","server.js","server.node.js","test-utils.js","umd"]}
+   pkg.json.version: 18.3.1
+=== pkg react-dom ===
+   cjs: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler/cjs'"}
+   .: {"exists":false,"error":"ENOENT: no such file or directory, stat '/home/user/app/node_modules/scheduler'"}
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 2503ms (wsClosed=false) ----
+
+---- STEP cmd: find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50 ----
+user@nimbus:~/app$ find /home/user/app/node_modules -maxdepth 3 -type d -empty 2>/dev/null | head -50
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: w25-bugshape-broken-framer-react18 ====
+scenario broken-framer-react18 ok=true
+
+==== END W2.5 BUG-SHAPE PROBES ====
+
+
+============================================================
+TASK B — INSTRUMENTED TRACE (no src/ changes — uses /api/stats)
+============================================================
+
+--- trace-fastify ---
+sid=gusty-husky-5993
+BEFORE: {"files":0,"dirs":0,"batchWrites":0,"batchWriteRows":0,"sqlReads":0,"sqlWrites":0,"vfsBytes":0}
+==== PROBE: trace-fastify-trace ====
+==== TIMESTAMP: 2026-04-30T03:23:42.845Z ====
+==== SID: candid-cheetah-0512 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=0.8s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.0s
+[npm] Done! 46 packages, 1928 files in 1.9s
+
+added 46 packages (1928 files) in 1.9s
+user@nimbus:~/app$ 
+---- step done in 2505ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_mokx64jg.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CiAgICAgIGNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKICAgICAgZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CiAgICAgIGNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CiAgICAgIGNvbnN0IG9ic2VydmVkID0ge307CiAgICAgIGZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICAgICAgICBpZiAoZSA9PT0gJy5iaW4nIHx8IGUuc3RhcnRzV2l0aCgnLicpKSBjb250aW51ZTsKICAgICAgICBpZiAoZS5zdGFydHNXaXRoKCdAJykpIHsKICAgICAgICAgIGNvbnN0IHN1YiA9IGxzKE5NICsgJy8nICsgZSkgfHwgW107CiAgICAgICAgICBmb3IgKGNvbnN0IHMgb2Ygc3ViKSBvYnNlcnZlZFtlICsgJy8nICsgc10gPSAobHMoTk0gKyAnLycgKyBlICsgJy8nICsgcykgfHwgW10pLmxlbmd0aDsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgb2JzZXJ2ZWRbZV0gPSAob...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_mokx64jg.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CiAgICAgIGNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKICAgICAgZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CiAgICAgIGNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CiAgICAgIGNvbnN0IG9ic2VydmVkID0ge307CiAgICAgIGZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICAgICAgICBpZiAoZSA9PT0gJy5iaW4nIHx8IGUuc3RhcnRzV2l0aCgnLicpKSBjb250aW51ZTsKICAgICAgICBpZiAoZS5zdGFydHNXaXRoKCdAJykpIHsKICAgICAgICAgIGNvbnN0IHN1YiA9IGxzKE5NICsgJy8nICsgZSkgfHwgW107CiAgICAgICAgICBmb3IgKGNvbnN0IHMgb2Ygc3ViKSBvYnNlcnZlZFtlICsgJy8nICsgc10gPSAobHMoTk0gKyAnLycgKyBlICsgJy8nICsgcykgfHwgW10pLmxlbmd0aDsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgb2JzZXJ2ZWRbZV0gPSAobHMoTk0gKyAnLycgKyBlKSB8fCBbXSkubGVuZ3RoOwogICAgICAgIH0KICAgICAgfQogICAgICBjb25zb2xlLmxvZygnLS0tT0JTRVJWRUQtTUFQLS0tJyk7CiAgICAgIGNvbnNvbGUubG9nKEpTT04uc3RyaW5naWZ5KG9ic2VydmVkKSk7CiAgICA=' && node /tmp/p_1_mokx64jg.js
+[facet started: pid=2 cmd="node /tmp/p_1_mokx64jg.js"]
+---OBSERVED-MAP---
+{"@fastify/ajv-compiler":12,"@fastify/error":10,"@fastify/fast-json-stringify-compiler":11,"@fastify/forwarded":5,"@fastify/merge-json-schemas":10,"@fastify/proxy-addr":10,"abstract-logging":4,"avvio":1,"fastify":21}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_mokx64jg.js) exited with code 0
+────────────────────────────────────────────────────────────
+---OBSERVED-MAP---
+{"@fastify/ajv-compiler":12,"@fastify/error":10,"@fastify/fast-json-stringify-compiler":11,"@fastify/forwarded":5,"@fastify/merge-json-schemas":10,"@fastify/proxy-addr":10,"abstract-logging":4,"avvio":1,"fastify":21}
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: trace-fastify-trace ====
+AFTER : {"files":0,"dirs":0,"batchWrites":0,"batchWriteRows":0,"sqlReads":0,"sqlWrites":0,"vfsBytes":0}
+DELTA : {"filesAdded":0,"dirsAdded":0,"batchWritesAdded":0,"batchWriteRowsAdded":0,"sqlWritesAdded":0,"vfsBytesAdded":0}
+
+--- trace-redis ---
+sid=solid-capybara-5504
+BEFORE: {"files":0,"dirs":0,"batchWrites":0,"batchWriteRows":0,"sqlReads":0,"sqlWrites":0,"vfsBytes":0}
+==== PROBE: trace-redis-trace ====
+==== TIMESTAMP: 2026-04-30T03:23:51.114Z ====
+==== SID: cosy-tern-8663 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install redis ----
+user@nimbus:~$ cd app && npm install redis
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 7 resolved, 7 packuments fetched (0.8 MiB), peak in-flight=4, cache writes=35, elapsed=1.0s
+[npm] Resolved 7 packages.
+[npm] To fetch: 7, to restore: 0, already installed: 0
+[npm] Fetching 7 packages... (path: batch-facet)
+[npm] Dispatching 7 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 7/7 packages, 2371 files, 0.5 MiB tarball bytes, peak in-flight=3, 0.3s
+[npm] Done! 7 packages, 2371 files in 1.4s
+
+added 7 packages (2371 files) in 1.4s
+user@nimbus:~/app$ 
+---- step done in 2003ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_2_mokx6ax6.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CiAgICAgIGNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKICAgICAgZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CiAgICAgIGNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CiAgICAgIGNvbnN0IG9ic2VydmVkID0ge307CiAgICAgIGZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICAgICAgICBpZiAoZSA9PT0gJy5iaW4nIHx8IGUuc3RhcnRzV2l0aCgnLicpKSBjb250aW51ZTsKICAgICAgICBpZiAoZS5zdGFydHNXaXRoKCdAJykpIHsKICAgICAgICAgIGNvbnN0IHN1YiA9IGxzKE5NICsgJy8nICsgZSkgfHwgW107CiAgICAgICAgICBmb3IgKGNvbnN0IHMgb2Ygc3ViKSBvYnNlcnZlZFtlICsgJy8nICsgc10gPSAobHMoTk0gKyAnLycgKyBlICsgJy8nICsgcykgfHwgW10pLmxlbmd0aDsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgb2JzZXJ2ZWRbZV0gPSAob...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_2_mokx6ax6.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CiAgICAgIGNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKICAgICAgZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CiAgICAgIGNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CiAgICAgIGNvbnN0IG9ic2VydmVkID0ge307CiAgICAgIGZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICAgICAgICBpZiAoZSA9PT0gJy5iaW4nIHx8IGUuc3RhcnRzV2l0aCgnLicpKSBjb250aW51ZTsKICAgICAgICBpZiAoZS5zdGFydHNXaXRoKCdAJykpIHsKICAgICAgICAgIGNvbnN0IHN1YiA9IGxzKE5NICsgJy8nICsgZSkgfHwgW107CiAgICAgICAgICBmb3IgKGNvbnN0IHMgb2Ygc3ViKSBvYnNlcnZlZFtlICsgJy8nICsgc10gPSAobHMoTk0gKyAnLycgKyBlICsgJy8nICsgcykgfHwgW10pLmxlbmd0aDsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgb2JzZXJ2ZWRbZV0gPSAobHMoTk0gKyAnLycgKyBlKSB8fCBbXSkubGVuZ3RoOwogICAgICAgIH0KICAgICAgfQogICAgICBjb25zb2xlLmxvZygnLS0tT0JTRVJWRUQtTUFQLS0tJyk7CiAgICAgIGNvbnNvbGUubG9nKEpTT04uc3RyaW5naWZ5KG9ic2VydmVkKSk7CiAgICA=' && node /tmp/p_2_mokx6ax6.js
+[facet started: pid=2 cmd="node /tmp/p_2_mokx6ax6.js"]
+---OBSERVED-MAP---
+{"@redis/bloom":3,"@redis/client":3,"@redis/json":3,"@redis/search":3,"@redis/time-series":3,"cluster-key-slot":6,"redis":3}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_2_mokx6ax6.js) exited with code 0
+────────────────────────────────────────────────────────────
+---OBSERVED-MAP---
+{"@redis/bloom":3,"@redis/client":3,"@redis/json":3,"@redis/search":3,"@redis/time-series":3,"cluster-key-slot":6,"redis":3}
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: trace-redis-trace ====
+AFTER : {"files":0,"dirs":0,"batchWrites":0,"batchWriteRows":0,"sqlReads":0,"sqlWrites":0,"vfsBytes":0}
+DELTA : {"filesAdded":0,"dirsAdded":0,"batchWritesAdded":0,"batchWriteRowsAdded":0,"sqlWritesAdded":0,"vfsBytesAdded":0}
+
+--- trace-pg ---
+sid=stellar-laurel-5559
+BEFORE: {"files":0,"dirs":0,"batchWrites":0,"batchWriteRows":0,"sqlReads":0,"sqlWrites":0,"vfsBytes":0}
+==== PROBE: trace-pg-trace ====
+==== TIMESTAMP: 2026-04-30T03:23:58.421Z ====
+==== SID: ripe-stream-7461 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install pg ----
+user@nimbus:~$ cd app && npm install pg
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 14 resolved, 14 packuments fetched (1.0 MiB), peak in-flight=4, cache writes=19, elapsed=0.6s
+[npm] Resolved 14 packages.
+[npm] To fetch: 14, to restore: 0, already installed: 0
+[npm] Fetching 14 packages... (path: batch-facet)
+[npm] Dispatching 14 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 14/14 packages, 141 files, 0.1 MiB tarball bytes, peak in-flight=3, 0.3s
+[npm] Done! 14 packages, 141 files in 0.9s
+
+added 14 packages (141 files) in 0.9s
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_3_mokx6gk5.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CiAgICAgIGNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKICAgICAgZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CiAgICAgIGNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CiAgICAgIGNvbnN0IG9ic2VydmVkID0ge307CiAgICAgIGZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICAgICAgICBpZiAoZSA9PT0gJy5iaW4nIHx8IGUuc3RhcnRzV2l0aCgnLicpKSBjb250aW51ZTsKICAgICAgICBpZiAoZS5zdGFydHNXaXRoKCdAJykpIHsKICAgICAgICAgIGNvbnN0IHN1YiA9IGxzKE5NICsgJy8nICsgZSkgfHwgW107CiAgICAgICAgICBmb3IgKGNvbnN0IHMgb2Ygc3ViKSBvYnNlcnZlZFtlICsgJy8nICsgc10gPSAobHMoTk0gKyAnLycgKyBlICsgJy8nICsgcykgfHwgW10pLmxlbmd0aDsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgb2JzZXJ2ZWRbZV0gPSAob...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_3_mokx6gk5.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CiAgICAgIGNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKICAgICAgZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CiAgICAgIGNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CiAgICAgIGNvbnN0IG9ic2VydmVkID0ge307CiAgICAgIGZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICAgICAgICBpZiAoZSA9PT0gJy5iaW4nIHx8IGUuc3RhcnRzV2l0aCgnLicpKSBjb250aW51ZTsKICAgICAgICBpZiAoZS5zdGFydHNXaXRoKCdAJykpIHsKICAgICAgICAgIGNvbnN0IHN1YiA9IGxzKE5NICsgJy8nICsgZSkgfHwgW107CiAgICAgICAgICBmb3IgKGNvbnN0IHMgb2Ygc3ViKSBvYnNlcnZlZFtlICsgJy8nICsgc10gPSAobHMoTk0gKyAnLycgKyBlICsgJy8nICsgcykgfHwgW10pLmxlbmd0aDsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgb2JzZXJ2ZWRbZV0gPSAobHMoTk0gKyAnLycgKyBlKSB8fCBbXSkubGVuZ3RoOwogICAgICAgIH0KICAgICAgfQogICAgICBjb25zb2xlLmxvZygnLS0tT0JTRVJWRUQtTUFQLS0tJyk7CiAgICAgIGNvbnNvbGUubG9nKEpTT04uc3RyaW5naWZ5KG9ic2VydmVkKSk7CiAgICA=' && node /tmp/p_3_mokx6gk5.js
+[facet started: pid=2 cmd="node /tmp/p_3_mokx6gk5.js"]
+{"pg":5,"pg-cloudflare":6,"pg-connection-string":6,"pg-int8":4,"pg-pool":5,"pg-protocol":6,"pg-types":9,"pgpass":3,"postgres-array":5,"postgres-bytea":4,"postgres-date":4,"postgres-interval":5,"split2":6,"xtend":7}
+---OBSERVED-MAP---
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_3_mokx6gk5.js) exited with code 0
+────────────────────────────────────────────────────────────
+{"pg":5,"pg-cloudflare":6,"pg-connection-string":6,"pg-int8":4,"pg-pool":5,"pg-protocol":6,"pg-types":9,"pgpass":3,"postgres-array":5,"postgres-bytea":4,"postgres-date":4,"postgres-interval":5,"split2":6,"xtend":7}
+---OBSERVED-MAP---
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: trace-pg-trace ====
+AFTER : {"files":0,"dirs":0,"batchWrites":0,"batchWriteRows":0,"sqlReads":0,"sqlWrites":0,"vfsBytes":0}
+DELTA : {"filesAdded":0,"dirsAdded":0,"batchWritesAdded":0,"batchWriteRowsAdded":0,"sqlWritesAdded":0,"vfsBytesAdded":0}
+
+==== END TASK B TRACE ====
+
+
+============================================================
+TASK B.2 — DETERMINISM TEST (repeated fastify installs across 5 fresh sessions)
+============================================================
+
+=== run 0 ===
+==== PROBE: determ-0 ====
+==== TIMESTAMP: 2026-04-30T03:26:09.243Z ====
+==== SID: tranquil-robin-1430 ====
+==== WS OPEN FAILED: ws open timeout ====
+---- initial banner ----
+
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+
+---- step done in 12559ms (wsClosed=true) ----
+
+==== END PROBE: determ-0 ====
+
+=== run 1 ===
+==== PROBE: determ-1 ====
+==== TIMESTAMP: 2026-04-30T03:26:39.842Z ====
+==== SID: fast-quail-0214 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=0.9s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.0s
+[npm] Done! 46 packages, 1928 files in 1.9s
+
+added 46 packages (1928 files) in 1.9s
+user@nimbus:~/app$ 
+---- step done in 2504ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_2_mokx9x42.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_2_mokx9x42.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY3RlZCkgcmVzdWx0W25dID0gcGtnUHJlc2VudChuKTsKY29uc29sZS5sb2coJy0tLURFVEVSTUlOSVNNLU1BUC0tLScpOwpjb25zb2xlLmxvZyhKU09OLnN0cmluZ2lmeShyZXN1bHQpKTsK' && node /tmp/p_2_mokx9x42.js
+[facet started: pid=2 cmd="node /tmp/p_2_mokx9x42.js"]
+{"avvio":1,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":0,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+---DETERMINISM-MAP---
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_2_mokx9x42.js) exited with code 0
+────────────────────────────────────────────────────────────
+{"avvio":1,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":0,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+---DETERMINISM-MAP---
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 502ms (wsClosed=false) ----
+
+==== END PROBE: determ-1 ====
+
+=== run 2 ===
+==== PROBE: determ-2 ====
+==== TIMESTAMP: 2026-04-30T03:26:46.827Z ====
+==== SID: glad-wisp-2334 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=1.2s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.3s
+[npm] Done! 46 packages, 1928 files in 2.5s
+
+added 46 packages (1928 files) in 2.5s
+user@nimbus:~/app$ 
+---- step done in 3005ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_3_mokxa2i3.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_3_mokxa2i3.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY3RlZCkgcmVzdWx0W25dID0gcGtnUHJlc2VudChuKTsKY29uc29sZS5sb2coJy0tLURFVEVSTUlOSVNNLU1BUC0tLScpOwpjb25zb2xlLmxvZyhKU09OLnN0cmluZ2lmeShyZXN1bHQpKTsK' && node /tmp/p_3_mokxa2i3.js
+[facet started: pid=2 cmd="node /tmp/p_3_mokxa2i3.js"]
+---DETERMINISM-MAP---
+{"avvio":1,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":0,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_3_mokxa2i3.js) exited with code 0
+────────────────────────────────────────────────────────────
+---DETERMINISM-MAP---
+{"avvio":1,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":0,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: determ-2 ====
+
+=== run 3 ===
+==== PROBE: determ-3 ====
+==== TIMESTAMP: 2026-04-30T03:26:54.829Z ====
+==== SID: lively-island-8700 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=1.0s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.3s
+[npm] Done! 46 packages, 1928 files in 2.3s
+
+added 46 packages (1928 files) in 2.3s
+user@nimbus:~/app$ 
+---- step done in 3005ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_4_mokxa8od.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_4_mokxa8od.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY3RlZCkgcmVzdWx0W25dID0gcGtnUHJlc2VudChuKTsKY29uc29sZS5sb2coJy0tLURFVEVSTUlOSVNNLU1BUC0tLScpOwpjb25zb2xlLmxvZyhKU09OLnN0cmluZ2lmeShyZXN1bHQpKTsK' && node /tmp/p_4_mokxa8od.js
+[facet started: pid=2 cmd="node /tmp/p_4_mokxa8od.js"]
+{"avvio":1,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":0,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+---DETERMINISM-MAP---
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_4_mokxa8od.js) exited with code 0
+────────────────────────────────────────────────────────────
+{"avvio":1,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":0,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+---DETERMINISM-MAP---
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: determ-3 ====
+
+=== run 4 ===
+==== PROBE: determ-4 ====
+==== TIMESTAMP: 2026-04-30T03:27:02.835Z ====
+==== SID: proud-raccoon-5565 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=0.8s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.1s
+[npm] Done! 46 packages, 1928 files in 1.9s
+
+added 46 packages (1928 files) in 1.9s
+user@nimbus:~/app$ 
+---- step done in 2503ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_5_mokxaeur.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_5_mokxaeur.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmZ1bmN0aW9uIHBrZ1ByZXNlbnQobmFtZSkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG5hbWUpOwogIHJldHVybiBlID8gZS5sZW5ndGggOiAtMTsKfQpjb25zdCBleHBlY3RlZCA9IFsnYXZ2aW8nLCdmYXN0cScsJ3Bpbm8nLCdzZW12ZXInLCdmYXN0LWpzb24tc3RyaW5naWZ5JywncmZkYycsJ3RvYWQtY2FjaGUnLCdzZWN1cmUtanNvbi1wYXJzZScsJ3Byb2Nlc3Mtd2FybmluZycsJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ2Zhc3RpZnknLCdAZmFzdGlmeS9lcnJvcicsJ0BmYXN0aWZ5L2Fqdi1jb21waWxlcicsJ2Fic3RyYWN0LWxvZ2dpbmcnXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY3RlZCkgcmVzdWx0W25dID0gcGtnUHJlc2VudChuKTsKY29uc29sZS5sb2coJy0tLURFVEVSTUlOSVNNLU1BUC0tLScpOwpjb25zb2xlLmxvZyhKU09OLnN0cmluZ2lmeShyZXN1bHQpKTsK' && node /tmp/p_5_mokxaeur.js
+[facet started: pid=2 cmd="node /tmp/p_5_mokxaeur.js"]
+{"avvio":0,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":1,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+---DETERMINISM-MAP---
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_5_mokxaeur.js) exited with code 0
+────────────────────────────────────────────────────────────
+{"avvio":0,"fastq":0,"pino":0,"semver":0,"fast-json-stringify":1,"rfdc":0,"toad-cache":0,"secure-json-parse":0,"process-warning":0,"find-my-way":0,"light-my-request":0,"fastify":21,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}
+---DETERMINISM-MAP---
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: determ-4 ====
+
+==== END TASK B.2 ====
+
+
+============================================================
+TASK B.3 — single-package fastify, see if just one tarball at a time still fails
+============================================================
+==== PROBE: install-individually ====
+==== TIMESTAMP: 2026-04-30T03:30:13.588Z ====
+==== SID: stable-lighthouse-5309 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install avvio ----
+user@nimbus:~$ cd app && npm install avvio
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 4 resolved, 4 packuments fetched (0.3 MiB), peak in-flight=2, cache writes=20, elapsed=0.6s
+[npm] Resolved 4 packages.
+[npm] To fetch: 4, to restore: 0, already installed: 0
+[npm] Fetching 4 packages... (path: batch-facet)
+[npm] Dispatching 4 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 4/4 packages, 114 files, 0.1 MiB tarball bytes, peak in-flight=3, 0.1s
+[npm] Done! 4 packages, 114 files in 0.8s
+
+added 4 packages (114 files) in 0.8s
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_mokxei1f.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coImF2dmlvOiIsIHJlcXVpcmUoImZzIikucmVhZGRpclN5bmMoIi9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcy9hdnZpbyIpLmxlbmd0aCk=' && node /tmp/p_1_mokxei1f.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_mokxei1f.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coImF2dmlvOiIsIHJlcXVpcmUoImZzIikucmVhZGRpclN5bmMoIi9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcy9hdnZpbyIpLmxlbmd0aCk=' && node /tmp/p_1_mokxei1f.js
+[facet started: pid=2 cmd="node /tmp/p_1_mokxei1f.js"]
+avvio: 12
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_mokxei1f.js) exited with code 0
+────────────────────────────────────────────────────────────
+avvio: 12
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: cd app && npm install pino ----
+user@nimbus:~/app$ cd app && npm install pino
+ENOENT: home/user/app/app
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_2_mokxei1f.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coInBpbm86IiwgcmVxdWlyZSgiZnMiKS5yZWFkZGlyU3luYygiL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzL3Bpbm8iKS5sZW5ndGgp' && node /tmp/p_2_mokxei1f.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_2_mokxei1f.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coInBpbm86IiwgcmVxdWlyZSgiZnMiKS5yZWFkZGlyU3luYygiL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzL3Bpbm8iKS5sZW5ndGgp' && node /tmp/p_2_mokxei1f.js
+[facet started: pid=4 cmd="node /tmp/p_2_mokxei1f.js"]
+pino: 0
+
+────────────────────────────────────────────────────────────
+Process 4 (node /tmp/p_2_mokxei1f.js) exited with code 0
+────────────────────────────────────────────────────────────
+pino: 0
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: cd app && npm install fastq semver typescript ----
+user@nimbus:~/app$ cd app && npm install fastq semver typescript
+ENOENT: home/user/app/app
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_3_mokxei1f.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnNvbGUubG9nKCdmYXN0cTonLCAobHMoTk0rJy9mYXN0cScpfHxbXSkubGVuZ3RoKTsKY29uc29sZS5sb2coJ3NlbXZlcjonLCAobHMoTk0rJy9zZW12ZXInKXx8W10pLmxlbmd0aCk7CmNvbnNvbGUubG9nKCd0eXBlc2NyaXB0OicsIChscyhOTSsnL3R5cGVzY3JpcHQnKXx8W10pLmxlbmd0aCk7Cg==' && node /tmp/p_3_mokxei1f.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_3_mokxei1f.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnNvbGUubG9nKCdmYXN0cTonLCAobHMoTk0rJy9mYXN0cScpfHxbXSkubGVuZ3RoKTsKY29uc29sZS5sb2coJ3NlbXZlcjonLCAobHMoTk0rJy9zZW12ZXInKXx8W10pLmxlbmd0aCk7CmNvbnNvbGUubG9nKCd0eXBlc2NyaXB0OicsIChscyhOTSsnL3R5cGVzY3JpcHQnKXx8W10pLmxlbmd0aCk7Cg==' && node /tmp/p_3_mokxei1f.js
+[facet started: pid=6 cmd="node /tmp/p_3_mokxei1f.js"]
+fastq: 11
+semver: 0
+typescript: 0
+
+────────────────────────────────────────────────────────────
+Process 6 (node /tmp/p_3_mokxei1f.js) exited with code 0
+────────────────────────────────────────────────────────────
+fastq: 11
+semver: 0
+typescript: 0
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: install-individually ====
+
+==== END TASK B.3 ====
+
+
+============================================================
+TASK B.4 — supervisor-side stats AFTER fastify install
+============================================================
+==== PROBE: w25-stats ====
+==== TIMESTAMP: 2026-04-30T03:32:07.862Z ====
+==== SID: snowy-viper-7271 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=1.2s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.2s
+[npm] Done! 46 packages, 1928 files in 2.5s
+
+added 46 packages (1928 files) in 2.5s
+user@nimbus:~/app$ 
+---- step done in 3005ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_mokxgy7p.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmxldCB0b3RhbCA9IDA7CmZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICBpZiAoZS5zdGFydHNXaXRoKCcuJykpIGNvbnRpbnVlOwogIGlmIChlLnN0YXJ0c1dpdGgoJ0AnKSkgewogICAgY29uc3Qgc3ViID0gbHMoTk0gKyAnLycgKyBlKSB8fCBbXTsKICAgIGZvciAoY29uc3QgcyBvZiBzdWIpIHsKICAgICAgY29uc3Qgc3ViMiA9IGxzKE5NICsgJy8nICsgZSArICcvJyArIHMpIHx8IFtdOwogICAgICB0b3RhbCArPSBzdWIyLmxlbmd0aDsKICAgIH0KICB9IGVsc2UgewogICAgY29uc3Qgc3ViID0gbHMoTk0gKyAnLycgKyBlKSB8fCBbXTsKICAgIHRvdGFsICs9IHN1Yi5sZW5ndGg7CiAgfQp9CmNvbnNvbGUubG9nKCdUT...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_mokxgy7p.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmxldCB0b3RhbCA9IDA7CmZvciAoY29uc3QgZSBvZiBmcy5yZWFkZGlyU3luYyhOTSkpIHsKICBpZiAoZS5zdGFydHNXaXRoKCcuJykpIGNvbnRpbnVlOwogIGlmIChlLnN0YXJ0c1dpdGgoJ0AnKSkgewogICAgY29uc3Qgc3ViID0gbHMoTk0gKyAnLycgKyBlKSB8fCBbXTsKICAgIGZvciAoY29uc3QgcyBvZiBzdWIpIHsKICAgICAgY29uc3Qgc3ViMiA9IGxzKE5NICsgJy8nICsgZSArICcvJyArIHMpIHx8IFtdOwogICAgICB0b3RhbCArPSBzdWIyLmxlbmd0aDsKICAgIH0KICB9IGVsc2UgewogICAgY29uc3Qgc3ViID0gbHMoTk0gKyAnLycgKyBlKSB8fCBbXTsKICAgIHRvdGFsICs9IHN1Yi5sZW5ndGg7CiAgfQp9CmNvbnNvbGUubG9nKCdUT1BMRVZFTF9GSUxFU19DT1VOVD0nICsgdG90YWwpOwo=' && node /tmp/p_1_mokxgy7p.js
+[facet started: pid=2 cmd="node /tmp/p_1_mokxgy7p.js"]
+TOPLEVEL_FILES_COUNT=84
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_mokxgy7p.js) exited with code 0
+────────────────────────────────────────────────────────────
+TOPLEVEL_FILES_COUNT=84
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: w25-stats ====
+
+POST-INSTALL STATS for sid=snowy-viper-7271:
+{
+  "files": 1955,
+  "dirs": 319,
+  "vfsBytes": 7225643,
+  "sql": {
+    "reads": 500,
+    "writes": 4393,
+    "batchWrites": 54,
+    "batchWriteRows": 4393,
+    "pendingWrites": 0,
+    "failedWrites": 0,
+    "totalWriteFailures": 0
+  }
+}
+
+==== END TASK B.4 ====

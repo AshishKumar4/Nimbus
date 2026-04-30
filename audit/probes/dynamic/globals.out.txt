@@ -1,0 +1,46 @@
+==== PROBE: globals ====
+==== TIMESTAMP: 2026-04-29T18:44:40.921Z ====
+==== SID: hopeful-toad-4771 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemna1_globals.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coJ2dsb2JhbFRoaXMgdHlwZW9mOicsIHR5cGVvZiBnbG9iYWxUaGlzKTsKY29uc29sZS5sb2coJ0J1ZmZlciB0eXBlb2Y6JywgdHlwZW9mIEJ1ZmZlcik7CmNvbnNvbGUubG9nKCdwcm9jZXNzIHR5cGVvZjonLCB0eXBlb2YgcHJvY2Vzcyk7CmNvbnNvbGUubG9nKCdxdWV1ZU1pY3JvdGFzayB0eXBlb2Y6JywgdHlwZW9mIHF1ZXVlTWljcm90YXNrKTsKY29uc29sZS5sb2coJ0Fib3J0Q29udHJvbGxlciB0eXBlb2Y6JywgdHlwZW9mIEFib3J0Q29udHJvbGxlcik7CmNvbnNvbGUubG9nKCdmZXRjaCB0eXBlb2Y6JywgdHlwZW9mIGZldGNoKTsKY29uc29sZS5sb2coJ2NyeXB0byB0eXBlb2Y6JywgdHlwZW9mIGNyeXB0byk7CmNvbnNvbGUubG9nKCdjcnlwdG8uc3VidGxlIHR5cGVvZjonLCB0eXBlb2YgKHR5cGVvZiBjcnlwdG8gIT09ICd1bmRlZmluZWQnICYmIGNyeXB0by5zdWJ0bGUpKTsKY29uc29sZS5sb2coJ1dlYkFzc2VtYmx5IHR5cGVvZjonLCB0eXBlb2YgV2ViQ...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemna1_globals.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coJ2dsb2JhbFRoaXMgdHlwZW9mOicsIHR5cGVvZiBnbG9iYWxUaGlzKTsKY29uc29sZS5sb2coJ0J1ZmZlciB0eXBlb2Y6JywgdHlwZW9mIEJ1ZmZlcik7CmNvbnNvbGUubG9nKCdwcm9jZXNzIHR5cGVvZjonLCB0eXBlb2YgcHJvY2Vzcyk7CmNvbnNvbGUubG9nKCdxdWV1ZU1pY3JvdGFzayB0eXBlb2Y6JywgdHlwZW9mIHF1ZXVlTWljcm90YXNrKTsKY29uc29sZS5sb2coJ0Fib3J0Q29udHJvbGxlciB0eXBlb2Y6JywgdHlwZW9mIEFib3J0Q29udHJvbGxlcik7CmNvbnNvbGUubG9nKCdmZXRjaCB0eXBlb2Y6JywgdHlwZW9mIGZldGNoKTsKY29uc29sZS5sb2coJ2NyeXB0byB0eXBlb2Y6JywgdHlwZW9mIGNyeXB0byk7CmNvbnNvbGUubG9nKCdjcnlwdG8uc3VidGxlIHR5cGVvZjonLCB0eXBlb2YgKHR5cGVvZiBjcnlwdG8gIT09ICd1bmRlZmluZWQnICYmIGNyeXB0by5zdWJ0bGUpKTsKY29uc29sZS5sb2coJ1dlYkFzc2VtYmx5IHR5cGVvZjonLCB0eXBlb2YgV2ViQXNzZW1ibHkpOw==' && node /tmp/dyn_mokemna1_globals.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemna1_globals.js"]
+globalThis typeof: object
+queueMicrotask typeof: function
+Buffer typeof: function
+process typeof: object
+crypto.subtle typeof: object
+fetch typeof: function
+crypto typeof: object
+AbortController typeof: function
+WebAssembly typeof: object
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemna1_globals.js) exited with code 0
+────────────────────────────────────────────────────────────
+globalThis typeof: object
+queueMicrotask typeof: function
+Buffer typeof: function
+process typeof: object
+crypto.subtle typeof: object
+fetch typeof: function
+crypto typeof: object
+AbortController typeof: function
+WebAssembly typeof: object
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: globals ====

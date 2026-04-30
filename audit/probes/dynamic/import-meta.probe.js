@@ -1,0 +1,1 @@
+try { console.log('import.meta:', typeof import.meta, JSON.stringify(import.meta && import.meta.url)); } catch(e) { console.log('SyntaxError on import.meta:', e.message); }

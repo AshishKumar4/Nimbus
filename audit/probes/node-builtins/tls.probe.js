@@ -1,0 +1,1 @@
+try { const t = require('tls'); console.log('keys:', Object.keys(t).slice(0, 15).join(',')); console.log('connect typeof:', typeof t.connect); console.log('createServer typeof:', typeof t.createServer); } catch(e) { console.log('tls require failed:', e.message); }

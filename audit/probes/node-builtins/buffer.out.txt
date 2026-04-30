@@ -1,0 +1,44 @@
+==== PROBE: buffer ====
+==== TIMESTAMP: 2026-04-29T18:27:29.079Z ====
+==== SID: eastern-sky-9984 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_7_moke0j3r.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgQiA9IHJlcXVpcmUoJ2J1ZmZlcicpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhCKS5zbGljZSgwLCAxMCkuam9pbignLCcpKTsKY29uc3QgYiA9IEJ1ZmZlci5mcm9tKCdoZWxsbycpOwpjb25zb2xlLmxvZygnZnJvbTonLCBiLnRvU3RyaW5nKCdoZXgnKSk7CmNvbnNvbGUubG9nKCdpc0J1ZmZlcjonLCBCdWZmZXIuaXNCdWZmZXIoYikpOwpjb25zb2xlLmxvZygnYWxsb2M6JywgQnVmZmVyLmFsbG9jKDMsIDApLnRvU3RyaW5nKCdoZXgnKSk7CmNvbnNvbGUubG9nKCdjb25jYXQ6JywgQnVmZmVyLmNvbmNhdChbYiwgQnVmZmVyLmZyb20oJyB3b3JsZCcpXSkudG9TdHJpbmcoKSk7CmNvbnNvbGUubG9nKCdieXRlTGVuZ3RoOicsIEJ1ZmZlci5ieXRlTGVuZ3RoKCdow6lsbG8nLCAndXRmOCcpKTsKY29uc29sZS5sb2coJ0Jsb2I6JywgdHlwZW9mIEIuQmxvYik7CmNvbnNvbGUubG9nKCdGaWxlOicsIHR5cGVvZiBCLkZpbGUpOwo=' && node /tmp/p_7_moke0j3r.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_7_moke0j3r.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgQiA9IHJlcXVpcmUoJ2J1ZmZlcicpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhCKS5zbGljZSgwLCAxMCkuam9pbignLCcpKTsKY29uc3QgYiA9IEJ1ZmZlci5mcm9tKCdoZWxsbycpOwpjb25zb2xlLmxvZygnZnJvbTonLCBiLnRvU3RyaW5nKCdoZXgnKSk7CmNvbnNvbGUubG9nKCdpc0J1ZmZlcjonLCBCdWZmZXIuaXNCdWZmZXIoYikpOwpjb25zb2xlLmxvZygnYWxsb2M6JywgQnVmZmVyLmFsbG9jKDMsIDApLnRvU3RyaW5nKCdoZXgnKSk7CmNvbnNvbGUubG9nKCdjb25jYXQ6JywgQnVmZmVyLmNvbmNhdChbYiwgQnVmZmVyLmZyb20oJyB3b3JsZCcpXSkudG9TdHJpbmcoKSk7CmNvbnNvbGUubG9nKCdieXRlTGVuZ3RoOicsIEJ1ZmZlci5ieXRlTGVuZ3RoKCdow6lsbG8nLCAndXRmOCcpKTsKY29uc29sZS5sb2coJ0Jsb2I6JywgdHlwZW9mIEIuQmxvYik7CmNvbnNvbGUubG9nKCdGaWxlOicsIHR5cGVvZiBCLkZpbGUpOwo=' && node /tmp/p_7_moke0j3r.js
+[facet started: pid=2 cmd="node /tmp/p_7_moke0j3r.js"]
+keys: Buffer
+concat: hello world
+from: 68656c6c6f
+alloc: 000000
+isBuffer: true
+byteLength: 6
+Blob: undefined
+File: undefined
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_7_moke0j3r.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: Buffer
+concat: hello world
+from: 68656c6c6f
+alloc: 000000
+isBuffer: true
+byteLength: 6
+Blob: undefined
+File: undefined
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1500ms (wsClosed=false) ----
+
+==== END PROBE: buffer ====

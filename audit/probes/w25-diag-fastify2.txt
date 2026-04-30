@@ -1,0 +1,164 @@
+SID=lively-seal-8968
+==== PROBE: w25-diag2 ====
+==== TIMESTAMP: 2026-04-30T15:20:08.929Z ====
+==== SID: idle-seal-3678 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install fastify ----
+user@nimbus:~$ cd app && npm install fastify
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=1.4s
+[npm] Resolved 46 packages.
+[npm] To fetch: 46, to restore: 0, already installed: 0
+[npm] Fetching 46 packages... (path: batch-facet)
+[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.4s
+[npm] Done! 46 packages, 1928 files in 2.9s
+
+added 46 packages (1928 files) in 2.9s
+user@nimbus:~/app$ 
+---- step done in 3508ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_molmrgtb.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgY3AgPSByZXF1aXJlKCdjaGlsZF9wcm9jZXNzJyk7CmNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CgovLyBDb3VudCBpbm9kZXMgYnkgcmVjdXJzaXZlIHdhbGsgb2YgTk0gdmlhIGZzIChpbi1tZW1vcnkgdHJlZSkKZnVuY3Rpb24gY291bnRBbGwoZCkgewogIGxldCBmPTAsIGRkPTA7CiAgbGV0IGVudHM7CiAgdHJ5IHsgZW50cyA9IGZzLnJlYWRkaXJTeW5jKGQpOyB9IGNhdGNoIHsgcmV0dXJuIFswLDBdOyB9CiAgZGQrKzsKICBmb3IgKGNvbnN0IGUgb2YgZW50cykgewogICAgY29uc3QgcCA9IGQgKyAnLycgKyBlOwogICAgbGV0IHN0OwogICAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCB7IGNvbnRpbnVlOyB9CiAgICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgeyBjb25zdCBbZmYsZGRkXSA9IGNvdW50QWxsKHApOyBmKz1mZjsgZGQrPWRkZDsgfQogICAgZWxzZSBmKys7CiAgfQogIHJldHVyb...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_molmrgtb.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgY3AgPSByZXF1aXJlKCdjaGlsZF9wcm9jZXNzJyk7CmNvbnN0IE5NID0gJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcyc7CgovLyBDb3VudCBpbm9kZXMgYnkgcmVjdXJzaXZlIHdhbGsgb2YgTk0gdmlhIGZzIChpbi1tZW1vcnkgdHJlZSkKZnVuY3Rpb24gY291bnRBbGwoZCkgewogIGxldCBmPTAsIGRkPTA7CiAgbGV0IGVudHM7CiAgdHJ5IHsgZW50cyA9IGZzLnJlYWRkaXJTeW5jKGQpOyB9IGNhdGNoIHsgcmV0dXJuIFswLDBdOyB9CiAgZGQrKzsKICBmb3IgKGNvbnN0IGUgb2YgZW50cykgewogICAgY29uc3QgcCA9IGQgKyAnLycgKyBlOwogICAgbGV0IHN0OwogICAgdHJ5IHsgc3QgPSBmcy5zdGF0U3luYyhwKTsgfSBjYXRjaCB7IGNvbnRpbnVlOyB9CiAgICBpZiAoc3QuaXNEaXJlY3RvcnkoKSkgeyBjb25zdCBbZmYsZGRkXSA9IGNvdW50QWxsKHApOyBmKz1mZjsgZGQrPWRkZDsgfQogICAgZWxzZSBmKys7CiAgfQogIHJldHVybiBbZiwgZGRdOwp9Cgpjb25zb2xlLmxvZygnU1RBVFNfQkVHSU4nKTsKY29uc3QgW2ZpbGVzVmlzaWJsZSwgZGlyc1Zpc2libGVdID0gY291bnRBbGwoTk0pOwpjb25zb2xlLmxvZygnVklTSUJMRSBmaWxlcz0nICsgZmlsZXNWaXNpYmxlICsgJyBkaXJzPScgKyBkaXJzVmlzaWJsZSk7CgovLyBUcnkgdG8gcXVlcnkgc3RhdHMgdmlhIHRoZSBWRlMgaW50ZXJuYWwgZW5kcG9pbnQgLSB1c2UgcHJvY2Vzcy5zdGF0IG9yIEhUVFAKLy8gV2UncmUgaW5zaWRlIGEgZmFjZXQsIHNvIGRpcmVjdCBmZXRjaCB0byAvYXBpL3N0YXRzIHdvcmtzIHZpYSBzZXNzaW9uIFVSTC4KLy8gKFdlIGNhbid0IGVhc2lseSDigJQgZmFjZXRzIGFyZSBzYW5kYm94ZWQuIFNraXAgdGhpcyBsYXllci4pCgovLyBGb3IgZWFjaCBleHBlY3RlZCBwa2csIHJlcG9ydCBleGlzdHMsIHBhcmVudC1jaGlsZHJlbi1vZi1wYXJlbnQsIGV0Yy4KY29uc3QgUEtHUyA9IFsnZmFzdGlmeScsJ2F2dmlvJywnZmFzdHEnLCdwaW5vJywnc2VtdmVyJywnZmFzdC1qc29uLXN0cmluZ2lmeScsCiAgICAgICAgICAgICAgJ2ZpbmQtbXktd2F5JywnbGlnaHQtbXktcmVxdWVzdCcsJ3Byb2Nlc3Mtd2FybmluZycsJ3JmZGMnLAogICAgICAgICAgICAgICdzZWN1cmUtanNvbi1wYXJzZScsJ3RvYWQtY2FjaGUnXTsKY29uc29sZS5sb2coJ1BFUl9QS0dfQkVHSU4nKTsKZm9yIChjb25zdCBwIG9mIFBLR1MpIHsKICBjb25zdCBkaXIgPSBOTSArICcvJyArIHA7CiAgY29uc3QgcGogPSBkaXIgKyAnL3BhY2thZ2UuanNvbic7CiAgbGV0IHJlcyA9IHsgcGtnOiBwIH07CiAgdHJ5IHsKICAgIGNvbnN0IHN0ID0gZnMuc3RhdFN5bmMoZGlyKTsKICAgIHJlcy5kaXJFeGlzdHMgPSB0cnVlOwogICAgcmVzLmRpcklzRGlyID0gc3QuaXNEaXJlY3RvcnkoKTsKICAgIHJlcy5lbnRyeUNvdW50ID0gZnMucmVhZGRpclN5bmMoZGlyKS5sZW5ndGg7CiAgfSBjYXRjaCAoZSkgeyByZXMuZGlyRXhpc3RzID0gZmFsc2U7IHJlcy5kaXJFcnIgPSBlLmNvZGU7IH0KICB0cnkgewogICAgY29uc3Qgc3QgPSBmcy5zdGF0U3luYyhwaik7CiAgICByZXMucGpFeGlzdHMgPSB0cnVlOyByZXMucGpTaXplID0gc3Quc2l6ZTsKICB9IGNhdGNoIChlKSB7IHJlcy5wakV4aXN0cyA9IGZhbHNlOyByZXMucGpFcnIgPSBlLmNvZGU7IH0KICBjb25zb2xlLmxvZyhKU09OLnN0cmluZ2lmeShyZXMpKTsKfQpjb25zb2xlLmxvZygnUEVSX1BLR19FTkQnKTsKCi8vIHJlYWRkaXIgb2YgTk0gcm9vdCAodGhpcyBzaG91bGQgZmlyZSB0aGUgVzIuNWIgZGlhZ25vc3RpYyBpZiBzaXplIG1pc21hdGNoKQpjb25zb2xlLmxvZygnTk1fUk9PVF9CRUdJTicpOwpjb25zb2xlLmxvZyhKU09OLnN0cmluZ2lmeShmcy5yZWFkZGlyU3luYyhOTSkpKTsKY29uc29sZS5sb2coJ05NX1JPT1RfRU5EJyk7CmNvbnNvbGUubG9nKCdTVEFUU19FTkQnKTsK' && node /tmp/p_1_molmrgtb.js
+[facet started: pid=2 cmd="node /tmp/p_1_molmrgtb.js"]
+STATS_BEGIN
+VISIBLE files=1931 dirs=298
+PER_PKG_BEGIN
+STATS_END
+{"pkg":"rfdc","dirExists":true,"dirIsDir":true,"entryCount":9,"pjExists":true,"pjSize":1656}
+{"pkg":"semver","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":1663}
+{"pkg":"fastify","dirExists":true,"dirIsDir":true,"entryCount":21,"pjExists":true,"pjSize":7124}
+{"pkg":"avvio","dirExists":true,"dirIsDir":true,"entryCount":12,"pjExists":true,"pjSize":1780}
+{"pkg":"find-my-way","dirExists":true,"dirIsDir":true,"entryCount":10,"pjExists":true,"pjSize":1406}
+{"pkg":"toad-cache","dirExists":true,"dirIsDir":true,"entryCount":6,"pjExists":true,"pjSize":2225}
+{"pkg":"light-my-request","dirExists":true,"dirIsDir":true,"entryCount":12,"pjExists":true,"pjSize":2127}
+{"pkg":"fast-json-stringify","dirExists":true,"dirIsDir":true,"entryCount":13,"pjExists":true,"pjSize":2343}
+{"pkg":"process-warning","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":1710}
+{"pkg":"secure-json-parse","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":1794}
+NM_ROOT_BEGIN
+{"pkg":"fastq","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":0}
+PER_PKG_END
+[".bin","@fastify","@pinojs","abstract-logging","ajv","ajv-formats","atomic-sleep","avvio","cookie","dequal","fast-decode-uri-component","fast-deep-equal","fast-json-stringify","fast-querystring","fast-uri","fastify","fastq","find-my-way","ipaddr.js","json-schema-ref-resolver","json-schema-traverse","light-my-request","on-exit-leak-free","pino","pino-abstract-transport","pino-std-serializers","process-warning","quick-format-unescaped","real-require","require-from-string","ret","reusify","rfdc","safe-regex2","safe-stable-stringify","secure-json-parse","semver","set-cookie-parser","sonic-boom","split2","thread-stream","toad-cache"]
+NM_ROOT_END
+{"pkg":"pino","dirExists":true,"dirIsDir":true,"entryCount":24,"pjExists":true,"pjSize":4208}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_molmrgtb.js) exited with code 0
+────────────────────────────────────────────────────────────
+STATS_BEGIN
+VISIBLE files=1931 dirs=298
+PER_PKG_BEGIN
+STATS_END
+{"pkg":"rfdc","dirExists":true,"dirIsDir":true,"entryCount":9,"pjExists":true,"pjSize":1656}
+{"pkg":"semver","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":1663}
+{"pkg":"fastify","dirExists":true,"dirIsDir":true,"entryCount":21,"pjExists":true,"pjSize":7124}
+{"pkg":"avvio","dirExists":true,"dirIsDir":true,"entryCount":12,"pjExists":true,"pjSize":1780}
+{"pkg":"find-my-way","dirExists":true,"dirIsDir":true,"entryCount":10,"pjExists":true,"pjSize":1406}
+{"pkg":"toad-cache","dirExists":true,"dirIsDir":true,"entryCount":6,"pjExists":true,"pjSize":2225}
+{"pkg":"light-my-request","dirExists":true,"dirIsDir":true,"entryCount":12,"pjExists":true,"pjSize":2127}
+{"pkg":"fast-json-stringify","dirExists":true,"dirIsDir":true,"entryCount":13,"pjExists":true,"pjSize":2343}
+{"pkg":"process-warning","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":1710}
+{"pkg":"secure-json-parse","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":1794}
+NM_ROOT_BEGIN
+{"pkg":"fastq","dirExists":true,"dirIsDir":true,"entryCount":11,"pjExists":true,"pjSize":0}
+PER_PKG_END
+[".bin","@fastify","@pinojs","abstract-logging","ajv","ajv-formats","atomic-sleep","avvio","cookie","dequal","fast-decode-uri-component","fast-deep-equal","fast-json-stringify","fast-querystring","fast-uri","fastify","fastq","find-my-way","ipaddr.js","json-schema-ref-resolver","json-schema-traverse","light-my-request","on-exit-leak-free","pino","pino-abstract-transport","pino-std-serializers","process-warning","quick-format-unescaped","real-require","require-from-string","ret","reusify","rfdc","safe-regex2","safe-stable-stringify","secure-json-parse","semver","set-cookie-parser","sonic-boom","split2","thread-stream","toad-cache"]
+NM_ROOT_END
+{"pkg":"pino","dirExists":true,"dirIsDir":true,"entryCount":24,"pjExists":true,"pjSize":4208}
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 2004ms (wsClosed=false) ----
+
+---- STEP cmd: ls /home/user/app/node_modules | wc -l ----
+user@nimbus:~/app$ ls /home/user/app/node_modules | wc -l
+       1
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: ls /home/user/app/node_modules ----
+user@nimbus:~/app$ ls /home/user/app/node_modules
+@fastify  @pinojs  abstract-logging  ajv  ajv-formats  atomic-sleep  avvio  cookie  dequal  fast-decode-uri-component  fast-deep-equal  fast-json-stringify  fast-querystring  fast-uri  fastify  fastq  find-my-way  ipaddr.js  json-schema-ref-resolver  json-schema-traverse  light-my-request  on-exit-leak-free  pino  pino-abstract-transport  pino-std-serializers  process-warning  quick-format-unescaped  real-require  require-from-string  ret  reusify  rfdc  safe-regex2  safe-stable-stringify  secure-json-parse  semver  set-cookie-parser  sonic-boom  split2  thread-stream  toad-cache
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: w25-diag2 ====
+
+=== /api/stats ===
+{
+  "files": 0,
+  "directories": 0,
+  "usedBytes": 0,
+  "capacityBytes": 10737418240,
+  "backend": "DO SQLite (demand-paged VFS)",
+  "cache": {
+    "entries": 0,
+    "maxEntries": 512,
+    "chunkSize": 65536,
+    "hotBytes": 0,
+    "maxBytes": 33554432,
+    "hits": 0,
+    "misses": 0,
+    "hitRate": 0,
+    "evictions": 0
+  },
+  "sql": {
+    "reads": 0,
+    "writes": 0,
+    "batchWrites": 0,
+    "batchWriteRows": 0,
+    "pendingWrites": 0,
+    "failedWrites": 0,
+    "totalWriteFailures": 0
+  },
+  "events": {
+    "totalEmitted": 0,
+    "totalBatches": 0,
+    "globalListeners": 0,
+    "pathListeners": 0,
+    "pending": 0
+  },
+  "inodes": {
+    "total": 0,
+    "files": 0,
+    "directories": 0,
+    "memoryEstimate": 0
+  },
+  "processes": {
+    "total": 0,
+    "running": 0,
+    "exited": 0,
+    "killed": 0,
+    "nextPid": 1
+  },
+  "logStore": {
+    "totalPids": 0,
+    "maxPids": 500,
+    "runningPids": 0,
+    "exitedPids": 0,
+    "totalBufferBytes": 0,
+    "subscribers": 0,
+    "droppedPids": 0
+  },
+  "ports": {
+    "activePorts": 0,
+    "ports": []
+  },
+  "vite": null,
+  "wrangler": null
+}

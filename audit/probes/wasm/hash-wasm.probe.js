@@ -1,0 +1,1 @@
+const m=require('hash-wasm');console.log('keys:',Object.keys(m).slice(0,10).join(','));m.sha256('hello').then(h=>console.log('sha256(hello):',h)).catch(e=>console.log('hash err:',e.message));setTimeout(()=>{},3000);

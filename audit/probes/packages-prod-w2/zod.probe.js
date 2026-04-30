@@ -1,0 +1,1 @@
+const z=require('zod');console.log('parse:',z.string().parse('hi'))

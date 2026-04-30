@@ -1,0 +1,32 @@
+==== PROBE: eval-and-Function ====
+==== TIMESTAMP: 2026-04-29T18:44:34.846Z ====
+==== SID: salty-lagoon-0949 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemila_eval-and-Function.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc29sZS5sb2coJ2V2YWwoMSsxKTonLCBldmFsKCcxKzEnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZXZhbCBmYWlsOicsIGUubWVzc2FnZSk7IH0KdHJ5IHsgY29uc3QgZiA9IG5ldyBGdW5jdGlvbigncmV0dXJuIDQyJyk7IGNvbnNvbGUubG9nKCduZXcgRnVuY3Rpb246JywgZigpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCduZXcgRnVuY3Rpb24gZmFpbDonLCBlLm1lc3NhZ2UpOyB9' && node /tmp/dyn_mokemila_eval-and-Function.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemila_eval-and-Function.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc29sZS5sb2coJ2V2YWwoMSsxKTonLCBldmFsKCcxKzEnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZXZhbCBmYWlsOicsIGUubWVzc2FnZSk7IH0KdHJ5IHsgY29uc3QgZiA9IG5ldyBGdW5jdGlvbigncmV0dXJuIDQyJyk7IGNvbnNvbGUubG9nKCduZXcgRnVuY3Rpb246JywgZigpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCduZXcgRnVuY3Rpb24gZmFpbDonLCBlLm1lc3NhZ2UpOyB9' && node /tmp/dyn_mokemila_eval-and-Function.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemila_eval-and-Function.js"]
+new Function fail: Code generation from strings disallowed for this context
+eval fail: Code generation from strings disallowed for this context
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemila_eval-and-Function.js) exited with code 0
+────────────────────────────────────────────────────────────
+new Function fail: Code generation from strings disallowed for this context
+eval fail: Code generation from strings disallowed for this context
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 9007ms (wsClosed=false) ----
+
+==== END PROBE: eval-and-Function ====

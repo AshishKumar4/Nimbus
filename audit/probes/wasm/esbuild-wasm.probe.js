@@ -1,0 +1,1 @@
+const e=require('esbuild-wasm');console.log('keys:',Object.keys(e).slice(0,10).join(','));console.log('transformSync typeof:',typeof e.transformSync);

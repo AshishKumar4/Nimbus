@@ -1,0 +1,69 @@
+==== PROBE: node-canvas ====
+==== TIMESTAMP: 2026-05-04T02:58:41.805Z ====
+==== SID: dreamy-mist-4950 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install canvas ----
+user@nimbus:~$ cd app && npm install canvas
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 37 resolved, 37 packuments fetched (3.2 MiB), peak in-flight=4, cache writes=176, elapsed=1.1s
+[npm] Resolved 37 packages.
+[npm] To fetch: 37, to restore: 0, already installed: 0
+[npm] Fetching 37 packages... (path: batch-facet)
+[npm] Dispatching 37 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 37/37 packages, 382 files, 0.4 MiB tarball bytes, peak in-flight=3, 0.8s
+[npm] Done! 37 packages, 382 files in 2.0s
+
+added 37 packages (382 files) in 2.0s
+user@nimbus:~/app$ 
+---- step done in 2504ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_moqm1czw.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdjYW52YXMnKTtjb25zb2xlLmxvZygna2V5czonLE9iamVjdC5rZXlzKG0pLnNsaWNlKDAsOCkp' && cd /home/user/app && node .pkgsmoke_moqm1czw.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_moqm1czw.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdjYW52YXMnKTtjb25zb2xlLmxvZygna2V5czonLE9iamVjdC5rZXlzKG0pLnNsaWNlKDAsOCkp' && cd /home/user/app && node .pkgsmoke_moqm1czw.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_moqm1czw.js"]
+Error: Cannot find module '../build/Release/canvas.node' (from home/user/app/node_modules/canvas/lib)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:1601:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:5:18)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:11:18)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_moqm1czw.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module '../build/Release/canvas.node' (from home/user/app/node_modules/canvas/lib)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:1601:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:5:18)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:11:18)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: node-canvas ====

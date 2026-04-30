@@ -1,0 +1,1 @@
+try { const a = require('async_hooks'); console.log('keys:', Object.keys(a).slice(0, 10).join(',')); console.log('AsyncLocalStorage typeof:', typeof a.AsyncLocalStorage); const als = new a.AsyncLocalStorage(); als.run({x:1}, () => console.log('ALS getStore:', JSON.stringify(als.getStore()))); } catch(e) { console.log('async_hooks fail:', e.message); }

@@ -1,0 +1,1 @@
+const m=require('@libsql/client');console.log('keys:',Object.keys(m).slice(0,8).join(','));console.log('createClient typeof:',typeof m.createClient);

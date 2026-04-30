@@ -1,0 +1,10 @@
+const o = require('os');
+console.log('keys:', Object.keys(o).slice(0, 20).join(','));
+console.log('platform:', o.platform());
+console.log('arch:', o.arch());
+console.log('tmpdir:', o.tmpdir());
+console.log('homedir:', o.homedir());
+console.log('hostname:', o.hostname());
+console.log('cpus length:', o.cpus().length);
+console.log('totalmem:', o.totalmem());
+console.log('availableParallelism typeof:', typeof o.availableParallelism);

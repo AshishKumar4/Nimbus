@@ -1,0 +1,30 @@
+==== PROBE: dynamic-import-variable ====
+==== TIMESTAMP: 2026-04-29T18:44:34.316Z ====
+==== SID: simple-yak-2097 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemi6j_dynamic-import-variable.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3Qgc3BlYyA9ICdmcyc7CmltcG9ydChzcGVjKS50aGVuKG0gPT4gY29uc29sZS5sb2coJ2R5biBpbXBvcnQgdmFyIG9rOicsIHR5cGVvZiBtLnJlYWRGaWxlU3luYykpLmNhdGNoKGUgPT4gY29uc29sZS5sb2coJ2R5biBpbXBvcnQgdmFyIGZhaWw6JywgZS5tZXNzYWdlKSk7CnNldFRpbWVvdXQoKCk9Pnt9LCAyMDAwKTs=' && node /tmp/dyn_mokemi6j_dynamic-import-variable.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemi6j_dynamic-import-variable.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3Qgc3BlYyA9ICdmcyc7CmltcG9ydChzcGVjKS50aGVuKG0gPT4gY29uc29sZS5sb2coJ2R5biBpbXBvcnQgdmFyIG9rOicsIHR5cGVvZiBtLnJlYWRGaWxlU3luYykpLmNhdGNoKGUgPT4gY29uc29sZS5sb2coJ2R5biBpbXBvcnQgdmFyIGZhaWw6JywgZS5tZXNzYWdlKSk7CnNldFRpbWVvdXQoKCk9Pnt9LCAyMDAwKTs=' && node /tmp/dyn_mokemi6j_dynamic-import-variable.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemi6j_dynamic-import-variable.js"]
+dyn import var ok: function
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemi6j_dynamic-import-variable.js) exited with code 0
+────────────────────────────────────────────────────────────
+dyn import var ok: function
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: dynamic-import-variable ====

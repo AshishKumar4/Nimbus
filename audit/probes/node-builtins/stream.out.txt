@@ -1,0 +1,46 @@
+==== PROBE: stream ====
+==== TIMESTAMP: 2026-04-29T18:27:28.977Z ====
+==== SID: fine-orchid-2158 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_6_moke0j0u.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcyA9IHJlcXVpcmUoJ3N0cmVhbScpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhzKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKY29uc29sZS5sb2coJ1JlYWRhYmxlOicsIHR5cGVvZiBzLlJlYWRhYmxlKTsKY29uc29sZS5sb2coJ1dyaXRhYmxlOicsIHR5cGVvZiBzLldyaXRhYmxlKTsKY29uc29sZS5sb2coJ1RyYW5zZm9ybTonLCB0eXBlb2Ygcy5UcmFuc2Zvcm0pOwpjb25zb2xlLmxvZygncHJvbWlzZXMgdHlwZW9mOicsIHR5cGVvZiBzLnByb21pc2VzKTsKY29uc29sZS5sb2coJ3dlYiB0eXBlb2Y6JywgdHlwZW9mIHMud2ViKTsKY29uc3QgciA9IHMuUmVhZGFibGUuZnJvbShbJ2EnLCdiJywnYyddKTsKbGV0IG91dD0nJzsgci5vbignZGF0YScsIGM9Pm91dCs9Yyk7IHIub24oJ2VuZCcsICgpPT5jb25zb2xlLmxvZygnUmVhZGFibGUuZnJvbSBjb2xsZWN0ZWQ6Jywgb3V0KSk7Cg==' && node /tmp/p_6_moke0j0u.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_6_moke0j0u.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcyA9IHJlcXVpcmUoJ3N0cmVhbScpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhzKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKY29uc29sZS5sb2coJ1JlYWRhYmxlOicsIHR5cGVvZiBzLlJlYWRhYmxlKTsKY29uc29sZS5sb2coJ1dyaXRhYmxlOicsIHR5cGVvZiBzLldyaXRhYmxlKTsKY29uc29sZS5sb2coJ1RyYW5zZm9ybTonLCB0eXBlb2Ygcy5UcmFuc2Zvcm0pOwpjb25zb2xlLmxvZygncHJvbWlzZXMgdHlwZW9mOicsIHR5cGVvZiBzLnByb21pc2VzKTsKY29uc29sZS5sb2coJ3dlYiB0eXBlb2Y6JywgdHlwZW9mIHMud2ViKTsKY29uc3QgciA9IHMuUmVhZGFibGUuZnJvbShbJ2EnLCdiJywnYyddKTsKbGV0IG91dD0nJzsgci5vbignZGF0YScsIGM9Pm91dCs9Yyk7IHIub24oJ2VuZCcsICgpPT5jb25zb2xlLmxvZygnUmVhZGFibGUuZnJvbSBjb2xsZWN0ZWQ6Jywgb3V0KSk7Cg==' && node /tmp/p_6_moke0j0u.js
+[facet started: pid=2 cmd="node /tmp/p_6_moke0j0u.js"]
+keys: Readable,Writable,Duplex,Transform,PassThrough,Stream,pipeline,finished,_Readable,_Writable,_Transform
+Writable: function
+web typeof: undefined
+promises typeof: undefined
+Readable: function
+Transform: function
+TypeError: s.Readable.from is not a function
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:10:22)
+    at NodeProcess.run (runner.js:1468:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_6_moke0j0u.js) exited with code 1
+────────────────────────────────────────────────────────────
+keys: Readable,Writable,Duplex,Transform,PassThrough,Stream,pipeline,finished,_Readable,_Writable,_Transform
+Writable: function
+web typeof: undefined
+promises typeof: undefined
+Readable: function
+Transform: function
+TypeError: s.Readable.from is not a function
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:10:22)
+    at NodeProcess.run (runner.js:1468:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1002ms (wsClosed=false) ----
+
+==== END PROBE: stream ====

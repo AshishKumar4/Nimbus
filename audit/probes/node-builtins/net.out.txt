@@ -1,0 +1,36 @@
+==== PROBE: net ====
+==== TIMESTAMP: 2026-04-29T18:27:38.252Z ====
+==== SID: polite-cheetah-5661 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_15_moke0q6j.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbiA9IHJlcXVpcmUoJ25ldCcpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhuKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKY29uc29sZS5sb2coJ2lzSVAgdjQ6Jywgbi5pc0lQKCcxLjIuMy40JykpOwpjb25zb2xlLmxvZygnaXNJUCB2NjonLCBuLmlzSVAoJzo6MScpKTsKY29uc3Qgc29jayA9IG5ldyBuLlNvY2tldCgpOwpzb2NrLm9uKCdjb25uZWN0JywgKCkgPT4gY29uc29sZS5sb2coJ1NvY2tldCBjb25uZWN0IGVtaXR0ZWQnKSk7CnNvY2sub24oJ2Vycm9yJywgKGUpID0+IGNvbnNvbGUubG9nKCdTb2NrZXQgZXJyb3I6JywgZS5tZXNzYWdlKSk7CnNvY2suY29ubmVjdCg0NDMsICdleGFtcGxlLmNvbScpOwpzZXRUaW1lb3V0KCgpID0+IGNvbnNvbGUubG9nKCdTb2NrZXQgc3RhdGU6IGNvbm5lY3Rpbmc9Jywgc29jay5jb25uZWN0aW5nLCAncmVtb3RlQWRkcmVzcz0nLCBzb2NrLnJlbW90ZUFkZHJlc3MpLCAxNTAwKTsK' && node /tmp/p_15_moke0q6j.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_15_moke0q6j.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbiA9IHJlcXVpcmUoJ25ldCcpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhuKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKY29uc29sZS5sb2coJ2lzSVAgdjQ6Jywgbi5pc0lQKCcxLjIuMy40JykpOwpjb25zb2xlLmxvZygnaXNJUCB2NjonLCBuLmlzSVAoJzo6MScpKTsKY29uc3Qgc29jayA9IG5ldyBuLlNvY2tldCgpOwpzb2NrLm9uKCdjb25uZWN0JywgKCkgPT4gY29uc29sZS5sb2coJ1NvY2tldCBjb25uZWN0IGVtaXR0ZWQnKSk7CnNvY2sub24oJ2Vycm9yJywgKGUpID0+IGNvbnNvbGUubG9nKCdTb2NrZXQgZXJyb3I6JywgZS5tZXNzYWdlKSk7CnNvY2suY29ubmVjdCg0NDMsICdleGFtcGxlLmNvbScpOwpzZXRUaW1lb3V0KCgpID0+IGNvbnNvbGUubG9nKCdTb2NrZXQgc3RhdGU6IGNvbm5lY3Rpbmc9Jywgc29jay5jb25uZWN0aW5nLCAncmVtb3RlQWRkcmVzcz0nLCBzb2NrLnJlbW90ZUFkZHJlc3MpLCAxNTAwKTsK' && node /tmp/p_15_moke0q6j.js
+[facet started: pid=2 cmd="node /tmp/p_15_moke0q6j.js"]
+keys: Socket,Server,createServer,createConnection,connect,isIP,isIPv4,isIPv6
+isIP v4: 4
+Socket connect emitted
+isIP v6: 0
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_15_moke0q6j.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: Socket,Server,createServer,createConnection,connect,isIP,isIPv4,isIPv6
+isIP v4: 4
+Socket connect emitted
+isIP v6: 0
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 999ms (wsClosed=false) ----
+
+==== END PROBE: net ====

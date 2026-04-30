@@ -1,0 +1,98 @@
+[
+  {
+    "name": "fs",
+    "ok": true
+  },
+  {
+    "name": "fs-promises",
+    "ok": true
+  },
+  {
+    "name": "crypto",
+    "ok": true
+  },
+  {
+    "name": "util",
+    "ok": true
+  },
+  {
+    "name": "path",
+    "ok": true
+  },
+  {
+    "name": "stream",
+    "ok": true
+  },
+  {
+    "name": "buffer",
+    "ok": true
+  },
+  {
+    "name": "events",
+    "ok": true
+  },
+  {
+    "name": "os",
+    "ok": true
+  },
+  {
+    "name": "url",
+    "ok": true
+  },
+  {
+    "name": "querystring",
+    "ok": true
+  },
+  {
+    "name": "zlib",
+    "ok": true
+  },
+  {
+    "name": "http",
+    "ok": true
+  },
+  {
+    "name": "https",
+    "ok": true
+  },
+  {
+    "name": "net",
+    "ok": true
+  },
+  {
+    "name": "tls",
+    "ok": true
+  },
+  {
+    "name": "child_process",
+    "ok": true
+  },
+  {
+    "name": "vm",
+    "ok": true
+  },
+  {
+    "name": "worker_threads",
+    "ok": true
+  },
+  {
+    "name": "async_hooks",
+    "ok": true
+  },
+  {
+    "name": "timers",
+    "ok": true
+  },
+  {
+    "name": "assert",
+    "ok": true
+  },
+  {
+    "name": "perf_hooks",
+    "ok": true
+  },
+  {
+    "name": "process",
+    "ok": true
+  }
+]

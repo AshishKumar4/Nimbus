@@ -1,0 +1,1 @@
+const g=require('@grpc/grpc-js');console.log('keys:',Object.keys(g).slice(0,8).join(','));console.log('credentials.createInsecure:',typeof g.credentials.createInsecure);

@@ -1,0 +1,30 @@
+==== PROBE: dynamic-require-variable ====
+==== TIMESTAMP: 2026-04-29T18:44:29.623Z ====
+==== SID: stormy-badger-4140 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemek6_dynamic-require-variable.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbmFtZSA9ICdmcyc7CnRyeSB7IGNvbnN0IG0gPSByZXF1aXJlKG5hbWUpOyBjb25zb2xlLmxvZygndmFyaWFibGUgcmVxdWlyZSBvazonLCB0eXBlb2YgbS5yZWFkRmlsZVN5bmMpOyB9CmNhdGNoKGUpIHsgY29uc29sZS5sb2coJ3ZhcmlhYmxlIHJlcXVpcmUgZmFpbGVkOicsIGUubWVzc2FnZSk7IH0=' && node /tmp/dyn_mokemek6_dynamic-require-variable.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemek6_dynamic-require-variable.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbmFtZSA9ICdmcyc7CnRyeSB7IGNvbnN0IG0gPSByZXF1aXJlKG5hbWUpOyBjb25zb2xlLmxvZygndmFyaWFibGUgcmVxdWlyZSBvazonLCB0eXBlb2YgbS5yZWFkRmlsZVN5bmMpOyB9CmNhdGNoKGUpIHsgY29uc29sZS5sb2coJ3ZhcmlhYmxlIHJlcXVpcmUgZmFpbGVkOicsIGUubWVzc2FnZSk7IH0=' && node /tmp/dyn_mokemek6_dynamic-require-variable.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemek6_dynamic-require-variable.js"]
+variable require ok: function
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemek6_dynamic-require-variable.js) exited with code 0
+────────────────────────────────────────────────────────────
+variable require ok: function
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1500ms (wsClosed=false) ----
+
+==== END PROBE: dynamic-require-variable ====

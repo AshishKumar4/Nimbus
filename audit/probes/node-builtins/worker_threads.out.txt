@@ -1,0 +1,36 @@
+==== PROBE: worker_threads ====
+==== TIMESTAMP: 2026-04-29T18:27:42.928Z ====
+==== SID: good-gull-6843 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_19_moke0tsg.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgdyA9IHJlcXVpcmUoJ3dvcmtlcl90aHJlYWRzJyk7IGNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKHcpLnNsaWNlKDAsIDE1KS5qb2luKCcsJykpOyBjb25zb2xlLmxvZygnaXNNYWluVGhyZWFkOicsIHcuaXNNYWluVGhyZWFkKTsgY29uc29sZS5sb2coJ1dvcmtlciB0eXBlb2Y6JywgdHlwZW9mIHcuV29ya2VyKTsgdHJ5IHsgbmV3IHcuV29ya2VyKCdjb25zb2xlLmxvZygxKScsIHtldmFsOnRydWV9KTsgY29uc29sZS5sb2coJ1dvcmtlciBjdG9yIG9rJyk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnV29ya2VyIGN0b3IgVEhSRVc6JywgZS5tZXNzYWdlKTsgfSB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ3dvcmtlcl90aHJlYWRzIHJlcXVpcmUgZmFpbGVkOicsIGUubWVzc2FnZSk7IH0K' && node /tmp/p_19_moke0tsg.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_19_moke0tsg.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgdyA9IHJlcXVpcmUoJ3dvcmtlcl90aHJlYWRzJyk7IGNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKHcpLnNsaWNlKDAsIDE1KS5qb2luKCcsJykpOyBjb25zb2xlLmxvZygnaXNNYWluVGhyZWFkOicsIHcuaXNNYWluVGhyZWFkKTsgY29uc29sZS5sb2coJ1dvcmtlciB0eXBlb2Y6JywgdHlwZW9mIHcuV29ya2VyKTsgdHJ5IHsgbmV3IHcuV29ya2VyKCdjb25zb2xlLmxvZygxKScsIHtldmFsOnRydWV9KTsgY29uc29sZS5sb2coJ1dvcmtlciBjdG9yIG9rJyk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnV29ya2VyIGN0b3IgVEhSRVc6JywgZS5tZXNzYWdlKTsgfSB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ3dvcmtlcl90aHJlYWRzIHJlcXVpcmUgZmFpbGVkOicsIGUubWVzc2FnZSk7IH0K' && node /tmp/p_19_moke0tsg.js
+[facet started: pid=2 cmd="node /tmp/p_19_moke0tsg.js"]
+keys: isMainThread,parentPort,workerData,threadId,Worker
+Worker ctor ok
+isMainThread: true
+Worker typeof: function
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_19_moke0tsg.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: isMainThread,parentPort,workerData,threadId,Worker
+Worker ctor ok
+isMainThread: true
+Worker typeof: function
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 999ms (wsClosed=false) ----
+
+==== END PROBE: worker_threads ====

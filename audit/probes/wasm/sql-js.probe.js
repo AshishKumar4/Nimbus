@@ -1,0 +1,1 @@
+const initSqlJs=require('sql.js');initSqlJs().then(SQL=>{const db=new SQL.Database();db.run('CREATE TABLE t(x)');db.run('INSERT INTO t VALUES (?)',[42]);const r=db.exec('SELECT * FROM t');console.log('result:',JSON.stringify(r));}).catch(e=>console.log('ERR:',e.message));setTimeout(()=>{},6000);

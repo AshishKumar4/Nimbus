@@ -1,0 +1,50 @@
+[
+  {
+    "name": "bcryptjs",
+    "ok": true
+  },
+  {
+    "name": "sass",
+    "ok": true
+  },
+  {
+    "name": "grpc-grpc-js",
+    "ok": true
+  },
+  {
+    "name": "sql-js",
+    "ok": true
+  },
+  {
+    "name": "libsql-client",
+    "ok": true
+  },
+  {
+    "name": "esbuild-wasm",
+    "ok": true
+  },
+  {
+    "name": "swc-wasm-web",
+    "ok": true
+  },
+  {
+    "name": "tailwindcss-oxide-wasm",
+    "ok": true
+  },
+  {
+    "name": "resvg-wasm",
+    "ok": true
+  },
+  {
+    "name": "wasm-vips",
+    "ok": true
+  },
+  {
+    "name": "rollup-wasm-node",
+    "ok": true
+  },
+  {
+    "name": "hash-wasm",
+    "ok": true
+  }
+]

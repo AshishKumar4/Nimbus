@@ -1,0 +1,53 @@
+==== PROBE: vite ====
+==== TIMESTAMP: 2026-04-30T15:38:17.388Z ====
+==== SID: stout-oriole-3292 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install vite ----
+user@nimbus:~$ cd app && npm install vite
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 0 resolved, 0 packuments fetched (0.0 MiB), peak in-flight=0, cache writes=0, elapsed=0.0s
+[npm] No packages resolved.
+Failed: vite
+
+added 0 packages (0 files) in 0.0s
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molnesoc.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd2aXRlJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_molnesoc.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molnesoc.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd2aXRlJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_molnesoc.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_molnesoc.js"]
+Error: Cannot find module 'vite' (from /home/user/app)
+    at __requireFrom (runner.js:1661:24)
+    at __require (runner.js:1671:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1701:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_molnesoc.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module 'vite' (from /home/user/app)
+    at __requireFrom (runner.js:1661:24)
+    at __require (runner.js:1671:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1701:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: vite ====

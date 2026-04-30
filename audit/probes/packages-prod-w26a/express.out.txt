@@ -1,0 +1,69 @@
+==== PROBE: express ====
+==== TIMESTAMP: 2026-05-04T02:59:20.744Z ====
+==== SID: ruby-mockingbird-7897 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install express ----
+user@nimbus:~$ cd app && npm install express
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 68 resolved, 68 packuments fetched (4.1 MiB), peak in-flight=4, cache writes=299, elapsed=1.4s
+[npm] Resolved 68 packages.
+[npm] To fetch: 68, to restore: 0, already installed: 0
+[npm] Fetching 68 packages... (path: batch-facet)
+[npm] Dispatching 68 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 68/68 packages, 628 files, 0.7 MiB tarball bytes, peak in-flight=3, 1.7s
+[npm] Done! 68 packages, 628 files in 3.2s
+
+added 68 packages (628 files) in 3.2s
+user@nimbus:~/app$ 
+---- step done in 3506ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_moqm271k.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdleHByZXNzJyk7Y29uc3QgYT1tKCk7Y29uc29sZS5sb2coJ2FwcCBrZXlzOicsT2JqZWN0LmtleXMoYSkuc2xpY2UoMCw2KSk=' && cd /home/user/app && node .pkgsmoke_moqm271k.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_moqm271k.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdleHByZXNzJyk7Y29uc3QgYT1tKCk7Y29uc29sZS5sb2coJ2FwcCBrZXlzOicsT2JqZWN0LmtleXMoYSkuc2xpY2UoMCw2KSk=' && cd /home/user/app && node .pkgsmoke_moqm271k.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_moqm271k.js"]
+TypeError: Object prototype may only be an Object or null: undefined
+    at Object.create (<anonymous>)
+    at Object.inherits (runner.js:935:60)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:157:6)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:33:12)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_moqm271k.js) exited with code 1
+────────────────────────────────────────────────────────────
+TypeError: Object prototype may only be an Object or null: undefined
+    at Object.create (<anonymous>)
+    at Object.inherits (runner.js:935:60)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:157:6)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:33:12)
+    at __loadModule (runner.js:1616:7)
+    at __requireFrom (runner.js:1682:10)
+    at scopedRequire (runner.js:1601:33)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: express ====

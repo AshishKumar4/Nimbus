@@ -1,0 +1,34 @@
+==== PROBE: require-resolve ====
+==== TIMESTAMP: 2026-04-29T18:44:29.675Z ====
+==== SID: sonic-newt-3726 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemeln_require-resolve.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc29sZS5sb2coJ3JlcXVpcmUucmVzb2x2ZShmcyk6JywgcmVxdWlyZS5yZXNvbHZlKCdmcycpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXNvbHZlIGZzIGZhaWw6JywgZS5tZXNzYWdlKTsgfQp0cnkgeyBjb25zb2xlLmxvZygncmVxdWlyZS5yZXNvbHZlKHBhdGgpOicsIHJlcXVpcmUucmVzb2x2ZSgncGF0aCcpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXNvbHZlIHBhdGggZmFpbDonLCBlLm1lc3NhZ2UpOyB9CnRyeSB7IGNvbnNvbGUubG9nKCdyZXF1aXJlLnJlc29sdmUoLi9ub3BlKTonLCByZXF1aXJlLnJlc29sdmUoJy4vbm9wZScpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXNvbHZlIHJlbGF0aXZlIGZhaWw6JywgZS5tZXNzYWdlKTsgfQ==' && node /tmp/dyn_mokemeln_require-resolve.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemeln_require-resolve.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc29sZS5sb2coJ3JlcXVpcmUucmVzb2x2ZShmcyk6JywgcmVxdWlyZS5yZXNvbHZlKCdmcycpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXNvbHZlIGZzIGZhaWw6JywgZS5tZXNzYWdlKTsgfQp0cnkgeyBjb25zb2xlLmxvZygncmVxdWlyZS5yZXNvbHZlKHBhdGgpOicsIHJlcXVpcmUucmVzb2x2ZSgncGF0aCcpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXNvbHZlIHBhdGggZmFpbDonLCBlLm1lc3NhZ2UpOyB9CnRyeSB7IGNvbnNvbGUubG9nKCdyZXF1aXJlLnJlc29sdmUoLi9ub3BlKTonLCByZXF1aXJlLnJlc29sdmUoJy4vbm9wZScpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXNvbHZlIHJlbGF0aXZlIGZhaWw6JywgZS5tZXNzYWdlKTsgfQ==' && node /tmp/dyn_mokemeln_require-resolve.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemeln_require-resolve.js"]
+resolve fs fail: Cannot resolve 'fs'
+resolve path fail: Cannot resolve 'path'
+resolve relative fail: Cannot resolve './nope'
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemeln_require-resolve.js) exited with code 0
+────────────────────────────────────────────────────────────
+resolve fs fail: Cannot resolve 'fs'
+resolve path fail: Cannot resolve 'path'
+resolve relative fail: Cannot resolve './nope'
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: require-resolve ====

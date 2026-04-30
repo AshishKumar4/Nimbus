@@ -1,0 +1,30 @@
+==== PROBE: dynamic-require-literal ====
+==== TIMESTAMP: 2026-04-29T18:44:25.297Z ====
+==== SID: sturdy-lily-8498 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemb81_dynamic-require-literal.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgZnMgPSByZXF1aXJlKCdmcycpOyBjb25zb2xlLmxvZygnbGl0ZXJhbCByZXF1aXJlIG9rOicsIHR5cGVvZiBmcy5yZWFkRmlsZVN5bmMpOw==' && node /tmp/dyn_mokemb81_dynamic-require-literal.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemb81_dynamic-require-literal.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgZnMgPSByZXF1aXJlKCdmcycpOyBjb25zb2xlLmxvZygnbGl0ZXJhbCByZXF1aXJlIG9rOicsIHR5cGVvZiBmcy5yZWFkRmlsZVN5bmMpOw==' && node /tmp/dyn_mokemb81_dynamic-require-literal.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemb81_dynamic-require-literal.js"]
+literal require ok: function
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemb81_dynamic-require-literal.js) exited with code 0
+────────────────────────────────────────────────────────────
+literal require ok: function
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1501ms (wsClosed=false) ----
+
+==== END PROBE: dynamic-require-literal ====

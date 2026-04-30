@@ -1,0 +1,1 @@
+try { const m=require('@rollup/wasm-node');console.log('keys:',Object.keys(m).slice(0,10).join(','));console.log('rollup typeof:',typeof m.rollup); } catch(e) { console.log('LOAD FAIL:', e.message); }

@@ -1,0 +1,30 @@
+==== PROBE: async_hooks ====
+==== TIMESTAMP: 2026-04-29T18:27:43.435Z ====
+==== SID: spry-ribbon-7742 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_20_moke0u6j.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgYSA9IHJlcXVpcmUoJ2FzeW5jX2hvb2tzJyk7IGNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKGEpLnNsaWNlKDAsIDEwKS5qb2luKCcsJykpOyBjb25zb2xlLmxvZygnQXN5bmNMb2NhbFN0b3JhZ2UgdHlwZW9mOicsIHR5cGVvZiBhLkFzeW5jTG9jYWxTdG9yYWdlKTsgY29uc3QgYWxzID0gbmV3IGEuQXN5bmNMb2NhbFN0b3JhZ2UoKTsgYWxzLnJ1bih7eDoxfSwgKCkgPT4gY29uc29sZS5sb2coJ0FMUyBnZXRTdG9yZTonLCBKU09OLnN0cmluZ2lmeShhbHMuZ2V0U3RvcmUoKSkpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdhc3luY19ob29rcyBmYWlsOicsIGUubWVzc2FnZSk7IH0K' && node /tmp/p_20_moke0u6j.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_20_moke0u6j.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgYSA9IHJlcXVpcmUoJ2FzeW5jX2hvb2tzJyk7IGNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKGEpLnNsaWNlKDAsIDEwKS5qb2luKCcsJykpOyBjb25zb2xlLmxvZygnQXN5bmNMb2NhbFN0b3JhZ2UgdHlwZW9mOicsIHR5cGVvZiBhLkFzeW5jTG9jYWxTdG9yYWdlKTsgY29uc3QgYWxzID0gbmV3IGEuQXN5bmNMb2NhbFN0b3JhZ2UoKTsgYWxzLnJ1bih7eDoxfSwgKCkgPT4gY29uc29sZS5sb2coJ0FMUyBnZXRTdG9yZTonLCBKU09OLnN0cmluZ2lmeShhbHMuZ2V0U3RvcmUoKSkpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdhc3luY19ob29rcyBmYWlsOicsIGUubWVzc2FnZSk7IH0K' && node /tmp/p_20_moke0u6j.js
+[facet started: pid=2 cmd="node /tmp/p_20_moke0u6j.js"]
+async_hooks fail: Cannot find module 'async_hooks' (from /tmp)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_20_moke0u6j.js) exited with code 0
+────────────────────────────────────────────────────────────
+async_hooks fail: Cannot find module 'async_hooks' (from /tmp)
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 999ms (wsClosed=false) ----
+
+==== END PROBE: async_hooks ====

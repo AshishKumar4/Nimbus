@@ -1,0 +1,1 @@
+const fs = require('fs'); console.log('literal require ok:', typeof fs.readFileSync);

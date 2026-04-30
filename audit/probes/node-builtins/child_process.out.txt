@@ -1,0 +1,38 @@
+==== PROBE: child_process ====
+==== TIMESTAMP: 2026-04-29T18:27:42.291Z ====
+==== SID: giddy-phoenix-9154 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_17_moke0tar.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgY3AgPSByZXF1aXJlKCdjaGlsZF9wcm9jZXNzJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKGNwKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKdHJ5IHsgY3AuZXhlY1N5bmMoJ2VjaG8gaGknKTsgY29uc29sZS5sb2coJ2V4ZWNTeW5jIG9rJyk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZXhlY1N5bmMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQpjcC5leGVjKCdlY2hvIGhpJywgKGVyciwgc3Rkb3V0KSA9PiBjb25zb2xlLmxvZygnZXhlYyBlcnI6JywgZXJyICYmIGVyci5tZXNzYWdlLCAnc3Rkb3V0OicsIEpTT04uc3RyaW5naWZ5KHN0ZG91dCkpKTsKY29uc3QgY2hpbGQgPSBjcC5zcGF3bignZWNobycsIFsnaGknXSk7CmNoaWxkLm9uKCdlcnJvcicsIGUgPT4gY29uc29sZS5sb2coJ3NwYXduIGVycm9yOicsIGUubWVzc2FnZSkpOwpjaGlsZC5vbignZXhpdCcsIGMgPT4gY29uc29sZS5sb2coJ3NwYXduIGV4aXQ6JywgYykpOwpzZXRUaW1lb3V0KCgpPT57fSwg...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_17_moke0tar.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgY3AgPSByZXF1aXJlKCdjaGlsZF9wcm9jZXNzJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKGNwKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKdHJ5IHsgY3AuZXhlY1N5bmMoJ2VjaG8gaGknKTsgY29uc29sZS5sb2coJ2V4ZWNTeW5jIG9rJyk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZXhlY1N5bmMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQpjcC5leGVjKCdlY2hvIGhpJywgKGVyciwgc3Rkb3V0KSA9PiBjb25zb2xlLmxvZygnZXhlYyBlcnI6JywgZXJyICYmIGVyci5tZXNzYWdlLCAnc3Rkb3V0OicsIEpTT04uc3RyaW5naWZ5KHN0ZG91dCkpKTsKY29uc3QgY2hpbGQgPSBjcC5zcGF3bignZWNobycsIFsnaGknXSk7CmNoaWxkLm9uKCdlcnJvcicsIGUgPT4gY29uc29sZS5sb2coJ3NwYXduIGVycm9yOicsIGUubWVzc2FnZSkpOwpjaGlsZC5vbignZXhpdCcsIGMgPT4gY29uc29sZS5sb2coJ3NwYXduIGV4aXQ6JywgYykpOwpzZXRUaW1lb3V0KCgpPT57fSwgMTAwMCk7Cg==' && node /tmp/p_17_moke0tar.js
+[facet started: pid=2 cmd="node /tmp/p_17_moke0tar.js"]
+execSync THREW: child_process.execSync: synchronous command execution not available in Nimbus isolate. Use async exec() or run scripts directly.
+keys: exec,execSync,spawn,fork,execFile,ChildProcess
+exec err: child_process.exec: command execution requires supervisor connection. Run scripts directly with 'node'. stdout: ""
+spawn exit: 1
+spawn error: child_process.spawn: process spawning requires supervisor connection.
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_17_moke0tar.js) exited with code 0
+────────────────────────────────────────────────────────────
+execSync THREW: child_process.execSync: synchronous command execution not available in Nimbus isolate. Use async exec() or run scripts directly.
+keys: exec,execSync,spawn,fork,execFile,ChildProcess
+exec err: child_process.exec: command execution requires supervisor connection. Run scripts directly with 'node'. stdout: ""
+spawn exit: 1
+spawn error: child_process.spawn: process spawning requires supervisor connection.
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: child_process ====

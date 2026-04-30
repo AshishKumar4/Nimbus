@@ -1,0 +1,38 @@
+==== PROBE: url ====
+==== TIMESTAMP: 2026-04-29T18:27:33.342Z ====
+==== SID: wandering-lobster-6968 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_10_moke0me6.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgVSA9IHJlcXVpcmUoJ3VybCcpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhVKS5zbGljZSgwLCAxMikuam9pbignLCcpKTsKY29uc29sZS5sb2coJ1VSTC5wYXRobmFtZTonLCBuZXcgVS5VUkwoJ2h0dHA6Ly9hLmNvbS9wP3g9MScpLnBhdGhuYW1lKTsKY29uc29sZS5sb2coJ3BhcnNlOicsIFUucGFyc2UoJ2h0dHA6Ly9hLmNvbS9wP3g9MScpLnF1ZXJ5KTsKY29uc29sZS5sb2coJ2ZpbGVVUkxUb1BhdGg6JywgVS5maWxlVVJMVG9QYXRoKCdmaWxlOi8vL2EvYicpKTsKY29uc29sZS5sb2coJ3BhdGhUb0ZpbGVVUkw6JywgU3RyaW5nKFUucGF0aFRvRmlsZVVSTCgnL3gveScpKSk7Cg==' && node /tmp/p_10_moke0me6.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_10_moke0me6.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgVSA9IHJlcXVpcmUoJ3VybCcpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhVKS5zbGljZSgwLCAxMikuam9pbignLCcpKTsKY29uc29sZS5sb2coJ1VSTC5wYXRobmFtZTonLCBuZXcgVS5VUkwoJ2h0dHA6Ly9hLmNvbS9wP3g9MScpLnBhdGhuYW1lKTsKY29uc29sZS5sb2coJ3BhcnNlOicsIFUucGFyc2UoJ2h0dHA6Ly9hLmNvbS9wP3g9MScpLnF1ZXJ5KTsKY29uc29sZS5sb2coJ2ZpbGVVUkxUb1BhdGg6JywgVS5maWxlVVJMVG9QYXRoKCdmaWxlOi8vL2EvYicpKTsKY29uc29sZS5sb2coJ3BhdGhUb0ZpbGVVUkw6JywgU3RyaW5nKFUucGF0aFRvRmlsZVVSTCgnL3gveScpKSk7Cg==' && node /tmp/p_10_moke0me6.js
+[facet started: pid=2 cmd="node /tmp/p_10_moke0me6.js"]
+URL.pathname: /p
+parse: undefined
+keys: URL,URLSearchParams,parse,format,resolve,pathToFileURL,fileURLToPath
+fileURLToPath: /a/b
+pathToFileURL: file:///x/y
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_10_moke0me6.js) exited with code 0
+────────────────────────────────────────────────────────────
+URL.pathname: /p
+parse: undefined
+keys: URL,URLSearchParams,parse,format,resolve,pathToFileURL,fileURLToPath
+fileURLToPath: /a/b
+pathToFileURL: file:///x/y
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: url ====

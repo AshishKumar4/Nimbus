@@ -1,0 +1,36 @@
+==== PROBE: querystring ====
+==== TIMESTAMP: 2026-04-29T18:27:33.468Z ====
+==== SID: easy-lantern-1672 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_11_moke0mho.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcSA9IHJlcXVpcmUoJ3F1ZXJ5c3RyaW5nJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKHEpLnNsaWNlKDAsIDEwKS5qb2luKCcsJykpOwpjb25zb2xlLmxvZygncGFyc2UgZGVmYXVsdDonLCBKU09OLnN0cmluZ2lmeShxLnBhcnNlKCdhPTEmYj0yJykpKTsKY29uc29sZS5sb2coJ3BhcnNlIGN1c3RvbS1zZXA6JywgSlNPTi5zdHJpbmdpZnkocS5wYXJzZSgnYT0xO2I9MicsICc7JykpKTsKY29uc29sZS5sb2coJ3N0cmluZ2lmeTonLCBxLnN0cmluZ2lmeSh7YToxLGI6J3ggeSd9KSk7Cg==' && node /tmp/p_11_moke0mho.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_11_moke0mho.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgcSA9IHJlcXVpcmUoJ3F1ZXJ5c3RyaW5nJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKHEpLnNsaWNlKDAsIDEwKS5qb2luKCcsJykpOwpjb25zb2xlLmxvZygncGFyc2UgZGVmYXVsdDonLCBKU09OLnN0cmluZ2lmeShxLnBhcnNlKCdhPTEmYj0yJykpKTsKY29uc29sZS5sb2coJ3BhcnNlIGN1c3RvbS1zZXA6JywgSlNPTi5zdHJpbmdpZnkocS5wYXJzZSgnYT0xO2I9MicsICc7JykpKTsKY29uc29sZS5sb2coJ3N0cmluZ2lmeTonLCBxLnN0cmluZ2lmeSh7YToxLGI6J3ggeSd9KSk7Cg==' && node /tmp/p_11_moke0mho.js
+[facet started: pid=2 cmd="node /tmp/p_11_moke0mho.js"]
+keys: stringify,parse,escape,unescape
+parse default: {"a":"1","b":"2"}
+stringify: a=1&b=x%20y
+parse custom-sep: {"a":"1;b=2"}
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_11_moke0mho.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: stringify,parse,escape,unescape
+parse default: {"a":"1","b":"2"}
+stringify: a=1&b=x%20y
+parse custom-sep: {"a":"1;b=2"}
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: querystring ====

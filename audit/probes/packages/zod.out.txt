@@ -1,0 +1,65 @@
+==== PROBE: zod ====
+==== TIMESTAMP: 2026-04-29T18:34:59.827Z ====
+==== SID: indigo-fawn-7884 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install zod ----
+user@nimbus:~$ cd app && npm install zod
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 1 resolved, 1 packuments fetched (3.3 MiB), peak in-flight=1, cache writes=6, elapsed=0.7s
+[npm] Resolved 1 packages.
+[npm] To fetch: 1, to restore: 0, already installed: 0
+[npm] Fetching 1 packages... (path: batch-facet)
+[npm] Dispatching 1 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 1/1 packages, 694 files, 0.7 MiB tarball bytes, peak in-flight=1, 0.3s
+[npm] Done! 1 packages, 694 files in 1.0s
+
+added 1 packages (694 files) in 1.0s
+user@nimbus:~/app$ 
+---- step done in 1501ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mokea6wj.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3Qgej1yZXF1aXJlKCd6b2QnKTtjb25zb2xlLmxvZygncGFyc2U6Jyx6LnN0cmluZygpLnBhcnNlKCdoaScpKQ==' && cd /home/user/app && node .pkgsmoke_mokea6wj.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mokea6wj.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3Qgej1yZXF1aXJlKCd6b2QnKTtjb25zb2xlLmxvZygncGFyc2U6Jyx6LnN0cmluZygpLnBhcnNlKCdoaScpKQ==' && cd /home/user/app && node .pkgsmoke_mokea6wj.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_mokea6wj.js"]
+Error: Cannot find module './v4/classic/external.cjs' (from home/user/app/node_modules/zod)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:32:24)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1468:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_mokea6wj.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module './v4/classic/external.cjs' (from home/user/app/node_modules/zod)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:32:24)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1468:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: zod ====

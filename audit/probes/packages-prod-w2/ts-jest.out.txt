@@ -1,0 +1,69 @@
+==== PROBE: ts-jest ====
+==== TIMESTAMP: 2026-04-30T15:39:31.824Z ====
+==== SID: bitter-sage-8340 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install ts-jest jest typescript ----
+user@nimbus:~$ cd app && npm install ts-jest jest typescript
+Installing 3 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 3 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 245 resolved, 245 packuments fetched (55.1 MiB), peak in-flight=4, cache writes=1248, elapsed=5.1s
+[npm] Resolved 245 packages.
+[npm] To fetch: 245, to restore: 0, already installed: 0
+[npm] Fetching 245 packages... (path: batch-facet)
+[npm] Dispatching 245 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 245/245 packages, 5367 files, 5.8 MiB tarball bytes, peak in-flight=3, 8.6s
+[npm] Done! 245 packages, 5367 files in 13.8s
+
+added 245 packages (5367 files) in 13.8s
+user@nimbus:~/app$ 
+---- step done in 14525ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molnge40.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd0cy1qZXN0Jyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDYpKQ==' && cd /home/user/app && node .pkgsmoke_molnge40.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molnge40.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd0cy1qZXN0Jyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDYpKQ==' && cd /home/user/app && node .pkgsmoke_molnge40.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_molnge40.js"]
+Error: Cannot find module 'typescript' (from home/user/app/node_modules/ts-jest/dist/legacy)
+    at __requireFrom (runner.js:1661:24)
+    at scopedRequire (runner.js:1582:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:11:38)
+    at __loadModule (runner.js:1597:7)
+    at __requireFrom (runner.js:1663:10)
+    at scopedRequire (runner.js:1582:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:19:31)
+    at __loadModule (runner.js:1597:7)
+    at __requireFrom (runner.js:1663:10)
+    at __require (runner.js:1671:10)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_molnge40.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module 'typescript' (from home/user/app/node_modules/ts-jest/dist/legacy)
+    at __requireFrom (runner.js:1661:24)
+    at scopedRequire (runner.js:1582:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:11:38)
+    at __loadModule (runner.js:1597:7)
+    at __requireFrom (runner.js:1663:10)
+    at scopedRequire (runner.js:1582:33)
+    at eval (eval at <anonymous> (runner.js:22:38), <anonymous>:19:31)
+    at __loadModule (runner.js:1597:7)
+    at __requireFrom (runner.js:1663:10)
+    at __require (runner.js:1671:10)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 2003ms (wsClosed=false) ----
+
+==== END PROBE: ts-jest ====

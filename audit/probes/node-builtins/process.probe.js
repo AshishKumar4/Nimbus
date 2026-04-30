@@ -1,0 +1,11 @@
+console.log('argv:', process.argv.slice(0, 3));
+console.log('platform:', process.platform);
+console.log('arch:', process.arch);
+console.log('version:', process.version);
+console.log('cwd:', process.cwd());
+console.log('env keys count:', Object.keys(process.env).length);
+console.log('pid:', process.pid);
+console.log('memoryUsage:', JSON.stringify(process.memoryUsage()));
+console.log('hrtime typeof:', typeof process.hrtime);
+console.log('hrtime.bigint typeof:', typeof process.hrtime?.bigint);
+console.log('nextTick typeof:', typeof process.nextTick);

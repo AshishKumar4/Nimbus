@@ -1,0 +1,10 @@
+const B = require('buffer');
+console.log('keys:', Object.keys(B).slice(0, 10).join(','));
+const b = Buffer.from('hello');
+console.log('from:', b.toString('hex'));
+console.log('isBuffer:', Buffer.isBuffer(b));
+console.log('alloc:', Buffer.alloc(3, 0).toString('hex'));
+console.log('concat:', Buffer.concat([b, Buffer.from(' world')]).toString());
+console.log('byteLength:', Buffer.byteLength('héllo', 'utf8'));
+console.log('Blob:', typeof B.Blob);
+console.log('File:', typeof B.File);

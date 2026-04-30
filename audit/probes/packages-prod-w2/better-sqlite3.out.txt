@@ -1,0 +1,49 @@
+==== PROBE: better-sqlite3 ====
+==== TIMESTAMP: 2026-04-30T15:38:05.890Z ====
+==== SID: shiny-crystal-6700 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install better-sqlite3 ----
+user@nimbus:~$ cd app && npm install better-sqlite3
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 38 resolved, 38 packuments fetched (2.9 MiB), peak in-flight=4, cache writes=179, elapsed=0.5s
+[npm] Resolved 38 packages.
+[npm] To fetch: 38, to restore: 0, already installed: 0
+[npm] Fetching 38 packages... (path: batch-facet)
+[npm] Dispatching 38 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 38/38 packages, 376 files, 2.8 MiB tarball bytes, peak in-flight=3, 1.3s
+[npm] Done! 38 packages, 376 files in 1.9s
+
+added 38 packages (376 files) in 1.9s
+user@nimbus:~/app$ 
+---- step done in 2505ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molnejsy.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdiZXR0ZXItc3FsaXRlMycpO2NvbnNvbGUubG9nKCd0eXBlb2Y6Jyx0eXBlb2YgbSk=' && cd /home/user/app && node .pkgsmoke_molnejsy.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_molnejsy.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdiZXR0ZXItc3FsaXRlMycpO2NvbnNvbGUubG9nKCd0eXBlb2Y6Jyx0eXBlb2YgbSk=' && cd /home/user/app && node .pkgsmoke_molnejsy.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_molnejsy.js"]
+typeof: function
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_molnejsy.js) exited with code 0
+────────────────────────────────────────────────────────────
+typeof: function
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: better-sqlite3 ====

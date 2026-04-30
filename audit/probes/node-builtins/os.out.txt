@@ -1,0 +1,46 @@
+==== PROBE: os ====
+==== TIMESTAMP: 2026-04-29T18:27:33.312Z ====
+==== SID: wandering-wave-0697 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_9_moke0mdc.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbyA9IHJlcXVpcmUoJ29zJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKG8pLnNsaWNlKDAsIDIwKS5qb2luKCcsJykpOwpjb25zb2xlLmxvZygncGxhdGZvcm06Jywgby5wbGF0Zm9ybSgpKTsKY29uc29sZS5sb2coJ2FyY2g6Jywgby5hcmNoKCkpOwpjb25zb2xlLmxvZygndG1wZGlyOicsIG8udG1wZGlyKCkpOwpjb25zb2xlLmxvZygnaG9tZWRpcjonLCBvLmhvbWVkaXIoKSk7CmNvbnNvbGUubG9nKCdob3N0bmFtZTonLCBvLmhvc3RuYW1lKCkpOwpjb25zb2xlLmxvZygnY3B1cyBsZW5ndGg6Jywgby5jcHVzKCkubGVuZ3RoKTsKY29uc29sZS5sb2coJ3RvdGFsbWVtOicsIG8udG90YWxtZW0oKSk7CmNvbnNvbGUubG9nKCdhdmFpbGFibGVQYXJhbGxlbGlzbSB0eXBlb2Y6JywgdHlwZW9mIG8uYXZhaWxhYmxlUGFyYWxsZWxpc20pOwo=' && node /tmp/p_9_moke0mdc.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_9_moke0mdc.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbyA9IHJlcXVpcmUoJ29zJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKG8pLnNsaWNlKDAsIDIwKS5qb2luKCcsJykpOwpjb25zb2xlLmxvZygncGxhdGZvcm06Jywgby5wbGF0Zm9ybSgpKTsKY29uc29sZS5sb2coJ2FyY2g6Jywgby5hcmNoKCkpOwpjb25zb2xlLmxvZygndG1wZGlyOicsIG8udG1wZGlyKCkpOwpjb25zb2xlLmxvZygnaG9tZWRpcjonLCBvLmhvbWVkaXIoKSk7CmNvbnNvbGUubG9nKCdob3N0bmFtZTonLCBvLmhvc3RuYW1lKCkpOwpjb25zb2xlLmxvZygnY3B1cyBsZW5ndGg6Jywgby5jcHVzKCkubGVuZ3RoKTsKY29uc29sZS5sb2coJ3RvdGFsbWVtOicsIG8udG90YWxtZW0oKSk7CmNvbnNvbGUubG9nKCdhdmFpbGFibGVQYXJhbGxlbGlzbSB0eXBlb2Y6JywgdHlwZW9mIG8uYXZhaWxhYmxlUGFyYWxsZWxpc20pOwo=' && node /tmp/p_9_moke0mdc.js
+[facet started: pid=2 cmd="node /tmp/p_9_moke0mdc.js"]
+keys: platform,arch,type,release,tmpdir,homedir,hostname,userInfo,cpus,totalmem,freemem,loadavg,uptime,networkInterfaces,EOL,endianness
+tmpdir: /tmp
+hostname: nimbus
+platform: linux
+arch: x64
+availableParallelism typeof: undefined
+totalmem: 134217728
+homedir: /home/user
+cpus length: 1
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_9_moke0mdc.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: platform,arch,type,release,tmpdir,homedir,hostname,userInfo,cpus,totalmem,freemem,loadavg,uptime,networkInterfaces,EOL,endianness
+tmpdir: /tmp
+hostname: nimbus
+platform: linux
+arch: x64
+availableParallelism typeof: undefined
+totalmem: 134217728
+homedir: /home/user
+cpus length: 1
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1000ms (wsClosed=false) ----
+
+==== END PROBE: os ====

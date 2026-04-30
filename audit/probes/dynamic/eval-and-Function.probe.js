@@ -1,0 +1,2 @@
+try { console.log('eval(1+1):', eval('1+1')); } catch(e) { console.log('eval fail:', e.message); }
+try { const f = new Function('return 42'); console.log('new Function:', f()); } catch(e) { console.log('new Function fail:', e.message); }

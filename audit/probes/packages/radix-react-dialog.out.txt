@@ -1,0 +1,71 @@
+==== PROBE: radix-react-dialog ====
+==== TIMESTAMP: 2026-04-29T18:35:02.049Z ====
+==== SID: fancy-alder-5241 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install @radix-ui/react-dialog react@18.3.1 react-dom@18.3.1 ----
+user@nimbus:~$ cd app && npm install @radix-ui/react-dialog react@18.3.1 react-dom@18.3.1
+Installing 3 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 3 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 31 resolved, 31 packuments fetched (27.1 MiB), peak in-flight=4, cache writes=166, elapsed=0.9s
+[npm] Resolved 31 packages.
+[npm] To fetch: 31, to restore: 0, already installed: 0
+[npm] Fetching 31 packages... (path: batch-facet)
+[npm] Dispatching 31 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 31/31 packages, 512 files, 1.3 MiB tarball bytes, peak in-flight=3, 2.7s
+[npm] Pre-bundling 5 modules... (supervisor heap 0.0 MiB)
+[npm] Done! 31 packages, 512 files in 3.7s
+
+added 31 packages (512 files) in 3.7s
+user@nimbus:~/app$ 
+---- step done in 4504ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mokea8m8.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdAcmFkaXgtdWkvcmVhY3QtZGlhbG9nJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_mokea8m8.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mokea8m8.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCdAcmFkaXgtdWkvcmVhY3QtZGlhbG9nJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_mokea8m8.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_mokea8m8.js"]
+Error: Cannot find module './cjs/react.development.js' (from home/user/app/node_modules/react)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:8:20)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:58:21)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_mokea8m8.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module './cjs/react.development.js' (from home/user/app/node_modules/react)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:8:20)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:58:21)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ [npm] Pre-bundle complete: 5/5 succeeded. (supervisor heap 0.0 MiB, Δ+0.0 MiB)
+
+---- step done in 20019ms (wsClosed=false) ----
+
+==== END PROBE: radix-react-dialog ====

@@ -1,0 +1,32 @@
+==== PROBE: process-cwd-chdir ====
+==== TIMESTAMP: 2026-04-29T18:44:38.681Z ====
+==== SID: rustic-turtle-8098 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemljt_process-cwd-chdir.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coJ2N3ZCBiZWZvcmU6JywgcHJvY2Vzcy5jd2QoKSk7CnRyeSB7IHByb2Nlc3MuY2hkaXIoJy90bXAnKTsgY29uc29sZS5sb2coJ2N3ZCBhZnRlciBjaGRpcjonLCBwcm9jZXNzLmN3ZCgpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdjaGRpciBmYWlsOicsIGUubWVzc2FnZSk7IH0=' && node /tmp/dyn_mokemljt_process-cwd-chdir.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemljt_process-cwd-chdir.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc29sZS5sb2coJ2N3ZCBiZWZvcmU6JywgcHJvY2Vzcy5jd2QoKSk7CnRyeSB7IHByb2Nlc3MuY2hkaXIoJy90bXAnKTsgY29uc29sZS5sb2coJ2N3ZCBhZnRlciBjaGRpcjonLCBwcm9jZXNzLmN3ZCgpKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdjaGRpciBmYWlsOicsIGUubWVzc2FnZSk7IH0=' && node /tmp/dyn_mokemljt_process-cwd-chdir.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemljt_process-cwd-chdir.js"]
+cwd after chdir: /tmp
+cwd before: /home/user
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemljt_process-cwd-chdir.js) exited with code 0
+────────────────────────────────────────────────────────────
+cwd after chdir: /tmp
+cwd before: /home/user
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: process-cwd-chdir ====

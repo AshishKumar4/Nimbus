@@ -1,0 +1,34 @@
+==== PROBE: https ====
+==== TIMESTAMP: 2026-04-29T18:27:38.035Z ====
+==== SID: dazzling-nightingale-2374 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_14_moke0q0i.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgaCA9IHJlcXVpcmUoJ2h0dHBzJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKGgpLnNsaWNlKDAsIDE1KS5qb2luKCcsJykpOwpjb25zb2xlLmxvZygncmVxdWVzdCB0eXBlb2Y6JywgdHlwZW9mIGgucmVxdWVzdCk7CmNvbnNvbGUubG9nKCdnZXQgdHlwZW9mOicsIHR5cGVvZiBoLmdldCk7Cg==' && node /tmp/p_14_moke0q0i.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_14_moke0q0i.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgaCA9IHJlcXVpcmUoJ2h0dHBzJyk7CmNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKGgpLnNsaWNlKDAsIDE1KS5qb2luKCcsJykpOwpjb25zb2xlLmxvZygncmVxdWVzdCB0eXBlb2Y6JywgdHlwZW9mIGgucmVxdWVzdCk7CmNvbnNvbGUubG9nKCdnZXQgdHlwZW9mOicsIHR5cGVvZiBoLmdldCk7Cg==' && node /tmp/p_14_moke0q0i.js
+[facet started: pid=2 cmd="node /tmp/p_14_moke0q0i.js"]
+request typeof: function
+keys: createServer,Server,Agent,globalAgent,request,get
+get typeof: function
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_14_moke0q0i.js) exited with code 0
+────────────────────────────────────────────────────────────
+request typeof: function
+keys: createServer,Server,Agent,globalAgent,request,get
+get typeof: function
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1002ms (wsClosed=false) ----
+
+==== END PROBE: https ====

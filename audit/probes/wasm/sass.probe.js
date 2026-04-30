@@ -1,0 +1,1 @@
+const s=require('sass');const r=s.compileString('a{b:1px+2px}');console.log('css:',r.css.replace(/\s/g,''));

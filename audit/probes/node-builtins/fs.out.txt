@@ -1,0 +1,42 @@
+==== PROBE: fs ====
+==== TIMESTAMP: 2026-04-29T18:27:23.247Z ====
+==== SID: zen-quokka-9284 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_moke0elq.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgZnMgPSByZXF1aXJlKCdmcycpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhmcykuc2xpY2UoMCwgMjUpLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdyZWFkRmlsZVN5bmM6JywgdHlwZW9mIGZzLnJlYWRGaWxlU3luYyk7CmNvbnNvbGUubG9nKCdwcm9taXNlczonLCB0eXBlb2YgZnMucHJvbWlzZXMpOwp0cnkgeyBmcy53cml0ZUZpbGVTeW5jKCcvdG1wL19wcm9iZScsICdoaScpOyBjb25zb2xlLmxvZygnd3JpdGUrcmVhZDonLCBmcy5yZWFkRmlsZVN5bmMoJy90bXAvX3Byb2JlJywgJ3V0ZjgnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnd3JpdGUgZmFpbDonLCBlLm1lc3NhZ2UpOyB9CmNvbnNvbGUubG9nKCdjcmVhdGVSZWFkU3RyZWFtOicsIHR5cGVvZiBmcy5jcmVhdGVSZWFkU3RyZWFtKTsKY29uc29sZS5sb2coJ29wZW5TeW5jIHR5cGVvZjonLCB0eXBlb2YgZnMub3BlblN5bmMpOwpjb25zb2xlLmxvZygncmVhbHBhdGhTeW5jIHR5cGVvZjonLCB0eXBlb...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_1_moke0elq.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgZnMgPSByZXF1aXJlKCdmcycpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhmcykuc2xpY2UoMCwgMjUpLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdyZWFkRmlsZVN5bmM6JywgdHlwZW9mIGZzLnJlYWRGaWxlU3luYyk7CmNvbnNvbGUubG9nKCdwcm9taXNlczonLCB0eXBlb2YgZnMucHJvbWlzZXMpOwp0cnkgeyBmcy53cml0ZUZpbGVTeW5jKCcvdG1wL19wcm9iZScsICdoaScpOyBjb25zb2xlLmxvZygnd3JpdGUrcmVhZDonLCBmcy5yZWFkRmlsZVN5bmMoJy90bXAvX3Byb2JlJywgJ3V0ZjgnKSk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnd3JpdGUgZmFpbDonLCBlLm1lc3NhZ2UpOyB9CmNvbnNvbGUubG9nKCdjcmVhdGVSZWFkU3RyZWFtOicsIHR5cGVvZiBmcy5jcmVhdGVSZWFkU3RyZWFtKTsKY29uc29sZS5sb2coJ29wZW5TeW5jIHR5cGVvZjonLCB0eXBlb2YgZnMub3BlblN5bmMpOwpjb25zb2xlLmxvZygncmVhbHBhdGhTeW5jIHR5cGVvZjonLCB0eXBlb2YgZnMucmVhbHBhdGhTeW5jKTsK' && node /tmp/p_1_moke0elq.js
+[facet started: pid=2 cmd="node /tmp/p_1_moke0elq.js"]
+keys: readFileSync,writeFileSync,appendFileSync,existsSync,statSync,lstatSync,readdirSync,mkdirSync,unlinkSync,rmdirSync,renameSync,copyFileSync,readFile,writeFile,stat,readdir,exists,mkdir,unlink,access,promises,constants,createReadStream,createWriteStream,watch
+readFileSync: function
+write+read: hi
+promises: object
+createReadStream: function
+openSync typeof: undefined
+realpathSync typeof: undefined
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_moke0elq.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: readFileSync,writeFileSync,appendFileSync,existsSync,statSync,lstatSync,readdirSync,mkdirSync,unlinkSync,rmdirSync,renameSync,copyFileSync,readFile,writeFile,stat,readdir,exists,mkdir,unlink,access,promises,constants,createReadStream,createWriteStream,watch
+readFileSync: function
+write+read: hi
+promises: object
+createReadStream: function
+openSync typeof: undefined
+realpathSync typeof: undefined
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: fs ====

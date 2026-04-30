@@ -1,0 +1,1 @@
+try { const m=require('@tailwindcss/oxide-wasm32-wasi'); console.log('keys:',Object.keys(m).slice(0,10).join(',')); } catch(e) { console.log('LOAD FAIL:', e.message); console.log('STACK:', e.stack && e.stack.split('\n').slice(0,4).join(' | ')); }

@@ -1,0 +1,29 @@
+==== PROBE: top-level-await ====
+==== TIMESTAMP: 2026-04-29T18:44:35.497Z ====
+==== SID: witty-bear-0845 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/dyn_mokemj3d_top-level-await.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Ly8gVExBIOKAlCBzaG91bGQgZmFpbCBiZWNhdXNlIHVzZXIgY29kZSBydW5zIGluc2lkZSBuZXcgRnVuY3Rpb24oKS4KY29uc3QgeCA9IGF3YWl0IFByb21pc2UucmVzb2x2ZSgxKTsgY29uc29sZS5sb2coJ1RMQSByZXN1bHQ6JywgeCk7' && node /tmp/dyn_mokemj3d_top-level-await.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/dyn_mokemj3d_top-level-await.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Ly8gVExBIOKAlCBzaG91bGQgZmFpbCBiZWNhdXNlIHVzZXIgY29kZSBydW5zIGluc2lkZSBuZXcgRnVuY3Rpb24oKS4KY29uc3QgeCA9IGF3YWl0IFByb21pc2UucmVzb2x2ZSgxKTsgY29uc29sZS5sb2coJ1RMQSByZXN1bHQ6JywgeCk7' && node /tmp/dyn_mokemj3d_top-level-await.js
+[facet started: pid=2 cmd="node /tmp/dyn_mokemj3d_top-level-await.js"]
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/dyn_mokemj3d_top-level-await.js) exited with code 1
+────────────────────────────────────────────────────────────
+[process killed: facet error: await is only valid in async functions and the top level bodies of modules]
+────────────────────────────────────────────────────────────
+await is only valid in async functions and the top level bodies of modulesuser@nimbus:~$ 
+---- step done in 1502ms (wsClosed=false) ----
+
+==== END PROBE: top-level-await ====

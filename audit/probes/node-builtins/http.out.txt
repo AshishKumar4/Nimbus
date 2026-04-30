@@ -1,0 +1,38 @@
+==== PROBE: http ====
+==== TIMESTAMP: 2026-04-29T18:27:37.619Z ====
+==== SID: burly-cardinal-2161 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_13_moke0poz.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgaCA9IHJlcXVpcmUoJ2h0dHAnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMoaCkuc2xpY2UoMCwgMTUpLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdjcmVhdGVTZXJ2ZXI6JywgdHlwZW9mIGguY3JlYXRlU2VydmVyKTsKdHJ5IHsgY29uc3QgcyA9IGguY3JlYXRlU2VydmVyKChyZXEscmVzKT0+cmVzLmVuZCgnb2snKSk7IGNvbnNvbGUubG9nKCdTZXJ2ZXIgY29uc3RydWN0ZWQ6JywgISFzKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdjcmVhdGVTZXJ2ZXIgdGhyZXc6JywgZS5tZXNzYWdlKTsgfQp0cnkgeyBoLnJlcXVlc3QoJ2h0dHA6Ly9leGFtcGxlLmNvbScsIHI9Pnt9KTsgY29uc29sZS5sb2coJ3JlcXVlc3QgT0snKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXF1ZXN0IHRocmV3OicsIGUubWVzc2FnZSk7IH0KdHJ5IHsgaC5nZXQoJ2h0dHA6Ly9leGFtcGxlLmNvbScsIHI9Pnt9KTsgY29uc29sZS5sb2coJ2dldCBPSycpOyB9IGNhdGNoKGUpIHsg...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_13_moke0poz.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgaCA9IHJlcXVpcmUoJ2h0dHAnKTsKY29uc29sZS5sb2coJ2tleXM6JywgT2JqZWN0LmtleXMoaCkuc2xpY2UoMCwgMTUpLmpvaW4oJywnKSk7CmNvbnNvbGUubG9nKCdjcmVhdGVTZXJ2ZXI6JywgdHlwZW9mIGguY3JlYXRlU2VydmVyKTsKdHJ5IHsgY29uc3QgcyA9IGguY3JlYXRlU2VydmVyKChyZXEscmVzKT0+cmVzLmVuZCgnb2snKSk7IGNvbnNvbGUubG9nKCdTZXJ2ZXIgY29uc3RydWN0ZWQ6JywgISFzKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdjcmVhdGVTZXJ2ZXIgdGhyZXc6JywgZS5tZXNzYWdlKTsgfQp0cnkgeyBoLnJlcXVlc3QoJ2h0dHA6Ly9leGFtcGxlLmNvbScsIHI9Pnt9KTsgY29uc29sZS5sb2coJ3JlcXVlc3QgT0snKTsgfSBjYXRjaChlKSB7IGNvbnNvbGUubG9nKCdyZXF1ZXN0IHRocmV3OicsIGUubWVzc2FnZSk7IH0KdHJ5IHsgaC5nZXQoJ2h0dHA6Ly9leGFtcGxlLmNvbScsIHI9Pnt9KTsgY29uc29sZS5sb2coJ2dldCBPSycpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ2dldCB0aHJldzonLCBlLm1lc3NhZ2UpOyB9Cg==' && node /tmp/p_13_moke0poz.js
+[facet started: pid=2 cmd="node /tmp/p_13_moke0poz.js"]
+keys: createServer,Server,IncomingMessage,ServerResponse,Agent,STATUS_CODES,METHODS,request,get
+Server constructed: true
+createServer: function
+get threw: Use fetch()
+request threw: Use fetch()
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_13_moke0poz.js) exited with code 0
+────────────────────────────────────────────────────────────
+keys: createServer,Server,IncomingMessage,ServerResponse,Agent,STATUS_CODES,METHODS,request,get
+Server constructed: true
+createServer: function
+get threw: Use fetch()
+request threw: Use fetch()
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1500ms (wsClosed=false) ----
+
+==== END PROBE: http ====

@@ -1,0 +1,1 @@
+try { const m=require('@swc/wasm-web');console.log('keys:',Object.keys(m).slice(0,10).join(',')); } catch(e) { console.log('LOAD FAIL:', e.message); }

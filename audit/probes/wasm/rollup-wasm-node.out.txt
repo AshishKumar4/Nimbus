@@ -1,0 +1,49 @@
+==== PROBE: rollup-wasm-node ====
+==== TIMESTAMP: 2026-04-29T18:41:22.168Z ====
+==== SID: chilly-canyon-4149 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install @rollup/wasm-node ----
+user@nimbus:~$ cd app && npm install @rollup/wasm-node
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 1 resolved, 1 packuments fetched (0.9 MiB), peak in-flight=1, cache writes=5, elapsed=0.6s
+[npm] Resolved 1 packages.
+[npm] To fetch: 1, to restore: 0, already installed: 0
+[npm] Fetching 1 packages... (path: batch-facet)
+[npm] Dispatching 1 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 1/1 packages, 28 files, 0.8 MiB tarball bytes, peak in-flight=1, 0.3s
+[npm] Done! 1 packages, 28 files in 1.0s
+
+added 1 packages (28 files) in 1.0s
+user@nimbus:~/app$ 
+---- step done in 1501ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.wasmsmoke_mokeidx4_rollup-wasm-node.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgbT1yZXF1aXJlKCdAcm9sbHVwL3dhc20tbm9kZScpO2NvbnNvbGUubG9nKCdrZXlzOicsT2JqZWN0LmtleXMobSkuc2xpY2UoMCwxMCkuam9pbignLCcpKTtjb25zb2xlLmxvZygncm9sbHVwIHR5cGVvZjonLHR5cGVvZiBtLnJvbGx1cCk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnTE9BRCBGQUlMOicsIGUubWVzc2FnZSk7IH0=' && cd /home/user/app && node .wasmsmoke_mokeidx4_rollup-wasm-node.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.wasmsmoke_mokeidx4_rollup-wasm-node.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgbT1yZXF1aXJlKCdAcm9sbHVwL3dhc20tbm9kZScpO2NvbnNvbGUubG9nKCdrZXlzOicsT2JqZWN0LmtleXMobSkuc2xpY2UoMCwxMCkuam9pbignLCcpKTtjb25zb2xlLmxvZygncm9sbHVwIHR5cGVvZjonLHR5cGVvZiBtLnJvbGx1cCk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnTE9BRCBGQUlMOicsIGUubWVzc2FnZSk7IH0=' && cd /home/user/app && node .wasmsmoke_mokeidx4_rollup-wasm-node.js
+[facet started: pid=2 cmd="node /home/user/app/.wasmsmoke_mokeidx4_rollup-wasm-node.js"]
+LOAD FAIL: Cannot find module './shared/rollup.js' (from home/user/app/node_modules/@rollup/wasm-node/dist)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.wasmsmoke_mokeidx4_rollup-wasm-node.js) exited with code 0
+────────────────────────────────────────────────────────────
+LOAD FAIL: Cannot find module './shared/rollup.js' (from home/user/app/node_modules/@rollup/wasm-node/dist)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1001ms (wsClosed=false) ----
+
+==== END PROBE: rollup-wasm-node ====

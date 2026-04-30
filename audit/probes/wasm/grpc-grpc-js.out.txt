@@ -1,0 +1,65 @@
+==== PROBE: grpc-grpc-js ====
+==== TIMESTAMP: 2026-04-29T18:40:56.040Z ====
+==== SID: stout-sage-2389 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install @grpc/grpc-js ----
+user@nimbus:~$ cd app && npm install @grpc/grpc-js
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 32 resolved, 32 packuments fetched (3.3 MiB), peak in-flight=4, cache writes=167, elapsed=0.8s
+[npm] Resolved 32 packages.
+[npm] To fetch: 32, to restore: 0, already installed: 0
+[npm] Fetching 32 packages... (path: batch-facet)
+[npm] Dispatching 32 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 32/32 packages, 1030 files, 1.3 MiB tarball bytes, peak in-flight=3, 0.8s
+[npm] Done! 32 packages, 1030 files in 1.6s
+
+added 32 packages (1030 files) in 1.6s
+user@nimbus:~/app$ 
+---- step done in 2002ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.wasmsmoke_mokehtrc_grpc-grpc-js.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgZz1yZXF1aXJlKCdAZ3JwYy9ncnBjLWpzJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhnKS5zbGljZSgwLDgpLmpvaW4oJywnKSk7Y29uc29sZS5sb2coJ2NyZWRlbnRpYWxzLmNyZWF0ZUluc2VjdXJlOicsdHlwZW9mIGcuY3JlZGVudGlhbHMuY3JlYXRlSW5zZWN1cmUpOw==' && cd /home/user/app && node .wasmsmoke_mokehtrc_grpc-grpc-js.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.wasmsmoke_mokehtrc_grpc-grpc-js.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgZz1yZXF1aXJlKCdAZ3JwYy9ncnBjLWpzJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhnKS5zbGljZSgwLDgpLmpvaW4oJywnKSk7Y29uc29sZS5sb2coJ2NyZWRlbnRpYWxzLmNyZWF0ZUluc2VjdXJlOicsdHlwZW9mIGcuY3JlZGVudGlhbHMuY3JlYXRlSW5zZWN1cmUpOw==' && cd /home/user/app && node .wasmsmoke_mokehtrc_grpc-grpc-js.js
+[facet started: pid=2 cmd="node /home/user/app/.wasmsmoke_mokehtrc_grpc-grpc-js.js"]
+Error: Cannot find module './call-credentials' (from home/user/app/node_modules/@grpc/grpc-js/build/src)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:22:28)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1468:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.wasmsmoke_mokehtrc_grpc-grpc-js.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module './call-credentials' (from home/user/app/node_modules/@grpc/grpc-js/build/src)
+    at __requireFrom (runner.js:1428:24)
+    at scopedRequire (runner.js:1361:33)
+    at eval (eval at <anonymous> (runner.js:18:38), <anonymous>:22:28)
+    at __loadModule (runner.js:1376:7)
+    at __requireFrom (runner.js:1430:10)
+    at __require (runner.js:1438:10)
+    at eval (eval at <anonymous> (runner.js:5:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:1468:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 1002ms (wsClosed=false) ----
+
+==== END PROBE: grpc-grpc-js ====

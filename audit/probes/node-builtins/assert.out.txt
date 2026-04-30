@@ -1,0 +1,46 @@
+==== PROBE: assert ====
+==== TIMESTAMP: 2026-04-29T18:27:47.049Z ====
+==== SID: supple-pigeon-9845 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_22_moke0wyx.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgYSA9IHJlcXVpcmUoJ2Fzc2VydCcpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhhKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKdHJ5IHsgYS5lcXVhbCgxLDEpOyBjb25zb2xlLmxvZygnZXF1YWwgb2snKTsgfSBjYXRjaChlKXt9CnRyeSB7IGEuZGVlcEVxdWFsKHthOjF9LHthOjF9KTsgY29uc29sZS5sb2coJ2RlZXBFcXVhbCBmbGF0IG9rJyk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZGVlcEVxdWFsIGZsYXQgZmFpbDonLCBlLm1lc3NhZ2UpOyB9CnRyeSB7IGEuZGVlcEVxdWFsKHthOlsxLDIse2I6M31dfSx7YTpbMSwyLHtiOjN9XX0pOyBjb25zb2xlLmxvZygnZGVlcEVxdWFsIG5lc3RlZCBvaycpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ2RlZXBFcXVhbCBuZXN0ZWQgZmFpbDonLCBlLm1lc3NhZ2UpOyB9CmNvbnN0IGN5YyA9IHt9OyBjeWMuc2VsZiA9IGN5YzsKdHJ5IHsgYS5kZWVwRXF1YWwoY3ljLCBjeWMpOyBjb25zb2xlLmxvZygnZGVlcEVx...[truncated] ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_22_moke0wyx.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgYSA9IHJlcXVpcmUoJ2Fzc2VydCcpOwpjb25zb2xlLmxvZygna2V5czonLCBPYmplY3Qua2V5cyhhKS5zbGljZSgwLCAxNSkuam9pbignLCcpKTsKdHJ5IHsgYS5lcXVhbCgxLDEpOyBjb25zb2xlLmxvZygnZXF1YWwgb2snKTsgfSBjYXRjaChlKXt9CnRyeSB7IGEuZGVlcEVxdWFsKHthOjF9LHthOjF9KTsgY29uc29sZS5sb2coJ2RlZXBFcXVhbCBmbGF0IG9rJyk7IH0gY2F0Y2goZSkgeyBjb25zb2xlLmxvZygnZGVlcEVxdWFsIGZsYXQgZmFpbDonLCBlLm1lc3NhZ2UpOyB9CnRyeSB7IGEuZGVlcEVxdWFsKHthOlsxLDIse2I6M31dfSx7YTpbMSwyLHtiOjN9XX0pOyBjb25zb2xlLmxvZygnZGVlcEVxdWFsIG5lc3RlZCBvaycpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ2RlZXBFcXVhbCBuZXN0ZWQgZmFpbDonLCBlLm1lc3NhZ2UpOyB9CmNvbnN0IGN5YyA9IHt9OyBjeWMuc2VsZiA9IGN5YzsKdHJ5IHsgYS5kZWVwRXF1YWwoY3ljLCBjeWMpOyBjb25zb2xlLmxvZygnZGVlcEVxdWFsIGN5Y2xpYyBvaycpOyB9IGNhdGNoKGUpIHsgY29uc29sZS5sb2coJ2RlZXBFcXVhbCBjeWNsaWMgVEhSRVc6JywgZS5tZXNzYWdlKTsgfQpjb25zb2xlLmxvZygnYXNzZXJ0Lm1hdGNoIHR5cGVvZjonLCB0eXBlb2YgYS5tYXRjaCk7CmNvbnNvbGUubG9nKCdhc3NlcnQucmVqZWN0cyB0eXBlb2Y6JywgdHlwZW9mIGEucmVqZWN0cyk7Cg==' && node /tmp/p_22_moke0wyx.js
+[facet started: pid=2 cmd="node /tmp/p_22_moke0wyx.js"]
+deepEqual cyclic THREW: Converting circular structure to JSON
+    --> starting at object with constructor 'Object'
+    --- property 'self' closes the circle
+deepEqual nested ok
+keys: ok,equal,notEqual,strictEqual,notStrictEqual,deepEqual,deepStrictEqual,throws,doesNotThrow,ifError,fail
+deepEqual flat ok
+assert.rejects typeof: undefined
+equal ok
+assert.match typeof: undefined
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_22_moke0wyx.js) exited with code 0
+────────────────────────────────────────────────────────────
+deepEqual cyclic THREW: Converting circular structure to JSON
+    --> starting at object with constructor 'Object'
+    --- property 'self' closes the circle
+deepEqual nested ok
+keys: ok,equal,notEqual,strictEqual,notStrictEqual,deepEqual,deepStrictEqual,throws,doesNotThrow,ifError,fail
+deepEqual flat ok
+assert.rejects typeof: undefined
+equal ok
+assert.match typeof: undefined
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 1003ms (wsClosed=false) ----
+
+==== END PROBE: assert ====
