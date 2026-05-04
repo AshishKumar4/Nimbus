@@ -23,11 +23,24 @@
  *     chunk, not a poll loop.
  *
  * Non-goals:
- *   - Persistence across DO hibernation. The store is in-memory; if the
- *     DO restarts, logs are gone. Acceptable because hibernation is rare
- *     during active sessions and logs are mostly useful in-session.
  *   - Routing raw Uint8Array. RPC boundary already strings the data
  *     (SupervisorRPC.stdout(data: string)), so we store strings.
+ *
+ * W9 — hibernation persistence (CF-INTERNAL-OPTIMIZATION-RESEARCH §C.2,
+ * Lever 11):
+ *   The store optionally accepts a `PersistAdapter` (set via
+ *   `setPersist`). When set:
+ *     - `append` / `markExit` mark the pid dirty in memory; the actual
+ *       SQL write is batched into `flush()`. Callers schedule `flush()`
+ *       from a debounced alarm OR a webSocketClose handler so writes
+ *       don't run on the hot stdout path.
+ *     - First read of a pid (`tail`/`all`/`subscribe`/`getExit`/`has`)
+ *       lazily hydrates from the adapter. Subsequent reads stay in
+ *       memory until eviction.
+ *     - Eviction (per-pid byte cap, dropOlderThan, maxPids) cascades
+ *       to the adapter on the next `flush()` — never inline, so eviction
+ *       under load doesn't write-amplify.
+ *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
 
 export type LogStream = 'stdout' | 'stderr';
@@ -62,6 +75,58 @@ interface PidState {
   lastActivity: number;
   subscribers: Set<(c: LogChunk) => void>;
   exitSubscribers: Set<(e: ProcessExitInfo) => void>;
+  /**
+   * W9: monotonic per-pid sequence. Each `append` increments by 1
+   * regardless of in-memory eviction; persisted alongside the chunk so
+   * after-hibernate hydrate restores chunks in append order. Resets only
+   * when the pid is fully dropped (dropPid / dropOlderThan / maxPids
+   * eviction) — same lifetime as the SQL row set for this pid.
+   */
+  nextSeq: number;
+  /**
+   * W9: chunks not yet flushed to the persist adapter. Indexed by `seq`,
+   * not by chunks-array offset, because in-memory eviction may shift
+   * the chunks array out from under a pending flush. The flush path
+   * iterates this list and posts to `persistChunks`.
+   */
+  dirtyChunks: { seq: number; chunk: LogChunk }[];
+  /** W9: set when `markExit` ran but exit not yet flushed. */
+  dirtyExit: boolean;
+  /** W9: hydrated from the adapter at least once this isolate-gen. */
+  hydrated: boolean;
+  /** W9: highest seq present in SQL after the last flush. Used by
+   *  pruneBeforeSeq to tell the adapter how far to keep rows. */
+  flushedHighSeq: number;
+}
+
+/**
+ * W9 PersistAdapter — see audit/sections/W9-plan.md §3.1. Implementations
+ * live in NimbusSession (production: ctx.storage.sql) and in test
+ * harnesses (functional probes: in-memory mock).
+ *
+ * Contract:
+ *   - load(pid) is called at most once per pid per isolate-gen, before
+ *     the first read for that pid. Returning `null` means "no row" —
+ *     the store treats the pid as fresh. Returning `{ chunks: [], exit: null }`
+ *     means "explicitly empty" (also fresh).
+ *   - persistChunks / persistExit are called ONLY from `flush()`. Each
+ *     call carries every NEW chunk since the last flush for that pid;
+ *     the adapter MUST insert all of them in seq order.
+ *   - dropPid removes ALL rows for the pid from BOTH tables. Called on
+ *     dropOlderThan + maxPids eviction.
+ *   - pruneBeforeSeq removes chunk rows below the given seq. Called
+ *     inside flush after the per-pid byte cap is exceeded; the store
+ *     computes the cutoff seq from its own ring state.
+ *   - Adapters MUST be synchronous from the store's POV. Real SQL
+ *     calls in the DO are synchronous (storage.sql.exec is blocking
+ *     against the SQLite engine); KV is not used by W9.
+ */
+export interface PersistAdapter {
+  load(pid: number): { chunks: LogChunk[]; exit: ProcessExitInfo | null } | null;
+  persistChunks(pid: number, rows: { seq: number; chunk: LogChunk }[]): void;
+  persistExit(pid: number, info: ProcessExitInfo): void;
+  dropPid(pid: number): void;
+  pruneBeforeSeq(pid: number, seq: number): void;
 }
 
 export interface ProcessLogStoreOptions {
@@ -129,6 +194,34 @@ export class ProcessLogStore {
   /** Cumulative count of PIDs evicted by the cap (STABILITY-AUDIT.md M-S5). */
   private _droppedPids = 0;
 
+  // ── W9 persistence state ────────────────────────────────────────────
+  /** Optional persistence backend. When null, store is in-memory only. */
+  private _persist: PersistAdapter | null = null;
+  /**
+   * Pids whose rows are dropped on next flush (eviction queue). Keyed by
+   * pid; value is `true` for "pid was evicted from memory; ask adapter to
+   * delete all rows". Distinct from dirtyChunks because the adapter call
+   * is dropPid, not persistChunks.
+   */
+  private _dropQueue = new Set<number>();
+  /**
+   * Pids that need pruneBeforeSeq on next flush — keyed by pid → cutoff
+   * seq (delete all rows with seq < cutoff). Set whenever an in-memory
+   * `_evict` shifts the chunks array; the cutoff is the lowest seq that
+   * remains in memory.
+   */
+  private _pruneQueue = new Map<number, number>();
+  /** Cumulative flushed-bytes counter (telemetry). */
+  private _flushedChunks = 0;
+  private _flushedBytes = 0;
+  private _flushCount = 0;
+  private _lastFlushAt = 0;
+  private _lastFlushDurationMs = 0;
+  /** Cumulative hydrate counters. */
+  private _hydratedPids = 0;
+  private _hydratedChunks = 0;
+  private _hydratedBytes = 0;
+
   constructor(opts: ProcessLogStoreOptions = {}) {
     this.perPidBytes = opts.perPidBytes ?? 64 * 1024;
     this.maxChunkBytes = opts.maxChunkBytes ?? 4 * 1024;
@@ -136,9 +229,21 @@ export class ProcessLogStore {
     this.maxPids = opts.maxPids ?? 500;
   }
 
+  /**
+   * W9: install a persistence adapter. Call once at NimbusSession init,
+   * after the SQL tables exist. Pre-existing in-memory state is NOT
+   * pushed to the adapter — only state mutated AFTER setPersist is
+   * subject to flush. This is fine in practice: NimbusSession sets the
+   * adapter in the constructor, before any append happens.
+   */
+  setPersist(adapter: PersistAdapter): void {
+    this._persist = adapter;
+  }
+
   /** Is there ANY state for this pid (including exit-only)? */
   has(pid: number): boolean {
-    return this.pids.has(pid);
+    if (this.pids.has(pid)) return true;
+    return this._maybeHydrateRead(pid) !== null;
   }
 
   /** Current buffered bytes for this PID (post-eviction). */
@@ -147,7 +252,33 @@ export class ProcessLogStore {
   }
 
   getExit(pid: number): ProcessExitInfo | null {
-    return this.pids.get(pid)?.exit ?? null;
+    const s = this._maybeHydrateRead(pid);
+    return s?.exit ?? null;
+  }
+
+  /**
+   * W9: read-side helper. If we have an adapter and the pid has any rows
+   * in SQL, lazy-create the in-memory state (which triggers hydrate).
+   * Returns the state or null. Performs at most one adapter `load` per
+   * pid per isolate-gen by routing through `_getOrCreate` → `_hydrate`,
+   * which is guarded by `state.hydrated`.
+   */
+  private _maybeHydrateRead(pid: number): PidState | null {
+    let s = this.pids.get(pid) ?? null;
+    if (s) return s;
+    if (!this._persist) return null;
+    // _getOrCreate triggers _hydrate which calls load(). To avoid an
+    // extra load() just to decide whether to materialise, we always
+    // create and then check whether hydrate populated anything. If it
+    // didn't, drop the empty state to keep the maxPids cap clean.
+    s = this._getOrCreate(pid);
+    if (s.chunks.length === 0 && !s.exit) {
+      // Nothing came back from SQL — drop the empty state so we don't
+      // pin a cap slot for a pid that never existed.
+      this.pids.delete(pid);
+      return null;
+    }
+    return s;
   }
 
   /**
@@ -167,11 +298,7 @@ export class ProcessLogStore {
         data: placeholder,
         binary: true,
       };
-      state.chunks.push(chunk);
-      state.bytes += chunk.data.length;
-      state.lastActivity = chunk.ts;
-      this._evict(state);
-      this._fanout(state, chunk);
+      this._appendChunk(pid, state, chunk);
       return;
     }
 
@@ -184,18 +311,27 @@ export class ProcessLogStore {
         stream,
         data: slice,
       };
-      state.chunks.push(chunk);
-      state.bytes += chunk.data.length;
-      state.lastActivity = chunk.ts;
-      this._evict(state);
-      this._fanout(state, chunk);
+      this._appendChunk(pid, state, chunk);
       offset += slice.length;
     }
   }
 
+  /** W9: shared insert path — assigns a seq, marks dirty, evicts, fans out. */
+  private _appendChunk(pid: number, state: PidState, chunk: LogChunk): void {
+    const seq = state.nextSeq++;
+    state.chunks.push(chunk);
+    state.bytes += chunk.data.length;
+    state.lastActivity = chunk.ts;
+    if (this._persist) {
+      state.dirtyChunks.push({ seq, chunk });
+    }
+    this._evict(state, pid);
+    this._fanout(state, chunk);
+  }
+
   /** Return the last N chunks (by line count) in chronological order. */
   tail(pid: number, opts: { lines?: number; bytes?: number } = {}): LogChunk[] {
-    const state = this.pids.get(pid);
+    const state = this._maybeHydrateRead(pid);
     if (!state) return [];
     if (!opts.lines && !opts.bytes) return [...state.chunks];
 
@@ -219,7 +355,7 @@ export class ProcessLogStore {
 
   /** All chunks for a pid, chronological. */
   all(pid: number): LogChunk[] {
-    const state = this.pids.get(pid);
+    const state = this._maybeHydrateRead(pid);
     return state ? [...state.chunks] : [];
   }
 
@@ -230,6 +366,7 @@ export class ProcessLogStore {
     const info: ProcessExitInfo = { code, at: Date.now(), reason };
     state.exit = info;
     state.lastActivity = info.at;
+    if (this._persist) state.dirtyExit = true;
     for (const cb of state.exitSubscribers) {
       try { cb(info); } catch { /* swallow subscriber errors */ }
     }
@@ -238,6 +375,8 @@ export class ProcessLogStore {
   /**
    * Subscribe to new chunks for this pid. Returns unsubscribe fn.
    * Subscriber is called synchronously from within `append`.
+   * W9: also hydrates from SQL on first touch so a post-hibernate
+   * subscriber sees pre-hibernate context in the next backlog frame.
    */
   subscribe(pid: number, cb: (c: LogChunk) => void): () => void {
     const state = this._getOrCreate(pid);
@@ -273,6 +412,7 @@ export class ProcessLogStore {
       if (state.subscribers.size !== 0) continue;
       if (state.exit && state.exit.at < cutoff) {
         this.pids.delete(pid);
+        if (this._persist) this._dropQueue.add(pid);
         dropped++;
         continue;
       }
@@ -285,15 +425,133 @@ export class ProcessLogStore {
         isOrphan?.(pid)
       ) {
         this.pids.delete(pid);
+        if (this._persist) this._dropQueue.add(pid);
         dropped++;
       }
     }
     return dropped;
   }
 
+  /**
+   * W9: drain dirty buffers into the persist adapter. Synchronous from
+   * the store's POV (the adapter's calls are sync; the production
+   * adapter wraps them in `ctx.storage.transactionSync`). Idempotent —
+   * second call without new data is a no-op.
+   *
+   * Order of operations (matters for crash resilience):
+   *   1. dropPid for every pid in the drop queue (frees SQL space first).
+   *   2. pruneBeforeSeq for any pid with a queued cutoff.
+   *   3. persistChunks for every pid with dirty chunks.
+   *   4. persistExit for every pid with a dirty exit.
+   *
+   * Step 3 BEFORE step 4 is the key crash-resilience invariant: if the
+   * actor terminates between (3) and (4), the chunks are persisted but
+   * the exit is not — on next hydrate we'll see the chunks but no exit
+   * row, which is the same state we'd be in if the process were still
+   * running. The reverse (exit row but missing chunks) would surface a
+   * misleading "exited cleanly with no output" frame.
+   */
+  flush(): void {
+    if (!this._persist) {
+      // No adapter — clear any dirty markers so the booleans stay sane.
+      this._dropQueue.clear();
+      this._pruneQueue.clear();
+      for (const state of this.pids.values()) {
+        state.dirtyChunks.length = 0;
+        state.dirtyExit = false;
+      }
+      return;
+    }
+    const t0 = Date.now();
+    const adapter = this._persist;
+
+    // Step 1: drop evicted pids first — the SQL DELETE for them might
+    // free space the chunk INSERTs need under tight memory.
+    for (const pid of this._dropQueue) {
+      try { adapter.dropPid(pid); } catch { /* fail-soft */ }
+    }
+    this._dropQueue.clear();
+
+    // Step 2: prune over-capped chunks for still-resident pids.
+    for (const [pid, cutoff] of this._pruneQueue) {
+      try { adapter.pruneBeforeSeq(pid, cutoff); } catch { /* fail-soft */ }
+    }
+    this._pruneQueue.clear();
+
+    let chunkBytesFlushed = 0;
+    let chunksFlushedCount = 0;
+
+    // Step 3: persist new chunks (per-pid batch).
+    for (const [pid, state] of this.pids) {
+      if (state.dirtyChunks.length === 0) continue;
+      const rows = state.dirtyChunks;
+      try {
+        adapter.persistChunks(pid, rows);
+        for (const r of rows) {
+          chunkBytesFlushed += r.chunk.data.length;
+          if (r.seq > state.flushedHighSeq) state.flushedHighSeq = r.seq;
+        }
+        chunksFlushedCount += rows.length;
+      } catch { /* fail-soft — leave dirty for next flush */
+        continue;
+      }
+      state.dirtyChunks = [];
+    }
+
+    // Step 4: persist exits AFTER chunks (crash resilience).
+    for (const [pid, state] of this.pids) {
+      if (!state.dirtyExit || !state.exit) continue;
+      try {
+        adapter.persistExit(pid, state.exit);
+        state.dirtyExit = false;
+      } catch { /* fail-soft */ }
+    }
+
+    this._flushCount++;
+    this._lastFlushAt = t0;
+    this._lastFlushDurationMs = Date.now() - t0;
+    this._flushedChunks += chunksFlushedCount;
+    this._flushedBytes += chunkBytesFlushed;
+  }
+
+  /**
+   * W9: counters for /api/_diag/memory hibernation telemetry. Cumulative
+   * since this isolate-gen started. Reset only when the store itself is
+   * reconstructed (i.e., on hibernation/wake).
+   */
+  hibStats(): {
+    rehydratedPids: number;
+    rehydratedChunks: number;
+    rehydratedBytes: number;
+    flushedChunks: number;
+    flushedBytes: number;
+    flushCount: number;
+    lastFlushAt: number;
+    lastFlushDurationMs: number;
+    pendingDirtyPids: number;
+    pendingDropPids: number;
+  } {
+    let pendingDirtyPids = 0;
+    for (const state of this.pids.values()) {
+      if (state.dirtyChunks.length > 0 || state.dirtyExit) pendingDirtyPids++;
+    }
+    return {
+      rehydratedPids: this._hydratedPids,
+      rehydratedChunks: this._hydratedChunks,
+      rehydratedBytes: this._hydratedBytes,
+      flushedChunks: this._flushedChunks,
+      flushedBytes: this._flushedBytes,
+      flushCount: this._flushCount,
+      lastFlushAt: this._lastFlushAt,
+      lastFlushDurationMs: this._lastFlushDurationMs,
+      pendingDirtyPids,
+      pendingDropPids: this._dropQueue.size,
+    };
+  }
+
   /** Introspection. Used by `ps -l` for LOGS column. */
   snapshot(pid: number): { bytes: number; chunks: number; exit: ProcessExitInfo | null } | null {
-    const s = this.pids.get(pid);
+    const s = this._maybeHydrateRead(pid);
     if (!s) return null;
     return { bytes: s.bytes, chunks: s.chunks.length, exit: s.exit };
   }
@@ -317,10 +575,85 @@ export class ProcessLogStore {
         lastActivity: Date.now(),
         subscribers: new Set(),
         exitSubscribers: new Set(),
+        nextSeq: 0,
+        dirtyChunks: [],
+        dirtyExit: false,
+        hydrated: false,
+        flushedHighSeq: -1,
       };
       this.pids.set(pid, s);
+      // W9: lazy hydrate the freshly-created state from persistent
+      // storage. If we have an adapter and rows exist for this pid
+      // (e.g., DO was hibernated and now woke), pull them into the
+      // ring before any caller can observe an empty ring.
+      this._hydrate(pid, s);
     }
     return s;
+  }
+
+  /**
+   * W9: pull rows from the persist adapter for this pid into the in-memory
+   * ring. Idempotent — guarded by `state.hydrated`. Bounded by
+   * `perPidBytes`: if SQL has more bytes than the in-memory cap, we keep
+   * only the newest rows that fit and queue a `pruneBeforeSeq` for the
+   * next flush so SQL converges.
+   *
+   * Called from `_getOrCreate` (covers append/tail/all/has/snapshot/
+   * subscribe — any first-touch read or write). Failures are swallowed:
+   * a broken adapter must not break the in-memory ring's correctness.
+   */
+  private _hydrate(pid: number, state: PidState): void {
+    if (state.hydrated) return;
+    state.hydrated = true;
+    if (!this._persist) return;
+    let loaded: { chunks: LogChunk[]; exit: ProcessExitInfo | null } | null;
+    try {
+      loaded = this._persist.load(pid);
+    } catch {
+      return;
+    }
+    if (!loaded) return;
+
+    // Restore exit first so pid-existence checks are correct even if
+    // we drop chunks below.
+    if (loaded.exit) {
+      state.exit = loaded.exit;
+      state.lastActivity = loaded.exit.at;
+    }
+
+    if (loaded.chunks.length === 0) return;
+
+    // Trim to perPidBytes from the newest end. Each persisted chunk has
+    // a `seq` (we appended it during `persistChunks`); fall back to
+    // index-based seq when a chunk lacks it (defensive).
+    const newest: LogChunk[] = [];
+    let bytes = 0;
+    let oldestKeptSeq = Number.POSITIVE_INFINITY;
+    let highestSeq = -1;
+    for (let i = loaded.chunks.length - 1; i >= 0; i--) {
+      const c = loaded.chunks[i];
+      const seq = (c as any).seq ?? i;
+      if (seq > highestSeq) highestSeq = seq;
+      const size = c.data.length;
+      if (bytes + size > this.perPidBytes && newest.length > 0) {
+        // Anything below this seq is overshoot — schedule a prune.
+        this._pruneQueue.set(pid, oldestKeptSeq);
+        break;
+      }
+      newest.unshift({ ts: c.ts, stream: c.stream, data: c.data, binary: c.binary });
+      bytes += size;
+      oldestKeptSeq = seq;
+    }
+    state.chunks = newest;
+    state.bytes = bytes;
+    state.nextSeq = highestSeq + 1;
+    state.flushedHighSeq = highestSeq;
+    if (loaded.chunks[loaded.chunks.length - 1]) {
+      state.lastActivity = Math.max(state.lastActivity, loaded.chunks[loaded.chunks.length - 1].ts);
+    }
+    this._hydratedPids++;
+    this._hydratedChunks += newest.length;
+    this._hydratedBytes += bytes;
   }
 
   /**
@@ -357,6 +690,7 @@ export class ProcessLogStore {
     if (bestPid !== null) {
       this.pids.delete(bestPid);
       this._droppedPids++;
+      if (this._persist) this._dropQueue.add(bestPid);
       return;
     }
 
@@ -374,6 +708,7 @@ export class ProcessLogStore {
     if (bestPid !== null) {
       this.pids.delete(bestPid);
       this._droppedPids++;
+      if (this._persist) this._dropQueue.add(bestPid);
       return;
     }
 
@@ -404,10 +739,33 @@ export class ProcessLogStore {
     };
   }
 
-  private _evict(state: PidState): void {
+  private _evict(state: PidState, pid?: number): void {
+    let droppedAny = false;
     while (state.bytes > this.perPidBytes && state.chunks.length > 0) {
       const dropped = state.chunks.shift()!;
       state.bytes -= dropped.data.length;
+      droppedAny = true;
+    }
+    if (!droppedAny || pid === undefined || !this._persist) return;
+
+    // W9: cutoff = lowest in-memory seq. Any persisted seq below this is
+    // dead weight in SQL (and dead weight in the dirty queue if not yet
+    // flushed). Drop them from BOTH:
+    //
+    //   1. Queue a `pruneBeforeSeq(pid, cutoff)` so already-flushed rows
+    //      below cutoff are deleted from SQL on next flush.
+    //   2. Drop entries from `dirtyChunks` whose seq is below cutoff —
+    //      they were evicted from memory before they ever made it to SQL,
+    //      no point persisting now.
+    //
+    // Without (2), a chatty process whose in-memory ring runs hot would
+    // still write every byte to SQL on the first flush, defeating the
+    // per-pid byte cap.
+    const cutoff = state.nextSeq - state.chunks.length;
+    const existing = this._pruneQueue.get(pid) ?? -1;
+    if (cutoff > existing) this._pruneQueue.set(pid, cutoff);
+    if (state.dirtyChunks.length > 0) {
+      state.dirtyChunks = state.dirtyChunks.filter((d) => d.seq >= cutoff);
     }
   }
 

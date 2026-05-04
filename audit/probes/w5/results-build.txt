@@ -1,9 +1,9 @@
-# W5 probe run @ 2026-05-04T20:02:18.004Z
-✓ functional/lru-shrink-restore.mjs (36ms, exit=0)
-✓ functional/sqlite-nomem-retry.mjs (32ms, exit=0)
-✓ functional/diag-shape.mjs (25ms, exit=0)
-✓ functional/ring-persistence.mjs (24ms, exit=0)
-✓ regression/fnv-counter-integrity.mjs (35ms, exit=0)
-✓ regression/install-pipeline-coverage.mjs (37ms, exit=0)
-✓ e2e/oom-stress.mjs (52ms, exit=0)
+# W5 probe run @ 2026-05-04T21:44:39.681Z
+✓ functional/lru-shrink-restore.mjs (34ms, exit=0)
+✓ functional/sqlite-nomem-retry.mjs (28ms, exit=0)
+✓ functional/diag-shape.mjs (19ms, exit=0)
+✓ functional/ring-persistence.mjs (20ms, exit=0)
+✓ regression/fnv-counter-integrity.mjs (28ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (31ms, exit=0)
+✓ e2e/oom-stress.mjs (43ms, exit=0)
 # all green

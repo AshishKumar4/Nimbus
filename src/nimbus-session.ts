@@ -27,8 +27,10 @@ import { DurableObject as CloudflareDurableObject, WorkerEntrypoint } from 'clou
 import { SqliteVFS, SqliteVFSProvider } from './sqlite-vfs.js';
 import { WebSocketTerminal } from './ws-terminal.js';
 import { FacetManager } from './facet-manager.js';
+import { FacetProcessManager } from './facet-process.js';
 import { ProcessTable } from './process-table.js';
-import { ProcessLogStore, stripAnsi, type LogChunk } from './process-logs.js';
+import { ProcessLogStore, stripAnsi, type LogChunk, type PersistAdapter, type ProcessExitInfo } from './process-logs.js';
+import { configureWsHibernation, type WsHibernationConfigResult } from './ws-hibernation-config.js';
 import { PortRegistry } from './port-registry.js';
 import { EsbuildService } from './esbuild-service.js';
 import { ViteDevServer } from './vite-dev-server.js';
@@ -396,6 +398,47 @@ function detectUnsupportedWranglerConfig(vfs: SqliteVFS, root: string): string[]
  *
  * Returns the detected bundler bin name (e.g. "vite") or null.
  */
+/**
+ * W8: classify a child_process spawn target by execution kind. Used by
+ * the FacetProcessManager to decide between inline pure-builtin vs
+ * facet-direct dispatch. See audit/sections/W8-plan.md §8.5 BLOCKER-2.
+ *
+ *   pure-builtin  — sync, no facet recursion. echo, cat, true, false,
+ *                   ls, cd, env, sleep, mkdir, rm, … (all the unix
+ *                   command shims in src/unix-commands.ts).
+ *   facet-direct  — needs a fresh isolate. node, npm, npx, git, sh,
+ *                   bash, husky, lefthook, the wranglers, vite, …
+ *   unknown       — exit 127.
+ */
+const _CP_FACET_DIRECT = new Set([
+  'node', 'npm', 'npx', 'pnpm', 'yarn', 'bun',
+  'git', 'sh', 'bash',
+  'wrangler', 'nimbus-wrangler',
+  'husky', 'lefthook', 'simple-git-hooks', 'lint-staged', 'yorkie',
+  'vite', 'tsc', 'esbuild', 'rollup', 'webpack',
+]);
+const _CP_PURE_BUILTIN = new Set([
+  'echo', 'cat', 'true', 'false', 'ls', 'pwd', 'cd', 'env', 'export',
+  'unset', 'mkdir', 'rmdir', 'rm', 'cp', 'mv', 'touch', 'stat',
+  'sleep', 'date', 'whoami', 'id', 'hostname', 'uname', 'clear',
+  'tree', 'find', 'grep', 'head', 'tail', 'wc', 'sort', 'uniq', 'sed',
+  'awk', 'xargs', 'tee', 'du', 'diff', 'base64', 'seq', 'realpath',
+  'basename', 'dirname', 'printf', 'sha256sum', 'file', 'xxd',
+  'chmod', 'chown', 'ln', 'test', '[', 'read', 'exit', 'set', 'shopt',
+  'trap', 'umask', 'ulimit', 'which', 'uptime',
+]);
+function _classifyCommand(name: string): { kind: 'pure-builtin' | 'facet-direct' | 'unknown' } | null {
+  if (_CP_PURE_BUILTIN.has(name)) return { kind: 'pure-builtin' };
+  if (_CP_FACET_DIRECT.has(name)) return { kind: 'facet-direct' };
+  // Anything in node_modules/.bin or starting with ./ is treated as
+  // facet-direct so the registered bin script (or a node fallthrough)
+  // can attempt to run it.
+  if (name.startsWith('./') || name.startsWith('/') || name.startsWith('node_modules/')) {
+    return { kind: 'facet-direct' };
+  }
+  return null;
+}
+
 function detectBundlerBin(script: string): string | null {
   if (!script) return null;
   const tokens = script.trim().split(/\s+/);
@@ -453,6 +496,8 @@ export class NimbusSession extends CloudflareDurableObject {
   private shell: Shell | null = null;
   private terminal: WebSocketTerminal | null = null;
   private facetManager: FacetManager | null = null;
+  /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
+  private facetProcessManager: any = null;
   private esbuildService: EsbuildService | null = null;
   private viteDevServer: ViteDevServer | null = null;
   /**
@@ -479,6 +524,39 @@ export class NimbusSession extends CloudflareDurableObject {
   private processLogs: ProcessLogStore = new ProcessLogStore();
   /** Janitor timer handle for dropOlderThan sweeps. */
   private processLogsTimer: any = null;
+
+  // ── W9 — hibernation persistence + auto-response config ───────────────
+  /**
+   * Result of `configureWsHibernation` at constructor time. Exposed via
+   * `/api/_diag/memory` under `hib.autoResponseConfigured`,
+   * `hib.timeoutSetMs` etc. `null` until the constructor's wiring runs
+   * (which it does unconditionally — left null only on a defensive
+   * catch-all).
+   */
+  private _w9WsConfig: WsHibernationConfigResult | null = null;
+  /**
+   * Monotonic isolate generation counter. Each fresh isolate (cold start
+   * or post-hibernation wake) increments this and persists to storage.
+   * Lets `/api/_diag/memory` confirm whether a wake actually happened
+   * between two probe calls.
+   */
+  private _w9IsolateGen = 0;
+  /** True once we've persisted the bumped gen counter to storage. */
+  private _w9IsolateGenPersisted = false;
+  /** Storage key for the isolate-gen counter. */
+  private static readonly _W9_ISOLATE_GEN_KEY = 'w9_isolate_gen';
+  /** SQL DDL — idempotent; run on first fetch. */
+  private _w9SchemaInit = false;
+  /** Have we wired the persist adapter into ProcessLogStore yet? */
+  private _w9PersistWired = false;
+  /**
+   * Debounced flush state. Append marks the timer; the timer fires
+   * after `_W9_FLUSH_DEBOUNCE_MS` and calls `processLogs.flush()`. We
+   * also flush eagerly when `dirtyChunks * pidCount` crosses a threshold
+   * — but the debounce handles the steady-state case.
+   */
+  private _w9FlushTimer: any = null;
+  private static readonly _W9_FLUSH_DEBOUNCE_MS = 250;
 
   // ── Heap-pressure probe state ───────────────────────────────────────────
   /**
@@ -551,6 +629,237 @@ export class NimbusSession extends CloudflareDurableObject {
     this.processTable = new ProcessTable();
     this.portRegistry = new PortRegistry();
     this._ensureLogJanitor();
+
+    // ── W9 (CF research §C.3 + §C.4) ──────────────────────────────────
+    //
+    // Configure WS auto-response (`ping`/`pong`) so vite HMR + xterm
+    // idle pings don't wake the actor from hibernation. ~95% drop in
+    // billable wakes per the research doc. Auto-response config and
+    // hibernation event timeout both survive hibernation per the
+    // STOR/Durable Objects WebSocket Primer ("Survives: Auto-response
+    // configuration") — set once, forget.
+    //
+    // Failures are non-fatal — older workerd builds may lack the APIs.
+    // The result lands in /api/_diag/memory.hib for verification.
+    try {
+      this._w9WsConfig = configureWsHibernation(this.ctx);
+    } catch (e: any) {
+      console.warn('[nimbus/W9] configureWsHibernation threw:', e?.message);
+      this._w9WsConfig = {
+        autoResponseConfigured: false,
+        timeoutSetMs: null,
+        autoResponseError: e?.message,
+        timeoutError: e?.message,
+      };
+    }
+
+    // Wire the ProcessLogStore to its persist adapter (CF research §C.2,
+    // Lever 11). Idempotent: only runs once per isolate. The DDL +
+    // adapter run lazily on first append/read, but the wiring itself
+    // happens here so any subsequent call (including initSession) sees
+    // the adapter in place.
+    this._w9WireProcessLogPersist();
+  }
+
+  /**
+   * W9: install the SQL-backed PersistAdapter on `this.processLogs`.
+   *
+   * NOTE: any future alarm-driven subsystem MUST coordinate via a single
+   * `alarm()` dispatcher (e.g., a `nextAlarmReason` storage key checked
+   * inside the dispatcher). Today W9 is the only consumer; the dispatcher
+   * lives in `_w9OnAlarm()` invoked from the exported `alarm()` handler.
+   */
+  private _w9WireProcessLogPersist(): void {
+    if (this._w9PersistWired) return;
+    this._w9PersistWired = true;
+    const self = this;
+    const adapter: PersistAdapter = {
+      load(pid: number) {
+        try {
+          self._w9EnsureSchema();
+          const sql: any = self.ctx.storage.sql;
+          const chunkRows = [...sql.exec(
+            'SELECT pid, seq, ts, stream, data, binary FROM w9_proc_logs WHERE pid = ? ORDER BY seq ASC',
+            pid,
+          )] as any[];
+          const exitRows = [...sql.exec(
+            'SELECT code, at, reason FROM w9_proc_exits WHERE pid = ?',
+            pid,
+          )] as any[];
+          const chunks: LogChunk[] = chunkRows.map((r) => ({
+            ts: Number(r.ts),
+            stream: r.stream === 'stderr' ? 'stderr' : 'stdout',
+            data: String(r.data),
+            binary: !!r.binary,
+            ...(r.seq !== undefined ? { seq: Number(r.seq) } : {}),
+          } as any));
+          const exit: ProcessExitInfo | null = exitRows.length > 0
+            ? {
+                code: Number(exitRows[0].code),
+                at: Number(exitRows[0].at),
+                reason: exitRows[0].reason ?? undefined,
+              }
+            : null;
+          return { chunks, exit };
+        } catch {
+          return null;
+        }
+      },
+      persistChunks(pid, rows) {
+        if (rows.length === 0) return;
+        try {
+          self._w9EnsureSchema();
+          const sql: any = self.ctx.storage.sql;
+          // Use a single transactionSync wrapping the per-row INSERTs so
+          // a partial write either fully lands or fully rolls back. Real
+          // multi-row VALUES (?,?,?), (?,?,?), … is faster but requires
+          // dynamic-arity SQL building — clarity wins here; flushes
+          // happen at most once per debounce window so the volume is low.
+          self.ctx.storage.transactionSync(() => {
+            for (const r of rows) {
+              const c = r.chunk;
+              sql.exec(
+                'INSERT OR REPLACE INTO w9_proc_logs (pid, seq, ts, stream, data, binary) VALUES (?, ?, ?, ?, ?, ?)',
+                pid, r.seq, c.ts, c.stream, c.data, c.binary ? 1 : 0,
+              );
+            }
+          });
+        } catch (e: any) {
+          console.warn('[nimbus/W9] persistChunks failed:', e?.message);
+        }
+      },
+      persistExit(pid, info) {
+        try {
+          self._w9EnsureSchema();
+          const sql: any = self.ctx.storage.sql;
+          sql.exec(
+            'INSERT OR REPLACE INTO w9_proc_exits (pid, code, at, reason) VALUES (?, ?, ?, ?)',
+            pid, info.code, info.at, info.reason ?? null,
+          );
+        } catch (e: any) {
+          console.warn('[nimbus/W9] persistExit failed:', e?.message);
+        }
+      },
+      dropPid(pid) {
+        try {
+          self._w9EnsureSchema();
+          const sql: any = self.ctx.storage.sql;
+          self.ctx.storage.transactionSync(() => {
+            sql.exec('DELETE FROM w9_proc_logs WHERE pid = ?', pid);
+            sql.exec('DELETE FROM w9_proc_exits WHERE pid = ?', pid);
+          });
+        } catch (e: any) {
+          console.warn('[nimbus/W9] dropPid failed:', e?.message);
+        }
+      },
+      pruneBeforeSeq(pid, seq) {
+        try {
+          self._w9EnsureSchema();
+          const sql: any = self.ctx.storage.sql;
+          sql.exec('DELETE FROM w9_proc_logs WHERE pid = ? AND seq < ?', pid, seq);
+        } catch (e: any) {
+          console.warn('[nimbus/W9] pruneBeforeSeq failed:', e?.message);
+        }
+      },
+    };
+    this.processLogs.setPersist(adapter);
+
+    // Wrap append/markExit on the store to schedule a debounced flush.
+    // We patch via method override rather than monkey-patching because
+    // the store doesn't (and shouldn't) know about timers — flush
+    // scheduling is the host's responsibility.
+    const origAppend = this.processLogs.append.bind(this.processLogs);
+    const origMarkExit = this.processLogs.markExit.bind(this.processLogs);
+    this.processLogs.append = (pid, stream, data) => {
+      origAppend(pid, stream, data);
+      this._w9ScheduleFlush();
+    };
+    this.processLogs.markExit = (pid, code, reason) => {
+      origMarkExit(pid, code, reason);
+      // Exit-on-process-end is a strong "flush soon" signal — if the
+      // process crashed we want the dump persisted before the actor
+      // can hibernate. Schedule but don't bypass debounce, so a fast
+      // exit-after-spawn doesn't double-fire.
+      this._w9ScheduleFlush();
+    };
+  }
+
+  /** W9: idempotent SQL schema bootstrap. */
+  private _w9EnsureSchema(): void {
+    if (this._w9SchemaInit) return;
+    this._w9SchemaInit = true;
+    try {
+      const sql: any = this.ctx.storage.sql;
+      sql.exec(
+        'CREATE TABLE IF NOT EXISTS w9_proc_logs (' +
+          'pid INTEGER NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, ' +
+          'stream TEXT NOT NULL, data TEXT NOT NULL, binary INTEGER NOT NULL, ' +
+          'PRIMARY KEY (pid, seq))',
+      );
+      sql.exec('CREATE INDEX IF NOT EXISTS w9_proc_logs_ts ON w9_proc_logs(ts)');
+      sql.exec(
+        'CREATE TABLE IF NOT EXISTS w9_proc_exits (' +
+          'pid INTEGER PRIMARY KEY, code INTEGER NOT NULL, at INTEGER NOT NULL, ' +
+          'reason TEXT)',
+      );
+    } catch (e: any) {
+      console.warn('[nimbus/W9] schema init failed:', e?.message);
+      this._w9SchemaInit = false; // retry next time
+    }
+  }
+
+  /**
+   * W9: ensure the alarm is set for the next flush window. Cheap to
+   * call repeatedly — we only set the alarm if it isn't already set.
+   * `setAlarm` writes to storage, so we additionally bracket with a
+   * timer-based fallback so tests + hot-path appends don't block.
+   */
+  private _w9ScheduleFlush(): void {
+    if (this._w9FlushTimer) return;
+    // Local timer for fast in-isolate flush; alarm ensures the post-
+    // hibernation case also drains.
+    this._w9FlushTimer = setTimeout(() => {
+      this._w9FlushTimer = null;
+      try {
+        this.processLogs.flush();
+      } catch (e: any) {
+        console.warn('[nimbus/W9] flush threw:', e?.message);
+      }
+    }, NimbusSession._W9_FLUSH_DEBOUNCE_MS);
+    // Best-effort alarm (storage). On older runtimes / wrangler-dev where
+    // setAlarm is unavailable this is a no-op.
+    try {
+      const fn = (this.ctx.storage as any).setAlarm;
+      if (typeof fn === 'function') {
+        fn.call(this.ctx.storage, Date.now() + NimbusSession._W9_FLUSH_DEBOUNCE_MS * 4);
+      }
+    } catch { /* fail-soft */ }
+  }
+
+  /**
+   * W9: alarm handler. Today only flush; if more subsystems need alarms,
+   * route through a single `nextAlarmReason` storage key checked here.
+   */
+  async alarm(): Promise<void> {
+    try {
+      this.processLogs.flush();
+    } catch (e: any) {
+      console.warn('[nimbus/W9] alarm flush threw:', e?.message);
+    }
+  }
+
+  /** W9: increment + persist isolate-gen counter once per fresh isolate. */
+  private async _w9MaybeBumpIsolateGen(): Promise<void> {
+    if (this._w9IsolateGenPersisted) return;
+    this._w9IsolateGenPersisted = true;
+    try {
+      const prev = (await this.ctx.storage.get(NimbusSession._W9_ISOLATE_GEN_KEY)) as number | undefined;
+      const next = (typeof prev === 'number' ? prev : 0) + 1;
+      this._w9IsolateGen = next;
+      await this.ctx.storage.put(NimbusSession._W9_ISOLATE_GEN_KEY, next);
+    } catch (e: any) {
+      console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);
+    }
   }
 
   /**
@@ -1086,6 +1395,48 @@ export class NimbusSession extends CloudflareDurableObject {
     }
   }
 
+  // ── child_process RPC entrypoints [W8 Phase 1] ────────────────────────
+  //
+  // Delegate to the lazily-constructed FacetProcessManager. Defensive
+  // ensureFacetProcessManager() handles cold-start cases where a child
+  // facet calls cp* before the supervisor has initialized the broker
+  // (e.g., immediately after DO hibernation wake-up).
+
+  async _rpcCpSpawn(req: any): Promise<{ childPid: number }> {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.spawn(req);
+  }
+
+  async _rpcCpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.stdinWrite(childPid, data);
+  }
+
+  async _rpcCpStdinEnd(childPid: number): Promise<void> {
+    const fpm = this._ensureFacetProcessManager();
+    fpm.stdinEnd(childPid);
+  }
+
+  async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number) {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.readOutput(childPid, fd, sinceSeq, waitMs);
+  }
+
+  async _rpcCpDrainOutput(childPid: number) {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.drainOutput(childPid);
+  }
+
+  async _rpcCpKill(childPid: number, signal: string): Promise<boolean> {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.kill(childPid, signal);
+  }
+
+  async _rpcCpWait(childPid: number, waitMs: number) {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.wait(childPid, waitMs);
+  }
+
   // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
   // Kept for backward compatibility with direct DO stub callers.
 
@@ -1166,6 +1517,11 @@ export class NimbusSession extends CloudflareDurableObject {
     // served app's module URLs, HMR paths, <base href>, and router basename
     // all resolve under `/s/<id>/preview/...`.
     await this.hydrateSessionBasePath(request);
+    // W9: bump the isolate generation counter on the FIRST request of a
+    // new isolate (cold start or post-hibernation wake). Cheap — one
+    // storage.get + one storage.put per isolate. Subsequent calls in the
+    // same isolate are a fast no-op (gated by _w9IsolateGenPersisted).
+    await this._w9MaybeBumpIsolateGen();
 
     if (url.pathname === '/ws') {
       if (request.headers.get('Upgrade') !== 'websocket') {
@@ -1215,6 +1571,8 @@ export class NimbusSession extends CloudflareDurableObject {
       return handleLogsWebSocketRequest(request, logsPid, {
         processLogs: this.processLogs,
         processTable: this.processTable,
+        // W9: pass ctx so the upgrade uses ctx.acceptWebSocket (hibernatable).
+        ctx: this.ctx as any,
       });
     }
     if (url.pathname === '/api/processes') {
@@ -1346,7 +1704,84 @@ export class NimbusSession extends CloudflareDurableObject {
         facet: {
           lastDispatch: getLastFacetId(),
         },
+
+        // ── W9: hibernation observability ───────────────────────────
+        // `hib.isolateGen` increments per fresh isolate (cold start or
+        // post-hibernation wake). Two probe calls a minute apart with
+        // different gens means a hibernation/wake cycle ran in between.
+        // `rehydrated*` counters are >0 only on the first hydrate after
+        // a wake. `flushed*` counters track the alarm-driven SQL writes.
+        // `autoResponseConfigured` reports the runtime's actual
+        // capability (older workerd builds report false).
+        hib: {
+          isolateGen: this._w9IsolateGen,
+          autoResponseConfigured: this._w9WsConfig?.autoResponseConfigured ?? false,
+          autoResponseError: this._w9WsConfig?.autoResponseError ?? null,
+          hibernationEventTimeoutMs: this._w9WsConfig?.timeoutSetMs ?? null,
+          timeoutError: this._w9WsConfig?.timeoutError ?? null,
+          ...this.processLogs.hibStats(),
+        },
       });
+    }
+
+    // ── W9: hibernation simulation + diagnostic spawn (NIMBUS_DEBUG=1) ──
+    //
+    // These endpoints exist to let local probes exercise the cross-
+    // hibernation code path. Real DO hibernation only happens in prod;
+    // wrangler dev keeps state across requests. So we simulate the
+    // "fresh isolate per dispatch" rule by clearing the in-memory
+    // ProcessLogStore — the next read MUST hydrate from SQL.
+    //
+    // 404 when NIMBUS_DEBUG isn't set, so prod isn't a free vector.
+    if (url.pathname.startsWith('/api/_test/') ) {
+      if (!this.nimbusDebug) {
+        return new Response('not found', { status: 404 });
+      }
+      if (url.pathname === '/api/_test/hib/simulate' && request.method === 'POST') {
+        // Drain any pending writes first so SQL is the source of truth,
+        // then nuke the in-memory ring. The next read on any pid will
+        // re-hydrate via the adapter.
+        try { this.processLogs.flush(); } catch {}
+        const fresh = new ProcessLogStore();
+        // Re-wire persist on the new store (mirrors constructor path).
+        this._w9PersistWired = false;
+        this.processLogs = fresh;
+        this._w9WireProcessLogPersist();
+        return Response.json({ cleared: true, ts: Date.now() });
+      }
+      if (url.pathname === '/api/_test/spawn-emitter' && request.method === 'POST') {
+        // Spawns a synthetic emitter directly into ProcessLogStore +
+        // ProcessTable without going through FacetManager. Lets the e2e
+        // probe drive the W9 code path without a real long-running
+        // facet (which the test environment may not support).
+        try {
+          const body = await request.json() as any;
+          const lines = Math.max(1, Math.min(1000, Number(body.lines) || 50));
+          const text = String(body.lineText || 'line');
+          const entry = this.processTable.spawn(`_test:${text}`, ['_test'], '/');
+          const pid = entry.pid;
+          for (let i = 0; i < lines; i++) {
+            this.processLogs.append(pid, 'stdout', `${text} ${i}\n`);
+          }
+          // Force-flush so SQL reflects state before the next request.
+          try { this.processLogs.flush(); } catch {}
+          return Response.json({ pid, lines });
+        } catch (e: any) {
+          return Response.json({ error: e?.message }, { status: 400 });
+        }
+      }
+      if (url.pathname === '/api/_test/log-tail' && request.method === 'GET') {
+        const pid = parseInt(url.searchParams.get('pid') || '', 10);
+        const linesQ = parseInt(url.searchParams.get('lines') || '0', 10) || undefined;
+        if (!Number.isFinite(pid) || pid <= 0) {
+          return Response.json({ error: 'bad pid' }, { status: 400 });
+        }
+        const chunks = this.processLogs.tail(pid, linesQ ? { lines: linesQ } : {});
+        const allText = chunks.map((c) => c.data).join('');
+        const lines = allText.split('\n').filter((l) => l !== '');
+        return Response.json({ pid, lines, chunkCount: chunks.length });
+      }
+      return new Response('unknown _test endpoint', { status: 404 });
     }
 
     if (url.pathname === '/api/stats') {
@@ -1839,6 +2274,149 @@ export class NimbusSession extends CloudflareDurableObject {
   }
 
   /**
+   * W8: lazily construct the FacetProcessManager when the first cp* RPC
+   * arrives. Wired with adapters that bridge the Nimbus shell command
+   * registry to the FacetProcessManager's CommandRegistryLike contract.
+   */
+  private _ensureFacetProcessManager() {
+    if (this.facetProcessManager) return this.facetProcessManager;
+    this.ensureSqliteFs();
+    this.ensureFacetManager();
+    // FacetProcessManager is statically imported at top-of-file (W8).
+    // No lazy-import: workerd doesn't ship CJS require, and the dynamic
+    // import would be async — making _ensureFacetProcessManager async
+    // would force every cp* RPC entry point to also be async on the
+    // promise-resolution path, which is fine but uglier. Compile-time
+    // tree-shaking handles unused-when-no-cp-RPC paths.
+    // Adapter for FacetManagerLike — wraps the existing FacetManager.exec
+    // with a streaming surface. Phase 1 simplification: facet-direct
+    // commands are dispatched through the shell registry the same way
+    // shell.execute does, but with the per-PID hooks routed.
+    const facetMgrAdapter = {
+      execStream: async (
+        codeJson: string,
+        opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[] },
+        hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+      ): Promise<number> => {
+        // codeJson is a payload from FacetProcessManager._dispatch facet-direct
+        // path: {command, args, env, cwd, stdin}. We dispatch through the
+        // existing shell registry by resolving the command and invoking
+        // it with synthesized output streams that route to hooks.
+        let payload: any;
+        try { payload = JSON.parse(codeJson); }
+        catch { payload = { command: '', args: [], env: {}, cwd: '/' }; }
+        const registry = this._cpRegistry;
+        if (!registry) {
+          hooks.onStderr('child_process: command registry unavailable\n');
+          return 127;
+        }
+        const cmd = await registry.resolve(payload.command);
+        if (!cmd) {
+          hooks.onStderr(`${payload.command}: command not found\n`);
+          return 127;
+        }
+        // Synthesize a CommandContext compatible with @lifo-sh/core.
+        const stdoutStream = { write: (d: string) => hooks.onStdout(String(d)) };
+        const stderrStream = { write: (d: string) => hooks.onStderr(String(d)) };
+        const ac = new AbortController();
+        const ctx = {
+          args: payload.args || [],
+          env: payload.env || {},
+          cwd: payload.cwd || '/home/user',
+          vfs: this.sqliteFs!,
+          stdout: stdoutStream,
+          stderr: stderrStream,
+          signal: ac.signal,
+          // For commands that need stdin we pass a tiny adapter.
+          stdin: {
+            read: async () => null,
+            readAll: async () => payload.stdin || '',
+          },
+        };
+        try {
+          const code = await cmd(ctx as any);
+          return typeof code === 'number' ? code : 0;
+        } catch (e: any) {
+          hooks.onStderr(`${payload.command}: ${e?.message || String(e)}\n`);
+          return 1;
+        }
+      },
+      abort: (facetName: string) => {
+        // Best-effort: relay to ctx.facets.abort, mirroring FacetManager.kill.
+        try { (this.ctx as any).facets?.abort?.(facetName, new Error('SIGKILL')); } catch {}
+        return true;
+      },
+    };
+    // Adapter for CommandRegistryLike. The shared shell registry is
+    // attached to `this._cpRegistry` by the shell-init path (see
+    // construction near line 2058 — registry passed as ctor arg there).
+    const cmdRegistryAdapter = {
+      // Consult the live shell registry FIRST so dynamically-registered
+      // commands (registerUnixCommands / registerGitCommands / npm /
+      // wrangler etc.) are seen even if they're not in the static
+      // _CP_PURE_BUILTIN allow-list. Falls back to the static
+      // facet-direct table for known facet-only commands. Returns null
+      // (→ exit 127) for everything unknown.
+      resolve: (name: string) => {
+        const registry = this._cpRegistry;
+        if (registry && typeof registry.has === 'function' && registry.has(name)) {
+          // Registered — classify by name. Reuse the static table so
+          // facet-direct commands (node/npm/git/...) keep their kind
+          // even when they ALSO happen to be registry entries.
+          return _classifyCommand(name) || { kind: 'pure-builtin' };
+        }
+        return _classifyCommand(name);
+      },
+      runPureBuiltin: async (
+        name: string,
+        args: string[],
+        env: Record<string, string>,
+        cwd: string,
+        stdin: string,
+        hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+      ): Promise<number> => {
+        const registry = this._cpRegistry;
+        if (!registry) { hooks.onStderr('cp: registry unavailable\n'); return 127; }
+        const cmd = await registry.resolve(name);
+        if (!cmd) { hooks.onStderr(`${name}: command not found\n`); return 127; }
+        const ac = new AbortController();
+        const ctx = {
+          args, env, cwd,
+          vfs: this.sqliteFs!,
+          stdout: { write: (d: string) => hooks.onStdout(String(d)) },
+          stderr: { write: (d: string) => hooks.onStderr(String(d)) },
+          signal: ac.signal,
+          stdin: { read: async () => null, readAll: async () => stdin },
+        };
+        try {
+          const code = await cmd(ctx as any);
+          return typeof code === 'number' ? code : 0;
+        } catch (e: any) {
+          hooks.onStderr(`${name}: ${e?.message || String(e)}\n`);
+          return 1;
+        }
+      },
+    };
+    this.facetProcessManager = new FacetProcessManager({
+      facetMgr: facetMgrAdapter,
+      processTable: this.processTable,
+      processLogs: this.processLogs as any,
+      vfs: this.sqliteFs!,
+      commandRegistry: cmdRegistryAdapter,
+      ctx: this.ctx as any,
+    });
+    return this.facetProcessManager;
+  }
+
+  /**
+   * Set the shell command registry for the W8 broker to dispatch
+   * resolved commands. Called from the shell-init path right after
+   * `registerUnixCommands(registry, sqliteFs)`.
+   */
+  private _cpRegistry: any = null;
+  private _setCpRegistry(r: any) { this._cpRegistry = r; }
+
+  /**
    * Get or create the singleton fetch proxy entrypoint.
    * ONE dynamic worker is created via LOADER.load() and reused for ALL npm
    * fetch calls across the lifetime of this DO instance. This prevents
@@ -2053,6 +2631,10 @@ export class NimbusSession extends CloudflareDurableObject {
     const kernel = this.kernel;
     const sqliteFs = this.sqliteFs!;
     const facetMgr = this.facetManager!;
+    // W8: hand the registry to the cp broker so child_process.spawn from
+    // a parent facet can resolve and dispatch commands the same way the
+    // shell does. Done AFTER all registrations are complete (below).
+    this._setCpRegistry(registry);
 
     // ── Unix commands (30+ real implementations) ──
     registerUnixCommands(registry, sqliteFs);
@@ -3915,6 +4497,11 @@ export class NimbusSession extends CloudflareDurableObject {
         this.cirrusReal?.deliverHmrClientMessage(attach.clientId, data);
         return;
       }
+      // W9: process-logs sockets are output-only by contract. Drop
+      // any inbound frame; never let it parse-fail to the shell.
+      if (attach?.kind === 'process-logs') {
+        return;
+      }
       const data = typeof message === 'string' ? message : dec.decode(message);
       const msg = JSON.parse(data);
       if (this.terminal) this.terminal.handleMessage(msg);
@@ -3947,6 +4534,12 @@ export class NimbusSession extends CloudflareDurableObject {
     // closed by `vite stop` / navigation — nulled the session's
     // shell/terminal/kernel, silently freezing the user's terminal tab.
     const att = this._wsKind(ws);
+    // W9: process-logs sockets close routinely (user closes a log tab).
+    // Don't touch shell/terminal — and don't bother flushing here either
+    // because process-logs ws close doesn't imply session lifecycle.
+    if (att.kind === 'process-logs') {
+      return;
+    }
     if (att.kind === 'cirrus-hmr') {
       // HMR socket closed. Detach from the bridge + drop from the map.
       // Do NOT touch shell/terminal/kernel — the user's terminal tab
@@ -3979,6 +4572,12 @@ export class NimbusSession extends CloudflareDurableObject {
     // the close handler doesn't hang on storage. Skipped if ring
     // is empty / unchanged.
     this._w5SafePersistRing();
+    // W9: flush any pending log writes so a hibernation cycle right
+    // after this close doesn't strand the in-memory ring. Synchronous
+    // SQL writes wrapped in transactionSync — fast (microseconds for
+    // typical buffer sizes); blocking is safer than racing waitUntil
+    // because flush() is what makes the logs survive.
+    this._w9FlushOnClose();
     this.shell = null;
     this.terminal = null;
     this.kernel = null;
@@ -3987,10 +4586,28 @@ export class NimbusSession extends CloudflareDurableObject {
     this.wranglerAliasBannerShown = false;
   }
 
+  /**
+   * W9: synchronous flush of the process-log ring on session close.
+   * Wraps `processLogs.flush()` in a try/catch so a flush failure
+   * doesn't take down the close handler. Cheap when there's nothing
+   * dirty (idempotent inside the store).
+   */
+  private _w9FlushOnClose(): void {
+    try {
+      this.processLogs.flush();
+    } catch (e: any) {
+      console.warn('[nimbus/W9] flush-on-close failed:', e?.message);
+    }
+  }
+
   async webSocketError(ws: WebSocket, _error?: any) {
     // Audit F1: same discriminator as webSocketClose. A socket error
     // on an HMR WS must not take down the terminal tab.
     const att = this._wsKind(ws);
+    // W9: process-logs error — same drop-and-return policy as close.
+    if (att.kind === 'process-logs') {
+      return;
+    }
     if (att.kind === 'cirrus-hmr') {
       try {
         const clientId = att.clientId || this._cirrusHmrWsClients?.get(ws);
@@ -4028,6 +4645,9 @@ export class NimbusSession extends CloudflareDurableObject {
       } catch { /* fail-soft */ }
     }
     this._w5SafePersistRing();
+    // W9: same flush rationale as webSocketClose. An error on the shell
+    // socket commonly precedes hibernation by milliseconds.
+    this._w9FlushOnClose();
     this.shell = null;
     this.terminal = null;
     this.kernel = null;

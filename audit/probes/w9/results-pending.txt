@@ -1,0 +1,8 @@
+# W9 probe run @ 2026-05-04T21:06:46.789Z
+✗ functional/hib-persist-roundtrip.mjs (37ms, exit=1)
+✗ functional/hib-flush-debounce.mjs (29ms, exit=1)
+✗ functional/autoresponse-config.mjs (31ms, exit=1)
+✓ regression/process-logs-api-shape.mjs (23ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (33ms, exit=0)
+✓ e2e/long-running-dev-hib-cycle.mjs (20ms, exit=0)
+# not all green
