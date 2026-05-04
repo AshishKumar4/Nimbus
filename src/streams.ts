@@ -27,7 +27,6 @@ const __streamMod = (() => {
       this._readableState = {
         buffer: [],
         ended: false,
-        endEmitted: false,
         flowing: null,
         highWaterMark: opts?.highWaterMark ?? 16384,
         encoding: opts?.encoding || null,
@@ -50,8 +49,7 @@ const __streamMod = (() => {
       }
       const chunk = state.buffer.shift();
       state.readableLength -= (chunk?.length || 0);
-      if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
-        state.endEmitted = true;
+      if (state.buffer.length === 0 && state.ended) {
         queueMicrotask(() => this.emit('end'));
       }
       return chunk;
@@ -61,8 +59,7 @@ const __streamMod = (() => {
       const state = this._readableState;
       if (chunk === null) {
         state.ended = true;
-        if (state.buffer.length === 0 && !state.endEmitted) {
-          state.endEmitted = true;
+        if (state.buffer.length === 0) {
           queueMicrotask(() => this.emit('end'));
         }
         return false;
@@ -78,14 +75,6 @@ const __streamMod = (() => {
             const c = state.buffer.shift();
             state.readableLength -= (c?.length || 0);
             this.emit('data', c);
-          }
-          // After draining, fire 'end' if push(null) was queued but
-          // deferred because the buffer was non-empty at the time.
-          // Guarded by endEmitted so a concurrent .read() drain doesn't
-          // double-fire (W8 fix: real Node uses an endEmitted flag).
-          if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-            state.endEmitted = true;
-            this.emit('end');
           }
         });
       }
@@ -122,8 +111,7 @@ const __streamMod = (() => {
             state.readableLength -= (chunk?.length || 0);
             this.emit('data', chunk);
           }
-          if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-            state.endEmitted = true;
+          if (state.ended && state.buffer.length === 0) {
             this.emit('end');
           }
         });
