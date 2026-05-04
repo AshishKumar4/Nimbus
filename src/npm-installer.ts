@@ -28,6 +28,10 @@ import {
   resolveTree, computeHoistPlan, shouldSkipPackage,
   type ResolvedPackage, type HoistPlan, type FetchFn,
 } from './npm-resolver.js';
+import {
+  applySwaps, findRejects, lookupSwap,
+  formatSwapNotice, RegistryRejectError,
+} from './wasm-swap-registry.js';
 import { resolvePackageEntry } from './_shared/exports-resolver.js';
 import {
   fetchWaves, buildBatchPayload, buildCacheRestorePayload,
@@ -44,6 +48,7 @@ import {
   setInstallPhase, setResolverPath,
   setInstallFacetPath, recordInstallFacetCounters,
   recordPreBundleSummary,
+  recordR2RaceCounters,
 } from './diag-counters.js';
 import {
   resolveTreeInFacet,
@@ -566,13 +571,25 @@ export class NpmInstaller {
 
     // Surface facet messages into the install log.
     for (const m of result.messages) log(m);
+    // [W4] Fold packument R2 race outcomes into supervisor diag.r2.
+    const rfc: any = result.facetCounters;
+    recordR2RaceCounters({
+      pipelinedTarballRaceWins: 0,
+      pipelinedTarballRaceLosses: 0,
+      pipelinedPackumentRaceWins: rfc.pipelinedPackumentRaceWins ?? 0,
+      pipelinedPackumentRaceLosses: rfc.pipelinedPackumentRaceLosses ?? 0,
+    });
+    const r2WinSuffix = (rfc.pipelinedPackumentRaceWins ?? 0) > 0
+      ? `, R2 packument cache wins=${rfc.pipelinedPackumentRaceWins}/${(rfc.pipelinedPackumentRaceWins ?? 0) + (rfc.pipelinedPackumentRaceLosses ?? 0)}`
+      : '';
     log(
       `  resolver-facet: ${result.resolved.length} resolved, ` +
       `${result.facetCounters.packumentsDecoded} packuments fetched (` +
       `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB), ` +
       `peak in-flight=${result.facetCounters.inFlightPeak}, ` +
-      `cache writes=${result.cacheWriteCount}, ` +
-      `elapsed=${(result.elapsed / 1000).toFixed(1)}s`,
+      `cache writes=${result.cacheWriteCount}` +
+      r2WinSuffix +
+      `, elapsed=${(result.elapsed / 1000).toFixed(1)}s`,
     );
 
     const resolved = new Map<string, ResolvedPackage>();
@@ -676,12 +693,25 @@ export class NpmInstaller {
       // while the supervisor's cumulativePackumentBytesDecoded stays
       // flat).
       recordInstallFacetCounters(result.facetCounters);
+      // [W4] Fold tarball R2 race outcomes into supervisor diag.r2.
+      const fc: any = result.facetCounters;
+      recordR2RaceCounters({
+        pipelinedTarballRaceWins: fc.pipelinedTarballRaceWins ?? 0,
+        pipelinedTarballRaceLosses: fc.pipelinedTarballRaceLosses ?? 0,
+        // Resolver counters folded separately at resolveTreeViaFacet().
+        pipelinedPackumentRaceWins: 0,
+        pipelinedPackumentRaceLosses: 0,
+      });
+      const r2WinSuffix = (fc.pipelinedTarballRaceWins ?? 0) > 0
+        ? `, R2 cache wins=${fc.pipelinedTarballRaceWins}/${(fc.pipelinedTarballRaceWins ?? 0) + (fc.pipelinedTarballRaceLosses ?? 0)}`
+        : '';
       log(
         `Batch-facet complete: ${okCount}/${specs.length} packages, ` +
         `${filesWritten} files, ` +
         `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB tarball bytes, ` +
-        `peak in-flight=${result.facetCounters.peakInFlight}, ` +
-        `${(result.elapsed / 1000).toFixed(1)}s` +
+        `peak in-flight=${result.facetCounters.peakInFlight}` +
+        r2WinSuffix +
+        `, ${(result.elapsed / 1000).toFixed(1)}s` +
         (failCount > 0 ? ` (${failCount} failed)` : ''),
       );
       return { installed, failed, filesWritten };
@@ -823,7 +853,7 @@ export class NpmInstaller {
           specs[pkg] = 'latest';
         }
       }
-      return specs;
+      return this.applyW6Registry(specs);
     }
 
     // Read from package.json
@@ -850,7 +880,30 @@ export class NpmInstaller {
       }
     } catch { /* corrupt package.json */ }
 
-    return specs;
+    return this.applyW6Registry(specs);
+  }
+
+  /**
+   * W6: apply WASM_SWAPS rewrites and REJECT_INSTALL deny list to a
+   * top-level spec map. Emits `[swap]` notices via onProgress; throws
+   * a multi-line error on any reject (with `transitive='warn'` rejects
+   * also failing at top level — they only soften at depth>0).
+   *
+   * Idempotent: running on already-swapped specs is a no-op.
+   */
+  private applyW6Registry(specs: Record<string, string>): Record<string, string> {
+    const { specs: swapped, swaps } = applySwaps(specs);
+    for (const s of swaps) {
+      // onProgress is unguarded everywhere else in this file (rg the
+      // pattern); singling it out for try/catch here would be inconsistent
+      // and could mask real bugs in the progress hook.
+      this.onProgress?.(formatSwapNotice(s));
+    }
+    const rejects = findRejects(swapped, 'top');
+    if (rejects.length > 0) {
+      throw new RegistryRejectError(rejects);
+    }
+    return swapped;
   }
 
   // ── Lockfile ──────────────────────────────────────────────────────────
@@ -1015,7 +1068,18 @@ export class NpmInstaller {
           name = spec;
         }
 
-        const pkg = resolved.get(name);
+        // W6: if a swap fired, the user typed `name` but `resolved` is
+        // keyed by the swap target (e.g. user typed 'esbuild', resolved
+        // has 'esbuild-wasm'). Look up via lookupSwap to bridge the
+        // gap; write the user's original key into package.json so the
+        // file remains the user's source-of-truth and isn't silently
+        // mutated to the swap target (which would break cross-environment
+        // pushes).
+        let pkg = resolved.get(name);
+        if (!pkg) {
+          const swap = lookupSwap(name);
+          if (swap) pkg = resolved.get(swap.to);
+        }
         if (pkg) {
           pkgJson.dependencies[name] = '^' + pkg.version;
         }

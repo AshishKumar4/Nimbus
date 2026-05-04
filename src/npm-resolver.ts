@@ -14,6 +14,10 @@ import {
   setResolverPhase,
   packumentFetchStart, packumentFetchEnd, responseStubDisposed,
 } from './diag-counters.js';
+import {
+  lookupSwap, lookupReject, shouldWarnSkipTransitive,
+  formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
+} from './wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
 // src/_shared/exports-resolver.ts. Callers that need these helpers
@@ -533,11 +537,30 @@ export async function resolveTree(
           onProgress?.(`  skipping ${name} (build-only)`);
           return null;
         }
-        onProgress?.(`  resolving ${name}...`);
+        // W6: transitive registry — swap rewrites name in flight; reject
+        // with transitive='fail' throws (matches top-level fail policy);
+        // reject with transitive='warn' logs [skip] and drops.
+        let resolveName = name;
+        const swap = lookupSwap(name);
+        if (swap) {
+          onProgress?.(formatSwapNotice(swap));
+          resolveName = swap.to;
+        } else {
+          const warnSkip = shouldWarnSkipTransitive(name);
+          if (warnSkip) {
+            onProgress?.(formatTransitiveSkip(warnSkip));
+            return null;
+          }
+          const rejectFail = lookupReject(name);
+          if (rejectFail && rejectFail.transitive === 'fail') {
+            throw new RegistryRejectError([rejectFail]);
+          }
+        }
+        onProgress?.(`  resolving ${resolveName}...`);
         try {
-          return await resolvePackage(name, range, cache, fetchFn, onProgress);
+          return await resolvePackage(resolveName, range, cache, fetchFn, onProgress);
         } catch (e: any) {
-          onProgress?.(`  ${name}: UNHANDLED ERROR: ${e?.message}`);
+          onProgress?.(`  ${resolveName}: UNHANDLED ERROR: ${e?.message}`);
           return null;
         }
       })),
@@ -616,13 +639,21 @@ export function computeHoistPlan(
 
 // ── Skip list ───────────────────────────────────────────────────────────
 
+// W6: `esbuild` and `fsevents` were removed from SKIP_PACKAGES so the
+// W6 swap/reject registry can own them. `esbuild` is in WASM_SWAPS
+// (→ esbuild-wasm); `fsevents` is in REJECT_INSTALL (transitive='warn').
+// node-gyp / node-pre-gyp remain here for transitive silence (they
+// also appear in REJECT_INSTALL with transitive='warn' so a top-level
+// `npm install node-gyp` reaches the registry first and emits a clear
+// rejection — see plan §10 risk row).
 const SKIP_PACKAGES = new Set([
   // Build tools
-  'typescript', 'esbuild', 'vite', 'rollup', 'webpack', 'parcel',
+  'typescript', 'vite', 'rollup', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
   'prettier', 'eslint', 'stylelint',
-  // Native modules (can't run in DO)
-  'fsevents', 'chokidar', 'node-gyp', 'node-pre-gyp',
+  // Native modules / build-time (chokidar = real-vite intercepts;
+  // node-gyp/pre-gyp = build-time only, never run in Workers)
+  'chokidar', 'node-gyp', 'node-pre-gyp',
   // Cloudflare dev tools
   '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
   // Other build-only

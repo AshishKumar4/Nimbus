@@ -9,16 +9,22 @@
  *
  * The resolver-facet references the following preamble symbols:
  *   - SHOULD_SKIP_PACKAGE(name) → boolean
+ *   - SHOULD_SWAP(name)         → { from, to } | undefined           (W6)
+ *   - SHOULD_REJECT_FAIL(name)  → { from, reason, suggest? } | undefined (W6)
+ *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → entry | undefined          (W6)
  *   - PARSE_SEMVER(v) → [major, minor, patch] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
  *   - RESOLVE_VERSION(versions, range) → string | null
  *
- * All of these are pasted from src/npm-resolver.ts:79-202 / 717-748 and
- * MUST stay byte-equivalent. Divergence between supervisor and facet
- * resolution would mean the facet picks different versions than the
- * legacy in-supervisor path, breaking both correctness and the
- * NIMBUS_FACET_RESOLVER=0 fallback contract.
+ * All of these are pasted from src/npm-resolver.ts and src/wasm-swap-registry.ts
+ * and MUST stay byte-equivalent. Divergence between supervisor and facet
+ * resolution would mean the facet picks different versions / makes different
+ * swap-or-reject decisions than the legacy in-supervisor path, breaking
+ * both correctness and the NIMBUS_FACET_RESOLVER=0 fallback contract.
+ *
+ * The W6 registry data is duplicated below — gated by
+ * `audit/probes/w6/functional/preamble-parity.mjs`.
  *
  * Preamble bytes are part of the loader-cache key for NimbusFacetPool —
  * any edit invalidates the warm slot and forces a re-load on next
@@ -26,12 +32,13 @@
  */
 
 export const NPM_RESOLVE_PREAMBLE: string = `
-// ── Skip list (pasted from src/npm-resolver.ts:719-742) ──────────────────
+// ── Skip list (mirrors src/npm-resolver.ts SKIP_PACKAGES, post-W6) ──────
+// W6: 'esbuild' migrated to WASM_SWAPS; 'fsevents' migrated to REJECT_INSTALL.
 const __SKIP_PACKAGES = new Set([
-  'typescript', 'esbuild', 'vite', 'rollup', 'webpack', 'parcel',
+  'typescript', 'vite', 'rollup', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
   'prettier', 'eslint', 'stylelint',
-  'fsevents', 'chokidar', 'node-gyp', 'node-pre-gyp',
+  'chokidar', 'node-gyp', 'node-pre-gyp',
   '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
   'husky', 'lint-staged', 'commitlint',
 ]);
@@ -46,6 +53,53 @@ function SHOULD_SKIP_PACKAGE(name) {
   if (__SKIP_PACKAGES.has(name)) return true;
   for (const p of __SKIP_PREFIXES) if (name.startsWith(p)) return true;
   return false;
+}
+
+// ── W6 swap / reject registry (mirrors src/wasm-swap-registry.ts) ─────
+// Gated by audit/probes/w6/functional/preamble-parity.mjs.
+const __WASM_SWAPS = new Map([
+  ['esbuild', { from: 'esbuild', to: 'esbuild-wasm' }],
+]);
+// Mirror of REJECT_INSTALL in src/wasm-swap-registry.ts. Entries with
+// transitive='warn' are tagged so the resolver can decide skip-vs-throw.
+const __REJECT_INSTALL = new Map([
+  ['sharp',          { from: 'sharp',          reason: 'Native libvips bindings; not portable to Workers.', transitive: 'fail' }],
+  ['sqlite3',        { from: 'sqlite3',        reason: 'Native sqlite3 .node binding.', transitive: 'fail' }],
+  ['better-sqlite3', { from: 'better-sqlite3', reason: 'Native sqlite .node binding.', transitive: 'fail' }],
+  ['canvas',         { from: 'canvas',         reason: 'Native Cairo bindings.', transitive: 'fail' }],
+  ['sodium-native',  { from: 'sodium-native',  reason: 'Native libsodium.', transitive: 'fail' }],
+  ['fsevents',       { from: 'fsevents',       reason: 'macOS-only filesystem watcher; never runs in Workers.', transitive: 'warn' }],
+  ['bufferutil',     { from: 'bufferutil',     reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
+  ['utf-8-validate', { from: 'utf-8-validate', reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
+  ['node-pty',       { from: 'node-pty',       reason: 'PTY syscalls unavailable in workerd.', transitive: 'fail' }],
+  ['robotjs',        { from: 'robotjs',        reason: 'Desktop automation; sandboxed Workers cannot access OS UI.', transitive: 'fail' }],
+  ['electron',       { from: 'electron',       reason: 'Embedded Chromium runtime; not applicable to Workers.', transitive: 'fail' }],
+  ['bcrypt',         { from: 'bcrypt',         reason: 'Native bcrypt; require() name differs from bcryptjs.', transitive: 'fail' }],
+  ['argon2',         { from: 'argon2',         reason: 'Native Argon2 C bindings.', transitive: 'fail' }],
+  ['node-sass',      { from: 'node-sass',      reason: 'Native libsass; deprecated upstream.', transitive: 'fail' }],
+  ['grpc',           { from: 'grpc',           reason: 'Deprecated native gRPC.', transitive: 'fail' }],
+  ['@swc/core',      { from: '@swc/core',      reason: 'Native Rust SWC.', transitive: 'fail' }],
+  ['prisma',         { from: 'prisma',         reason: 'Native query engine; not portable to Workers in this configuration.', transitive: 'fail' }],
+  ['@prisma/client', { from: '@prisma/client', reason: 'Native Prisma query engine.', transitive: 'fail' }],
+  ['node-gyp',       { from: 'node-gyp',       reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
+  ['node-pre-gyp',   { from: 'node-pre-gyp',   reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
+  ['puppeteer',      { from: 'puppeteer',      reason: 'Bundled Chromium binary (~150 MB).', transitive: 'fail' }],
+  ['playwright',     { from: 'playwright',     reason: 'Bundled browsers (~300 MB).', transitive: 'fail' }],
+  ['sql.js',         { from: 'sql.js',         reason: 'Installs but fails at runtime: WASM artifact dist/sql-wasm.wasm not extracted (loader gap).', transitive: 'fail' }],
+  ['@swc/wasm-web',  { from: '@swc/wasm-web',  reason: 'Installs but fails at runtime: file not pre-bundled in VFS (loader gap).', transitive: 'fail' }],
+]);
+function SHOULD_SWAP(name) {
+  return __WASM_SWAPS.get(name);
+}
+function SHOULD_REJECT_FAIL(name) {
+  const r = __REJECT_INSTALL.get(name);
+  if (r && r.transitive === 'fail') return r;
+  return undefined;
+}
+function SHOULD_WARN_SKIP_TRANSITIVE(name) {
+  const r = __REJECT_INSTALL.get(name);
+  if (r && r.transitive === 'warn') return r;
+  return undefined;
 }
 
 // ── Semver helpers (pasted from src/npm-resolver.ts:83-202) ─────────────
