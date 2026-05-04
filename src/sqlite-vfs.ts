@@ -46,6 +46,8 @@
 
 import { VfsEventEmitter, type VfsEventType } from './vfs-events.js';
 import { CHUNK_SIZE, LRU_MAX_ENTRIES, BATCH_SIZE } from './constants.js';
+import { recordFailure } from './oom-discriminator.js';
+import { classifyError } from './oom-classify.js';
 import { enc, dec } from './_shared/bytes.js';
 
 // CHUNK_SIZE / LRU_MAX_ENTRIES / BATCH_SIZE are imported from ./constants.js
@@ -118,6 +120,24 @@ export class SqliteVFS {
   private cache = new Map<string, CacheEntry>();
   /** Actual bytes in cache (not all chunks are full 64KB) */
   private _cacheBytes = 0;
+
+  // ── W5 Lever 8: runtime-mutable LRU cap + shrink refcount ─────────
+  // Default seeded from LRU_MAX_ENTRIES (32 MiB). Heavy-alloc owners
+  // (npm install, git clone, pre-bundle) call shrinkForInstall() to
+  // drop the cap to ~8 MiB and free heap headroom for the in-flight
+  // RPC payloads + pending-writes queue. Refcount-based: nested
+  // acquires stack; only the OUTERMOST restoreAfterInstall() actually
+  // raises the cap back to the default.
+  //
+  // Why instance-level (not module-level):
+  //   - Tests need an in-memory VFS without polluting the constant.
+  //   - Future per-DO tuning (e.g. set higher cap on a session running
+  //     `vite build` vs `npm install`) becomes a one-call change.
+  //
+  // The eviction trigger at cacheSet() reads this field. Counter
+  // accounting is unchanged.
+  private _lruMaxEntries: number = LRU_MAX_ENTRIES;
+  private _lruShrinkRefcount: number = 0;
 
   // ── Running counters for O(1) getStats() (B3 / AUDIT M10 / M-S8) ──
   // Replaces the triple scan of this.inodes on every /api/stats poll.
@@ -356,8 +376,10 @@ export class SqliteVFS {
       return;
     }
 
-    // Evict if at capacity
-    while (this.cache.size >= LRU_MAX_ENTRIES) {
+    // Evict if at capacity. W5 Lever 8: read the runtime-mutable
+    // _lruMaxEntries instead of the constant so shrinkForInstall()
+    // takes effect for in-flight writes too.
+    while (this.cache.size >= this._lruMaxEntries) {
       this.evictOne();
     }
 
@@ -377,6 +399,74 @@ export class SqliteVFS {
 
     if (entry.dirty) {
       this.deferWrite(entry.path, entry.chunkId, entry.data);
+    }
+  }
+
+  // ── W5 Lever 8: public LRU shrink / restore + evictAll ───────────────
+  //
+  // shrinkForInstall(targetEntries): tighten the cap so heavy-alloc
+  // owners (npm install / git clone / pre-bundle) free heap headroom
+  // for in-flight RPC payloads + pending-writes queue. Refcount-based
+  // so nested heavy-alloc owners (e.g. concurrent install + clone)
+  // don't race; only the OUTERMOST restoreAfterInstall() raises the
+  // cap back to LRU_MAX_ENTRIES.
+  //
+  // Default target 128 entries × 64 KB = 8 MiB. Matches
+  // CF-INTERNAL-OPTIMIZATION-RESEARCH.md J.1.2.
+  //
+  // Eviction during shrink flows through deferWrite → flushPendingWrites
+  // (existing path), so no data loss. Cold-cache bounce for the next
+  // reads of evicted pages is acceptable since install workloads
+  // write-once-and-rarely-reread.
+  shrinkForInstall(targetEntries: number = 128): void {
+    const target = Math.max(1, Math.min(LRU_MAX_ENTRIES, targetEntries | 0));
+    // Refcount: nested acquires stack. Take the smallest target across
+    // owners — most aggressive shrinker wins.
+    if (this._lruShrinkRefcount > 0) {
+      if (target < this._lruMaxEntries) this._lruMaxEntries = target;
+      this._lruShrinkRefcount++;
+      return;
+    }
+    this._lruShrinkRefcount = 1;
+    this._lruMaxEntries = target;
+    // Evict down to the new cap. Each evictOne() flushes the dirty
+    // entry (if any) via deferWrite; queueMicrotask schedules the
+    // flush. Stays sync — preserves the sqlite-vfs invariant.
+    while (this.cache.size > this._lruMaxEntries) {
+      this.evictOne();
+    }
+  }
+
+  /** Decrement the heavy-alloc refcount. When the count returns to
+   *  zero, restore the cap to LRU_MAX_ENTRIES. No re-population —
+   *  the cache warms naturally on next reads. */
+  restoreAfterInstall(): void {
+    if (this._lruShrinkRefcount <= 0) return;
+    this._lruShrinkRefcount--;
+    if (this._lruShrinkRefcount === 0) {
+      this._lruMaxEntries = LRU_MAX_ENTRIES;
+    }
+  }
+
+  /**
+   * Drop EVERY cache entry, flushing dirty ones via deferWrite. Used
+   * by the W5 Lever 9 SQLITE_NOMEM retry path to free pages owned by
+   * us before retrying a smaller batch. Sync; safe inside the input
+   * gate.
+   */
+  evictAll(): void {
+    // Iterate a snapshot so concurrent mutation through deferWrite
+    // doesn't disturb iteration.
+    const keys = Array.from(this.cache.keys());
+    for (const key of keys) {
+      const entry = this.cache.get(key);
+      if (!entry) continue;
+      this.cache.delete(key);
+      this._cacheBytes -= entry.data.length;
+      this._evictions++;
+      if (entry.dirty) {
+        this.deferWrite(entry.path, entry.chunkId, entry.data);
+      }
     }
   }
 
@@ -1070,6 +1160,152 @@ export class SqliteVFS {
    * Speedup: 60K ops → ~60 ops (1000x fewer transaction commits).
    */
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } {
+    // W5 Lever 9: top-level entry. Inner _writeBatchOnce throws on
+    // SQLITE_NOMEM; this wrapper catches, classifies, drops the LRU,
+    // and retries by halving — bounded depth 4. Other errors propagate
+    // unchanged (loud failure preserves the W2.5 error contract for
+    // constraint conflicts etc.).
+    return this._writeBatchWithRetry(payload, 0);
+  }
+
+  private _writeBatchWithRetry(
+    payload: BatchWritePayload,
+    depth: number,
+  ): { inodes: number; chunks: number } {
+    try {
+      return this._writeBatchOnce(payload);
+    } catch (e: any) {
+      const cause = classifyError(e);
+      // Classify before deciding to retry. Only the SQLITE_NOMEM family
+      // is retryable; constraint conflicts / disk-full / clone-refused
+      // / unknown all surface to the caller (fail loud).
+      const lru = this._cacheBytes;
+      const inFlight = this._estimateBatchBytes(payload);
+      recordFailure({
+        at: Date.now(),
+        phase: 'install',
+        cause,
+        rssEstimateBytes: 0,
+        heapUsedBytes: this._safeHeapUsed(),
+        lruBytes: lru,
+        inFlightBytes: inFlight,
+        lastRpcFrame: null,
+        lastFacetId: null,
+        message: e?.message || String(e),
+      });
+      if (cause !== 'sqlite_nomem') throw e;
+
+      // Bounded retry depth. 500-row batch → 250 → 125 → ~63 → ~32.
+      // Beyond depth=4, give up: persistent OOM at 32 rows means we
+      // are not the bottleneck.
+      if (depth >= 4) throw e;
+
+      // Free pages owned by us before re-attempting. evictAll() flushes
+      // dirty entries via deferWrite (existing path) so no data loss.
+      this.evictAll();
+
+      // Halve the payload by partitioning ALL three lists (inodes,
+      // chunks, deletePaths) by path-set so each half operates on
+      // disjoint paths. Halving is on inodes (the primary index);
+      // chunks and deletePaths are partitioned to match.
+      const halves = this._halveBatchPayload(payload);
+      const r1 = this._writeBatchWithRetry(halves[0], depth + 1);
+      const r2 = this._writeBatchWithRetry(halves[1], depth + 1);
+      return {
+        inodes: r1.inodes + r2.inodes,
+        chunks: r1.chunks + r2.chunks,
+      };
+    }
+  }
+
+  /**
+   * Estimate the byte cost of a writeBatch payload. Used by the W5
+   * recordFailure call so /api/_diag/memory can report inFlightBytes
+   * at the moment of the SQLITE_NOMEM. Fast (no copy).
+   */
+  private _estimateBatchBytes(payload: BatchWritePayload): number {
+    let n = 0;
+    for (const c of payload.chunks) n += c.data.length;
+    // Path strings + inode header overhead — rough estimate.
+    for (const i of payload.inodes) n += 80 + i.path.length;
+    return n;
+  }
+
+  /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
+  private _safeHeapUsed(): number {
+    try {
+      const mu = (globalThis as any).process?.memoryUsage?.();
+      return Number(mu?.heapUsed) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Partition a writeBatch payload into two halves with disjoint
+   * path-sets. Preserves the W2.5 invariant: deletePaths and chunks
+   * follow their owning inode into the same half. Used by the
+   * SQLITE_NOMEM retry path.
+   */
+  private _halveBatchPayload(
+    p: BatchWritePayload,
+  ): [BatchWritePayload, BatchWritePayload] {
+    // If there are inodes, halve by inode list and partition chunks +
+    // deletePaths by path-set. If there are NO inodes (chunks-only
+    // batch), halve chunks directly.
+    const inodes = p.inodes ?? [];
+    const chunks = p.chunks ?? [];
+    const dels = p.deletePaths ?? [];
+
+    if (inodes.length >= 2) {
+      const mid = Math.ceil(inodes.length / 2);
+      const i1 = inodes.slice(0, mid);
+      const i2 = inodes.slice(mid);
+      const set1 = new Set(i1.map(n => n.path));
+      const set2 = new Set(i2.map(n => n.path));
+      const c1: typeof chunks = [];
+      const c2: typeof chunks = [];
+      for (const c of chunks) {
+        if (set1.has(c.path)) c1.push(c);
+        else if (set2.has(c.path)) c2.push(c);
+        // Chunks orphaned from inodes (defensive) go to half 1.
+        else c1.push(c);
+      }
+      const d1: string[] = [];
+      const d2: string[] = [];
+      for (const d of dels) {
+        if (set1.has(d)) d1.push(d);
+        else if (set2.has(d)) d2.push(d);
+        else d1.push(d);
+      }
+      return [
+        { inodes: i1, chunks: c1, deletePaths: d1 },
+        { inodes: i2, chunks: c2, deletePaths: d2 },
+      ];
+    }
+
+    // No inodes — chunks-only or delete-only payload. Halve directly.
+    if (chunks.length >= 2) {
+      const mid = Math.ceil(chunks.length / 2);
+      return [
+        { inodes: [], chunks: chunks.slice(0, mid), deletePaths: dels },
+        { inodes: [], chunks: chunks.slice(mid), deletePaths: [] },
+      ];
+    }
+
+    if (dels.length >= 2) {
+      const mid = Math.ceil(dels.length / 2);
+      return [
+        { inodes: [], chunks: [], deletePaths: dels.slice(0, mid) },
+        { inodes: [], chunks: [], deletePaths: dels.slice(mid) },
+      ];
+    }
+
+    // Single-item payload — can't halve further; return original + empty.
+    return [p, { inodes: [], chunks: [], deletePaths: [] }];
+  }
+
+  private _writeBatchOnce(payload: BatchWritePayload): { inodes: number; chunks: number } {
     let inodeCount = 0;
     let chunkCount = 0;
 
@@ -1320,17 +1556,20 @@ export class SqliteVFS {
       capacityBytes: 10 * 1024 * 1024 * 1024, // 10 GB
       backend: 'DO SQLite (demand-paged VFS)',
 
-      // Cache stats
+      // Cache stats. maxEntries / maxBytes are now W5-runtime-mutable —
+      // shrinkForInstall() drops them, restoreAfterInstall() restores.
+      // lruShrunk is the at-a-glance signal for /api/_diag/memory.
       cache: {
         entries: this.cache.size,
-        maxEntries: LRU_MAX_ENTRIES,
+        maxEntries: this._lruMaxEntries,
         chunkSize: CHUNK_SIZE,
         hotBytes: this._cacheBytes,
-        maxBytes: LRU_MAX_ENTRIES * CHUNK_SIZE,
+        maxBytes: this._lruMaxEntries * CHUNK_SIZE,
         hits: this._cacheHits,
         misses: this._cacheMisses,
         hitRate: Math.round(hitRate * 100) / 100,
         evictions: this._evictions,
+        lruShrunk: this._lruMaxEntries < LRU_MAX_ENTRIES,
       },
 
       // SQL I/O stats

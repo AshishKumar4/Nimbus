@@ -28,6 +28,8 @@ import { CF_COMPAT_DATE } from '../constants.js';
 import { getCtxExports } from '../ctx-exports.js';
 import { buildWorkerCode } from './vendor/codegen.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { recordFailure, setLastFacetId, getLastRpcFrame } from '../oom-discriminator.js';
+import { classifyError } from '../oom-classify.js';
 import {
   BindingError,
   ExecutionError,
@@ -456,6 +458,11 @@ export class NimbusFacetPool {
     const id = `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:slot-${slotIndex}`;
     const code = this.#buildCode(fnSource, context);
 
+    // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
+    // last-facet-id even on a hang or silent kill. Bounded — single
+    // slot updated on every dispatch.
+    try { setLastFacetId(id, slotIndex); } catch { /* best-effort */ }
+
     const runOnce = async (): Promise<unknown> => {
       // loader.get() is synchronous from the caller's POV; the callback
       // is only invoked on cache miss. We wrap the callback tightly so a
@@ -531,6 +538,23 @@ export class NimbusFacetPool {
         return await runOnce();
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        // W5 Lever 5: classify + record. We push on EVERY failed
+        // attempt (not just the final retry-exhausted throw) so the
+        // ring captures transient SQLITE_NOMEM / clone-refused
+        // patterns that still ultimately succeed. Ring is bounded
+        // (50 entries) so noise is self-limiting.
+        try {
+          recordFailure({
+            at: Date.now(),
+            phase: 'rpc',
+            cause: classifyError(lastError),
+            rssEstimateBytes: 0, heapUsedBytes: 0,
+            lruBytes: 0, inFlightBytes: 0,
+            lastRpcFrame: getLastRpcFrame(),
+            lastFacetId: { codeId: id, slotIndex, atMs: Date.now() },
+            message: lastError.message,
+          });
+        } catch { /* fail-soft */ }
         if (attempt < maxAttempts - 1) {
           // 100 * 2^attempt, capped at 2s so retries don't compound waiting.
           const delay = Math.min(2000, 100 * Math.pow(2, attempt));

@@ -19,6 +19,8 @@ import type { SqliteVFS } from './sqlite-vfs.js';
 import type { PortRegistry } from './port-registry.js';
 import { getCtxExports } from './ctx-exports.js';
 import { prefetchForRequire } from './require-resolver.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId } from './oom-discriminator.js';
+import { classifyError } from './oom-classify.js';
 import {
   CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES,
@@ -799,6 +801,14 @@ export class FacetManager {
           );
           this._hasFacets = true;
           this.processTable.exit(entry.pid, result.exitCode);
+          // W5 Lever 5: zero-silent-OOM contract — every non-zero exit
+          // must yield a ring entry.
+          if (result.exitCode !== 0) {
+            this._w5RecordTermination(
+              entry.pid, result.exitCode, 'facet',
+              result.stderr || `exit ${result.exitCode}`,
+            );
+          }
           this._flushVfsWrites(result);
           return result;
         } catch (facetErr: any) {
@@ -816,6 +826,10 @@ export class FacetManager {
             // stuck "running" dot for facets that crash before they get
             // a chance to self-report).
             this.processTable.exit(entry.pid, 1);
+            this._w5RecordTermination(
+              entry.pid, 1, 'facet',
+              'facet error: ' + (facetErr?.message || String(facetErr)),
+            );
             try {
               this.hooks.onExternalExit?.(
                 entry.pid, 1,
@@ -842,6 +856,12 @@ export class FacetManager {
         entry,
       );
       this.processTable.exit(entry.pid, result.exitCode);
+      if (result.exitCode !== 0) {
+        this._w5RecordTermination(
+          entry.pid, result.exitCode, 'facet',
+          result.stderr || `exit ${result.exitCode}`,
+        );
+      }
       this._flushVfsWrites(result);
       return result;
     } catch (err: any) {
@@ -853,6 +873,14 @@ export class FacetManager {
       const timedOut = !!(entry as any).__timedOut;
       const exitCode = timedOut ? 124 : 1;
       this.processTable.exit(entry.pid, exitCode);
+      // W5 Lever 5: ring entry on every catch-path exit.
+      this._w5RecordTermination(
+        entry.pid, exitCode,
+        timedOut ? 'rpc' : 'facet',
+        timedOut
+          ? 'timeout'
+          : ('facet error: ' + (err?.message || String(err))),
+      );
       // Non-timeout failure: route through external-exit so the log
       // store marks exit AND the tabs-UI structured event fires. The
       // timeout path already called onExternalExit from the timeout
@@ -866,6 +894,46 @@ export class FacetManager {
         } catch {}
       }
       return { exitCode, stdout: '', stderr: err?.message || String(err) };
+    }
+  }
+
+  /**
+   * W5 Lever 5: push a DiagFailure into the OOM ring for every facet
+   * termination with a non-zero exit code. This is the supervisor side
+   * of the zero-silent-OOM contract — the audit/probes/w5/e2e/
+   * oom-stress probe asserts that every termination has a matching
+   * ring entry.
+   *
+   * Classification: parse the reason/stderr for SQLITE_NOMEM, OOM,
+   * clone-refused, rpc_timeout signatures (oom-classify.ts). Code 124
+   * always maps to rpc_timeout regardless of message.
+   */
+  private _w5RecordTermination(
+    pid: number,
+    exitCode: number,
+    phase: string,
+    reason: string,
+  ): void {
+    try {
+      let cause = classifyError(reason);
+      if (exitCode === 124 && cause === 'unknown') cause = 'rpc_timeout';
+      recordFailure({
+        at: Date.now(),
+        phase,
+        cause,
+        rssEstimateBytes: 0,
+        heapUsedBytes: 0,
+        lruBytes: 0,
+        inFlightBytes: 0,
+        lastRpcFrame: getLastRpcFrame(),
+        lastFacetId: getLastFacetId(),
+        exitCode,
+        pid,
+        message: reason,
+      });
+    } catch (e: any) {
+      // Fail-soft: telemetry must never break the exit path.
+      console.warn('[facet-manager/W5] recordFailure threw:', e?.message);
     }
   }
 
