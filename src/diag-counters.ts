@@ -111,39 +111,6 @@ export interface DiagCounters {
      *  Empty when the most recent batch had zero errors. */
     errorsByModule: Record<string, string>;
   };
-  /** R2-backed cross-tenant npm cache counters (W4). All counts are
-   *  cumulative since DO-isolate start. Hits drop install latency;
-   *  tracking the hit-rate is the smoking gun for whether the W4 plan
-   *  is delivering its promised wins. */
-  r2: {
-    /** Tarball R2 cache hits (bytes returned from R2, integrity-verified
-     *  on read by the install facet). */
-    tarballHit: number;
-    /** Tarball R2 cache misses (R2 returned null OR oversize-bypass). */
-    tarballMiss: number;
-    /** Packument R2 cache hits — fresh, not expired. */
-    packumentHit: number;
-    /** Packument R2 cache misses — absent OR expired. */
-    packumentMiss: number;
-    /** Tarball R2 writes that succeeded. */
-    tarballPutOk: number;
-    /** Tarball R2 writes that failed (non-fatal, install proceeds). */
-    tarballPutFail: number;
-    /** Packument R2 writes that succeeded. */
-    packumentPutOk: number;
-    /** Packument R2 writes that failed (non-fatal). */
-    packumentPutFail: number;
-    /** Pipelined-RPC race wins for tarballs (R2 came back first; network
-     *  was cancelled). */
-    pipelinedTarballRaceWins: number;
-    /** Pipelined-RPC race losses for tarballs (R2 came back too slow or
-     *  empty; network response used). */
-    pipelinedTarballRaceLosses: number;
-    /** Pipelined-RPC race wins for packuments. */
-    pipelinedPackumentRaceWins: number;
-    /** Pipelined-RPC race losses for packuments. */
-    pipelinedPackumentRaceLosses: number;
-  };
 }
 
 const _counters: DiagCounters = {
@@ -170,20 +137,6 @@ const _counters: DiagCounters = {
     wasmBootBytes: 0,
     lastError: '',
     errorsByModule: {},
-  },
-  r2: {
-    tarballHit: 0,
-    tarballMiss: 0,
-    packumentHit: 0,
-    packumentMiss: 0,
-    tarballPutOk: 0,
-    tarballPutFail: 0,
-    packumentPutOk: 0,
-    packumentPutFail: 0,
-    pipelinedTarballRaceWins: 0,
-    pipelinedTarballRaceLosses: 0,
-    pipelinedPackumentRaceWins: 0,
-    pipelinedPackumentRaceLosses: 0,
   },
 };
 
@@ -297,38 +250,6 @@ export function recordPreBundleSummary(s: {
   }
 }
 
-// ── R2-backed npm cache counters [W4] ──────────────────────────────────
-//
-// These counter bumps live in the supervisor isolate (called from
-// SupervisorRPC.getCachedTarball / getCachedPackument / putCached*).
-// The facet itself never imports diag-counters — it sees only the
-// SUPERVISOR RPC binding; the bump happens on the supervisor side after
-// the RPC method fires.
-
-export function r2TarballHit(): void { _counters.r2.tarballHit++; }
-export function r2TarballMiss(): void { _counters.r2.tarballMiss++; }
-export function r2PackumentHit(): void { _counters.r2.packumentHit++; }
-export function r2PackumentMiss(): void { _counters.r2.packumentMiss++; }
-export function r2TarballPutOk(): void { _counters.r2.tarballPutOk++; }
-export function r2TarballPutFail(): void { _counters.r2.tarballPutFail++; }
-export function r2PackumentPutOk(): void { _counters.r2.packumentPutOk++; }
-export function r2PackumentPutFail(): void { _counters.r2.packumentPutFail++; }
-
-/** Bump pipelined-RPC race outcome counters. The facet returns these
- *  in its result counters; the supervisor folds them in alongside the
- *  existing installFacet counters. */
-export function recordR2RaceCounters(c: {
-  pipelinedTarballRaceWins: number;
-  pipelinedTarballRaceLosses: number;
-  pipelinedPackumentRaceWins: number;
-  pipelinedPackumentRaceLosses: number;
-}): void {
-  _counters.r2.pipelinedTarballRaceWins += c.pipelinedTarballRaceWins;
-  _counters.r2.pipelinedTarballRaceLosses += c.pipelinedTarballRaceLosses;
-  _counters.r2.pipelinedPackumentRaceWins += c.pipelinedPackumentRaceWins;
-  _counters.r2.pipelinedPackumentRaceLosses += c.pipelinedPackumentRaceLosses;
-}
-
 /** Reset everything. Used by tests; not called from prod paths. */
 export function resetDiagCounters(): void {
   _counters.installPhase = 'idle';
@@ -354,19 +275,5 @@ export function resetDiagCounters(): void {
     wasmBootBytes: 0,
     lastError: '',
     errorsByModule: {},
-  };
-  _counters.r2 = {
-    tarballHit: 0,
-    tarballMiss: 0,
-    packumentHit: 0,
-    packumentMiss: 0,
-    tarballPutOk: 0,
-    tarballPutFail: 0,
-    packumentPutOk: 0,
-    packumentPutFail: 0,
-    pipelinedTarballRaceWins: 0,
-    pipelinedTarballRaceLosses: 0,
-    pipelinedPackumentRaceWins: 0,
-    pipelinedPackumentRaceLosses: 0,
   };
 }

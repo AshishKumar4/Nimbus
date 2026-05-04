@@ -44,7 +44,6 @@ import {
   setInstallPhase, setResolverPath,
   setInstallFacetPath, recordInstallFacetCounters,
   recordPreBundleSummary,
-  recordR2RaceCounters,
 } from './diag-counters.js';
 import {
   resolveTreeInFacet,
@@ -567,25 +566,13 @@ export class NpmInstaller {
 
     // Surface facet messages into the install log.
     for (const m of result.messages) log(m);
-    // [W4] Fold packument R2 race outcomes into supervisor diag.r2.
-    const rfc: any = result.facetCounters;
-    recordR2RaceCounters({
-      pipelinedTarballRaceWins: 0,
-      pipelinedTarballRaceLosses: 0,
-      pipelinedPackumentRaceWins: rfc.pipelinedPackumentRaceWins ?? 0,
-      pipelinedPackumentRaceLosses: rfc.pipelinedPackumentRaceLosses ?? 0,
-    });
-    const r2WinSuffix = (rfc.pipelinedPackumentRaceWins ?? 0) > 0
-      ? `, R2 packument cache wins=${rfc.pipelinedPackumentRaceWins}/${(rfc.pipelinedPackumentRaceWins ?? 0) + (rfc.pipelinedPackumentRaceLosses ?? 0)}`
-      : '';
     log(
       `  resolver-facet: ${result.resolved.length} resolved, ` +
       `${result.facetCounters.packumentsDecoded} packuments fetched (` +
       `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB), ` +
       `peak in-flight=${result.facetCounters.inFlightPeak}, ` +
-      `cache writes=${result.cacheWriteCount}` +
-      r2WinSuffix +
-      `, elapsed=${(result.elapsed / 1000).toFixed(1)}s`,
+      `cache writes=${result.cacheWriteCount}, ` +
+      `elapsed=${(result.elapsed / 1000).toFixed(1)}s`,
     );
 
     const resolved = new Map<string, ResolvedPackage>();
@@ -689,25 +676,12 @@ export class NpmInstaller {
       // while the supervisor's cumulativePackumentBytesDecoded stays
       // flat).
       recordInstallFacetCounters(result.facetCounters);
-      // [W4] Fold tarball R2 race outcomes into supervisor diag.r2.
-      const fc: any = result.facetCounters;
-      recordR2RaceCounters({
-        pipelinedTarballRaceWins: fc.pipelinedTarballRaceWins ?? 0,
-        pipelinedTarballRaceLosses: fc.pipelinedTarballRaceLosses ?? 0,
-        // Resolver counters folded separately at resolveTreeViaFacet().
-        pipelinedPackumentRaceWins: 0,
-        pipelinedPackumentRaceLosses: 0,
-      });
-      const r2WinSuffix = (fc.pipelinedTarballRaceWins ?? 0) > 0
-        ? `, R2 cache wins=${fc.pipelinedTarballRaceWins}/${(fc.pipelinedTarballRaceWins ?? 0) + (fc.pipelinedTarballRaceLosses ?? 0)}`
-        : '';
       log(
         `Batch-facet complete: ${okCount}/${specs.length} packages, ` +
         `${filesWritten} files, ` +
         `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB tarball bytes, ` +
-        `peak in-flight=${result.facetCounters.peakInFlight}` +
-        r2WinSuffix +
-        `, ${(result.elapsed / 1000).toFixed(1)}s` +
+        `peak in-flight=${result.facetCounters.peakInFlight}, ` +
+        `${(result.elapsed / 1000).toFixed(1)}s` +
         (failCount > 0 ? ` (${failCount} failed)` : ''),
       );
       return { installed, failed, filesWritten };

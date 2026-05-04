@@ -47,38 +47,5 @@
   ],
   "worker_loaders": [
     { "binding": "LOADER" }
-  ],
-  // [W4] R2-backed cross-tenant npm cache (Lever D1/D2 from
-  // audit/sections/CF-INTERNAL-OPTIMIZATION-RESEARCH.md §D).
-  //
-  // Two buckets:
-  //   - nimbus-npm-cache:           tarballs, content-fixed, immutable.
-  //                                 No TTL, schema-bump invalidation only.
-  //   - nimbus-npm-packument-cache: packument JSON, 5-min TTL via
-  //                                 customMetadata.expiresAt.
-  //
-  // Graceful-degrade: if these bindings are missing at runtime, the
-  // R2CacheClient (src/r2-cache.ts) treats reads as misses and writes
-  // as no-ops. The installer falls through to its existing
-  // registry.npmjs.org fetch path with no behavioural change. So this
-  // config is safe to land BEFORE the R2 buckets are provisioned in
-  // the production CF account.
-  //
-  // To provision (one-time, manual):
-  //   wrangler r2 bucket create nimbus-npm-cache
-  //   wrangler r2 bucket create nimbus-npm-packument-cache
-  //
-  // No `preview_bucket_name`: the same buckets are used in dev. With
-  // `wrangler dev` (local), the binding falls through to the local R2
-  // simulator which is empty — same null-bucket null-on-miss path.
-  "r2_buckets": [
-    {
-      "binding": "NPM_TARBALL_CACHE",
-      "bucket_name": "nimbus-npm-cache"
-    },
-    {
-      "binding": "NPM_PACKUMENT_CACHE",
-      "bucket_name": "nimbus-npm-packument-cache"
-    }
   ]
 }
