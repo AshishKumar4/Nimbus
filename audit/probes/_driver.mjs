@@ -13,7 +13,7 @@
 import WebSocket from 'ws';
 import fs from 'fs';
 
-const BASE = 'https://nimbus.ashishkmr472.workers.dev';
+const BASE = process.env.BASE || 'https://nimbus.ashishkmr472.workers.dev';
 
 function strip(s) {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');

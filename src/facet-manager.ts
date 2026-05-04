@@ -14,6 +14,7 @@
 
 import { ProcessTable, type ProcessEntry } from './process-table.js';
 import { generateShimsCode } from './node-shims.js';
+import { getRealNodeImportsCode } from './_shared/real-node-imports.js';
 import type { SqliteVFS } from './sqlite-vfs.js';
 import type { PortRegistry } from './port-registry.js';
 import { getCtxExports } from './ctx-exports.js';
@@ -36,6 +37,14 @@ export interface FacetExecResult {
 // ── Code generators ─────────────────────────────────────────────────────
 
 const SHIMS = generateShimsCode();
+
+/**
+ * Static `import * as __real_X from 'node:X'` block.  Prepended to both
+ * facet-code templates (NodeProcess + LOADER.load fallback) so the
+ * SHIMS string can forward to workerd's real `node:*` builtins.
+ * See src/_shared/real-node-imports.ts for the rationale + matrix.
+ */
+const REAL_NODE_IMPORTS = getRealNodeImportsCode();
 
 /** Simple hash for deduplicating identical code across invocations. */
 function hashCode(s: string): string {
@@ -174,6 +183,7 @@ function generateFacetCode(userCode: string, vfsState: FacetVfsState): string {
   const safeManifest = JSON.stringify(vfsState.manifest);
   return `
 import { DurableObject } from "cloudflare:workers";
+${REAL_NODE_IMPORTS}
 
 const USER_CODE = ${safeCode};
 const __compiledFn = new Function(
@@ -337,6 +347,8 @@ function generateEntrypointCode(userCode: string, vfsState: FacetVfsState): stri
   const safeBundle = JSON.stringify(vfsState.bundle);
   const safeManifest = JSON.stringify(vfsState.manifest);
   return `
+${REAL_NODE_IMPORTS}
+
 const USER_CODE = ${safeCode};
 const __compiledFn = new Function(
   "exports", "require", "module", "__filename", "__dirname",
