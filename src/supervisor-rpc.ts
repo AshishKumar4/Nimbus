@@ -24,6 +24,31 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+// W5: OOM discriminator — record last-known RPC frame on writeBatch entry
+import { setLastRpcFrame } from './oom-discriminator.js';
+// W4: R2 cross-tenant npm cache (tarballs + packuments)
+import { R2CacheClient, MAX_R2_TARBALL_BYTES } from './r2-cache.js';
+import {
+  r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss,
+  r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail,
+} from './diag-counters.js';
+
+/**
+ * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
+ * /api/_diag/memory.rpc.lastFrame.payloadBytes field is meaningful.
+ * Counts chunk data bytes + per-inode header overhead. Fast (no copy).
+ */
+function _estimateWriteBatchBytes(payload: any): number {
+  if (!payload) return 0;
+  let n = 0;
+  const chunks = payload.chunks ?? [];
+  for (const c of chunks) {
+    n += (c?.data?.length ?? c?.data?.byteLength ?? 0);
+  }
+  const inodes = payload.inodes ?? [];
+  for (const i of inodes) n += 80 + (i?.path?.length ?? 0);
+  return n;
+}
 
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
@@ -102,6 +127,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
    *   }
    */
   async writeBatch(payload: any): Promise<{ inodes: number; chunks: number }> {
+    // W5 Lever 5: record the frame on entry so /api/_diag/memory has
+    // last-known-RPC context if the supervisor crashes mid-RPC. Single
+    // slot — overwritten on every entry. Best-effort; never fails the
+    // RPC itself.
+    try {
+      setLastRpcFrame('writeBatch', _estimateWriteBatchBytes(payload));
+    } catch { /* best-effort */ }
     return this._getStub()._rpcWriteBatch(payload);
   }
 
@@ -120,6 +152,129 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async putRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> {
     return this._getStub()._rpcPutRegistryEntries(entries);
+  }
+
+  // ── R2-backed npm cache RPC [W4] ─────────────────────────────────────
+  //
+  // The R2 buckets are bindings on the SUPERVISOR worker (not the
+  // facet). The facet only sees what we hang on its `env: { SUPERVISOR }`
+  // injection (see src/facet-manager.ts:892 and similar). To expose R2
+  // to the facet without pinning a binding stub through the LOADER, we
+  // proxy reads/writes through these RPC methods.
+  //
+  // Counter increments live HERE (supervisor isolate, where diag-counters
+  // is module-scoped). The facet itself never sees the counter module.
+  //
+  // Graceful-degrade: if NPM_TARBALL_CACHE / NPM_PACKUMENT_CACHE bindings
+  // aren't configured (deploy without R2 buckets, or local dev), the
+  // R2CacheClient falls through to null returns / no-op writes; the
+  // facet sees null and uses its existing network-fetch path. No errors,
+  // no breakage. See audit/sections/W4-plan.md §8 risk #1.
+
+  /**
+   * Build a fresh R2CacheClient bound to this request's env. Cheap to
+   * instantiate; does no async work. Called from each R2 RPC method to
+   * avoid keeping the client in instance state (the WorkerEntrypoint
+   * lifecycle is per-invocation and we want a clean closure each time).
+   */
+  private _r2(): R2CacheClient {
+    const tar = (this.env as any)?.NPM_TARBALL_CACHE ?? null;
+    const pkm = (this.env as any)?.NPM_PACKUMENT_CACHE ?? null;
+    return new R2CacheClient(tar, pkm);
+  }
+
+  /**
+   * Look up a tarball in the R2 cross-tenant cache. Returns the gzipped
+   * tar bytes as Uint8Array, or null on miss / oversize / missing
+   * binding. The caller (npm-install-batch-facet) is expected to
+   * integrity-verify the bytes before unpacking — same posture as
+   * the network-fetch path.
+   *
+   * Hit / miss counters are bumped on the supervisor side so
+   * /api/_diag/memory surfaces accurate cross-install hit-rates.
+   */
+  async getCachedTarball(name: string, version: string): Promise<Uint8Array | null> {
+    const r2 = this._r2();
+    const bytes = await r2.getTarball(name, version);
+    if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
+      r2TarballHit();
+      return bytes;
+    }
+    r2TarballMiss();
+    return null;
+  }
+
+  /**
+   * Store a tarball in the R2 cross-tenant cache. Best-effort: on R2
+   * write failure, returns false but the install pipeline continues
+   * unaffected. Caller passes the bytes already verified against the
+   * resolver's integrity hash.
+   */
+  async putCachedTarball(
+    name: string,
+    version: string,
+    bytes: Uint8Array | ArrayBuffer,
+  ): Promise<boolean> {
+    const r2 = this._r2();
+    const ok = await r2.putTarball(name, version, bytes);
+    if (ok) r2TarballPutOk();
+    else r2TarballPutFail();
+    return ok;
+  }
+
+  /**
+   * Look up a packument in the R2 cross-tenant cache. Returns
+   * { json, ageMs, expired } or null on miss / missing binding.
+   *
+   * Caller MUST honour the `expired` flag: only treat as a hot-path
+   * hit when expired === false. Stale data is returned only for
+   * stale-while-error fallback semantics.
+   */
+  async getCachedPackument(
+    name: string,
+  ): Promise<{ json: string; ageMs: number; expired: boolean } | null> {
+    const r2 = this._r2();
+    const cached = await r2.getPackument(name);
+    if (cached && !cached.expired) {
+      r2PackumentHit();
+      return cached;
+    }
+    if (cached && cached.expired) {
+      // Treat expired as a miss for hit-rate accounting; still return
+      // the data so callers can use it for stale-while-error.
+      r2PackumentMiss();
+      return cached;
+    }
+    r2PackumentMiss();
+    return null;
+  }
+
+  /**
+   * Store a packument in the R2 cross-tenant cache with a TTL stamp.
+   * Best-effort. Returns true on success.
+   */
+  async putCachedPackument(name: string, json: string): Promise<boolean> {
+    const r2 = this._r2();
+    const ok = await r2.putPackument(name, json);
+    if (ok) r2PackumentPutOk();
+    else r2PackumentPutFail();
+    return ok;
+  }
+
+  /**
+   * Admin: purge a single tarball from R2. Used in incident response.
+   */
+  async purgeCachedTarball(name: string, version: string): Promise<boolean> {
+    const r2 = this._r2();
+    return r2.deleteTarball(name, version);
+  }
+
+  /**
+   * Admin: purge a single packument from R2.
+   */
+  async purgeCachedPackument(name: string): Promise<boolean> {
+    const r2 = this._r2();
+    return r2.deletePackument(name);
   }
 
   /**

@@ -44,17 +44,76 @@
 
 const KEY = '__NIMBUS_HEAVY_ALLOC_COORD__';
 
+/**
+ * W5 Lever 8: a registered observer (typically a SqliteVFS) that
+ * receives shrink/restore signals when the heavy-alloc refcount
+ * transitions 0↔≥1. Kept as a duck-typed pair of callbacks so we
+ * don't pull SqliteVFS as a static import (preserves layering: this
+ * module is consumed by both the supervisor and tests, and shouldn't
+ * acquire a heavy dependency).
+ */
+interface AllocObserver {
+  /** Called when refcount transitions 0 → 1 (heavy-alloc phase entered). */
+  onAcquire?: () => void;
+  /** Called when refcount transitions ≥1 → 0 (phase exited). */
+  onRelease?: () => void;
+}
+
 interface Coord {
   /** Number of outstanding acquires. >0 means "pause heavy-bg work". */
   count: number;
+  /** W5 Lever 8: registered observers fired on edge transitions. */
+  observers: Set<AllocObserver>;
 }
 
 function getCoord(): Coord {
   const g = globalThis as any;
   if (!g[KEY]) {
-    g[KEY] = { count: 0 } as Coord;
+    g[KEY] = { count: 0, observers: new Set<AllocObserver>() } as Coord;
   }
-  return g[KEY] as Coord;
+  // Defensive: older entries (pre-W5) lack observers — add it.
+  const c = g[KEY] as Coord;
+  if (!c.observers) c.observers = new Set<AllocObserver>();
+  return c;
+}
+
+/**
+ * W5 Lever 8 hook. Register an observer that fires when the heavy-
+ * alloc refcount transitions 0 → 1 (acquire) and ≥1 → 0 (release).
+ * Returns an unsubscribe function. Idempotent: registering the same
+ * observer twice is a no-op (Set semantics).
+ *
+ * Wire from NimbusSession constructor: register an observer whose
+ * onAcquire calls vfs.shrinkForInstall() and onRelease calls
+ * vfs.restoreAfterInstall(). This decouples SqliteVFS from
+ * heavy-alloc-coord while keeping the observer pattern simple.
+ */
+export function registerAllocObserver(o: AllocObserver): () => void {
+  const c = getCoord();
+  c.observers.add(o);
+  return () => { c.observers.delete(o); };
+}
+
+function fireOnAcquire(): void {
+  const c = getCoord();
+  for (const o of c.observers) {
+    try { o.onAcquire?.(); } catch (e) {
+      // Observer errors must NOT break the heavy-alloc protocol.
+      // Log and continue.
+      // eslint-disable-next-line no-console
+      console.error('[heavy-alloc-coord] observer.onAcquire threw:', (e as any)?.message);
+    }
+  }
+}
+
+function fireOnRelease(): void {
+  const c = getCoord();
+  for (const o of c.observers) {
+    try { o.onRelease?.(); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[heavy-alloc-coord] observer.onRelease threw:', (e as any)?.message);
+    }
+  }
 }
 
 /** True if any heavy-alloc owner has the gate open. */
@@ -70,12 +129,18 @@ export function isHeavyAllocActive(): boolean {
  */
 export function acquireHeavyAlloc(): () => void {
   const coord = getCoord();
+  const wasZero = coord.count === 0;
   coord.count++;
+  // W5 Lever 8: fire onAcquire on the 0→1 edge so SqliteVFS can
+  // shrinkForInstall(). Subsequent nested acquires don't re-fire.
+  if (wasZero) fireOnAcquire();
   let released = false;
   return () => {
     if (released) return;
     released = true;
     if (coord.count > 0) coord.count--;
+    // Fire onRelease on the ≥1→0 edge so SqliteVFS restoreAfterInstall().
+    if (coord.count === 0) fireOnRelease();
   };
 }
 

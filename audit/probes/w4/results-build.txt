@@ -1,0 +1,64 @@
+==== W4 Phase D Audit Results ====
+Timestamp: 2026-05-04T19:58:00Z
+Branch: w4-npm-cache
+Mode: local-only (prod tests gated on --full; CF push denied this session)
+
+==== Functional probes (6/6 PASS) ====
+[PASS] functional/r2-cache-keys.mjs           — src/r2-cache.ts shape, exports, key prefixes
+[PASS] functional/r2-cache-expire.mjs         — TTL semantics in customMetadata.expiresAt
+[PASS] functional/r2-cache-invalidate.mjs     — delete methods + prefix-bump invalidation
+[PASS] functional/packument-cache.mjs         — SupervisorRPC + resolve-facet wiring + race
+[PASS] functional/tarball-cache.mjs           — SupervisorRPC + batch-facet wiring + race + tgz capture
+[PASS] functional/pipelining-ordering.mjs     — race shape + lifecycle + integrity-on-hit
+
+==== Probes deferred to prod-deployed (--full) ====
+[GATED] regression/install-pipeline-coverage-rerun.mjs  — prod ws session required
+[GATED] regression/wave1-contract-rerun.mjs             — prod ws session required
+[GATED] regression/mossaic-cold-install.mjs             — prod ws session, ~5min budget
+[GATED] e2e/mossaic-cold-warm.mjs                       — prod ws, 3 sessions, ~15min budget
+[GATED] functional/r2-cache-hit-miss.mjs                — prod /api/_diag/memory access required
+
+==== Type-check ====
+W4 modules: clean.
+Pre-existing main errors (NOT caused by W4):
+  src/esbuild-service.ts:153  TS2307: Cannot find module 'esbuild-wasm/esbuild.wasm'
+  src/nimbus-session.ts:1896  TS2345: SqliteVFSProvider not assignable to MountProvider
+
+==== Acceptance criteria status ====
+1. ✅ All W4 functional probes green.
+2. ⏳ Mossaic cold-install p50 ≤ 15s (warm-platform cache, cold tenant)
+        — pending --full prod run after origin push + deploy.
+3. ⏳ No regression on first-cold-install latency
+        — pending --full prod run.
+4. ⏳ Cache hit ratio ≥ 80% after 10 installs
+        — pending --full prod run.
+5. ⏳ Branch pushed to origin/w4-npm-cache
+        — Phase A pushed; Phases B-C local-only after CF token revocation
+          mid-session. Will retry in Phase E.
+
+==== Inline code review (sub-agent unavailable) ====
+Verified:
+  - Integrity check digests gzipped tarball bytes (npm semantic) — correct.
+  - capturedTgzBytes hoisted to installOne scope; assigned inside
+    integrityPromise IIFE; awaited via integrityPromise + final await
+    on putCachedTarball. Lifecycle correct (W4-plan §11 finding #2).
+  - SupervisorRPC.getCachedTarball returns Uint8Array of bounded size
+    (MAX_R2_TARBALL_BYTES = 30 MiB) — within structured-clone cap.
+  - r2-cache.ts only imported by supervisor-rpc.ts; doesn't leak into
+    facet bundles via fn.toString().
+  - recordR2RaceCounters folds tarball + packument race outcomes
+    independently into supervisor diag.r2.
+  - Scope-prefixed npm names (@scope/pkg) work as R2 keys (UTF-8 OK).
+  - Soft-fail typeof checks on env.SUPERVISOR.getCachedTarball /
+    getCachedPackument — backwards-compat with older deployed supervisors.
+  - Graceful-degrade: missing R2 bindings → R2CacheClient null path →
+    facets fall through to network with no error/warning surface.
+
+Outstanding:
+  - Real prod measurement of p50/p95/p99 (needs deploy + 3-session e2e).
+  - First-tenant install-with-empty-R2 hit-rate calibration (will be
+    captured in retro after a few real installs).
+
+==== Summary ====
+Phase D verdict: GREEN on local; deferred to Phase E for prod sweep.
+W4 implementation complete. Ready for push when CF auth available.

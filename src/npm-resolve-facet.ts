@@ -113,6 +113,9 @@ export interface ResolveFacetResult {
     packumentsDecoded: number;
     lastPackumentName: string;
     lastPackumentBytes: number;
+    /** [W4] Pipelined-RPC race outcomes for the packument cache. */
+    pipelinedPackumentRaceWins: number;
+    pipelinedPackumentRaceLosses: number;
   };
   /** Wall-clock elapsed inside the facet. */
   elapsed: number;
@@ -142,6 +145,10 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   env: {
     SUPERVISOR: {
       putRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }>;
+      // [W4] Optional R2 packument cache. Soft-fail via typeof checks
+      // below so this facet keeps working against older deployments.
+      getCachedPackument?: (name: string) => Promise<{ json: string; ageMs: number; expired: boolean } | null>;
+      putCachedPackument?: (name: string, json: string) => Promise<boolean>;
     };
   },
 ): Promise<ResolveFacetResult> {
@@ -175,6 +182,18 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   let packumentsDecoded = 0;
   let lastPackumentName = '';
   let lastPackumentBytes = 0;
+  // [W4] Pipelined-RPC race outcomes. Folded into supervisor diag via
+  // recordR2RaceCounters() in npm-installer.
+  let pipelinedPackumentRaceWins = 0;
+  let pipelinedPackumentRaceLosses = 0;
+
+  // [W4] Cap on how long we wait for an R2 packument GET before
+  // committing to the network response. 250 ms covers typical regional
+  // R2 latency (30-150 ms) with margin; bounded enough that worst-case
+  // miss adds only 250 ms × packumentsDecoded / pLimit-bound to wall
+  // clock — typically ≤ 1 s on Mossaic-class. Tunable via spec, but
+  // the default suits prod; keep a constant here to avoid wire changes.
+  const R2_PACKUMENT_RACE_TIMEOUT_MS = 250;
 
   // ── Concurrency limiter (inline; preamble doesn't carry pLimit) ─────
   // Identical semantics to npm-resolver.ts:31-50.
@@ -287,6 +306,38 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     const url = NPM_REGISTRY + '/' + safeName;
     const BACKOFF = [500, 1500, 4500];
     const totalRetries = Math.max(0, spec.retries ?? 3);
+
+    // [W4] R2 packument cache race. Kick off the cache lookup with a
+    // bounded wait; if it returns fresh JSON before the timeout, we
+    // skip the network entirely. Soft-fail when env.SUPERVISOR.getCachedPackument
+    // isn't available (older deployment).
+    const r2Available = typeof env.SUPERVISOR.getCachedPackument === 'function';
+    if (r2Available) {
+      try {
+        const r2P = Promise.race([
+          env.SUPERVISOR.getCachedPackument!(name),
+          new Promise<null>((rs) => setTimeout(() => rs(null), R2_PACKUMENT_RACE_TIMEOUT_MS)),
+        ]).catch(() => null);
+        const r2 = await r2P;
+        if (r2 && !r2.expired && r2.json) {
+          pipelinedPackumentRaceWins++;
+          lastPackumentBytes = r2.json.length;
+          lastPackumentName = name;
+          cumulativeBytesDecoded += r2.json.length;
+          packumentsDecoded++;
+          try {
+            return JSON.parse(r2.json);
+          } catch {
+            // Malformed cache entry: fall through to network.
+            messages.push(`[resolve-facet] ${name}: malformed R2 packument; falling through`);
+          }
+        }
+      } catch {
+        // best-effort; fall through to network
+      }
+    }
+    pipelinedPackumentRaceLosses++;
+
     let lastErr: any;
     for (let attempt = 0; attempt <= totalRetries; attempt++) {
       try {
@@ -300,6 +351,20 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
             lastPackumentName = name;
             cumulativeBytesDecoded += text.length;
             packumentsDecoded++;
+            // [W4] Write back to R2 cache (best-effort, non-blocking).
+            // The packument JSON gets a 5-minute TTL via supervisor.
+            // We DO await this RPC: per W4-plan §11 finding #2, the
+            // facet's lifecycle ends when resolveTreeInFacet returns;
+            // unawaited puts may be torn down before R2 commits.
+            // Cost: one extra ~30 ms RPC per network-miss packument;
+            // mitigated by pLimit hiding it behind concurrent work.
+            if (typeof env.SUPERVISOR.putCachedPackument === 'function') {
+              try {
+                await env.SUPERVISOR.putCachedPackument(name, text);
+              } catch {
+                // best-effort cache write
+              }
+            }
             return JSON.parse(text);
           }
           if (resp.status >= 400 && resp.status < 500) return null;
@@ -479,6 +544,8 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       packumentsDecoded,
       lastPackumentName,
       lastPackumentBytes,
+      pipelinedPackumentRaceWins,
+      pipelinedPackumentRaceLosses,
     },
     elapsed: Date.now() - t0,
     cacheWriteCount: totalCacheWrites,

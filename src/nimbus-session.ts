@@ -33,11 +33,21 @@ import { PortRegistry } from './port-registry.js';
 import { EsbuildService } from './esbuild-service.js';
 import { ViteDevServer } from './vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from './cirrus-real.js';
-import { acquireHeavyAlloc } from './heavy-alloc-coord.js';
+import { acquireHeavyAlloc, registerAllocObserver } from './heavy-alloc-coord.js';
 import { NimbusWrangler } from './nimbus-wrangler.js';
 import { NpmInstaller } from './npm-installer.js';
 import { NpmCache } from './npm-cache.js';
 import { readDiagCounters } from './diag-counters.js';
+import {
+  getFailures,
+  getLastRpcFrame,
+  getLastFacetId,
+  snapshotForStorage,
+  rehydrateFromStorage,
+  recordFailure,
+} from './oom-discriminator.js';
+import { classifyError } from './oom-classify.js';
+import { LRU_MAX_ENTRIES } from './constants.js';
 import { getEsbuildWasmBytes as _getCachedEsbuildWasmBytes } from './esbuild-wasm-bytes.js';
 import { handleSupervisorRpc } from './supervisor-rpc.js';
 import { setCtxExports } from './ctx-exports.js';
@@ -988,6 +998,31 @@ export class NimbusSession extends CloudflareDurableObject {
     if (this.terminal && this.processLogs.size(pid) > 0) {
       this._emitExitDump(pid, code);
     }
+    // W5 Lever 5: ring entry for every external exit with a non-zero
+    // code. The FacetManager already records its own exits inline via
+    // _w5RecordTermination — this catches the residual paths
+    // (timeouts dispatched via the timeout-handler in FacetManager
+    // call back through hooks.onExternalExit, which reaches here).
+    // The ring is bounded; double-recording is harmless.
+    if (code !== 0) {
+      try {
+        let cause = classifyError(reason);
+        if (code === 124 && cause === 'unknown') cause = 'rpc_timeout';
+        recordFailure({
+          at: Date.now(),
+          phase: 'facet',
+          cause,
+          rssEstimateBytes: this._diagPeakRss,
+          heapUsedBytes: this._diagPeakHeapUsed,
+          lruBytes: 0, inFlightBytes: 0,
+          lastRpcFrame: getLastRpcFrame(),
+          lastFacetId: getLastFacetId(),
+          exitCode: code,
+          pid,
+          message: reason,
+        });
+      } catch { /* fail-soft */ }
+    }
   }
 
   /**
@@ -1269,7 +1304,16 @@ export class NimbusSession extends CloudflareDurableObject {
       // of MB on the supervisor; post-fix (resolver moved to facet) it
       // stays near 0.
       const counters = readDiagCounters();
+      // W5 Lever 5: cause-discriminated last-failures + last-RPC-frame
+      // + last-facet-id + LRU shrink state. Back-compat with v1: every
+      // existing field preserved; new fields are additive. See
+      // audit/sections/W5-plan.md §5.
+      // `vfs` here is the getStats() result (line 1268). vfs.cache holds
+      // the LRU stats including the W5-augmented maxEntries/lruShrunk.
+      const cacheStats = (vfs as any).cache ?? {};
+      const lastFailures = getFailures();
       return Response.json({
+        // ── v1 fields (preserved) ─────────────────────────────────
         vfs: { files: vfs.files, usedBytes: vfs.usedBytes },
         nodeMem,
         perfMem,
@@ -1285,6 +1329,23 @@ export class NimbusSession extends CloudflareDurableObject {
           ? Math.round((heapUsed / DO_HEAP_LIMIT_BYTES) * 1000) / 10
           : 0,
         ts: Date.now(),
+
+        // ── v2 / W5 additions ─────────────────────────────────────
+        lastFailures,
+        vfsDetail: {
+          lruBytes: cacheStats.hotBytes ?? 0,
+          lruMaxEntries: cacheStats.maxEntries ?? LRU_MAX_ENTRIES,
+          lruMaxBytes: cacheStats.maxBytes ?? (LRU_MAX_ENTRIES * 65536),
+          lruShrunk: cacheStats.lruShrunk ?? false,
+          evictions: cacheStats.evictions ?? 0,
+          hitRate: cacheStats.hitRate ?? 0,
+        },
+        rpc: {
+          lastFrame: getLastRpcFrame(),
+        },
+        facet: {
+          lastDispatch: getLastFacetId(),
+        },
       });
     }
 
@@ -1674,6 +1735,76 @@ export class NimbusSession extends CloudflareDurableObject {
           }
         } catch { /* handler must not throw back into the flush path */ }
       });
+      // W5 Lever 8: shrinkForInstall() during heavy-alloc windows.
+      // The observer fires only on 0→1 / ≥1→0 edges (registerAllocObserver
+      // in heavy-alloc-coord.ts handles the refcount). Default shrink
+      // target 128 entries × 64 KB = 8 MiB; +24 MiB heap headroom
+      // during install / clone / pre-bundle. See W5-plan.md §2.
+      const vfs = this.sqliteFs;
+      registerAllocObserver({
+        onAcquire: () => {
+          try { vfs.shrinkForInstall(); } catch (e: any) {
+            console.warn('[nimbus/W5] shrinkForInstall threw:', e?.message);
+          }
+        },
+        onRelease: () => {
+          try { vfs.restoreAfterInstall(); } catch (e: any) {
+            console.warn('[nimbus/W5] restoreAfterInstall threw:', e?.message);
+          }
+        },
+      });
+      // W5 Lever 5: rehydrate the OOM ring from storage (best-effort).
+      // Survives DO hibernation; lets cf-tail-style forensics include
+      // pre-hibernate failures. Fail-soft on garbage / missing — the
+      // rehydrate function's own contract.
+      this._w5RehydrateRingFromStorage().catch((e: any) => {
+        console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
+      });
+    }
+  }
+
+  // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
+  // Storage key for the OOM-discriminator snapshot. Bounded ≤20 KB by
+  // oom-discriminator.ts; one async put per webSocketClose where the
+  // ring is non-empty.
+  private static readonly _W5_RING_STORAGE_KEY = 'w5_oom_ring_v1';
+  /** Track when we last persisted to avoid redundant writes. */
+  private _w5LastPersistAt: number = 0;
+  /** Track ring size at last persist; skip write if unchanged. */
+  private _w5LastPersistRingSize: number = -1;
+
+  private async _w5RehydrateRingFromStorage(): Promise<void> {
+    try {
+      const blob = await this.ctx.storage.get(NimbusSession._W5_RING_STORAGE_KEY);
+      if (blob) rehydrateFromStorage(blob);
+    } catch (e: any) {
+      // Storage read can fail on a fresh isolate or after schema reset.
+      // The ring stays empty — perfectly OK.
+    }
+  }
+
+  /** Snapshot the ring + persist to ctx.storage. Async; callers should
+   *  pass the returned promise to ctx.waitUntil so close-handler return
+   *  doesn't race the put. Skips redundant writes. */
+  private _w5PersistRing(): Promise<void> | null {
+    try {
+      const failures = getFailures();
+      if (failures.length === 0) return null;
+      if (failures.length === this._w5LastPersistRingSize) return null;
+      const snap = snapshotForStorage();
+      this._w5LastPersistRingSize = failures.length;
+      this._w5LastPersistAt = Date.now();
+      // ctx.storage.put returns a promise; await semantics for the
+      // caller's waitUntil. Errors here are non-fatal — log and move on.
+      return this.ctx.storage.put(
+        NimbusSession._W5_RING_STORAGE_KEY,
+        snap,
+      ).catch((e: any) => {
+        console.warn('[nimbus/W5] ring persist failed:', e?.message);
+      });
+    } catch (e: any) {
+      console.warn('[nimbus/W5] ring persist threw:', e?.message);
+      return null;
     }
   }
 
@@ -3843,6 +3974,11 @@ export class NimbusSession extends CloudflareDurableObject {
         try { this.sqliteFs.clearWriteFailures(); } catch {}
       }
     }
+    // W5 Lever 5: persist the OOM ring on close so cf-tail-style
+    // forensics survive DO hibernation. Gated on ctx.waitUntil so
+    // the close handler doesn't hang on storage. Skipped if ring
+    // is empty / unchanged.
+    this._w5SafePersistRing();
     this.shell = null;
     this.terminal = null;
     this.kernel = null;
@@ -3872,9 +4008,43 @@ export class NimbusSession extends CloudflareDurableObject {
         try { this.sqliteFs.clearWriteFailures(); } catch {}
       }
     }
+    // W5 Lever 5: persist OOM ring (same rationale as webSocketClose).
+    // Also synthesize a DiagFailure for the WS error itself if one
+    // hasn't already been recorded. Helps when a session vanishes
+    // without ever recording an explicit failure.
+    if (_error) {
+      try {
+        recordFailure({
+          at: Date.now(),
+          phase: 'ws',
+          cause: 'unknown',
+          rssEstimateBytes: this._diagPeakRss,
+          heapUsedBytes: this._diagPeakHeapUsed,
+          lruBytes: 0, inFlightBytes: 0,
+          lastRpcFrame: getLastRpcFrame(),
+          lastFacetId: getLastFacetId(),
+          message: (_error as any)?.message ?? String(_error),
+        });
+      } catch { /* fail-soft */ }
+    }
+    this._w5SafePersistRing();
     this.shell = null;
     this.terminal = null;
     this.kernel = null;
+  }
+
+  /** W5 Lever 5: bridge between _w5PersistRing (which returns a
+   *  Promise) and ctx.waitUntil. Skipped silently if ctx.waitUntil
+   *  isn't available (test contexts). */
+  private _w5SafePersistRing(): void {
+    try {
+      const p = this._w5PersistRing();
+      if (p && typeof (this.ctx as any).waitUntil === 'function') {
+        try { (this.ctx as any).waitUntil(p); } catch { /* best-effort */ }
+      }
+    } catch (e: any) {
+      console.warn('[nimbus/W5] _w5SafePersistRing threw:', e?.message);
+    }
   }
 }
 

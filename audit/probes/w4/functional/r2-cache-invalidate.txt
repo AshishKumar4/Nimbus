@@ -1,0 +1,6 @@
+==== PROBE: r2-cache-invalidate ====
+==== TIMESTAMP: 2026-05-04T19:57:11.632Z ====
+  PASS: delete OR prefix-version invalidation surface
+  PASS: invalidation rationale in JSDoc
+
+VERDICT: PASS

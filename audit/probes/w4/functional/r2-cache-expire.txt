@@ -1,0 +1,8 @@
+==== PROBE: r2-cache-expire ====
+==== TIMESTAMP: 2026-05-04T19:57:11.591Z ====
+  PASS: PACKUMENT_TTL_MS = 5 * 60_000
+  PASS: expiresAt customMetadata read
+  PASS: expired flag computed in CachedPackument
+  PASS: put writes expiresAt customMetadata
+
+VERDICT: PASS
