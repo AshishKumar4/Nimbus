@@ -1,0 +1,8 @@
+==== PROBE: pipelining-ordering ====
+==== TIMESTAMP: 2026-05-04T19:57:11.759Z ====
+  PASS: putCachedTarball is awaited (not void-fired)
+  PASS: NO bare void putCachedTarball (lifecycle bug)
+  PASS: Race uses Promise.race
+  PASS: Integrity check still applies on cache hit (subtle.digest)
+
+VERDICT: PASS

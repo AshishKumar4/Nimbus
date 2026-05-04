@@ -113,6 +113,9 @@ export interface ResolveFacetResult {
     packumentsDecoded: number;
     lastPackumentName: string;
     lastPackumentBytes: number;
+    /** [W4] Pipelined-RPC race outcomes for the packument cache. */
+    pipelinedPackumentRaceWins: number;
+    pipelinedPackumentRaceLosses: number;
   };
   /** Wall-clock elapsed inside the facet. */
   elapsed: number;
@@ -142,6 +145,10 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   env: {
     SUPERVISOR: {
       putRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }>;
+      // [W4] Optional R2 packument cache. Soft-fail via typeof checks
+      // below so this facet keeps working against older deployments.
+      getCachedPackument?: (name: string) => Promise<{ json: string; ageMs: number; expired: boolean } | null>;
+      putCachedPackument?: (name: string, json: string) => Promise<boolean>;
     };
   },
 ): Promise<ResolveFacetResult> {
@@ -175,6 +182,18 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   let packumentsDecoded = 0;
   let lastPackumentName = '';
   let lastPackumentBytes = 0;
+  // [W4] Pipelined-RPC race outcomes. Folded into supervisor diag via
+  // recordR2RaceCounters() in npm-installer.
+  let pipelinedPackumentRaceWins = 0;
+  let pipelinedPackumentRaceLosses = 0;
+
+  // [W4] Cap on how long we wait for an R2 packument GET before
+  // committing to the network response. 250 ms covers typical regional
+  // R2 latency (30-150 ms) with margin; bounded enough that worst-case
+  // miss adds only 250 ms × packumentsDecoded / pLimit-bound to wall
+  // clock — typically ≤ 1 s on Mossaic-class. Tunable via spec, but
+  // the default suits prod; keep a constant here to avoid wire changes.
+  const R2_PACKUMENT_RACE_TIMEOUT_MS = 250;
 
   // ── Concurrency limiter (inline; preamble doesn't carry pLimit) ─────
   // Identical semantics to npm-resolver.ts:31-50.
@@ -287,6 +306,38 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     const url = NPM_REGISTRY + '/' + safeName;
     const BACKOFF = [500, 1500, 4500];
     const totalRetries = Math.max(0, spec.retries ?? 3);
+
+    // [W4] R2 packument cache race. Kick off the cache lookup with a
+    // bounded wait; if it returns fresh JSON before the timeout, we
+    // skip the network entirely. Soft-fail when env.SUPERVISOR.getCachedPackument
+    // isn't available (older deployment).
+    const r2Available = typeof env.SUPERVISOR.getCachedPackument === 'function';
+    if (r2Available) {
+      try {
+        const r2P = Promise.race([
+          env.SUPERVISOR.getCachedPackument!(name),
+          new Promise<null>((rs) => setTimeout(() => rs(null), R2_PACKUMENT_RACE_TIMEOUT_MS)),
+        ]).catch(() => null);
+        const r2 = await r2P;
+        if (r2 && !r2.expired && r2.json) {
+          pipelinedPackumentRaceWins++;
+          lastPackumentBytes = r2.json.length;
+          lastPackumentName = name;
+          cumulativeBytesDecoded += r2.json.length;
+          packumentsDecoded++;
+          try {
+            return JSON.parse(r2.json);
+          } catch {
+            // Malformed cache entry: fall through to network.
+            messages.push(`[resolve-facet] ${name}: malformed R2 packument; falling through`);
+          }
+        }
+      } catch {
+        // best-effort; fall through to network
+      }
+    }
+    pipelinedPackumentRaceLosses++;
+
     let lastErr: any;
     for (let attempt = 0; attempt <= totalRetries; attempt++) {
       try {
@@ -300,6 +351,20 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
             lastPackumentName = name;
             cumulativeBytesDecoded += text.length;
             packumentsDecoded++;
+            // [W4] Write back to R2 cache (best-effort, non-blocking).
+            // The packument JSON gets a 5-minute TTL via supervisor.
+            // We DO await this RPC: per W4-plan §11 finding #2, the
+            // facet's lifecycle ends when resolveTreeInFacet returns;
+            // unawaited puts may be torn down before R2 commits.
+            // Cost: one extra ~30 ms RPC per network-miss packument;
+            // mitigated by pLimit hiding it behind concurrent work.
+            if (typeof env.SUPERVISOR.putCachedPackument === 'function') {
+              try {
+                await env.SUPERVISOR.putCachedPackument(name, text);
+              } catch {
+                // best-effort cache write
+              }
+            }
             return JSON.parse(text);
           }
           if (resp.status >= 400 && resp.status < 500) return null;
@@ -346,10 +411,39 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     // @ts-ignore — SHOULD_SKIP_PACKAGE provided by preamble.
     if (SHOULD_SKIP_PACKAGE(name)) return null;
 
-    const cached = resolveFromCache(name, range);
+    // W6: registry transitive policy. Swap rewrites name in flight;
+    // 'fail' rejects throw; 'warn' rejects log [skip] and drop.
+    let effName = name;
+    // @ts-ignore — SHOULD_SWAP provided by preamble.
+    const __swap = SHOULD_SWAP(name);
+    if (__swap) {
+      messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${__swap.from} → ${__swap.to}`);
+      effName = __swap.to;
+    } else {
+      // @ts-ignore — preamble.
+      const __warn = SHOULD_WARN_SKIP_TRANSITIVE(name);
+      if (__warn) {
+        messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}`);
+        return null;
+      }
+      // @ts-ignore — preamble.
+      const __fail = SHOULD_REJECT_FAIL(name);
+      if (__fail) {
+        // Tag with own-property so the BFS catch can identify a
+        // registry reject without relying on message-prefix string
+        // matching. Mirror of supervisor-side RegistryRejectError.
+        const err: any = new Error(`npm install rejected: ${__fail.from} — ${__fail.reason}`);
+        err.__w6_reject = true;
+        err.__w6_reject_from = __fail.from;
+        err.__w6_reject_reason = __fail.reason;
+        throw err;
+      }
+    }
+
+    const cached = resolveFromCache(effName, range);
     if (cached) return cached;
 
-    const data = await fetchPackumentWithRetry(name);
+    const data = await fetchPackumentWithRetry(effName);
     if (!data || !data.versions) return null;
 
     // Pick a version
@@ -364,7 +458,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       version = data['dist-tags']?.[range] || data['dist-tags']?.latest || null;
     }
     if (!version || !data.versions[version]) {
-      messages.push(`[resolve-facet] ${name}: no version satisfies ${range}`);
+      messages.push(`[resolve-facet] ${effName}: no version satisfies ${range}`);
       return null;
     }
 
@@ -449,7 +543,18 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
           try {
             return await resolveOne(name, range);
           } catch (e: any) {
-            messages.push(`[resolve-facet] ${name}: UNHANDLED: ${e?.message}`);
+            // W6: REJECT_INSTALL with transitive='fail' throws from
+            // resolveOne tagged with `__w6_reject = true`. Propagate
+            // those — turning them into "UNHANDLED" log lines would
+            // silently partial-install. Other UNHANDLEDs continue to
+            // log + drop. Detection via own-property survives the
+            // postMessage / fn.toString() boundary (prototype is lost
+            // on that boundary, so `instanceof` would not work).
+            if (e && typeof e === 'object' && (e as any).__w6_reject === true) {
+              throw e;
+            }
+            const msg = e?.message || String(e);
+            messages.push(`[resolve-facet] ${name}: UNHANDLED: ${msg}`);
             return null;
           }
         }),
@@ -479,6 +584,8 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       packumentsDecoded,
       lastPackumentName,
       lastPackumentBytes,
+      pipelinedPackumentRaceWins,
+      pipelinedPackumentRaceLosses,
     },
     elapsed: Date.now() - t0,
     cacheWriteCount: totalCacheWrites,
