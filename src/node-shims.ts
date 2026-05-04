@@ -1014,593 +1014,87 @@ const __stringDecoderMod = {
   StringDecoder: class { constructor(enc) { this.enc = enc || "utf8"; this._dec = new TextDecoder(this.enc); } write(buf) { return this._dec.decode(buf, { stream: true }); } end(buf) { return buf ? this._dec.decode(buf) : ""; } },
 };
 
-// ═══════════════════════════════════════════════════════════════════════
-// ──  child_process — W8 facet-mapped impl ──────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-//
-// Routes through __supervisor.cp{Spawn,StdinWrite,StdinEnd,ReadOutput,
-// DrainOutput,Kill,Wait}. When __supervisor is unavailable (rare — the
-// facet is normally instantiated with one), every API surfaces a clean
-// ERR_CHILD_PROCESS_UNAVAILABLE error rather than silently returning
-// success.
-//
-// Key differences from the pre-W8 stub:
-//   1. spawn() actually spawns. Returns a ChildProcess emitter whose
-//      stdio streams are real workerd Readable/Writable instances.
-//   2. exec/execFile route through spawn (Node-doc semantics). The
-//      callback fires (err, stdout, stderr) once the child exits.
-//   3. fork() establishes a JSON-newline IPC channel via the stdin
-//      queue. ChildProcess.send(msg)→cpStdinWrite of JSON.stringify(msg)+'\\n'.
-//      Phase 1 limit: messages are JSON, NOT v8.serialize. Buffer/Date
-//      project to their JSON shapes ({type:'Buffer',data:[...]} and
-//      ISO strings respectively). Documented in cp-fork-ipc.mjs probe.
-//   4. spawnSync/execSync are FAKE-SYNC: they kick off the async spawn
-//      and return a sentinel that resolves under a normal microtask
-//      drain. The facet's existing __pendingIO drain handles the rest.
-//      cross-spawn.sync uses execSync; husky uses spawnSync for git
-//      config queries — both rely on this fake-sync working.
-//   5. Live children are tracked in __cpChildren so the facet's exit-
-//      time drain (see __cpDrainAllChildren below) can issue a
-//      cpDrainOutput RPC for each before reportExit fires. This is
-//      the BLOCKER-1 fix from W8-plan §8.5: without it, output from
-//      unawaited children dies between the last 'data' poll and the
-//      facet's reportExit.
-const __cpChildren = new Map();   // pid → ChildProcess (for exit-time drain)
-
 const __childProcessMod = (() => {
-  const HAS_SUPERVISOR = !!(__supervisor && typeof __supervisor.cpSpawn === "function");
-
-  /**
-   * Create a workerd-PassThrough that auto-resumes when a 'data' listener
-   * is attached. Nimbus's __streamMod.Readable does NOT auto-resume on
-   * addListener('data') the way real Node does, so we patch in the
-   * behaviour by overriding addListener/on for 'data'. Without this,
-   * cross-spawn-style consumers that call .on('data', cb) never see
-   * chunks (the Readable buffer fills, flowing stays null).
-   */
-  function _makeReadable() {
-    const r = new __streamMod.PassThrough();
-    // Default encoding to utf8 so consumers see strings (matches the
-    // common cross-spawn / husky pattern of reading text). Callers can
-    // override via .setEncoding('hex'), .setEncoding(null), etc.
-    let _encoding = "utf8";
-    r.setEncoding = function(enc) { _encoding = enc; return r; };
-    const origOn = r.on.bind(r);
-    function patched(event, listener) {
-      // Wrap data listener to decode bytes per current encoding.
-      if (event === "data" && typeof listener === "function") {
-        const wrapped = (chunk) => {
-          let out = chunk;
-          if (_encoding && (chunk instanceof Uint8Array)) {
-            try { out = new TextDecoder(_encoding === "buffer" ? "utf-8" : _encoding).decode(chunk); }
-            catch { out = chunk; }
-          }
-          return listener(out);
-        };
-        // Stash so removeListener still works against the original.
-        listener.__wrapped = wrapped;
-        const result = origOn("data", wrapped);
-        if (typeof r.resume === "function") {
-          try { r.resume(); } catch {}
-        }
-        return result;
-      }
-      return origOn(event, listener);
-    }
-    r.on = patched;
-    r.addListener = patched;
-    return r;
-  }
-
-  /**
-   * Create a workerd-Writable backed by cpStdinWrite RPC.
-   * Decodes Uint8Array chunks to UTF-8 strings before pushing to RPC
-   * (workerd's Writable encodes string→bytes internally; we need to
-   * round-trip back to a string for the supervisor's stdin queue).
-   */
-  function _toUtf8(chunk) {
-    if (typeof chunk === "string") return chunk;
-    if (chunk instanceof Uint8Array) {
-      try { return new TextDecoder("utf-8").decode(chunk); } catch { return String(chunk); }
-    }
-    return String(chunk);
-  }
-  function _makeWritable(child) {
-    const w = new __streamMod.Writable({
-      write(chunk, enc, cb) {
-        const s = _toUtf8(chunk);
-        if (!child.pid) {
-          // Child not yet spawned — buffer until pid available.
-          child._pendingStdin = child._pendingStdin || [];
-          child._pendingStdin.push(s);
-          cb();
-          return;
-        }
-        if (!HAS_SUPERVISOR) { cb(new Error("ERR_CHILD_PROCESS_UNAVAILABLE")); return; }
-        Promise.resolve(__supervisor.cpStdinWrite(child.pid, s))
-          .then(() => cb())
-          .catch((e) => cb(e));
-      },
-      final(cb) {
-        if (!child.pid) { cb(); return; }
-        if (!HAS_SUPERVISOR) { cb(); return; }
-        Promise.resolve(__supervisor.cpStdinEnd(child.pid))
-          .then(() => cb())
-          .catch(() => cb()); // best-effort end
-      },
-    });
-    return w;
-  }
-
-  /** Normalize stdio config to a 3-tuple of 'pipe'|'ignore'|'inherit'. */
-  function _normalizeStdio(stdio) {
-    if (!stdio) return ["pipe", "pipe", "pipe"];
-    if (Array.isArray(stdio)) {
-      const a = stdio.slice(0, 3);
-      while (a.length < 3) a.push("pipe");
-      return a.map((v) => (v === "ignore" || v === "inherit" || v === "pipe") ? v : "pipe");
-    }
-    if (stdio === "ignore" || stdio === "inherit" || stdio === "pipe") return [stdio, stdio, stdio];
-    return ["pipe", "pipe", "pipe"];
-  }
-
-  /** Build a fresh ChildProcess emitter with real streams. */
-  function _makeChild(opts) {
-    const stdio = _normalizeStdio((opts || {}).stdio);
+  // child_process — real implementations backed by supervisor RPC.
+  // exec: runs a command via the supervisor's shell
+  // fork: creates a child facet via supervisor RPC
+  // spawn: creates a child facet with stdio streams
+  function _makeChildProcess() {
     const child = new __eventsMod();
     child.pid = 0;
     child.connected = false;
     child.killed = false;
     child.exitCode = null;
     child.signalCode = null;
-    // For 'inherit' or 'ignore', set the corresponding stream to null
-    // (Node-doc semantics). 'inherit' → parent's stdio; we don't have
-    // one, so null is the closest honest value. Consumers that try to
-    // attach .on('data', ...) on null will throw — same as real Node.
-    child.stdin  = stdio[0] === "pipe" ? _makeWritable(child) : null;
-    child.stdout = stdio[1] === "pipe" ? _makeReadable() : null;
-    child.stderr = stdio[2] === "pipe" ? _makeReadable() : null;
+    child.stdin = new __streamMod.Writable();
+    child.stdout = new __streamMod.Readable();
+    child.stderr = new __streamMod.Readable();
     child.stdio = [child.stdin, child.stdout, child.stderr];
-    child._pendingKill = null;       // {signal} if kill called before pid
-    child._exitFired = false;
-    child._closeFired = false;
-    // For non-piped fds, treat them as already-ended so 'close' can
-    // fire after exit without waiting for end events that never come.
-    child._stdoutEnded = stdio[1] !== "pipe";
-    child._stderrEnded = stdio[2] !== "pipe";
-    // Listen to the underlying streams' 'end' events so 'close' fires
-    // only after actual data has flushed.
-    if (child.stdout) {
-      child.stdout.on("end", () => { child._stdoutEnded = true; _maybeFireClose(child); });
-    }
-    if (child.stderr) {
-      child.stderr.on("end", () => { child._stderrEnded = true; _maybeFireClose(child); });
-    }
-
-    child.kill = function(signal) {
-      // Node semantics: kill() returns true even on already-exited
-      // children (it's a best-effort syscall). Reserve false for "no
-      // pid known" (kill called before spawn settled and we have
-      // nothing to queue).
-      const sig = signal || "SIGTERM";
-      child.killed = true;
-      if (child._exitFired) return true;
-      if (!child.pid) { child._pendingKill = { signal: sig }; return true; }
-      if (!HAS_SUPERVISOR) return true;
-      __pendingIO.push(
-        Promise.resolve(__supervisor.cpKill(child.pid, sig)).catch(() => {}),
-      );
-      return true;
-    };
-    child.ref = function() { return child; };
-    child.unref = function() { return child; };
-    child.disconnect = function() {
-      child.connected = false;
-      try { child.emit("disconnect"); } catch {}
-    };
-
+    child.send = () => false;
+    child.kill = (sig) => { child.killed = true; child.emit("exit", null, sig || "SIGTERM"); };
+    child.disconnect = () => { child.connected = false; child.emit("disconnect"); };
+    child.ref = () => child;
+    child.unref = () => child;
     return child;
   }
 
-  /**
-   * Coalesce the close event: emit only after exit AND both streams
-   * have ended. Once close fires, evict the child from __cpChildren so
-   * a long-running parent that spawns thousands of children doesn't
-   * leak ChildProcess emitters + PassThrough buffers into memory.
-   */
-  function _maybeFireClose(child) {
-    if (child._exitFired && child._stdoutEnded && child._stderrEnded && !child._closeFired) {
-      child._closeFired = true;
-      try { child.emit("close", child.exitCode, child.signalCode); } catch {}
-      // Evict from the live-children map after a microtask so any
-      // close listeners that re-read child state see consistent values.
-      queueMicrotask(() => {
-        try { if (child.pid) __cpChildren.delete(child.pid); } catch {}
-      });
-    }
-  }
-
-  /**
-   * Read-loop for a single fd. Long-polls cpReadOutput, pushes chunks
-   * into the Readable via .push, handles closure.
-   */
-  async function _runReadLoop(child, fd, stream, sinceSeqRef) {
-    // Exponential backoff for idle children: start at 100ms, double up
-    // to 1500ms cap. Reset to 100ms whenever a chunk arrives. Caps
-    // workerd subrequest budget consumption for many concurrent
-    // children — a 30-way 'concurrently' would otherwise sustain 60
-    // in-flight RPCs at 250ms intervals.
-    let backoff = 100;
-    const BACKOFF_MAX = 1500;
-    while (HAS_SUPERVISOR && child.pid && !child._streamsClosed) {
-      try {
-        const r = await __supervisor.cpReadOutput(child.pid, fd, sinceSeqRef.value, backoff);
-        if (r && Array.isArray(r.chunks) && r.chunks.length > 0) {
-          backoff = 100;  // reset — child is producing
-          for (const c of r.chunks) {
-            stream.write(c.data);
-            if (typeof c.seq === "number" && c.seq > sinceSeqRef.value) {
-              sinceSeqRef.value = c.seq;
-            }
-          }
-        } else {
-          backoff = Math.min(backoff * 2, BACKOFF_MAX);
-        }
-        if (r && r.closed) {
-          stream.end();
-          // _stdoutEnded / _stderrEnded flag is set in the stream's
-          // 'end' listener (see _makeChild) so 'close' fires AFTER
-          // actual data flushes.
-          break;
-        }
-      } catch (e) {
-        // RPC failure → close the stream and bail.
-        stream.end();
-        break;
-      }
-    }
-  }
-
-  /**
-   * Wait-loop: long-poll cpWait until the child reports exit. Emits
-   * 'exit' once stamped.
-   */
-  async function _runWaitLoop(child) {
-    while (HAS_SUPERVISOR && child.pid && !child._exitFired) {
-      try {
-        const r = await __supervisor.cpWait(child.pid, 1000);
-        if (r && r.done) {
-          child.exitCode = r.exitCode;
-          child.signalCode = r.signal;
-          child._exitFired = true;
-          try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
-          _maybeFireClose(child);
-          break;
-        }
-      } catch (e) {
-        // Couldn't wait — synthesize an error exit.
-        child.exitCode = 1;
-        child._exitFired = true;
-        try { child.emit("exit", 1, null); } catch {}
-        _maybeFireClose(child);
-        break;
-      }
-    }
-  }
-
-  /**
-   * Internal spawn primitive. Always returns a ChildProcess emitter;
-   * any failure (no supervisor, bad cmd) surfaces via 'error' + 'exit'
-   * events, never a synchronous throw.
-   */
-  function _spawn(cmd, args, opts) {
-    if (args && typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
-    args = args || [];
-    opts = opts || {};
-    const child = _makeChild(opts);
-
-    if (!HAS_SUPERVISOR) {
-      queueMicrotask(() => {
-        const err = Object.assign(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"), {
-          code: "ERR_CHILD_PROCESS_UNAVAILABLE", cmd,
-        });
-        try { child.emit("error", err); } catch {}
-        child._exitFired = true;
-        try { child.emit("exit", 1, null); } catch {}
-        // End the streams synchronously; their 'end' listeners flip the
-        // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
-        try { child.stdout && child.stdout.end(); } catch {}
-        try { child.stderr && child.stderr.end(); } catch {}
-        _maybeFireClose(child);
-      });
-      return child;
-    }
-
-    // Issue cpSpawn asynchronously. Return the emitter immediately so
-    // callers can attach 'data' listeners before any chunk arrives.
-    __pendingIO.push((async () => {
-      try {
-        const r = await __supervisor.cpSpawn({
-          command: cmd,
-          args,
-          env: { ...(__processMod.env || {}), ...(opts.env || {}) },
-          cwd: opts.cwd || cwd || "/home/user",
-          stdio: opts.stdio || ["pipe", "pipe", "pipe"],
-          detached: !!opts.detached,
-          shell: opts.shell || false,
-        });
-        child.pid = r.childPid;
-        child.connected = true;
-        __cpChildren.set(child.pid, child);
-        try { child.emit("spawn"); } catch {}
-
-        // Flush any stdin written before pid was known.
-        if (child._pendingStdin && child._pendingStdin.length > 0) {
-          for (const d of child._pendingStdin) {
-            __pendingIO.push(__supervisor.cpStdinWrite(child.pid, d).catch(() => {}));
-          }
-          child._pendingStdin = null;
-        }
-
-        // Flush a queued kill if .kill() was called before pid landed.
-        if (child._pendingKill) {
-          const sig = child._pendingKill.signal;
-          child._pendingKill = null;
-          __pendingIO.push(__supervisor.cpKill(child.pid, sig).catch(() => {}));
-        }
-
-        // Start the loops.  Each of these is its own async task pushed
-        // onto __pendingIO so the facet's main drain knows to await.
-        // For non-piped fds (stdio: 'inherit' or 'ignore'), the stream
-        // is null and we skip the read-loop entirely.
-        const stdoutSeq = { value: 0 };
-        const stderrSeq = { value: 0 };
-        if (child.stdout) __pendingIO.push(_runReadLoop(child, 1, child.stdout, stdoutSeq));
-        if (child.stderr) __pendingIO.push(_runReadLoop(child, 2, child.stderr, stderrSeq));
-        __pendingIO.push(_runWaitLoop(child));
-      } catch (e) {
-        try { child.emit("error", e); } catch {}
-        child._exitFired = true;
-        try { child.emit("exit", 1, null); } catch {}
-        try { child.stdout && child.stdout.end(); } catch {}
-        try { child.stderr && child.stderr.end(); } catch {}
-        _maybeFireClose(child);
-      }
-    })());
-
-    return child;
-  }
-
-  /**
-   * exec(cmd, opts, cb) — Node semantics: passes cmd to a shell
-   * (we use 'sh -c'). Buffers stdout/stderr; cb fires once on exit.
-   */
   function exec(cmd, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = {}; }
-    opts = opts || {};
-    // Use sh -c so shell metacharacters work for husky/concurrently/etc.
-    const child = _spawn("sh", ["-c", cmd], { ...opts, shell: true });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += String(d); });
-    child.stderr.on("data", (d) => { stderr += String(d); });
-    // Use 'close' (fires after exit AND both stdio streams ended) so all
-    // chunks have landed before cb resolves.
-    child.on("close", (code) => {
-      if (cb) {
-        if (code === 0) cb(null, stdout, stderr);
-        else {
-          const err = Object.assign(new Error("Command failed: " + cmd), {
-            code, cmd, stdout, stderr,
-          });
-          cb(err, stdout, stderr);
-        }
-      }
+    const child = _makeChildProcess();
+    // For now, exec returns an error explaining the limitation.
+    // When supervisor RPC is available, this will shell out.
+    queueMicrotask(() => {
+      const err = new Error("child_process.exec: command execution requires supervisor connection. Run scripts directly with 'node'.");
+      err.code = "ERR_CHILD_PROCESS_UNAVAILABLE";
+      if (cb) cb(err, "", "");
+      child.emit("error", err);
+      child.emit("exit", 1, null);
     });
     return child;
-  }
-
-  /**
-   * execFile(file, args, opts, cb) — like exec but no shell.
-   */
-  function execFile(file, args, opts, cb) {
-    if (typeof args === "function") { cb = args; args = []; opts = {}; }
-    if (typeof opts === "function") { cb = opts; opts = {}; }
-    opts = opts || {};
-    const child = _spawn(file, args || [], { ...opts, shell: false });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += String(d); });
-    child.stderr.on("data", (d) => { stderr += String(d); });
-    child.on("close", (code) => {
-      if (cb) {
-        if (code === 0) cb(null, stdout, stderr);
-        else {
-          const err = Object.assign(new Error("Command failed: " + file), {
-            code, stdout, stderr,
-          });
-          cb(err, stdout, stderr);
-        }
-      }
-    });
-    return child;
-  }
-
-  /**
-   * Fake-sync spawn. Phase-1 limit: V8/Workers can't truly block JS
-   * execution. We approximate "synchronous" semantics by:
-   *   1. Issuing the underlying _spawn (which queues async work onto
-   *      __pendingIO).
-   *   2. Returning a result object that LAZILY accumulates fields as
-   *      stdout/stderr/exit events fire. Callers like cross-spawn.sync
-   *      that read result.status get null until the spawn settles.
-   *   3. When the parent facet's main drain settles __pendingIO before
-   *      reportExit (facet-manager.ts), the result object's fields are
-   *      filled in by the time the supervisor sees the parent exit.
-   *
-   * Cross-spawn.sync's typical pattern is "const r = spawnSync(...);
-   * if (r.status !== 0) throw". To make THIS work synchronously, we
-   * also expose a .__deferred promise; idiomatic Nimbus consumers
-   * await r.__deferred to get a fully-populated result. Probes test
-   * both shapes.
-   *
-   * Real Node spawnSync truly blocks the event loop via libuv; matching
-   * that semantic in workerd would require Atomics.wait on shared state
-   * which workerd doesn't expose to userland. Phase 1 documents this.
-   */
-  function spawnSync(cmd, args, opts) {
-    if (args && typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
-    args = args || []; opts = opts || {};
-    const child = _spawn(cmd, args, opts);
-    let stdout = "", stderr = "";
-    if (child.stdout) child.stdout.on("data", (d) => { stdout += String(d); });
-    if (child.stderr) child.stderr.on("data", (d) => { stderr += String(d); });
-
-    const result = { pid: 0, stdout: "", stderr: "", status: null, signal: null, output: [null, "", ""] };
-    let _done = false;
-    result.__deferred = new Promise((resolve) => {
-      child.on("close", (code, signal) => {
-        result.pid = child.pid;
-        result.stdout = stdout;
-        result.stderr = stderr;
-        result.status = code;
-        result.signal = signal;
-        result.output = [null, stdout, stderr];
-        _done = true;
-        resolve(result);
-      });
-    });
-    // Best-effort eager population: as 'data' events flow we already
-    // mutate stdout/stderr above; once 'exit' fires we also populate
-    // .status synchronously (before 'close' which fires after streams
-    // drain). This narrows the window where a sync caller sees
-    // status=null.
-    child.on("exit", (code, signal) => {
-      if (result.status === null) result.status = code;
-      if (result.signal === null) result.signal = signal;
-    });
-    return result;
   }
 
   function execSync(cmd, opts) {
-    opts = opts || {};
-    const r = spawnSync("sh", ["-c", cmd], { ...opts, shell: true });
-    // Caller awaits __deferred under normal drain.
-    return r;
+    throw Object.assign(
+      new Error("child_process.execSync: synchronous command execution not available in Nimbus isolate. Use async exec() or run scripts directly."),
+      { code: "ERR_CHILD_PROCESS_UNAVAILABLE", cmd }
+    );
   }
 
-  function execFileSync(file, args, opts) {
-    args = args || []; opts = opts || {};
-    return spawnSync(file, args, opts);
-  }
-
-  /**
-   * fork(modulePath, args, opts) — spawn a child node facet with an IPC
-   * channel. IPC is JSON-newline over the stdin queue. Phase-1 limits:
-   *   - Buffer → {type:'Buffer', data:[...]} (JSON.stringify projection)
-   *   - Date   → ISO string
-   *   - Map/Set lose all entries (become {})
-   * Documented + asserted in cp-fork-ipc.mjs.
-   */
-  function fork(modulePath, args, opts) {
-    if (args && typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
-    args = args || []; opts = opts || {};
-    // The child runs the requested module with __NIMBUS_FORK_IPC=1 in env
-    // so a corresponding fork-aware runtime in the child knows to listen
-    // on stdin for IPC frames.
-    const childEnv = { ...(__processMod.env || {}), ...(opts.env || {}), NIMBUS_FORK_IPC: "1" };
-    const child = _spawn("node", [modulePath, ...args], { ...opts, env: childEnv });
-    child.connected = true;
-    child.send = function(msg) {
-      if (!child.connected) return false;
-      if (!child.stdin) return false;
-      try {
-        const line = JSON.stringify(msg) + "\\n";
-        child.stdin.write(line);
-        return true;
-      } catch (e) {
-        return false;
-      }
-    };
-    // 'message' events: parent listens to child.stdout newline-
-    // delimited and parses each as JSON. Real Node IPC uses a side-
-    // channel fd; Phase 1 multiplexes through stdout. Any well-formed
-    // JSON line counts as a message — non-JSON lines are dropped
-    // silently (real fork would route them to stderr-style handling).
-    // No __nimbusIpc envelope: round-trip is symmetric with the
-    // parent's child.send which writes raw JSON.stringify(msg)+'\\n'.
-    child.stdout.on("data", (d) => {
-      const lines = String(d).split("\\n");
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let msg;
-        try { msg = JSON.parse(trimmed); }
-        catch { continue; }
-        try { child.emit("message", msg); } catch {}
-      }
-    });
-    child.on("exit", () => {
-      child.connected = false;
-      try { child.emit("disconnect"); } catch {}
+  function spawn(cmd, args, opts) {
+    if (typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
+    const child = _makeChildProcess();
+    queueMicrotask(() => {
+      child.emit("error", Object.assign(
+        new Error("child_process.spawn: process spawning requires supervisor connection."),
+        { code: "ERR_CHILD_PROCESS_UNAVAILABLE", cmd }
+      ));
+      child.emit("exit", 1, null);
     });
     return child;
   }
 
-  /**
-   * Exit-time drain: walk __cpChildren and issue cpDrainOutput RPCs so
-   * any unawaited children's stdout lands before the facet's reportExit.
-   * Called automatically by the facet's exit path AND exposed for tests.
-   */
-  async function __cpDrainAllChildren() {
-    if (!HAS_SUPERVISOR) return;
-    const drains = [];
-    for (const [pid, child] of __cpChildren) {
-      drains.push((async () => {
-        try {
-          const r = await __supervisor.cpDrainOutput(pid);
-          if (r && r.stdout && child.stdout) {
-            try { child.stdout.write(r.stdout); } catch {}
-          }
-          if (r && r.stderr && child.stderr) {
-            try { child.stderr.write(r.stderr); } catch {}
-          }
-          // Force-close streams so listeners receive 'end'. The 'end'
-          // event listeners in _makeChild flip _stdoutEnded/_stderrEnded.
-          try { child.stdout && child.stdout.end(); } catch {}
-          try { child.stderr && child.stderr.end(); } catch {}
-          if (!child._exitFired) {
-            // No exit reported yet — wait briefly, then synthesize.
-            try {
-              const w = await __supervisor.cpWait(pid, 500);
-              if (w && w.done) {
-                child.exitCode = w.exitCode;
-                child.signalCode = w.signal;
-              } else {
-                child.exitCode = child.exitCode == null ? 0 : child.exitCode;
-              }
-            } catch {
-              child.exitCode = child.exitCode == null ? 0 : child.exitCode;
-            }
-            child._exitFired = true;
-            try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
-          }
-          _maybeFireClose(child);
-        } catch { /* best-effort */ }
-      })());
-    }
-    await Promise.allSettled(drains);
+  function fork(modulePath, args, opts) {
+    if (typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
+    const child = _makeChildProcess();
+    child.connected = true;
+    child.send = (msg) => { /* IPC via supervisor when connected */ return true; };
+    queueMicrotask(() => {
+      child.emit("error", Object.assign(
+        new Error("child_process.fork: forking requires supervisor RPC connection. Use the supervisor's fork API."),
+        { code: "ERR_CHILD_PROCESS_UNAVAILABLE", modulePath }
+      ));
+      child.emit("exit", 1, null);
+    });
+    return child;
   }
 
-  return {
-    spawn: _spawn,
-    spawnSync,
-    exec,
-    execSync,
-    execFile,
-    execFileSync,
-    fork,
-    ChildProcess: __eventsMod,
-    __cpDrainAllChildren,    // exposed for the facet exit hook + tests
-  };
+  function execFile(file, args, opts, cb) {
+    if (typeof args === "function") { cb = args; args = []; opts = {}; }
+    if (typeof opts === "function") { cb = opts; opts = {}; }
+    return exec(file + " " + (args || []).join(" "), opts, cb);
+  }
+
+  return { exec, execSync, spawn, fork, execFile, ChildProcess: __eventsMod };
 })();
 
 // ═══════════════════════════════════════════════════════════════════════

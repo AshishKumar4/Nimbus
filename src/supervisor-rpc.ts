@@ -335,47 +335,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async transform(code: string, loader: string): Promise<{ code: string; map: string } | null> {
     return this._getStub()._rpcTransform(code, loader);
   }
-
-  // ── child_process [W8 Phase 1] ────────────────────────────────────────
-  //
-  // The parent facet's `child_process.spawn` shim (node-shims.ts) calls
-  // these methods. They delegate to NimbusSession._rpcCp* methods which
-  // route through the shared FacetProcessManager.
-  //
-  // Contract documented in audit/sections/W8-plan.md §2 / §8.5.
-
-  async cpSpawn(req: any): Promise<{ childPid: number }> {
-    return this._getStub()._rpcCpSpawn(req);
-  }
-
-  async cpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {
-    return this._getStub()._rpcCpStdinWrite(childPid, data);
-  }
-
-  async cpStdinEnd(childPid: number): Promise<void> {
-    return this._getStub()._rpcCpStdinEnd(childPid);
-  }
-
-  async cpReadOutput(
-    childPid: number,
-    fd: 1 | 2,
-    sinceSeq: number,
-    waitMs: number,
-  ): Promise<{ chunks: { seq: number; data: string }[]; closed: boolean; maxSeq: number }> {
-    return this._getStub()._rpcCpReadOutput(childPid, fd, sinceSeq, waitMs);
-  }
-
-  async cpDrainOutput(childPid: number): Promise<{ stdout: string; stderr: string; stdoutClosed: boolean; stderrClosed: boolean }> {
-    return this._getStub()._rpcCpDrainOutput(childPid);
-  }
-
-  async cpKill(childPid: number, signal: string): Promise<boolean> {
-    return this._getStub()._rpcCpKill(childPid, signal);
-  }
-
-  async cpWait(childPid: number, waitMs: number): Promise<{ done: boolean; exitCode: number | null; signal: string | null }> {
-    return this._getStub()._rpcCpWait(childPid, waitMs);
-  }
 }
 
 /**
