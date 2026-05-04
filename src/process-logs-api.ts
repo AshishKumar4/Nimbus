@@ -18,11 +18,21 @@
  * unsubscribe. The ring buffer keeps state for 10 min post-exit so a tab
  * that's still open after a crash continues to show the final output.
  *
- * Why server.accept() and not ctx.acceptWebSocket()?
- *   Log streams are ephemeral and user-closable. We want subscribers
- *   cleaned up the moment the client closes — no need for hibernation.
- *   The ring buffer lives on the DO and survives independent of the
- *   socket, so state loss isn't a concern.
+ * W9 (CF research §C.2, Lever 11): the WS now uses `ctx.acceptWebSocket`
+ * (hibernatable) when a `ctx` is provided. Why the switch:
+ *   - The pre-W9 `server.accept()` call pinned the actor for the full
+ *     duration of the log tail. A user opening a long-running log tab
+ *     and walking away kept the DO awake — accumulating co-residency-
+ *     OOM risk per Section A.1 of the research doc.
+ *   - With hibernatable WS, the actor sleeps when nothing else holds it.
+ *     The `pid` is captured in the serialized attachment so a wake-up
+ *     dispatch can re-resolve. Subscribers are NOT preserved across
+ *     hibernation (per the STOR Primer: "Does not survive: All JS
+ *     in-memory state"), but the client typically reconnects via a
+ *     fresh WS open which triggers a new backlog frame from the now-
+ *     hydrated ring (W9 hib-persist) — equivalent UX, fewer wakes.
+ *   - Falls back to `server.accept()` when `ctx` is omitted (legacy
+ *     callers / unit tests without a DurableObjectState).
  */
 
 import type { ProcessLogStore, LogChunk } from './process-logs.js';
@@ -38,6 +48,14 @@ import type { ProcessTable } from './process-table.js';
 export interface LogsWebSocketDeps {
   processLogs: ProcessLogStore;
   processTable: ProcessTable;
+  /**
+   * W9: optional `DurableObjectState`. When provided, the upgrade uses
+   * `ctx.acceptWebSocket` (hibernatable) and serializes a process-logs
+   * attachment so post-hibernate dispatches can resolve the pid. When
+   * omitted, falls back to `server.accept()` (non-hibernatable; pre-W9
+   * behaviour, kept for unit tests).
+   */
+  ctx?: { acceptWebSocket(ws: WebSocket, tags?: string[]): void } | null;
 }
 
 /**
@@ -91,13 +109,30 @@ export function handleLogsWebSocketRequest(
   pid: number,
   deps: LogsWebSocketDeps,
 ): Response {
-  const { processLogs, processTable } = deps;
+  const { processLogs, processTable, ctx } = deps;
   if (request.headers.get('Upgrade') !== 'websocket') {
     return new Response('Expected WebSocket', { status: 426 });
   }
   const pair = new WebSocketPair();
   const [client, server] = Object.values(pair);
-  server.accept();
+  // W9: prefer hibernatable WS so an idle log-tail tab doesn't pin the
+  // actor. Fallback to server.accept when ctx is absent (e.g., unit
+  // tests). Either way, tag the socket with `{kind:'process-logs', pid}`
+  // so the close handler can discriminate.
+  if (ctx && typeof ctx.acceptWebSocket === 'function') {
+    try {
+      ctx.acceptWebSocket(server, ['process-logs']);
+      try {
+        (server as any).serializeAttachment?.({ kind: 'process-logs', pid });
+      } catch { /* attachment is best-effort */ }
+    } catch (e: any) {
+      // If acceptWebSocket throws (e.g., older runtime), fall back.
+      console.warn('[nimbus/W9] ctx.acceptWebSocket failed; falling back:', e?.message);
+      server.accept();
+    }
+  } else {
+    server.accept();
+  }
 
   // A pid is "truly unknown" only if neither the log store nor the
   // process table has ever heard of it. The log store lags slightly
