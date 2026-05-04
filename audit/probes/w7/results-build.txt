@@ -1,0 +1,17 @@
+# W7 probe run @ 2026-05-04T23:05:29.800Z
+✓ functional/01-frame-roundtrip.mjs (29ms, exit=0)
+✓ functional/02-large-payload.mjs (168ms, exit=0)
+✓ functional/03-backpressure.mjs (520ms, exit=0)
+✓ functional/04-cancel-mid-stream.mjs (29ms, exit=0)
+✓ functional/05-error-propagation.mjs (26ms, exit=0)
+✓ functional/06-empty-batches.mjs (24ms, exit=0)
+✓ functional/07-bytes-source-type.mjs (23ms, exit=0)
+✓ functional/08-writestream-on-vfs.mjs (25ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (31ms, exit=0)
+✓ regression/legacy-writeBatch-still-works.mjs (30ms, exit=0)
+✓ regression/mossaic-shape.mjs (31ms, exit=0)
+✓ regression/rpc-contracts-additive.mjs (31ms, exit=0)
+✓ e2e/synthetic-50mb-tarball.mjs (201ms, exit=0)
+✓ e2e/heap-peak-during-install.mjs (611ms, exit=0)
+✓ e2e/install-batch-facet-streams.mjs (34ms, exit=0)
+# all green

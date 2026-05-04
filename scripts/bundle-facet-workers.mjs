@@ -20,6 +20,8 @@
  *   src/parallel/generated-workers.ts — exports
  *       TAR_STREAM_PREAMBLE: string
  *       TAR_STREAM_PREAMBLE_SIZE: number
+ *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
+ *       W7_FRAME_PREAMBLE_SIZE: number
  *
  * Runs as a postinstall + predev + predeploy step via package.json.
  */
@@ -32,39 +34,58 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 
-async function main() {
-  // Bundle the tar parser as a single ESM module. It's dependency-free by
-  // construction (src/npm-tarball-stream.ts imports nothing), so the bundle
-  // is essentially a transpiled copy — we still run it through esbuild to
-  // strip TypeScript types and get a verifiable one-line-per-function output.
+/**
+ * Bundle one TS source into a self-contained ESM string suitable for
+ * inlining as a facet preamble. Strips the leading `export` on
+ * declarations and the aggregate `export { ... };` block so the
+ * blob is inlinable into another module without re-export errors.
+ */
+async function bundleAsPreamble(entryPath, label) {
   const result = await build({
-    entryPoints: [join(root, 'src', 'npm-tarball-stream.ts')],
+    entryPoints: [entryPath],
     bundle: true,
     format: 'esm',
     target: 'esnext',
     platform: 'neutral',
     write: false,
     logLevel: 'warning',
-    // Strip license banner; keep things deterministic for size reporting.
     legalComments: 'none',
-    // No externals — this file has no imports.
+    // Strip TypeScript-only imports (e.g. `import type {…}`) — esbuild
+    // already drops these, but leave the option default.
   });
-
   if (!result.outputFiles || result.outputFiles.length === 0) {
-    throw new Error('esbuild produced no output');
+    throw new Error(`[bundle-facet-workers/${label}] esbuild produced no output`);
   }
-  const code = result.outputFiles[0].text;
-
-  // Preamble emission: the bundled ESM declares `export` on each function
-  // and emits an aggregate `export { ... };` block at the end. Inside a
-  // module that embeds this text, BOTH are invalid (the enclosing module
-  // can't re-export from an inlined blob). Strip both forms:
-  //   - leading `export ` on declarations (function / async function / const)
-  //   - the trailing `export { name1, name2, ... };` aggregate block
-  let stripped = code.replace(/^export\s+(async\s+function|function|const)\b/gm, '$1');
+  let stripped = result.outputFiles[0].text;
+  stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
+  return stripped;
+}
 
-  const encoded = JSON.stringify(stripped);
+async function main() {
+  // 1. Tar-parser preamble (existing W2.5/W4 hot-path helpers).
+  const tarStripped = await bundleAsPreamble(
+    join(root, 'src', 'npm-tarball-stream.ts'),
+    'tar-stream',
+  );
+
+  // 2. W7 frame encoder preamble. The npm-install-batch-facet calls
+  //    encodeWriteBatchStream() to wrap its writeBatch payload as a
+  //    type:'bytes' ReadableStream, then passes the stream to
+  //    env.SUPERVISOR.writeBatchStream(). Without this preamble the
+  //    facet has no access to the encoder symbol (cloudflare-parallel
+  //    serialises via fn.toString() — no runtime imports).
+  //
+  //    The W7-frame module imports a TypeScript type from sqlite-vfs,
+  //    which esbuild's type-stripping handles transparently. The
+  //    runtime output has no imports.
+  const w7Stripped = await bundleAsPreamble(
+    join(root, 'src', '_shared', 'w7-frame.ts'),
+    'w7-frame',
+  );
+
+  const tarEncoded = JSON.stringify(tarStripped);
+  const w7Encoded = JSON.stringify(w7Stripped);
   const outPath = join(root, 'src', 'parallel', 'generated-workers.ts');
 
   const tsWrapper = [
@@ -73,20 +94,30 @@ async function main() {
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - src/npm-tarball-stream.ts (streaming tar primitives)',
+    ' *   - src/_shared/w7-frame.ts   (W7 streaming bulk-write encoder)',
     ' *',
     ' * Consumed by src/parallel/facet-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
     ' * worker module so user functions can reference the exported',
-    ' * helpers (parseTarHeader, streamTarEntries, readableStreamToAsyncIterable,',
-    ' * MAX_FILE_BYTES) by name.',
+    ' * helpers by name.',
+    ' *',
+    ' * Tar-stream symbols: parseTarHeader, streamTarEntries,',
+    ' *   readableStreamToAsyncIterable, MAX_FILE_BYTES.',
+    ' * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,',
+    ' *   W7_MAGIC, W7_TRAILER.',
     ' *',
     ` * Generated at: ${new Date().toISOString()}`,
-    ` * Size: ${(stripped.length / 1024).toFixed(2)} KiB`,
+    ` * Tar size: ${(tarStripped.length / 1024).toFixed(2)} KiB`,
+    ` * W7 size:  ${(w7Stripped.length / 1024).toFixed(2)} KiB`,
     ' */',
     '',
-    `export const TAR_STREAM_PREAMBLE: string = ${encoded};`,
+    `export const TAR_STREAM_PREAMBLE: string = ${tarEncoded};`,
     '',
-    `export const TAR_STREAM_PREAMBLE_SIZE: number = ${stripped.length};`,
+    `export const TAR_STREAM_PREAMBLE_SIZE: number = ${tarStripped.length};`,
+    '',
+    `export const W7_FRAME_PREAMBLE: string = ${w7Encoded};`,
+    '',
+    `export const W7_FRAME_PREAMBLE_SIZE: number = ${w7Stripped.length};`,
     '',
   ].join('\n');
 
@@ -94,7 +125,9 @@ async function main() {
   writeFileSync(outPath, tsWrapper);
 
   console.log(
-    `[bundle-facet-workers] wrote ${outPath} (${(stripped.length / 1024).toFixed(2)} KiB)`,
+    `[bundle-facet-workers] wrote ${outPath} ` +
+    `(tar=${(tarStripped.length / 1024).toFixed(2)} KiB, ` +
+    `w7=${(w7Stripped.length / 1024).toFixed(2)} KiB)`,
   );
 }
 

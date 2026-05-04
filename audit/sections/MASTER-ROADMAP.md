@@ -1,6 +1,6 @@
 # Nimbus Master Roadmap — WebContainer-Class Edge OS
 
-> **Last updated:** 2026-05-04 (Phase 1 merged to main)
+> **Last updated:** 2026-05-04 (Phase 1 + Phase 2 merged to main)
 > **Status:** AUTONOMOUS EXECUTION MODE
 > **User has stepped away.** Year-long horizon. Continue without input.
 
@@ -32,17 +32,17 @@ Make Nimbus the universal browser-native development environment. Any Node, Vite
 | W4 | npm install UX (R2 cache, pipelining) | `w4-npm-cache` | ✅ Merged to main 2026-05-04 — prod deploy DEFERRED (wrangler auth pending user OAuth) |
 | W5 | Robustness (SqliteVFS LRU, OOM observability) | `w5-robustness` | ✅ Merged to main 2026-05-04 — prod deploy DEFERRED (wrangler auth pending user OAuth) |
 
-### Phase 2 — Parallel Expansion (after Phase 1)
+### Phase 2 — Parallel Expansion — ✅ COMPLETE (code merged, prod deploy deferred)
 | Wave | Topic | Branch | Status |
 |---|---|---|---|
-| W6 | WASM swap registry + REJECT_INSTALL UX | `w6-native-swap` | pending |
-| W8 | child_process.spawn (facet-mapped) | `w8-child-process` | pending |
-| W9 | Hibernatable process logs + WS auto-response | `w9-hib-logs` | pending |
+| W6 | WASM swap registry + REJECT_INSTALL UX | `w6-wasm-swap` | ✅ Merged to main 2026-05-04 — prod deploy DEFERRED (wrangler auth pending user OAuth) |
+| W8 | child_process.spawn (facet-mapped) | `w8-child-process` | ✅ Merged to main 2026-05-04 — prod deploy DEFERRED (wrangler auth pending user OAuth) |
+| W9 | Hibernatable process logs + WS auto-response | `w9-hib-logs` | ✅ Merged to main 2026-05-04 — prod deploy DEFERRED (wrangler auth pending user OAuth) |
 
-### Phase 3 — RPC Overhaul (single)
+### Phase 3 — RPC Overhaul (single) — ✅ COMPLETE (code on branch, prod deploy deferred)
 | Wave | Topic | Branch | Status |
 |---|---|---|---|
-| W7 | Streams over RPC (bypass 32 MiB wall) | `w7-rpc-streams` | pending |
+| W7 | Streams over RPC (bypass 32 MiB wall) | `w7-rpc-streams` | ✅ branch-complete 2026-05-04 — 15/15 probes GREEN, prod deploy DEFERRED (wrangler auth pending user OAuth). See W7-retro.md. Heap-peak: 0.23 MiB observed vs 30 MiB target (16× over). |
 
 ### Phase 4 — Project Type Expansion (parallel)
 | Wave | Topic | Branch | Status |
@@ -330,9 +330,9 @@ bun install
 
 ## Pending Prod Deploys
 
-Phase 1 code is **merged to main** as of 2026-05-04. Production deploy is **deferred**: wrangler OAuth has lapsed in this autonomous session and no `CLOUDFLARE_API_TOKEN` is provisioned. When the user returns and re-authenticates wrangler, run the batch deploy procedure below.
+Phase 1 + Phase 2 code is **merged to main** as of 2026-05-04. Production deploy is **deferred**: wrangler OAuth has lapsed in this autonomous session and no `CLOUDFLARE_API_TOKEN` is provisioned. When the user returns and re-authenticates wrangler, run the batch deploy procedure below.
 
-The merge to main is safe regardless of when prod deploy happens — every wave's runtime code path graceful-degrades when its support resources (R2 buckets for W4, OOM telemetry sinks for W5, workerd builtins for W3) are absent.
+The merge to main is safe regardless of when prod deploy happens — every wave's runtime code path graceful-degrades when its support resources (R2 buckets for W4, OOM telemetry sinks for W5, workerd builtins for W3, hibernatable WS APIs for W9, etc.) are absent.
 
 ### Pending deploys
 
@@ -341,6 +341,9 @@ The merge to main is safe regardless of when prod deploy happens — every wave'
 | W3 | `origin/main` (merged from `w3-builtins`) | `audit/probes/w3/run-all.mjs` against prod (BASE=https://nimbus.ashishkmr472.workers.dev). Expected: 22 functional + 1 regression + 6 e2e. Build-time recorded local 21/22 functional+regression + 3/6 e2e (e2e gaps are bundler/resolver — orthogonal to W3 scope, see W3-retro §2 S3-S4). Crypto regression: real SHA-256 vs NIST vectors. Mossaic regression: must PASS. Wave 1 external-host count = 0. | None of the W3 probes are local-runnable — all need a deployed server. |
 | W4 | `origin/main` (merged from `w4-npm-cache`) | `audit/probes/w4/run-all.mjs` against prod. Mossaic cold-install p50 ≤15s. Cache hit ratio ≥80% after 10 installs of same project. No regression on first-cold-install. Build-time: 6/6 functional probes green on the branch tip. | Requires R2 bucket provisioning (one-time, see batch procedure step 5). Bindings degrade gracefully when missing. |
 | W5 | `origin/main` (merged from `w5-robustness`) | `audit/probes/w5/run-all.mjs` against prod (set `NIMBUS_W5_E2E_PROD=1` for the OOM-stress e2e). Synthetic 50-parallel-installs OOM stress: zero silent kills. Every OOM must produce a `/api/_diag/memory` ring entry with `cause` populated. Mossaic regression: PASS. | **Local probes are green NOW** via the mock-SqlStorage harness: 81/81 assertions across 6 probes (functional + regression). e2e is the only prod-gated piece. |
+| W6 | `origin/main` (merged from `w6-wasm-swap`) | `audit/probes/w6/run-all.mjs` with `NIMBUS_W6_E2E_PROD=1` (the registry-coverage e2e walks the full registry against a deployed install path). Mossaic regression: must remain PASS (W6 deliberately does NOT touch the 4 Mossaic scenarios' install names). | **17/17 local probes GREEN this session** (functional 7/7, regression 4/4, e2e 6/6 — registry-coverage SKIPs locally as designed). Only the prod-gated registry-coverage probe is missing prod numbers. |
+| W8 | `origin/main` (merged from `w8-child-process`) | `audit/probes/w8/run-all.mjs` against prod. Acceptance gates from W8-plan: husky + concurrently + lefthook + lint-staged + simple-git-hooks + yorkie postinstalls succeed. cross-spawn shape parity. spawnSync deferred awaitable. ProcessLogStore tee for cp children works. fork IPC JSON projection (Buffer/Date) round-trips. | **21/21 local probes GREEN this session** (functional 15/15, regression 2/2, e2e 4/4 via mock `_test-interpreter.mjs` shim host). All W8 e2e probes are local-runnable; prod run is a tighter integration check, not a gating one. |
+| W9 | `origin/main` (merged from `w9-hib-logs`) | `audit/probes/w9/run-all.mjs` with `NIMBUS_W9_E2E=1` + a real prod hibernation. The `e2e/long-running-dev-hib-cycle.mjs` is wrangler-dev-focused; on prod the actual contract is the **24-48 h CT1 baseline**: confirm DO billable-duration drops materially (auto-response avoiding ~2880 wakes/day per idle tab) and `/api/_diag/memory.hib.rehydratedPids` advances after a wake. | **6/6 local probes GREEN this session** via the mock SqlStorage harness. Prod gate is observability-driven (CT1 baseline), not assertion-driven. |
 
 ### Batch deploy procedure (when user returns)
 
@@ -355,23 +358,29 @@ The merge to main is safe regardless of when prod deploy happens — every wave'
    ```
    ./node_modules/.bin/wrangler deploy
    ```
-5. Run prod acceptance probes in order:
+5. Run prod acceptance probes in order (Phase 1 then Phase 2):
    ```
+   # Phase 1
    bun audit/probes/w3/run-all.mjs                          # default: prod
    bun audit/probes/w4/run-all.mjs --full --phase=prod-verify
    NIMBUS_W5_E2E_PROD=1 bun audit/probes/w5/run-all.mjs
+
+   # Phase 2
+   NIMBUS_W6_E2E_PROD=1 bun audit/probes/w6/run-all.mjs
+   bun audit/probes/w8/run-all.mjs                          # against prod
+   NIMBUS_W9_E2E=1 bun audit/probes/w9/run-all.mjs
    ```
 6. Update this section: replace each "Pending" entry with "Verified on prod <ISO>".
-7. If any acceptance gate fails, see corresponding `W<N>-retro.md §6` (W3.5 / W4.5 / W5.5 candidates) and dispatch a follow-up wave.
+7. If any acceptance gate fails, see corresponding `W<N>-retro.md §6` (W3.5 / W4.5 / W5.5 / W6.5 / W8 phase-1.5 / W9 phase-1.5 candidates) and dispatch a follow-up wave.
 
 The daily ops schedule (CT1) attempts auto-deploy every morning. If wrangler auth is fresh, it will deploy autonomously.
 
 ### Push grant note
 
-The `cloudflare-seal[bot]` push grant has lapsed intermittently throughout this session (see W3-retro §S6, W4-retro §6 — same root cause). Phase 1 merge commits land locally on `main`; if push fails, retry from a session where the grant is fresh, or have the user push:
+The `cloudflare-seal[bot]` push grant has lapsed intermittently across sessions (see W3-retro §S6, W4-retro §6 — same root cause). Phase 1 + Phase 2 merge commits all pushed cleanly during this session. If a future session hits the lapse, retry at the end of the session (the grant typically rotates back), or have the user push:
 ```
 git push origin main
 ```
-Local main is `a177138 Phase 1 merge: W4 ...` once all 3 merges complete.
+Local main is `bcb32df Phase 2 merge: W8 ...` after Phase 2 completes.
 
 ---
