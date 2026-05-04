@@ -415,8 +415,58 @@ const __fsMod = (() => {
     if (existsSync(p)) cb(null); else { const e = new Error("ENOENT"); e.code = "ENOENT"; cb(e); }
   }
 
-  // ── promises namespace ──
+  // ── FileHandle (W3) — returned from fs.promises.open ──
+  // VFS-backed minimal impl: read, write, readFile, writeFile, stat,
+  // truncate, close, asyncDispose. Sufficient for puppeteer-core,
+  // graceful-fs, and most module-level fs.promises.open patterns.
+  class __FileHandle {
+    constructor(path, flags) { this._path = path; this._flags = flags || 'r'; this._closed = false; this.fd = 0; }
+    async read(buffer, offset, length, position) {
+      const absPath = _resolve(this._path);
+      const data = _bundleLookup(absPath);
+      if (data === undefined) {
+        const e = new Error("ENOENT: no such file, read '" + this._path + "'");
+        e.code = "ENOENT"; throw e;
+      }
+      const buf = typeof data === "string" ? _enc.encode(data) : data;
+      const start = position || 0;
+      const slice = buf.subarray(start, start + (length || (buf.length - start)));
+      buffer.set(slice, offset || 0);
+      return { bytesRead: slice.length, buffer };
+    }
+    async write(buffer, offset, length, position) {
+      let chunk;
+      if (typeof buffer === "string") chunk = buffer;
+      else {
+        const o = offset || 0;
+        const l = length === undefined ? buffer.length - o : length;
+        chunk = _dec.decode(buffer.subarray(o, o + l));
+      }
+      const existing = (() => { try { return readFileSync(this._path, "utf8"); } catch { return ""; } })();
+      // Naive concat. Adequate for the small-file patterns in
+      // puppeteer-core / graceful-fs; not a real positional write.
+      writeFileSync(this._path, existing + chunk);
+      return { bytesWritten: chunk.length, buffer };
+    }
+    async readFile(opts) { return readFileSync(this._path, opts); }
+    async writeFile(data, opts) { writeFileSync(this._path, data, opts); }
+    async appendFile(data, opts) { appendFileSync(this._path, data, opts); }
+    async stat() { return statSync(this._path); }
+    async truncate(len) {
+      const cur = readFileSync(this._path, "utf8");
+      writeFileSync(this._path, cur.slice(0, len || 0));
+    }
+    async chmod() {} async chown() {} async utimes() {} async sync() {} async datasync() {}
+    async close() { this._closed = true; }
+    [Symbol.asyncDispose]() { return this.close(); }
+  }
+
+  // ── promises namespace (W3: full surface, VFS-backed) ──
+  // We can't forward to workerd's node:fs/promises because that operates
+  // on a real-host filesystem, not our VFS. So every method is shim'd
+  // against the same underlying readFileSync/writeFileSync/etc.
   const promises = {
+    // pre-W3 surface:
     readFile: (p, o) => new Promise((res, rej) => readFile(p, o, (e, d) => e ? rej(e) : res(d))),
     writeFile: (p, d, o) => new Promise((res, rej) => writeFile(p, d, o, (e) => e ? rej(e) : res())),
     stat: (p) => new Promise((res, rej) => stat(p, (e, s) => e ? rej(e) : res(s))),
@@ -424,6 +474,104 @@ const __fsMod = (() => {
     mkdir: (p, o) => new Promise((res, rej) => mkdir(p, o, (e) => e ? rej(e) : res())),
     unlink: (p) => new Promise((res, rej) => unlink(p, (e) => e ? rej(e) : res())),
     access: (p, m) => new Promise((res, rej) => access(p, m, (e) => e ? rej(e) : res())),
+
+    // W3 additions:
+    appendFile: async (p, d, o) => { appendFileSync(p, d, o); },
+    lstat: (p) => new Promise((res, rej) => stat(p, (e, s) => e ? rej(e) : res(s))),
+    rm: async (p, opts) => {
+      const o = opts || {};
+      const k = _strip(_resolve(p));
+      const prefix = k + "/";
+      if (o.recursive) {
+        if (__vfsBundle) for (const bk of Object.keys(__vfsBundle)) if (bk === k || bk.startsWith(prefix)) delete __vfsBundle[bk];
+        if (__vfsWrites) for (const wk of Object.keys(__vfsWrites)) if (wk === k || wk.startsWith(prefix)) delete __vfsWrites[wk];
+        if (__vfsDirs) for (const dk of Object.keys(__vfsDirs)) if (dk === k || dk.startsWith(prefix)) delete __vfsDirs[dk];
+      } else {
+        try { unlinkSync(p); } catch (e) { if (!o.force) throw e; }
+      }
+    },
+    cp: async (src, dest, opts) => {
+      const o = opts || {};
+      const srcAbs = _resolve(src);
+      const srcK = _strip(srcAbs);
+      const destK = _strip(_resolve(dest));
+      const content = _bundleLookup(srcAbs);
+      if (content !== undefined) { writeFileSync(dest, content); return; }
+      if (!o.recursive) {
+        const err = new Error("EISDIR: cp without recursive on directory: " + src);
+        err.code = "EISDIR"; throw err;
+      }
+      // Recursive: copy every key under srcK/ to destK/
+      const prefix = srcK + "/";
+      const entries = [];
+      if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) entries.push([bk, __vfsBundle[bk]]);
+      if (__vfsWrites) for (const wk in __vfsWrites) if (wk.startsWith(prefix)) entries.push([wk, __vfsWrites[wk]]);
+      // Ensure destination directory tree
+      __vfsDirs[destK] = true;
+      for (const [bk, v] of entries) {
+        const newK = destK + "/" + bk.slice(prefix.length);
+        __vfsWrites[newK] = v;
+        if (__vfsBundle) __vfsBundle[newK] = v;
+      }
+    },
+    copyFile: async (src, dest) => { copyFileSync(src, dest); },
+    rename: async (oldP, newP) => { renameSync(oldP, newP); },
+    rmdir: async (p) => { rmdirSync(p); },
+    realpath: async (p) => __pathMod.resolve(String(p)),
+    truncate: async (p, len) => {
+      const cur = (() => { try { return readFileSync(p, "utf8"); } catch { return ""; } })();
+      writeFileSync(p, cur.slice(0, len || 0));
+    },
+    chmod: async () => {}, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
+    utimes: async () => {}, lutimes: async () => {},
+    symlink: async () => {}, link: async () => {},
+    readlink: async (p) => String(p),
+    mkdtemp: async (prefix) => {
+      const name = String(prefix) + Math.random().toString(36).slice(2, 10);
+      mkdirSync(name, { recursive: true });
+      return name;
+    },
+    open: async (path, flags, mode) => new __FileHandle(path, flags || 'r'),
+    watch: async function* (filename, opts) {
+      // Minimal async iter — polls _bundleLookup every 500ms and yields
+      // a single \`change\` event when content differs. Adequate for
+      // "wait for file to change" patterns; not a complete fsevents.
+      const absPath = _resolve(filename);
+      let last = _bundleLookup(absPath);
+      while (true) {
+        await new Promise(r => setTimeout(r, 500));
+        const cur = _bundleLookup(absPath);
+        if (cur !== last) {
+          last = cur;
+          yield { eventType: cur === undefined ? 'rename' : 'change', filename: __pathMod.basename(String(filename)) };
+        }
+      }
+    },
+    glob: async function* (pattern, opts) {
+      // Minimal — yield matching files via prefix scan. Not full glob.
+      // Sufficient for "**/*.js" style patterns; documented limitation.
+      const root = (opts && opts.cwd) ? _strip(_resolve(opts.cwd)) : _strip(_resolve('.'));
+      const re = (() => {
+        // Convert simple glob to regex: ** -> .*, * -> [^/]*, ? -> .
+        let r = '^' + (root ? root + '/' : '');
+        let g = pattern.replace(/\\\\/g, '/');
+        for (let i = 0; i < g.length; i++) {
+          const c = g[i];
+          if (c === '*') {
+            if (g[i+1] === '*') { r += '.*'; i++; if (g[i+1] === '/') i++; }
+            else r += '[^/]*';
+          } else if (c === '?') r += '.';
+          else if (/[.+^$(){}|[\\]\\\\]/.test(c)) r += '\\\\' + c;
+          else r += c;
+        }
+        r += '$';
+        return new RegExp(r);
+      })();
+      const seen = new Set();
+      if (__vfsBundle) for (const bk in __vfsBundle) if (re.test(bk)) seen.add(bk);
+      if (__vfsWrites) for (const wk in __vfsWrites) if (re.test(wk)) seen.add(wk);
+      for (const m of [...seen].sort()) yield '/' + m;
+    },
   };
 
   // ── constants ──
@@ -578,88 +726,257 @@ const __urlMod = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  crypto module (real SubtleCrypto) ──────────────────────────────
+// ──  crypto module (W3: forward to workerd's real node:crypto) ──────
 // ═══════════════════════════════════════════════════════════════════════
+//
+// Pre-W3 this was a hand-rolled FNV-1a fake that returned a 16-byte
+// FNV state repeated as a 32-byte "sha256" hash — silent correctness
+// disaster (sha256("hello") = abdd62852c5bd7fc9fa116d64f0254ec × 2
+// instead of 2cf24dba...).  W3 forwards to workerd's real
+// node:crypto, which has been stable since CF changelog 2025-04-08.
+// __real_crypto comes from the static import block at the top of the
+// generated facet file (see src/_shared/real-node-imports.ts).
+//
+// The forward is exhaustive — Node 20 surface (createHash, createHmac,
+// pbkdf2/Sync, scrypt/Sync, createCipheriv/Decipheriv, createSign/
+// Verify, KeyObject, generateKeyPair/Sync, createPublic/PrivateKey,
+// timingSafeEqual, randomBytes/UUID/Int/Fill, getHashes/Ciphers/Curves,
+// constants, webcrypto, subtle) is all on the workerd module.
 const __cryptoMod = (() => {
-  const _enc = new TextEncoder();
-  const _algoMap = { md5: "MD5", sha1: "SHA-1", sha256: "SHA-256", sha384: "SHA-384", sha512: "SHA-512" };
-
-  function createHash(algo) {
-    const webAlgo = _algoMap[algo?.toLowerCase?.()] || _algoMap.sha256;
-    const _chunks = [];
-    return {
-      update(d) {
-        _chunks.push(typeof d === "string" ? _enc.encode(d) : (d instanceof Uint8Array ? d : _enc.encode(String(d))));
-        return this;
-      },
-      // digest() is synchronous in Node but async in WebCrypto.
-      // We compute synchronously using a fallback for the common case,
-      // and provide digestAsync for real crypto.
-      digest(enc) {
-        // Concatenate all chunks
-        let total = 0; for (const c of _chunks) total += c.length;
-        const buf = new Uint8Array(total); let off = 0;
-        for (const c of _chunks) { buf.set(c, off); off += c.length; }
-        // Use a synchronous FNV-1a variant for MD5/SHA-1 (common non-security uses)
-        // and real SubtleCrypto for SHA-256+ via digestAsync
-        let h1 = 0x811c9dc5 >>> 0, h2 = 0x1000193 >>> 0;
-        let h3 = 0xcbf29ce4 >>> 0, h4 = 0x84222325 >>> 0;
-        for (let i = 0; i < buf.length; i++) {
-          h1 = (h1 ^ buf[i]) >>> 0; h1 = Math.imul(h1, 0x01000193) >>> 0;
-          h2 = (h2 ^ buf[(i + 1) % buf.length]) >>> 0; h2 = Math.imul(h2, 0x01000193) >>> 0;
-          h3 = (h3 ^ buf[(i + 2) % buf.length]) >>> 0; h3 = Math.imul(h3, 0x01000193) >>> 0;
-          h4 = (h4 ^ buf[(i + 3) % buf.length]) >>> 0; h4 = Math.imul(h4, 0x01000193) >>> 0;
-        }
-        // Produce hash bytes from 4 FNV states (16 bytes for md5, extend for sha)
-        const hashLen = algo === "md5" ? 16 : algo === "sha1" ? 20 : algo === "sha384" ? 48 : algo === "sha512" ? 64 : 32;
-        const hashBuf = new Uint8Array(hashLen);
-        for (let i = 0; i < hashLen; i++) {
-          const states = [h1, h2, h3, h4];
-          hashBuf[i] = (states[i % 4] >>> ((i >> 2) * 8)) & 0xff;
-        }
-        const hex = Array.from(hashBuf).map(b => b.toString(16).padStart(2, "0")).join("");
-        if (enc === "hex") return hex;
-        if (enc === "base64") { let s = ""; for (const b of hashBuf) s += String.fromCharCode(b); return btoa(s); }
-        return __BufferMod.from(hashBuf);
-      },
-      // Real async digest using SubtleCrypto
-      async digestAsync(enc) {
-        let total = 0; for (const c of _chunks) total += c.length;
-        const buf = new Uint8Array(total); let off = 0;
-        for (const c of _chunks) { buf.set(c, off); off += c.length; }
-        const ab = await crypto.subtle.digest(webAlgo, buf);
-        const hashBuf = new Uint8Array(ab);
-        const hex = Array.from(hashBuf).map(b => b.toString(16).padStart(2, "0")).join("");
-        if (enc === "hex") return hex;
-        if (enc === "base64") { let s = ""; for (const b of hashBuf) s += String.fromCharCode(b); return btoa(s); }
-        return __BufferMod.from(hashBuf);
-      },
+  const real = (typeof __real_crypto !== 'undefined') ? (__real_crypto.default ?? __real_crypto) : null;
+  if (real && typeof real.createHash === 'function') return real;
+  // Defensive fallback: if for some reason the static import didn't
+  // materialise (e.g. compat-flag drift), surface honest-error rather
+  // than silently shipping a fake hash.  Anything beyond randomBytes/
+  // randomUUID throws a NIMBUS-flavoured error.
+  function _unavail(name) {
+    return () => {
+      const e = new Error('crypto.' + name + ': workerd node:crypto not available. Check facet compat date >= 2025-04-08.');
+      e.code = 'ERR_CRYPTO_UNAVAILABLE';
+      throw e;
     };
   }
-
-  function createHmac(algo, key) {
-    const keyStr = typeof key === "string" ? key : new TextDecoder().decode(key);
-    const _chunks = [];
-    return {
-      update(d) { _chunks.push(typeof d === "string" ? d : new TextDecoder().decode(d)); return this; },
-      digest(enc) {
-        const data = keyStr + _chunks.join("");
-        return createHash(algo).update(data).digest(enc);
-      },
-    };
-  }
-
   return {
     randomBytes: (n) => { const a = new Uint8Array(n); crypto.getRandomValues(a); return __BufferMod.from(a); },
     randomUUID: () => crypto.randomUUID(),
     randomInt: (min, max) => { if (max === undefined) { max = min; min = 0; } return min + Math.floor(Math.random() * (max - min)); },
     randomFillSync: (buf) => { crypto.getRandomValues(buf); return buf; },
-    createHash,
-    createHmac,
+    createHash: _unavail('createHash'),
+    createHmac: _unavail('createHmac'),
+    pbkdf2: _unavail('pbkdf2'),
+    pbkdf2Sync: _unavail('pbkdf2Sync'),
     timingSafeEqual: (a, b) => { if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a[i] ^ b[i]; return r === 0; },
-    getHashes: () => ["md5", "sha1", "sha256", "sha384", "sha512"],
-    getCiphers: () => [],
     constants: {},
+    webcrypto: globalThis.crypto,
+    subtle: globalThis.crypto?.subtle,
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  vm module (W3: hybrid — forward surface, honest-error on eval) ──
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Workerd's node:vm provides the API surface (constants, classes,
+// runInContext as a function) BUT every code-running method throws
+// ERR_METHOD_NOT_IMPLEMENTED at request-handler time. New Function
+// is also blocked at request time. So we forward the surface (so
+// jsdom's static-load checks pass) and wrap the eval methods with
+// a honest Nimbus error so callers know it's the workerd block.
+//
+// Acceptance limitation: jsdom static-load works; jsdom HTML-script
+// execution does not.  Documented in W3 retro for W3.5 follow-up
+// (a parser-based vm fallback, or pre-bundle vm-using scripts at
+// install time).
+const __vmMod = (() => {
+  const real = (typeof __real_vm !== 'undefined') ? (__real_vm.default ?? __real_vm) : null;
+  function honestError(method, originalErr) {
+    const e = new Error(
+      'vm.' + method + ': workerd does not implement runtime eval. ' +
+      'Pre-bundle vm-using scripts at install time, or wait for W3.5 ' +
+      'parser-based fallback. (Original: ' +
+      ((originalErr && originalErr.message) || 'no underlying error') + ')'
+    );
+    e.code = 'ERR_VM_DYNAMIC_EVAL_DISALLOWED';
+    return e;
+  }
+  function wrapRuntimeEval(method) {
+    return (...args) => {
+      if (!real || typeof real[method] !== 'function') {
+        throw honestError(method, null);
+      }
+      try { return real[method](...args); } catch (e) {
+        // Workerd surfaces ERR_METHOD_NOT_IMPLEMENTED;
+        // \`new Function\` surfaces "Code generation from strings disallowed".
+        if (e && (e.code === 'ERR_METHOD_NOT_IMPLEMENTED'
+                  || /not implemented|disallowed|Code generation/i.test(e.message || ''))) {
+          throw honestError(method, e);
+        }
+        throw e;
+      }
+    };
+  }
+  return {
+    constants: real?.constants ?? {},
+    createContext: (sandbox, opts) => {
+      if (!real || typeof real.createContext !== 'function') return sandbox || {};
+      try { return real.createContext(sandbox, opts); }
+      catch { return sandbox || {}; }
+    },
+    isContext: real?.isContext ?? ((o) => !!o),
+    runInContext: wrapRuntimeEval('runInContext'),
+    runInNewContext: wrapRuntimeEval('runInNewContext'),
+    runInThisContext: wrapRuntimeEval('runInThisContext'),
+    compileFunction: wrapRuntimeEval('compileFunction'),
+    Script: real?.Script ?? class { constructor() { throw honestError('Script', null); } },
+    Module: real?.Module,
+    SourceTextModule: real?.SourceTextModule,
+    SyntheticModule: real?.SyntheticModule,
+    measureMemory: real?.measureMemory ?? (async () => ({ total: { jsMemoryEstimate: 0 } })),
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  http2 module (W3: stub — non-throwing load, honest connect err) ─
+// ═══════════════════════════════════════════════════════════════════════
+//
+// axios's dist/node code does \`var http2 = require('http2')\` at top
+// level, unconditionally. Without this stub the require fails →
+// axios fails to load. The actual HTTP/2 transport is only invoked
+// when user opts in (\`httpVersion: 2\`); otherwise this shim is dormant.
+const __http2Mod = (() => {
+  function _err(op) {
+    const e = new Error('http2.' + op + ': not implemented in Nimbus. Use fetch() or HTTP/1.1.');
+    e.code = 'ERR_HTTP2_NOT_SUPPORTED';
+    return e;
+  }
+  class Http2Session extends __eventsMod {
+    constructor() { super(); this.destroyed = false; }
+    request() { throw _err('request'); }
+    close() { this.destroyed = true; this.emit('close'); }
+    destroy(err) { this.destroyed = true; if (err) this.emit('error', err); this.emit('close'); }
+    settings() {}
+  }
+  function connect(/* authority, opts, listener */) {
+    const session = new Http2Session();
+    queueMicrotask(() => session.emit('error', _err('connect')));
+    return session;
+  }
+  function createServer() { throw _err('createServer'); }
+  return {
+    connect, createServer,
+    createSecureServer: createServer,
+    Http2Session,
+    constants: {
+      NGHTTP2_NO_ERROR: 0, NGHTTP2_PROTOCOL_ERROR: 1,
+      HTTP2_HEADER_PATH: ':path', HTTP2_HEADER_METHOD: ':method',
+      HTTP2_HEADER_STATUS: ':status', HTTP2_HEADER_AUTHORITY: ':authority',
+      HTTP2_HEADER_SCHEME: ':scheme',
+    },
+    sensitiveHeaders: Symbol('nodejs.http2.sensitiveHeaders'),
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  repl module (W3: forward to workerd) ───────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// ts-node imports repl. Workerd has it (stub since 2026-03-17).
+const __replMod = (() => {
+  const real = (typeof __real_repl !== 'undefined') ? (__real_repl.default ?? __real_repl) : null;
+  if (real && typeof real.start === 'function') return real;
+  // Fallback if static import didn't materialise.
+  class REPLServer extends __eventsMod {
+    close() { this.emit('exit'); }
+    displayPrompt() {} pause() {} resume() {}
+    setupHistory(p, cb) { if (cb) cb(null, this); }
+    defineCommand() {}
+  }
+  return { start: (opts) => new REPLServer(), REPLServer, REPL_MODE_SLOPPY: 0, REPL_MODE_STRICT: 1 };
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  diagnostics_channel (W3: forward to workerd) ───────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// fastify uses Channel.runStores at request-handler time — workerd's
+// real impl includes this. Forward whole module.
+const __diagChannelMod = (() => {
+  const real = (typeof __real_diagnostics_channel !== 'undefined') ? (__real_diagnostics_channel.default ?? __real_diagnostics_channel) : null;
+  if (real && typeof real.channel === 'function') return real;
+  // Fallback: tiny pure-JS impl (no runStores; fastify will fail loud).
+  const channels = new Map();
+  class Channel {
+    constructor(name) { this.name = name; this._subs = []; }
+    get hasSubscribers() { return this._subs.length > 0; }
+    subscribe(fn) { this._subs.push(fn); }
+    unsubscribe(fn) { const i = this._subs.indexOf(fn); if (i >= 0) { this._subs.splice(i, 1); return true; } return false; }
+    publish(msg) { for (const fn of [...this._subs]) { try { fn(msg, this.name); } catch {} } }
+    runStores(_store, fn, thisArg, ...args) { return fn.apply(thisArg, args); }
+    bindStore() {} unbindStore() {}
+  }
+  function channel(name) {
+    let c = channels.get(name);
+    if (!c) { c = new Channel(name); channels.set(name, c); }
+    return c;
+  }
+  return {
+    channel,
+    hasSubscribers: (name) => { const c = channels.get(name); return !!(c && c.hasSubscribers); },
+    subscribe: (name, fn) => channel(name).subscribe(fn),
+    unsubscribe: (name, fn) => channel(name).unsubscribe(fn),
+    tracingChannel: (n) => ({
+      start: channel('tracing:' + n + ':start'),
+      end: channel('tracing:' + n + ':end'),
+      asyncStart: channel('tracing:' + n + ':asyncStart'),
+      asyncEnd: channel('tracing:' + n + ':asyncEnd'),
+      error: channel('tracing:' + n + ':error'),
+      traceSync(fn) { return fn(); },
+      tracePromise(fn) { return Promise.resolve().then(fn); },
+      traceCallback(fn, _pos, _ctx, thisArg, ...args) { return fn.apply(thisArg, args); },
+    }),
+    Channel,
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  tls module (W3: forward to workerd, override createServer) ─────
+// ═══════════════════════════════════════════════════════════════════════
+const __tlsMod = (() => {
+  const real = (typeof __real_tls !== 'undefined') ? (__real_tls.default ?? __real_tls) : null;
+  if (!real) {
+    return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
+  }
+  // tls.createServer in workerd would bind a real port; in a facet we want
+  // routing through __portRegistry, so override that one method.
+  return new Proxy(real, {
+    get(t, p) {
+      if (p === 'createServer') {
+        return () => {
+          const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
+          e.code = 'ERR_NET_SERVER_NOT_AVAILABLE';
+          throw e;
+        };
+      }
+      return t[p];
+    }
+  });
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  async_hooks module (W3: forward to workerd) ────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// AsyncLocalStorage is the 90% case; workerd has it via nodejs_als
+// (auto-on at compat date 2026-04-01). createHook is also present
+// in workerd as a non-functional stub.
+const __asyncHooksMod = (() => {
+  const real = (typeof __real_async_hooks !== 'undefined') ? (__real_async_hooks.default ?? __real_async_hooks) : null;
+  if (real && typeof real.AsyncLocalStorage === 'function') return real;
+  // Defensive fallback.
+  return {
+    AsyncLocalStorage: class { run(_s, fn, ...args) { return fn(...args); } getStore() { return undefined; } enterWith() {} disable() {} exit(fn, ...args) { return fn(...args); } },
+    AsyncResource: class { runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); } bind(fn) { return fn; } asyncId() { return 0; } triggerAsyncId() { return 0; } emitDestroy() {} },
+    createHook: () => ({ enable() { return this; }, disable() { return this; } }),
+    executionAsyncId: () => 0,
+    executionAsyncResource: () => null,
+    triggerAsyncId: () => 0,
   };
 })();
 
@@ -877,17 +1194,73 @@ builtins.https = (() => {
     get: (url, opts, cb) => { const req = builtins.https.request(url, opts, cb); req.end(); return req; },
   };
 })();
+// W3 — net.Socket honest-error mode.
+//
+// Pre-W3 behaviour: \`new net.Socket().connect(443, 'example.com')\`
+// immediately fired the 'connect' event without any I/O — silent lie.
+// Anything attempting raw TCP from a facet (pg, mysql2, redis wire
+// protocols) thought it succeeded but produced no I/O.
+//
+// W3 behaviour: connect() emits 'error' with code
+// ERR_NET_SOCKET_NOT_AVAILABLE so callers fail loud.  W8 will route
+// raw outbound TCP through supervisor RPC.
 builtins.net = (() => {
   class Socket extends __eventsMod {
-    constructor() { super(); this.connecting = false; this.destroyed = false; this.writable = true; this.readable = true; this.remoteAddress = null; this.remotePort = null; this.localAddress = "0.0.0.0"; this.localPort = 0; }
-    connect(port, host, cb) { if (typeof host === "function") { cb = host; host = "127.0.0.1"; } this.connecting = true; this.remoteAddress = host || "127.0.0.1"; this.remotePort = port; queueMicrotask(() => { this.connecting = false; this.emit("connect"); if (cb) cb(); }); return this; }
-    write(data, enc, cb) { if (typeof enc === "function") cb = enc; if (cb) queueMicrotask(cb); return true; }
-    end(data, enc, cb) { if (typeof data === "function") { cb = data; data = undefined; } if (data) this.write(data); this.writable = false; queueMicrotask(() => { this.emit("end"); this.emit("close"); if (cb) cb(); }); return this; }
+    constructor() {
+      super();
+      this.connecting = false;
+      this.destroyed = false;
+      // Honest: we cannot send/receive bytes from a facet today.
+      this.writable = false;
+      this.readable = false;
+      this.remoteAddress = null;
+      this.remotePort = null;
+      this.localAddress = "0.0.0.0";
+      this.localPort = 0;
+    }
+    connect(port, host, cb) {
+      if (typeof host === "function") { cb = host; host = "127.0.0.1"; }
+      this.remoteAddress = host || "127.0.0.1";
+      this.remotePort = port;
+      const self = this;
+      queueMicrotask(() => {
+        const err = new Error(
+          "net.Socket: outbound TCP from Nimbus facet not yet supported. " +
+          "Use fetch() for HTTP/HTTPS. (W8 will route via supervisor RPC.)"
+        );
+        err.code = "ERR_NET_SOCKET_NOT_AVAILABLE";
+        self.destroyed = true;
+        self.emit("error", err);
+        if (cb) cb(err);
+      });
+      return this;
+    }
+    write() { return false; }
+    end(data, enc, cb) {
+      if (typeof data === "function") { cb = data; data = undefined; }
+      const self = this;
+      queueMicrotask(() => { self.emit("end"); self.emit("close"); if (cb) cb(); });
+      return this;
+    }
     destroy(err) { this.destroyed = true; if (err) this.emit("error", err); this.emit("close"); return this; }
-    setEncoding() { return this; } setTimeout(ms, cb) { if (cb) this.once("timeout", cb); return this; } setNoDelay() { return this; } setKeepAlive() { return this; } ref() { return this; } unref() { return this; }
-    address() { return { address: this.localAddress, port: this.localPort, family: "IPv4" }; }
+    setEncoding() { return this; }
+    setTimeout() { return this; }
+    setNoDelay() { return this; }
+    setKeepAlive() { return this; }
+    ref() { return this; }
+    unref() { return this; }
+    address() { return null; }
   }
-  return { Socket, Server: builtins.http.Server, createServer: (o, h) => { if (typeof o === "function") { h = o; } return builtins.http.createServer(h); }, createConnection: (p, h, cb) => new Socket().connect(p, h, cb), connect: (p, h, cb) => new Socket().connect(p, h, cb), isIP: (s) => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(s) ? 4 : 0, isIPv4: (s) => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(s), isIPv6: () => false };
+  return {
+    Socket,
+    Server: builtins.http.Server,
+    createServer: (o, h) => { if (typeof o === "function") { h = o; } return builtins.http.createServer(h); },
+    createConnection: (p, h, cb) => new Socket().connect(p, h, cb),
+    connect: (p, h, cb) => new Socket().connect(p, h, cb),
+    isIP: (s) => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(s) ? 4 : 0,
+    isIPv4: (s) => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(s),
+    isIPv6: () => false,
+  };
 })();
 builtins.dns = (() => {
   async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
@@ -907,6 +1280,31 @@ builtins.readline = (() => {
 })();
 builtins.perf_hooks = { performance: globalThis.performance || { now:()=>Date.now(), mark:()=>{}, measure:()=>{}, getEntriesByName:()=>[], clearMarks:()=>{}, clearMeasures:()=>{} } };
 builtins.worker_threads = { isMainThread:true, parentPort:null, workerData:null, threadId:0, Worker: class extends __eventsMod { constructor(){super();} terminate(){return Promise.resolve(0);} postMessage(){} } };
+
+// ── W3 additions: builtins forwarded/shimmed for axios/jsdom/fastify/
+//                 puppeteer-core/ts-node + Node 20 surface completeness.
+builtins.vm = __vmMod;
+builtins.http2 = __http2Mod;
+builtins.repl = __replMod;
+builtins.diagnostics_channel = __diagChannelMod;
+builtins.tls = __tlsMod;
+builtins.async_hooks = __asyncHooksMod;
+// Subpath-style require() — the shim's __requireFrom strips a 'node:'
+// prefix to look up bare names, so we expose both bare and prefixed
+// keys explicitly for grep-friendliness and to handle any future call
+// site that bypasses the strip path.
+builtins["fs/promises"] = __fsMod.promises;
+builtins["node:fs/promises"] = __fsMod.promises;
+builtins["timers/promises"] = (() => {
+  return {
+    setTimeout: (ms, value) => new Promise(res => setTimeout(() => res(value), ms || 0)),
+    setImmediate: (value) => new Promise(res => queueMicrotask(() => res(value))),
+    setInterval: async function* (ms, value) {
+      while (true) { await new Promise(r => setTimeout(r, ms || 0)); yield value; }
+    },
+  };
+})();
+builtins["node:timers/promises"] = builtins["timers/promises"];
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────

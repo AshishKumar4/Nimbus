@@ -671,23 +671,20 @@ function mkTrue(): CmdFn { return () => 0; }
 function mkFalse(): CmdFn { return () => 1; }
 
 function mkSha256sum(vfs: SqliteVFS): CmdFn {
-  return (ctx) => {
+  // W3: real SHA-256 via WebCrypto (crypto.subtle.digest).
+  // Pre-W3 was a 4-state FNV-1a fake — second silent-correctness bug
+  // discovered during W3 plan grep (the first being node-shims crypto).
+  // The harness type CmdFn = (ctx) => number | Promise<number> already
+  // accepts async; convert sync→async to use SubtleCrypto.
+  return async (ctx) => {
     for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
       const fp = resolvePath(ctx.cwd, f);
       try {
         const content = vfs.readFileString(fp);
-        // FNV-1a based hash (same as crypto shim, deterministic)
-        let h1 = 0x811c9dc5 >>> 0, h2 = 0x1000193 >>> 0;
-        let h3 = 0xcbf29ce4 >>> 0, h4 = 0x84222325 >>> 0;
         const buf = enc.encode(content);
-        for (let i = 0; i < buf.length; i++) {
-          h1 = (h1 ^ buf[i]) >>> 0; h1 = Math.imul(h1, 0x01000193) >>> 0;
-          h2 = (h2 ^ buf[(i+1) % buf.length]) >>> 0; h2 = Math.imul(h2, 0x01000193) >>> 0;
-          h3 = (h3 ^ buf[(i+2) % buf.length]) >>> 0; h3 = Math.imul(h3, 0x01000193) >>> 0;
-          h4 = (h4 ^ buf[(i+3) % buf.length]) >>> 0; h4 = Math.imul(h4, 0x01000193) >>> 0;
-        }
-        const hash = [h1, h2, h3, h4, h1 ^ h2, h2 ^ h3, h3 ^ h4, h4 ^ h1]
-          .map(h => (h >>> 0).toString(16).padStart(8, '0')).join('');
+        const ab = await crypto.subtle.digest('SHA-256', buf);
+        const bytes = new Uint8Array(ab);
+        const hash = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
         ctx.stdout.write(`${hash}  ${f}\n`);
       } catch { ctx.stderr.write(`sha256sum: ${f}: No such file\n`); return 1; }
     }
