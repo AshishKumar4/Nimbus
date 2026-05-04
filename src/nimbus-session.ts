@@ -27,6 +27,7 @@ import { DurableObject as CloudflareDurableObject, WorkerEntrypoint } from 'clou
 import { SqliteVFS, SqliteVFSProvider } from './sqlite-vfs.js';
 import { WebSocketTerminal } from './ws-terminal.js';
 import { FacetManager } from './facet-manager.js';
+import { FacetProcessManager } from './facet-process.js';
 import { ProcessTable } from './process-table.js';
 import { ProcessLogStore, stripAnsi, type LogChunk, type PersistAdapter, type ProcessExitInfo } from './process-logs.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from './ws-hibernation-config.js';
@@ -397,6 +398,47 @@ function detectUnsupportedWranglerConfig(vfs: SqliteVFS, root: string): string[]
  *
  * Returns the detected bundler bin name (e.g. "vite") or null.
  */
+/**
+ * W8: classify a child_process spawn target by execution kind. Used by
+ * the FacetProcessManager to decide between inline pure-builtin vs
+ * facet-direct dispatch. See audit/sections/W8-plan.md §8.5 BLOCKER-2.
+ *
+ *   pure-builtin  — sync, no facet recursion. echo, cat, true, false,
+ *                   ls, cd, env, sleep, mkdir, rm, … (all the unix
+ *                   command shims in src/unix-commands.ts).
+ *   facet-direct  — needs a fresh isolate. node, npm, npx, git, sh,
+ *                   bash, husky, lefthook, the wranglers, vite, …
+ *   unknown       — exit 127.
+ */
+const _CP_FACET_DIRECT = new Set([
+  'node', 'npm', 'npx', 'pnpm', 'yarn', 'bun',
+  'git', 'sh', 'bash',
+  'wrangler', 'nimbus-wrangler',
+  'husky', 'lefthook', 'simple-git-hooks', 'lint-staged', 'yorkie',
+  'vite', 'tsc', 'esbuild', 'rollup', 'webpack',
+]);
+const _CP_PURE_BUILTIN = new Set([
+  'echo', 'cat', 'true', 'false', 'ls', 'pwd', 'cd', 'env', 'export',
+  'unset', 'mkdir', 'rmdir', 'rm', 'cp', 'mv', 'touch', 'stat',
+  'sleep', 'date', 'whoami', 'id', 'hostname', 'uname', 'clear',
+  'tree', 'find', 'grep', 'head', 'tail', 'wc', 'sort', 'uniq', 'sed',
+  'awk', 'xargs', 'tee', 'du', 'diff', 'base64', 'seq', 'realpath',
+  'basename', 'dirname', 'printf', 'sha256sum', 'file', 'xxd',
+  'chmod', 'chown', 'ln', 'test', '[', 'read', 'exit', 'set', 'shopt',
+  'trap', 'umask', 'ulimit', 'which', 'uptime',
+]);
+function _classifyCommand(name: string): { kind: 'pure-builtin' | 'facet-direct' | 'unknown' } | null {
+  if (_CP_PURE_BUILTIN.has(name)) return { kind: 'pure-builtin' };
+  if (_CP_FACET_DIRECT.has(name)) return { kind: 'facet-direct' };
+  // Anything in node_modules/.bin or starting with ./ is treated as
+  // facet-direct so the registered bin script (or a node fallthrough)
+  // can attempt to run it.
+  if (name.startsWith('./') || name.startsWith('/') || name.startsWith('node_modules/')) {
+    return { kind: 'facet-direct' };
+  }
+  return null;
+}
+
 function detectBundlerBin(script: string): string | null {
   if (!script) return null;
   const tokens = script.trim().split(/\s+/);
@@ -454,6 +496,8 @@ export class NimbusSession extends CloudflareDurableObject {
   private shell: Shell | null = null;
   private terminal: WebSocketTerminal | null = null;
   private facetManager: FacetManager | null = null;
+  /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
+  private facetProcessManager: any = null;
   private esbuildService: EsbuildService | null = null;
   private viteDevServer: ViteDevServer | null = null;
   /**
@@ -1045,6 +1089,38 @@ export class NimbusSession extends CloudflareDurableObject {
   }
 
   /**
+   * W7 — Streaming bulk-write entry point. Receives a
+   * ReadableStream<Uint8Array> in the W7 wire format (see
+   * src/_shared/w7-frame.ts), decodes inode metadata + chunks lazily,
+   * and feeds them into SqliteVFS.writeStream().
+   *
+   * Bypasses the 32 MiB structured-clone cap that constrained the
+   * legacy writeBatch path — workerd flow-controls the byte stream
+   * end-to-end.
+   *
+   * Atomicity guarantee mirrors writeBatch: either ALL inodes +
+   * chunks land in SQLite or NONE do. SqliteVFS.writeStream defers
+   * the actual transactionSync until the chunk iterator is fully
+   * drained (v1 spool-then-commit), so a stream error mid-transit
+   * aborts before any SQL state mutates.
+   */
+  async _rpcWriteBatchStream(
+    stream: ReadableStream<Uint8Array>,
+  ): Promise<{ inodes: number; chunks: number }> {
+    this.ensureSqliteFs();
+    // Lazy import to keep the supervisor-side dependency graph stable
+    // for callers that never touch the streaming path. The W7 frame
+    // module itself is small (~10 KB compiled).
+    const { decodeWriteBatchStream } = await import('./_shared/w7-frame.js');
+    const decoded = await decodeWriteBatchStream(stream);
+    return this.sqliteFs!.writeStream({
+      inodes: decoded.inodes,
+      chunkIter: decoded.chunkIter,
+      deletePaths: decoded.deletePaths,
+    });
+  }
+
+  /**
    * Bulk-write npm registry cache entries in ONE RPC. Used by the
    * resolver-facet to flush a wave of resolved packages back to the
    * supervisor without per-entry round-trips.
@@ -1349,6 +1425,48 @@ export class NimbusSession extends CloudflareDurableObject {
     } catch (e: any) {
       return null;
     }
+  }
+
+  // ── child_process RPC entrypoints [W8 Phase 1] ────────────────────────
+  //
+  // Delegate to the lazily-constructed FacetProcessManager. Defensive
+  // ensureFacetProcessManager() handles cold-start cases where a child
+  // facet calls cp* before the supervisor has initialized the broker
+  // (e.g., immediately after DO hibernation wake-up).
+
+  async _rpcCpSpawn(req: any): Promise<{ childPid: number }> {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.spawn(req);
+  }
+
+  async _rpcCpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.stdinWrite(childPid, data);
+  }
+
+  async _rpcCpStdinEnd(childPid: number): Promise<void> {
+    const fpm = this._ensureFacetProcessManager();
+    fpm.stdinEnd(childPid);
+  }
+
+  async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number) {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.readOutput(childPid, fd, sinceSeq, waitMs);
+  }
+
+  async _rpcCpDrainOutput(childPid: number) {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.drainOutput(childPid);
+  }
+
+  async _rpcCpKill(childPid: number, signal: string): Promise<boolean> {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.kill(childPid, signal);
+  }
+
+  async _rpcCpWait(childPid: number, waitMs: number) {
+    const fpm = this._ensureFacetProcessManager();
+    return fpm.wait(childPid, waitMs);
   }
 
   // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
@@ -2188,6 +2306,149 @@ export class NimbusSession extends CloudflareDurableObject {
   }
 
   /**
+   * W8: lazily construct the FacetProcessManager when the first cp* RPC
+   * arrives. Wired with adapters that bridge the Nimbus shell command
+   * registry to the FacetProcessManager's CommandRegistryLike contract.
+   */
+  private _ensureFacetProcessManager() {
+    if (this.facetProcessManager) return this.facetProcessManager;
+    this.ensureSqliteFs();
+    this.ensureFacetManager();
+    // FacetProcessManager is statically imported at top-of-file (W8).
+    // No lazy-import: workerd doesn't ship CJS require, and the dynamic
+    // import would be async — making _ensureFacetProcessManager async
+    // would force every cp* RPC entry point to also be async on the
+    // promise-resolution path, which is fine but uglier. Compile-time
+    // tree-shaking handles unused-when-no-cp-RPC paths.
+    // Adapter for FacetManagerLike — wraps the existing FacetManager.exec
+    // with a streaming surface. Phase 1 simplification: facet-direct
+    // commands are dispatched through the shell registry the same way
+    // shell.execute does, but with the per-PID hooks routed.
+    const facetMgrAdapter = {
+      execStream: async (
+        codeJson: string,
+        opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[] },
+        hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+      ): Promise<number> => {
+        // codeJson is a payload from FacetProcessManager._dispatch facet-direct
+        // path: {command, args, env, cwd, stdin}. We dispatch through the
+        // existing shell registry by resolving the command and invoking
+        // it with synthesized output streams that route to hooks.
+        let payload: any;
+        try { payload = JSON.parse(codeJson); }
+        catch { payload = { command: '', args: [], env: {}, cwd: '/' }; }
+        const registry = this._cpRegistry;
+        if (!registry) {
+          hooks.onStderr('child_process: command registry unavailable\n');
+          return 127;
+        }
+        const cmd = await registry.resolve(payload.command);
+        if (!cmd) {
+          hooks.onStderr(`${payload.command}: command not found\n`);
+          return 127;
+        }
+        // Synthesize a CommandContext compatible with @lifo-sh/core.
+        const stdoutStream = { write: (d: string) => hooks.onStdout(String(d)) };
+        const stderrStream = { write: (d: string) => hooks.onStderr(String(d)) };
+        const ac = new AbortController();
+        const ctx = {
+          args: payload.args || [],
+          env: payload.env || {},
+          cwd: payload.cwd || '/home/user',
+          vfs: this.sqliteFs!,
+          stdout: stdoutStream,
+          stderr: stderrStream,
+          signal: ac.signal,
+          // For commands that need stdin we pass a tiny adapter.
+          stdin: {
+            read: async () => null,
+            readAll: async () => payload.stdin || '',
+          },
+        };
+        try {
+          const code = await cmd(ctx as any);
+          return typeof code === 'number' ? code : 0;
+        } catch (e: any) {
+          hooks.onStderr(`${payload.command}: ${e?.message || String(e)}\n`);
+          return 1;
+        }
+      },
+      abort: (facetName: string) => {
+        // Best-effort: relay to ctx.facets.abort, mirroring FacetManager.kill.
+        try { (this.ctx as any).facets?.abort?.(facetName, new Error('SIGKILL')); } catch {}
+        return true;
+      },
+    };
+    // Adapter for CommandRegistryLike. The shared shell registry is
+    // attached to `this._cpRegistry` by the shell-init path (see
+    // construction near line 2058 — registry passed as ctor arg there).
+    const cmdRegistryAdapter = {
+      // Consult the live shell registry FIRST so dynamically-registered
+      // commands (registerUnixCommands / registerGitCommands / npm /
+      // wrangler etc.) are seen even if they're not in the static
+      // _CP_PURE_BUILTIN allow-list. Falls back to the static
+      // facet-direct table for known facet-only commands. Returns null
+      // (→ exit 127) for everything unknown.
+      resolve: (name: string) => {
+        const registry = this._cpRegistry;
+        if (registry && typeof registry.has === 'function' && registry.has(name)) {
+          // Registered — classify by name. Reuse the static table so
+          // facet-direct commands (node/npm/git/...) keep their kind
+          // even when they ALSO happen to be registry entries.
+          return _classifyCommand(name) || { kind: 'pure-builtin' };
+        }
+        return _classifyCommand(name);
+      },
+      runPureBuiltin: async (
+        name: string,
+        args: string[],
+        env: Record<string, string>,
+        cwd: string,
+        stdin: string,
+        hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+      ): Promise<number> => {
+        const registry = this._cpRegistry;
+        if (!registry) { hooks.onStderr('cp: registry unavailable\n'); return 127; }
+        const cmd = await registry.resolve(name);
+        if (!cmd) { hooks.onStderr(`${name}: command not found\n`); return 127; }
+        const ac = new AbortController();
+        const ctx = {
+          args, env, cwd,
+          vfs: this.sqliteFs!,
+          stdout: { write: (d: string) => hooks.onStdout(String(d)) },
+          stderr: { write: (d: string) => hooks.onStderr(String(d)) },
+          signal: ac.signal,
+          stdin: { read: async () => null, readAll: async () => stdin },
+        };
+        try {
+          const code = await cmd(ctx as any);
+          return typeof code === 'number' ? code : 0;
+        } catch (e: any) {
+          hooks.onStderr(`${name}: ${e?.message || String(e)}\n`);
+          return 1;
+        }
+      },
+    };
+    this.facetProcessManager = new FacetProcessManager({
+      facetMgr: facetMgrAdapter,
+      processTable: this.processTable,
+      processLogs: this.processLogs as any,
+      vfs: this.sqliteFs!,
+      commandRegistry: cmdRegistryAdapter,
+      ctx: this.ctx as any,
+    });
+    return this.facetProcessManager;
+  }
+
+  /**
+   * Set the shell command registry for the W8 broker to dispatch
+   * resolved commands. Called from the shell-init path right after
+   * `registerUnixCommands(registry, sqliteFs)`.
+   */
+  private _cpRegistry: any = null;
+  private _setCpRegistry(r: any) { this._cpRegistry = r; }
+
+  /**
    * Get or create the singleton fetch proxy entrypoint.
    * ONE dynamic worker is created via LOADER.load() and reused for ALL npm
    * fetch calls across the lifetime of this DO instance. This prevents
@@ -2402,6 +2663,10 @@ export class NimbusSession extends CloudflareDurableObject {
     const kernel = this.kernel;
     const sqliteFs = this.sqliteFs!;
     const facetMgr = this.facetManager!;
+    // W8: hand the registry to the cp broker so child_process.spawn from
+    // a parent facet can resolve and dispatch commands the same way the
+    // shell does. Done AFTER all registrations are complete (below).
+    this._setCpRegistry(registry);
 
     // ── Unix commands (30+ real implementations) ──
     registerUnixCommands(registry, sqliteFs);

@@ -307,6 +307,21 @@ ${SHIMS}
       await Promise.allSettled(__pendingIO.slice(__preSecondDrain));
     }
 
+    // W8 BLOCKER-1 fix: parent-exit synchronous flush of any live
+    // child_process children. Without this, output from spawn-and-forget
+    // children (e.g., concurrently 'echo a' 'echo b' from a parent that
+    // exits before its data listeners drain) gets dropped between the
+    // last cpReadOutput poll and reportExit. __cpDrainAllChildren issues
+    // a single cpDrainOutput RPC per live child to flush remaining
+    // buffers; idempotent on already-exited children.
+    try {
+      if (__childProcessMod && typeof __childProcessMod.__cpDrainAllChildren === "function") {
+        await __childProcessMod.__cpDrainAllChildren();
+      }
+    } catch (e) {
+      // Best-effort. Drain failure must not block reportExit.
+    }
+
     // Report exit AFTER I/O drains so the ring buffer has everything the
     // facet wrote before the dump fires on the supervisor side.
     //
@@ -450,6 +465,14 @@ ${SHIMS}
     if (__pendingIO.length > __preSecondDrain) {
       await Promise.allSettled(__pendingIO.slice(__preSecondDrain));
     }
+
+    // W8 BLOCKER-1 fix: parent-exit synchronous flush of child_process
+    // children. See generateFacetCode for the rationale.
+    try {
+      if (__childProcessMod && typeof __childProcessMod.__cpDrainAllChildren === "function") {
+        await __childProcessMod.__cpDrainAllChildren();
+      }
+    } catch (e) { /* best-effort */ }
 
     // Report exit after draining so the ring buffer is complete before
     // the supervisor decides whether to emit a dump. Fix 6: include an

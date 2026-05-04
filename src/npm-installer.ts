@@ -37,7 +37,7 @@ import {
   fetchWaves, buildBatchPayload, buildCacheRestorePayload,
 } from './npm-tarball.js';
 import { NimbusFacetPool } from './parallel/facet-pool.js';
-import { TAR_STREAM_PREAMBLE } from './parallel/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from './parallel/generated-workers.js';
 import { fetchAndStagePackage, type FacetPackageSpec, type FacetPackageResult } from './npm-install-facet.js';
 import {
   installPackagesInFacet,
@@ -649,7 +649,11 @@ export class NpmInstaller {
       timeoutMs: 10 * 60_000,
       retries: 0,
       tag: 'npm-install-batch',
-      preamble: TAR_STREAM_PREAMBLE,
+      // W7: tar-stream + W7-frame preambles concatenated. The batch
+      // facet calls encodeWriteBatchStream() to produce a type:'bytes'
+      // ReadableStream, then env.SUPERVISOR.writeBatchStream(stream) to
+      // bypass the 32 MiB structured-clone cap on the bulk-write RPC.
+      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
     });
 
     let result: InstallBatchResult;

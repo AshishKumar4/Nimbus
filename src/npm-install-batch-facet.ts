@@ -99,6 +99,12 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   env: {
     SUPERVISOR: {
       writeBatch(payload: any): Promise<{ inodes: number; chunks: number }>;
+      // [W7] Streaming bulk-write RPC. Bypasses the 32 MiB structured-clone
+      // cap by sending the batch as a type:'bytes' ReadableStream<Uint8Array>
+      // (W7 wire protocol — see src/_shared/w7-frame.ts).
+      // Optional in the type so the facet keeps working against pre-W7
+      // supervisors via the typeof-guarded fallback at the call site.
+      writeBatchStream?: (stream: ReadableStream<Uint8Array>) => Promise<{ inodes: number; chunks: number }>;
       // [W4] Optional R2-cache RPC. Soft-fail via typeof checks below
       // so this facet keeps working against older deployed supervisors.
       getCachedTarball?: (name: string, version: string) => Promise<Uint8Array | null>;
@@ -114,6 +120,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   if (!env || !env.SUPERVISOR || typeof env.SUPERVISOR.writeBatch !== 'function') {
     throw new Error('installPackagesInFacet: env.SUPERVISOR.writeBatch missing');
   }
+  // [W7] Detect streaming RPC support ONCE per batch — the typeof check
+  // is cheap but we don't want to repeat it inside every flush hot path.
+  const supportsStreaming =
+    typeof (env.SUPERVISOR as any).writeBatchStream === 'function';
 
   // [W4] Cap on how long we wait for the R2 cache before committing to
   // the network response. 300 ms is generous enough for a regional R2
@@ -376,9 +386,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       const asyncIter = readableStreamToAsyncIterable(decompressed);
 
       // 4. Build + flush BatchWritePayload(s) at the threshold.
-      //    Threshold lowered from 24 MiB → 16 MiB vs. legacy facet:
-      //    with 3 concurrent in-flight tarballs, total in-flight pending
-      //    flush bytes peak at 3 × 16 = 48 MiB inside the 128 MiB cap.
+      //    Pre-W7 threshold: 16 MiB to keep the structured-clone payload
+      //      well under workerd's 32 MiB cap with 6% serialization
+      //      overhead. With pLimit=3, total in-flight pending flush bytes
+      //      peaked at 3 × 16 = 48 MiB inside the 128 MiB cap.
+      //    W7 (streaming path): the RPC has no 32 MiB cap because the
+      //      bytes traverse the boundary as a flow-controlled byte stream.
+      //      We could in principle drop this threshold entirely (one
+      //      flush per package), but a memory-pressure boundary is still
+      //      useful — a single 100 MiB tarball would otherwise hold 100
+      //      MiB resident in the chunks array before flushing. Keep the
+      //      threshold; raise it if/when measured peak heap suggests the
+      //      legacy 16 MiB is now the bottleneck on the streaming path.
       const pkgDir = spec.pkgDir;
       type InodeT = {
         path: string; parentPath: string; isDir: boolean;
@@ -401,7 +420,20 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
       const flush = async () => {
         if (inodes.length === 0 && chunks.length === 0) return;
-        await env.SUPERVISOR.writeBatch({ inodes, chunks });
+        if (supportsStreaming) {
+          // W7: stream the batch as a type:'bytes' ReadableStream over RPC.
+          // No 32 MiB structured-clone cap on this path. encodeWriteBatchStream
+          // is injected via the facet preamble (W7_FRAME_PREAMBLE in
+          // src/parallel/generated-workers.ts).
+          // @ts-ignore — preamble symbol.
+          const stream = encodeWriteBatchStream({ inodes, chunks });
+          await (env.SUPERVISOR as any).writeBatchStream(stream);
+        } else {
+          // Pre-W7 supervisor — fall back to the legacy structured-clone
+          // path. The 16 MiB RPC_FLUSH_THRESHOLD above keeps payloads
+          // under workerd's 32 MiB cap on this branch.
+          await env.SUPERVISOR.writeBatch({ inodes, chunks });
+        }
         inodes = [];
         chunks = [];
         bufferedBytes = 0;

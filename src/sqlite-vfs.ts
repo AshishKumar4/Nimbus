@@ -1168,6 +1168,47 @@ export class SqliteVFS {
     return this._writeBatchWithRetry(payload, 0);
   }
 
+  /**
+   * W7 — streaming bulk-write. Same semantics as writeBatch() but
+   * accepts the chunks list as an `AsyncIterable<BatchChunkEntry>`
+   * rather than a fully-realised array.
+   *
+   * v1 (this wave) is "spool-then-commit": we drain the iterator into
+   * an in-memory Array<BatchChunkEntry>, then delegate to writeBatch.
+   * The HEAP-savings claim of W7 lives on the FACET side — by the
+   * time chunks reach this method (post-RPC), they've already
+   * traversed the byte-stream boundary without hitting the 32 MiB
+   * structured-clone cap.
+   *
+   * Future v2 (deferred — out of W7 scope, see W7-retro.md): chunk
+   * the supervisor-side `transactionSync` calls into N segments
+   * (e.g. every 8 MiB of streamed content) so the supervisor heap
+   * peak also drops.
+   *
+   * Throws on SQLITE_NOMEM (with halve-retry per writeBatch); any
+   * iterator-source error propagates unchanged. Atomicity guarantee
+   * matches writeBatch: either ALL inodes + chunks land in SQLite or
+   * NONE do.
+   */
+  async writeStream(payload: {
+    inodes: BatchInodeEntry[];
+    chunkIter: AsyncIterable<BatchChunkEntry>;
+    deletePaths?: string[];
+  }): Promise<{ inodes: number; chunks: number }> {
+    // Drain the iterator. Iterator errors propagate unchanged.
+    // We build the chunks array fully BEFORE entering transactionSync
+    // because transactionSync is synchronous (cannot await mid-txn).
+    const chunks: BatchChunkEntry[] = [];
+    for await (const c of payload.chunkIter) {
+      chunks.push(c);
+    }
+    return this.writeBatch({
+      inodes: payload.inodes,
+      chunks,
+      deletePaths: payload.deletePaths,
+    });
+  }
+
   private _writeBatchWithRetry(
     payload: BatchWritePayload,
     depth: number,

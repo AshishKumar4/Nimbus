@@ -138,6 +138,32 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /**
+   * W7 — Streaming bulk-write. Same semantics as writeBatch() but the
+   * argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
+   * (see src/_shared/w7-frame.ts). Bypasses the 32 MiB structured-clone
+   * cap entirely; the byte stream traverses the RPC boundary with
+   * automatic flow control per Cloudflare RPC docs.
+   *
+   * Acceptance per audit/sections/MASTER-ROADMAP.md §W7:
+   *   - Install of 5GB monorepo doesn't hit 32 MiB wall.
+   *   - Peak heap reduction 48 MiB → 30 MiB on the facet side.
+   *
+   * The RPC frame itself does NOT pre-clone the stream — workerd
+   * transfers the byte stream's underlying-source ownership to the
+   * receiver. From the OOM-discriminator's perspective, payloadBytes
+   * is unknown up-front (-1 sentinel); it is the supervisor's
+   * decoder that observes the actual byte count.
+   */
+  async writeBatchStream(
+    stream: ReadableStream<Uint8Array>,
+  ): Promise<{ inodes: number; chunks: number }> {
+    try {
+      setLastRpcFrame('writeBatchStream', -1);
+    } catch { /* best-effort */ }
+    return this._getStub()._rpcWriteBatchStream(stream);
+  }
+
+  /**
    * Bulk-write npm registry cache entries (resolved packument metadata)
    * in ONE RPC. Used by the resolver-facet to flush a wave of resolved
    * packages back to the supervisor without per-entry round-trips.
@@ -334,6 +360,47 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async transform(code: string, loader: string): Promise<{ code: string; map: string } | null> {
     return this._getStub()._rpcTransform(code, loader);
+  }
+
+  // ── child_process [W8 Phase 1] ────────────────────────────────────────
+  //
+  // The parent facet's `child_process.spawn` shim (node-shims.ts) calls
+  // these methods. They delegate to NimbusSession._rpcCp* methods which
+  // route through the shared FacetProcessManager.
+  //
+  // Contract documented in audit/sections/W8-plan.md §2 / §8.5.
+
+  async cpSpawn(req: any): Promise<{ childPid: number }> {
+    return this._getStub()._rpcCpSpawn(req);
+  }
+
+  async cpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {
+    return this._getStub()._rpcCpStdinWrite(childPid, data);
+  }
+
+  async cpStdinEnd(childPid: number): Promise<void> {
+    return this._getStub()._rpcCpStdinEnd(childPid);
+  }
+
+  async cpReadOutput(
+    childPid: number,
+    fd: 1 | 2,
+    sinceSeq: number,
+    waitMs: number,
+  ): Promise<{ chunks: { seq: number; data: string }[]; closed: boolean; maxSeq: number }> {
+    return this._getStub()._rpcCpReadOutput(childPid, fd, sinceSeq, waitMs);
+  }
+
+  async cpDrainOutput(childPid: number): Promise<{ stdout: string; stderr: string; stdoutClosed: boolean; stderrClosed: boolean }> {
+    return this._getStub()._rpcCpDrainOutput(childPid);
+  }
+
+  async cpKill(childPid: number, signal: string): Promise<boolean> {
+    return this._getStub()._rpcCpKill(childPid, signal);
+  }
+
+  async cpWait(childPid: number, waitMs: number): Promise<{ done: boolean; exitCode: number | null; signal: string | null }> {
+    return this._getStub()._rpcCpWait(childPid, waitMs);
   }
 }
 
