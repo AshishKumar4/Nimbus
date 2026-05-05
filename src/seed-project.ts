@@ -853,6 +853,22 @@ re-seeding on normal boots; deleting it opts back in.)
 
 Delete anything you don't want. The seed never runs again once
 \`~/.nimbus-seeded\` exists, so your edits are safe.
+
+## Other frameworks
+
+Nimbus also runs (W11 status):
+
+- **SvelteKit** (\`@sveltejs/kit\`) — \u2705 dev + build
+- **Astro** (\`astro\`) — \u2705 dev + build
+- **Remix v2** (\`@remix-run/dev\` vite plugin) — \u2705 dev + build
+- **Nuxt 3** (\`nuxt\`) — \u26A0\uFE0F caveats (Vite + Nitro single-server only;
+  HMR may degrade)
+- **Next.js** (\`next\`) — \u274C blocked in Phase 1 (custom server,
+  webpack/Turbopack); tracked for W11.5
+
+To use one of the supported frameworks, clone its starter or scaffold
+with \`npm create <framework>@latest\` (or your usual scaffolder), then
+\`npm install && npm run dev\` from the project directory.
 `;
 
 // ── SEED_FILES list (single source of truth) ────────────────────────────

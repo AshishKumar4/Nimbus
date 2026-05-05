@@ -32,8 +32,10 @@
  */
 
 export const NPM_RESOLVE_PREAMBLE: string = `
-// ── Skip list (mirrors src/npm-resolver.ts SKIP_PACKAGES, post-W6) ──────
+// ── Skip list (mirrors src/npm-resolver.ts SKIP_PACKAGES, post-W6+W11) ──
 // W6: 'esbuild' migrated to WASM_SWAPS; 'fsevents' migrated to REJECT_INSTALL.
+// W11: vite is exempted when frameworkAware=true so framework CLIs can
+//      import('vite') from node_modules. See audit/sections/W11-plan.md §3.0.
 const __SKIP_PACKAGES = new Set([
   'typescript', 'vite', 'rollup', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
@@ -42,6 +44,9 @@ const __SKIP_PACKAGES = new Set([
   '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
   'husky', 'lint-staged', 'commitlint',
 ]);
+const __FRAMEWORK_REQUIRED_PACKAGES = new Set([
+  'vite',
+]);
 const __SKIP_PREFIXES = [
   '@types/',
   '@eslint/',
@@ -49,7 +54,8 @@ const __SKIP_PREFIXES = [
   'eslint-plugin-',
   'eslint-config-',
 ];
-function SHOULD_SKIP_PACKAGE(name) {
+function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
+  if (frameworkAware && __FRAMEWORK_REQUIRED_PACKAGES.has(name)) return false;
   if (__SKIP_PACKAGES.has(name)) return true;
   for (const p of __SKIP_PREFIXES) if (name.startsWith(p)) return true;
   return false;
@@ -63,30 +69,34 @@ const __WASM_SWAPS = new Map([
 // Mirror of REJECT_INSTALL in src/wasm-swap-registry.ts. Entries with
 // transitive='warn' are tagged so the resolver can decide skip-vs-throw.
 const __REJECT_INSTALL = new Map([
-  ['sharp',          { from: 'sharp',          reason: 'Native libvips bindings; not portable to Workers.', transitive: 'fail' }],
-  ['sqlite3',        { from: 'sqlite3',        reason: 'Native sqlite3 .node binding.', transitive: 'fail' }],
-  ['better-sqlite3', { from: 'better-sqlite3', reason: 'Native sqlite .node binding.', transitive: 'fail' }],
-  ['canvas',         { from: 'canvas',         reason: 'Native Cairo bindings.', transitive: 'fail' }],
-  ['sodium-native',  { from: 'sodium-native',  reason: 'Native libsodium.', transitive: 'fail' }],
-  ['fsevents',       { from: 'fsevents',       reason: 'macOS-only filesystem watcher; never runs in Workers.', transitive: 'warn' }],
-  ['bufferutil',     { from: 'bufferutil',     reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
-  ['utf-8-validate', { from: 'utf-8-validate', reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
-  ['node-pty',       { from: 'node-pty',       reason: 'PTY syscalls unavailable in workerd.', transitive: 'fail' }],
-  ['robotjs',        { from: 'robotjs',        reason: 'Desktop automation; sandboxed Workers cannot access OS UI.', transitive: 'fail' }],
-  ['electron',       { from: 'electron',       reason: 'Embedded Chromium runtime; not applicable to Workers.', transitive: 'fail' }],
-  ['bcrypt',         { from: 'bcrypt',         reason: 'Native bcrypt; require() name differs from bcryptjs.', transitive: 'fail' }],
-  ['argon2',         { from: 'argon2',         reason: 'Native Argon2 C bindings.', transitive: 'fail' }],
-  ['node-sass',      { from: 'node-sass',      reason: 'Native libsass; deprecated upstream.', transitive: 'fail' }],
-  ['grpc',           { from: 'grpc',           reason: 'Deprecated native gRPC.', transitive: 'fail' }],
-  ['@swc/core',      { from: '@swc/core',      reason: 'Native Rust SWC.', transitive: 'fail' }],
-  ['prisma',         { from: 'prisma',         reason: 'Native query engine; not portable to Workers in this configuration.', transitive: 'fail' }],
-  ['@prisma/client', { from: '@prisma/client', reason: 'Native Prisma query engine.', transitive: 'fail' }],
-  ['node-gyp',       { from: 'node-gyp',       reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
-  ['node-pre-gyp',   { from: 'node-pre-gyp',   reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
-  ['puppeteer',      { from: 'puppeteer',      reason: 'Bundled Chromium binary (~150 MB).', transitive: 'fail' }],
-  ['playwright',     { from: 'playwright',     reason: 'Bundled browsers (~300 MB).', transitive: 'fail' }],
-  ['sql.js',         { from: 'sql.js',         reason: 'Installs but fails at runtime: WASM artifact dist/sql-wasm.wasm not extracted (loader gap).', transitive: 'fail' }],
-  ['@swc/wasm-web',  { from: '@swc/wasm-web',  reason: 'Installs but fails at runtime: file not pre-bundled in VFS (loader gap).', transitive: 'fail' }],
+  ['sharp',                          { from: 'sharp',                          reason: 'Native libvips bindings; not portable to Workers.', transitive: 'fail' }],
+  ['sqlite3',                        { from: 'sqlite3',                        reason: 'Native sqlite3 .node binding.', transitive: 'fail' }],
+  ['better-sqlite3',                 { from: 'better-sqlite3',                 reason: 'Native sqlite .node binding.', transitive: 'fail' }],
+  ['canvas',                         { from: 'canvas',                         reason: 'Native Cairo bindings.', transitive: 'fail' }],
+  ['sodium-native',                  { from: 'sodium-native',                  reason: 'Native libsodium.', transitive: 'fail' }],
+  ['fsevents',                       { from: 'fsevents',                       reason: 'macOS-only filesystem watcher; never runs in Workers.', transitive: 'warn' }],
+  ['bufferutil',                     { from: 'bufferutil',                     reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
+  ['utf-8-validate',                 { from: 'utf-8-validate',                 reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
+  ['node-pty',                       { from: 'node-pty',                       reason: 'PTY syscalls unavailable in workerd.', transitive: 'fail' }],
+  ['robotjs',                        { from: 'robotjs',                        reason: 'Desktop automation; sandboxed Workers cannot access OS UI.', transitive: 'fail' }],
+  ['electron',                       { from: 'electron',                       reason: 'Embedded Chromium runtime; not applicable to Workers.', transitive: 'fail' }],
+  ['bcrypt',                         { from: 'bcrypt',                         reason: 'Native bcrypt; require() name differs from bcryptjs.', transitive: 'fail' }],
+  ['argon2',                         { from: 'argon2',                         reason: 'Native Argon2 C bindings.', transitive: 'fail' }],
+  ['node-sass',                      { from: 'node-sass',                      reason: 'Native libsass; deprecated upstream.', transitive: 'fail' }],
+  ['grpc',                           { from: 'grpc',                           reason: 'Deprecated native gRPC.', transitive: 'fail' }],
+  ['@swc/core',                      { from: '@swc/core',                      reason: 'Native Rust SWC.', transitive: 'fail' }],
+  ['prisma',                         { from: 'prisma',                         reason: 'Native query engine; not portable to Workers in this configuration.', transitive: 'fail' }],
+  ['@prisma/client',                 { from: '@prisma/client',                 reason: 'Native Prisma query engine.', transitive: 'fail' }],
+  ['node-gyp',                       { from: 'node-gyp',                       reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
+  ['node-pre-gyp',                   { from: 'node-pre-gyp',                   reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
+  ['puppeteer',                      { from: 'puppeteer',                      reason: 'Bundled Chromium binary (~150 MB).', transitive: 'fail' }],
+  ['playwright',                     { from: 'playwright',                     reason: 'Bundled browsers (~300 MB).', transitive: 'fail' }],
+  ['sql.js',                         { from: 'sql.js',                         reason: 'Installs but fails at runtime: ENOENT on dist/sql-wasm.wasm — loader gap (W6.5.x).', transitive: 'fail' }],
+  ['@swc/wasm-web',                  { from: '@swc/wasm-web',                  reason: 'Installs but fails at runtime: workerd CSP-like new-Function block in node-shims.ts:2058 — loader gap (W6.5.x).', transitive: 'fail' }],
+  // W6.5 additions:
+  ['@img/sharp-wasm32',              { from: '@img/sharp-wasm32',              reason: 'WASM build of sharp; wasm32-cpu-only AND libvips initThreads() fails under workerd (no pthread).', transitive: 'fail' }],
+  ['@napi-rs/canvas',                { from: '@napi-rs/canvas',                reason: 'Native bindings only; no WASM build published.', transitive: 'fail' }],
+  ['@napi-rs/canvas-wasm32-wasi',    { from: '@napi-rs/canvas-wasm32-wasi',    reason: 'Package does not exist on npm (404); @napi-rs/canvas has no WASM/WASI build.', transitive: 'fail' }],
 ]);
 function SHOULD_SWAP(name) {
   return __WASM_SWAPS.get(name);
@@ -100,6 +110,30 @@ function SHOULD_WARN_SKIP_TRANSITIVE(name) {
   const r = __REJECT_INSTALL.get(name);
   if (r && r.transitive === 'warn') return r;
   return undefined;
+}
+
+// ── W6.5 telemetry: facet-side event collection ──────────────────────
+// The facet cannot import the registry's emitRegistryEvent (preamble has
+// no import surface). Instead, decision sites push into a shared
+// __pendingEvents array which resolveTreeInFacet returns inside
+// ResolveFacetResult.registryEvents. The supervisor drains it and
+// flushes via emitRegistryEvent (npm-installer.ts).
+//
+// Shape of each entry:
+//   { type: 'swap',            from, to,                     ctx: 'transitive' }
+//   { type: 'reject',          from, reason, suggest?,       ctx: 'transitive' }
+//   { type: 'transitive-skip', from, reason }
+//
+// Note: ctx is always 'transitive' from this path (the supervisor's
+// applyW6Registry handles 'top'-ctx events directly without the facet).
+const __pendingEvents = [];
+function __EMIT_EVENT(e) { __pendingEvents.push(e); }
+function __DRAIN_EVENTS() {
+  // Hand ownership to caller; reset for next run (defensive — facet
+  // function bodies are re-instantiated per run anyway).
+  const out = __pendingEvents.slice();
+  __pendingEvents.length = 0;
+  return out;
 }
 
 // ── Semver helpers (pasted from src/npm-resolver.ts:83-202) ─────────────
