@@ -319,19 +319,18 @@ function filterWranglerFlags(argv: string[]): { args: string[]; ignored: string[
 // knows WHY their inner Worker will crash when it tries to access one.
 //
 // This list is trimmed as new synthesis code lands:
-//   Phase 0 (vars + services)     — removed `services`
-//   Phase 1 (assets)              — removed `assets`
-//   Phase 2 (worker_loaders)      — removed `worker_loaders`
-//   Phase 3 (durable_objects)     — removed `durable_objects`
+//   Phase 0 (vars + services)       — removed `services`
+//   Phase 1 (assets)                — removed `assets`
+//   Phase 2 (worker_loaders)        — removed `worker_loaders`
+//   Phase 3 (durable_objects)       — removed `durable_objects`
+//   W10 (kv/d1/r2 emulation)        — removed `kv_namespaces`,
+//                                     `d1_databases`, `r2_buckets`
 //
 // `vars` was never in this list because it's trivially synthesizable.
 // Remaining fields genuinely can't be synthesized without the real CF
-// platform (KV/D1/R2/Queues/Vectorize/AI/Browser/Hyperdrive/Analytics/
-// Dispatch) and would require building a full emulation layer.
+// platform (Queues/Vectorize/AI/Browser/Hyperdrive/Analytics/Dispatch)
+// and would require building a full emulation layer.
 const WRANGLER_UNSUPPORTED_CONFIG_FIELDS = [
-  'kv_namespaces',
-  'd1_databases',
-  'r2_buckets',
   'queues',
   'vectorize',
   'ai',
@@ -390,6 +389,12 @@ function detectUnsupportedWranglerConfig(vfs: SqliteVFS, root: string): string[]
   }
   return found;
 }
+
+// W10: detectCloudflareWorkersProject lives in src/project-detect.ts so
+// unit-level tests can import it without pulling in cloudflare:workers.
+// Re-export here so the existing import surface (callers that already
+// import from nimbus-session) continues to work.
+export { detectCloudflareWorkersProject } from './project-detect.js';
 
 /**
  * Parse the first token of an npm script's command string and decide whether
