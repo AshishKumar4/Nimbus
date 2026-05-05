@@ -1,0 +1,100 @@
+==== W4 run-all ====
+==== TIMESTAMP: 2026-05-05T00:46:27.430Z ====
+==== PHASE: unspecified ====
+==== MODE: fast (functional only) ====
+
+---- functional: functional/r2-cache-keys.mjs ----
+==== PROBE: r2-cache-keys ====
+==== TIMESTAMP: 2026-05-05T00:46:27.521Z ====
+  PASS: PACKUMENT_TTL_MS exported
+  PASS: R2_CACHE_PREFIX exported (versioned)
+  PASS: R2CacheClient class exported
+  PASS: getTarball method
+  PASS: putTarball method
+  PASS: getPackument method
+  PASS: putPackument method
+  PASS: tarball key uses /t/ prefix
+  PASS: packument key uses /p/ prefix
+  PASS: null-bucket graceful-degrade
+
+VERDICT: PASS
+  → PASS (exit=0, ms=112)
+
+---- functional: functional/r2-cache-expire.mjs ----
+==== PROBE: r2-cache-expire ====
+==== TIMESTAMP: 2026-05-05T00:46:27.599Z ====
+  PASS: PACKUMENT_TTL_MS = 5 * 60_000
+  PASS: expiresAt customMetadata read
+  PASS: expired flag computed in CachedPackument
+  PASS: put writes expiresAt customMetadata
+
+VERDICT: PASS
+  → PASS (exit=0, ms=77)
+
+---- functional: functional/r2-cache-invalidate.mjs ----
+==== PROBE: r2-cache-invalidate ====
+==== TIMESTAMP: 2026-05-05T00:46:27.682Z ====
+  PASS: delete OR prefix-version invalidation surface
+  PASS: invalidation rationale in JSDoc
+
+VERDICT: PASS
+  → PASS (exit=0, ms=66)
+
+---- functional: functional/packument-cache.mjs ----
+==== PROBE: packument-cache ====
+==== TIMESTAMP: 2026-05-05T00:46:27.726Z ====
+  PASS: SupervisorRPC.getCachedPackument
+  PASS: SupervisorRPC.putCachedPackument
+  PASS: getCachedPackument reads NPM_PACKUMENT_CACHE binding
+  PASS: resolve-facet calls getCachedPackument
+  PASS: resolve-facet has soft-fail (typeof check)
+  PASS: resolve-facet uses Promise.race with timeout cap
+
+VERDICT: PASS
+  → PASS (exit=0, ms=43)
+
+---- functional: functional/tarball-cache.mjs ----
+==== PROBE: tarball-cache ====
+==== TIMESTAMP: 2026-05-05T00:46:27.780Z ====
+  PASS: SupervisorRPC.getCachedTarball
+  PASS: SupervisorRPC.putCachedTarball
+  PASS: getCachedTarball reads NPM_TARBALL_CACHE binding
+  PASS: batch-facet calls getCachedTarball
+  PASS: batch-facet soft-fail typeof check
+  PASS: batch-facet captures compressed bytes for putCachedTarball
+  PASS: batch-facet uses Promise.race for cache vs network
+
+VERDICT: PASS
+  → PASS (exit=0, ms=51)
+
+---- functional: functional/pipelining-ordering.mjs ----
+==== PROBE: pipelining-ordering ====
+==== TIMESTAMP: 2026-05-05T00:46:27.884Z ====
+  PASS: putCachedTarball is awaited (not void-fired)
+  PASS: NO bare void putCachedTarball (lifecycle bug)
+  PASS: Race uses Promise.race
+  PASS: Integrity check still applies on cache hit (subtle.digest)
+
+VERDICT: PASS
+  → PASS (exit=0, ms=92)
+SKIP (regression): regression/install-pipeline-coverage-rerun.mjs [requires --full]
+SKIP (regression): regression/wave1-contract-rerun.mjs [requires --full]
+SKIP (regression): regression/mossaic-cold-install.mjs [requires --full]
+SKIP (e2e): e2e/mossaic-cold-warm.mjs [requires --full]
+SKIP (functional): functional/r2-cache-hit-miss.mjs [requires --full]
+
+==== Summary ====
+  [PASS] functional/functional/r2-cache-keys.mjs (112ms)
+  [PASS] functional/functional/r2-cache-expire.mjs (77ms)
+  [PASS] functional/functional/r2-cache-invalidate.mjs (66ms)
+  [PASS] functional/functional/packument-cache.mjs (43ms)
+  [PASS] functional/functional/tarball-cache.mjs (51ms)
+  [PASS] functional/functional/pipelining-ordering.mjs (92ms)
+  [SKIP] regression/regression/install-pipeline-coverage-rerun.mjs
+  [SKIP] regression/regression/wave1-contract-rerun.mjs
+  [SKIP] regression/regression/mossaic-cold-install.mjs
+  [SKIP] e2e/e2e/mossaic-cold-warm.mjs
+  [SKIP] functional/functional/r2-cache-hit-miss.mjs
+
+Ran 6 probes: 6 pass, 0 fail.
+Phase D expectation: ALL probes PASS. Failures are bugs.

@@ -1,0 +1,3 @@
+# Probe run artifacts — runtime output, not committed.
+*
+!.gitignore

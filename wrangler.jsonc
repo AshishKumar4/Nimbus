@@ -8,20 +8,19 @@
   // chained stubs without serializing raw WorkerStub objects). Required
   // for `wrangler dev` inside Nimbus to proxy env.LOADER.load() calls.
   //
-  // [W12 — Lever 12 / G3 / H1] `replica_routing` enables Durable Object
-  // read replicas (cross-region read-mostly DO instances). Per CF research
-  // §G.4 / §J.7.1 (citing the wiki SPEC: STOR/Durable Objects read
-  // replication API). At runtime, the DO calls
-  // `ctx.storage.enableReplicas()` (or its alternate name
-  // `configureReadReplication`); replicas are isolates whose
-  // `ctx.storage.primary` is an RpcStub to the primary, and the primary's
-  // `ctx.storage.primary` is `undefined`. The flag is additive: pre-GA
-  // runtimes that don't recognize `replica_routing` ignore it. The runtime
-  // probe in `tryEnableReplicas` (src/replica-routing.ts) makes the DO
-  // functional with or without the flag — `getReplicaState()` reports
-  // `state: 'unsupported'` when the API surface is absent and behaviour
-  // falls back to the pre-W12 single-primary path.
-  "compatibility_flags": ["nodejs_compat", "experimental", "replica_routing"],
+  // [CWB-1 hotfix, 2026-05-05] `replica_routing` MOVED to env.production
+  // overlay below. The bundled workerd in many local dev installs predates
+  // GA replica routing and rejects the flag at config-time, breaking every
+  // `wrangler dev` (no `--env`) DO request with `Error: workerd does not
+  // support replica routing.` See audit/sections/POST-PHASE5-CROSS-WAVE-AUDIT
+  // §CWB-1 for the full root cause. Production deploys MUST use
+  // `wrangler deploy --env production` to pick up replica_routing
+  // (see env.production.compatibility_flags below). The W12 DO code path
+  // graceful-degrades when the flag is absent: replica-routing.ts reports
+  // `state: 'unsupported'` and the DO falls back to the pre-W12 single-
+  // primary path. So `wrangler dev` without --env loses W12 read-replica
+  // benefit but functions correctly.
+  "compatibility_flags": ["nodejs_compat", "experimental"],
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
   // [docs](https://developers.cloudflare.com/workers/configuration/placement/),
   // Cloudflare measures the Worker's request duration in different colos
@@ -36,6 +35,8 @@
   // could slow shell loads for users far from the placement. Mitigation:
   // the bare landing page `/` is excluded from `run_worker_first` and is
   // served direct-from-edge regardless. See W12-plan.md §4.3.
+  // `placement` is an inheritable key — env.production picks it up
+  // automatically from the top level.
   "placement": { "mode": "smart" },
   "vars": {
     // Diagnostic gate for [sqlite-vfs/W2.5b] logs. Set to "1" to enable;
@@ -109,5 +110,54 @@
       "binding": "NPM_PACKUMENT_CACHE",
       "bucket_name": "nimbus-npm-packument-cache"
     }
-  ]
+  ],
+  // [CWB-1 hotfix, 2026-05-05] env.production overlay carries the
+  // W12 `replica_routing` compatibility flag. Production deploys MUST
+  // use `wrangler deploy --env production` to apply this overlay.
+  // `audit/probes/_deploy-and-verify-all.mjs` was updated in the same
+  // commit to invoke `wrangler deploy --env production`.
+  //
+  // Wrangler env-overlay rules:
+  // - **Inheritable keys** (`compatibility_date`, `placement`, `assets`,
+  //   `alias`, `worker_loaders`, `main`, `name`, `compatibility_flags`):
+  //   if absent in env block, inherited from top level. If present, the
+  //   env value REPLACES the top-level value entirely (no merge for
+  //   array fields). So `compatibility_flags` here MUST be the FULL list,
+  //   not just the additional flag.
+  // - **Non-inheritable keys** (`vars`, `durable_objects`, `r2_buckets`,
+  //   `kv_namespaces`, `services`, etc.): MUST be redeclared in the env
+  //   block to reach the deployed Worker. Verified per
+  //   https://developers.cloudflare.com/workers/wrangler/configuration/#non-inheritable-keys
+  //   (top-level docs section "Non-inheritable keys").
+  // - **Top-level only keys** (`migrations`): cannot appear in env blocks;
+  //   `migrations` is shared across all envs by definition (same DO class
+  //   migrations run once per Worker name).
+  //
+  // The `name` field is duplicated explicitly so the deployed Worker
+  // is `nimbus`, not `nimbus-production` (wrangler's default behavior is
+  // to append the env name unless `name` is explicitly set in the env block).
+  "env": {
+    "production": {
+      "name": "nimbus",
+      "compatibility_flags": ["nodejs_compat", "experimental", "replica_routing"],
+      "vars": {
+        "NIMBUS_DIAG_INSTALL_PIPELINE": ""
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+        ]
+      },
+      "r2_buckets": [
+        {
+          "binding": "NPM_TARBALL_CACHE",
+          "bucket_name": "nimbus-npm-cache"
+        },
+        {
+          "binding": "NPM_PACKUMENT_CACHE",
+          "bucket_name": "nimbus-npm-packument-cache"
+        }
+      ]
+    }
+  }
 }

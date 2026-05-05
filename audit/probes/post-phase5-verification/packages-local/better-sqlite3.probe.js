@@ -1,0 +1,1 @@
+const m=require('better-sqlite3');console.log('typeof:',typeof m)

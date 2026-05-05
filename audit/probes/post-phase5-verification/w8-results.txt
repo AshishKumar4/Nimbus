@@ -1,0 +1,321 @@
+
+========================================
+# Running functional/spawn-echo-stdout.mjs
+========================================
+# spawn-echo-stdout
+  ok  childPid is a positive number
+  ok  exitCode is 0
+  ok  signal is null
+  ok  stdout is "hello world\n"
+  ok  stderr is ""
+  ok  stdout closed flag
+  ok  stderr closed flag
+
+# spawn-echo-stdout: 7 passed, 0 failed
+
+========================================
+# Running functional/spawn-exit-codes.mjs
+========================================
+# spawn-exit-codes
+  ok  true  → exitCode 0
+  ok  false  → exitCode 1
+  ok  exit-code 42 → exitCode 42
+  ok  exit-code 137 → exitCode 137
+  ok  exit-code 0 → exitCode 0
+
+# spawn-exit-codes: 5 passed, 0 failed
+
+========================================
+# Running functional/stdin-pipe.mjs
+========================================
+# stdin-pipe
+  ok  childPid allocated
+  ok  exit 0
+  ok  stdout echoes all 3 lines
+
+# stdin-pipe: 3 passed, 0 failed
+
+========================================
+# Running functional/kill-sigterm.mjs
+========================================
+# kill-sigterm
+  ok  first kill returns true
+  ok  exitCode 143 (SIGTERM)
+  ok  signal SIGTERM
+  ok  wait resolved within 500ms
+  ok  second kill returns false
+  ok  SIGKILL → exitCode 137
+  ok  SIGKILL → signal SIGKILL
+
+# kill-sigterm: 7 passed, 0 failed
+
+========================================
+# Running functional/split-streams.mjs
+========================================
+# split-streams
+  ok  stdout is "out-line\n"
+  ok  stderr is "err-line\n"
+
+# split-streams: 2 passed, 0 failed
+
+========================================
+# Running functional/incremental-read.mjs
+========================================
+# incremental-read
+  ok  all 4 chunks collected
+  ok  eventually closed
+  ok  exit 0
+
+# incremental-read: 3 passed, 0 failed
+
+========================================
+# Running functional/exit-idempotency.mjs
+========================================
+# exit-idempotency
+  ok  exitCode stays 143
+  ok  signal stays SIGTERM
+
+# exit-idempotency: 2 passed, 0 failed
+
+========================================
+# Running functional/env-propagation.mjs
+========================================
+# env-propagation
+  ok  FOO=bar visible to child
+  ok  NIMBUS_CP_DEPTH=1 in fresh child
+  ok  NIMBUS_CP_DEPTH=8 at boundary
+  ok  depth-cap error mentions EAGAIN
+  ok  spawn at depth 8 rejected
+
+# env-propagation: 5 passed, 0 failed
+
+========================================
+# Running functional/log-store-integration.mjs
+========================================
+# log-store-integration
+  ok  logs.read(pid, "stdout")
+  ok  logs.read(pid, "stderr")
+  ok  exit slot marked in log store
+
+# log-store-integration: 3 passed, 0 failed
+
+========================================
+# Running functional/cp-spawn-emitter.mjs
+========================================
+# cp-spawn-emitter
+  ok  exec exists
+  ok  execSync exists
+  ok  execFile exists
+  ok  execFileSync exists
+  ok  spawn exists
+  ok  spawnSync exists
+  ok  fork exists
+  ok  ChildProcess exists
+  ok  spawn returns object
+  ok  child.kill is function
+  ok  child.stdin is non-null
+  ok  child.stdout is non-null
+  ok  child.stderr is non-null
+  ok  child.stdio is array
+  ok  child.stdio length 3
+  ok  cpSpawn was called
+  ok  child.pid is set
+  ok  stdout received "hello world"
+  ok  exit fired
+  ok  exit code 0
+
+# cp-spawn-emitter: 20 passed, 0 failed
+
+========================================
+# Running functional/cp-exec-callback.mjs
+========================================
+# cp-exec-callback
+  ok  callback fired
+  ok  err is null
+  ok  stdout includes from-exec
+
+# cp-exec-callback: 3 passed, 0 failed
+
+========================================
+# Running functional/cp-spawn-sync.mjs
+========================================
+# cp-spawn-sync
+  ok  status 0
+  ok  stdout has hi-from-sync
+
+# cp-spawn-sync: 2 passed, 0 failed
+
+========================================
+# Running functional/cp-fork-ipc.mjs
+========================================
+# cp-fork-ipc
+  ok  fork returns object
+  ok  child.connected is true after spawn settles
+  ok  child.send is function
+  ok  send returns true (queued)
+  ok  at least 3 stdin writes recorded
+  ok  plain message hello=world
+  ok  plain message n=42
+  ok  buffer projection has type Buffer
+  ok  date projected to ISO string
+  ok  disconnect set connected=false
+
+# cp-fork-ipc: 10 passed, 0 failed
+
+========================================
+# Running functional/cp-stdio-streams.mjs
+========================================
+# cp-stdio-streams
+  ok  child.stdout has setEncoding
+  ok  child.stdout has pause
+  ok  child.stdout has resume
+  ok  child.stdout has pipe
+  ok  sink captured stdout
+
+# cp-stdio-streams: 5 passed, 0 failed
+
+========================================
+# Running functional/cp-execfile.mjs
+========================================
+# cp-execfile
+  ok  callback fired
+  ok  err is null
+  ok  stdout includes file-arg
+  ok  cpSpawn was issued
+  ok  cpSpawn shell flag is falsy
+
+# cp-execfile: 5 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage.mjs
+========================================
+# install-pipeline-coverage probe still present
+  ok  file exists
+  ok  mentions fastify scenario
+  ok  mentions express scenario
+  ok  mentions ts-jest scenario
+  ok  mentions redis scenario
+  ok  mustHaveAtLeastOne contract present
+# regression probe parseable as module
+  ok  readable
+
+# install-pipeline-coverage [W8 regression]: 7 passed, 0 failed
+
+========================================
+# Running regression/node-shims-builtins-shape.mjs
+========================================
+# node-shims-builtins-shape
+  ok  builtins.fs is object
+  ok  builtins.path is object
+  ok  builtins.os is object
+  ok  builtins.events is non-null
+  ok  builtins.stream is object
+  ok  builtins.buffer is object
+  ok  builtins.util is object
+  ok  builtins.url is object
+  ok  builtins.crypto is object
+  ok  builtins.assert is non-null
+  ok  builtins.querystring is object
+  ok  builtins.string_decoder is object
+  ok  builtins.child_process is object
+  ok  builtins.process is object
+  ok  builtins.console is object
+  ok  cp.exec
+  ok  cp.execSync
+  ok  cp.execFile
+  ok  cp.execFileSync
+  ok  cp.spawn
+  ok  cp.spawnSync
+  ok  cp.fork
+  ok  cp.ChildProcess
+  ok  fs.readFile
+  ok  fs.writeFile
+  ok  fs.readFileSync
+  ok  fs.existsSync
+  ok  crypto.createHash
+  ok  crypto.randomBytes
+
+# node-shims-builtins-shape [W8 regression]: 29 passed, 0 failed
+
+========================================
+# Running e2e/postinstall-success-rate.mjs
+========================================
+# postinstall-success-rate (should-pass)
+  ok  husky: true  → exit 0
+  ok  lefthook: true  → exit 0
+  ok  simple-git-hooks: echo installed → exit 0
+  ok  lint-staged: echo ok → exit 0
+  ok  yorkie: true  → exit 0
+  ok  pass rate 100% ≥ 100%
+# postinstall expected-fail-platform — fail loudly
+  ok  esbuild: command not found → exit 127
+
+# postinstall-success-rate: 7 passed, 0 failed
+
+========================================
+# Running e2e/concurrently-two-echo.mjs
+========================================
+# concurrently-two-echo
+  ok  two distinct PIDs
+  ok  a exit 0
+  ok  b exit 0
+  ok  a stdout has "a"
+  ok  b stdout has "b"
+
+# concurrently-two-echo: 5 passed, 0 failed
+
+========================================
+# Running e2e/cross-spawn-shape.mjs
+========================================
+# cross-spawn shape
+  ok  child has pid getter
+  ok  child has kill method
+  ok  child has on method
+  ok  child has stdio
+  ok  exit event fired
+  ok  close event fired
+  ok  error event NOT fired
+  ok  result has status
+  ok  result has stdout
+  ok  result has stderr
+  ok  status 0
+  ok  stdout includes sync-test
+
+# cross-spawn-shape: 12 passed, 0 failed
+
+========================================
+# Running e2e/spawn-unawaited-exit.mjs
+========================================
+# spawn-unawaited-exit
+  ok  cpDrainOutput was issued
+  ok  child state present in supervisor
+  ok  captured stdout
+
+# spawn-unawaited-exit: 3 passed, 0 failed
+
+========================================
+# W8 probe summary
+========================================
+✓ functional/spawn-echo-stdout.mjs (122ms, exit=0)
+✓ functional/spawn-exit-codes.mjs (325ms, exit=0)
+✓ functional/stdin-pipe.mjs (76ms, exit=0)
+✓ functional/kill-sigterm.mjs (95ms, exit=0)
+✓ functional/split-streams.mjs (87ms, exit=0)
+✓ functional/incremental-read.mjs (302ms, exit=0)
+✓ functional/exit-idempotency.mjs (66ms, exit=0)
+✓ functional/env-propagation.mjs (198ms, exit=0)
+✓ functional/log-store-integration.mjs (102ms, exit=0)
+✓ functional/cp-spawn-emitter.mjs (190ms, exit=0)
+✓ functional/cp-exec-callback.mjs (197ms, exit=0)
+✓ functional/cp-spawn-sync.mjs (130ms, exit=0)
+✓ functional/cp-fork-ipc.mjs (876ms, exit=0)
+✓ functional/cp-stdio-streams.mjs (151ms, exit=0)
+✓ functional/cp-execfile.mjs (219ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (37ms, exit=0)
+✓ regression/node-shims-builtins-shape.mjs (59ms, exit=0)
+✓ e2e/postinstall-success-rate.mjs (306ms, exit=0)
+✓ e2e/concurrently-two-echo.mjs (95ms, exit=0)
+✓ e2e/cross-spawn-shape.mjs (258ms, exit=0)
+✓ e2e/spawn-unawaited-exit.mjs (106ms, exit=0)
+
+# ALL GREEN

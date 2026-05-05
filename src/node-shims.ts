@@ -1841,11 +1841,36 @@ function __fileExists(path) {
   }
   return false;
 }
+// W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
+// directories (it has to — __resolveNodeModule and __resolveImportsField call
+// it to check whether a node_modules/<pkg> directory exists). __resolveFile's
+// empty-extension probe needs the inverse: "is this an actual file?" — so the
+// loop falls through to /index.js when "base" is a directory rather than
+// short-circuiting and returning the directory path (which __loadModule then
+// can't read, throwing "Cannot read module: <dir>"). See W3 retro §S3 for
+// the fastify ret/dist/types failure.
+function __pathIsFile(path) {
+  const k = path.replace(/^\\/+/, "");
+  if (__vfsBundle && k in __vfsBundle) return true;
+  if (__vfsWrites && k in __vfsWrites) return true;
+  // Deliberately does NOT consult __vfsDirs nor do the prefix scan.
+  return false;
+}
 function __resolveFile(base) {
   // Extensions probed when a path doesn't include one. Must mirror the
   // install-time pre-bundler: see audit/sections/03-resolver-gaps.md §3.5.
+  // The first ext is "" (exact-match). It must be probed via __pathIsFile,
+  // not __fileExists, so directories don't short-circuit before /index.* —
+  // see W3.5-plan.md §1 Failure 1.
   const exts = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.cjs", "/index.mjs", "/index.json"];
-  for (const ext of exts) { if (__fileExists(base + ext)) return base + ext; }
+  for (const ext of exts) {
+    const cand = base + ext;
+    if (ext === "") {
+      if (__pathIsFile(cand)) return cand;
+      continue;
+    }
+    if (__fileExists(cand)) return cand;
+  }
   return null;
 }
 
@@ -2054,6 +2079,20 @@ function __loadModule(resolvedPath) {
         const fn = new Function("exports", "require", "module", "__filename", "__dirname", code);
         fn(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
       } catch (evalErr) {
+        // W3.5 Fix C: if the file was in the bundle but its pre-compile
+        // failed at facet startup, surface the original SyntaxError
+        // instead of the misleading "file was not pre-bundled" text.
+        // See audit/sections/W3.5-plan.md §1 Failure 2.
+        const normalizedPath2 = resolvedPath.replace(/^\\/+/, "");
+        const compileErr =
+          (typeof __compileFailures !== "undefined" && __compileFailures &&
+            (__compileFailures.get(normalizedPath2) || __compileFailures.get(resolvedPath))) || null;
+        if (compileErr) {
+          throw new Error(
+            "Cannot load module '" + resolvedPath +
+            "': pre-compile failed at facet startup: " + compileErr,
+          );
+        }
         if (evalErr.message && evalErr.message.includes("Code generation from strings disallowed")) {
           throw new Error("Cannot load module '" + resolvedPath + "': file was not pre-bundled. Add it to the VFS bundle.");
         }

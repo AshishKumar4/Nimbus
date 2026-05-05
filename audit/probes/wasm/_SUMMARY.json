@@ -1,50 +1,62 @@
 [
   {
     "name": "bcryptjs",
-    "ok": true
+    "ok": true,
+    "note": "loads + hashSync/compareSync work"
   },
   {
     "name": "sass",
-    "ok": true
+    "ok": false,
+    "note": "Cannot find module './sass.dart.js' — runtime resolver gap on internal subpath"
   },
   {
     "name": "grpc-grpc-js",
-    "ok": true
+    "ok": false,
+    "note": "Cannot find module './call-credentials' — runtime resolver gap on internal subpath"
   },
   {
     "name": "sql-js",
-    "ok": true
+    "ok": false,
+    "note": "ENOENT on dist/sql-wasm.wasm at runtime; loader gap (W6.5 spike sql-js.verdict.md: deferred to W6.5.x)"
   },
   {
     "name": "libsql-client",
-    "ok": true
+    "ok": false,
+    "note": "Cannot find module '@libsql/core/config' as of 2026-04-29 probe; W6.5 spike libsql-client.verdict.md says probe may be stale post-W2.6a — needs prod re-probe"
   },
   {
     "name": "esbuild-wasm",
-    "ok": true
+    "ok": true,
+    "note": "verified — W6's marquee swap target; build/transform/version/initialize all work"
   },
   {
     "name": "swc-wasm-web",
-    "ok": true
+    "ok": false,
+    "note": "'file was not pre-bundled' from node-shims.ts:2058 (workerd CSP-like new-Function block); W6.5 spike: deferred"
   },
   {
     "name": "tailwindcss-oxide-wasm",
-    "ok": true
+    "ok": false,
+    "note": "Cannot find module 'node:wasi' — workerd does not provide node:wasi"
   },
   {
     "name": "resvg-wasm",
-    "ok": true
+    "ok": true,
+    "note": "verified — render() works for SVG → PNG"
   },
   {
     "name": "wasm-vips",
-    "ok": true
+    "ok": true,
+    "note": "loads BUT only exposes default export — partial API surface (W6 retro §2 caveat)"
   },
   {
     "name": "rollup-wasm-node",
-    "ok": true
+    "ok": false,
+    "note": "Cannot find module './shared/rollup.js' — runtime resolver gap on internal subpath"
   },
   {
     "name": "hash-wasm",
-    "ok": true
+    "ok": true,
+    "note": "verified — argon2id and other hashes work"
   }
 ]

@@ -1,0 +1,5 @@
+src/esbuild-service.ts(153,28): error TS2307: Cannot find module 'esbuild-wasm/esbuild.wasm' or its corresponding type declarations.
+src/nimbus-session.ts(2773,39): error TS2345: Argument of type 'SqliteVFSProvider' is not assignable to parameter of type 'VirtualProvider | MountProvider'.
+  Type 'SqliteVFSProvider' is not assignable to type 'MountProvider'.
+    The types of 'stat(...).type' are incompatible between these types.
+      Type 'string' is not assignable to type 'FileType'.

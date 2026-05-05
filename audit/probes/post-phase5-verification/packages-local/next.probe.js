@@ -1,0 +1,1 @@
+const m=require('next');console.log('typeof:',typeof m)

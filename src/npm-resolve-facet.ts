@@ -101,12 +101,32 @@ export interface ResolveFacetSpec {
   frameworkAware?: boolean;
 }
 
+/**
+ * W6.5: Telemetry-event mirror of `RegistryEvent` (defined in
+ * `src/wasm-swap-registry.ts`). The facet cannot import the registry
+ * (preamble has no import surface), so the type is duplicated here.
+ * Parity is gated by audit/probes/w6.5/regression/event-fires-from-facet.mjs.
+ */
+export type FacetRegistryEvent =
+  | { type: 'swap'; from: string; to: string; ctx: 'transitive' }
+  | { type: 'reject'; from: string; reason: string; suggest?: string; ctx: 'transitive' }
+  | { type: 'transitive-skip'; from: string; reason: string };
+
 export interface ResolveFacetResult {
   /** Resolved packages, lean (no packument retained). */
   resolved: ResolvedPackage[];
   /** Per-spec status messages — surfaced into the install log as
    *  `[resolve-facet] <line>`. Bounded to ~one line per resolved spec. */
   messages: string[];
+  /**
+   * W6.5: registry decisions taken inside the facet (swap / transitive-
+   * skip / reject). Drained by the supervisor and forwarded to the
+   * registry sink via `emitRegistryEvent`. See npm-installer.ts.
+   *
+   * Note: throw-path reject events do NOT reach this field today (the
+   * facet throws before returning). Documented gap in W6.5-plan §5.3.
+   */
+  registryEvents: FacetRegistryEvent[];
   /** Counter snapshot at end of phase. Mirrors src/diag-counters.ts shape
    *  for the resolver subset, so the supervisor can fold these into its
    *  own counters before responding to /api/_diag/memory. */
@@ -416,22 +436,41 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
 
     // W6: registry transitive policy. Swap rewrites name in flight;
     // 'fail' rejects throw; 'warn' rejects log [skip] and drop.
+    // W6.5: each decision also pushes a RegistryEvent into __pendingEvents
+    // (preamble-provided), drained by the supervisor after the facet
+    // returns. NOTE: the throw-path reject case below stops execution
+    // BEFORE __DRAIN_EVENTS is read by the caller — so reject events
+    // from the facet are an accepted incomplete-coverage gap (W6.5-plan
+    // §5.3). We still push them in case a future caller change drains
+    // events from the rejected ResolveFacetResult.
     let effName = name;
     // @ts-ignore — SHOULD_SWAP provided by preamble.
     const __swap = SHOULD_SWAP(name);
     if (__swap) {
       messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${__swap.from} → ${__swap.to}`);
+      // @ts-ignore — preamble.
+      __EMIT_EVENT({ type: 'swap', from: __swap.from, to: __swap.to, ctx: 'transitive' });
       effName = __swap.to;
     } else {
       // @ts-ignore — preamble.
       const __warn = SHOULD_WARN_SKIP_TRANSITIVE(name);
       if (__warn) {
         messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}`);
+        // @ts-ignore — preamble.
+        __EMIT_EVENT({ type: 'transitive-skip', from: __warn.from, reason: __warn.reason });
         return null;
       }
       // @ts-ignore — preamble.
       const __fail = SHOULD_REJECT_FAIL(name);
       if (__fail) {
+        // @ts-ignore — preamble.
+        __EMIT_EVENT({
+          type: 'reject',
+          from: __fail.from,
+          reason: __fail.reason,
+          suggest: __fail.suggest,
+          ctx: 'transitive',
+        });
         // Tag with own-property so the BFS catch can identify a
         // registry reject without relying on message-prefix string
         // matching. Mirror of supervisor-side RegistryRejectError.
@@ -581,6 +620,8 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   return {
     resolved: [...resolved.values()],
     messages,
+    // @ts-ignore — preamble-provided drain helper.
+    registryEvents: typeof __DRAIN_EVENTS === 'function' ? __DRAIN_EVENTS() : [],
     facetCounters: {
       inFlightPeak,
       cumulativeBytesDecoded,

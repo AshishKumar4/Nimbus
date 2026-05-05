@@ -1,0 +1,559 @@
+
+========================================
+# Running functional/registry-shape.mjs
+========================================
+# module exports
+  ok  WASM_SWAPS exported
+  ok  REJECT_INSTALL exported
+  ok  WASM_SWAPS non-empty
+  ok  REJECT_INSTALL non-empty
+# WASM_SWAPS entry shape
+  ok  swap.from is non-empty string (esbuild)
+  ok  swap.to is non-empty string (esbuild → esbuild-wasm)
+  ok  swap.reason present (esbuild)
+  ok  swap.compat is allowed literal (esbuild)
+  ok  swap from!=to (esbuild)
+# REJECT_INSTALL entry shape
+  ok  reject.from is non-empty string (sharp)
+  ok  reject.reason present (sharp)
+  ok  reject.transitive is 'fail' | 'warn' (sharp)
+  ok  reject.suggest is string when present (sharp)
+  ok  reject.from is non-empty string (sqlite3)
+  ok  reject.reason present (sqlite3)
+  ok  reject.transitive is 'fail' | 'warn' (sqlite3)
+  ok  reject.suggest is string when present (sqlite3)
+  ok  reject.from is non-empty string (better-sqlite3)
+  ok  reject.reason present (better-sqlite3)
+  ok  reject.transitive is 'fail' | 'warn' (better-sqlite3)
+  ok  reject.suggest is string when present (better-sqlite3)
+  ok  reject.from is non-empty string (canvas)
+  ok  reject.reason present (canvas)
+  ok  reject.transitive is 'fail' | 'warn' (canvas)
+  ok  reject.suggest is string when present (canvas)
+  ok  reject.from is non-empty string (sodium-native)
+  ok  reject.reason present (sodium-native)
+  ok  reject.transitive is 'fail' | 'warn' (sodium-native)
+  ok  reject.suggest is string when present (sodium-native)
+  ok  reject.from is non-empty string (fsevents)
+  ok  reject.reason present (fsevents)
+  ok  reject.transitive is 'fail' | 'warn' (fsevents)
+  ok  reject.suggest is string when present (fsevents)
+  ok  reject.from is non-empty string (bufferutil)
+  ok  reject.reason present (bufferutil)
+  ok  reject.transitive is 'fail' | 'warn' (bufferutil)
+  ok  reject.suggest is string when present (bufferutil)
+  ok  reject.from is non-empty string (utf-8-validate)
+  ok  reject.reason present (utf-8-validate)
+  ok  reject.transitive is 'fail' | 'warn' (utf-8-validate)
+  ok  reject.suggest is string when present (utf-8-validate)
+  ok  reject.from is non-empty string (node-pty)
+  ok  reject.reason present (node-pty)
+  ok  reject.transitive is 'fail' | 'warn' (node-pty)
+  ok  reject.suggest is string when present (node-pty)
+  ok  reject.from is non-empty string (robotjs)
+  ok  reject.reason present (robotjs)
+  ok  reject.transitive is 'fail' | 'warn' (robotjs)
+  ok  reject.suggest is string when present (robotjs)
+  ok  reject.from is non-empty string (electron)
+  ok  reject.reason present (electron)
+  ok  reject.transitive is 'fail' | 'warn' (electron)
+  ok  reject.suggest is string when present (electron)
+  ok  reject.from is non-empty string (bcrypt)
+  ok  reject.reason present (bcrypt)
+  ok  reject.transitive is 'fail' | 'warn' (bcrypt)
+  ok  reject.suggest is string when present (bcrypt)
+  ok  reject.from is non-empty string (argon2)
+  ok  reject.reason present (argon2)
+  ok  reject.transitive is 'fail' | 'warn' (argon2)
+  ok  reject.suggest is string when present (argon2)
+  ok  reject.from is non-empty string (node-sass)
+  ok  reject.reason present (node-sass)
+  ok  reject.transitive is 'fail' | 'warn' (node-sass)
+  ok  reject.suggest is string when present (node-sass)
+  ok  reject.from is non-empty string (grpc)
+  ok  reject.reason present (grpc)
+  ok  reject.transitive is 'fail' | 'warn' (grpc)
+  ok  reject.suggest is string when present (grpc)
+  ok  reject.from is non-empty string (@swc/core)
+  ok  reject.reason present (@swc/core)
+  ok  reject.transitive is 'fail' | 'warn' (@swc/core)
+  ok  reject.suggest is string when present (@swc/core)
+  ok  reject.from is non-empty string (prisma)
+  ok  reject.reason present (prisma)
+  ok  reject.transitive is 'fail' | 'warn' (prisma)
+  ok  reject.suggest is string when present (prisma)
+  ok  reject.from is non-empty string (@prisma/client)
+  ok  reject.reason present (@prisma/client)
+  ok  reject.transitive is 'fail' | 'warn' (@prisma/client)
+  ok  reject.suggest is string when present (@prisma/client)
+  ok  reject.from is non-empty string (node-gyp)
+  ok  reject.reason present (node-gyp)
+  ok  reject.transitive is 'fail' | 'warn' (node-gyp)
+  ok  reject.suggest is string when present (node-gyp)
+  ok  reject.from is non-empty string (node-pre-gyp)
+  ok  reject.reason present (node-pre-gyp)
+  ok  reject.transitive is 'fail' | 'warn' (node-pre-gyp)
+  ok  reject.suggest is string when present (node-pre-gyp)
+  ok  reject.from is non-empty string (puppeteer)
+  ok  reject.reason present (puppeteer)
+  ok  reject.transitive is 'fail' | 'warn' (puppeteer)
+  ok  reject.suggest is string when present (puppeteer)
+  ok  reject.from is non-empty string (playwright)
+  ok  reject.reason present (playwright)
+  ok  reject.transitive is 'fail' | 'warn' (playwright)
+  ok  reject.suggest is string when present (playwright)
+  ok  reject.from is non-empty string (sql.js)
+  ok  reject.reason present (sql.js)
+  ok  reject.transitive is 'fail' | 'warn' (sql.js)
+  ok  reject.suggest is string when present (sql.js)
+  ok  reject.from is non-empty string (@swc/wasm-web)
+  ok  reject.reason present (@swc/wasm-web)
+  ok  reject.transitive is 'fail' | 'warn' (@swc/wasm-web)
+  ok  reject.suggest is string when present (@swc/wasm-web)
+# disjoint sets
+  ok  WASM_SWAPS.from ∩ REJECT_INSTALL.from is empty
+# uniqueness within each list
+  ok  no duplicate WASM_SWAPS.from
+  ok  no duplicate REJECT_INSTALL.from
+# expected entries present (sanity)
+  ok  esbuild is in WASM_SWAPS
+  ok  sharp is in REJECT_INSTALL
+  ok  sqlite3 is in REJECT_INSTALL
+  ok  better-sqlite3 is in REJECT_INSTALL
+  ok  fsevents is in REJECT_INSTALL
+  ok  prisma is in REJECT_INSTALL
+  ok  @prisma/client is in REJECT_INSTALL
+  ok  puppeteer is in REJECT_INSTALL
+  ok  playwright is in REJECT_INSTALL
+  ok  bcrypt is in REJECT_INSTALL
+  ok  argon2 is in REJECT_INSTALL
+
+# w6/functional/registry-shape: 119 passed, 0 failed
+
+========================================
+# Running functional/lookup.mjs
+========================================
+# lookupSwap
+  ok  is a function
+  ok  hits esbuild
+  ok  esbuild → esbuild-wasm
+  ok  miss returns undefined for unknown name
+  ok  case-sensitive: ESBUILD does not match
+  ok  miss for already-swapped target
+# lookupReject
+  ok  is a function
+  ok  hits sharp
+  ok  sharp.transitive
+  ok  hits fsevents
+  ok  fsevents.transitive
+  ok  miss returns undefined for unknown name
+  ok  case-sensitive
+  ok  scoped name lookup hits
+
+# w6/functional/lookup: 14 passed, 0 failed
+
+========================================
+# Running functional/apply-swaps.mjs
+========================================
+# basic rewrite
+  ok  result has specs
+  ok  result has swaps array
+  ok  esbuild rewritten away
+  ok  esbuild-wasm now in specs
+  ok  lodash untouched
+  ok  one swap recorded
+  ok  swap.from is esbuild
+  ok  swap.to is esbuild-wasm
+# purity: input not mutated
+  ok  input unchanged after applySwaps
+# idempotency
+  ok  second pass produces same specs
+  ok  second pass swaps is empty (already rewritten)
+# empty input
+  ok  empty specs in
+  ok  empty swaps array
+# no swap candidates
+  ok  specs unchanged
+  ok  no swaps
+# range carried over to swap target
+  ok  swap target has a range string
+
+# w6/functional/apply-swaps: 16 passed, 0 failed
+
+========================================
+# Running functional/find-rejects.mjs
+========================================
+# top context: includes all matches
+  ok  two rejects at top
+  ok  sharp included
+  ok  fsevents included
+# transitive context: only fail-policy entries
+  ok  sharp (fail) included transitively
+  ok  fsevents (warn) NOT included transitively
+# empty inputs
+  ok  empty top
+  ok  empty transitive
+# no matches
+  ok  clean specs top
+  ok  clean specs transitive
+# bcrypt is rejected at top
+  ok  one reject
+  ok  it is bcrypt
+  ok  reason mentions require() name issue
+
+# w6/functional/find-rejects: 12 passed, 0 failed
+
+========================================
+# Running functional/format-messages.mjs
+========================================
+# formatSwapNotice
+  ok  is a function
+  ok  swap entry available
+  ok  starts with [npm] prefix
+  ok  contains [swap] tag
+  ok  contains from name
+  ok  contains to name
+  ok  contains arrow
+  ok  contains reason substring
+  ok  contains ANSI yellow
+  ok  contains ANSI reset
+# formatRejectError single
+  ok  is a function
+  ok  reject entry available
+  ok  contains "rejected"
+  ok  contains sharp
+  ok  contains reason
+  ok  contains ANSI red
+  ok  contains ❌ marker
+# formatRejectError multi
+  ok  summary line counts both
+  ok  contains sharp
+  ok  contains prisma
+  ok  two ❌ markers
+# formatTransitiveSkip
+  ok  is a function
+  ok  fsevents entry available
+  ok  starts with [npm]
+  ok  contains [skip] tag
+  ok  contains fsevents
+  ok  contains ANSI yellow
+
+# w6/functional/format-messages: 27 passed, 0 failed
+
+========================================
+# Running functional/no-conflict-with-skip.mjs
+========================================
+# WASM_SWAPS.from disjoint from SKIP_PACKAGES
+  ok  esbuild NOT skipped (would mask the swap)
+# REJECT_INSTALL(fail).from disjoint from SKIP_PACKAGES
+  ok  sharp NOT skipped (would mask the reject)
+  ok  sqlite3 NOT skipped (would mask the reject)
+  ok  better-sqlite3 NOT skipped (would mask the reject)
+  ok  canvas NOT skipped (would mask the reject)
+  ok  sodium-native NOT skipped (would mask the reject)
+  ok  node-pty NOT skipped (would mask the reject)
+  ok  robotjs NOT skipped (would mask the reject)
+  ok  electron NOT skipped (would mask the reject)
+  ok  bcrypt NOT skipped (would mask the reject)
+  ok  argon2 NOT skipped (would mask the reject)
+  ok  node-sass NOT skipped (would mask the reject)
+  ok  grpc NOT skipped (would mask the reject)
+  ok  @swc/core NOT skipped (would mask the reject)
+  ok  prisma NOT skipped (would mask the reject)
+  ok  @prisma/client NOT skipped (would mask the reject)
+  ok  puppeteer NOT skipped (would mask the reject)
+  ok  playwright NOT skipped (would mask the reject)
+  ok  sql.js NOT skipped (would mask the reject)
+  ok  @swc/wasm-web NOT skipped (would mask the reject)
+# REJECT_INSTALL(warn).from overlap with SKIP_PACKAGES is allowlisted
+  ok  node-gyp overlap is intentional (in INTENTIONAL_OVERLAP allowlist)
+  ok  node-pre-gyp overlap is intentional (in INTENTIONAL_OVERLAP allowlist)
+# esbuild and fsevents specifically NOT skipped
+  ok  esbuild NOT in SKIP_PACKAGES anymore
+  ok  fsevents NOT in SKIP_PACKAGES anymore
+
+# w6/functional/no-conflict-with-skip: 24 passed, 0 failed
+
+========================================
+# Running functional/preamble-parity.mjs
+========================================
+# preamble exposes swap helpers
+  ok  SHOULD_SWAP function declared in preamble
+  ok  SHOULD_REJECT_FAIL function declared in preamble
+  ok  SHOULD_WARN_SKIP_TRANSITIVE function declared in preamble
+# npm-resolve-facet.ts SHOULD_* references all exist in preamble
+  ok  facet uses SHOULD_SKIP_PACKAGE → preamble declares it
+  ok  facet uses SHOULD_SWAP → preamble declares it
+  ok  facet uses SHOULD_WARN_SKIP_TRANSITIVE → preamble declares it
+  ok  facet uses SHOULD_REJECT_FAIL → preamble declares it
+# every WASM_SWAPS.from appears in preamble
+  ok  esbuild appears as quoted token in preamble
+  ok  esbuild-wasm (target) appears as quoted token in preamble
+# every REJECT_INSTALL.from appears in preamble
+  ok  sharp appears as quoted token in preamble
+  ok  sqlite3 appears as quoted token in preamble
+  ok  better-sqlite3 appears as quoted token in preamble
+  ok  canvas appears as quoted token in preamble
+  ok  sodium-native appears as quoted token in preamble
+  ok  fsevents appears as quoted token in preamble
+  ok  bufferutil appears as quoted token in preamble
+  ok  utf-8-validate appears as quoted token in preamble
+  ok  node-pty appears as quoted token in preamble
+  ok  robotjs appears as quoted token in preamble
+  ok  electron appears as quoted token in preamble
+  ok  bcrypt appears as quoted token in preamble
+  ok  argon2 appears as quoted token in preamble
+  ok  node-sass appears as quoted token in preamble
+  ok  grpc appears as quoted token in preamble
+  ok  @swc/core appears as quoted token in preamble
+  ok  prisma appears as quoted token in preamble
+  ok  @prisma/client appears as quoted token in preamble
+  ok  node-gyp appears as quoted token in preamble
+  ok  node-pre-gyp appears as quoted token in preamble
+  ok  puppeteer appears as quoted token in preamble
+  ok  playwright appears as quoted token in preamble
+  ok  sql.js appears as quoted token in preamble
+  ok  @swc/wasm-web appears as quoted token in preamble
+
+# w6/functional/preamble-parity: 33 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage-meta.mjs
+========================================
+# install-pipeline-coverage probe still present
+  ok  file exists
+  ok  mentions fastify scenario
+  ok  mentions express scenario
+  ok  mentions ts-jest scenario
+  ok  mentions redis scenario
+  ok  mustHaveAtLeastOne contract present
+# Mossaic gate scenarios untouched by W6
+  ok  does NOT install esbuild explicitly
+  ok  does NOT install bcrypt explicitly
+  ok  does NOT install sharp explicitly
+  ok  does NOT install prisma explicitly
+
+# w6/regression/install-pipeline-coverage-meta: 10 passed, 0 failed
+
+========================================
+# Running regression/skip-set-curated.mjs
+========================================
+# npm-resolver.ts SKIP_PACKAGES is the curated set
+  ok  SKIP_PACKAGES extracted
+  ok  includes typescript
+  ok  includes vite
+  ok  includes rollup
+  ok  includes webpack
+  ok  includes parcel
+  ok  includes postcss
+  ok  includes autoprefixer
+  ok  includes tailwindcss
+  ok  includes cssnano
+  ok  includes prettier
+  ok  includes eslint
+  ok  includes stylelint
+  ok  includes chokidar
+  ok  includes node-gyp
+  ok  includes node-pre-gyp
+  ok  includes @cloudflare/vite-plugin
+  ok  includes @cloudflare/workers-types
+  ok  includes wrangler
+  ok  includes husky
+  ok  includes lint-staged
+  ok  includes commitlint
+  ok  excludes (moved out) esbuild
+  ok  excludes (moved out) fsevents
+  ok  SKIP_PACKAGES.size matches curated
+# npm-resolve-preamble.ts SKIP set mirrors resolver
+  ok  preamble SKIP extracted
+  ok  same size
+  ok  preamble has typescript
+  ok  preamble has vite
+  ok  preamble has rollup
+  ok  preamble has webpack
+  ok  preamble has parcel
+  ok  preamble has postcss
+  ok  preamble has autoprefixer
+  ok  preamble has tailwindcss
+  ok  preamble has cssnano
+  ok  preamble has prettier
+  ok  preamble has eslint
+  ok  preamble has stylelint
+  ok  preamble has chokidar
+  ok  preamble has node-gyp
+  ok  preamble has node-pre-gyp
+  ok  preamble has @cloudflare/vite-plugin
+  ok  preamble has @cloudflare/workers-types
+  ok  preamble has wrangler
+  ok  preamble has husky
+  ok  preamble has lint-staged
+  ok  preamble has commitlint
+
+# w6/regression/skip-set-curated: 48 passed, 0 failed
+
+========================================
+# Running regression/builds-specs-passthrough.mjs
+========================================
+# applySwaps is a no-op on Mossaic-like input
+  ok  specs deep-equal input
+  ok  no swaps recorded
+# findRejects is empty on Mossaic-like input (top)
+  ok  no rejects
+# findRejects is empty on Mossaic-like input (transitive)
+  ok  no transitive rejects
+
+# w6/regression/builds-specs-passthrough: 4 passed, 0 failed
+
+========================================
+# Running regression/resolver-paths-symmetric.mjs
+========================================
+# per-name decision parity
+  ok  esbuild: preamble has swap entry
+  ok  esbuild: not in both swap and reject
+  ok  sharp: preamble has reject entry
+  ok  sharp: not in both swap and reject
+  ok  prisma: preamble has reject entry
+  ok  prisma: not in both swap and reject
+  ok  puppeteer: preamble has reject entry
+  ok  puppeteer: not in both swap and reject
+  ok  bcrypt: preamble has reject entry
+  ok  bcrypt: not in both swap and reject
+  ok  argon2: preamble has reject entry
+  ok  argon2: not in both swap and reject
+  ok  fsevents: preamble has reject entry
+  ok  fsevents: not in both swap and reject
+  ok  bufferutil: preamble has reject entry
+  ok  bufferutil: not in both swap and reject
+  ok  utf-8-validate: preamble has reject entry
+  ok  utf-8-validate: not in both swap and reject
+  ok  lodash: pass-through (no entry needed)
+  ok  lodash: not in both swap and reject
+  ok  react: pass-through (no entry needed)
+  ok  react: not in both swap and reject
+  ok  fastify: pass-through (no entry needed)
+  ok  fastify: not in both swap and reject
+  ok  typescript: preamble has skip entry
+  ok  typescript: not in both swap and reject
+  ok  eslint: preamble has skip entry
+  ok  eslint: not in both swap and reject
+  ok  prettier: preamble has skip entry
+  ok  prettier: not in both swap and reject
+# counts roughly match
+  ok  preamble has at least 2 swap-related quoted tokens
+
+# w6/regression/resolver-paths-symmetric: 31 passed, 0 failed
+
+========================================
+# Running e2e/build-specs-integration.mjs
+========================================
+# mixed swap + reject + neutral input
+  ok  one swap recorded
+  ok  swap from is esbuild
+  ok  esbuild-wasm in specs
+  ok  lodash preserved
+  ok  two rejects
+  ok  sharp rejected
+  ok  prisma rejected
+  ok  swap notice contains both names
+  ok  reject message mentions sharp
+  ok  reject message mentions prisma
+  ok  reject message has summary count "2"
+# all-clean input is fully passthrough
+  ok  specs unchanged
+  ok  no swaps
+  ok  no rejects
+# all-reject input throws via formatter
+  ok  three rejects
+  ok  msg has summary 3
+  ok  msg has all three names
+# user-visible error includes suggestions where present
+  ok  contains "try" or "suggestion"
+
+# w6/e2e/build-specs-integration: 18 passed, 0 failed
+
+========================================
+# Running e2e/transitive-warn-not-throw.mjs
+========================================
+# transitive fsevents → warn skip, no throw
+  ok  did not throw
+  ok  result drops fsevents
+  ok  one [skip] log line
+  ok  skip line contains fsevents
+  ok  skip line contains [skip] tag
+# transitive sharp (fail) → throw
+  ok  did throw
+  ok  message mentions sharp
+# transitive bufferutil/utf-8-validate (warn) → silent skip
+  ok  did not throw
+  ok  only ws survives
+  ok  two skip lines
+# multiple transitive fails accumulate one error
+  ok  throws on first transitive fail
+
+# w6/e2e/transitive-warn-not-throw: 11 passed, 0 failed
+
+========================================
+# Running e2e/lockfile-replay-with-swap.mjs
+========================================
+# cold → swap fires; warm → silent
+  ok  cold: one swap recorded
+  ok  lockfile has esbuild-wasm
+  ok  lockfile does NOT have esbuild
+  ok  cold notice count
+  ok  warm: zero swaps recorded (idempotent)
+  ok  warm: specs unchanged
+  ok  warm notice count
+# user package.json source-of-truth preserved
+  ok  input not mutated
+
+# w6/e2e/lockfile-replay-with-swap: 8 passed, 0 failed
+
+========================================
+# Running e2e/swap-target-symbol-parity.mjs
+========================================
+# drop-in swap targets export expected API
+
+# w6/e2e/swap-target-symbol-parity: 0 passed, 0 failed
+
+========================================
+# Running e2e/swap-preserves-package-json.mjs
+========================================
+# package.json key preserved after swap
+  ok  lockfile-style specs has esbuild-wasm
+  ok  lockfile-style specs does NOT have esbuild
+  ok  user package.json still has esbuild key
+  ok  user package.json does NOT have esbuild-wasm key
+# multiple deps + a swap
+  ok  package.json deps unchanged
+  ok  lockfile has 3 entries
+  ok  lockfile lists esbuild-wasm
+
+# w6/e2e/swap-preserves-package-json: 7 passed, 0 failed
+
+========================================
+# Running e2e/registry-coverage.mjs
+========================================
+# w6/e2e/registry-coverage SKIPPED (set NIMBUS_W6_E2E_PROD=1 to run)
+
+========================================
+# W6 probe summary
+========================================
+  [OK ] functional/registry-shape.mjs  (85ms, exit=0)
+  [OK ] functional/lookup.mjs  (84ms, exit=0)
+  [OK ] functional/apply-swaps.mjs  (57ms, exit=0)
+  [OK ] functional/find-rejects.mjs  (52ms, exit=0)
+  [OK ] functional/format-messages.mjs  (49ms, exit=0)
+  [OK ] functional/no-conflict-with-skip.mjs  (72ms, exit=0)
+  [OK ] functional/preamble-parity.mjs  (91ms, exit=0)
+  [OK ] regression/install-pipeline-coverage-meta.mjs  (42ms, exit=0)
+  [OK ] regression/skip-set-curated.mjs  (57ms, exit=0)
+  [OK ] regression/builds-specs-passthrough.mjs  (23ms, exit=0)
+  [OK ] regression/resolver-paths-symmetric.mjs  (48ms, exit=0)
+  [OK ] e2e/build-specs-integration.mjs  (29ms, exit=0)
+  [OK ] e2e/transitive-warn-not-throw.mjs  (47ms, exit=0)
+  [OK ] e2e/lockfile-replay-with-swap.mjs  (39ms, exit=0)
+  [OK ] e2e/swap-target-symbol-parity.mjs  (32ms, exit=0)
+  [OK ] e2e/swap-preserves-package-json.mjs  (26ms, exit=0)
+  [OK ] e2e/registry-coverage.mjs  (22ms, exit=0)
+
+# ALL W6 PROBES PASS

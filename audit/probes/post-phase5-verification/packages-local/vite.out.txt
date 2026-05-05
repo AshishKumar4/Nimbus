@@ -1,0 +1,60 @@
+==== PROBE: vite ====
+==== TIMESTAMP: 2026-05-05T01:15:03.139Z ====
+==== SID: idle-newt-4339 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install vite ----
+user@nimbus:~$ cd app && npm install vite
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 9 resolved, 9 packuments fetched (41.5 MiB), peak in-flight=4, cache writes=47, elapsed=0.8s
+[npm] Resolved 9 packages.
+[npm] To fetch: 9, to restore: 0, already installed: 0
+[npm] Fetching 9 packages... (path: batch-facet)
+[npm] Dispatching 9 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 9/9 packages, 150 files, 0.8 MiB tarball bytes, peak in-flight=3, 0.4s
+[npm] Done! 9 packages, 150 files in 1.2s
+
+added 9 packages (150 files) in 1.2s
+user@nimbus:~/app$ 
+---- step done in 1501ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_morxrxb7.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd2aXRlJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_morxrxb7.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_morxrxb7.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd2aXRlJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_morxrxb7.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_morxrxb7.js"]
+Error: Cannot load module 'home/user/app/node_modules/vite/dist/node/index.js': file was not pre-bundled. Add it to the VFS bundle.
+    at __loadModule (runner.js:2546:17)
+    at __requireFrom (runner.js:2604:10)
+    at __require (runner.js:2612:10)
+    at eval (eval at <anonymous> (runner.js:11:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:2642:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_morxrxb7.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot load module 'home/user/app/node_modules/vite/dist/node/index.js': file was not pre-bundled. Add it to the VFS bundle.
+    at __loadModule (runner.js:2546:17)
+    at __requireFrom (runner.js:2604:10)
+    at __require (runner.js:2612:10)
+    at eval (eval at <anonymous> (runner.js:11:22), <anonymous>:3:9)
+    at NodeProcess.run (runner.js:2642:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: vite ====

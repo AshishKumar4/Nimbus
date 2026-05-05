@@ -1,0 +1,281 @@
+
+========================================
+# Running functional/01-frame-roundtrip.mjs
+========================================
+# round-trip a small batch
+  ok  encoder returns a ReadableStream
+  ok  decode returns object
+  ok  decoded.inodes is an array
+  ok  inode count preserved
+  ok  inode[0].path
+  ok  inode[0].parentPath
+  ok  inode[0].isDir
+  ok  inode[0].size
+  ok  inode[0].mtime
+  ok  inode[0].mode
+  ok  inode[0].chunkCount
+  ok  inode[1].path
+  ok  inode[1].parentPath
+  ok  inode[1].isDir
+  ok  inode[1].size
+  ok  inode[1].mtime
+  ok  inode[1].mode
+  ok  inode[1].chunkCount
+  ok  inode[2].path
+  ok  inode[2].parentPath
+  ok  inode[2].isDir
+  ok  inode[2].size
+  ok  inode[2].mtime
+  ok  inode[2].mode
+  ok  inode[2].chunkCount
+  ok  inode[3].path
+  ok  inode[3].parentPath
+  ok  inode[3].isDir
+  ok  inode[3].size
+  ok  inode[3].mtime
+  ok  inode[3].mode
+  ok  inode[3].chunkCount
+  ok  inode[4].path
+  ok  inode[4].parentPath
+  ok  inode[4].isDir
+  ok  inode[4].size
+  ok  inode[4].mtime
+  ok  inode[4].mode
+  ok  inode[4].chunkCount
+  ok  deletePaths preserved
+  ok  chunk count preserved
+  ok  chunk[0].path
+  ok  chunk[0].chunkId
+  ok  chunk[0].data.length
+  ok  chunk[0] bytes equal
+  ok  chunk[1].path
+  ok  chunk[1].chunkId
+  ok  chunk[1].data.length
+  ok  chunk[1] bytes equal
+  ok  chunk[2].path
+  ok  chunk[2].chunkId
+  ok  chunk[2].data.length
+  ok  chunk[2] bytes equal
+
+# w7/functional/01-frame-roundtrip: 53 passed, 0 failed
+
+========================================
+# Running functional/02-large-payload.mjs
+========================================
+# encode/decode a 50 MB payload
+  ok  encoder returns ReadableStream
+  ok  inode count preserved
+  ok  chunks seen
+  ok  total bytes streamed
+  ok  all chunk seeds match
+  ok  streamed > 32 MiB (bypasses cap)
+
+# w7/functional/02-large-payload: 6 passed, 0 failed
+
+========================================
+# Running functional/03-backpressure.mjs
+========================================
+# slow-drain reader sees backpressure
+  ok  all bytes read
+  ok  encoder did not eagerly buffer (peak ≤ 4 MiB)
+
+# w7/functional/03-backpressure: 2 passed, 0 failed
+
+========================================
+# Running functional/04-cancel-mid-stream.mjs
+========================================
+# cancel reader mid-stream does not crash encoder
+  ok  first read returns bytes
+  ok  post-cancel read returns done
+# decode side: cancellation propagates to chunkIter
+  ok  decode rejects on a stream that errors immediately
+
+# w7/functional/04-cancel-mid-stream: 3 passed, 0 failed
+
+========================================
+# Running functional/05-error-propagation.mjs
+========================================
+# decoder surfaces a malformed magic-byte stream
+  ok  malformed magic rejects
+# decoder surfaces a truncated header
+  ok  truncated header rejects
+
+# w7/functional/05-error-propagation: 2 passed, 0 failed
+
+========================================
+# Running functional/06-empty-batches.mjs
+========================================
+# empty batch round-trip
+  ok  fully-empty: inode count
+  ok  fully-empty: chunk count
+  ok  fully-empty: deletePaths
+# inode-only batch round-trip
+  ok  inode-only: inode count
+  ok  inode-only: chunk count
+  ok  inode-only: deletePaths
+# chunks-only batch round-trip
+  ok  chunks-only: inode count
+  ok  chunks-only: chunk count
+  ok  chunks-only: deletePaths
+# deletePaths-only batch round-trip
+  ok  delete-only: inode count
+  ok  delete-only: chunk count
+  ok  delete-only: deletePaths
+
+# w7/functional/06-empty-batches: 12 passed, 0 failed
+
+========================================
+# Running functional/07-bytes-source-type.mjs
+========================================
+# encoder produces a byte-oriented stream
+  ok  getReader({mode:"byob"}) succeeds (byte-typed source)
+
+# w7/functional/07-bytes-source-type: 1 passed, 0 failed
+
+========================================
+# Running functional/08-writestream-on-vfs.mjs
+========================================
+# writeStream parity with writeBatch
+  ok  vfs.writeStream is defined
+  ok  writeStream returns object
+  ok  writeStream return.inodes
+  ok  writeStream return.chunks
+  ok  inodes table has rows
+  ok  pkg/a.js row present
+  ok  pkg/a.js size
+  ok  file_chunks has rows
+  ok  pkg/a.js chunk0 present
+  ok  chunk data is byte-equal
+# writeStream tolerates an empty iterator
+  ok  inode count = 1
+  ok  chunk count = 0
+
+# w7/functional/08-writestream-on-vfs: 12 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage.mjs
+========================================
+# install-pipeline-coverage probe still present
+  ok  file exists
+  ok  mentions fastify scenario
+  ok  mentions express scenario
+  ok  mentions ts-jest scenario
+  ok  mentions redis scenario
+  ok  mustHaveAtLeastOne contract present
+
+# install-pipeline-coverage [W7 regression]: 6 passed, 0 failed
+
+========================================
+# Running regression/legacy-writeBatch-still-works.mjs
+========================================
+# legacy writeBatch is still callable and returns counts
+  ok  writeBatch returns object
+  ok  writeBatch.inodes
+  ok  writeBatch.chunks
+  ok  legacy/x.js exists in inode tree
+  ok  legacy/y.js exists in inode tree
+# writeBatch still works after writeStream coexists
+  ok  legacy writeBatch returns inode count after coexist
+  ok  legacy writeBatch returns chunk count after coexist
+
+# legacy-writeBatch-still-works [W7 regression]: 7 passed, 0 failed
+
+========================================
+# Running regression/mossaic-shape.mjs
+========================================
+# mossaic probe scaffold present
+  ok  file present: audit/probes/run-mossaic-prod-w2.mjs
+  ok  file present: audit/probes/mossaic-prod-w2.txt
+  ok  driver references mossaic
+
+# mossaic-shape [W7 regression]: 3 passed, 0 failed
+
+========================================
+# Running regression/rpc-contracts-additive.mjs
+========================================
+# SupervisorRPC has both writeBatch and writeBatchStream
+  ok  writeBatch present
+  ok  writeBatchStream present
+# NimbusSession has both _rpcWriteBatch and _rpcWriteBatchStream
+  ok  _rpcWriteBatch present
+  ok  _rpcWriteBatchStream present
+# SqliteVFS has both writeBatch and writeStream
+  ok  writeBatch present
+  ok  writeStream present
+# w7-frame module exists at expected path
+  ok  src/_shared/w7-frame.ts exists
+
+# rpc-contracts-additive [W7 regression]: 7 passed, 0 failed
+
+========================================
+# Running e2e/synthetic-50mb-tarball.mjs
+========================================
+# full encode → RPC-shape → decode → writeStream pipeline
+  ok  encoder built a ReadableStream
+  ok  writeStream return.inodes
+  ok  writeStream return.chunks
+  ok  SQL has ≥ FILE_COUNT inode rows
+  ok  SQL has FILE_COUNT chunk rows
+  ok  chunk[0] row present
+  ok  chunk[0] bytes preserved
+  ok  chunk[100] row present
+  ok  chunk[100] bytes preserved
+  ok  chunk[400] row present
+  ok  chunk[400] bytes preserved
+  ok  chunk[799] row present
+  ok  chunk[799] bytes preserved
+  ok  streamed byte budget exceeds 50 MiB
+  ok  pipeline completed without hitting structured-clone cap
+
+# w7/e2e/synthetic-50mb-tarball: 15 passed, 0 failed
+
+========================================
+# Running e2e/heap-peak-during-install.mjs
+========================================
+# peak in-flight bytes during stream encode/decode
+  ok  scenario size > 100 MiB
+  ok  all bytes streamed
+# observed encoder peak in-flight: 0.23 MiB
+  ok  encoder peak in-flight ≤ 30 MiB
+# heap reduction from 48 MiB baseline: 99.5%
+  ok  heap reduction ≥ 30%
+# round-trip integrity at 100 MiB scale
+  ok  chunk count preserved
+  ok  total bytes preserved
+
+# w7/e2e/heap-peak-during-install: 6 passed, 0 failed
+
+========================================
+# Running e2e/install-batch-facet-streams.mjs
+========================================
+# npm-install-batch-facet has the streams call shape
+  ok  facet references env.SUPERVISOR.writeBatchStream
+  ok  legacy writeBatch fallback retained
+# SupervisorRPC interface signature retained on env type
+  ok  env type declares writeBatch
+  ok  env type declares writeBatchStream
+# preamble carries encodeWriteBatchStream symbol (or facet inlines it)
+  ok  encodeWriteBatchStream visible to facet (preamble or inlined)
+
+# w7/e2e/install-batch-facet-streams: 5 passed, 0 failed
+
+========================================
+# W7 probe summary
+========================================
+✓ functional/01-frame-roundtrip.mjs (113ms, exit=0)
+✓ functional/02-large-payload.mjs (312ms, exit=0)
+✓ functional/03-backpressure.mjs (703ms, exit=0)
+✓ functional/04-cancel-mid-stream.mjs (28ms, exit=0)
+✓ functional/05-error-propagation.mjs (32ms, exit=0)
+✓ functional/06-empty-batches.mjs (33ms, exit=0)
+✓ functional/07-bytes-source-type.mjs (27ms, exit=0)
+✓ functional/08-writestream-on-vfs.mjs (30ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (40ms, exit=0)
+✓ regression/legacy-writeBatch-still-works.mjs (35ms, exit=0)
+✓ regression/mossaic-shape.mjs (34ms, exit=0)
+✓ regression/rpc-contracts-additive.mjs (40ms, exit=0)
+✓ e2e/synthetic-50mb-tarball.mjs (340ms, exit=0)
+✓ e2e/heap-peak-during-install.mjs (1413ms, exit=0)
+✓ e2e/install-batch-facet-streams.mjs (50ms, exit=0)
+
+# ALL GREEN

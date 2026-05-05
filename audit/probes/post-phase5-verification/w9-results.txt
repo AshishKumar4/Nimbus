@@ -1,0 +1,152 @@
+
+========================================
+# Running functional/hib-persist-roundtrip.mjs
+========================================
+# public surface
+  ok  setPersist exists
+  ok  flush exists
+# append → flush → cold-reconstruct → tail
+  ok  SQL rows after flush
+  ok  s2 fresh: has(7) returns true (hydrate from SQL)
+  ok  chunks recovered after cold-reconstruct
+  ok  chunk 0 stream
+  ok  chunk 0 data
+  ok  chunk 1 stream
+  ok  chunk 1 data
+  ok  chunk 2 data
+# exit info survives
+  ok  exit recovered
+  ok  exit code
+  ok  exit reason
+# append after hydrate continues seq monotonically
+  ok  total rows after second append + flush
+  ok  row 0 data
+  ok  row 1 data
+  ok  row 2 data
+# dropOlderThan evicts SQL rows
+  ok  rows present
+# dropOlderThan evicts SQL rows (after retainAfterExitMs)
+  ok  rows present
+  ok  one pid dropped
+  ok  w9_proc_logs cleaned
+  ok  w9_proc_exits cleaned
+# per-pid byte cap is honoured in SQL after flush
+  ok  SQL bytes <= 1.5x perPidBytes
+# maxPids cap cascades a SQL DELETE
+  ok  exactly 3 pids in SQL
+  ok  pid 100 evicted from SQL
+
+# w9/functional/hib-persist-roundtrip: 25 passed, 0 failed
+
+========================================
+# Running functional/hib-flush-debounce.mjs
+========================================
+# append does not synchronously persist
+  ok  persistChunks NOT called from append
+# flush() drains dirty buffers and is idempotent
+  ok  total chunks persisted
+  ok  idempotent flush — zero new calls
+# markExit gets persisted on next flush
+  ok  no exit persist before flush
+  ok  exit persist after flush
+  ok  exit pid
+  ok  exit code
+# flush order: chunks before exit (so a crash dump survives)
+  ok  chunks call exists
+  ok  exit call exists
+  ok  chunks persist before exit
+# no-adapter mode keeps existing in-memory behaviour
+  ok  flush is callable without adapter
+  ok  chunk still readable in-memory
+  ok  exit still readable in-memory
+
+# w9/functional/hib-flush-debounce: 13 passed, 0 failed
+
+========================================
+# Running functional/autoresponse-config.mjs
+========================================
+# constants are sane
+  ok  NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS exported
+  ok  timeout is 5000ms
+# happy path on a workerd-shaped ctx
+  ok  autoResponseConfigured
+  ok  timeoutSetMs
+  ok  ctx auto-response saved
+  ok  ctx auto-response saved (res)
+  ok  ctx hibernation timeout saved
+  ok  exactly one WebSocketRequestResponsePair constructed
+# graceful degrade when ctx APIs are missing
+  ok  did not throw
+  ok  autoResponseConfigured = false
+  ok  timeoutSetMs = null
+# graceful degrade when WebSocketRequestResponsePair is absent
+  ok  did not throw without the global
+  ok  autoResponseConfigured falsy without the global
+  ok  timeout still set
+# idempotent — second call is a no-op
+  ok  second call did not error
+  ok  still configured
+
+# w9/functional/autoresponse-config: 16 passed, 0 failed
+
+========================================
+# Running regression/process-logs-api-shape.mjs
+========================================
+# matchLogsPath unchanged
+  ok  valid path
+  ok  zero pid is rejected
+  ok  negative not matched
+  ok  non-numeric
+  ok  trailing slash
+  ok  different prefix
+# notifyTerminalEvent fail-soft on null terminal
+  ok  null terminal does not throw
+# notifyTerminalEvent uses ws.send
+  ok  one frame sent
+  ok  frame is JSON
+# handleProcessesListRequest returns expected shape
+  ok  response is a Response
+  ok  content-type-ish header
+  ok  processes is array
+  ok  two processes
+  ok  vite is longRunning
+  ok  vite hasLogs
+  ok  vite logBytes
+  ok  echo is not longRunning
+  ok  echo hasLogs false
+
+# w9/regression/process-logs-api-shape: 18 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage.mjs
+========================================
+# install-pipeline-coverage probe still present
+  ok  file exists
+  ok  mentions fastify scenario
+  ok  mentions express scenario
+  ok  mentions ts-jest scenario
+  ok  mentions redis scenario
+  ok  mustHaveAtLeastOne contract present
+# regression probe is invokable
+  ok  imports runProbe driver
+  ok  writes artifact path
+
+# w9/regression/install-pipeline-coverage: 8 passed, 0 failed
+
+========================================
+# Running e2e/long-running-dev-hib-cycle.mjs
+========================================
+# W9 e2e skipped (set NIMBUS_W9_E2E=1 with wrangler dev running)
+# 0 passed, 0 failed
+
+========================================
+# W9 probe summary
+========================================
+✓ functional/hib-persist-roundtrip.mjs (110ms, exit=0)
+✓ functional/hib-flush-debounce.mjs (59ms, exit=0)
+✓ functional/autoresponse-config.mjs (58ms, exit=0)
+✓ regression/process-logs-api-shape.mjs (50ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (113ms, exit=0)
+✓ e2e/long-running-dev-hib-cycle.mjs (27ms, exit=0)
+
+# ALL GREEN
