@@ -92,56 +92,67 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
   {
     from: 'sharp',
     reason: 'Native libvips bindings; not portable to Workers.',
-    suggest: 'no Workers-compatible swap; render server-side and ship pixels.',
+    suggest:
+      'no Workers-compatible target — render server-side or use Cloudflare Images. ' +
+      'For the wasm32 build see @img/sharp-wasm32 entry below.',
     transitive: 'fail',
   },
   {
     from: 'sqlite3',
     reason: 'Native sqlite3 .node binding.',
-    suggest: 'better-sqlite3-wasm or sql.js (after W6.5 loader fix).',
+    suggest:
+      'better-sqlite3-wasm (untested by Nimbus) or sql.js (loader gap — see audit/probes/w6.5/spike/sql-js.verdict.md).',
     transitive: 'fail',
   },
   {
     from: 'better-sqlite3',
     reason: 'Native sqlite .node binding.',
-    suggest: 'better-sqlite3-wasm or @libsql/client (after W6.5 loader fix).',
+    suggest:
+      'better-sqlite3-wasm (untested by Nimbus) or @libsql/client (resolver subpath gap — see audit/probes/w6.5/spike/libsql-client.verdict.md; may already work post-W2.6a).',
     transitive: 'fail',
   },
   {
     from: 'canvas',
     reason: 'Native Cairo bindings.',
-    suggest: 'no Workers-compatible swap; render server-side and ship pixels.',
+    suggest:
+      'canvaskit-wasm (Skia → WASM, canvas-API-compatible, ~7MB; untested by Nimbus) ' +
+      'or @resvg/resvg-wasm for SVG (verified — see audit/probes/wasm/resvg-wasm.out.txt).',
     transitive: 'fail',
   },
   {
     from: 'sodium-native',
     reason: 'Native libsodium.',
-    suggest: 'tweetnacl (pure JS) or libsodium-wrappers (WASM).',
+    suggest:
+      'tweetnacl (pure JS, untested by Nimbus) or libsodium-wrappers (WASM, untested by Nimbus).',
     transitive: 'fail',
   },
   {
     from: 'fsevents',
     reason: 'macOS-only filesystem watcher; never runs in Workers.',
     suggest:
-      'optional dep — chokidar/watchpack work without it. Move to optionalDependencies in your package.json.',
+      'optional dep — chokidar/watchpack work without it (untested by Nimbus). ' +
+      'Move to optionalDependencies in your package.json.',
     transitive: 'warn',
   },
   {
     from: 'bufferutil',
     reason: 'Native binding for ws speedups; install requires node-gyp.',
-    suggest: 'optional dep — ws works without it (slower frames). Move to optionalDependencies.',
+    suggest:
+      'optional dep — ws works without it (slower frames; untested by Nimbus). ' +
+      'Move to optionalDependencies.',
     transitive: 'warn',
   },
   {
     from: 'utf-8-validate',
     reason: 'Native binding for ws speedups; install requires node-gyp.',
-    suggest: 'optional dep — same as bufferutil.',
+    suggest:
+      'optional dep — ws works without it (untested by Nimbus). Same as bufferutil.',
     transitive: 'warn',
   },
   {
     from: 'node-pty',
     reason: 'PTY syscalls unavailable in workerd.',
-    suggest: 'use the Nimbus built-in shell.',
+    suggest: 'no Workers-compatible target — use the Nimbus built-in shell.',
     transitive: 'fail',
   },
   {
@@ -161,9 +172,9 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
   {
     from: 'bcrypt',
     reason:
-      'Native bcrypt; pure-JS bcryptjs has identical sync API but the require() name differs and Nimbus does not yet support `npm:` aliases.',
+      'Native bcrypt; pure-JS bcryptjs has identical sync API but the require() name differs and Nimbus does not yet support `npm:` aliases (W6.6).',
     suggest:
-      'change `require("bcrypt")` to `require("bcryptjs")`, then `npm install bcryptjs`. APIs are sync-compatible.',
+      'change `require("bcrypt")` to `require("bcryptjs")`, then `npm install bcryptjs` (verified — see audit/probes/wasm/bcryptjs.out.txt). APIs are sync-compatible.',
     transitive: 'fail',
   },
   {
@@ -176,19 +187,22 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
   {
     from: 'node-sass',
     reason: 'Native libsass; deprecated upstream.',
-    suggest: 'sass (dart-sass, pure JS).',
+    suggest:
+      'sass (dart-sass, pure JS — partial support: top-level CJS load fails today, see audit/probes/wasm/sass.out.txt; untested for ESM imports).',
     transitive: 'fail',
   },
   {
     from: 'grpc',
     reason: 'Deprecated native gRPC.',
-    suggest: '@grpc/grpc-js (pure JS).',
+    suggest:
+      '@grpc/grpc-js (pure JS — runtime resolver gap on internal subpath today, see audit/probes/wasm/grpc-grpc-js.out.txt; untested end-to-end).',
     transitive: 'fail',
   },
   {
     from: '@swc/core',
     reason: 'Native Rust SWC.',
-    suggest: '@swc/wasm-web (transform/parse only; no Plugin API; loader gap pending W6.5).',
+    suggest:
+      '@swc/wasm-web (transform/parse only; no Plugin API; loader gap — see audit/probes/wasm/swc-wasm-web.out.txt and audit/probes/w6.5/spike/swc-wasm-web.verdict.md).',
     transitive: 'fail',
   },
 
@@ -197,14 +211,15 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
     from: 'prisma',
     reason: 'Native query engine; not portable to Workers in this configuration.',
     suggest:
-      '@prisma/adapter-d1 (Prisma official Workers adapter), or migrate to drizzle-orm + @libsql/client.',
+      '@prisma/adapter-d1 (Prisma official Workers adapter, untested by Nimbus), ' +
+      'or migrate to drizzle-orm + @libsql/client (untested; @libsql/client has known resolver gap — see audit/probes/wasm/libsql-client.out.txt).',
     transitive: 'fail',
   },
   {
     from: '@prisma/client',
-    reason: 'Same as `prisma`.',
+    reason: 'Same as `prisma` (native query engine).',
     suggest:
-      '@prisma/adapter-d1 (Prisma official Workers adapter), or drizzle-orm + @libsql/client.',
+      '@prisma/adapter-d1 (untested by Nimbus), or drizzle-orm + @libsql/client (untested).',
     transitive: 'fail',
   },
 
@@ -212,13 +227,14 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
   {
     from: 'node-gyp',
     reason: 'Build-time native compiler; never runs in Workers.',
-    suggest: 'remove from dependencies — Nimbus pre-skips build-only tools transitively.',
+    suggest:
+      'no Workers-compatible target — remove from dependencies. Nimbus pre-skips build-only tools transitively.',
     transitive: 'warn',
   },
   {
     from: 'node-pre-gyp',
     reason: 'Build-time native compiler; never runs in Workers.',
-    suggest: 'remove from dependencies.',
+    suggest: 'no Workers-compatible target — remove from dependencies.',
     transitive: 'warn',
   },
 
@@ -226,29 +242,63 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
   {
     from: 'puppeteer',
     reason: 'Bundled Chromium binary (~150 MB).',
-    suggest: 'puppeteer-core + Cloudflare Browser Rendering.',
+    suggest:
+      'no Workers-compatible target for the bundled binary — use puppeteer-core + Cloudflare Browser Rendering (untested by Nimbus).',
     transitive: 'fail',
   },
   {
     from: 'playwright',
     reason: 'Bundled browsers (~300 MB).',
-    suggest: '@playwright/test against a remote browser endpoint.',
+    suggest:
+      'no Workers-compatible target for bundled browsers — use @playwright/test against a remote browser endpoint (untested by Nimbus).',
     transitive: 'fail',
   },
 
   // ── Loader-gap honesty (install OK; runtime FAIL today) ─────────────
-  // These come out of REJECT once the W6.5 loader work lands.
+  // These come out of REJECT once the loader work lands. Spike verdicts
+  // (audit/probes/w6.5/spike/) confirmed both gaps span >1 src/ file.
   {
     from: 'sql.js',
     reason:
-      'Installs but fails at runtime: WASM artifact `dist/sql-wasm.wasm` not extracted by Nimbus today (loader gap).',
-    suggest: 'tracked as W6.5 — extraction filter for `dist/*.wasm`.',
+      'Installs but fails at runtime: ENOENT on dist/sql-wasm.wasm. Loader gap NOT in tar extraction — likely between streamTarEntries and writeBatch RPC handler, or in cirrus-real fs shim. See audit/probes/w6.5/spike/sql-js.verdict.md.',
+    suggest:
+      'no Workers-compatible target today — tracked for W6.5.x (multi-file fix exceeded W6.5 surface-area gate). For SQL in Workers consider Cloudflare D1 or @libsql/client (loader gap — see audit/probes/w6.5/spike/libsql-client.verdict.md).',
     transitive: 'fail',
   },
   {
     from: '@swc/wasm-web',
-    reason: 'Installs but fails at runtime: file not pre-bundled in VFS today (loader gap).',
-    suggest: 'tracked as W6.5 — VFS pre-bundle wiring.',
+    reason:
+      'Installs but fails at runtime: node-shims.ts:2058 throws "Cannot load module … file was not pre-bundled" — this is a workerd CSP-like new-Function block, not a slice walker gap. See audit/probes/w6.5/spike/swc-wasm-web.verdict.md.',
+    suggest:
+      'no Workers-compatible target today — tracked for W6.5.x (general facet-runtime issue, not @swc/wasm-web-specific). For ESM transforms consider esbuild-wasm (verified — see audit/probes/wasm/esbuild-wasm.out.txt; a Nimbus W6 swap target).',
+    transitive: 'fail',
+  },
+
+  // ── W6.5 additions: WASM/wasi-flavour packages that don't load ──────
+  {
+    from: '@img/sharp-wasm32',
+    reason:
+      'WASM build of sharp; package is wasm32-cpu-only (npm refuses install on x64) AND libvips initThreads() fails under workerd (no pthread support — see audit/sections/07-workerd-hard-limits.md).',
+    suggest:
+      'wasm-vips (verified install + load, default-export-only API — see audit/probes/wasm/wasm-vips.out.txt). For complex pipelines: render server-side and ship pixels.',
+    transitive: 'fail',
+  },
+  {
+    from: '@napi-rs/canvas',
+    reason:
+      'Native bindings only (linux-x64-gnu/musl, darwin-arm64/x64, android-arm64, linux-arm64-gnu/musl, win32-x64-msvc, linux-arm-gnueabihf). No WASM build published.',
+    suggest:
+      'canvaskit-wasm (Skia → WASM, canvas-API-compatible, ~7MB; untested by Nimbus) ' +
+      'or @resvg/resvg-wasm for SVG (verified — see audit/probes/wasm/resvg-wasm.out.txt).',
+    transitive: 'fail',
+  },
+  {
+    from: '@napi-rs/canvas-wasm32-wasi',
+    reason:
+      '@napi-rs/canvas does not publish a wasm32-wasi variant on npm (404). The @napi-rs/canvas project ships only native bindings. No WASM/WASI build exists.',
+    suggest:
+      'canvaskit-wasm (Skia → WASM, canvas-API-compatible; untested by Nimbus) ' +
+      'or @resvg/resvg-wasm (verified — see audit/probes/wasm/resvg-wasm.out.txt) for SVG.',
     transitive: 'fail',
   },
 ];
@@ -412,6 +462,88 @@ export class RegistryRejectError extends Error {
  */
 export function isRegistryReject(e: unknown): boolean {
   return !!(e && typeof e === 'object' && (e as any).__w6_reject === true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// W6.5: Telemetry hook
+// ─────────────────────────────────────────────────────────────────────────
+//
+// When a swap fires, a reject throws, or a transitive-skip drops a package,
+// we emit a `RegistryEvent` so an external sink can aggregate these signals
+// (e.g. "which rejected packages should we invest in swapping next?").
+//
+// Design (W6.5-plan.md §5):
+//   - Pluggable sink: callers register a single global sink via
+//     `setRegistryEventSink(...)`. The sink runs on the supervisor isolate;
+//     the facet isolate collects events into a side-channel array
+//     (ResolveFacetResult.registryEvents) which the supervisor drains.
+//   - Sink throws are CAUGHT (telemetry must never break the install path)
+//     and counted via `getSinkThrowCount()` so production can detect
+//     misbehaving sinks.
+//   - Default sink: src/index.ts installs a JSONL-to-stdout sink at module
+//     top so events show up in `wrangler tail`. Replace with
+//     analytics_engine_datasets when F-observability lands.
+
+/**
+ * The discriminated-union event emitted by the supervisor whenever the
+ * registry takes a decision.
+ *
+ *   - `swap`            — `from` is being installed as `to`. `ctx='top'` means
+ *                         user typed `npm install <from>`; `'transitive'`
+ *                         means a dep of a dep referenced `from`.
+ *   - `reject`          — `from` was rejected with `reason` (and optional
+ *                         actionable `suggest`). At `ctx='top'` an error is
+ *                         thrown; at `ctx='transitive'` the throw happens
+ *                         when the entry's policy is `'fail'`.
+ *   - `transitive-skip` — `from` (with `transitive: 'warn'` policy) was
+ *                         dropped silently from the resolved tree at depth>0.
+ */
+export type RegistryEvent =
+  | { type: 'swap'; from: string; to: string; ctx: 'top' | 'transitive' }
+  | { type: 'reject'; from: string; reason: string; suggest?: string; ctx: 'top' | 'transitive' }
+  | { type: 'transitive-skip'; from: string; reason: string };
+
+export type RegistryEventSink = (e: RegistryEvent) => void;
+
+let _sink: RegistryEventSink | null = null;
+let _sinkThrowCount = 0;
+
+/**
+ * Install (or clear, with `null`) the global registry event sink.
+ *
+ * The sink is a per-isolate singleton. The supervisor isolate's sink does
+ * NOT propagate to facet isolates — facet emits travel through
+ * `ResolveFacetResult.registryEvents` and are flushed by the supervisor
+ * after the facet returns. See W6.5-plan.md §5.5 for the per-isolate
+ * invariant.
+ */
+export function setRegistryEventSink(s: RegistryEventSink | null): void {
+  _sink = s;
+}
+
+export function getRegistryEventSink(): RegistryEventSink | null {
+  return _sink;
+}
+
+/**
+ * Forward an event to the sink. Sink throws are caught (telemetry must
+ * never break install) and counted.
+ */
+export function emitRegistryEvent(e: RegistryEvent): void {
+  if (!_sink) return;
+  try {
+    _sink(e);
+  } catch {
+    _sinkThrowCount++;
+  }
+}
+
+/**
+ * Number of sink invocations that threw (and were caught). Useful for
+ * production monitoring (and probes).
+ */
+export function getSinkThrowCount(): number {
+  return _sinkThrowCount;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
