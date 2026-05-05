@@ -18,9 +18,6 @@ import type { SqliteVFS } from './sqlite-vfs.js';
 import type { EsbuildService } from './esbuild-service.js';
 import type { VfsEventEmitter, VfsEvent } from './vfs-events.js';
 import { registerInnerDoClass, clearInnerDoClasses } from './inner-do-registry.js';
-import { KvEmulator } from './binding-kv.js';
-import { D1Emulator } from './binding-d1.js';
-import { R2Emulator } from './binding-r2.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -34,20 +31,8 @@ interface WranglerConfig {
   main?: string;
   compatibility_date?: string;
   compatibility_flags?: string[];
-  kv_namespaces?: { binding: string; id?: string; preview_id?: string }[];
-  d1_databases?: {
-    binding: string;
-    database_id?: string;
-    database_name?: string;
-    migrations_dir?: string;
-    preview_database_id?: string;
-  }[];
-  r2_buckets?: {
-    binding: string;
-    bucket_name?: string;
-    preview_bucket_name?: string;
-    jurisdiction?: string;
-  }[];
+  kv_namespaces?: { binding: string; id?: string }[];
+  d1_databases?: { binding: string; database_id?: string }[];
   /** Inline env-vars (strings) delivered to the inner worker as env.<KEY>. */
   vars?: Record<string, string>;
   /**
@@ -629,96 +614,6 @@ export class NimbusWrangler {
       }
     }
 
-    // ── kv_namespaces ── (W10)
-    // Inner worker: env[binding].get(key) / put / delete / list /
-    // getWithMetadata. Implementation is a plain JS class (KvEmulator)
-    // backed by SqliteVFS file blobs at <root>/.nimbus/kv/<binding>/.
-    // No ctx.exports loopback needed: KV is pure data, no callbacks
-    // back into the supervisor's fetch handlers. Each emulator instance
-    // is bound to one (binding, root) pair.
-    if (this.config?.kv_namespaces?.length) {
-      for (const kv of this.config.kv_namespaces) {
-        if (!kv.binding) continue;
-        if (kv.binding in env) {
-          this.onLog(`  \x1b[33mwarning: kv_namespaces binding '${kv.binding}' overwrites a previous key\x1b[0m\n`);
-        }
-        env[kv.binding] = new KvEmulator({
-          vfs: this.vfs,
-          root: this.root,
-          binding: kv.binding,
-          onLog: this.onLog,
-        });
-      }
-    }
-
-    // ── d1_databases ── (W10)
-    // Inner worker: env[binding].prepare(query) / batch / exec.
-    // Implementation: D1Emulator backed by the supervisor's SqlStorage
-    // with per-binding table-prefix isolation. See plan §14.1 — a
-    // child-DO-facet-per-binding upgrade is the W10.5 candidate.
-    //
-    // migrations_dir is honored: applyMigrations() walks the directory
-    // alphabetically and replays each .sql file once (idempotent via
-    // a per-binding ledger table).
-    if (this.config?.d1_databases?.length) {
-      const sqlStorage = this.supervisorCtx?.storage?.sql;
-      if (!sqlStorage) {
-        for (const d1 of this.config.d1_databases) {
-          this.onLog(`  \x1b[33mwarning: ctx.storage.sql unavailable; env.${d1.binding} will not work\x1b[0m\n`);
-        }
-      } else {
-        for (const d1 of this.config.d1_databases) {
-          if (!d1.binding) continue;
-          if (d1.binding in env) {
-            this.onLog(`  \x1b[33mwarning: d1_databases binding '${d1.binding}' overwrites a previous key\x1b[0m\n`);
-          }
-          const emu = new D1Emulator({
-            sqlStorage,
-            binding: d1.binding,
-            vfs: this.vfs,
-            root: this.root,
-            migrationsDir: d1.migrations_dir,
-            onLog: this.onLog,
-          });
-          env[d1.binding] = emu;
-          // Fire migrations in the background. They're idempotent so
-          // racing rebuilds is safe.
-          if (d1.migrations_dir) {
-            emu.applyMigrations().then((r) => {
-              if (r.applied > 0) {
-                this.onLog(`  \x1b[2mD1 ${d1.binding}: applied ${r.applied} migrations\x1b[0m\n`);
-              }
-            }).catch((e: any) => {
-              this.onLog(`  \x1b[33mwarning: D1 ${d1.binding} migrations failed: ${e?.message || e}\x1b[0m\n`);
-            });
-          }
-        }
-      }
-    }
-
-    // ── r2_buckets ── (W10)
-    // Inner worker: env[binding].get(key) / put / head / list / delete.
-    // Implementation: R2Emulator backed by SqliteVFS file blobs at
-    // <root>/.nimbus/r2/<binding>/. Etag is sha256(body); conditionals
-    // (etagMatches/etagDoesNotMatch/uploaded*) are honored.
-    //
-    // Multipart upload methods throw a clear "not supported" error
-    // (W10.5 candidate; see plan §13 review B4).
-    if (this.config?.r2_buckets?.length) {
-      for (const r2 of this.config.r2_buckets) {
-        if (!r2.binding) continue;
-        if (r2.binding in env) {
-          this.onLog(`  \x1b[33mwarning: r2_buckets binding '${r2.binding}' overwrites a previous key\x1b[0m\n`);
-        }
-        env[r2.binding] = new R2Emulator({
-          vfs: this.vfs,
-          root: this.root,
-          binding: r2.binding,
-          onLog: this.onLog,
-        });
-      }
-    }
-
     return env;
   }
 
@@ -731,12 +626,7 @@ export class NimbusWrangler {
     let needsRebuild = false;
     for (const event of events) {
       if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink') continue;
-      if (event.path.startsWith(this.root) &&
-          !event.path.includes('node_modules/') &&
-          !event.path.includes('/.nimbus/')) {
-        // W10: skip writes by KV/D1/R2 emulators (they live under
-        // <root>/.nimbus/{kv,r2}/...) — otherwise every emulator put
-        // triggers a rebuild and the system feedback-loops itself.
+      if (event.path.startsWith(this.root) && !event.path.includes('node_modules/')) {
         needsRebuild = true;
         break;
       }
@@ -888,59 +778,5 @@ export class NimbusWrangler {
       root: this.root,
       buildVersion: this.buildVersion,
     };
-  }
-
-  // ── Test seams (W10 probes) ───────────────────────────────────────────
-  //
-  // These exist so probes can drive specific code paths (config parse,
-  // env synthesis, watcher installation) without running the full
-  // start() pipeline (which requires a real esbuild + LOADER + ctx).
-  //
-  // Production code does NOT use these; they're stable contracts only
-  // for the test probes. Naming convention: leading underscore + ForTest
-  // suffix.
-
-  /** @internal — test seam: parse the wrangler config and store it. Returns true on success. */
-  _readConfigForTest(): boolean {
-    this.config = this.readConfig();
-    return this.config != null;
-  }
-
-  /** @internal — test seam: invoke buildInnerEnv() without a probe-load pass. */
-  _buildInnerEnvForTest(): Record<string, any> {
-    return this.buildInnerEnv();
-  }
-
-  /** @internal — test seam: install the VFS file-watch listener and the
-   * mock-rebuild path (esbuild.build() is called, but the real
-   * buildAndLoad() pipeline is bypassed in favour of just calling
-   * esbuild). Used for hot-reload latency + nimbus-paths-not-watched
-   * probes. Production calls start() which installs the watcher AND the
-   * full rebuild pipeline. */
-  _installWatchersForTest(): void {
-    this.running = true;
-    this.unsubVfs = this.vfs.events.on(async (events: VfsEvent[]) => {
-      let needsRebuild = false;
-      for (const event of events) {
-        if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink') continue;
-        if (event.path.startsWith(this.root) &&
-            !event.path.includes('node_modules/') &&
-            !event.path.includes('/.nimbus/')) {
-          needsRebuild = true;
-          break;
-        }
-      }
-      if (!needsRebuild) return;
-      if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
-      this.rebuildTimer = setTimeout(async () => {
-        this.rebuildTimer = null;
-        try {
-          await this.esbuild.build([this.root + '/' + (this.config?.main || 'src/index.ts')], {
-            bundle: true, format: 'esm', target: 'esnext', platform: 'neutral',
-          } as any);
-          this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
-        } catch {}
-      }, 250);
-    });
   }
 }

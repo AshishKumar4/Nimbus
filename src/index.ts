@@ -17,25 +17,6 @@ import {
   SESSION_ROUTE_PREFIX,
 } from './session-router.js';
 import { setCtxExports, getCtxExports as _getCtxExports } from './ctx-exports.js';
-import { setRegistryEventSink } from './wasm-swap-registry.js';
-
-// W6.5: install the default registry-event sink at module top so events
-// emitted from any code path (supervisor BFS, facet drain, applyW6Registry)
-// land in `wrangler tail` as one JSON line per event. When F-observability
-// lands, replace this with `env.INSTALL_METRICS.writeDataPoint(...)`.
-//
-// Format: `[w6.5/registry] {"type":"swap","from":"...","to":"...","ctx":"top"}`
-//
-// Per W6.5-plan §5.6: prefix `[w6.5/registry]` checked against existing
-// taxonomy (no collisions with [w6/...], [w7/...], [w12/...]).
-setRegistryEventSink((e) => {
-  try {
-    console.log(`[w6.5/registry] ${JSON.stringify(e)}`);
-  } catch {
-    // Defensive — never break the install path on telemetry serialization
-    // (RegistryEvent is plain-JSON-shaped, so this should never throw).
-  }
-});
 
 // Re-export inner-Worker binding shims so wrangler bundles them AND
 // ctx.exports auto-populates Service Bindings for them (via
