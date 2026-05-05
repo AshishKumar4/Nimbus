@@ -1,0 +1,389 @@
+
+========================================
+# Running functional/replica-policy-classification.mjs
+========================================
+  ok  classifyReplicaPolicy is a function
+# replica-ok routes
+  ok  /api/memory GET → replica-ok
+  ok  /api/_diag/memory GET → replica-ok
+  ok  /api/_diag/anything-else GET → replica-ok
+  ok  /api/processes GET → replica-ok
+  ok  /api/stats GET → replica-ok
+# replica-warm-only routes
+  ok  /preview/ → replica-warm-only
+  ok  /preview → replica-warm-only
+  ok  /preview/index.html → replica-warm-only
+  ok  /preview/src/App.tsx → replica-warm-only
+# primary-only-ws routes
+  ok  /ws GET → primary-only-ws
+  ok  /api/processes/123/logs → primary-only-ws
+  ok  /api/processes/45/logs → primary-only-ws
+  ok  /preview/__nimbus_hmr → primary-only-ws
+# primary-only routes (writes + test endpoints + worker + port + supervisor-rpc)
+  ok  /api/write-file POST → primary-only
+  ok  /api/mkdir POST → primary-only
+  ok  /api/start-vite POST → primary-only
+  ok  /api/supervisor-rpc POST → primary-only
+  ok  /api/_test/hib/simulate POST → primary-only
+  ok  /api/_test/spawn-emitter POST → primary-only
+  ok  /api/_test/log-tail GET → primary-only
+  ok  /worker/ → primary-only
+  ok  /worker → primary-only
+  ok  /worker/api/foo → primary-only
+  ok  /port/3000/ → primary-only
+  ok  /port/8080/anything → primary-only
+# unknown routes default to primary-only (safe default)
+  ok  /totally-unknown → primary-only
+  ok  / → primary-only
+  ok  /random/path → primary-only
+# write methods on otherwise-replica-ok routes are still primary-only
+  ok  /api/memory POST → primary-only
+  ok  /api/stats DELETE → primary-only
+  ok  /api/processes PUT → primary-only
+
+# w12/functional/replica-policy-classification: 32 passed, 0 failed
+
+========================================
+# Running functional/eventual-consistency-window-ms.mjs
+========================================
+  ok  REPLICA_POLICIES export
+  ok  getEventualConsistencyToleranceMs is a function
+# eligible routes have ≤2000ms tolerance
+  ok  /api/memory tolerance ≤ 2000ms
+  ok  /api/memory has a numeric tolerance
+  ok  /api/_diag/memory tolerance ≤ 2000ms
+  ok  /api/_diag/memory has a numeric tolerance
+  ok  /api/processes tolerance ≤ 2000ms
+  ok  /api/processes has a numeric tolerance
+  ok  /api/stats tolerance ≤ 2000ms
+  ok  /api/stats has a numeric tolerance
+  ok  /api/_diag/foo tolerance ≤ 2000ms
+  ok  /api/_diag/foo has a numeric tolerance
+  ok  /preview/ tolerance ≤ 2000ms
+  ok  /preview/index.html tolerance ≤ 2000ms
+  ok  /preview/src/App.tsx tolerance ≤ 2000ms
+# primary-only routes have null tolerance (not replicable)
+  ok  /api/write-file returns null tolerance
+  ok  /ws returns null tolerance
+  ok  /worker/ returns null tolerance
+  ok  /port/3000/ returns null tolerance
+  ok  /api/_test/log-tail returns null tolerance
+
+# w12/functional/eventual-consistency-window-ms: 20 passed, 0 failed
+
+========================================
+# Running functional/replicas-suspension-counter.mjs
+========================================
+# initial state
+  ok  replicasSuspended() is false initially
+# single suspend / release
+  ok  replicasSuspended() true while held
+  ok  release is a function
+  ok  replicasSuspended() false after release
+# nested suspend / release (count semantics)
+  ok  still suspended (3 holders)
+  ok  still suspended (2 holders)
+  ok  still suspended (1 holder)
+  ok  not suspended (0 holders)
+# double-release is idempotent
+  ok  still 0 holders after double-release
+  ok  fresh suspend after double-release
+  ok  release back to 0
+
+# w12/functional/replicas-suspension-counter: 11 passed, 0 failed
+
+========================================
+# Running functional/smart-placement-config-shape.mjs
+========================================
+# placement.mode = smart
+  ok  placement object present
+  ok  placement.mode === smart
+# replica_routing compat flag present
+  ok  compatibility_flags is an array
+  ok  includes nodejs_compat (W3 carry)
+  ok  includes experimental (W10 carry)
+  ok  includes replica_routing (W12 add)
+# compat date unchanged (no accidental bump)
+  ok  compatibility_date present
+
+# w12/functional/smart-placement-config-shape: 7 passed, 0 failed
+
+========================================
+# Running functional/replica-state-shape.mjs
+========================================
+  ok  tryEnableReplicas is a function
+  ok  inspectReplicaState is a function
+# SPEC API present (enableReplicas) — primary isolate
+  ok  returns enabled state
+  ok  error is null
+  ok  enableReplicas was called once
+  ok  isReplica false on primary
+# SPEC API present — replica isolate
+  ok  state enabled on replica too
+  ok  isReplica true on replica
+  ok  primary stub captured
+# alternate API present (configureReadReplication)
+  ok  state enabled-via-configure
+  ok  configure was called with mode auto
+# neither API present (pre-GA runtime)
+  ok  state unsupported
+  ok  error null when not throwing
+# enableReplicas throws — recoverable
+  ok  state error
+  ok  error message captured
+# inspect — bookmark exposure
+  ok  bookmark surfaced
+  ok  bookmark null when API absent
+# inspect shape stability
+  ok  isReplica is boolean
+  ok  primary is object on replica
+  ok  bookmark is string|null
+
+# w12/functional/replica-state-shape: 20 passed, 0 failed
+
+========================================
+# Running functional/should-delegate-decision.mjs
+========================================
+  ok  shouldDelegateToPrimary is a function
+# not a replica → never delegate
+  ok  primary handles /api/memory (policy=replica-ok)
+  ok  primary handles /api/write-file (policy=primary-only)
+  ok  primary handles /preview/index.html (policy=replica-warm-only)
+  ok  primary handles /ws (policy=primary-only-ws)
+  ok  primary handles /port/3000/ (policy=primary-only)
+# replica + replica-ok → never delegate
+  ok  replica-ok policy
+  ok  replica handles locally
+  ok  warm replica handles locally
+# replica + primary-only → always delegate
+  ok  primary-only policy
+  ok  replica delegates
+  ok  cold replica also delegates
+# replica + primary-only-ws → always delegate (WS upgrade goes to primary)
+  ok  primary-only-ws policy
+  ok  replica delegates WS upgrade
+# replica + replica-warm-only → delegate iff cold
+  ok  replica-warm-only policy
+  ok  cold replica delegates
+  ok  warm replica handles locally
+# suspended replicas always delegate
+  ok  replica-ok policy
+  ok  suspended replica delegates even on replica-ok
+
+# w12/functional/should-delegate-decision: 19 passed, 0 failed
+
+========================================
+# Running functional/replica-metadata-flag-in-diag.mjs
+========================================
+# /api/_diag/memory handler exposes W12 replica metadata
+  ok  handler block present
+  ok  mentions inspectReplicaState or getReplicaState
+  ok  emits a replica block in the diag response
+# replica state init at constructor time (best-effort)
+  ok  mentions tryEnableReplicas
+# replica routing preflight wired into _handleFetch
+  ok  mentions handleReplicaPreflight / classifyReplicaPolicy / shouldDelegateToPrimary
+
+# w12/functional/replica-metadata-flag-in-diag: 5 passed, 0 failed
+
+========================================
+# Running functional/ws-routes-are-primary-only.mjs
+========================================
+# all known WS upgrade paths are primary-only-ws
+  ok  /ws
+  ok  /api/processes/1/logs
+  ok  /api/processes/12345/logs
+  ok  /preview/__nimbus_hmr
+# paths that look WS-ish but aren't are NOT primary-only-ws
+  ok  /api/processes (list, not WS)
+
+# w12/functional/ws-routes-are-primary-only: 5 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage.mjs
+========================================
+# install-pipeline-coverage probe still present
+  ok  file exists
+  ok  mentions fastify scenario
+  ok  mentions express scenario
+  ok  mentions ts-jest scenario
+  ok  mentions redis scenario
+  ok  mustHaveAtLeastOne contract present
+
+# w12/regression/install-pipeline-coverage: 6 passed, 0 failed
+
+========================================
+# Running regression/mossaic-shape.mjs
+========================================
+# mossaic runner exists
+  ok  runner present
+  ok  runner has Mossaic-style scenarios
+
+# w12/regression/mossaic-shape: 2 passed, 0 failed
+
+========================================
+# Running regression/w11-frameworks-detect-unchanged.mjs
+========================================
+# framework-detect.ts source-shape unchanged
+  ok  file exists
+  ok  exports detectFramework
+
+# w12/regression/w11-frameworks-detect-unchanged: 2 passed, 0 failed
+
+========================================
+# Running regression/w10-bindings-still-injected.mjs
+========================================
+# W10 binding sources still present
+  ok  binding-kv.ts exists
+  ok  binding-d1.ts exists
+  ok  binding-r2.ts exists
+  ok  nimbus-wrangler.ts exists
+# nimbus-wrangler still injects KV / D1 / R2 emulators
+  ok  imports binding-kv
+  ok  imports binding-d1
+  ok  imports binding-r2
+
+# w12/regression/w10-bindings-still-injected: 7 passed, 0 failed
+
+========================================
+# Running regression/w7-stream-rpc-still-present.mjs
+========================================
+# SupervisorRPC still has W7 stream surface
+  ok  source exists
+  ok  writeBatchStream method declaration present
+
+# w12/regression/w7-stream-rpc-still-present: 2 passed, 0 failed
+
+========================================
+# Running regression/w9-hib-config-still-present.mjs
+========================================
+# W9 hibernation config still wired
+  ok  ws-hibernation-config.ts exists
+  ok  NimbusSession still imports configureWsHibernation
+
+# w12/regression/w9-hib-config-still-present: 2 passed, 0 failed
+
+========================================
+# Running regression/w5-diag-memory-shape.mjs
+========================================
+# /api/_diag/memory handler exists
+  ok  handler block
+# W5 fields still emitted
+  ok  emits peak block (rssBytes / heapUsedBytes)
+# W9 hib block still emitted (additive landmark)
+  ok  emits hib block
+  ok  mentions autoResponseConfigured
+
+# w12/regression/w5-diag-memory-shape: 4 passed, 0 failed
+
+========================================
+# Running regression/wrangler-jsonc-still-valid.mjs
+========================================
+# top-level shape unchanged
+  ok  name === nimbus
+  ok  main === src/index.ts
+  ok  compatibility_date set
+# W3 carry: nodejs_compat flag
+  ok  compatibility_flags includes nodejs_compat
+# W10 carry: experimental flag (for ServiceStub serialization)
+  ok  compatibility_flags includes experimental
+# W3-W11 carry: durable_objects + migrations
+  ok  NIMBUS_SESSION binding present
+  ok  migrations v1 NimbusSession present
+# W4 carry: r2_buckets for npm cache
+  ok  NPM_TARBALL_CACHE bucket present
+  ok  NPM_PACKUMENT_CACHE bucket present
+# W10 carry: worker_loaders binding
+  ok  LOADER worker_loader present
+# assets binding still wired
+  ok  assets.binding === ASSETS
+  ok  assets.directory still ./public
+
+# w12/regression/wrangler-jsonc-still-valid: 12 passed, 0 failed
+
+========================================
+# Running e2e/delegate-roundtrip.mjs
+========================================
+  ok  handleReplicaPreflight is a function
+# primary-only route on replica → primary handles it
+  ok  result.delegated true
+  ok  result.response is a Response
+  ok  primary saw the URL
+  ok  primary handled
+  ok  primary recorded one call
+# replica-ok route on replica → handles locally (no delegate)
+  ok  not delegated
+  ok  no response prepared
+  ok  primary saw zero calls
+# replica-warm-only cold replica → delegates
+  ok  cold replica delegates /preview/
+  ok  primary saw one call
+# replica-warm-only warm replica → handles locally
+  ok  warm replica handles /preview/ locally
+  ok  primary saw zero calls
+# primary isolate handles everything locally
+  ok  primary delegated=false for /api/write-file
+  ok  primary delegated=false for /api/memory
+  ok  primary delegated=false for /preview/index.html
+  ok  primary delegated=false for /ws
+
+# w12/e2e/delegate-roundtrip: 17 passed, 0 failed
+
+========================================
+# Running e2e/replica-bookmark-roundtrip.mjs
+========================================
+# primary captures bookmark after a write
+  ok  bookmark surfaces
+# primary without bookmark API returns null
+  ok  null bookmark when API missing
+# replica eventually catches up (mock simulates lag)
+  ok  initial bookmark visible
+  ok  bookmark advanced after lag
+  ok  lag-simulation observed bookmark advance
+# inspect on replica with no bookmark API returns null
+  ok  isReplica still true
+  ok  bookmark null when API absent on replica
+
+# w12/e2e/replica-bookmark-roundtrip: 7 passed, 0 failed
+
+========================================
+# Running e2e/region-latency-baseline.mjs
+========================================
+# SKIP w12/e2e/region-latency-baseline (NIMBUS_W12_E2E not set)
+
+========================================
+# Running e2e/region-latency-after.mjs
+========================================
+# SKIP w12/e2e/region-latency-after (NIMBUS_W12_E2E not set)
+
+========================================
+# Running e2e/mossaic-regression-e2e.mjs
+========================================
+# SKIP w12/e2e/mossaic-regression-e2e (NIMBUS_W12_E2E not set)
+
+========================================
+# W12 probe summary
+========================================
+✓ functional/replica-policy-classification.mjs (76ms, exit=0)
+✓ functional/eventual-consistency-window-ms.mjs (67ms, exit=0)
+✓ functional/replicas-suspension-counter.mjs (49ms, exit=0)
+✓ functional/smart-placement-config-shape.mjs (48ms, exit=0)
+✓ functional/replica-state-shape.mjs (49ms, exit=0)
+✓ functional/should-delegate-decision.mjs (71ms, exit=0)
+✓ functional/replica-metadata-flag-in-diag.mjs (62ms, exit=0)
+✓ functional/ws-routes-are-primary-only.mjs (38ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (49ms, exit=0)
+✓ regression/mossaic-shape.mjs (50ms, exit=0)
+✓ regression/w11-frameworks-detect-unchanged.mjs (45ms, exit=0)
+✓ regression/w10-bindings-still-injected.mjs (44ms, exit=0)
+✓ regression/w7-stream-rpc-still-present.mjs (48ms, exit=0)
+✓ regression/w9-hib-config-still-present.mjs (50ms, exit=0)
+✓ regression/w5-diag-memory-shape.mjs (42ms, exit=0)
+✓ regression/wrangler-jsonc-still-valid.mjs (51ms, exit=0)
+✓ e2e/delegate-roundtrip.mjs (31ms, exit=0)
+✓ e2e/replica-bookmark-roundtrip.mjs (128ms, exit=0)
+✓ e2e/region-latency-baseline.mjs (41ms, exit=0)
+✓ e2e/region-latency-after.mjs (39ms, exit=0)
+✓ e2e/mossaic-regression-e2e.mjs (24ms, exit=0)
+
+# ALL GREEN

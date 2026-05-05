@@ -1,0 +1,1 @@
+const m=require('fsevents');console.log('typeof:',typeof m)

@@ -1,0 +1,491 @@
+
+========================================
+# Running functional/kv-put-get.mjs
+========================================
+  ok  text get default
+  ok  text get explicit type
+  ok  text get string-form options
+  ok  missing key returns null
+  ok  json type returns parsed object
+  ok  arrayBuffer type returns ArrayBuffer
+  ok  arrayBuffer roundtrip bytes
+  ok  stream type returns ReadableStream
+  ok  stream collects to original text
+  ok  vfs has hello blob under .nimbus/kv
+  ok  binding isolation: MY_KV.hello unchanged
+  ok  binding isolation: OTHER_KV.hello distinct
+
+# w10/functional/kv-put-get: 12 passed, 0 failed
+
+========================================
+# Running functional/kv-list-prefix.mjs
+========================================
+  ok  list returns 25 keys total
+  ok  list_complete true when fits in one page
+  ok  prefix-filtered count
+  ok  all keys have prefix
+  ok  paginated first page size
+  ok  list_complete false on partial page
+  ok  cursor returned
+  ok  paginated remainder
+  ok  list_complete true on tail page
+  ok  no overlap between pages
+  ok  keys have name field
+  ok  cacheStatus field present
+
+# w10/functional/kv-list-prefix: 12 passed, 0 failed
+
+========================================
+# Running functional/kv-delete.mjs
+========================================
+  ok  present before delete
+  ok  null after delete
+  ok  other key untouched
+  ok  delete missing is idempotent (no throw)
+  ok  blob gone
+  ok  meta sidecar gone
+
+# w10/functional/kv-delete: 6 passed, 0 failed
+
+========================================
+# Running functional/kv-ttl-expiration.mjs
+========================================
+  ok  present before expiration
+  ok  still present mid-window
+  ok  expired returns null
+  ok  expired blob lazy-deleted
+  ok  exp-ttl listed before window
+  ok  exp-ttl still present at 99s
+  ok  exp-ttl expired at 101s
+
+# w10/functional/kv-ttl-expiration: 7 passed, 0 failed
+
+========================================
+# Running functional/kv-metadata-roundtrip.mjs
+========================================
+  ok  value matches
+  ok  metadata roundtrips object
+  ok  cacheStatus present
+  ok  cacheStatus is null
+  ok  plain get returns just value
+  ok  no-metadata value
+  ok  no-metadata metadata is null
+  ok  missing key value null
+  ok  missing key metadata null
+  ok  overwrite value
+  ok  overwrite WITHOUT metadata clears metadata
+
+# w10/functional/kv-metadata-roundtrip: 11 passed, 0 failed
+
+========================================
+# Running functional/kv-cachettl-accepted-ignored.mjs
+========================================
+  ok  cacheTtl: value still returned
+  ok  cacheTtl: no throw
+  ok  cacheTtl with type: value parsed
+  ok  cacheTtl with type: no throw
+
+# w10/functional/kv-cachettl-accepted-ignored: 4 passed, 0 failed
+
+========================================
+# Running functional/d1-prepare-bind-run.mjs
+========================================
+  ok  exec returns object
+  ok  exec.count is number
+  ok  prepare returns object
+  ok  stmt has bind method
+  ok  bind returns a (new) prepared statement
+  ok  run.success
+  ok  run.meta exists
+  ok  run.meta.changes
+  ok  run.meta.duration is number
+  ok  run.meta.last_row_id positive
+  ok  first returns row object
+  ok  first(colName) returns scalar
+  ok  first on no-match returns null
+
+# w10/functional/d1-prepare-bind-run: 13 passed, 0 failed
+
+========================================
+# Running functional/d1-prepare-all.mjs
+========================================
+  ok  all.success
+  ok  all.results array
+  ok  all.results length
+  ok  all.results[0]
+  ok  all.results[1]
+  ok  rows_read accounting
+  ok  all w/o WHERE returns 5
+  ok  raw returns array
+  ok  raw row count
+  ok  raw rows are arrays
+  ok  raw first row contents
+
+# w10/functional/d1-prepare-all: 11 passed, 0 failed
+
+========================================
+# Running functional/d1-batch.mjs
+========================================
+  ok  batch returns array
+  ok  batch returns 3 results
+  ok  first INSERT success
+  ok  first INSERT changes
+  ok  second INSERT success
+  ok  SELECT result is the row
+  ok  batch with failure throws
+  ok  failed batch did NOT persist partial
+
+# w10/functional/d1-batch: 8 passed, 0 failed
+
+========================================
+# Running functional/d1-exec.mjs
+========================================
+  ok  exec returns object
+  ok  exec.duration is number
+  ok  exec.count >= 3 statements
+  ok  post-exec prepare succeeds (empty)
+
+# w10/functional/d1-exec: 4 passed, 0 failed
+
+========================================
+# Running functional/d1-table-prefix-isolation.mjs
+========================================
+  ok  A has 1 row, A only
+  ok  B has 1 row, B only
+  ok  A.name
+  ok  B.name
+  ok  A cannot see B rows
+
+# w10/functional/d1-table-prefix-isolation: 5 passed, 0 failed
+
+========================================
+# Running functional/d1-cte-and-trigger.mjs
+========================================
+  ok  CTE query succeeded
+  ok  CTE returns rows
+  ok  CREATE TRIGGER does not throw
+  ok  INSERT after CREATE TRIGGER succeeds
+
+# w10/functional/d1-cte-and-trigger: 4 passed, 0 failed
+
+========================================
+# Running functional/r2-put-get.mjs
+========================================
+  ok  put returns object
+  ok  put returns key
+  ok  put returns size
+  ok  put.size correct
+  ok  put returns etag
+  ok  get returns object
+  ok  get.key
+  ok  get.size
+  ok  get.body is ReadableStream
+  ok  get has text() helper
+  ok  text() returns body
+  ok  refetch text() works
+  ok  arrayBuffer() returns ArrayBuffer
+  ok  byte 0
+  ok  byte 1
+  ok  byte 2
+  ok  byte 3
+  ok  cafe.bin size
+  ok  stream body roundtrip
+  ok  missing get returns null
+  ok  blob in .nimbus/r2/<binding>/
+
+# w10/functional/r2-put-get: 21 passed, 0 failed
+
+========================================
+# Running functional/r2-head.mjs
+========================================
+  ok  head returns object
+  ok  head.key
+  ok  head.size
+  ok  head.etag is string
+  ok  head.httpMetadata.contentType
+  ok  head.httpMetadata.cacheControl
+  ok  head.customMetadata.author
+  ok  head.customMetadata.version
+  ok  head has no .body field (or it is null)
+  ok  head.uploaded is Date
+  ok  head missing returns null
+
+# w10/functional/r2-head: 11 passed, 0 failed
+
+========================================
+# Running functional/r2-list-prefix.mjs
+========================================
+  ok  all object count
+  ok  truncated false
+  ok  prefix-filter count
+  ok  all keys begin with prefix
+  ok  p1 size
+  ok  p1 truncated
+  ok  p1 cursor present
+  ok  p2 size
+  ok  p3 size
+  ok  p3 truncated false (last page)
+  ok  no dup logs/2026-05-00.log
+  ok  no dup logs/2026-05-01.log
+  ok  no dup logs/2026-05-02.log
+  ok  no dup logs/2026-05-03.log
+  ok  no dup logs/2026-05-04.log
+  ok  no dup logs/2026-05-05.log
+  ok  no dup logs/2026-05-06.log
+  ok  no dup logs/2026-05-07.log
+  ok  no dup logs/2026-05-08.log
+  ok  no dup logs/2026-05-09.log
+  ok  no dup logs/2026-05-10.log
+  ok  no dup logs/2026-05-11.log
+  ok  no dup logs/2026-05-12.log
+  ok  no dup logs/2026-05-13.log
+  ok  no dup logs/2026-05-14.log
+  ok  no dup logs/2026-05-15.log
+  ok  no dup logs/2026-05-16.log
+  ok  no dup logs/2026-05-17.log
+  ok  no dup logs/2026-05-18.log
+  ok  no dup logs/2026-05-19.log
+  ok  all distinct keys
+  ok  object.key
+  ok  object.size
+  ok  object.etag
+  ok  object.uploaded is Date
+  ok  delimiter returns delimitedPrefixes array
+  ok  delimitedPrefixes contains logs/
+  ok  delimitedPrefixes contains assets/
+
+# w10/functional/r2-list-prefix: 38 passed, 0 failed
+
+========================================
+# Running functional/r2-delete-single-and-array.mjs
+========================================
+  ok  a gone
+  ok  b survives
+  ok  b gone
+  ok  c gone
+  ok  d survives
+  ok  delete missing idempotent
+  ok  delete all-missing array idempotent
+  ok  a meta gone
+
+# w10/functional/r2-delete-single-and-array: 8 passed, 0 failed
+
+========================================
+# Running functional/r2-conditionals.mjs
+========================================
+  ok  etag present
+  ok  match: returns object
+  ok  match: text correct
+  ok  etagMatches wrong returns null
+  ok  etagDoesNotMatch with unrelated etag returns body
+  ok  etagDoesNotMatch with matching etag returns null
+  ok  conditional put with matching etag succeeds
+  ok  updated body
+  ok  stale conditional put returns null
+  ok  body unchanged after stale put
+
+# w10/functional/r2-conditionals: 10 passed, 0 failed
+
+========================================
+# Running functional/r2-range-read.mjs
+========================================
+  ok  range[5,5)+5 text
+  ok  range from offset 20 returns tail
+  ok  suffix 3 returns last 3 bytes
+  ok  offset > size returns object
+  ok  offset > size returns empty text
+
+# w10/functional/r2-range-read: 5 passed, 0 failed
+
+========================================
+# Running functional/r2-etag-content-addressed.mjs
+========================================
+  ok  same content → same etag
+  ok  diff content → diff etag
+  ok  etag hex chars only
+  ok  rewrite same content → same etag
+
+# w10/functional/r2-etag-content-addressed: 4 passed, 0 failed
+
+========================================
+# Running functional/r2-multipart-throws.mjs
+========================================
+  ok  createMultipartUpload exists (function)
+  ok  resumeMultipartUpload exists (function)
+  ok  createMultipartUpload throws with "not supported" message
+  ok  resumeMultipartUpload throws with "not supported" message
+
+# w10/functional/r2-multipart-throws: 4 passed, 0 failed
+
+========================================
+# Running functional/env-bindings-injection.mjs
+========================================
+  ok  readConfig parses wrangler.jsonc
+  ok  env.GREETING from vars
+  ok  env.CACHE present (KV)
+  ok  env.CACHE has .get
+  ok  env.CACHE has .put
+  ok  env.CACHE has .list
+  ok  env.CACHE has .delete
+  ok  env.CACHE has .getWithMetadata
+  ok  env.DB present (D1)
+  ok  env.DB has .prepare
+  ok  env.DB has .batch
+  ok  env.DB has .exec
+  ok  env.STORE present (R2)
+  ok  env.STORE has .get
+  ok  env.STORE has .put
+  ok  env.STORE has .head
+  ok  env.STORE has .list
+  ok  env.STORE has .delete
+  ok  env keys include GREETING
+  ok  env keys include CACHE
+  ok  env keys include DB
+  ok  env keys include STORE
+
+# w10/functional/env-bindings-injection: 22 passed, 0 failed
+
+========================================
+# Running functional/project-type-detection.mjs
+========================================
+  ok  empty project not CF Workers
+  ok  wrangler.jsonc → true
+  ok  wrangler.json → true
+  ok  wrangler.toml → true
+  ok  package.json devDeps wrangler → true
+  ok  package.json deps wrangler → true
+  ok  package.json without wrangler → false
+  ok  malformed package.json → false (no crash)
+
+# w10/functional/project-type-detection: 8 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage.mjs
+========================================
+  ok  exists src/npm-installer.ts
+  ok  exists src/npm-resolver.ts
+  ok  exists src/npm-tarball.ts
+  ok  exists src/npm-tarball-stream.ts
+  ok  exists src/npm-cache.ts
+  ok  exists src/npm-install-facet.ts
+  ok  exists src/npm-install-batch-facet.ts
+  ok  npm-installer does not import binding-kv
+  ok  npm-installer does not import binding-d1
+  ok  npm-installer does not import binding-r2
+  ok  npm-installer does not import nimbus-wrangler
+  ok  nimbus-wrangler imports binding-kv
+  ok  nimbus-wrangler imports binding-d1
+  ok  nimbus-wrangler imports binding-r2
+
+# w10/regression/install-pipeline-coverage: 14 passed, 0 failed
+
+========================================
+# Running regression/nimbus-wrangler-existing-bindings-still-work.mjs
+========================================
+  ok  vars.API_KEY
+  ok  vars.GREETING
+  ok  no synth bindings when not configured: env.ASSETS undefined
+  ok  no synth bindings when not configured: env.MY_KV undefined
+  ok  env2.ASSETS synthesized
+  ok  env2.INNER_LOADER synthesized
+  ok  env2.API_KEY survives W10 changes
+
+# w10/regression/nimbus-wrangler-existing-bindings-still-work: 7 passed, 0 failed
+
+========================================
+# Running regression/nimbus-paths-not-watched.mjs
+========================================
+  ok  source change triggers rebuild
+  ok  .nimbus/kv writes do NOT trigger rebuild
+  ok  .nimbus/r2 writes do NOT trigger rebuild
+  ok  node_modules writes do NOT trigger rebuild
+
+# w10/regression/nimbus-paths-not-watched: 4 passed, 0 failed
+
+========================================
+# Running regression/hot-reload-latency.mjs
+========================================
+  ok  rebuild fired within deadline
+  # observed latency: 308ms
+  ok  latency < 500ms target
+  ok  5 rapid saves coalesced into one rebuild
+
+# w10/regression/hot-reload-latency: 3 passed, 0 failed
+
+========================================
+# Running e2e/kv-roundtrip-e2e.mjs
+========================================
+  ok  NimbusWrangler.start succeeded
+  ok  LOADER.load was called
+  ok  LOADER.load received env.MY_KV
+  ok  LOADER.load env.MY_KV has .get
+  ok  PUT status
+  ok  PUT body
+  ok  GET status
+  ok  GET body roundtrip
+  ok  VFS contains the KV blob
+
+# w10/e2e/kv-roundtrip-e2e: 9 passed, 0 failed
+
+========================================
+# Running e2e/unsupported-fields-list-shrinks.mjs
+========================================
+  ok  WRANGLER_UNSUPPORTED_CONFIG_FIELDS array found
+  # current unsupported fields: queues, vectorize, ai, browser, hyperdrive, analytics_engine_datasets, dispatch_namespaces
+  ok  kv_namespaces NOT in unsupported list
+  ok  d1_databases NOT in unsupported list
+  ok  r2_buckets NOT in unsupported list
+  ok  queues remains unsupported
+  ok  vectorize remains unsupported
+
+# w10/e2e/unsupported-fields-list-shrinks: 6 passed, 0 failed
+
+========================================
+# Running e2e/starter-worker-router.mjs
+========================================
+  # SKIP — NIMBUS_W10_E2E_PROD not set; runs only against deployed Nimbus
+
+# w10/e2e/starter-worker-router (skipped): 0 passed, 0 failed
+
+========================================
+# Running e2e/starter-d1.mjs
+========================================
+  # SKIP — NIMBUS_W10_E2E_PROD not set
+
+# w10/e2e/starter-d1 (skipped): 0 passed, 0 failed
+
+========================================
+# W10 probe summary
+========================================
+✓ functional/kv-put-get.mjs (96ms, exit=0)
+✓ functional/kv-list-prefix.mjs (68ms, exit=0)
+✓ functional/kv-delete.mjs (56ms, exit=0)
+✓ functional/kv-ttl-expiration.mjs (37ms, exit=0)
+✓ functional/kv-metadata-roundtrip.mjs (67ms, exit=0)
+✓ functional/kv-cachettl-accepted-ignored.mjs (92ms, exit=0)
+✓ functional/d1-prepare-bind-run.mjs (62ms, exit=0)
+✓ functional/d1-prepare-all.mjs (45ms, exit=0)
+✓ functional/d1-batch.mjs (39ms, exit=0)
+✓ functional/d1-exec.mjs (36ms, exit=0)
+✓ functional/d1-table-prefix-isolation.mjs (36ms, exit=0)
+✓ functional/d1-cte-and-trigger.mjs (38ms, exit=0)
+✓ functional/r2-put-get.mjs (40ms, exit=0)
+✓ functional/r2-head.mjs (33ms, exit=0)
+✓ functional/r2-list-prefix.mjs (49ms, exit=0)
+✓ functional/r2-delete-single-and-array.mjs (34ms, exit=0)
+✓ functional/r2-conditionals.mjs (35ms, exit=0)
+✓ functional/r2-range-read.mjs (40ms, exit=0)
+✓ functional/r2-etag-content-addressed.mjs (33ms, exit=0)
+✓ functional/r2-multipart-throws.mjs (26ms, exit=0)
+✓ functional/env-bindings-injection.mjs (49ms, exit=0)
+✓ functional/project-type-detection.mjs (40ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (41ms, exit=0)
+✓ regression/nimbus-wrangler-existing-bindings-still-work.mjs (42ms, exit=0)
+✓ regression/nimbus-paths-not-watched.mjs (1490ms, exit=0)
+✓ regression/hot-reload-latency.mjs (768ms, exit=0)
+✓ e2e/kv-roundtrip-e2e.mjs (39ms, exit=0)
+✓ e2e/unsupported-fields-list-shrinks.mjs (41ms, exit=0)
+✓ e2e/starter-worker-router.mjs (26ms, exit=0)
+✓ e2e/starter-d1.mjs (27ms, exit=0)
+
+# ALL GREEN

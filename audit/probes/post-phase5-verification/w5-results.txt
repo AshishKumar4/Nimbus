@@ -1,0 +1,296 @@
+
+========================================
+# Running functional/lru-shrink-restore.mjs
+========================================
+# shrinkForInstall + restoreAfterInstall surface
+  ok  shrinkForInstall is a function
+  ok  restoreAfterInstall is a function
+# default cap reflects LRU_MAX_ENTRIES (back-compat)
+  ok  cache.maxEntries default
+# shrink reduces cap and evicts excess
+  ok  cache filled to >=128 entries before shrink
+  ok  cache.maxEntries after shrink
+  ok  cache.entries after shrink ≤ 128
+# data survives eviction by shrink
+  ok  data round-trips through SQL after eviction
+# restoreAfterInstall raises cap back to default
+  ok  cache.maxEntries restored
+# refcount: nested shrink only restores on outermost release
+  ok  cap is the smaller of nested shrinks
+  ok  still shrunk after inner restore (refcount 1 remaining)
+  ok  restored after outer restore
+
+# w5/functional/lru-shrink-restore: 11 passed, 0 failed
+
+========================================
+# Running functional/sqlite-nomem-retry.mjs
+========================================
+# classifier
+  ok  SQLITE_NOMEM string → sqlite_nomem
+  ok  out of memory → sqlite_nomem
+  ok  plain string accepted
+  ok  unknown error → unknown
+  ok  clone-refused → clone_refused
+  ok  rpc timeout → rpc_timeout
+# writeBatch retries on SQLITE_NOMEM (halve)
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+  ok  writeBatch did NOT propagate SQLITE_NOMEM up
+  ok  all 12 inodes present after retry
+  ok  all 12 chunks present after retry
+  ok  at least one sqlite_nomem ring entry
+  ok  ring entry has phase string
+  ok  ring entry has at timestamp
+# writeBatch fail-loud after retry depth exhausted
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+  ok  writeBatch eventually throws when retry depth exhausted
+
+# w5/functional/sqlite-nomem-retry: 13 passed, 0 failed
+
+========================================
+# Running functional/diag-shape.mjs
+========================================
+# module surface
+  ok  recordFailure is fn
+  ok  getFailures is fn
+  ok  resetFailures is fn
+  ok  setLastRpcFrame is fn
+  ok  getLastRpcFrame is fn
+  ok  setLastFacetId is fn
+  ok  getLastFacetId is fn
+# initial state
+  ok  failures empty
+  ok  last RPC frame null
+  ok  last facet id null
+# recordFailure shape
+  ok  one entry
+  ok  cause
+  ok  phase
+  ok  message
+# ring buffer caps at 50
+  ok  size capped at 50
+  ok  newest at[0] is i=74
+# setLastRpcFrame / getLastRpcFrame round-trip
+  ok  method
+  ok  payloadBytes
+  ok  atMs is recent
+# setLastFacetId / getLastFacetId round-trip
+  ok  codeId
+  ok  slotIndex
+
+# w5/functional/diag-shape: 21 passed, 0 failed
+
+========================================
+# Running functional/ring-persistence.mjs
+========================================
+# persistence surface exists
+  ok  snapshotForStorage is fn
+  ok  rehydrateFromStorage is fn
+# snapshot → rehydrate round-trip
+  ok  snapshot is plain object
+  ok  snapshot is JSON-serializable
+  ok  snapshot ≤ 20 KB for 5 entries
+  ok  after reset, no failures
+  ok  after reset, no rpc frame
+  ok  rehydrated 5 entries
+  ok  newest at[0]
+  ok  rehydrated rpc frame method
+  ok  rehydrated facet id
+# rehydrate is fail-soft on garbage input
+  ok  null → no entries
+  ok  garbage → no entries
+  ok  no throw on bad shape
+# full 50-entry snapshot stays bounded
+  ok  snapshot ≤ 20 KB even with full ring
+  ok  only 50 entries kept
+
+# w5/functional/ring-persistence: 16 passed, 0 failed
+
+========================================
+# Running regression/fnv-counter-integrity.mjs
+========================================
+# initial writeBatch counters
+  ok  totalFiles
+  ok  usedBytes
+# counters stay correct after shrinkForInstall
+  ok  totalFiles unchanged by shrink
+  ok  usedBytes unchanged by shrink
+# counters stay correct after retry-on-NOMEM
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+  ok  writeBatch did NOT throw despite injected NOMEM
+  ok  totalFiles after retry
+  ok  usedBytes after retry
+# children-index integrity (W2.5)
+  ok  a child count
+  ok  b child count
+  ok  readdir contents look like file entries
+# counters match O(N) walk
+  ok  walkFiles == counter
+  ok  walkBytes == counter
+
+# w5/regression/fnv-counter-integrity: 12 passed, 0 failed
+
+========================================
+# Running regression/install-pipeline-coverage.mjs
+========================================
+# install-pipeline-coverage probe still present
+  ok  file exists
+  ok  mentions fastify scenario
+  ok  mentions express scenario
+  ok  mentions ts-jest scenario
+  ok  mentions redis scenario
+  ok  mustHaveAtLeastOne contract present
+# regression probe is invokable
+  ok  imports runProbe driver
+  ok  writes artifact path
+
+# w5/regression/install-pipeline-coverage: 8 passed, 0 failed
+
+========================================
+# Running e2e/oom-stress.mjs
+========================================
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+[sqlite-vfs] writeBatch failed: SQLITE_NOMEM: out of memory
+# every fail-loud termination has a cause-tagged ring entry
+  ok  throws happened (sanity)
+  ok  every thrown run produced ≥1 sqlite_nomem ring entry
+  ok  no ring entries with empty cause and no message
+  ok  at least one phase tag is "install"
+# zero-silent-OOM contract
+  ok  zero silent terminations
+
+# w5/e2e/oom-stress: 5 passed, 0 failed
+
+========================================
+# W5 probe summary
+========================================
+✓ functional/lru-shrink-restore.mjs (88ms, exit=0)
+✓ functional/sqlite-nomem-retry.mjs (72ms, exit=0)
+✓ functional/diag-shape.mjs (40ms, exit=0)
+✓ functional/ring-persistence.mjs (49ms, exit=0)
+✓ regression/fnv-counter-integrity.mjs (94ms, exit=0)
+✓ regression/install-pipeline-coverage.mjs (69ms, exit=0)
+✓ e2e/oom-stress.mjs (108ms, exit=0)
+
+# ALL GREEN

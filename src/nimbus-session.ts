@@ -67,6 +67,30 @@ import {
   handleProcessesListRequest,
   matchLogsPath,
 } from './process-logs-api.js';
+// ── W12 — Lever 12/G3/H1 + Lever 7/G4 — DO read replicas + Smart Placement
+//
+// `replica-routing.ts` is a pure module (no `cloudflare:workers` import) so it
+// can be unit-tested under bun. The DO uses two integration points:
+//   - constructor: `tryEnableReplicas(this.ctx)` opts in via the wiki SPEC
+//     API (`enableReplicas`) or the alternate API name observed in CF
+//     research §J.7.1 (`configureReadReplication({mode:'auto'})`). Pre-GA
+//     runtimes lacking either get `state: 'unsupported'` and the DO
+//     behaves exactly as pre-W12.
+//   - _handleFetch preflight: `handleReplicaPreflight(this.ctx, request,
+//     {isWarm})` decides whether to handle locally or forward to the
+//     primary via `ctx.storage.primary.fetch(request)`. Replica-ok routes
+//     handle locally; replica-warm-only routes handle locally only when
+//     warm; primary-only routes always delegate.
+// `/api/_diag/memory` exposes the `replica` block so operators (and the
+// CT1 daily drift detector) can confirm replicas landed and observe
+// the replication-bookmark stream.
+import {
+  tryEnableReplicas as _w12TryEnableReplicas,
+  inspectReplicaState as _w12InspectReplicaState,
+  handleReplicaPreflight as _w12HandleReplicaPreflight,
+  type TryEnableReplicasResult as _W12EnableResult,
+} from './replica-routing.js';
+import { replicasSuspended as _w12ReplicasSuspended } from './replica-suspension.js';
 
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
@@ -319,19 +343,18 @@ function filterWranglerFlags(argv: string[]): { args: string[]; ignored: string[
 // knows WHY their inner Worker will crash when it tries to access one.
 //
 // This list is trimmed as new synthesis code lands:
-//   Phase 0 (vars + services)     — removed `services`
-//   Phase 1 (assets)              — removed `assets`
-//   Phase 2 (worker_loaders)      — removed `worker_loaders`
-//   Phase 3 (durable_objects)     — removed `durable_objects`
+//   Phase 0 (vars + services)       — removed `services`
+//   Phase 1 (assets)                — removed `assets`
+//   Phase 2 (worker_loaders)        — removed `worker_loaders`
+//   Phase 3 (durable_objects)       — removed `durable_objects`
+//   W10 (kv/d1/r2 emulation)        — removed `kv_namespaces`,
+//                                     `d1_databases`, `r2_buckets`
 //
 // `vars` was never in this list because it's trivially synthesizable.
 // Remaining fields genuinely can't be synthesized without the real CF
-// platform (KV/D1/R2/Queues/Vectorize/AI/Browser/Hyperdrive/Analytics/
-// Dispatch) and would require building a full emulation layer.
+// platform (Queues/Vectorize/AI/Browser/Hyperdrive/Analytics/Dispatch)
+// and would require building a full emulation layer.
 const WRANGLER_UNSUPPORTED_CONFIG_FIELDS = [
-  'kv_namespaces',
-  'd1_databases',
-  'r2_buckets',
   'queues',
   'vectorize',
   'ai',
@@ -391,6 +414,12 @@ function detectUnsupportedWranglerConfig(vfs: SqliteVFS, root: string): string[]
   return found;
 }
 
+// W10: detectCloudflareWorkersProject lives in src/project-detect.ts so
+// unit-level tests can import it without pulling in cloudflare:workers.
+// Re-export here so the existing import surface (callers that already
+// import from nimbus-session) continues to work.
+export { detectCloudflareWorkersProject } from './project-detect.js';
+
 /**
  * Parse the first token of an npm script's command string and decide whether
  * it's a bundler/framework CLI that requires node_modules. Handles common
@@ -416,6 +445,10 @@ const _CP_FACET_DIRECT = new Set([
   'wrangler', 'nimbus-wrangler',
   'husky', 'lefthook', 'simple-git-hooks', 'lint-staged', 'yorkie',
   'vite', 'tsc', 'esbuild', 'rollup', 'webpack',
+  // W11: framework CLIs — bare-name dispatch must reach a Node isolate
+  // for npm-run-dev / direct-shell invocations to work. See
+  // audit/sections/W11-plan.md §5 + reviewer comment 2.
+  'astro', 'nuxt', 'nuxi', 'remix', 'svelte-kit', 'next',
 ]);
 const _CP_PURE_BUILTIN = new Set([
   'echo', 'cat', 'true', 'false', 'ls', 'pwd', 'cd', 'env', 'export',
@@ -590,6 +623,15 @@ export class NimbusSession extends CloudflareDurableObject {
     } catch { return false; }
   }
 
+  // ── W12 — DO read replicas state ────────────────────────────────────
+  /**
+   * Result of `tryEnableReplicas(this.ctx)` at constructor time. Surfaced
+   * via `/api/_diag/memory.replica` so operators can confirm whether the
+   * runtime accepted the SPEC API. Stays `null` if the constructor's
+   * call ran before this assignment (defensive — should never happen).
+   */
+  private _w12EnableResult: _W12EnableResult | null = null;
+
   /**
    * Public URL prefix this DO is mounted at (e.g. `/s/nimble-otter-4271`).
    * Set from the `X-Nimbus-Base` request header on the first forwarded
@@ -659,6 +701,22 @@ export class NimbusSession extends CloudflareDurableObject {
     // happens here so any subsequent call (including initSession) sees
     // the adapter in place.
     this._w9WireProcessLogPersist();
+
+    // ── W12 — Lever 12 / G3 / H1 — DO read replicas (best-effort).
+    //
+    // Constructor runs on EVERY isolate (primary + replica alike). Replicas
+    // get a stub at `ctx.storage.primary` from the runtime; primaries get
+    // `undefined`. We call `enableReplicas()` defensively — pre-GA runtimes
+    // lacking the API surface get `state: 'unsupported'` and the DO behaves
+    // exactly as pre-W12 (single-primary). Result is captured for the
+    // `/api/_diag/memory.replica` block.
+    try {
+      this._w12EnableResult = _w12TryEnableReplicas(this.ctx);
+    } catch (e: any) {
+      // tryEnableReplicas itself never throws (it catches), but keep this
+      // belt-and-braces so a future change doesn't break the constructor.
+      this._w12EnableResult = { state: 'error', error: e?.message ?? String(e) };
+    }
   }
 
   /**
@@ -1555,6 +1613,39 @@ export class NimbusSession extends CloudflareDurableObject {
     // same isolate are a fast no-op (gated by _w9IsolateGenPersisted).
     await this._w9MaybeBumpIsolateGen();
 
+    // ── W12 — DO read replica preflight ─────────────────────────────────
+    //
+    // If THIS isolate is a replica AND the route policy says delegate, we
+    // forward the Request to the primary via `ctx.storage.primary.fetch()`
+    // and return the primary's Response. Single intra-region RPC hop:
+    // the replica was placed near the primary, so this is fast; the user
+    // experiences edge-RTT-to-replica + RPC + primary-handle, which is
+    // strictly less than user-RTT-to-far-region for cross-region tenants.
+    //
+    // On the primary OR for replica-eligible routes (with cold/warm
+    // distinction handled), `delegated === false` and we fall through to
+    // the existing route handlers unchanged.
+    //
+    // Graceful-degrade: if `inspectReplicaState` reports isReplica but the
+    // primary stub is unusable, `handleReplicaPreflight` returns
+    // `delegated: false` and we handle locally — correctness > latency.
+    //
+    // Performance note: the preflight is <1ms (pure pathname classification
+    // + a `typeof` check on `ctx.storage.primary`). Hot path.
+    try {
+      const w12Pre = await _w12HandleReplicaPreflight(this.ctx, request, {
+        isWarm: !!(this.viteDevServer?.isRunning || this.cirrusReal?.isRunning),
+        suspended: _w12ReplicasSuspended(),
+      });
+      if (w12Pre.delegated && w12Pre.response) {
+        return w12Pre.response;
+      }
+    } catch (e: any) {
+      // Preflight should never throw, but never let a routing helper kill
+      // request handling. Log + continue with local handling.
+      console.warn('[nimbus/W12] preflight threw:', e?.message);
+    }
+
     if (url.pathname === '/ws') {
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket', { status: 426 });
@@ -1753,6 +1844,18 @@ export class NimbusSession extends CloudflareDurableObject {
           timeoutError: this._w9WsConfig?.timeoutError ?? null,
           ...this.processLogs.hibStats(),
         },
+
+        // ── W12: replica observability ──────────────────────────────
+        // `replica.state` is one of 'enabled' / 'enabled-via-configure' /
+        // 'unsupported' / 'error' / 'unknown' (per tryEnableReplicas
+        // result; pre-GA runtimes get 'unsupported' graceful-degrade).
+        // `isReplica` is true when this isolate is a regional read
+        // replica (its `ctx.storage.primary` is an RpcStub). `bookmark`
+        // reflects ctx.storage.getCurrentBookmark() if the API surfaces
+        // it — used by future read-your-writes wait-for-bookmark wiring.
+        // `suspended` reflects the global write-burst guard (npm install
+        // / git clone in flight) per CF research §G.4 + ~lambros feedback.
+        replica: this.getReplicaState(),
       });
     }
 
@@ -2122,6 +2225,39 @@ export class NimbusSession extends CloudflareDurableObject {
    * fault-tolerant so a probe that fails in prod doesn't take the
    * request handler down with it.
    */
+  // ── W12 — getReplicaState() — exposed via /api/_diag/memory.replica.
+  //
+  // Pulls the constructor's `_w12EnableResult` (state + error) and the
+  // per-fetch live `inspectReplicaState()` (isReplica, primary, bookmark)
+  // for a complete operator surface. CT1 drift detector reads this to
+  // confirm replicas landed in EU/APAC and observe replication lag via
+  // bookmark advance.
+  private getReplicaState(): {
+    state: string;
+    error: string | null;
+    isReplica: boolean;
+    bookmark: string | null;
+    suspended: boolean;
+  } {
+    const enable = this._w12EnableResult ?? { state: 'unknown', error: null };
+    let isReplica = false;
+    let bookmark: string | null = null;
+    try {
+      const inspect = _w12InspectReplicaState(this.ctx);
+      isReplica = inspect.isReplica;
+      bookmark = inspect.bookmark;
+    } catch { /* never throw from a diag helper */ }
+    let suspended = false;
+    try { suspended = _w12ReplicasSuspended(); } catch {}
+    return {
+      state: enable.state,
+      error: enable.error,
+      isReplica,
+      bookmark,
+      suspended,
+    };
+  }
+
   private _diagReadNodeMem(): { rss: number; heapTotal: number; heapUsed: number; external: number; arrayBuffers: number } | null {
     try {
       const g: any = globalThis as any;
@@ -2302,6 +2438,14 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     if (this.facetManager && this.sqliteFs) {
       this.facetManager.setVfs(this.sqliteFs);
+      // W3.5 Fix B: share the session's lazy esbuildService with the
+      // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
+      // wasm-init twice. If the session hasn't constructed one yet,
+      // FacetManager will lazy-create its own on first exec — same
+      // wasm bytes, same ~10ms init cost, just paid once per surface.
+      if (this.esbuildService) {
+        this.facetManager.setEsbuildService(this.esbuildService);
+      }
     }
   }
 
@@ -3908,6 +4052,23 @@ export class NimbusSession extends CloudflareDurableObject {
           ctx.stdout.write(`\n> ${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${scriptName}\n`);
           ctx.stdout.write(`> ${script}\n\n`);
 
+          // ── W11: Next.js loud-block ───────────────────────────────────
+          // Next.js dev/start needs a custom http.Server + child_process.fork
+          // with v8-IPC + webpack/Turbopack, none of which Phase 1 ships.
+          // Surface a deterministic message rather than letting the script
+          // hang or emit a confusing crash. See src/frameworks/next.ts.
+          if (
+            (scriptName === 'dev' || scriptName === 'start') &&
+            (pkg.dependencies?.next || pkg.devDependencies?.next) &&
+            !(scriptArgs.includes('--force') || scriptArgs.includes('--allow-next'))
+          ) {
+            try {
+              const { blockMessage, BLOCK_EXIT_CODE } = await import('./frameworks/next.js');
+              ctx.stderr.write(blockMessage());
+              return BLOCK_EXIT_CODE;
+            } catch { /* fall through if module load fails for any reason */ }
+          }
+
           // ── Shell-composite detection ──────────────────────────────────
           // Scripts like `cd packages/cf-backend && vite dev` or
           // `NODE_ENV=prod node build.js | tee log` need the full shell
@@ -4432,6 +4593,40 @@ export class NimbusSession extends CloudflareDurableObject {
         );
       }
     } catch {}
+
+    // ── W11: framework detection MOTD line ──
+    // If ~/app has a recognizable framework, print one informational line.
+    // Purely advisory — does not change boot behaviour. Fire-and-forget
+    // because initSession is sync; any failure is silently swallowed.
+    void (async () => {
+      try {
+        const projDir = SEED_PROJECT_DIR;
+        const pkgPath = projDir + '/package.json';
+        if (!this.sqliteFs!.exists(pkgPath)) return;
+        const pkg = JSON.parse(this.sqliteFs!.readFileString(pkgPath));
+        const files = new Set<string>();
+        try {
+          for (const e of this.sqliteFs!.readdir(projDir)) files.add(e.name);
+        } catch {}
+        const fileContents: Record<string, string> = {};
+        for (const c of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
+          if (files.has(c)) {
+            try { fileContents[c] = this.sqliteFs!.readFileString(projDir + '/' + c); } catch {}
+          }
+        }
+        const { detectFramework, describeDetect } = await import('./framework-detect.js');
+        const result = detectFramework({
+          pkg: { dependencies: pkg.dependencies, devDependencies: pkg.devDependencies, scripts: pkg.scripts },
+          files,
+          fileContents,
+        });
+        if (result.framework !== 'unknown' && result.framework !== 'vite' && this.terminal) {
+          this.terminal.write(
+            '\x1b[2m[nimbus]\x1b[0m \x1b[36m' + describeDetect(result) + '\x1b[0m\r\n\r\n'
+          );
+        }
+      } catch { /* MOTD line is non-critical */ }
+    })();
 
     // ── Start shell ──
     this.shell.start();

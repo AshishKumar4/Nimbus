@@ -31,6 +31,7 @@ import {
 import {
   applySwaps, findRejects, lookupSwap,
   formatSwapNotice, RegistryRejectError,
+  emitRegistryEvent,
 } from './wasm-swap-registry.js';
 import { resolvePackageEntry } from './_shared/exports-resolver.js';
 import {
@@ -198,6 +199,16 @@ export class NpmInstaller {
       return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases: {} };
     }
 
+    // W11: framework detection. If the project depends on a framework
+    // (next/astro/nuxt/remix/sveltekit) or generic vite, we exempt
+    // FRAMEWORK_REQUIRED_PACKAGES (vite, ...) from the SKIP_PACKAGES set
+    // so the framework's CLI can `import 'vite'` from node_modules.
+    // See audit/sections/W11-plan.md §3.0.
+    const frameworkAware = await this.detectFrameworkAware(projDir);
+    if (frameworkAware) {
+      log(`Framework detected — installing framework-required packages (vite, …).`);
+    }
+
     const lockfile = this.cache.readLockfile(projDir);
     let resolved: Map<string, ResolvedPackage>;
     let usedLockfile = false;
@@ -221,9 +232,13 @@ export class NpmInstaller {
       log(`Resolving ${Object.keys(specs).length} dependencies (path: ${useFacetResolver ? 'facet' : 'in-supervisor'}, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
 
       if (useFacetResolver) {
-        resolved = await this.resolveTreeViaFacet(specs, log);
+        // Facet resolver runs in a worker without easy access to the VFS
+        // detection result; we pass frameworkAware via an env var the
+        // facet preamble reads. For now, mirror behaviour by also calling
+        // the in-supervisor path's flag here.
+        resolved = await this.resolveTreeViaFacet(specs, log, { frameworkAware });
       } else {
-        resolved = await resolveTree(specs, this.cache, undefined, log, this.fetchFn);
+        resolved = await resolveTree(specs, this.cache, undefined, log, this.fetchFn, { frameworkAware });
       }
       phases['resolve'] = Date.now() - phaseStart;
 
@@ -502,7 +517,9 @@ export class NpmInstaller {
   private async resolveTreeViaFacet(
     specs: Record<string, string>,
     log: (msg: string) => void,
+    opts: { frameworkAware?: boolean } = {},
   ): Promise<Map<string, ResolvedPackage>> {
+    const frameworkAware = !!opts.frameworkAware;
     // Pre-load cached entries. Cached registry entries are ~500 B each;
     // cap at 5000 for ~2.5 MiB total. Facets that find a cache miss for
     // a transitive dep beyond this cap will simply re-fetch — same as
@@ -528,6 +545,7 @@ export class NpmInstaller {
     const facetSpec: ResolveFacetSpec = {
       specs,
       cachedEntries,
+      frameworkAware,
       // Concurrency 4 inside the facet (NOT 6 like the legacy in-supervisor
       // resolver). Worst-case 4 × ~20 MiB packument parse buffers = 80 MiB
       // transient peak inside the facet's 128 MiB cap. Concurrency 6 would
@@ -571,6 +589,15 @@ export class NpmInstaller {
 
     // Surface facet messages into the install log.
     for (const m of result.messages) log(m);
+    // W6.5: drain telemetry events the facet collected and forward to
+    // the registry sink. Defensive: older facet builds may not return
+    // the field, so handle missing/undefined gracefully.
+    const facetEvents = (result as any).registryEvents;
+    if (Array.isArray(facetEvents)) {
+      for (const ev of facetEvents) {
+        try { emitRegistryEvent(ev); } catch { /* sink errors swallowed inside emitRegistryEvent */ }
+      }
+    }
     // [W4] Fold packument R2 race outcomes into supervisor diag.r2.
     const rfc: any = result.facetCounters;
     recordR2RaceCounters({
@@ -837,6 +864,46 @@ export class NpmInstaller {
   /**
    * Build the dependency specs from package.json + explicit packages.
    */
+  /**
+   * W11: framework detection at install time. Reads package.json from the
+   * project root and runs detectFramework() against its deps + the basenames
+   * we can see in node_modules-adjacent siblings.
+   *
+   * Returns true if the project is detected as one of {next, astro, nuxt,
+   * remix, sveltekit, vite, wrangler}. False for 'unknown'.
+   */
+  private async detectFrameworkAware(projDir: string): Promise<boolean> {
+    try {
+      const pkgPath = projDir + '/package.json';
+      if (!this.vfs.exists(pkgPath)) return false;
+      const pkg = JSON.parse(this.vfs.readFileString(pkgPath));
+      // Lazy-load the detector to avoid a hard dep cycle.
+      const { detectFramework } = await import('./framework-detect.js');
+      // Snapshot root files. Best-effort — if readdir throws we proceed
+      // with an empty set (still detects via deps for most frameworks).
+      const files = new Set<string>();
+      try {
+        for (const e of this.vfs.readdir(projDir)) files.add(e.name);
+      } catch { /* tolerate */ }
+      // Optional file contents — read only the vite.config.* if present
+      // (used by the Remix gate).
+      const fileContents: Record<string, string> = {};
+      for (const c of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
+        if (files.has(c)) {
+          try { fileContents[c] = this.vfs.readFileString(projDir + '/' + c); } catch {}
+        }
+      }
+      const result = detectFramework({
+        pkg: { dependencies: pkg.dependencies, devDependencies: pkg.devDependencies, scripts: pkg.scripts },
+        files,
+        fileContents,
+      });
+      return result.framework !== 'unknown';
+    } catch {
+      return false;
+    }
+  }
+
   private async buildSpecs(
     projDir: string,
     explicitPackages?: string[],
@@ -902,9 +969,22 @@ export class NpmInstaller {
       // pattern); singling it out for try/catch here would be inconsistent
       // and could mask real bugs in the progress hook.
       this.onProgress?.(formatSwapNotice(s));
+      // W6.5: telemetry — fire-and-forget; sink swallows its own errors.
+      emitRegistryEvent({ type: 'swap', from: s.from, to: s.to, ctx: 'top' });
     }
     const rejects = findRejects(swapped, 'top');
     if (rejects.length > 0) {
+      // W6.5: emit one reject event per offending package BEFORE throwing,
+      // so the telemetry sink sees them even if the install aborts.
+      for (const r of rejects) {
+        emitRegistryEvent({
+          type: 'reject',
+          from: r.from,
+          reason: r.reason,
+          suggest: r.suggest,
+          ctx: 'top',
+        });
+      }
       throw new RegistryRejectError(rejects);
     }
     return swapped;

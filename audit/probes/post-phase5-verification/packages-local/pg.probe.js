@@ -1,0 +1,1 @@
+const m=require('pg');console.log('keys:',Object.keys(m).slice(0,6))

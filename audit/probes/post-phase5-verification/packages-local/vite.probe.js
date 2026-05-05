@@ -1,0 +1,1 @@
+const m=require('vite');console.log('keys:',Object.keys(m).slice(0,8))

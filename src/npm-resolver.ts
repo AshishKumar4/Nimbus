@@ -17,6 +17,7 @@ import {
 import {
   lookupSwap, lookupReject, shouldWarnSkipTransitive,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
+  emitRegistryEvent,
 } from './wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
@@ -507,6 +508,11 @@ function registryCacheToResolved(entry: RegistryCacheEntry): ResolvedPackage {
  * Resolve the full dependency tree, breadth-first.
  * Calls onResolved() for each package as it's resolved (pipelined — caller
  * can start fetching tarballs immediately).
+ *
+ * W11: pass `opts.frameworkAware = true` when the project is detected as
+ * one of {next, astro, nuxt, remix, sveltekit, vite, wrangler} so that
+ * `vite` (and any future FRAMEWORK_REQUIRED_PACKAGES additions) actually
+ * land in node_modules. See audit/sections/W11-plan.md §3.0.
  */
 export async function resolveTree(
   specs: Record<string, string>,
@@ -514,7 +520,9 @@ export async function resolveTree(
   onResolved?: (pkg: ResolvedPackage) => void,
   onProgress?: (msg: string) => void,
   fetchFn?: FetchFn,
+  opts?: { frameworkAware?: boolean },
 ): Promise<Map<string, ResolvedPackage>> {
+  const frameworkAware = !!(opts && opts.frameworkAware);
   const resolved = new Map<string, ResolvedPackage>();
   const seen = new Set<string>();
   const queue: [string, string][] = Object.entries(specs);
@@ -533,26 +541,36 @@ export async function resolveTree(
       batch.map(([name, range]) => limit(async () => {
         if (seen.has(name)) return null;
         seen.add(name);
-        if (shouldSkipPackage(name)) {
+        if (shouldSkipPackageWithFramework(name, frameworkAware)) {
           onProgress?.(`  skipping ${name} (build-only)`);
           return null;
         }
         // W6: transitive registry — swap rewrites name in flight; reject
         // with transitive='fail' throws (matches top-level fail policy);
         // reject with transitive='warn' logs [skip] and drops.
+        // W6.5: each decision also emits a RegistryEvent for telemetry.
         let resolveName = name;
         const swap = lookupSwap(name);
         if (swap) {
           onProgress?.(formatSwapNotice(swap));
+          emitRegistryEvent({ type: 'swap', from: swap.from, to: swap.to, ctx: 'transitive' });
           resolveName = swap.to;
         } else {
           const warnSkip = shouldWarnSkipTransitive(name);
           if (warnSkip) {
             onProgress?.(formatTransitiveSkip(warnSkip));
+            emitRegistryEvent({ type: 'transitive-skip', from: warnSkip.from, reason: warnSkip.reason });
             return null;
           }
           const rejectFail = lookupReject(name);
           if (rejectFail && rejectFail.transitive === 'fail') {
+            emitRegistryEvent({
+              type: 'reject',
+              from: rejectFail.from,
+              reason: rejectFail.reason,
+              suggest: rejectFail.suggest,
+              ctx: 'transitive',
+            });
             throw new RegistryRejectError([rejectFail]);
           }
         }
@@ -646,6 +664,13 @@ export function computeHoistPlan(
 // also appear in REJECT_INSTALL with transitive='warn' so a top-level
 // `npm install node-gyp` reaches the registry first and emits a clear
 // rejection — see plan §10 risk row).
+//
+// W11: `vite` was previously unconditionally skipped because the
+// supervisor bundles real-vite. But Astro/Nuxt/Remix/SvelteKit `import`
+// from the user's installed `vite` to call createServer() — so when a
+// framework is detected, `vite` must actually land in node_modules.
+// `shouldSkipPackageWithFramework({ frameworkAware: true })` exempts
+// it. See audit/sections/W11-plan.md §3.0.
 const SKIP_PACKAGES = new Set([
   // Build tools
   'typescript', 'vite', 'rollup', 'webpack', 'parcel',
@@ -658,6 +683,14 @@ const SKIP_PACKAGES = new Set([
   '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
   // Other build-only
   'husky', 'lint-staged', 'commitlint',
+]);
+
+// W11: when a framework is detected at install time, packages in this
+// set are removed from the skip list. Their dev binaries `import` from
+// the project's node_modules and would crash with "Cannot find module"
+// otherwise.
+const FRAMEWORK_REQUIRED_PACKAGES = new Set([
+  'vite',
 ]);
 
 const SKIP_PREFIXES = [
@@ -676,6 +709,24 @@ const SKIP_PREFIXES = [
 export function shouldSkipPackage(name: string): boolean {
   if (SKIP_PACKAGES.has(name)) return true;
   return SKIP_PREFIXES.some(p => name.startsWith(p));
+}
+
+/**
+ * W11: framework-aware skip variant. When `frameworkAware` is true, the
+ * resolver lets through packages in FRAMEWORK_REQUIRED_PACKAGES (currently
+ * just `vite`) so framework dev binaries can import them from node_modules.
+ *
+ * Callers detect framework presence via `framework-detect.ts` BEFORE
+ * starting resolution and thread the flag through `resolveTree`.
+ *
+ * See audit/sections/W11-plan.md §3.0.
+ */
+export function shouldSkipPackageWithFramework(
+  name: string,
+  frameworkAware: boolean,
+): boolean {
+  if (frameworkAware && FRAMEWORK_REQUIRED_PACKAGES.has(name)) return false;
+  return shouldSkipPackage(name);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
