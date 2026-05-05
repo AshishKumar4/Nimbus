@@ -1,1 +1,0 @@
-const m=require('@swc/core');console.log('keys:',Object.keys(m).slice(0,8))

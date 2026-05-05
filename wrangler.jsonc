@@ -7,36 +7,7 @@
   // returning-WorkerEntrypoint patterns (used by NimbusLoaderRPC to return
   // chained stubs without serializing raw WorkerStub objects). Required
   // for `wrangler dev` inside Nimbus to proxy env.LOADER.load() calls.
-  //
-  // [W12 — Lever 12 / G3 / H1] `replica_routing` enables Durable Object
-  // read replicas (cross-region read-mostly DO instances). Per CF research
-  // §G.4 / §J.7.1 (citing the wiki SPEC: STOR/Durable Objects read
-  // replication API). At runtime, the DO calls
-  // `ctx.storage.enableReplicas()` (or its alternate name
-  // `configureReadReplication`); replicas are isolates whose
-  // `ctx.storage.primary` is an RpcStub to the primary, and the primary's
-  // `ctx.storage.primary` is `undefined`. The flag is additive: pre-GA
-  // runtimes that don't recognize `replica_routing` ignore it. The runtime
-  // probe in `tryEnableReplicas` (src/replica-routing.ts) makes the DO
-  // functional with or without the flag — `getReplicaState()` reports
-  // `state: 'unsupported'` when the API surface is absent and behaviour
-  // falls back to the pre-W12 single-primary path.
-  "compatibility_flags": ["nodejs_compat", "experimental", "replica_routing"],
-  // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
-  // [docs](https://developers.cloudflare.com/workers/configuration/placement/),
-  // Cloudflare measures the Worker's request duration in different colos
-  // and pins it to the optimum (≤15 min analysis window post-deploy).
-  // ⚠️ Smart Placement is "ignored when making RPC calls" per
-  // [Workers RPC docs](https://developers.cloudflare.com/workers/runtime-apis/rpc/),
-  // so RPC into the DO is unchanged — but the gateway's own fetch handler
-  // gets pinned near the DO's region, which removes the cross-region
-  // gateway⇄DO RTT for warm tenants. DOs themselves don't move
-  // (CF research §J.9). Trade-off: ASSETS-binding fetches for the session
-  // shell (`/s/<id>/index.html`) happen at the placed location, which
-  // could slow shell loads for users far from the placement. Mitigation:
-  // the bare landing page `/` is excluded from `run_worker_first` and is
-  // served direct-from-edge regardless. See W12-plan.md §4.3.
-  "placement": { "mode": "smart" },
+  "compatibility_flags": ["nodejs_compat", "experimental"],
   "vars": {
     // Diagnostic gate for [sqlite-vfs/W2.5b] logs. Set to "1" to enable;
     // empty/absent disables. The diag code remains in src/sqlite-vfs.ts

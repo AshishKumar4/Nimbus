@@ -1,1 +1,0 @@
-const m=require('@tailwindcss/vite');console.log('typeof:',typeof m)

@@ -1,1 +1,0 @@
-const m=require('bcrypt');console.log('hash:',m.hashSync('x',4))

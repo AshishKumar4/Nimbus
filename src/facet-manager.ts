@@ -21,7 +21,6 @@ import { getCtxExports } from './ctx-exports.js';
 import { prefetchForRequire } from './require-resolver.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from './oom-discriminator.js';
 import { classifyError } from './oom-classify.js';
-import { EsbuildService } from './esbuild-service.js';
 import {
   CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES,
@@ -204,18 +203,9 @@ const __compiledFn = new Function(
 const __MODULE_VFS_BUNDLE = ${safeBundle};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __compiledModules = new Map();
-// W3.5 Fix C: stop swallowing pre-compile errors. Record the path → error
-// message so __loadModule can surface the real reason (typically
-// SyntaxError on ESM source) instead of the misleading "file was not
-// pre-bundled" message at request time.
-const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
-    try {
-      __compiledModules.set(__p, new Function("exports","require","module","__filename","__dirname", __c));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
+    try { __compiledModules.set(__p, new Function("exports","require","module","__filename","__dirname", __c)); } catch {}
   }
 }
 
@@ -391,16 +381,9 @@ const __compiledFn = new Function(
 const __MODULE_VFS_BUNDLE = ${safeBundle};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __compiledModules = new Map();
-// W3.5 Fix C: keep this template byte-equivalent to generateFacetCode's
-// pre-compile loop so __loadModule sees the same diagnostic surface.
-const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
-    try {
-      __compiledModules.set(__p, new Function("exports","require","module","__filename","__dirname", __c));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
+    try { __compiledModules.set(__p, new Function("exports","require","module","__filename","__dirname", __c)); } catch {}
   }
 }
 
@@ -677,115 +660,6 @@ function greedyAddMainEntries(
 }
 
 /**
- * W3.5 Fix B helper — detect ESM source by sniffing for top-level
- * `import` / `export` STATEMENTS. Identifier/property uses (`obj.import`,
- * `pkg.export`) won't match because we anchor at start-of-line / `^\s*`.
- *
- * Comment stripping is intentionally cheap: regex over `//…` and
- * `/* … *​/` blocks. Strings containing the patterns won't be touched,
- * but esbuild produces valid CJS for any input it parses, so a false
- * positive is harmless (just a wasted transform).
- *
- * Misses to be aware of:
- *   - JSX-only files with no import/export — but those wouldn't load via
- *     plain new Function anyway (loader: 'js' rejects JSX).
- *   - Files inside a "type":"module" package that don't use import/export
- *     keywords (rare; nominally CJS-shaped). Accepted limitation, called
- *     out in audit/sections/W3.5-plan.md §6.
- */
-function looksLikeEsm(src: string): boolean {
-  // Cheap comment strip. Not a full parser — enough to avoid the
-  // common false positives ("// import X" or `/* export */`).
-  const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  // import STATEMENT: `^\s*import\s+(string|identifier|*|{)`. Skips
-  // dynamic `import(...)` (which is fine in CJS).
-  const importStmt = /(^|\n)\s*import\s+(['"][^'"]+['"]|[\w*$]|\{)/;
-  // export STATEMENT: `^\s*export\s+(default|{|*|let|const|var|function|class|async|type)`.
-  const exportStmt = /(^|\n)\s*export\s+(default\b|\{|\*|let\b|const\b|var\b|function\b|class\b|async\b|type\b)/;
-  return importStmt.test(stripped) || exportStmt.test(stripped);
-}
-
-/**
- * W3.5 Fix B — module-level cache for ESM→CJS transform results, keyed
- * by content hash. A cheap FNV-1a 32-bit hash is enough (collisions are
- * astronomically rare for the size of bundles we ship; on collision the
- * pre-compile would still succeed because the cached result is a valid
- * CJS rebuild of an equally-valid ESM input).
- *
- * Lives at module scope so warm exec invocations hit the cache without
- * paying the wasm cold-start cost again.
- */
-const __esmTransformCache = new Map<string, string>();
-function __cacheKey(src: string): string {
-  // FNV-1a 32-bit. Only used for cache keys, NEVER for content
-  // integrity. The ~30-byte string we return is a hex hash + length —
-  // length disambiguates collisions across the rare 32-bit overlap.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < src.length; i++) {
-    h ^= src.charCodeAt(i);
-    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-  }
-  return h.toString(16).padStart(8, '0') + ':' + src.length.toString(16);
-}
-
-/**
- * Transform every ESM-shaped file in the bundle to CJS via esbuild.
- * Mutates `bundle` in place. Errors are swallowed (the file is left as
- * ESM source); the facet's pre-compile loop will record the SyntaxError
- * into __compileFailures and __loadModule will surface it (Fix C).
- *
- * Skips:
- *   - .json (esbuild can transform but there's no payoff and it's a
- *     no-op on our pre-compile loop too).
- *   - .cjs (already CJS; transform is a wash).
- *   - files that pass the regex sniff cleanly (heuristic: no top-level
- *     import/export → CJS-shaped already).
- *
- * Returns the count of files transformed (for diagnostics).
- */
-async function transformEsmInBundle(
-  bundle: Record<string, string>,
-  esbuild: EsbuildService,
-): Promise<{ transformed: number; failed: number }> {
-  let transformed = 0;
-  let failed = 0;
-  // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
-  const candidates: string[] = [];
-  for (const path of Object.keys(bundle)) {
-    if (!path.endsWith('.js') && !path.endsWith('.mjs')) continue;
-    const src = bundle[path];
-    if (!looksLikeEsm(src)) continue;
-    candidates.push(path);
-  }
-  for (const path of candidates) {
-    const src = bundle[path];
-    const key = __cacheKey(src);
-    const cached = __esmTransformCache.get(key);
-    if (cached) {
-      bundle[path] = cached;
-      transformed++;
-      continue;
-    }
-    try {
-      const t = await esbuild.transform(src, {
-        loader: 'js',
-        format: 'cjs',
-        target: 'esnext',
-      });
-      bundle[path] = t.code;
-      __esmTransformCache.set(key, t.code);
-      transformed++;
-    } catch {
-      // Leave the original ESM source. The pre-compile loop will record
-      // the SyntaxError into __compileFailures (Fix C) and __loadModule
-      // will surface it as "pre-compile failed at facet startup: ...".
-      failed++;
-    }
-  }
-  return { transformed, failed };
-}
-
-/**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
  * Replaces the legacy whole-tree-with-cap walk that pre-W2.5b shipped
@@ -800,19 +674,14 @@ async function transformEsmInBundle(
  * `const __MODULE_VFS_BUNDLE = ${JSON.stringify(bundle)}`, so workerd's
  * per-module text-size limit applies to the encoded form.
  *
- * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
- * If `esbuild` is not provided, the pass is skipped (preserves prior
- * behaviour for code paths that don't have esbuild handy).
- *
  * See audit/sections/W2.6-plan.md §3 (B1+ verdict + sub-agent review).
  */
-async function buildPrefetchBundle(
+function buildPrefetchBundle(
   vfs: SqliteVFS,
   scriptPath: string | undefined,
   cwd: string,
   entryCode: string,
-  esbuild?: EsbuildService,
-): Promise<FacetVfsState> {
+): FacetVfsState {
   // 1. Static reachable-set walk from entry.
   const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
   const bundle: Record<string, string> = { ...prefetch.bundle };
@@ -831,27 +700,6 @@ async function buildPrefetchBundle(
   const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState);
   totalBytes = budgetState.totalBytes;
   fileCount = budgetState.fileCount;
-
-  // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
-  //     .js/.mjs for top-level import/export, runs esbuild's CJS transform
-  //     on the matches, and replaces the value in-place. Without this,
-  //     ESM files (e.g. tldts/dist/es6/index.js, @remix-run/react/dist/esm,
-  //     @tailwindcss/vite, react-remove-scroll, astro) silently fail
-  //     `new Function` at facet startup and surface as the misleading
-  //     "file was not pre-bundled" at request time.
-  if (esbuild) {
-    try {
-      await transformEsmInBundle(bundle, esbuild);
-      // Recount bytes after the transform — CJS rebuilds can be larger
-      // OR smaller than the ESM source. We don't try to thread totalBytes
-      // through the transform because the eviction loop below recomputes
-      // the encoded size from scratch anyway.
-    } catch {
-      // Esbuild init / dispatch failure is non-fatal: the pre-compile
-      // loop will swallow the SyntaxError on each ESM file (Fix C
-      // surfaces it later via __compileFailures).
-    }
-  }
 
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
   //    from content cap so fs.readdirSync remains honest even if the
@@ -915,14 +763,6 @@ export class FacetManager {
   private _hasFacets: boolean | null = null;
   private _facetLogOnce = false;
   private hooks: FacetManagerHooks;
-  /**
-   * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
-   * over the prefetch bundle. Created on first exec where vfs is set;
-   * shared across subsequent execs (warm wasm).  Optional setter
-   * `setEsbuildService` lets NimbusSession share its existing instance
-   * to avoid double-init.
-   */
-  private esbuild: EsbuildService | null = null;
 
   constructor(
     ctx: DurableObjectState,
@@ -939,12 +779,6 @@ export class FacetManager {
   }
 
   setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
-  /**
-   * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
-   * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
-   * for the user-shell `node` runtime; sharing avoids paying init twice.
-   */
-  setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
   /**
    * Execute JS code in a facet (or fallback dynamic worker).
@@ -974,16 +808,8 @@ export class FacetManager {
       try { this.hooks.onSpawn?.(entry.pid, command, false); } catch {}
     }
 
-    // W3.5 Fix B: thread an EsbuildService into buildPrefetchBundle so
-    // ESM source files (e.g. tldts/dist/es6/index.js, @remix-run/react,
-    // @tailwindcss/vite, react-remove-scroll, astro) get transformed to
-    // CJS before they hit the facet's `new Function` pre-compile loop.
-    // Lazy-create one if NimbusSession didn't share its own.
-    if (this.vfs && !this.esbuild) {
-      try { this.esbuild = new EsbuildService(this.vfs as any); } catch { this.esbuild = null; }
-    }
     const vfsState: FacetVfsState = this.vfs
-      ? await buildPrefetchBundle(this.vfs, opts.filename, opts.cwd || '/home/user', code, this.esbuild || undefined)
+      ? buildPrefetchBundle(this.vfs, opts.filename, opts.cwd || '/home/user', code)
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
 
     try {

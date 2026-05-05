@@ -17,7 +17,6 @@ import {
 import {
   lookupSwap, lookupReject, shouldWarnSkipTransitive,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
-  emitRegistryEvent,
 } from './wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
@@ -548,29 +547,19 @@ export async function resolveTree(
         // W6: transitive registry — swap rewrites name in flight; reject
         // with transitive='fail' throws (matches top-level fail policy);
         // reject with transitive='warn' logs [skip] and drops.
-        // W6.5: each decision also emits a RegistryEvent for telemetry.
         let resolveName = name;
         const swap = lookupSwap(name);
         if (swap) {
           onProgress?.(formatSwapNotice(swap));
-          emitRegistryEvent({ type: 'swap', from: swap.from, to: swap.to, ctx: 'transitive' });
           resolveName = swap.to;
         } else {
           const warnSkip = shouldWarnSkipTransitive(name);
           if (warnSkip) {
             onProgress?.(formatTransitiveSkip(warnSkip));
-            emitRegistryEvent({ type: 'transitive-skip', from: warnSkip.from, reason: warnSkip.reason });
             return null;
           }
           const rejectFail = lookupReject(name);
           if (rejectFail && rejectFail.transitive === 'fail') {
-            emitRegistryEvent({
-              type: 'reject',
-              from: rejectFail.from,
-              reason: rejectFail.reason,
-              suggest: rejectFail.suggest,
-              ctx: 'transitive',
-            });
             throw new RegistryRejectError([rejectFail]);
           }
         }

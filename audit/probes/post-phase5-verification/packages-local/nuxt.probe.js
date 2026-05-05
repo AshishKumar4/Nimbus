@@ -1,1 +1,0 @@
-const m=require('nuxt');console.log('typeof:',typeof m)

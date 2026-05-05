@@ -1,1 +1,0 @@
-const m=require('fastify');const a=m();console.log('app title:',a.constructor && a.constructor.name)

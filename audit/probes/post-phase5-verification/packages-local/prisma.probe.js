@@ -1,1 +1,0 @@
-const m=require('prisma');console.log('typeof:',typeof m)

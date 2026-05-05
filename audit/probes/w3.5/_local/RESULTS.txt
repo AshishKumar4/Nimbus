@@ -1,7 +1,0 @@
-PHASE D — local integration test results (2026-05-05T01:17:15Z)
-
-PASS directory-as-index resolves to /index.js
-PASS ESM-transformed module exports named symbols
-PASS broken-syntax module surfaces real reason
-
-========== integration: 3 pass / 0 fail ==========

@@ -1,1 +1,0 @@
-const m=require('jest');console.log('typeof:',typeof m)

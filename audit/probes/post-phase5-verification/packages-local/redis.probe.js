@@ -1,1 +1,0 @@
-const m=require('redis');console.log('keys:',Object.keys(m).slice(0,8))

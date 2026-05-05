@@ -1,26 +1,0 @@
-Total: 33
-✅: 7
-⚠️: 19
-⛔: 7
-❌: 0
-❓: 0
-
-| Package | Status | Install | Runtime |
-|---|---|---|---|
-| `astro` | ⚠️ | added 230 pkgs, 8983 files | Error: Cannot load module 'home/user/app/node_modules/astro/dist/index.js': file was not pre-bundled. Add it to the VFS bundle. |
-| `axios` | ✅ | added 26 pkgs, 417 files | keys: ["constructor","request","_request","getUri","delete","get","head","options"] |
-| `bcrypt` | ⛔ | ❌ bcrypt — Native bcrypt; pure-JS bcryptjs has identical sync API but the require() name differs and Nimbus does not yet support `npm:` aliases. | Error: Cannot find module 'bcrypt' (from /home/user/app) |
-| `better-sqlite3` | ⛔ | ❌ better-sqlite3 — Native sqlite .node binding. | Error: Cannot find module 'better-sqlite3' (from /home/user/app) |
-| `drizzle-orm` | ✅ | added 1 pkgs, 2666 files | keys: ["ColumnAliasProxyHandler","RelationTableAliasProxyHandler","TableAliasProxyHandler","aliasedRelation","aliasedTable","aliasedTableColumn","mapColumnsInAliasedSQLToAlias","mapColumnsInSQLToAlias |
-| `express` | ⚠️ | added 68 pkgs, 628 files | Error: Object prototype may only be an Object or null: undefined |
-| `fastify` | ⚠️ | added 46 pkgs, 1928 files | Error: Cannot read module: home/user/app/node_modules/ret/dist/types |
-| `framer-motion` | ⚠️ | added 4 pkgs, 907 files | Error: Cannot find module 'react/jsx-runtime' (from home/user/app/node_modules/framer-motion/dist/cjs) |
-| `fsevents` | ⛔ | ❌ fsevents — macOS-only filesystem watcher; never runs in Workers. | Error: Cannot find module 'fsevents' (from /home/user/app) |
-| `jest` | ✅ | added 236 pkgs, 4823 files | typeof: object |
-| `jsdom` | ⚠️ | added 39 pkgs, 1800 files | Error: Cannot load module 'home/user/app/node_modules/tldts/dist/es6/index.js': file was not pre-bundled. Add it to the VFS bundle. |
-| `next` | ⚠️ | added 8 pkgs, 9374 files | Error: Cannot read properties of undefined (reading 'require') |
-| `node-canvas` | ⛔ | ❌ canvas — Native Cairo bindings. | Error: Cannot find module 'canvas' (from /home/user/app) |
-| `nuxt` | ⚠️ | added 428 pkgs, 10814 files | Error: Cannot find module 'nuxt' (from /home/user/app) |
-| `parcel` | ⚠️ | added 0 pkgs, 0 files | Error: Cannot find module 'parcel' (from /home/user/app) |
-| `pg` | ✅ | added 14 pkgs, 141 files | keys: ["defaults","Client","Query","Pool","_pools","Connection"] |
-| `prisma` | ⛔ | ❌ prisma — Native query engine; not portable to Workers in this configuration. | Error: Cannot find module 'prisma' (from /home/user/app) |

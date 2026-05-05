@@ -31,7 +31,6 @@ import {
 import {
   applySwaps, findRejects, lookupSwap,
   formatSwapNotice, RegistryRejectError,
-  emitRegistryEvent,
 } from './wasm-swap-registry.js';
 import { resolvePackageEntry } from './_shared/exports-resolver.js';
 import {
@@ -589,15 +588,6 @@ export class NpmInstaller {
 
     // Surface facet messages into the install log.
     for (const m of result.messages) log(m);
-    // W6.5: drain telemetry events the facet collected and forward to
-    // the registry sink. Defensive: older facet builds may not return
-    // the field, so handle missing/undefined gracefully.
-    const facetEvents = (result as any).registryEvents;
-    if (Array.isArray(facetEvents)) {
-      for (const ev of facetEvents) {
-        try { emitRegistryEvent(ev); } catch { /* sink errors swallowed inside emitRegistryEvent */ }
-      }
-    }
     // [W4] Fold packument R2 race outcomes into supervisor diag.r2.
     const rfc: any = result.facetCounters;
     recordR2RaceCounters({
@@ -969,22 +959,9 @@ export class NpmInstaller {
       // pattern); singling it out for try/catch here would be inconsistent
       // and could mask real bugs in the progress hook.
       this.onProgress?.(formatSwapNotice(s));
-      // W6.5: telemetry — fire-and-forget; sink swallows its own errors.
-      emitRegistryEvent({ type: 'swap', from: s.from, to: s.to, ctx: 'top' });
     }
     const rejects = findRejects(swapped, 'top');
     if (rejects.length > 0) {
-      // W6.5: emit one reject event per offending package BEFORE throwing,
-      // so the telemetry sink sees them even if the install aborts.
-      for (const r of rejects) {
-        emitRegistryEvent({
-          type: 'reject',
-          from: r.from,
-          reason: r.reason,
-          suggest: r.suggest,
-          ctx: 'top',
-        });
-      }
       throw new RegistryRejectError(rejects);
     }
     return swapped;

@@ -1,1 +1,0 @@
-const m=require('express');const a=m();console.log('app keys:',Object.keys(a).slice(0,6))

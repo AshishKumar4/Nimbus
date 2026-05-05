@@ -1,1 +1,0 @@
-const m=require('webpack');console.log('typeof:',typeof m)

@@ -1,1 +1,0 @@
-const m=require('ts-node');console.log('typeof:',typeof m)

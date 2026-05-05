@@ -1,1 +1,0 @@
-const m=require('parcel');console.log('typeof:',typeof m)
