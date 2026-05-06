@@ -1,0 +1,34 @@
+=== src/ skip-list confirmation ===
+  src/npm-resolver.ts SKIP_PACKAGES has 'tailwindcss'           : true
+  src/parallel/npm-resolve-preamble.ts __SKIP_PACKAGES has it   : true
+  src/npm-resolver.ts FRAMEWORK_REQUIRED_PACKAGES exempts it    : false
+  src/parallel/...    __FRAMEWORK_REQUIRED_PACKAGES exempts it  : false
+
+  tailwindcss enters SKIP at npm-resolver.ts:887
+
+=== @tailwindcss/node@4.2.4 deps ===
+dependencies: {
+  jiti: "^2.6.1",
+  tailwindcss: "4.2.4",
+  lightningcss: "1.32.0",
+  "magic-string": "^0.30.21",
+  "source-map-js": "^1.2.1",
+  "enhanced-resolve": "^5.19.0",
+  "@jridgewell/remapping": "^2.3.5",
+}
+peerDependencies: undefined
+peerDependenciesMeta: undefined
+optionalDependencies: undefined
+
+=== inspect @tailwindcss/node/dist/index.js for require("tailwindcss") ===
+  require("tailwindcss") match count: 1
+    line 1: require("tailwindcss")
+
+=== conclusion ===
+tailwindcss IS in SKIP_PACKAGES at src/npm-resolver.ts:887 and
+src/parallel/npm-resolve-preamble.ts:42. FRAMEWORK_REQUIRED_PACKAGES
+only exempts vite (line 903). @tailwindcss/node@4.2.4 has tailwindcss
+as a regular `dependencies` entry (not peer/optional), and its
+dist/index.js literally `require("tailwindcss")` at runtime. The
+install-time skip is a false-positive for Tailwind v4 (where
+tailwindcss became the runtime engine, not just a build CLI).

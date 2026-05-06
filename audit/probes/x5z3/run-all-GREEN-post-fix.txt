@@ -1,0 +1,17 @@
+── X.5-Z3 functional + regression ─────────────────────────
+[PASS] functional/f1-readfilesync-asset.mjs
+[PASS] functional/f2-asset-extensions.mjs
+[PASS] functional/f3-skip-dynamic.mjs
+[PASS] regression/r1-no-bundle-cap-blowup.mjs
+[PASS] regression/r2-vfs-not-found.mjs
+[PASS] regression/r3-existing-bundle-untouched.mjs
+── cross-wave guards ──────────────────────────────────────
+[PASS] ../x5f/regression/install-pipeline-coverage-shim.mjs
+[PASS] ../x5f/regression/single-resolver-source.mjs
+── heavy regressions skipped (NIMBUS_X5Z3_HEAVY=1 to run)
+── e2e (NIMBUS_X5Z3_E2E=1) ────────────────────────────────
+[PASS] e2e/e1-jsdom-loads.mjs
+[PASS] e2e/e2-jsdom-window.mjs
+[PASS] e2e/e3-tailwindcss-vite-pre-existing-fail.mjs
+
+──── x5z3 run-all: 11 pass / 0 fail

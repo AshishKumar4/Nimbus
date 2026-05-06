@@ -1,0 +1,57 @@
+── X.5-Z3 functional + regression ─────────────────────────
+[FAIL] functional/f1-readfilesync-asset.mjs
+    X.5-Z3 functional/f1-readfilesync-asset — static .css path.resolve(__dirname,...) gets prefetched
+      (TDD-RED) addStaticReadFileAssets is not exported from facet-manager.ts
+      ✗ addStaticReadFileAssets exists
+          expected named export from src/facet-manager.ts (added in Phase D)
+      ✗ asset.css would be in bundle after the new pass
+          pre-fix: asset is NOT in bundle (RED — confirms gap)
+    
+      ────  0 pass / 2 fail
+      failures:
+        - addStaticReadFileAssets exists: expected named export from src/facet-manager.ts (added in Phase D)
+        - asset.css would be in bundle after the new pass: pre-fix: asset is NOT in bundle (RED — confirms gap)
+    
+[FAIL] functional/f2-asset-extensions.mjs
+    X.5-Z3 functional/f2-asset-extensions — .css/.html/.txt/.svg all prefetched
+      (TDD-RED) addStaticReadFileAssets not exported
+      ✗ styles.css prefetched
+          pre-fix: not present (RED)
+      ✗ template.html prefetched
+          pre-fix: not present (RED)
+      ✗ README.txt prefetched
+          pre-fix: not present (RED)
+      ✗ icon.svg prefetched
+          pre-fix: not present (RED)
+    
+      ────  0 pass / 4 fail
+      failures:
+        - styles.css prefetched: pre-fix: not present (RED)
+        - template.html prefetched: pre-fix: not present (RED)
+        - README.txt prefetched: pre-fix: not present (RED)
+        - icon.svg prefetched: pre-fix: not present (RED)
+    
+[FAIL] functional/f3-skip-dynamic.mjs
+    X.5-Z3 functional/f3-skip-dynamic — dynamic forms safely skipped
+      (TDD-RED) addStaticReadFileAssets not exported
+      ✗ real.css prefetched (post-fix expectation)
+          RED: helper missing
+      ✓ foo.css NOT prefetched (template-literal)
+      ✓ bar.css NOT prefetched (variable)
+      ✓ baz.css NOT prefetched (concat)
+      ✓ comment.css NOT prefetched (in comment)
+    
+      ────  4 pass / 1 fail
+      failures:
+        - real.css prefetched (post-fix expectation): RED: helper missing
+    
+[PASS] regression/r1-no-bundle-cap-blowup.mjs
+[PASS] regression/r2-vfs-not-found.mjs
+[PASS] regression/r3-existing-bundle-untouched.mjs
+── cross-wave guards ──────────────────────────────────────
+[PASS] ../x5f/regression/install-pipeline-coverage-shim.mjs
+[PASS] ../x5f/regression/single-resolver-source.mjs
+── heavy regressions skipped (NIMBUS_X5Z3_HEAVY=1 to run)
+── e2e skipped (NIMBUS_X5Z3_E2E=1 to run; BASE=http://127.0.0.1:8787 required)
+
+──── x5z3 run-all: 5 pass / 3 fail

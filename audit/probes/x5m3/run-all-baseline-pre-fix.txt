@@ -1,0 +1,58 @@
+── X.5-M3 functional + regression ─────────────────────────
+[FAIL] functional/f1-url-null-base-current-module.mjs
+    # M3 marker present in shim source
+      NOT OK  source contains "X.5-M3" marker
+      NOT OK  URL shim references globalThis.__currentModulePath
+    # vite shape: __currentModulePath set, null-base relative URL
+      ok  inner URL composed
+      NOT OK  inner URL.href — actual="file:///src/node/constants.ts" expected="file:///node_modules/vite/src/node/constants.ts"
+      ok  outer URL composed
+      NOT OK  outer URL.href is real vite/package.json — actual="file:///package.json" expected="file:///node_modules/vite/package.json"
+    # null base also works
+      ok  null base accepted
+      NOT OK  null-base + relative resolves vs current module — actual="file:///neighbor.js" expected="file:///node_modules/vite/dist/node/chunks/neighbor.js"
+    # leading-slash __currentModulePath is normalized
+      ok  absolute __currentModulePath accepted
+      NOT OK  href has no double-slash — actual="file:///baz.js" expected="file:///node_modules/foo/baz.js"
+    
+    # f1-url-null-base-current-module: 4 passed, 6 failed
+    # failures:
+    #   - source contains "X.5-M3" marker
+    #   - URL shim references globalThis.__currentModulePath
+    #   - inner URL.href: actual="file:///src/node/constants.ts" expected="file:///node_modules/vite/src/node/constants.ts"
+    #   - outer URL.href is real vite/package.json: actual="file:///package.json" expected="file:///node_modules/vite/package.json"
+    #   - null-base + relative resolves vs current module: actual="file:///neighbor.js" expected="file:///node_modules/vite/dist/node/chunks/neighbor.js"
+    #   - href has no double-slash: actual="file:///baz.js" expected="file:///node_modules/foo/baz.js"
+    
+[PASS] functional/f2-url-null-base-no-context.mjs
+[FAIL] functional/f3-loadmodule-saves-restores.mjs
+      ok  __loadModule defined
+    # __loadModule prologue: save + assign __currentModulePath
+      NOT OK  saves prior __currentModulePath into a local
+      NOT OK  assigns globalThis.__currentModulePath = resolvedPath
+    # __loadModule epilogue: restore in finally
+      NOT OK  finally block restores __currentModulePath
+    # save+restore brackets the precompiled invocation
+      NOT OK  save is before precompiled call
+      NOT OK  restore is after precompiled call
+    # save+restore also brackets the new Function fallback
+      NOT OK  save is before new Function fallback
+      NOT OK  restore is after new Function fallback
+    
+    # f3-loadmodule-saves-restores: 1 passed, 7 failed
+    # failures:
+    #   - saves prior __currentModulePath into a local
+    #   - assigns globalThis.__currentModulePath = resolvedPath
+    #   - finally block restores __currentModulePath
+    #   - save is before precompiled call
+    #   - restore is after precompiled call
+    #   - save is before new Function fallback
+    #   - restore is after new Function fallback
+    
+[PASS] regression/install-pipeline-coverage-shim.mjs
+[PASS] regression/single-resolver-source.mjs
+[PASS] regression/cross-wave-x5-runalls.mjs
+── heavy regressions skipped (NIMBUS_X5M3_HEAVY=1 to run)
+── e2e skipped (NIMBUS_X5M3_E2E=1 to run; BASE=http://127.0.0.1:8787 required)
+
+──── x5m3 run-all: 4 pass / 2 fail

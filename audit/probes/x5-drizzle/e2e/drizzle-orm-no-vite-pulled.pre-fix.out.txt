@@ -1,0 +1,43 @@
+==== PROBE: x5-drizzle drizzle-orm-no-vite-pulled ====
+==== TIMESTAMP: 2026-05-06T08:29:42.554Z ====
+==== SID: fancy-whale-5828 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install drizzle-orm ----
+user@nimbus:~$ cd app && npm install drizzle-orm
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet failed: npm install rejected: lightningcss — Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.
+npm install failed: resolver-facet failed: npm install rejected: lightningcss — Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.
+user@nimbus:~/app$ 
+---- step done in 3003ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_motsqqzd.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKY29uc3QgcmVzdWx0ID0gewogIHZpdGU6IGZzLmV4aXN0c1N5bmMoTk0gKyAnL3ZpdGUnKSwKICBsaWdodG5pbmdjc3M6IGZzLmV4aXN0c1N5bmMoTk0gKyAnL2xpZ2h0bmluZ2NzcycpLAogIGRyaXp6bGVPcm06IGZzLmV4aXN0c1N5bmMoTk0gKyAnL2RyaXp6bGUtb3JtJyksCn07CmNvbnNvbGUubG9nKCctLS1OTS1NQVAtLS0nICsgSlNPTi5zdHJpbmdpZnkocmVzdWx0KSArICctLS1FTkQtTk0tTUFQLS0tJyk7Cg==' && node /tmp/p_1_motsqqzd.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_motsqqzd.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKY29uc3QgcmVzdWx0ID0gewogIHZpdGU6IGZzLmV4aXN0c1N5bmMoTk0gKyAnL3ZpdGUnKSwKICBsaWdodG5pbmdjc3M6IGZzLmV4aXN0c1N5bmMoTk0gKyAnL2xpZ2h0bmluZ2NzcycpLAogIGRyaXp6bGVPcm06IGZzLmV4aXN0c1N5bmMoTk0gKyAnL2RyaXp6bGUtb3JtJyksCn07CmNvbnNvbGUubG9nKCctLS1OTS1NQVAtLS0nICsgSlNPTi5zdHJpbmdpZnkocmVzdWx0KSArICctLS1FTkQtTk0tTUFQLS0tJyk7Cg==' && node /tmp/p_1_motsqqzd.js
+[facet started: pid=2 cmd="node /tmp/p_1_motsqqzd.js"]
+---NM-MAP---{"vite":false,"lightningcss":false,"drizzleOrm":false}---END-NM-MAP---
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_motsqqzd.js) exited with code 0
+────────────────────────────────────────────────────────────
+---NM-MAP---{"vite":false,"lightningcss":false,"drizzleOrm":false}---END-NM-MAP---
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: x5-drizzle drizzle-orm-no-vite-pulled ====

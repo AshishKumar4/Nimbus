@@ -1,0 +1,14 @@
+==== X5F R3 ESM-fallback functional probe ====
+==== TIMESTAMP: 2026-05-06T00:25:30.638Z ====
+test1 — CJS conds vs nuxt exports:    entry=null
+test2 — ESM conds vs nuxt exports:    entry="./dist/index.mjs"
+test3 — __resolvePkgSubpath (current) → null
+test4 — __resolvePkgSubpath (fixed)   → "node_modules/nuxt/dist/index.mjs"
+
+SUMMARY:
+  test1 CJS-yields-null:                    PASS
+  test2 ESM-yields-mjs:                     PASS
+  test3 __resolvePkgSubpath_current==null:  PASS
+  test4 __resolvePkgSubpath_fixed==mjs:     PASS
+test5 node-shims.ts has ESM-fallback:     PASS
+OVERALL: PASS

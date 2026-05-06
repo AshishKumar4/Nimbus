@@ -85,6 +85,24 @@ export const WASM_SWAPS: ReadonlyArray<SwapEntry> = [
       'Native esbuild not available in Workers; esbuild-wasm exposes the same build/transform/version/initialize API.',
     compat: 'drop-in',
   },
+  // X.5-G G2: rollup ships native platform shards as
+  // `optionalDependencies` (26 of them). On any host where the matching
+  // shard isn't present, rollup's own `native.js` throws the famous
+  // 'npm has a bug related to optional dependencies (#4828)'. Even
+  // when the matching shard IS installed, the .node binary cannot
+  // load in workerd. @rollup/wasm-node is the upstream-published
+  // pure-WASM build with byte-identical exports (verified via registry
+  // packument compare 2026-05-05; both ship `dist/rollup.js` with the
+  // same `exports` map). Drop-in swap.
+  {
+    from: 'rollup',
+    to: '@rollup/wasm-node',
+    reason:
+      'Native rollup uses optionalDependencies for 26 platform shards (npm CLI bug #4828) ' +
+      'and ships .node binaries that workerd cannot load. @rollup/wasm-node is the upstream ' +
+      'pure-WASM build with identical exports.',
+    compat: 'drop-in',
+  },
 ];
 
 export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
@@ -299,6 +317,34 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
     suggest:
       'canvaskit-wasm (Skia → WASM, canvas-API-compatible; untested by Nimbus) ' +
       'or @resvg/resvg-wasm (verified — see audit/probes/wasm/resvg-wasm.out.txt) for SVG.',
+    transitive: 'fail',
+  },
+
+  // ── X.5-26b additions: Tailwind v4 oxide + lightningcss native parents ─
+  // Both ship only platform-native .node bindings + a wasm32-wasi shard.
+  // workerd has no node:wasi (W6.5 hard limit), so neither path loads.
+  // Without these REJECT entries, both parents install fine and surface
+  // a misleading runtime error (npm-4828 fallthrough for oxide, detect-
+  // libc execSync gap for lightningcss). With transitive='fail', the
+  // install is loud-rejected at resolve time → ⚠ → ⛔ classifier flip.
+  // Investigation: audit/probes/x526b/investigation/{tailwindcss-oxide,lightningcss}.out.txt
+  // Plan: audit/sections/X526b-plan.md §3.1
+  // Functional probes: audit/probes/x526b/functional/{oxide,lightningcss}-rejected.mjs
+  // E2E probes: audit/probes/x526b/e2e/{oxide,lightningcss,tailwindcss-vite-transitive}-e2e.mjs
+  {
+    from: '@tailwindcss/oxide',
+    reason:
+      'Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings (linux-x64-gnu/musl, darwin-x64/arm64, freebsd-x64, win32-x64-msvc, etc.) plus a wasm32-wasi shard. workerd has no node:wasi (W6.5 hard limit; see audit/sections/07-workerd-hard-limits.md), and bare native bindings cannot dlopen. The parent index.js throws an npm-4828 message at runtime when no sibling shard loads.',
+    suggest:
+      'no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine.',
+    transitive: 'fail',
+  },
+  {
+    from: 'lightningcss',
+    reason:
+      'Native Rust CSS parser; ships platform-specific .node bindings + a wasm32-wasi-only `lightningcss-wasm` package (cpu=wasm32; npm refuses install on x64). workerd has no node:wasi (W6.5). Even before the binding load, the detect-libc dependency throws because child_process.execSync returns undefined inside workerd.',
+    suggest:
+      'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
     transitive: 'fail',
   },
 ];
@@ -544,6 +590,156 @@ export function emitRegistryEvent(e: RegistryEvent): void {
  */
 export function getSinkThrowCount(): number {
   return _sinkThrowCount;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// X.5-G: optional-dependencies semantics
+// ─────────────────────────────────────────────────────────────────────────
+//
+// npm 4828 / npm v7+ semantics for `optionalDependencies`:
+//   - Entries are best-effort. Failure to install one MUST NOT cause the
+//     parent install to fail.
+//   - Entries with `os`, `cpu`, or `libc` constraints that don't match the
+//     host MUST be silently skipped before any fetch attempt.
+//   - Entries whose `main` is a `.node` (Node.js N-API binary) cannot run
+//     in workerd (no dlopen) and must be silently skipped even on a
+//     matching platform.
+//
+// X.5-G adds:
+//   - `isOptionalNativeBinding(packument)`: heuristic to detect platform-
+//     native bindings (used to silent-skip from `optionalDependencies`).
+//   - `selectAutoInstallPeers(pkg)`: returns the subset of `peerDependencies`
+//     to auto-install (filters out optional-marked-in-meta, EXCEPT when
+//     called with `topLevel:true` per X5F R2.5 npm CLI default behaviour).
+//     Peer-meta-only entries (in `peerDependenciesMeta` but NOT in
+//     `peerDependencies`) are NEVER auto-installed.
+//   - `classifyInstallError(e, ctx)`: distinguishes recoverable
+//     optional-dep skip from real resolve failures and registry-rejects.
+
+/**
+ * Minimal shape of a registry packument entry that the helpers below
+ * consume. We don't pull from a stricter schema because the registry
+ * cache passes string-typed data with optional fields.
+ */
+export interface MinimalPackument {
+  name?: string;
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
+  main?: string;
+}
+
+// Known native-shard name globs. Matched as `prefix-` (so the parent
+// package name without a platform suffix never matches).
+const NATIVE_SHARD_PREFIXES: ReadonlyArray<string> = [
+  '@rollup/rollup-',
+  '@parcel/watcher-',
+  '@swc/core-',
+  '@next/swc-',
+  '@tailwindcss/oxide-',
+  '@img/sharp-',
+  '@napi-rs/canvas-',
+  '@biomejs/cli-',
+  '@esbuild/',
+];
+
+/**
+ * Heuristic: does this packument represent a platform-native binding
+ * that workerd cannot load?
+ *
+ * Returns true when ANY of:
+ *   - `os`, `cpu`, or `libc` field is non-empty (npm spec platform
+ *     constraints — package is opting out of cross-platform installs).
+ *   - `main` ends in `.node` (Node.js N-API binary, not workerd-loadable).
+ *   - name matches a known native-shard glob (see NATIVE_SHARD_PREFIXES).
+ *
+ * Returns false for pure-JS packages, parent wrappers (e.g. the
+ * non-platform `@parcel/watcher` itself), and packuments with empty
+ * platform-constraint arrays.
+ *
+ * X.5-G G1: the resolver consults this on every packument fetched from
+ * a transitive `optionalDependencies` entry. Returns-true → silent-skip
+ * (emit a `transitive-skip` RegistryEvent, drop the package from the
+ * resolved tree).
+ */
+export function isOptionalNativeBinding(p: MinimalPackument): boolean {
+  if (!p) return false;
+  if (Array.isArray(p.os) && p.os.length > 0) return true;
+  if (Array.isArray(p.cpu) && p.cpu.length > 0) return true;
+  if (Array.isArray(p.libc) && p.libc.length > 0) return true;
+  if (typeof p.main === 'string' && /\.node$/.test(p.main)) return true;
+  if (typeof p.name === 'string') {
+    for (const prefix of NATIVE_SHARD_PREFIXES) {
+      // Require the prefix-then-something-else shape. The parent package
+      // (e.g. `@parcel/watcher`, `@rollup/wasm-node`) does not match.
+      if (p.name.startsWith(prefix) && p.name.length > prefix.length) {
+        // Carve out @rollup/wasm-node: it's the WASM build, not a native shard.
+        if (p.name === '@rollup/wasm-node') return false;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Select which entries in `peerDependencies` should be auto-installed.
+ *
+ * npm v7+ default behaviour:
+ *   - All `peerDependencies` entries auto-install.
+ *   - Entries marked `optional: true` in `peerDependenciesMeta` STILL
+ *     auto-install (with `--include=peer` default-on) — but tools may
+ *     opt-out with `--no-include=peer`.
+ *   - Entries that exist ONLY in `peerDependenciesMeta` (NOT in
+ *     `peerDependencies`) are NEVER auto-installed (they're feature-
+ *     detect signals, e.g. ts-jest's `esbuild`).
+ *
+ * X.5-G strict mode (the default here): we only iterate `peerDependencies`
+ * keys. peer-meta-only entries are excluded by construction.
+ *
+ * The `requiredOnly` flag, when true, also filters out entries marked
+ * optional in meta — used for transitive (depth>0) enqueue per X5F R2.
+ * When false (top-level / X5F R2.5), all `peerDependencies` entries are
+ * returned including optional-marked-in-meta ones (npm CLI default).
+ */
+export function selectAutoInstallPeers(
+  pkg: {
+    peerDependencies?: Record<string, string>;
+    peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  },
+  opts: { requiredOnly?: boolean } = {},
+): string[] {
+  const peers = pkg.peerDependencies || {};
+  const meta = pkg.peerDependenciesMeta || {};
+  const out: string[] = [];
+  for (const name of Object.keys(peers)) {
+    if (opts.requiredOnly && meta[name]?.optional) continue;
+    out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Classification of an install-time error so the supervisor can decide
+ * whether to swallow (recoverable) or propagate (real fail).
+ *
+ *   - 'optional-dep-skip'  — the failed package was an entry in
+ *                            `optionalDependencies`; skip silently.
+ *   - 'registry-reject'    — RegistryRejectError (W6 known-bad package).
+ *   - 'real-resolve-fail'  — anything else; propagate.
+ */
+export type InstallErrorClass =
+  | 'optional-dep-skip'
+  | 'registry-reject'
+  | 'real-resolve-fail';
+
+export function classifyInstallError(
+  e: unknown,
+  ctx: { isOptional?: boolean } = {},
+): InstallErrorClass {
+  if (isRegistryReject(e)) return 'registry-reject';
+  if (ctx.isOptional) return 'optional-dep-skip';
+  return 'real-resolve-fail';
 }
 
 // ─────────────────────────────────────────────────────────────────────────

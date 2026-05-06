@@ -1,0 +1,24 @@
+==== X5F R2 peerdep-resolution functional probe ====
+==== TIMESTAMP: 2026-05-06T00:25:30.552Z ====
+
+--- test 1: fake-radix-dialog (top-level) ---
+resolved names: ["@types/react","aria-hidden","fake-radix-dialog","loose-envify","react","react-dom","scheduler"]
+t1a fake-radix-dialog resolved:           PASS
+t1b react peer enqueued:                  PASS
+t1c react-dom peer enqueued:              PASS
+t1d @types/react (optional, top-level):   PASS
+
+--- test 2: fake-ts-jest ---
+resolved names: ["fake-ts-jest","jest","jest-util","typescript"]
+t2a fake-ts-jest resolved:         PASS
+t2b typescript peer (over-skip):   PASS
+t2c jest peer enqueued:            PASS
+
+--- test 3: fake-radix-dialog as transitive ---
+resolved names: ["aria-hidden","fake-app-wrapper","fake-radix-dialog","loose-envify","react","react-dom","scheduler"]
+t3a fake-app-wrapper resolved:               PASS
+t3b fake-radix-dialog transitive resolved:   PASS
+t3c react/react-dom (required peers) install:PASS
+t3d @types/react (optional, transitive) skip:PASS
+
+OVERALL: PASS

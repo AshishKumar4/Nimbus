@@ -189,13 +189,32 @@ import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 
 const USER_CODE = ${safeCode};
-const __compiledFn = new Function(
-  "exports", "require", "module", "__filename", "__dirname",
+
+// X.5-S: conditional-param-rename wrap for new Function. esbuild ESM→CJS
+// transform output (W3.5 Fix B) preserves any source-level
+// \`const __dirname = path.dirname(fileURLToPath(import.meta.url))\` line
+// (vite's open@10 idiom), which collides at parse time with a hardcoded
+// \`__dirname\` parameter. Rename the \`__filename\` / \`__dirname\` slot to
+// a placeholder when the body declares it — slot alignment is preserved
+// (callers pass 5 positional args; dropping would mis-align downstream
+// slots like \`console\` / \`process\` in the USER_CODE wrap), and the
+// body's own binding becomes the single declarer.
+// See VERIFY-23417C5 §4 #1, audit/sections/X5S-plan.md §3.
+function __mkCompiledFn(code, extraParams) {
+  const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
+  const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
+  const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
+  const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
+  const params = ["exports", "require", "module", fnName, dnName];
+  if (extraParams) for (const p of extraParams) params.push(p);
+  return new Function(...params, code);
+}
+
+const __compiledFn = __mkCompiledFn(USER_CODE, [
   "console", "process", "Buffer",
   "setTimeout", "setInterval", "clearTimeout", "clearInterval",
   "global", "__args",
-  USER_CODE
-);
+]);
 
 // VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
 // __MODULE_VFS_BUNDLE   = capped path→content (workerd module-size budget).
@@ -212,7 +231,8 @@ const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
-      __compiledModules.set(__p, new Function("exports","require","module","__filename","__dirname", __c));
+      // X.5-S: conditional-param-rename via __mkCompiledFn — see helper above.
+      __compiledModules.set(__p, __mkCompiledFn(__c));
     } catch (__e) {
       __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
     }
@@ -377,13 +397,25 @@ function generateEntrypointCode(userCode: string, vfsState: FacetVfsState): stri
 ${REAL_NODE_IMPORTS}
 
 const USER_CODE = ${safeCode};
-const __compiledFn = new Function(
-  "exports", "require", "module", "__filename", "__dirname",
+
+// X.5-S: conditional-param-rename wrap. Kept byte-equivalent to
+// generateFacetCode's helper so both pre-compile loops see the same
+// diagnostic surface. See generateFacetCode for the rationale.
+function __mkCompiledFn(code, extraParams) {
+  const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
+  const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
+  const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
+  const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
+  const params = ["exports", "require", "module", fnName, dnName];
+  if (extraParams) for (const p of extraParams) params.push(p);
+  return new Function(...params, code);
+}
+
+const __compiledFn = __mkCompiledFn(USER_CODE, [
   "console", "process", "Buffer",
   "setTimeout", "setInterval", "clearTimeout", "clearInterval",
   "global", "__args",
-  USER_CODE
-);
+]);
 
 // VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
 // See generateFacetCode for the rationale; this is the fallback (LOADER.load)
@@ -397,7 +429,8 @@ const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
-      __compiledModules.set(__p, new Function("exports","require","module","__filename","__dirname", __c));
+      // X.5-S: conditional-param-rename via __mkCompiledFn — see helper above.
+      __compiledModules.set(__p, __mkCompiledFn(__c));
     } catch (__e) {
       __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
     }
@@ -590,7 +623,12 @@ function buildManifest(vfs: SqliteVFS, cwd: string): Record<string, string[]> {
  * per package — sub-agent §Q3 quantified the worst-case cumulative
  * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
  */
-function greedyAddMainEntries(
+// X.5-C: exported so audit/probes/x5c/functional/f2-hash-chunk-greedy.mjs
+// can verify the hash-chunk + shared/ oversample directly. Pre-X.5-C this
+// was a file-local helper. Adding the named export is a pure surface
+// addition — no callers other than buildPrefetchBundle (same file) and
+// the new probe.
+export function greedyAddMainEntries(
   vfs: SqliteVFS,
   cwd: string,
   bundle: Record<string, string>,
@@ -620,6 +658,22 @@ function greedyAddMainEntries(
     } catch { return false; }
   }
 
+  // X.5-C Fix #2 helper: walk a (possibly nested) exports value and
+  // collect every string-leaf path. unbuild-shaped packages like pathe
+  // nest two deep — `exports."."`.{require,import}.{types,default} —
+  // and the previous one-level loop only caught the inner string leaves
+  // when default was at the top, missing the unbuild shape entirely.
+  function collectExportLeaves(node: any, out: Set<string>): void {
+    if (typeof node === 'string') { out.add(node); return; }
+    if (!node || typeof node !== 'object') return;
+    // Order matters for the "most likely usable" leaf: prefer require
+    // (most CJS-friendly), then default, then node, then import. We add
+    // ALL of them to the candidate set — addPkgEntry will probe each.
+    for (const k of ['require', 'node', 'default', 'import']) {
+      if (k in node) collectExportLeaves(node[k], out);
+    }
+  }
+
   function addPkgEntry(pkgDir: string) {
     addOne(pkgDir + '/package.json');
     let meta: any;
@@ -633,13 +687,12 @@ function greedyAddMainEntries(
       if (typeof exp === 'string') candidates.add(exp);
       else if (exp && typeof exp === 'object') {
         const dot = (exp as any)['.'];
-        if (typeof dot === 'string') candidates.add(dot);
-        else if (dot && typeof dot === 'object') {
-          for (const k of ['require', 'node', 'default', 'import']) {
-            const v = (dot as any)[k];
-            if (typeof v === 'string') candidates.add(v);
-          }
-        }
+        // X.5-C Fix #2: walk nested condition trees recursively. Without
+        // this, packages with two-level exports (pathe, magic-string,
+        // most unbuild-emitted libs) miss their actual entry leaf and
+        // greedyAddMainEntries falls back to /index.js probing — which
+        // doesn't exist for those packages.
+        collectExportLeaves(dot, candidates);
       }
     }
     if (candidates.size === 0) candidates.add('index.js');
@@ -654,7 +707,57 @@ function greedyAddMainEntries(
           if (addOne(candidate)) { landed = true; break; }
         }
       }
-      if (landed) break;
+      if (landed) {
+        // X.5-C Fix #2: when an entry lands, also pull in sibling files
+        // that match unbuild's hash-chunk pattern (`<base>.<hash>.cjs|mjs|js`)
+        // AND walk one level into a `shared/` subdir if the package has
+        // one. The unbuild bundler emits chunked CJS like:
+        //   dist/index.cjs        (entry)
+        //   dist/shared/<base>.<hash>.cjs  (chunk required by entry)
+        //
+        // Without this, even when Fix #1 lets the prefetch walker reach
+        // the entry, the package's required chunks land OUTSIDE the
+        // walker's MAX_FILES/MAX_BYTES budget on big trees (nuxt 516
+        // pkgs / 10k+ files). The greedy oversample is the defensive
+        // safety net for hash-chunk reachability.
+        const entryDir = base.replace(/\/[^/]+$/, '');
+        try {
+          const sibs = vfs.readdir(entryDir);
+          for (const sib of sibs) {
+            if (sib.type !== 'file') continue;
+            // Hash-chunk pattern: <name>.<hash>.<cjs|mjs|js>. Hash must
+            // be 6+ chars AND look like a hash, not an English word —
+            // either contain digits/underscore/dash, or contain BOTH
+            // uppercase AND lowercase letters (real bundler hashes are
+            // mixed-case base64-shaped: `BSlhyZSM`, `M-eThtNZ`, ...). This
+            // discriminator keeps us from false-positiving on common
+            // suffixes that happen to be 6+ chars all-lowercase like
+            // `minified`, `modern`, `production`, `compiled`.
+            const hashMatch = sib.name.match(/\.([A-Za-z0-9_-]{6,})\.(cjs|mjs|js)$/);
+            if (!hashMatch) continue;
+            const seg = hashMatch[1];
+            const hasDigitOrDash = /[0-9_-]/.test(seg);
+            const hasMixedCase = /[A-Z]/.test(seg) && /[a-z]/.test(seg);
+            if (!hasDigitOrDash && !hasMixedCase) continue;
+            addOne(entryDir + '/' + sib.name);
+          }
+          // Walk one level into `shared/` — unconditionally, since the
+          // pattern is well-known across unbuild/rolldown/rollup chunked
+          // outputs. Bounded by addOne's budget checks; readdir of a
+          // typical shared/ dir returns 1-5 files.
+          const sharedDir = entryDir + '/shared';
+          const sharedStripped = sharedDir.replace(/^\/+/, '');
+          if (vfs.exists(sharedStripped) && vfs.isDirectory(sharedStripped)) {
+            for (const sh of vfs.readdir(sharedDir)) {
+              if (sh.type !== 'file') continue;
+              if (!/\.(cjs|mjs|js)$/.test(sh.name)) continue;
+              addOne(sharedDir + '/' + sh.name);
+            }
+          }
+        } catch { /* unreadable dir — drop sibling oversample, entry
+                       file is enough */ }
+        break;
+      }
     }
   }
 
@@ -673,6 +776,137 @@ function greedyAddMainEntries(
       }
     }
   } catch { /* ignore */ }
+  return { added };
+}
+
+/**
+ * X.5-Z3: scan every JS source already in `bundle` for static
+ * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
+ * the matched asset files (.css / .html / .htm / .svg / .txt / .json)
+ * into the bundle. The motivating case is jsdom's
+ * `lib/jsdom/living/css/helpers/computed-style.js:16-19`, which loads
+ * `default-stylesheet.css` at module-eval time:
+ *
+ *   const defaultStyleSheet = fs.readFileSync(
+ *     path.resolve(__dirname, "../../../browser/default-stylesheet.css"),
+ *     { encoding: "utf-8" },
+ *   );
+ *
+ * The fs shim's `readFileSync` (`src/node-shims.ts:202-215`) consults
+ * only `__vfsBundle` + `__vfsWrites`; runtime asset files that the
+ * require-graph walker doesn't reach (it's bounded to .js/.mjs/.cjs)
+ * are absent from the bundle and ENOENT at runtime. This helper closes
+ * that gap as a sibling of `greedyAddMainEntries` (W2.6a) +
+ * `transformEsmInBundle` (W3.5 Fix B).
+ *
+ * Pattern matched: literal-only, conservative.
+ *
+ *   fs.readFileSync(path.resolve(__dirname, "<rel>"), …)
+ *   readFileSync(path.resolve(__dirname, "<rel>"), …)
+ *
+ * `<rel>` is a string literal (single, double, OR backtick — provided
+ * the backtick form has no `${}` interpolation). Template-literal,
+ * variable, and concatenation forms are **deliberately skipped** —
+ * they're an unbounded class. Comment-stripped first to avoid
+ * matching the pattern inside `//` / `/* *​/`.
+ *
+ * Returns the count of asset files added (for diagnostics). Errors
+ * are swallowed: missing assets, unreadable VFS, and non-string
+ * readFile inputs are silent skips.
+ *
+ * Same budget shape as `greedyAddMainEntries` — shares the same
+ * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
+ * `budgetState` counter.
+ */
+export function addStaticReadFileAssets(
+  vfs: SqliteVFS,
+  cwd: string,
+  bundle: Record<string, string>,
+  budgetState: { totalBytes: number; fileCount: number },
+): { added: number } {
+  let added = 0;
+  // Asset extensions covered. Conservative whitelist — txt/json are
+  // also legit runtime-loaded assets (e.g. mime-db json, license.txt).
+  // .json is already typically reachable via `require('./x.json')` so
+  // it's mostly defensive here.
+  const ASSET_EXT = /\.(css|html|htm|svg|txt|json)$/i;
+  // Match the static-literal shape. The capture groups are:
+  //   1 = the relative path string literal contents (no quote chars).
+  // Shape:
+  //   readFileSync(  path.resolve(  __dirname  ,  "rel"  )
+  //   fs.readFileSync(path.resolve(__dirname, "rel"), …)
+  //   node:path / "node:path" forms also covered by allowing optional
+  //   leading `\w+\.` prefix on the resolve target.
+  // Quote chars supported: ' " `. For backtick we additionally check
+  // there's no `${` in the captured body (template-literal interpolation
+  // is rejected).
+  const RX = /(?:\bfs\s*\.)?readFileSync\s*\(\s*(?:[\w$.]+\s*\.\s*)?resolve\s*\(\s*__dirname\s*,\s*(['"`])([^'"`]+)\1\s*[\),]/g;
+
+  function addOneAsset(absPath: string): boolean {
+    const stripped = absPath.replace(/^\/+/, '');
+    if (stripped in bundle) return false;
+    if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
+    if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
+    try {
+      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+      const content = vfs.readFileString(stripped);
+      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return false;
+      bundle[stripped] = content;
+      budgetState.totalBytes += content.length;
+      budgetState.fileCount++;
+      added++;
+      return true;
+    } catch { return false; }
+  }
+
+  // Snapshot the keys first — we mutate `bundle` during the loop.
+  const sourceKeys = Object.keys(bundle).filter((k) =>
+    k.endsWith('.js') || k.endsWith('.mjs') || k.endsWith('.cjs'),
+  );
+
+  for (const sourcePath of sourceKeys) {
+    const src = bundle[sourcePath];
+    if (!src || src.length === 0) continue;
+    // Strip line + block comments before regex-matching so the pattern
+    // doesn't fire inside `// fs.readFileSync(...)` etc.
+    const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    // Quick reject: skip files that don't even contain readFileSync.
+    if (stripped.indexOf('readFileSync') < 0) continue;
+    const sourceDir = sourcePath.includes('/')
+      ? sourcePath.substring(0, sourcePath.lastIndexOf('/'))
+      : '';
+    RX.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = RX.exec(stripped)) !== null) {
+      const quote = match[1];
+      const rel = match[2];
+      // Reject template-literal interpolation inside backticks.
+      if (quote === '`' && rel.indexOf('${') >= 0) continue;
+      // Reject any form that looks dynamic (defensive — RX already
+      // requires literal but absolute paths starting with `/` would
+      // bypass the __dirname-relative semantics; allow them since
+      // they're literal and unambiguous).
+      if (!ASSET_EXT.test(rel)) continue;
+      // Resolve relative to the source file's directory (the runtime's
+      // __dirname for that source). Match runtime resolution: leading
+      // `./` strips, `..` walks up.
+      let resolved: string;
+      if (rel.startsWith('/')) {
+        resolved = rel.replace(/^\/+/, '');
+      } else {
+        const parts = (sourceDir + '/' + rel).split('/');
+        const out: string[] = [];
+        for (const seg of parts) {
+          if (seg === '' || seg === '.') continue;
+          if (seg === '..') { if (out.length > 0) out.pop(); continue; }
+          out.push(seg);
+        }
+        resolved = out.join('/');
+      }
+      addOneAsset(resolved);
+    }
+  }
+
   return { added };
 }
 
@@ -697,11 +931,17 @@ function looksLikeEsm(src: string): boolean {
   // Cheap comment strip. Not a full parser — enough to avoid the
   // common false positives ("// import X" or `/* export */`).
   const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  // import STATEMENT: `^\s*import\s+(string|identifier|*|{)`. Skips
-  // dynamic `import(...)` (which is fine in CJS).
-  const importStmt = /(^|\n)\s*import\s+(['"][^'"]+['"]|[\w*$]|\{)/;
-  // export STATEMENT: `^\s*export\s+(default|{|*|let|const|var|function|class|async|type)`.
-  const exportStmt = /(^|\n)\s*export\s+(default\b|\{|\*|let\b|const\b|var\b|function\b|class\b|async\b|type\b)/;
+  // import STATEMENT: catches `^...import...`, `\n...import...`,
+  // `;import...` (post-statement on same line), `}import...` (post-block).
+  // Trailing `[\s{]` catches the no-whitespace minified form `import{...}from"..."`
+  // shipped by @tailwindcss/vite/dist/index.mjs and other minified ESM bundles.
+  // Skips dynamic `import(...)` (which is fine in CJS) because `(` ∉ `[\s{]`.
+  // See audit/sections/X5Z5-plan.md §3 (both relaxations needed: leading
+  // anchor [\n;}] AND trailing [\s{]).
+  const importStmt = /(^|[\n;}])\s*import[\s{]/;
+  // export STATEMENT: same dual relaxation. Trailing `[\s{*]` covers
+  // `export ` (whitespace), `export{` (no-ws minified), and `export*`.
+  const exportStmt = /(^|[\n;}])\s*export[\s{*]/;
   return importStmt.test(stripped) || exportStmt.test(stripped);
 }
 
@@ -829,6 +1069,21 @@ async function buildPrefetchBundle(
   //    regex prefetch misses. Bounded by VFS_BUNDLE_MAX_BYTES.
   const budgetState = { totalBytes, fileCount };
   const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState);
+  totalBytes = budgetState.totalBytes;
+  fileCount = budgetState.fileCount;
+
+  // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
+  //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
+  //
+  //        fs.readFileSync(path.resolve(__dirname, "<rel>.css"), …)
+  //
+  //      and pulls the matched asset into the bundle. Without this,
+  //      `default-stylesheet.css` (and similar runtime asset reads in
+  //      tldts, parse5, lookup-table packages, mime-db, etc.) ENOENT
+  //      at facet runtime even though the file is on VFS-disk + in
+  //      the manifest. See audit/sections/X5Z3-plan.md §3.
+  const assetAdd = addStaticReadFileAssets(vfs, cwd, bundle, budgetState);
+  void assetAdd;
   totalBytes = budgetState.totalBytes;
   fileCount = budgetState.fileCount;
 

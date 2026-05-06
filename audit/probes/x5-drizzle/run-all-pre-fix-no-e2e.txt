@@ -1,0 +1,140 @@
+==== X5-DRIZZLE RUN-ALL ====
+==== 2026-05-06T08:23:54.794Z ====
+
+==== detect-aware-on-starter ====
+$ bun audit/probes/x5-drizzle/functional/detect-aware-on-starter.mjs
+# starter-shape pkg.json triggers detectFramework=vite (step 8)
+  ok  detector returns framework=vite
+  ok  detector returns devCommand=vite-real
+# frameworkAware decision (post-fix RED→GREEN)
+  NOT OK  frameworkAware === false (post-fix; pre-fix this assertion FAILS) — aware=true — when this fails RED, it means src/npm-installer.ts:detectFrameworkAware still returns aware=true for generic-vite (pre-fix shape).
+
+# x5-drizzle/functional/detect-aware-on-starter: 2 passed, 1 failed
+# failures:
+#   - frameworkAware === false (post-fix; pre-fix this assertion FAILS): aware=true — when this fails RED, it means src/npm-installer.ts:detectFrameworkAware still returns aware=true for generic-vite (pre-fix shape).
+
+EXIT=1
+
+==== detect-aware-preserves-frameworks ====
+$ bun audit/probes/x5-drizzle/functional/detect-aware-preserves-frameworks.mjs
+# W11-preserved: next.js
+  ok    framework=next
+  ok    frameworkAware === true (under current src)
+# W11-preserved: astro
+  ok    framework=astro
+  ok    frameworkAware === true (under current src)
+# W11-preserved: nuxt
+  ok    framework=nuxt
+  ok    frameworkAware === true (under current src)
+# W11-preserved: remix v2
+  ok    framework=remix
+  ok    frameworkAware === true (under current src)
+# W11-preserved: sveltekit
+  ok    framework=sveltekit
+  ok    frameworkAware === true (under current src)
+# W11-preserved: wrangler-on-fw (sk+wrangler)
+  ok    framework=sveltekit
+  ok    frameworkAware === true (under current src)
+# W11-preserved: wrangler-standalone
+  ok    framework=wrangler
+  ok    frameworkAware === true (under current src)
+
+# x5-drizzle/functional/detect-aware-preserves-frameworks: 14 passed, 0 failed
+
+EXIT=0
+
+==== installer-detect-source-shape ====
+$ bun audit/probes/x5-drizzle/functional/installer-detect-source-shape.mjs
+# npm-installer.ts:detectFrameworkAware contains post-fix clause
+  ok  detectFrameworkAware result block located
+  ok  return statement after detectFramework located
+  NOT OK  expr = "result.framework !== 'unknown' && result.framework !== 'vite'" — actual expr: result.framework !== 'unknown'
+# comment references X.5-drizzle / lightningcss cascade rationale
+  NOT OK  rationale comment present near return — no rationale ref (X.5-drizzle / lightningcss / generic-vite / real-vite is bundled)
+
+# x5-drizzle/functional/installer-detect-source-shape: 2 passed, 2 failed
+# failures:
+#   - expr = "result.framework !== 'unknown' && result.framework !== 'vite'": actual expr: result.framework !== 'unknown'
+#   - rationale comment present near return: no rationale ref (X.5-drizzle / lightningcss / generic-vite / real-vite is bundled)
+
+EXIT=1
+
+==== single-resolver-source ====
+$ bun audit/probes/x5-drizzle/regression/single-resolver-source.mjs
+==== X5F single-resolver-source regression probe ====
+==== TIMESTAMP: 2026-05-06T08:23:54.947Z ====
+grep matches: ["/workspace/worktrees/x5-drizzle/src/_shared/exports-resolver.ts","/workspace/worktrees/x5-drizzle/src/real-vite-bundle.generated.ts"]
+  /workspace/worktrees/x5-drizzle/src/real-vite-bundle.generated.ts: has the substring but no export-function declaration
+real TS impls: ["/workspace/worktrees/x5-drizzle/src/_shared/exports-resolver.ts"]
+exactly-one-impl:                PASS
+impl is _shared/exports-resolver.ts: PASS
+OVERALL: PASS
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5-drizzle/regression/install-pipeline-coverage-shim.mjs
+==== X5F install-pipeline-coverage shim regression ====
+==== TIMESTAMP: 2026-05-06T08:23:55.098Z ====
+BASE=http://127.0.0.1:8787
+!! BASE unreachable — SKIP. Phase D will start wrangler dev.
+
+EXIT=0
+
+==== w11-frameworks-still-detect ====
+$ bun audit/probes/x5-drizzle/regression/w11-frameworks-still-detect.mjs
+==== W11 detect probes (run via X.5-drizzle regression shim) ====
+  PASS  audit/probes/w11/functional/detect-next.mjs
+  PASS  audit/probes/w11/functional/detect-astro.mjs
+  PASS  audit/probes/w11/functional/detect-nuxt.mjs
+  PASS  audit/probes/w11/functional/detect-remix.mjs
+  PASS  audit/probes/w11/functional/detect-sveltekit.mjs
+  PASS  audit/probes/w11/functional/detect-wrangler.mjs
+  PASS  audit/probes/w11/functional/detect-wrangler-on-framework.mjs
+  PASS  audit/probes/w11/functional/detect-vite-generic.mjs
+  PASS  audit/probes/w11/functional/detect-precedence.mjs
+  PASS  audit/probes/w11/functional/detect-remix-bare-react.mjs
+  PASS  audit/probes/w11/functional/detect-unknown.mjs
+  PASS  audit/probes/w11/functional/shim-modules-loadable.mjs
+
+Total: 12 pass / 0 fail (out of 12)
+
+EXIT=0
+
+==== w11-vite-generic-still-detects-as-vite ====
+$ bun audit/probes/x5-drizzle/regression/w11-vite-generic-still-detects-as-vite.mjs
+# detect-vite-generic invariant
+  ok  framework=vite
+  ok  devCommand=vite-real
+  ok  confidence is 0.7 (step 8)
+  ok  reason mentions vite
+
+# x5-drizzle/regression/w11-vite-generic-still-detects-as-vite: 4 passed, 0 failed
+
+EXIT=0
+
+==== mossaic-regression-coverage ====
+$ bun audit/probes/x5-drizzle/regression/mossaic-regression-coverage.mjs
+# Mossaic-shape detector verdict + post-fix awareness
+  ok  detector framework=vite
+  ok  detector devCommand=vite-real
+  NOT OK  frameworkAware === false (W11-retro §4 #8 stated intent) — aware=true — pre-fix this fails because npm-installer.ts:detectFrameworkAware returns true for any non-unknown framework.
+
+# x5-drizzle/regression/mossaic-regression-coverage: 2 passed, 1 failed
+# failures:
+#   - frameworkAware === false (W11-retro §4 #8 stated intent): aware=true — pre-fix this fails because npm-installer.ts:detectFrameworkAware returns true for any non-unknown framework.
+
+EXIT=1
+
+==== SKIPPING E2E (BASE not set or --no-e2e flag) ====
+==== SUMMARY ====
+  FAIL  detect-aware-on-starter
+  PASS  detect-aware-preserves-frameworks
+  FAIL  installer-detect-source-shape
+  PASS  single-resolver-source
+  PASS  install-pipeline-coverage-shim
+  PASS  w11-frameworks-still-detect
+  PASS  w11-vite-generic-still-detects-as-vite
+  FAIL  mossaic-regression-coverage
+
+Total: 5 pass, 3 fail (out of 8)

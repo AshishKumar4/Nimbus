@@ -1,0 +1,102 @@
+==== PROBE: i2-vfs-inspection ====
+==== TIMESTAMP: 2026-05-05T23:13:50.728Z ====
+==== SID: smart-robin-2755 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install jsdom ----
+user@nimbus:~$ cd app && npm install jsdom
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm] [resolve-facet] [skip] canvas — optional peer in REJECT_INSTALL: canvas — Native Cairo bindings.
+[npm]   resolver-facet: 39 resolved, 39 packuments fetched (12.2 MiB), peak in-flight=0, cache writes=193, R2 packument cache wins=39/39, elapsed=0.2s
+[npm] Resolved 39 packages.
+[npm] To fetch: 39, to restore: 0, already installed: 0
+[npm] Fetching 39 packages... (path: batch-facet)
+[npm] Dispatching 39 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 39/39 packages, 1800 files, 3.8 MiB tarball bytes, peak in-flight=3, R2 cache wins=39/39, 1.6s
+[npm] Done! 39 packages, 1800 files in 1.8s
+
+added 39 packages (1800 files) in 1.8s
+user@nimbus:~/app$ 
+---- step done in 2002ms (wsClosed=false) ----
+
+---- STEP cmd: ls node_modules/jsdom/lib/jsdom/browser/ ----
+user@nimbus:~/app$ ls node_modules/jsdom/lib/jsdom/browser/
+default-stylesheet.css  not-implemented.js  parser  resources  Window.js
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: ls node_modules/@csstools/css-tokenizer/dist/ ----
+user@nimbus:~/app$ ls node_modules/@csstools/css-tokenizer/dist/
+index.d.ts  index.mjs
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.inv_a_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IG09cmVxdWlyZSgnQGNzc3Rvb2xzL2Nzcy10b2tlbml6ZXInKTtjb25zb2xlLmxvZygnQ1QtT0sga2V5czonLE9iamVjdC5rZXlzKG0pLnNsaWNlKDAsNSkpO31jYXRjaChlKXtjb25zb2xlLmxvZygnQ1QtRkFJTDonLGUubWVzc2FnZSk7fQ==' && cd /home/user/app && node .inv_a_mot8vwjr.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.inv_a_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IG09cmVxdWlyZSgnQGNzc3Rvb2xzL2Nzcy10b2tlbml6ZXInKTtjb25zb2xlLmxvZygnQ1QtT0sga2V5czonLE9iamVjdC5rZXlzKG0pLnNsaWNlKDAsNSkpO31jYXRjaChlKXtjb25zb2xlLmxvZygnQ1QtRkFJTDonLGUubWVzc2FnZSk7fQ==' && cd /home/user/app && node .inv_a_mot8vwjr.js
+[facet started: pid=2 cmd="node /home/user/app/.inv_a_mot8vwjr.js"]
+CT-OK keys: ["HashType","NumberType","ParseError","ParseErrorMessage","ParseErrorWithToken"]
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.inv_a_mot8vwjr.js) exited with code 0
+────────────────────────────────────────────────────────────
+CT-OK keys: ["HashType","NumberType","ParseError","ParseErrorMessage","ParseErrorWithToken"]
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.inv_b_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IGM9cmVxdWlyZSgnZnMnKS5yZWFkRmlsZVN5bmMoJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcy9qc2RvbS9saWIvanNkb20vYnJvd3Nlci9kZWZhdWx0LXN0eWxlc2hlZXQuY3NzJywndXRmOCcpO2NvbnNvbGUubG9nKCdDU1MtT0sgbGVuOicsYy5sZW5ndGgpO31jYXRjaChlKXtjb25zb2xlLmxvZygnQ1NTLUZBSUw6JyxlLm1lc3NhZ2UpO30=' && cd /home/user/app && node .inv_b_mot8vwjr.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.inv_b_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IGM9cmVxdWlyZSgnZnMnKS5yZWFkRmlsZVN5bmMoJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcy9qc2RvbS9saWIvanNkb20vYnJvd3Nlci9kZWZhdWx0LXN0eWxlc2hlZXQuY3NzJywndXRmOCcpO2NvbnNvbGUubG9nKCdDU1MtT0sgbGVuOicsYy5sZW5ndGgpO31jYXRjaChlKXtjb25zb2xlLmxvZygnQ1NTLUZBSUw6JyxlLm1lc3NhZ2UpO30=' && cd /home/user/app && node .inv_b_mot8vwjr.js
+[facet started: pid=4 cmd="node /home/user/app/.inv_b_mot8vwjr.js"]
+CSS-FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/jsdom/lib/jsdom/browser/default-stylesheet.css'
+
+────────────────────────────────────────────────────────────
+Process 4 (node /home/user/app/.inv_b_mot8vwjr.js) exited with code 0
+────────────────────────────────────────────────────────────
+CSS-FAIL: ENOENT: no such file or directory, open '/home/user/app/node_modules/jsdom/lib/jsdom/browser/default-stylesheet.css'
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.inv_c_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IGM9cmVxdWlyZSgnZnMnKS5yZWFkRmlsZVN5bmMoJ25vZGVfbW9kdWxlcy9qc2RvbS9saWIvanNkb20vYnJvd3Nlci9kZWZhdWx0LXN0eWxlc2hlZXQuY3NzJywndXRmOCcpO2NvbnNvbGUubG9nKCdDU1MyLU9LIGxlbjonLGMubGVuZ3RoKTt9Y2F0Y2goZSl7Y29uc29sZS5sb2coJ0NTUzItRkFJTDonLGUubWVzc2FnZSk7fQ==' && cd /home/user/app && node .inv_c_mot8vwjr.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.inv_c_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IGM9cmVxdWlyZSgnZnMnKS5yZWFkRmlsZVN5bmMoJ25vZGVfbW9kdWxlcy9qc2RvbS9saWIvanNkb20vYnJvd3Nlci9kZWZhdWx0LXN0eWxlc2hlZXQuY3NzJywndXRmOCcpO2NvbnNvbGUubG9nKCdDU1MyLU9LIGxlbjonLGMubGVuZ3RoKTt9Y2F0Y2goZSl7Y29uc29sZS5sb2coJ0NTUzItRkFJTDonLGUubWVzc2FnZSk7fQ==' && cd /home/user/app && node .inv_c_mot8vwjr.js
+[facet started: pid=6 cmd="node /home/user/app/.inv_c_mot8vwjr.js"]
+CSS2-FAIL: ENOENT: no such file or directory, open 'node_modules/jsdom/lib/jsdom/browser/default-stylesheet.css'
+
+────────────────────────────────────────────────────────────
+Process 6 (node /home/user/app/.inv_c_mot8vwjr.js) exited with code 0
+────────────────────────────────────────────────────────────
+CSS2-FAIL: ENOENT: no such file or directory, open 'node_modules/jsdom/lib/jsdom/browser/default-stylesheet.css'
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.inv_d_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IGxzPXJlcXVpcmUoJ2ZzJykucmVhZGRpclN5bmMoJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcy9qc2RvbS9saWIvanNkb20vYnJvd3NlcicpO2NvbnNvbGUubG9nKCdKU0RPTS1ESVI6Jyxscy5qb2luKCd8JykpO31jYXRjaChlKXtjb25zb2xlLmxvZygnSlNET00tRElSLUZBSUw6JyxlLm1lc3NhZ2UpO30=' && cd /home/user/app && node .inv_d_mot8vwjr.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.inv_d_mot8vwjr.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5e2NvbnN0IGxzPXJlcXVpcmUoJ2ZzJykucmVhZGRpclN5bmMoJy9ob21lL3VzZXIvYXBwL25vZGVfbW9kdWxlcy9qc2RvbS9saWIvanNkb20vYnJvd3NlcicpO2NvbnNvbGUubG9nKCdKU0RPTS1ESVI6Jyxscy5qb2luKCd8JykpO31jYXRjaChlKXtjb25zb2xlLmxvZygnSlNET00tRElSLUZBSUw6JyxlLm1lc3NhZ2UpO30=' && cd /home/user/app && node .inv_d_mot8vwjr.js
+[facet started: pid=8 cmd="node /home/user/app/.inv_d_mot8vwjr.js"]
+JSDOM-DIR: Window.js|default-stylesheet.css|not-implemented.js|parser|resources
+
+────────────────────────────────────────────────────────────
+Process 8 (node /home/user/app/.inv_d_mot8vwjr.js) exited with code 0
+────────────────────────────────────────────────────────────
+JSDOM-DIR: Window.js|default-stylesheet.css|not-implemented.js|parser|resources
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: i2-vfs-inspection ====

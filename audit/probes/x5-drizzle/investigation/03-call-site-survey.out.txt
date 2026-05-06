@@ -1,0 +1,34 @@
+==== src/ refs to `frameworkAware` ====
+  src/npm-installer.ts:207  const frameworkAware = await this.detectFrameworkAware(projDir);
+  src/npm-installer.ts:208  if (frameworkAware) {
+  src/npm-installer.ts:236  // detection result; we pass frameworkAware via an env var the
+  src/npm-installer.ts:239  resolved = await this.resolveTreeViaFacet(specs, log, { frameworkAware });
+  src/npm-installer.ts:241  resolved = await resolveTree(specs, this.cache, undefined, log, this.fetchFn, { frameworkAware });
+  src/npm-installer.ts:520  opts: { frameworkAware?: boolean } = {},
+  src/npm-installer.ts:522  const frameworkAware = !!opts.frameworkAware;
+  src/npm-installer.ts:548  frameworkAware,
+  src/npm-resolver.ts:590  * W11: pass `opts.frameworkAware = true` when the project is detected as
+  src/npm-resolver.ts:601  opts?: { frameworkAware?: boolean },
+  src/npm-resolver.ts:603  const frameworkAware = !!(opts && opts.frameworkAware);
+  src/npm-resolver.ts:636  shouldSkipPackageWithFramework(name, frameworkAware)) {
+  src/npm-resolver.ts:876  // `shouldSkipPackageWithFramework({ frameworkAware: true })` exempts
+  src/npm-resolver.ts:925  * W11: framework-aware skip variant. When `frameworkAware` is true, the
+  src/npm-resolver.ts:936  frameworkAware: boolean,
+  src/npm-resolver.ts:938  if (frameworkAware && FRAMEWORK_REQUIRED_PACKAGES.has(name)) return false;
+  src/npm-resolve-facet.ts:104  frameworkAware?: boolean;
+  src/npm-resolve-facet.ts:483  if (!topLevelNames.has(name) && SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware)) return null;
+  src/npm-resolve-facet.ts:663  if (!topLevelNames.has(name) && SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware)) return null;
+  src/parallel/npm-resolve-preamble.ts:37  // W11: vite is exempted when frameworkAware=true so framework CLIs can
+  src/parallel/npm-resolve-preamble.ts:58  function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
+  src/parallel/npm-resolve-preamble.ts:59  if (frameworkAware && __FRAMEWORK_REQUIRED_PACKAGES.has(name)) return false;
+
+==== src/ refs to literal "Framework detected" (the user-visible string the prompt asks us to localize) ====
+  src/npm-installer.ts:209  log(`Framework detected — installing framework-required packages (vite, …).`);
+
+==== Decision sites (where frameworkAware is COMPUTED, not consumed) ====
+  src/npm-installer.ts:207  const frameworkAware = await this.detectFrameworkAware(projDir);
+
+Conclusion:
+  - Computed in exactly ONE site: src/npm-installer.ts:detectFrameworkAware (and called from _installInner).
+  - All other refs are pass-through consumers (resolveTree, resolveTreeViaFacet, npm-resolve-facet.ts, parallel preamble).
+  - Single edit point: detectFrameworkAware return statement.

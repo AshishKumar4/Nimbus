@@ -1,0 +1,1 @@
+const m=require('astro');console.log('typeof:',typeof m)

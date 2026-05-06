@@ -1,0 +1,37 @@
+==== X5F run-all ====
+==== TIMESTAMP: 2026-05-06T00:25:30.465Z ====
+
+---- functional: r1-toplevel-bypass.mjs ----
+  [PASS] r1-toplevel-bypass.mjs (53ms)
+
+---- functional: r2-peerdep-resolution.mjs ----
+  [PASS] r2-peerdep-resolution.mjs (58ms)
+
+---- functional: r3-cjs-priority.mjs ----
+  [PASS] r3-cjs-priority.mjs (34ms)
+
+---- functional: r3-esm-fallback.mjs ----
+  [PASS] r3-esm-fallback.mjs (39ms)
+
+---- regression: single-resolver-source.mjs ----
+  [PASS] single-resolver-source.mjs (142ms)
+
+---- regression: skip-still-skips-transitive.mjs ----
+  [PASS] skip-still-skips-transitive.mjs (50ms)
+
+---- regression: install-pipeline-coverage-shim.mjs ----
+  [PASS] install-pipeline-coverage-shim.mjs (51ms)
+
+!! e2e SKIPPED (set NIMBUS_X5F_E2E=1 to enable; needs wrangler dev at BASE)
+
+=========================================
+SUMMARY:
+  PASS  functional/r1-toplevel-bypass.mjs (53ms)
+  PASS  functional/r2-peerdep-resolution.mjs (58ms)
+  PASS  functional/r3-cjs-priority.mjs (34ms)
+  PASS  functional/r3-esm-fallback.mjs (39ms)
+  PASS  regression/single-resolver-source.mjs (142ms)
+  PASS  regression/skip-still-skips-transitive.mjs (50ms)
+  PASS  regression/install-pipeline-coverage-shim.mjs (51ms)
+-----------------------------------------
+total 7, pass 7, fail 0

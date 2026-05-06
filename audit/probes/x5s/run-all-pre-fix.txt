@@ -1,0 +1,49 @@
+── X.5-S functional + regression ──────────────────────────
+[FAIL] functional/f1-conditional-param-drop-marker.mjs
+    # X.5-S marker present in shim source
+      NOT OK  node-shims.ts shim source contains "X.5-S" marker
+      NOT OK  node-shims.ts shim source defines `__mkCompiledFn`
+      NOT OK  node-shims.ts no longer hard-codes __dirname in __loadModule fallback `new Function(...)`
+    # X.5-S marker present in facet-manager.ts source
+      NOT OK  facet-manager.ts contains "X.5-S" marker
+      NOT OK  generateFacetCode template embeds __mkCompiledFn
+      NOT OK  generateEntrypointCode template embeds __mkCompiledFn
+    # regex sniff covers both __dirname and __filename
+      NOT OK  helper checks __dirname declaration
+      NOT OK  helper checks __filename declaration
+    
+    # f1-conditional-param-drop-marker: 0 passed, 8 failed
+    # failures:
+    #   - node-shims.ts shim source contains "X.5-S" marker
+    #   - node-shims.ts shim source defines `__mkCompiledFn`
+    #   - node-shims.ts no longer hard-codes __dirname in __loadModule fallback `new Function(...)`
+    #   - facet-manager.ts contains "X.5-S" marker
+    #   - generateFacetCode template embeds __mkCompiledFn
+    #   - generateEntrypointCode template embeds __mkCompiledFn
+    #   - helper checks __dirname declaration
+    #   - helper checks __filename declaration
+    
+[FAIL] functional/f2-eval-no-collision.mjs
+    # SKIP: X.5-S helper missing — RED state
+      NOT OK  FIX-NOT-APPLIED: __mkCompiledFn must exist in node-shims.ts shim source
+    
+    # f2-eval-no-collision: 0 passed, 1 failed
+    # failures:
+    #   - FIX-NOT-APPLIED: __mkCompiledFn must exist in node-shims.ts shim source
+    
+[FAIL] functional/f3-clean-body-still-binds-dirname.mjs
+    # SKIP: X.5-S helper missing — RED state
+      NOT OK  FIX-NOT-APPLIED: __mkCompiledFn must exist
+    
+    # f3-clean-body-still-binds-dirname: 0 passed, 1 failed
+    # failures:
+    #   - FIX-NOT-APPLIED: __mkCompiledFn must exist
+    
+[PASS] investigation/repro.mjs
+[PASS] regression/install-pipeline-coverage-shim.mjs
+[PASS] regression/single-resolver-source.mjs
+[PASS] regression/cross-wave-x5-runalls.mjs
+── heavy regressions skipped (NIMBUS_X5S_HEAVY=1 to run)
+── e2e skipped (NIMBUS_X5S_E2E=1 to run; BASE=http://127.0.0.1:8787 required)
+
+──── x5s run-all: 4 pass / 3 fail

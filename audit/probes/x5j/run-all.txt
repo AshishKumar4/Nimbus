@@ -1,0 +1,154 @@
+# X5J functional probes
+
+==== functional/r25-rejects-optional-peer-supervisor.mjs ====
+# R2.5 supervisor block exists
+  ok  npm-resolver.ts has X.5-F R2.5 block
+  ok  R2.5 block uses topLevelNames.has(pkg.name)
+  ok  R2.5 block extractable
+# R2.5 supervisor consults REJECT_INSTALL on each optional peer
+  ok  R2.5 block references X.5-J
+  ok  R2.5 block calls lookupReject(peerName) (or equivalent)
+  ok  R2.5 block has a continue branch on rejected peer
+# R2.5 supervisor emits transitive-skip event for rejected peers
+  ok  emitRegistryEvent({ type: "transitive-skip", … }) inside R2.5
+  ok  reason mentions REJECT_INSTALL
+# R2.5 supervisor still enqueues non-rejected peers
+  ok  R2.5 block still has queue.push([peerName, peerRange ...
+  ok  R2.5 block still has topLevelNames.add(peerName)
+
+# r25-rejects-optional-peer-supervisor: 10 passed, 0 failed
+[PASS] functional/r25-rejects-optional-peer-supervisor.mjs
+
+==== functional/r25-rejects-optional-peer-facet.mjs ====
+# R2.5 facet block exists
+  ok  npm-resolve-facet.ts has X.5-F R2.5 block
+  ok  R2.5 block uses topLevelNames.has(pkg.name)
+  ok  R2.5 block extractable
+# R2.5 facet consults REJECT_INSTALL on each optional peer (preamble accessors)
+  ok  R2.5 block references X.5-J
+  ok  R2.5 block calls SHOULD_REJECT_FAIL(peerName)
+  ok  R2.5 block calls SHOULD_WARN_SKIP_TRANSITIVE(peerName)
+  ok  R2.5 block has a continue branch on rejected peer
+# R2.5 facet emits transitive-skip event for rejected peers
+  ok  __EMIT_EVENT({ type: "transitive-skip", … }) inside R2.5
+  ok  messages.push includes [skip] for rejected peer
+  ok  reason mentions REJECT_INSTALL
+# R2.5 facet still enqueues non-rejected peers
+  ok  R2.5 block still has queue2.push([peerName, ...
+  ok  R2.5 block still has topLevelNames.add(peerName)
+
+# r25-rejects-optional-peer-facet: 12 passed, 0 failed
+[PASS] functional/r25-rejects-optional-peer-facet.mjs
+
+==== functional/r2-required-peer-still-throws.mjs ====
+# R2 blocks isolatable
+  ok  supervisor R2 block exists
+  ok  facet R2 block exists
+# Supervisor R2 (required peers) does NOT consult REJECT_INSTALL
+  ok  supervisor R2 has no lookupReject call
+  ok  supervisor R2 still has queue.push for required peers
+  ok  supervisor R2 still iterates pkg.peerDependencies (required-only)
+# Facet R2 (required peers) does NOT consult REJECT_INSTALL
+  ok  facet R2 has no SHOULD_REJECT_FAIL call
+  ok  facet R2 has no SHOULD_WARN_SKIP_TRANSITIVE call
+  ok  facet R2 still has queue2.push for required peers
+# Required-dep reject path preserved
+  ok  supervisor still throws RegistryRejectError on transitive=fail
+  ok  facet still tags __w6_reject = true on rejected fetch
+
+# r2-required-peer-still-throws: 10 passed, 0 failed
+[PASS] functional/r2-required-peer-still-throws.mjs
+
+==== functional/synth-fixture-package-rejects-soft-skip.mjs ====
+==== X5J synth-fixture optional-peer-rejects-soft-skip ====
+==== TIMESTAMP: 2026-05-05T19:12:21.660Z ====
+resolved names: ["goodpeer","synth-P"]
+progress lines (last 10): ["  synth-P: cache read error: null is not an object (evaluating 'cachedVersions.length')","  synth-P: fetching from registry (proxy)...","  synth-P: registry responded 200","  synth-P: resolved → 1.0.0","[npm] [skip] sql.js (optional peer in REJECT_INSTALL: sql.js — Installs but fails at runtime: ENOENT on dist/sql-wasm.wasm. Loader gap NOT in tar extraction — likely between streamTarEntries and writeBatch RPC handler, or in cirrus-real fs shim. See audit/probes/w6.5/spike/sql-js.verdict.md.)","  resolving goodpeer...","  goodpeer: cache read error: null is not an object (evaluating 'cachedVersions.length')","  goodpeer: fetching from registry (proxy)...","  goodpeer: registry responded 200","  goodpeer: resolved → 1.0.0"]
+t1 resolveTree did NOT throw:                 PASS
+t2 synth-P resolved:                          PASS
+t3 goodpeer (non-rejected optional) resolved: PASS
+t4 sql.js (rejected optional) NOT in tree:    PASS
+t5 sql.js soft-skip log line surfaced:        PASS
+
+OVERALL: PASS
+[PASS] functional/synth-fixture-package-rejects-soft-skip.mjs
+
+# X5J regression probes
+
+==== regression/single-resolver-source.mjs ====
+# X.5-J markers present in both supervisor and facet
+  ok  supervisor has X.5-J marker(s) — count=2
+  ok  facet has X.5-J marker(s) — count=2
+# single-resolver invariant (W2.6a) preserved
+  ok  _shared/exports-resolver.ts exists
+  ok  exports-resolver: exactly 1 export function resolveExports — got 1
+  ok  exports-resolver: exactly 1 export function resolvePackageEntry — got 1
+
+# single-resolver-source: 5 passed, 0 failed
+[PASS] regression/single-resolver-source.mjs
+
+==== regression/loud-reject-still-loud-top-level.mjs ====
+# Top-level reject path preserved (npm-installer.ts)
+  ok  npm-installer still imports RegistryRejectError
+  ok  npm-installer still throws new RegistryRejectError
+# Transitive reject path preserved (npm-resolver.ts)
+  ok  resolver still throws RegistryRejectError on transitive=fail
+# REJECT_INSTALL data integrity
+  ok  REJECT_INSTALL still contains 'sql.js' transitive='fail'
+  ok  REJECT_INSTALL still contains '@swc/core' transitive='fail'
+  ok  REJECT_INSTALL still contains 'sharp' transitive='fail'
+
+# loud-reject-still-loud-top-level: 6 passed, 0 failed
+[PASS] regression/loud-reject-still-loud-top-level.mjs
+
+==== regression/loud-reject-still-loud-required-peer.mjs ====
+==== X5J loud-reject-still-loud-required-peer ====
+==== TIMESTAMP: 2026-05-05T19:12:21.816Z ====
+resolveTree threw: true
+error message:     [31mnpm install rejected:[0m 1 package not supported on Nimbus.
+  ❌ sharp — Native libvips bindings; not portable to Workers.
+     [2mtry:[0m no Workers-compatible target — render server-side or use Cloudflare Images. For the wasm32 build see @img/sharp-wasm32 entry below.
+t1 resolveTree threw on required-peer reject:    PASS
+t2 error is RegistryRejectError-shaped:          PASS
+t3 error mentions "sharp":                       PASS
+
+OVERALL: PASS
+[PASS] regression/loud-reject-still-loud-required-peer.mjs
+
+==== regression/r25-still-installs-non-rejected-peers.mjs ====
+==== X5J r25-still-installs-non-rejected-peers ====
+==== TIMESTAMP: 2026-05-05T19:12:21.866Z ====
+resolved names: ["react","synth-FM"]
+t1 resolveTree did NOT throw:                PASS
+t2 synth-FM resolved:                        PASS
+t3 react (non-rejected optional) installed:  PASS
+t4 sql.js (rejected optional) NOT installed: PASS
+
+OVERALL: PASS
+[PASS] regression/r25-still-installs-non-rejected-peers.mjs
+
+==== regression/tsc-baseline-preserved.mjs ====
+==== X5J tsc-baseline-preserved ====
+==== TIMESTAMP: 2026-05-05T19:12:21.925Z ====
+tsc exit: 2
+tsc output:
+src/esbuild-service.ts(153,28): error TS2307: Cannot find module 'esbuild-wasm/esbuild.wasm' or its corresponding type declarations.
+src/nimbus-session-init.ts(74,39): error TS2345: Argument of type 'SqliteVFSProvider' is not assignable to parameter of type 'VirtualProvider | MountProvider'.
+  Type 'SqliteVFSProvider' is not assignable to type 'MountProvider'.
+    The types of 'stat(...).type' are incompatible between these types.
+      Type 'string' is not assignable to type 'FileType'.
+
+
+error lines: 2
+  src/esbuild-service.ts(153,28): error TS2307: Cannot find module 'esbuild-wasm/esbuild.wasm' or its corresponding type declarations.
+  src/nimbus-session-init.ts(74,39): error TS2345: Argument of type 'SqliteVFSProvider' is not assignable to parameter of type 'VirtualProvider | MountProvider'.
+
+t1 tsc errors <= 2 (no new errors): PASS
+OVERALL: PASS
+[PASS] regression/tsc-baseline-preserved.mjs
+
+# X5J e2e probes — set NIMBUS_X5J_E2E=1 to run
+
+=========================================
+X5J summary: 9 passed, 0 failed
+=========================================

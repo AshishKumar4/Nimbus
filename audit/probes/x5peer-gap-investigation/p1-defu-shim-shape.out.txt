@@ -1,0 +1,43 @@
+=== defu@6.1.7 shape ===
+main: ./lib/defu.cjs
+module: ./dist/defu.mjs
+exports."." {
+  "import": {
+    "types": "./dist/defu.d.mts",
+    "default": "./dist/defu.mjs"
+  },
+  "require": {
+    "types": "./lib/defu.d.cts",
+    "default": "./lib/defu.cjs"
+  }
+}
+
+=== lib/defu.cjs (CJS shim) ===
+const { defu, createDefu, defuFn, defuArrayFn } = require("../dist/defu.cjs");
+
+module.exports = defu;
+
+module.exports.defu = defu;
+module.exports.default = defu;
+
+module.exports.createDefu = createDefu;
+module.exports.defuFn = defuFn;
+module.exports.defuArrayFn = defuArrayFn;
+
+=== sizes === lib/defu.cjs=278B  dist/defu.cjs=2203B
+
+--- assertions ---
+  shim requires "../dist/defu.cjs"      : true
+  dist/defu.cjs IS in tarball           : true
+  exports.require.default               : ./lib/defu.cjs
+  meta.main == ./lib/defu.cjs           : true
+
+=== conclusion ===
+greedyAddMainEntries (facet-manager.ts:644-728) will land
+lib/defu.cjs because meta.main = ./lib/defu.cjs. It does NOT
+parse-and-recurse the file's requires; it only adds the main
+entry + hash-chunk siblings + shared/ subdir. Since shim is in
+lib/ and target is in dist/, neither hash-chunk nor shared/ catches
+it. The require-walker (prefetchForRequire) DOES recurse but only
+reaches defu via nuxt's ESM `import` chain, landing dist/defu.mjs,
+not lib/defu.cjs. So dist/defu.cjs never enters __vfsBundle.

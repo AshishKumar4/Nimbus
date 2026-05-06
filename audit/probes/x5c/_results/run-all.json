@@ -1,0 +1,47 @@
+{
+  "passed": 10,
+  "failed": 0,
+  "total": 10,
+  "results": [
+    {
+      "probe": "functional/f1-import-walker.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "functional/f2-hash-chunk-greedy.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "functional/f3-cycle-safe.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r1-single-resolver-source.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r2-w35-fixes-still-green.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r3-install-pipeline-coverage.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r4-prefetch-bound-cap.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "e2e/e1-react-remove-scroll.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "e2e/e2-pathe-via-nuxt.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "e2e/e3-radix-react-dialog.mjs",
+      "status": "✓"
+    }
+  ]
+}

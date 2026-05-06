@@ -18,6 +18,7 @@ import {
   lookupSwap, lookupReject, shouldWarnSkipTransitive,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
+  isOptionalNativeBinding, classifyInstallError,
 } from './wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
@@ -73,6 +74,21 @@ export interface ResolvedPackage {
   tarballUrl: string;
   integrity: string;
   dependencies: Record<string, string>;
+  /** X.5-F R2: required peer-deps surfaced for auto-install. Optional
+   *  peers (peerDependenciesMeta.<name>.optional === true) are
+   *  excluded here. */
+  peerDependencies?: Record<string, string>;
+  /** X.5-G G1: optionalDependencies — best-effort installs that are
+   *  silently skipped when the host doesn't match os/cpu/libc OR when
+   *  the packument shape is a known native-shard pattern. Per npm 4828
+   *  semantics: failure to install MUST NOT fail the parent. */
+  optionalDependencies?: Record<string, string>;
+  /** X.5-G G1: platform constraints from the registry. Empty arrays
+   *  mean cross-platform. Non-empty means the package opts out of
+   *  installs on hosts that don't match. */
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
   exports: any;          // package.json exports field (raw)
   main: string;
   module: string;
@@ -404,6 +420,7 @@ export async function resolvePackage(
       tarballUrl: pkg.tarballUrl,
       integrity: pkg.integrity,
       depsJson: JSON.stringify(pkg.dependencies),
+      peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
       exportsJson: JSON.stringify(pkg.exports ?? {}),
       main: pkg.main,
       moduleField: pkg.module,
@@ -457,6 +474,7 @@ function cachePopularVersions(data: any, cache: NpmCache, alreadyCached: string)
         tarballUrl: pkg.tarballUrl,
         integrity: pkg.integrity,
         depsJson: JSON.stringify(pkg.dependencies),
+        peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
         exportsJson: JSON.stringify(pkg.exports ?? {}),
         main: pkg.main,
         moduleField: pkg.module,
@@ -474,27 +492,87 @@ function versionToResolved(vData: any): ResolvedPackage {
     ? { [vData.name.split('/').pop()!]: binField }
     : binField;
 
-  return {
+  // X.5-F R2.5: keep the full peer set (including optionals) on a
+  // hidden field so the BFS walk can include optional peers when
+  // THIS package was the user's top-level request (npm CLI default).
+  const allPeers = vData.peerDependencies && typeof vData.peerDependencies === 'object'
+    ? Object.fromEntries(
+        Object.entries(vData.peerDependencies)
+          .filter(([, r]) => typeof r === 'string'),
+      ) as Record<string, string>
+    : undefined;
+
+  // X.5-G G1: capture optionalDependencies + os/cpu/libc constraints.
+  // The resolver consumes these to decide silent-skip per npm 4828.
+  const optionalDependencies =
+    vData.optionalDependencies && typeof vData.optionalDependencies === 'object'
+      ? Object.fromEntries(
+          Object.entries(vData.optionalDependencies)
+            .filter(([, r]) => typeof r === 'string'),
+        ) as Record<string, string>
+      : undefined;
+
+  const out: ResolvedPackage & { __allPeerDependencies?: Record<string, string> } = {
     name: vData.name,
     version: vData.version,
     tarballUrl: vData.dist?.tarball || '',
     integrity: vData.dist?.integrity || vData.dist?.shasum || '',
     dependencies: vData.dependencies || {},
+    // X.5-F R2: surface required peer-deps (optionals filtered) so
+    // the resolveTree breadth-first walk can enqueue them. Without
+    // this, packages like @radix-ui/react-dialog (peer: react,
+    // react-dom) get installed but their `require('react')` from
+    // inside the nested dist fails at runtime.
+    peerDependencies: extractRequiredPeers(vData),
+    optionalDependencies,
+    os:   Array.isArray(vData.os)   ? vData.os   : undefined,
+    cpu:  Array.isArray(vData.cpu)  ? vData.cpu  : undefined,
+    libc: Array.isArray(vData.libc) ? vData.libc : undefined,
     exports: vData.exports ?? null,
     main: vData.main || '',
     module: vData.module || '',
     bin,
   };
+  if (allPeers && Object.keys(allPeers).length > 0) {
+    out.__allPeerDependencies = allPeers;
+  }
+  return out;
+}
+
+/**
+ * Extract the SUBSET of `peerDependencies` that are not marked optional
+ * via `peerDependenciesMeta.<name>.optional === true`. Returns undefined
+ * when there are no required peers, so downstream code can use a single
+ * truthiness check.
+ *
+ * X.5-F R2 — see audit/sections/X5F-plan.md §3.
+ */
+function extractRequiredPeers(vData: any): Record<string, string> | undefined {
+  const peers = vData.peerDependencies;
+  if (!peers || typeof peers !== 'object') return undefined;
+  const meta = vData.peerDependenciesMeta;
+  const out: Record<string, string> = {};
+  for (const [name, range] of Object.entries(peers)) {
+    if (typeof range !== 'string') continue;
+    if (meta && meta[name] && meta[name].optional === true) continue;
+    out[name] = range;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Convert a RegistryCacheEntry back to ResolvedPackage. */
 function registryCacheToResolved(entry: RegistryCacheEntry): ResolvedPackage {
+  // X.5-F R2: surface cached peerDependencies so a registry-cache hit
+  // doesn't lose the peer-enqueue signal. Empty object → undefined so
+  // callers (resolveTree) can use a single truthy check.
+  const peers = safeJsonParse<Record<string, string>>(entry.peerDepsJson || '{}', {});
   return {
     name: entry.name,
     version: entry.version,
     tarballUrl: entry.tarballUrl,
     integrity: entry.integrity,
     dependencies: safeJsonParse(entry.depsJson, {}),
+    peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
     exports: safeJsonParse(entry.exportsJson, null),
     main: entry.main,
     module: entry.moduleField,
@@ -525,6 +603,25 @@ export async function resolveTree(
   const frameworkAware = !!(opts && opts.frameworkAware);
   const resolved = new Map<string, ResolvedPackage>();
   const seen = new Set<string>();
+  // X.5-F R1: names the user typed at the top level (or that are
+  // required peer-deps of an installed package — see R2 below) bypass
+  // SKIP_PACKAGES. Transitive `dependencies` walks do NOT add to this
+  // set, preserving silent-skip for build-tool noise. See audit/sections/
+  // X5F-plan.md §6.1.
+  const topLevelNames = new Set<string>(Object.keys(specs));
+  // X.5-G G1: names that came from a parent's `optionalDependencies`.
+  // These are best-effort per npm 4828 — fetch failures and platform-
+  // native-binding detection silent-skip them rather than propagating
+  // as install errors. See audit/sections/X5G-plan.md §2.
+  const optionalNames = new Set<string>();
+  // X.5-drizzle: names enqueued by the X.5-J top-level optional-peer
+  // path (R2.5) and ALL their transitive descendants. The user did not
+  // explicitly ask for them — npm CLI's --include=peer pulls them as a
+  // best-effort convenience. When a `transitive: 'fail'` REJECT_INSTALL
+  // fires for a name in this set, we silent-skip the offending name +
+  // log a notice, instead of throwing and killing the parent install.
+  // Mirrors src/npm-resolve-facet.ts. See audit/sections/X5-drizzle-plan.md.
+  const bestEffortNames = new Set<string>();
   const queue: [string, string][] = Object.entries(specs);
   const limit = pLimit(RESOLVE_CONCURRENCY);
 
@@ -541,7 +638,10 @@ export async function resolveTree(
       batch.map(([name, range]) => limit(async () => {
         if (seen.has(name)) return null;
         seen.add(name);
-        if (shouldSkipPackageWithFramework(name, frameworkAware)) {
+        // X.5-F R1: top-level user requests + required peer-deps bypass
+        // the SKIP_PACKAGES filter. Transitive deps do not.
+        if (!topLevelNames.has(name) &&
+            shouldSkipPackageWithFramework(name, frameworkAware)) {
           onProgress?.(`  skipping ${name} (build-only)`);
           return null;
         }
@@ -575,9 +675,68 @@ export async function resolveTree(
           }
         }
         onProgress?.(`  resolving ${resolveName}...`);
+        const isOptional = optionalNames.has(name);
         try {
-          return await resolvePackage(resolveName, range, cache, fetchFn, onProgress);
+          const pkg = await resolvePackage(resolveName, range, cache, fetchFn, onProgress);
+          // X.5-G G1: silent-skip platform-native bindings sourced from
+          // optionalDependencies. Per npm 4828: best-effort installs MUST
+          // NOT fail the parent. We go further than npm's host-mismatch
+          // skip: even a host-matching .node binding is unloadable in
+          // workerd, so all native bindings are skipped regardless of
+          // host. The parent package's runtime fallback (e.g. rollup's
+          // native.js → @rollup/wasm-node) handles absence.
+          if (pkg && isOptional && isOptionalNativeBinding({
+            name: pkg.name,
+            os: pkg.os, cpu: pkg.cpu, libc: pkg.libc,
+            main: pkg.main,
+          })) {
+            const reason = `optional native binding (os=${pkg.os ?? '*'}, cpu=${pkg.cpu ?? '*'}, libc=${pkg.libc ?? '*'}, main=${pkg.main || '?'})`;
+            onProgress?.(`[npm] [skip] ${name} — ${reason}`);
+            emitRegistryEvent({
+              type: 'transitive-skip',
+              from: name,
+              reason,
+            });
+            return null;
+          }
+          return pkg;
         } catch (e: any) {
+          // X.5-G G1: errors on optional-dep resolution silent-skip
+          // rather than propagating. classifyInstallError preserves
+          // RegistryRejectError propagation (registry-reject errors
+          // ALWAYS bubble — a transitive=fail reject still throws).
+          const cls = classifyInstallError(e, { isOptional });
+          if (cls === 'optional-dep-skip') {
+            onProgress?.(`[npm] [skip] ${name} (optional dep — ${e?.message ?? 'fetch failed'})`);
+            emitRegistryEvent({
+              type: 'transitive-skip',
+              from: name,
+              reason: `optional dep fetch failed: ${e?.message ?? 'unknown'}`,
+            });
+            return null;
+          }
+          if (cls === 'registry-reject') {
+            // X.5-drizzle: registry-reject inside a best-effort
+            // optional-peer subtree (X.5-J R2.5 enqueue) silent-skips
+            // instead of bubbling up to kill the parent install. The
+            // user did not explicitly ask for the optional-peer-rooted
+            // subtree; mirror npm's --omit=optional behaviour for its
+            // descendants. See VERIFY-9D4B61D §6 and the mirror in
+            // src/npm-resolve-facet.ts. Canonical chain: drizzle-orm →
+            // expo-sqlite (optpeer) → expo (peer) → @expo/metro-config
+            // (dep) → lightningcss (dep, transitive='fail').
+            if (bestEffortNames.has(name)) {
+              onProgress?.(`[npm] [skip] ${name} — inside best-effort optional-peer subtree (X.5-drizzle): ${e?.message ?? 'reject'}`);
+              emitRegistryEvent({
+                type: 'transitive-skip',
+                from: name,
+                reason: `inside best-effort optional-peer subtree (X.5-drizzle): ${e?.message ?? 'reject'}`,
+              });
+              return null;
+            }
+            // Re-throw — registry rejects are loud at any depth.
+            throw e;
+          }
           onProgress?.(`  ${resolveName}: UNHANDLED ERROR: ${e?.message}`);
           return null;
         }
@@ -589,10 +748,96 @@ export async function resolveTree(
       resolved.set(pkg.name, pkg);
       onResolved?.(pkg);
 
+      // X.5-drizzle: when this pkg was best-effort (a child of an
+      // X.5-J optional-peer subtree), its newly-enqueued descendants
+      // inherit the best-effort flag so a deep `transitive: 'fail'`
+      // REJECT_INSTALL silent-skips instead of killing the parent.
+      const inheritBestEffort = bestEffortNames.has(pkg.name);
+
       // Enqueue transitive deps
       for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
         if (!resolved.has(depName) && !seen.has(depName)) {
+          if (inheritBestEffort) bestEffortNames.add(depName);
           queue.push([depName, depRange as string]);
+        }
+      }
+
+      // X.5-G G1: enqueue transitive optionalDependencies, tagged so
+      // resolveOne skips platform-native bindings silently and any
+      // fetch failure becomes optional-dep-skip rather than fail. See
+      // audit/sections/X5G-plan.md §2 for the npm 4828 rationale.
+      if (pkg.optionalDependencies) {
+        for (const [depName, depRange] of Object.entries(pkg.optionalDependencies)) {
+          if (!resolved.has(depName) && !seen.has(depName)) {
+            optionalNames.add(depName);
+            if (inheritBestEffort) bestEffortNames.add(depName);
+            queue.push([depName, depRange as string]);
+          }
+        }
+      }
+
+      // X.5-F R2: enqueue REQUIRED peer-deps (optionals already
+      // filtered in versionToResolved). Mark them as topLevelNames so
+      // they bypass SKIP_PACKAGES — ts-jest needs typescript even
+      // though typescript is in SKIP_PACKAGES. See audit/sections/
+      // X5F-plan.md §3 for the bug evidence and §6.2 for the fix.
+      if (pkg.peerDependencies) {
+        for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
+          if (resolved.has(peerName) || seen.has(peerName)) continue;
+          topLevelNames.add(peerName);
+          if (inheritBestEffort) bestEffortNames.add(peerName);
+          queue.push([peerName, peerRange as string]);
+        }
+      }
+      // X.5-F R2.5: when the user typed THIS package at top level,
+      // also enqueue optional peer-deps. Mirrors npm CLI's
+      // `--include=peer` default. Without this, framer-motion (whose
+      // peers are ALL marked optional including react) installs but
+      // its compiled CJS still imports react/jsx-runtime and fails.
+      // For TRANSITIVE packages we keep optionals filtered out — only
+      // top-level requests get this generous treatment.
+      //
+      // X.5-J: optional peers whose target is in REJECT_INSTALL get
+      // SOFT-SKIPPED at enqueue time. Without this carve-out, R2.5's
+      // generous include cascades into the W6 reject-throw and kills
+      // the parent install. Two real regressions surfaced this:
+      //   - drizzle-orm declares optional peer 'sql.js' (W6.5 loader gap)
+      //   - ts-node     declares optional peer '@swc/core' (native Rust)
+      // Both packages have non-rejected primary code paths (drizzle
+      // works against d1/libsql/postgres/mysql; ts-node default mode
+      // uses TypeScript transformer not swc), so a soft-skip recovers
+      // the previously-working install. REQUIRED peers in REJECT_INSTALL
+      // still hard-fail via the R2 path above (peerDependencies set
+      // excludes optionals); transitive REQUIRED deps in REJECT_INSTALL
+      // also still hard-fail via the dep walk's resolveOne reject path.
+      // See audit/sections/X5J-plan.md §3 for the full rationale.
+      if (topLevelNames.has(pkg.name)) {
+        const allPeers = (pkg as any).__allPeerDependencies as Record<string, string> | undefined;
+        if (allPeers) {
+          for (const [peerName, peerRange] of Object.entries(allPeers)) {
+            if (resolved.has(peerName) || seen.has(peerName)) continue;
+            // X.5-J: filter optional peers through REJECT_INSTALL.
+            const peerReject = lookupReject(peerName);
+            if (peerReject) {
+              const reason = `optional peer in REJECT_INSTALL: ${peerName} — ${peerReject.reason}`;
+              onProgress?.(`[npm] [skip] ${peerName} (${reason})`);
+              emitRegistryEvent({
+                type: 'transitive-skip',
+                from: peerName,
+                reason,
+              });
+              continue;  // do NOT seen.add — let a later required-dep walk
+                         // hit it via its own resolveOne path if needed.
+            }
+            topLevelNames.add(peerName);
+            // X.5-drizzle: tag X.5-J optional-peer enqueues as
+            // best-effort so a deep `transitive: 'fail'` REJECT
+            // (e.g., expo-sqlite → expo → @expo/metro-config →
+            // lightningcss) silent-skips the offending sub-tree
+            // instead of killing the parent install.
+            bestEffortNames.add(peerName);
+            queue.push([peerName, peerRange as string]);
+          }
         }
       }
     }
@@ -671,9 +916,15 @@ export function computeHoistPlan(
 // framework is detected, `vite` must actually land in node_modules.
 // `shouldSkipPackageWithFramework({ frameworkAware: true })` exempts
 // it. See audit/sections/W11-plan.md §3.0.
+//
+// X.5-G: `rollup` removed from SKIP_PACKAGES because it's now in
+// WASM_SWAPS (rollup → @rollup/wasm-node). SKIP would mask the swap at
+// transitive depth: vite → rollup transitive enqueue would silent-skip
+// rollup before the swap fires. Removing the SKIP entry lets the
+// transitive swap path (npm-resolver.ts:645) consult the registry.
 const SKIP_PACKAGES = new Set([
-  // Build tools
-  'typescript', 'vite', 'rollup', 'webpack', 'parcel',
+  // Build tools (X.5-G: rollup migrated to WASM_SWAPS)
+  'typescript', 'vite', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
   'prettier', 'eslint', 'stylelint',
   // Native modules / build-time (chokidar = real-vite intercepts;

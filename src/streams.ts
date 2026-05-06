@@ -377,13 +377,27 @@ const __streamMod = (() => {
     return cleanup;
   }
 
-  return {
+  // X.5-Z5 Defect-A fix: real Node's \`require('stream')\` returns the
+  // legacy Stream class (a function) with Readable/Writable/etc. as own
+  // properties. Userland code (notably readable-stream@2's
+  // _stream_writable.js:96 and \`send/index.js\`'s util.inherits(SendStream,
+  // require('stream'))) reads \`Stream.prototype\` for prototype chaining.
+  // Our namespace-object shape lacks it, so Object.create(stream.prototype, ...)
+  // throws "Object prototype may only be an Object or null: undefined".
+  // Plant a non-enumerable .prototype pointing at Readable.prototype to
+  // satisfy that contract without breaking any other access pattern.
+  // See audit/sections/X5Z5-plan.md §1.3 Primary fix.
+  const __streamMod = {
     Readable, Writable, Duplex, Transform, PassThrough,
     Stream: Readable,
     pipeline, finished,
     // Aliases for compatibility
     _Readable: Readable, _Writable: Writable, _Transform: Transform,
   };
+  Object.defineProperty(__streamMod, 'prototype', {
+    value: Readable.prototype, enumerable: false,
+  });
+  return __streamMod;
 })();
 `;
 }

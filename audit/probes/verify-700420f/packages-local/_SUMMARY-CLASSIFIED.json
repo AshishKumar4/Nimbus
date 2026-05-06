@@ -1,0 +1,266 @@
+[
+  {
+    "name": "astro",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "npm install rejected: sharp — Native libvips bindings; not portable to Workers.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'astro' (from /home/user/app)"
+  },
+  {
+    "name": "axios",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 26 pkgs, 417 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"constructor\",\"request\",\"_request\",\"getUri\",\"delete\",\"get\",\"head\",\"options\"]"
+  },
+  {
+    "name": "bcrypt",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ bcrypt — Native bcrypt; pure-JS bcryptjs has identical sync API but the require() name differs and Nimbus does not yet support `npm:` aliases (W6.6).\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'bcrypt' (from /home/user/app)"
+  },
+  {
+    "name": "better-sqlite3",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ better-sqlite3 — Native sqlite .node binding.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'better-sqlite3' (from /home/user/app)"
+  },
+  {
+    "name": "drizzle-orm",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 608 pkgs, 29920 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"ColumnAliasProxyHandler\",\"RelationTableAliasProxyHandler\",\"TableAliasProxyHandler\",\"aliasedRelation\",\"aliasedTable\",\"aliasedTableColumn\",\"mapColumnsInAliasedSQLToAlias\",\"mapColumnsInSQLToAlias"
+  },
+  {
+    "name": "express",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 68 pkgs, 628 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Object prototype may only be an Object or null: undefined"
+  },
+  {
+    "name": "fastify",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 46 pkgs, 1930 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot read properties of undefined (reading 'start')"
+  },
+  {
+    "name": "framer-motion",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 9 pkgs, 1020 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"LayoutGroupContext\",\"MotionConfigContext\",\"MotionContext\",\"PresenceContext\",\"SwitchLayoutGroupContext\",\"addPointerEvent\",\"addPointerInfo\",\"animations\"]"
+  },
+  {
+    "name": "fsevents",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ fsevents — macOS-only filesystem watcher; never runs in Workers.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'fsevents' (from /home/user/app)"
+  },
+  {
+    "name": "jest",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 243 pkgs, 4957 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "typeof: object"
+  },
+  {
+    "name": "jsdom",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 39 pkgs, 1800 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot load module 'home/user/app/node_modules/@csstools/css-tokenizer/dist/index.mjs': pre-compile failed at facet startup: Unexpected token 'export'"
+  },
+  {
+    "name": "next",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "npm install rejected: sharp — Native libvips bindings; not portable to Workers.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'next' (from /home/user/app)"
+  },
+  {
+    "name": "node-canvas",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ canvas — Native Cairo bindings.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'canvas' (from /home/user/app)"
+  },
+  {
+    "name": "nuxt",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 526 pkgs, 15630 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module '../dist/defu.cjs' (from home/user/app/node_modules/defu/lib)"
+  },
+  {
+    "name": "parcel",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "npm install rejected: @swc/core — Native Rust SWC.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'parcel' (from /home/user/app)"
+  },
+  {
+    "name": "pg",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 19 pkgs, 253 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"defaults\",\"Client\",\"Query\",\"Pool\",\"_pools\",\"Connection\"]"
+  },
+  {
+    "name": "prisma",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ prisma — Native query engine; not portable to Workers in this configuration.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'prisma' (from /home/user/app)"
+  },
+  {
+    "name": "puppeteer-core",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 78 pkgs, 4066 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"connect\",\"defaultArgs\",\"executablePath\",\"launch\",\"WEB_PERMISSION_TO_PROTOCOL_PERMISSION\",\"Browser\",\"BrowserContext\",\"CDPSessionEvent\"]"
+  },
+  {
+    "name": "radix-react-dialog",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 32 pkgs, 553 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"Close\",\"Content\",\"Description\",\"Dialog\",\"DialogClose\",\"DialogContent\",\"DialogDescription\",\"DialogOverlay\"]"
+  },
+  {
+    "name": "react-remove-scroll",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 11 pkgs, 320 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"RemoveScroll\"]"
+  },
+  {
+    "name": "redis",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 7 pkgs, 2371 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Class extends value undefined is not a constructor or null"
+  },
+  {
+    "name": "remix-react",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 16 pkgs, 483 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "keys: [\"Await\",\"Form\",\"Link\",\"Links\",\"LiveReload\",\"Meta\",\"NavLink\",\"Navigate\"]"
+  },
+  {
+    "name": "rollup",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 1 pkgs, 28 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'rollup' (from /home/user/app)"
+  },
+  {
+    "name": "sharp",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ sharp — Native libvips bindings; not portable to Workers.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'sharp' (from /home/user/app)"
+  },
+  {
+    "name": "swc-core",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "❌ @swc/core — Native Rust SWC.\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module '@swc/core' (from /home/user/app)"
+  },
+  {
+    "name": "tailwindcss-oxide",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 1 pkgs, 4 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find native binding. npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). Please try `npm i` again after removing both package-lock.json and node_modules directory."
+  },
+  {
+    "name": "tailwindcss-vite",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 232 pkgs, 7506 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot load module 'home/user/app/node_modules/@tailwindcss/vite/dist/index.mjs': pre-compile failed at facet startup: Cannot use import statement outside a module"
+  },
+  {
+    "name": "ts-jest",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 255 pkgs, 5590 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot read properties of undefined (reading 'native')"
+  },
+  {
+    "name": "ts-node",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 21 pkgs, 548 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "typeof: object"
+  },
+  {
+    "name": "vite",
+    "overall": "⚠️",
+    "installStatus": "installed",
+    "installNote": "added 227 pkgs, 7412 files",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: ENOENT: no such file or directory, open 'file:///package.json'"
+  },
+  {
+    "name": "vitest",
+    "overall": "⛔",
+    "installStatus": "rejected-loud",
+    "installNote": "npm install rejected: playwright — Bundled browsers (~300 MB).\r",
+    "runtimeStatus": "runtime-failed",
+    "runtimeNote": "Error: Cannot find module 'vitest' (from /home/user/app)"
+  },
+  {
+    "name": "webpack",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 66 pkgs, 3092 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "typeof: function"
+  },
+  {
+    "name": "zod",
+    "overall": "✅",
+    "installStatus": "installed",
+    "installNote": "added 1 pkgs, 718 files",
+    "runtimeStatus": "ok",
+    "runtimeNote": "parse: hi"
+  }
+]

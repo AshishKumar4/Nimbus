@@ -1,0 +1,30 @@
+==== Per-case detector verdict + post-fix frameworkAware semantics ====
+PASS next.js project
+     framework=next (expected next)
+     aware(post-fix)=true (expected true)
+PASS astro project
+     framework=astro (expected astro)
+     aware(post-fix)=true (expected true)
+PASS nuxt project
+     framework=nuxt (expected nuxt)
+     aware(post-fix)=true (expected true)
+PASS remix v2 project
+     framework=remix (expected remix)
+     aware(post-fix)=true (expected true)
+PASS sveltekit project
+     framework=sveltekit (expected sveltekit)
+     aware(post-fix)=true (expected true)
+PASS wrangler-on-framework (svelte+wrangler)
+     framework=sveltekit (expected sveltekit)
+     aware(post-fix)=true (expected true)
+PASS wrangler standalone (no framework)
+     framework=wrangler (expected wrangler)
+     aware(post-fix)=true (expected true)
+PASS STARTER (generic vite + react, no framework)
+     framework=vite (expected vite)
+     aware(post-fix)=false (expected false)
+PASS pure node lib (no framework, no vite)
+     framework=unknown (expected unknown)
+     aware(post-fix)=false (expected false)
+
+Summary: 9 pass / 0 fail (out of 9)

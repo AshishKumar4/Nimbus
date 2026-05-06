@@ -1,0 +1,9 @@
+==== X5F skip-still-skips-transitive regression probe ====
+==== TIMESTAMP: 2026-05-06T00:25:30.826Z ====
+resolved names: ["fake-app","other"]
+skip messages: ["  skipping typescript (build-only)"]
+t1 fake-app resolved:                  PASS
+t2 other resolved:                     PASS
+t3 typescript NOT in resolved:         PASS
+t4 saw "skipping typescript" message:  PASS
+OVERALL: PASS

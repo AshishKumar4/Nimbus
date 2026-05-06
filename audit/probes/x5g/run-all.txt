@@ -1,0 +1,210 @@
+# X5G functional probes
+
+==== functional/native-binding-detect.mjs ====
+# helper exists
+  ok  exports isOptionalNativeBinding
+# positive: os/cpu/libc constraints
+  ok  os: ["linux"] → true
+  ok  cpu: ["x64"] → true
+  ok  libc: ["glibc"] → true
+  ok  os: ["linux"], cpu: ["x64"], libc: ["glibc"] → true
+# positive: .node main
+  ok  main "./rollup.linux-x64-gnu.node" → true
+  ok  main "rollup.node" → true
+# positive: known native-shard name globs
+  ok  @rollup/rollup-linux-x64-gnu → true
+  ok  @rollup/rollup-darwin-arm64 → true
+  ok  @parcel/watcher-linux-x64-glibc → true
+  ok  @swc/core-linux-x64-gnu → true
+  ok  @next/swc-linux-x64-gnu → true
+  ok  @tailwindcss/oxide-linux-x64-gnu → true
+  ok  @img/sharp-linux-x64 → true
+  ok  @napi-rs/canvas-linux-x64-gnu → true
+# negative: pure-JS packages
+  ok  react → false
+  ok  lodash → false
+  ok  pure-JS with main ./index.js → false
+  ok  empty packument → false
+  ok  no platform fields, name not glob → false
+# edge cases
+  ok  os: [] (empty) → false
+  ok  parent shard (e.g. @rollup/wasm-node) → false
+  ok  @parcel/watcher (parent, not platform shard) → false
+
+# native-binding-detect: 23 passed, 0 failed
+[PASS] functional/native-binding-detect.mjs
+
+==== functional/optional-deps-parse.mjs ====
+# ResolvedPackage interface includes optionalDependencies
+  ok  ResolvedPackage type has optionalDependencies field
+# versionToResolved populates optionalDependencies + os/cpu/libc
+  ok  reads vData.optionalDependencies
+  ok  reads vData.os
+  ok  reads vData.cpu
+  ok  reads vData.libc
+# registryCacheToResolved restores optionalDependencies
+  ok  registryCacheToResolved reads optionalDepsJson or similar
+
+# optional-deps-parse: 6 passed, 0 failed
+[PASS] functional/optional-deps-parse.mjs
+
+==== functional/peer-meta-only-not-installed.mjs ====
+# X5F R2.5 baseline: __allPeerDependencies iterates peerDependencies only
+  ok  __allPeerDependencies built from vData.peerDependencies (not peerMeta)
+  ok  does NOT iterate vData.peerDependenciesMeta keys for install-set
+# extractRequiredPeers filters by meta.optional
+  ok  extractRequiredPeers respects peerDependenciesMeta.X.optional === true
+# R2.5 generous-peer-include is gated on top-level only
+  ok  R2.5 unfiltered-peer enqueue is gated on topLevelNames
+# semantic outcome (synthetic packument)
+  ok  ts-jest synthetic: __allPeerDependencies excludes esbuild
+
+# peer-meta-only-not-installed (X5G regression-style): 5 passed, 0 failed
+[PASS] functional/peer-meta-only-not-installed.mjs
+
+==== functional/applySwaps-rollup.mjs ====
+# rollup swap entry exists
+  ok  lookupSwap("rollup") returns an entry
+  ok    .from === "rollup"
+  ok    .to === "@rollup/wasm-node"
+  ok    .compat === "drop-in"
+  ok    .reason mentions npm 4828 or optional dep
+# applySwaps rewrites rollup
+  ok  input rollup → output @rollup/wasm-node
+  ok  @rollup/wasm-node carries the same range
+  ok  swaps array has one entry
+  ok    swap.from === "rollup"
+# applySwaps idempotent on @rollup/wasm-node
+  ok  @rollup/wasm-node passes through unchanged
+  ok  no swaps fired
+# rollup not in REJECT_INSTALL (would conflict with WASM_SWAPS)
+  ok  lookupReject("rollup") returns undefined
+# mixed specs
+  ok  react untouched
+  ok  rollup → @rollup/wasm-node
+  ok  esbuild → esbuild-wasm
+  ok  two swaps fired
+
+# applySwaps-rollup: 16 passed, 0 failed
+[PASS] functional/applySwaps-rollup.mjs
+
+==== functional/preamble-parity-rollup.mjs ====
+# preamble has rollup swap entry
+  ok  preamble __WASM_SWAPS map contains 'rollup' → '@rollup/wasm-node'
+# registry has rollup swap entry
+  ok  WASM_SWAPS contains rollup → @rollup/wasm-node
+# parity: count of WASM_SWAPS entries matches preamble map size
+  ok  WASM_SWAPS array found in registry
+  ok  preamble __WASM_SWAPS Map found
+  ok  registry entry count (2) === preamble entry count (2)
+
+# preamble-parity-rollup: 5 passed, 0 failed
+[PASS] functional/preamble-parity-rollup.mjs
+
+==== functional/error-classification.mjs ====
+# helper exists
+  ok  exports classifyInstallError
+# optional-dep skip is recoverable
+  ok  platform mismatch (os) → optional-dep-skip
+  ok  optional 404 → optional-dep-skip
+# non-optional fetch-fail is real
+  ok  fetch fail on required dep → real-resolve-fail
+# registry reject is loud-reject
+  ok  registry-reject error → registry-reject
+# default optional-flag absent
+  ok  no isOptional → real-resolve-fail (conservative)
+
+# error-classification: 6 passed, 0 failed
+[PASS] functional/error-classification.mjs
+
+# X5G regression probes
+
+==== regression/single-resolver-source.mjs ====
+# exactly one TS impl
+  ok  real TS impls: ["src/_shared/exports-resolver.ts"]
+  ok  impl is _shared/exports-resolver.ts
+# generated-file mentions are string-literal artefacts
+  ok  1 generated-file mentions (informational)
+
+# single-resolver-source: 3 passed, 0 failed
+[PASS] regression/single-resolver-source.mjs
+
+==== regression/transitive-warn-still-warns.mjs ====
+# W6 transitive=warn entries still in REJECT_INSTALL
+  ok  fsevents is rejected
+  ok    fsevents.transitive === 'warn'
+  ok  bufferutil is rejected
+  ok    bufferutil.transitive === 'warn'
+  ok  utf-8-validate is rejected
+  ok    utf-8-validate.transitive === 'warn'
+  ok  node-gyp is rejected
+  ok    node-gyp.transitive === 'warn'
+  ok  node-pre-gyp is rejected
+  ok    node-pre-gyp.transitive === 'warn'
+# shouldWarnSkipTransitive returns the entry for warn names
+  ok  shouldWarnSkipTransitive("fsevents") returns entry
+  ok    fsevents transitive policy
+# shouldWarnSkipTransitive returns undefined for fail names
+  ok  shouldWarnSkipTransitive("sharp") undefined
+
+# transitive-warn-still-warns: 13 passed, 0 failed
+[PASS] regression/transitive-warn-still-warns.mjs
+
+==== regression/w65-telemetry-events-compatible.mjs ====
+# emit existing variants
+  ok  3 events captured
+  ok  first is swap
+  ok  second is transitive-skip
+  ok  third is reject
+# no new event variants leaked
+  ok  event type "swap" is in allowed set
+  ok  event type "transitive-skip" is in allowed set
+  ok  event type "reject" is in allowed set
+
+# w65-telemetry-events-compatible: 7 passed, 0 failed
+[PASS] regression/w65-telemetry-events-compatible.mjs
+
+==== regression/install-pipeline-coverage-shim.mjs ====
+# SCENARIOS list contains the expected 4 scenarios
+  ok  SCENARIOS contains label "fastify"
+  ok  SCENARIOS contains label "express"
+  ok  SCENARIOS contains label "ts-jest"
+  ok  SCENARIOS contains label "redis"
+# mustHaveAtLeastOne lists are unchanged
+  ok  ts-jest scenario expects 'typescript' visible
+  ok  ts-jest scenario expects 'jest' visible
+
+# install-pipeline-coverage-shim: 6 passed, 0 failed
+[PASS] regression/install-pipeline-coverage-shim.mjs
+
+==== regression/skip-still-skips-buildtools.mjs ====
+# SKIP_PACKAGES still contains the expected build-tools
+  ok  SKIP_PACKAGES contains 'typescript'
+  ok  SKIP_PACKAGES contains 'vite'
+  ok  SKIP_PACKAGES contains 'webpack'
+  ok  SKIP_PACKAGES contains 'parcel'
+  ok  SKIP_PACKAGES contains 'postcss'
+  ok  SKIP_PACKAGES contains 'autoprefixer'
+  ok  SKIP_PACKAGES contains 'tailwindcss'
+  ok  SKIP_PACKAGES contains 'prettier'
+  ok  SKIP_PACKAGES contains 'eslint'
+  ok  SKIP_PACKAGES contains 'stylelint'
+  ok  SKIP_PACKAGES contains 'chokidar'
+  ok  SKIP_PACKAGES contains 'node-gyp'
+  ok  SKIP_PACKAGES contains 'node-pre-gyp'
+# X5G: rollup MOVED from SKIP_PACKAGES to WASM_SWAPS
+  ok  SKIP_PACKAGES block found
+  ok  'rollup' NOT in SKIP_PACKAGES
+# SKIP_PREFIXES untouched
+  ok  SKIP_PREFIXES contains '@types/'
+  ok  SKIP_PREFIXES contains '@eslint/'
+  ok  SKIP_PREFIXES contains '@typescript-eslint/'
+
+# skip-still-skips-buildtools: 18 passed, 0 failed
+[PASS] regression/skip-still-skips-buildtools.mjs
+
+# X5G e2e probes — set NIMBUS_X5G_E2E=1 to run
+
+=========================================
+X5G summary: 11 passed, 0 failed
+=========================================

@@ -1004,6 +1004,26 @@ export class NpmInstaller {
       if (shouldSkipPackage(name)) continue;
       if (!lockfile.has(name)) return false;
     }
+    // X.5-F R2: every locked package's REQUIRED peerDependencies must
+    // also be in the lockfile. Lockfiles built before X.5-F lack peer
+    // entries; we invalidate them so the next install re-resolves and
+    // picks up peers (e.g. radix-react-dialog needs react+react-dom in
+    // the tree, ts-jest needs typescript). The peer info comes from
+    // the registry cache — if the cache miss happens too, we play it
+    // safe and invalidate (forcing a fresh resolve which is correct).
+    for (const [, entry] of lockfile) {
+      const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+      if (!cached) {
+        // Registry cache miss for this locked entry — can't verify
+        // peers. Invalidate to be safe (next install will repopulate
+        // the registry cache while resolving).
+        return false;
+      }
+      const peers = safeJsonParse<Record<string, string>>(cached.peerDepsJson || '{}', {});
+      for (const peerName of Object.keys(peers)) {
+        if (!lockfile.has(peerName)) return false;
+      }
+    }
     return true;
   }
 

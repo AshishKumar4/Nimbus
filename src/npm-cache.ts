@@ -19,6 +19,19 @@ export interface RegistryCacheEntry {
   tarballUrl: string;
   integrity: string;
   depsJson: string;       // JSON-encoded Record<string, string>
+  /**
+   * JSON-encoded REQUIRED peerDependencies (X.5-F R2).
+   *
+   * Optional peers — those marked `peerDependenciesMeta.<name>.optional
+   * === true` in the source packument — are filtered out before this
+   * field is written. Storing only the required subset means downstream
+   * lockfile-validity checks can ask "is this peer in the tree?"
+   * without having to consult the meta field again.
+   *
+   * Defaults to '{}' for entries written by pre-X.5-F builds (the
+   * column was added via ALTER TABLE, see ensureSchema).
+   */
+  peerDepsJson?: string;
   exportsJson: string;    // JSON-encoded exports field
   main: string;
   moduleField: string;
@@ -64,18 +77,42 @@ export class NpmCache {
     if (this.initialized) return;
 
     this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_registry_cache (
-      name         TEXT NOT NULL,
-      version      TEXT NOT NULL,
-      tarball_url  TEXT NOT NULL,
-      integrity    TEXT NOT NULL DEFAULT '',
-      deps_json    TEXT NOT NULL DEFAULT '{}',
-      exports_json TEXT NOT NULL DEFAULT '{}',
-      main         TEXT NOT NULL DEFAULT '',
-      module_field TEXT NOT NULL DEFAULT '',
-      bin_json     TEXT NOT NULL DEFAULT '{}',
-      fetched_at   INTEGER NOT NULL DEFAULT 0,
+      name           TEXT NOT NULL,
+      version        TEXT NOT NULL,
+      tarball_url    TEXT NOT NULL,
+      integrity      TEXT NOT NULL DEFAULT '',
+      deps_json      TEXT NOT NULL DEFAULT '{}',
+      peer_deps_json TEXT NOT NULL DEFAULT '{}',
+      exports_json   TEXT NOT NULL DEFAULT '{}',
+      main           TEXT NOT NULL DEFAULT '',
+      module_field   TEXT NOT NULL DEFAULT '',
+      bin_json       TEXT NOT NULL DEFAULT '{}',
+      fetched_at     INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (name, version)
     )`);
+
+    // X.5-F R2: peer_deps_json column added in this wave. Older tenants
+    // have a registry cache table without it — ALTER TABLE adds it
+    // with the same NOT NULL DEFAULT '{}' the CREATE specifies. SQLite
+    // ignores ADD COLUMN if the column already exists in newer setups
+    // — except it doesn't, it errors. So we probe via PRAGMA first.
+    let hasPeerCol = false;
+    try {
+      const cols = [...this.sql.exec(`PRAGMA table_info(pkg_registry_cache)`)];
+      hasPeerCol = cols.some((r) => String((r as any).name) === 'peer_deps_json');
+    } catch { /* PRAGMA failed — fall through and ATTEMPT, swallow on error */ }
+    if (!hasPeerCol) {
+      try {
+        this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN peer_deps_json TEXT NOT NULL DEFAULT '{}'`);
+      } catch (e: any) {
+        // Race or pre-existing — non-fatal; the column might already
+        // exist if the CREATE just ran above on a fresh tenant.
+        const msg = e?.message || String(e);
+        if (!/duplicate column/i.test(msg)) {
+          console.error('[npm-cache] peer_deps_json migration failed:', msg);
+        }
+      }
+    }
 
     this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_tarball_cache (
       name     TEXT NOT NULL,
@@ -116,7 +153,7 @@ export class NpmCache {
   getRegistryEntry(name: string, version: string): RegistryCacheEntry | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT name, version, tarball_url, integrity, deps_json, exports_json, main, module_field, bin_json, fetched_at
+      `SELECT name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at
        FROM pkg_registry_cache WHERE name = ? AND version = ?`,
       name, version,
     )];
@@ -128,6 +165,7 @@ export class NpmCache {
       tarballUrl: String(r.tarball_url),
       integrity: String(r.integrity),
       depsJson: String(r.deps_json),
+      peerDepsJson: String(r.peer_deps_json ?? '{}'),
       exportsJson: String(r.exports_json),
       main: String(r.main),
       moduleField: String(r.module_field),
@@ -149,7 +187,7 @@ export class NpmCache {
   dumpRegistryEntries(maxRows: number): RegistryCacheEntry[] {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT name, version, tarball_url, integrity, deps_json, exports_json, main, module_field, bin_json, fetched_at
+      `SELECT name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at
        FROM pkg_registry_cache ORDER BY fetched_at DESC LIMIT ?`,
       maxRows,
     )];
@@ -159,6 +197,7 @@ export class NpmCache {
       tarballUrl: String(r.tarball_url),
       integrity: String(r.integrity),
       depsJson: String(r.deps_json),
+      peerDepsJson: String(r.peer_deps_json ?? '{}'),
       exportsJson: String(r.exports_json),
       main: String(r.main),
       moduleField: String(r.module_field),
@@ -171,7 +210,7 @@ export class NpmCache {
   getRegistryVersions(name: string): RegistryCacheEntry[] {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT name, version, tarball_url, integrity, deps_json, exports_json, main, module_field, bin_json, fetched_at
+      `SELECT name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at
        FROM pkg_registry_cache WHERE name = ?`,
       name,
     )];
@@ -181,6 +220,7 @@ export class NpmCache {
       tarballUrl: String(r.tarball_url),
       integrity: String(r.integrity),
       depsJson: String(r.deps_json),
+      peerDepsJson: String(r.peer_deps_json ?? '{}'),
       exportsJson: String(r.exports_json),
       main: String(r.main),
       moduleField: String(r.module_field),
@@ -194,10 +234,11 @@ export class NpmCache {
     this.ensureSchema();
     this.sql.exec(
       `INSERT OR REPLACE INTO pkg_registry_cache
-       (name, version, tarball_url, integrity, deps_json, exports_json, main, module_field, bin_json, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       entry.name, entry.version, entry.tarballUrl, entry.integrity,
-      entry.depsJson, entry.exportsJson, entry.main, entry.moduleField,
+      entry.depsJson, entry.peerDepsJson || '{}',
+      entry.exportsJson, entry.main, entry.moduleField,
       entry.binJson, entry.fetchedAt,
     );
   }
@@ -224,10 +265,11 @@ export class NpmCache {
       try {
         this.sql.exec(
           `INSERT OR REPLACE INTO pkg_registry_cache
-           (name, version, tarball_url, integrity, deps_json, exports_json, main, module_field, bin_json, fetched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           entry.name, entry.version, entry.tarballUrl, entry.integrity,
-          entry.depsJson, entry.exportsJson, entry.main, entry.moduleField,
+          entry.depsJson, entry.peerDepsJson || '{}',
+          entry.exportsJson, entry.main, entry.moduleField,
           entry.binJson, entry.fetchedAt,
         );
         written++;

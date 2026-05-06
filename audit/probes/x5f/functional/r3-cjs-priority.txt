@@ -1,0 +1,7 @@
+==== X5F R3 CJS-priority regression probe ====
+==== TIMESTAMP: 2026-05-06T00:25:30.604Z ====
+cjs path: "./dist/index.js"
+esm path: "./dist/index.mjs"
+t1 CJS picks .js (no fallback shadow): PASS
+t2 ESM picks .mjs (sanity):            PASS
+OVERALL: PASS

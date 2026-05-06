@@ -1,0 +1,4 @@
+functional/*.txt
+regression/*.txt
+e2e/*.out.txt
+run-all-RED.txt

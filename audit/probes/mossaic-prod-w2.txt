@@ -1,67 +1,22 @@
 ==== MOSSAIC PROD W2 REGRESSION ====
-==== TIMESTAMP: 2026-05-04T03:00:57.502Z ====
-==== BASE: https://nimbus.ashishkmr472.workers.dev ====
-==== SID: polar-stream-0697 ====
+==== TIMESTAMP: 2026-05-06T00:16:43.115Z ====
+==== BASE: http://127.0.0.1:8787 ====
+==== SID: calm-kestrel-6744 ====
 ---- STEP cmd (clone+install+dev): git clone https://github.com/AshishKumar4/Mossaic && cd Mossaic && npm install && npm run dev & ----
----- vite ready t=30.5s ----
----- stats: {"files":13295,"directories":1336,"usedBytes":136980254,"capacityBytes":10737418240,"backend":"DO SQLite (demand-paged VFS)","cache":{"entries":512,"maxEntries":512,"chunkSize":65536,"hotBytes":10103835,"maxBytes":33554432,"hits":375,"misses":1133,"hitRate":24.87,"evictions":630},"sql":{"reads":1133,"writes":36770,"batchWrites":269,"batchWriteRows":36770,"pendingWrites":0,"failedWrites":0,"totalWriteFailures":0},"events":{"totalEmitted":19185,"totalBatches":266,"globalListeners":1,"pathListeners":0,"pending":0},"inodes":{"total":14631,"files":13295,"directories":1336,"memoryEstimate":2926200},"processes":{"total":0,"running":0,"exited":0,"killed":0,"nextPid":1},"logStore":{"totalPids":0,"maxPids":500,"runningPids":0,"exitedPids":0,"totalBufferBytes":0,"subscribers":0,"droppedPids":0},"port ----
----- WS output snapshot (last 4000 chars) ----
-user@nimbus:~$ git clone https://github.com/AshishKumar4/Mossaic && cd Mossaic && npm install && npm run dev &
+!!!! VITE NEVER READY after 242.8s !!!!
+---- last buffer (-2000): [J[1m[32muser@nimbus[0m:[1m[34m~[0m$ git clone https://github.com/AshishKumar4/Mossaic && cd Mossaic && npm install && npm run dev &[110C
 [1] 3 (background)
-user@nimbus:~$ Cloning into '/home/user/Mossaic'... (shallow, depth=1)
-[git] Counting objects 1/491[git] Counting objects 491/491[git] Counting objects 491/491[git] Compressing objects 1/473[git] Compressing objects 417/473[git] Compressing objects 473/473[git] Compressing objects 473/473[git] Resolving deltas 0/490[git] Receiving objects 490/490[git] Receiving objects 0/490[git] Resolving deltas 490/490[git] Analyzing workdir 1/?[git] Analyzing workdir 15/?[git] Analyzing workdir 88/?[git] Analyzing workdir 301/?[git] Analyzing workdir 440/?[git] Updating workdir 1/489[git] Updating workdir 50/425[git] Updating workdir 100/425[git] Updating workdir 150/425[git] Updating workdir 200/425[git] Updating workdir 250/425[git] Updating workdir 300/425[git] Updating workdir 350/425[git] Updating workdir 400/425[git] Updating workdir 425/425[git] Updating workdir 425/425
-[git] clone complete (435 files, 5141.6KB in 5.8s)
-Installing dependencies from package.json (npm v2 — batched writes)...
+[1m[32muser@nimbus[0m:[1m[34m~[0m$ Cloning into '/home/user/Mossaic'... (shallow, depth=1)
+[git] Counting objects 1/491[git] Counting objects 491/491[git] Counting objects 491/491[git] Compressing objects 1/473[git] Compressing objects 388/473[git] Compressing objects 473/473[git] Compressing objects 473/473[git] Receiving objects 0/490[git] Receiving objects 490/490[git] Resolving deltas 0/490[git] Resolving deltas 490/490[git] Analyzing workdir 1/?[git] Updating workdir 1/489[git] Updating workdir 200/425[git] Updating workdir 350/425[git] Updating workdir 425/425[git] Updating workdir 425/425
+[git] clone complete (435 files, 5141.6KB in 3.3s)
+[36mInstalling dependencies from package.json (npm v2 — batched writes)...[0m
 [npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
 [npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
 [npm] Resolving 30 dependencies (path: facet, fetch: global)...
 [npm]   resolver-facet: shipping 0 cached entries
-[npm]   resolver-facet: 251 resolved, 251 packuments fetched (175.2 MiB), peak in-flight=4, cache writes=1251, elapsed=7.0s
-[npm] Resolved 251 packages.
-[npm] To fetch: 251, to restore: 0, already installed: 0
-[npm] Fetching 251 packages... (path: batch-facet)
-[npm] Dispatching 251 packages to batch-facet (single worker, internal pLimit=3)...
-[npm] Batch-facet complete: 251/251 packages, 12815 files, 22.9 MiB tarball bytes, peak in-flight=3, 13.3s
-[npm]   synthesized entry for lucide-react (barrel: 3940 files; 72 static imports → tree-shaken bundle)
-[npm] Pre-bundling 31 modules... (supervisor heap 0.0 MiB)
-[npm] Done! 251 packages, 12815 files in 20.4s
-
-added 251 packages (12815 files) in 20.4s
-
-> mossaic@0.1.0 dev
-> vite
-
-
-  Nimbus Vite Dev Server v2.0
-
-  ➜  Preview:    /s/polar-stream-0697/preview/
-  ➜  Root:       home/user/Mossaic
-  ➜  Port:       4500
-  ➜  Transforms: .ts .tsx .jsx (React JSX automatic)
-  ➜  Aliases:    @, @shared, @core, @app
-
-  Run vite stop to stop.
-
-[npm]   pre-bundle failed for @playwright/test: Worker exceeded memory limit.
----- end snapshot ----
----- GET https://nimbus.ashishkmr472.workers.dev/s/polar-stream-0697/preview/ ----
-status: 200
-content-length: 2870
-first 600 chars: <!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Mossaic</title>\n    <link rel="icon" type="image/svg+xml" href="/s/polar-stream-0697/preview/favicon.svg" />\n  <base href="/s/polar-stream-0697/preview/">\n<script src="/s/polar-stream-0697/preview/__nimbus_assets/tailwind-play.js"></script>\n<script>(()=>{const s=(m)=>{let o=document.getElementById('nimbus-error-overlay');if(!o){o=document.createElement('div');o.id='nimbus-error-overlay';o.style.cssText='position:fixed;top:0;left:0;right:
----- URLs found in /preview/ HTML: 4 ----
-  /s/polar-stream-0697/preview/favicon.svg
-  /s/polar-stream-0697/preview/
-  /s/polar-stream-0697/preview/__nimbus_assets/tailwind-play.js
-  /s/polar-stream-0697/preview/src/main.tsx
----- internal host counts: {"nimbus.ashishkmr472.workers.dev":4} ----
----- external URLs: 0 ----
----- session alive after preview load: true ----
----- buf tail after alive-check: st: unresolved bare import "util" from /home/user/Mossaic/node_modules/@vitest/snapshot/dist/index.js → marked external
-[npm]   [warn] vitest/config: unresolved bare import "node:os" from /home/user/Mossaic/node_modules/vitest/dist/config.js → marked external
-[npm]   [warn] vitest/config: unresolved bare import "vite" from /home/user/Mossaic/node_modules/vitest/dist/config.js → marked external
+[npm]   resolver-facet failed: npm install rejected: playwright — Bundled browsers (~300 MB).
+[31mnpm install failed: resolver-facet failed: npm install rejected: playwright — Bundled browsers (~300 MB).[0m
  ----
----- /api/stats post-preview: {"files":13295,"directories":1336,"usedBytes":136980277,"capacityBytes":10737418240,"backend":"DO SQLite (demand-paged VFS)","cache":{"entries":512,"maxEntries":512,"chunkSize":65536,"hotBytes":2026016,"maxBytes":33554432,"hits":514,"misses":5420,"hitRate":8.66,"evictions":4918},"sql":{"reads":5420,"writes":36771,"batchWrites":270,"batchWriteRows":36771,"pendingWrites":0,"failedWrites":0,"totalWriteFailures":0},"events":{"totalEmitted":19186,"totalBatches":267,"globalListeners":1,"pathListeners":0,"pending":0},"inodes":{"total":14631,"files":13295,"directories":1336,"memoryEstimate":2926200},"processes":{"total":0,"running":0,"exited":0,"killed":0,"nextPid":1},"logStore":{"totalPids":0,"maxPids":500,"runningPids":0,"exitedPids":0,"totalBufferBytes":0,"subscribers":0,"droppedPids":0},"ports ----
-
-==== VERDICT: PASS ====
-  status=200, htmlLen=2870, external=0, alive=true, viteRunning=true
-==== END MOSSAIC PROD W2 ====
+---- last stats: {"files":457,"directories":97,"usedBytes":5296742,"capacityBytes":10737418240,"backend":"DO SQLite (demand-paged VFS)","cache":{"entries":12,"maxEntries":512,"chunkSize":65536,"hotBytes":5901,"maxBytes":33554432,"hits":5,"misses":4,"hitRate":55.56,"evictions":0,"lruShrunk":false},"sql":{"reads":4,"writes":7509,"batchWrites":14,"batchWriteRows":7509,"pendingWrites":0,"failedWrites":0,"totalWriteFailures":0},"events":{"totalEmitted":4031,"totalBatches":12,"globalListeners":0,"pathListeners":0,"pending":0},"inodes":{"total":554,"files":457,"directories":97,"memoryEstimate":110800},"processes":{"total":0,"running":0,"exited":0,"killed":0,"nextPid":1},"logStore":{"totalPids":0,"maxPids":500,"runningPids":0,"exitedPids":0,"totalBufferBytes":0,"subscribers":0,"droppedPids":0},"ports":{"activePort ----
+==== END MOSSAIC PROD W2 (FAIL: vite never ready) ====

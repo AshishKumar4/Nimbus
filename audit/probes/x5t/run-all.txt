@@ -1,0 +1,79 @@
+==== X5T RUN-ALL ====
+==== 2026-05-06T07:51:19.170Z ====
+
+==== realpath-native-defined ====
+$ bun audit/probes/x5t/functional/realpath-native-defined.mjs
+# shim evaluation
+  ok  shim scope evaluates without error
+# fs.realpathSync — sync surface present
+  ok  typeof fs.realpathSync === "function"
+  ok  fs.realpathSync("/foo") returns a string
+  ok  fs.realpathSync("/foo") === "/foo"
+# fs.realpathSync.native — TS getNodeSystem fix surface
+  ok  typeof fs.realpathSync.native === "function"
+  ok  !!fs.realpathSync.native is truthy (matches TS truthy gate)
+  ok  fs.realpathSync === fs.realpathSync.native (same ref per Z5 plan §4.3)
+  ok  fs.realpathSync.native("/foo") returns a string
+  ok  fs.realpathSync.native("/foo") === fs.realpathSync("/foo")
+
+# x5t realpath-native-defined: 9 passed, 0 failed
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x5t/regression/single-resolver-source.mjs
+==== X5F single-resolver-source regression probe ====
+==== TIMESTAMP: 2026-05-06T07:51:19.258Z ====
+grep matches: ["/workspace/worktrees/x5t-tsjest/src/_shared/exports-resolver.ts","/workspace/worktrees/x5t-tsjest/src/real-vite-bundle.generated.ts"]
+  /workspace/worktrees/x5t-tsjest/src/real-vite-bundle.generated.ts: has the substring but no export-function declaration
+real TS impls: ["/workspace/worktrees/x5t-tsjest/src/_shared/exports-resolver.ts"]
+exactly-one-impl:                PASS
+impl is _shared/exports-resolver.ts: PASS
+OVERALL: PASS
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5t/regression/install-pipeline-coverage-shim.mjs
+==== X5F install-pipeline-coverage shim regression ====
+==== TIMESTAMP: 2026-05-06T07:51:19.404Z ====
+BASE=http://127.0.0.1:8787
+==== INSTALL PIPELINE COVERAGE PROBE ====
+==== TIMESTAMP: 2026-05-06T07:51:19.452Z ====
+
+--- scenario: fastify ---
+install: npm install fastify
+  PASS — all 15 expected packages visible
+
+--- scenario: express ---
+install: npm install express
+  PASS — all 7 expected packages visible
+
+--- scenario: ts-jest ---
+install: npm install ts-jest jest typescript
+  !! could not parse coverage map; scenario inconclusive
+
+--- scenario: redis ---
+install: npm install redis
+  !! could not parse coverage map; scenario inconclusive
+
+=========================================
+SUMMARY:
+  PASS  fastify
+  PASS  express
+  FAIL  ts-jest
+  FAIL  redis
+=========================================
+Overall: 2/4 scenarios pass
+==== END PROBE ====
+canonical probe exited 1
+
+EXIT=1
+
+==== SKIPPING E2E (BASE not set or --no-e2e flag) ====
+==== SUMMARY ====
+  PASS  realpath-native-defined
+  PASS  single-resolver-source
+  FAIL  install-pipeline-coverage-shim
+
+Total: 2 pass, 1 fail (out of 3)

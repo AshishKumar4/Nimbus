@@ -1,0 +1,28 @@
+==== PROBE: x526b lightningcss-e2e ====
+==== TIMESTAMP: 2026-05-06T07:11:47.803Z ====
+==== SID: pearly-castle-2930 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install lightningcss ----
+user@nimbus:~$ cd app && npm install lightningcss
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+npm install failed: npm install rejected: 1 package not supported on Nimbus.
+  ❌ lightningcss — Native Rust CSS parser; ships platform-specific .node bindings + a wasm32-wasi-only `lightningcss-wasm` package (cpu=wasm32; npm refuses install on x64). workerd has no node:wasi (W6.5). Even before the binding load, the detect-libc dependency throws because child_process.execSync returns undefined inside workerd.
+     try: no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: x526b lightningcss-e2e ====

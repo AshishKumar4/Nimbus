@@ -1,16 +1,16 @@
 ==== WAVE 1 REGRESSION POST-W2 ====
-==== TIMESTAMP: 2026-05-04T03:01:43.220Z ====
-==== BASE: https://nimbus.ashishkmr472.workers.dev ====
-==== SID: lively-forest-7648 ====
----- vite ready t=6.9s ----
----- GET /preview/ → 200 (3206 bytes) ----
-first 500 chars: <!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1" />\n    <title>Nimbus Starter</title>\n    <link rel="stylesheet" href="/s/lively-forest-7648/preview/src/index.css" />\n  <base href="/s/lively-forest-7648/preview/">\n<script src="/s/lively-forest-7648/preview/__nimbus_assets/tailwind-play.js"></script>\n<script>\ntailwind.config = {\n  content: ['./index.html', './src/**/*.{ts,tsx,js,jsx}'],\n  theme: {\n    ex
----- top-level: internal={"nimbus.ashishkmr472.workers.dev":9} external=0 ----
+==== TIMESTAMP: 2026-05-06T00:20:53.771Z ====
+==== BASE: http://127.0.0.1:8787 ====
+==== SID: scarlet-diamond-8007 ====
+---- vite ready t=7.1s ----
+---- GET /preview/ → 200 (3214 bytes) ----
+first 500 chars: <!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1" />\n    <title>Nimbus Starter</title>\n    <link rel="stylesheet" href="/s/scarlet-diamond-8007/preview/src/index.css" />\n  <base href="/s/scarlet-diamond-8007/preview/">\n<script src="/s/scarlet-diamond-8007/preview/__nimbus_assets/tailwind-play.js"></script>\n<script>\ntailwind.config = {\n  content: ['./index.html', './src/**/*.{ts,tsx,js,jsx}'],\n  theme: {\n
+---- top-level: internal={"127.0.0.1:8787":9} external=0 ----
 ---- crawling 1 same-host JS modules for transitive externals ----
----- crawled 1 JS modules (sample: https://nimbus.ashishkmr472.workers.dev/s/lively-forest-7648/preview/__nimbus_assets/tailwind-play.js) ----
----- final: internal={"nimbus.ashishkmr472.workers.dev":9} external=0 ----
+---- crawled 1 JS modules (sample: http://127.0.0.1:8787/s/scarlet-diamond-8007/preview/__nimbus_assets/tailwind-play.js) ----
+---- final: internal={"127.0.0.1:8787":9} external=0 ----
 ---- tailwind-play.js: status=200 ct=application/javascript; charset=utf-8 ----
 
 ==== VERDICT: PASS ====
-  external=0, status=200, htmlLen=3206, twOk=true
+  external=0, status=200, htmlLen=3214, twOk=true
 ==== END WAVE1 REGRESSION ====

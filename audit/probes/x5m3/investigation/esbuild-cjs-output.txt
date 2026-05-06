@@ -1,0 +1,4 @@
+var import_node_fs = require("node:fs");
+const import_meta = {};
+const x = new URL("../../package.json", new URL("../../../src/node/constants.ts", import_meta.url));
+console.log("URL:", x.href);

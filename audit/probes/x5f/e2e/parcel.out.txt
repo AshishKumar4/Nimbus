@@ -1,0 +1,43 @@
+==== PROBE: x5f-parcel ====
+==== TIMESTAMP: 2026-05-05T02:33:09.767Z ====
+==== SID: ardent-oak-8621 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install parcel ----
+user@nimbus:~$ cd app && npm install parcel
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet failed: npm install rejected: @swc/core — Native Rust SWC.
+npm install failed: resolver-facet failed: npm install rejected: @swc/core — Native Rust SWC.
+user@nimbus:~/app$ 
+---- step done in 6514ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.x5fsmoke_mos0kdja_wy0rmj.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgcCA9IHJlcXVpcmUoJ3BhcmNlbCcpOyBjb25zb2xlLmxvZygndHlwZW9mOicsIHR5cGVvZiBwKTsgfSBjYXRjaChlKXsgY29uc29sZS5sb2coJ3JlcXVpcmUtdGhyb3c6JywgZS5tZXNzYWdlKTsgfQ==' && cd /home/user/app && node .x5fsmoke_mos0kdja_wy0rmj.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.x5fsmoke_mos0kdja_wy0rmj.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgcCA9IHJlcXVpcmUoJ3BhcmNlbCcpOyBjb25zb2xlLmxvZygndHlwZW9mOicsIHR5cGVvZiBwKTsgfSBjYXRjaChlKXsgY29uc29sZS5sb2coJ3JlcXVpcmUtdGhyb3c6JywgZS5tZXNzYWdlKTsgfQ==' && cd /home/user/app && node .x5fsmoke_mos0kdja_wy0rmj.js
+[facet started: pid=2 cmd="node /home/user/app/.x5fsmoke_mos0kdja_wy0rmj.js"]
+require-throw: Cannot find module 'parcel' (from /home/user/app)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.x5fsmoke_mos0kdja_wy0rmj.js) exited with code 0
+────────────────────────────────────────────────────────────
+require-throw: Cannot find module 'parcel' (from /home/user/app)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: x5f-parcel ====

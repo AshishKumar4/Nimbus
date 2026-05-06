@@ -1,0 +1,140 @@
+==== X5-DRIZZLE RUN-ALL ====
+==== 2026-05-06T09:30:14.992Z ====
+
+==== detect-aware-on-starter ====
+$ bun audit/probes/x5-drizzle/functional/detect-aware-on-starter.mjs
+# starter-shape pkg.json triggers detectFramework=vite (step 8)
+  ok  detector returns framework=vite
+  ok  detector returns devCommand=vite-real
+  ok  detector confidence=0.7 (step 8)
+
+# x5-drizzle/functional/detect-aware-on-starter: 3 passed, 0 failed
+
+EXIT=0
+
+==== detect-aware-preserves-frameworks ====
+$ bun audit/probes/x5-drizzle/functional/detect-aware-preserves-frameworks.mjs
+# detector contract: next.js
+  ok    framework=next
+# detector contract: astro
+  ok    framework=astro
+# detector contract: nuxt
+  ok    framework=nuxt
+# detector contract: remix v2
+  ok    framework=remix
+# detector contract: sveltekit
+  ok    framework=sveltekit
+# detector contract: wrangler-on-fw (sk+wrangler)
+  ok    framework=sveltekit
+# detector contract: wrangler-standalone
+  ok    framework=wrangler
+# detector contract: generic vite (starter / Mossaic)
+  ok    framework=vite
+# detector contract: pure-node-lib
+  ok    framework=unknown
+
+# x5-drizzle/functional/detect-aware-preserves-frameworks: 9 passed, 0 failed
+
+EXIT=0
+
+==== installer-detect-source-shape ====
+$ bun audit/probes/x5-drizzle/functional/installer-detect-source-shape.mjs
+# npm-resolver.ts: bestEffortNames declared
+  ok  bestEffortNames Set declared
+  ok  X.5-drizzle rationale comment present
+# npm-resolver.ts: registry-reject soft-skip branch
+  ok  soft-skip branch refers to bestEffortNames
+  ok  soft-skip branch quotes the canonical chain
+# npm-resolver.ts: X.5-J path tags optional peers as best-effort
+  ok  X.5-J enqueue block located
+  ok  block calls bestEffortNames.add(peerName)
+# npm-resolve-facet.ts: bestEffortNames mirror
+  ok  bestEffortNames Set declared (facet)
+  ok  X.5-drizzle rationale comment present (facet)
+  ok  facet soft-skip branch refers to bestEffortNames
+  ok  facet X.5-J enqueue tags peer as bestEffort
+# inheritBestEffort propagation present
+  ok  npm-resolver.ts: inheritBestEffort propagation
+  ok  npm-resolve-facet.ts: inheritBestEffort propagation
+
+# x5-drizzle/functional/installer-detect-source-shape: 12 passed, 0 failed
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x5-drizzle/regression/single-resolver-source.mjs
+==== X5F single-resolver-source regression probe ====
+==== TIMESTAMP: 2026-05-06T09:30:15.120Z ====
+grep matches: ["/workspace/worktrees/x5-drizzle/src/_shared/exports-resolver.ts","/workspace/worktrees/x5-drizzle/src/real-vite-bundle.generated.ts"]
+  /workspace/worktrees/x5-drizzle/src/real-vite-bundle.generated.ts: has the substring but no export-function declaration
+real TS impls: ["/workspace/worktrees/x5-drizzle/src/_shared/exports-resolver.ts"]
+exactly-one-impl:                PASS
+impl is _shared/exports-resolver.ts: PASS
+OVERALL: PASS
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5-drizzle/regression/install-pipeline-coverage-shim.mjs
+==== X5F install-pipeline-coverage shim regression ====
+==== TIMESTAMP: 2026-05-06T09:30:15.273Z ====
+BASE=http://127.0.0.1:8787
+!! BASE unreachable — SKIP. Phase D will start wrangler dev.
+
+EXIT=0
+
+==== w11-frameworks-still-detect ====
+$ bun audit/probes/x5-drizzle/regression/w11-frameworks-still-detect.mjs
+==== W11 detect probes (run via X.5-drizzle regression shim) ====
+  PASS  audit/probes/w11/functional/detect-next.mjs
+  PASS  audit/probes/w11/functional/detect-astro.mjs
+  PASS  audit/probes/w11/functional/detect-nuxt.mjs
+  PASS  audit/probes/w11/functional/detect-remix.mjs
+  PASS  audit/probes/w11/functional/detect-sveltekit.mjs
+  PASS  audit/probes/w11/functional/detect-wrangler.mjs
+  PASS  audit/probes/w11/functional/detect-wrangler-on-framework.mjs
+  PASS  audit/probes/w11/functional/detect-vite-generic.mjs
+  PASS  audit/probes/w11/functional/detect-precedence.mjs
+  PASS  audit/probes/w11/functional/detect-remix-bare-react.mjs
+  PASS  audit/probes/w11/functional/detect-unknown.mjs
+  PASS  audit/probes/w11/functional/shim-modules-loadable.mjs
+
+Total: 12 pass / 0 fail (out of 12)
+
+EXIT=0
+
+==== w11-vite-generic-still-detects-as-vite ====
+$ bun audit/probes/x5-drizzle/regression/w11-vite-generic-still-detects-as-vite.mjs
+# detect-vite-generic invariant
+  ok  framework=vite
+  ok  devCommand=vite-real
+  ok  confidence is 0.7 (step 8)
+  ok  reason mentions vite
+
+# x5-drizzle/regression/w11-vite-generic-still-detects-as-vite: 4 passed, 0 failed
+
+EXIT=0
+
+==== mossaic-regression-coverage ====
+$ bun audit/probes/x5-drizzle/regression/mossaic-regression-coverage.mjs
+# Mossaic-shape detector verdict (W11 detector contract)
+  ok  detector framework=vite
+  ok  detector devCommand=vite-real
+  ok  detector confidence=0.7
+
+# x5-drizzle/regression/mossaic-regression-coverage: 3 passed, 0 failed
+
+EXIT=0
+
+==== SKIPPING E2E (BASE not set or --no-e2e flag) ====
+==== SUMMARY ====
+  PASS  detect-aware-on-starter
+  PASS  detect-aware-preserves-frameworks
+  PASS  installer-detect-source-shape
+  PASS  single-resolver-source
+  PASS  install-pipeline-coverage-shim
+  PASS  w11-frameworks-still-detect
+  PASS  w11-vite-generic-still-detects-as-vite
+  PASS  mossaic-regression-coverage
+
+Total: 8 pass, 0 fail (out of 8)

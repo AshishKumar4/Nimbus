@@ -1,0 +1,149 @@
+==== PROBE: vite ====
+==== TIMESTAMP: 2026-05-05T20:10:55.494Z ====
+==== SID: giddy-mink-0299 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install vite ----
+user@nimbus:~$ cd app && npm install vite
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm] [npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers.
+[npm] [npm] [swap] esbuild → esbuild-wasm
+[npm] [resolve-facet] [skip] lightningcss-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=lightningcss.darwin-x64.node)
+[npm] [resolve-facet] [skip] lightningcss-win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=lightningcss.win32-x64-msvc.node)
+[npm] [resolve-facet] [skip] lightningcss-win32-arm64-msvc — optional native binding (os=win32, cpu=arm64, libc=*, main=lightningcss.win32-arm64-msvc.node)
+[npm] [resolve-facet] [skip] lightningcss-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=lightningcss.darwin-arm64.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=glibc, main=lightningcss.linux-x64-gnu.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=lightningcss.linux-arm-gnueabihf.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=glibc, main=lightningcss.linux-arm64-gnu.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=lightningcss.linux-arm64-musl.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=lightningcss.linux-x64-musl.node)
+[npm] [resolve-facet] [skip] lightningcss-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=lightningcss.freebsd-x64.node)
+[npm] [resolve-facet] [skip] lightningcss-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=lightningcss.android-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=rolldown-binding.freebsd-x64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-wasm32-wasi — optional native binding (os=*, cpu=wasm32, libc=*, main=rolldown-binding.wasi.cjs)
+[npm] [resolve-facet] [skip] @rolldown/binding-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=rolldown-binding.darwin-x64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=rolldown-binding.darwin-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=rolldown-binding.linux-x64-musl.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=rolldown-binding.android-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=rolldown-binding.win32-x64-msvc.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=glibc, main=rolldown-binding.linux-x64-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-s390x-gnu — optional native binding (os=linux, cpu=s390x, libc=glibc, main=rolldown-binding.linux-s390x-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-ppc64-gnu — optional native binding (os=linux, cpu=ppc64, libc=glibc, main=rolldown-binding.linux-ppc64-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=glibc, main=rolldown-binding.linux-arm64-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=rolldown-binding.linux-arm64-musl.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-openharmony-arm64 — optional native binding (os=openharmony, cpu=arm64, libc=*, main=rolldown-binding.openharmony-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=rolldown-binding.linux-arm-gnueabihf.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-win32-arm64-msvc — optional native binding (os=win32, cpu=arm64, libc=*, main=rolldown-binding.win32-arm64-msvc.node)
+[npm] [resolve-facet] [skip] sass-embedded-all-unknown — optional native binding (os=*, cpu=!arm,!arm64,!riscv64,!x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-x64 — optional native binding (os=android, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-riscv64 — optional native binding (os=android, cpu=riscv64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-arm — optional native binding (os=android, cpu=arm, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-arm64 — optional native binding (os=linux, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-arm — optional native binding (os=linux, cpu=arm, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-x64 — optional native binding (os=linux, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-riscv64 — optional native binding (os=linux, cpu=riscv64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-arm64 — optional native binding (os=linux, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-arm — optional native binding (os=linux, cpu=arm, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-riscv64 — optional native binding (os=linux, cpu=riscv64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-unknown-all — optional native binding (os=!android,!darwin,!linux,!win32, cpu=*, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-win32-arm64 — optional native binding (os=win32, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-x64 — optional native binding (os=linux, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-win32-x64 — optional native binding (os=win32, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] @parcel/watcher-win32-x64 — optional native binding (os=win32, cpu=x64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-win32-arm64 — optional native binding (os=win32, cpu=arm64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-win32-ia32 — optional native binding (os=win32, cpu=ia32, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-x64-glibc — optional native binding (os=linux, cpu=x64, libc=glibc, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm-glibc — optional native binding (os=linux, cpu=arm, libc=glibc, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm-musl — optional native binding (os=linux, cpu=arm, libc=musl, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm64-glibc — optional native binding (os=linux, cpu=arm64, libc=glibc, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=parser.freebsd-x64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=parser.darwin-x64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=glibc, main=parser.linux-x64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=parser.android-arm64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-wasm32-wasi — optional native binding (os=*, cpu=wasm32, libc=*, main=parser.wasi.cjs)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=parser.darwin-arm64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=parser.win32-x64-msvc.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-ppc64-gnu — optional native binding (os=linux, cpu=ppc64, libc=glibc, main=parser.linux-ppc64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=glibc, main=parser.linux-arm64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=parser.linux-x64-musl.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-win32-ia32-msvc — optional native binding (os=win32, cpu=ia32, libc=*, main=parser.win32-ia32-msvc.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-android-arm-eabi — optional native binding (os=android, cpu=arm, libc=*, main=parser.android-arm-eabi.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-s390x-gnu — optional native binding (os=linux, cpu=s390x, libc=glibc, main=parser.linux-s390x-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=parser.linux-arm64-musl.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-riscv64-musl — optional native binding (os=linux, cpu=riscv64, libc=musl, main=parser.linux-riscv64-musl.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-openharmony-arm64 — optional native binding (os=openharmony, cpu=arm64, libc=*, main=parser.openharmony-arm64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-riscv64-gnu — optional native binding (os=linux, cpu=riscv64, libc=glibc, main=parser.linux-riscv64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-win32-arm64-msvc — optional native binding (os=win32, cpu=arm64, libc=*, main=parser.win32-arm64-msvc.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm-musleabihf — optional native binding (os=linux, cpu=arm, libc=*, main=parser.linux-arm-musleabihf.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=parser.linux-arm-gnueabihf.node)
+[npm]   resolver-facet: 227 resolved, 304 packuments fetched (122.5 MiB), peak in-flight=4, cache writes=1533, elapsed=9.5s
+[npm] Resolved 227 packages.
+[npm] To fetch: 227, to restore: 0, already installed: 0
+[npm] Fetching 227 packages... (path: batch-facet)
+[npm] Dispatching 227 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 227/227 packages, 7411 files, 24.1 MiB tarball bytes, peak in-flight=3, 13.0s
+[npm] Done! 227 packages, 7411 files in 22.6s
+
+added 227 packages (7411 files) in 22.6s
+user@nimbus:~/app$ 
+---- step done in 23049ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mot2co06.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd2aXRlJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_mot2co06.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.pkgsmoke_mot2co06.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbT1yZXF1aXJlKCd2aXRlJyk7Y29uc29sZS5sb2coJ2tleXM6JyxPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKQ==' && cd /home/user/app && node .pkgsmoke_mot2co06.js
+[facet started: pid=2 cmd="node /home/user/app/.pkgsmoke_mot2co06.js"]
+Error: ENOENT: no such file or directory, open 'file:///package.json'
+    at readFileSync (runner.js:207:19)
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:144:64)
+    at __loadModule (runner.js:2652:7)
+    at __requireFrom (runner.js:2732:10)
+    at scopedRequire (runner.js:2637:33)
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:84:21)
+    at __loadModule (runner.js:2652:7)
+    at __requireFrom (runner.js:2732:10)
+    at __require (runner.js:2740:10)
+    at eval (eval at <anonymous> (runner.js:11:22), <anonymous>:3:9)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.pkgsmoke_mot2co06.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: ENOENT: no such file or directory, open 'file:///package.json'
+    at readFileSync (runner.js:207:19)
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:144:64)
+    at __loadModule (runner.js:2652:7)
+    at __requireFrom (runner.js:2732:10)
+    at scopedRequire (runner.js:2637:33)
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:84:21)
+    at __loadModule (runner.js:2652:7)
+    at __requireFrom (runner.js:2732:10)
+    at __require (runner.js:2740:10)
+    at eval (eval at <anonymous> (runner.js:11:22), <anonymous>:3:9)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 7521ms (wsClosed=false) ----
+
+==== END PROBE: vite ====

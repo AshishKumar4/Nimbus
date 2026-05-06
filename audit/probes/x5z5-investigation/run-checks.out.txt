@@ -1,0 +1,9 @@
+[ok] express: util.inherits with no-.prototype Stream throws verbatim message — verbatim runtime message reproduced
+[ok] express: a guarded inherits + namespace-with-.prototype both fix it — A1 namespace fix and B guard fix both no-throw
+[ok] ts-jest: _fs.realpathSync.native throws verbatim message — verbatim runtime message reproduced
+[ok] ts-jest: adding realpathSync + .native makes the access succeed — fix unblocks /foo/bar
+[ok] tailwindcss-vite: looksLikeEsm returns false on minified ;import/;export — regex correctly fails to detect minified ESM (the bug)
+[ok] tailwindcss-vite: amended regex with [\n;}] anchor + import[\s{] catches it — fixed regex passes all 3 cases
+[ok] tailwindcss-oxide: documentation-pointer probe — section 04 confirms node:wasi is the upstream block (line 41,47-56)
+
+──── X5Z5 reproduction summary: 7 ok, 0 err ────

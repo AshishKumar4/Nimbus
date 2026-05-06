@@ -1,0 +1,134 @@
+[
+  {
+    "name": "sharp",
+    "skipped": true
+  },
+  {
+    "name": "fsevents",
+    "skipped": true
+  },
+  {
+    "name": "bcrypt",
+    "skipped": true
+  },
+  {
+    "name": "better-sqlite3",
+    "skipped": true
+  },
+  {
+    "name": "prisma",
+    "skipped": true
+  },
+  {
+    "name": "swc-core",
+    "skipped": true
+  },
+  {
+    "name": "tailwindcss-oxide",
+    "skipped": true
+  },
+  {
+    "name": "node-canvas",
+    "skipped": true
+  },
+  {
+    "name": "vite",
+    "skipped": true
+  },
+  {
+    "name": "webpack",
+    "skipped": true
+  },
+  {
+    "name": "rollup",
+    "skipped": true
+  },
+  {
+    "name": "parcel",
+    "skipped": true
+  },
+  {
+    "name": "next",
+    "skipped": true
+  },
+  {
+    "name": "nuxt",
+    "skipped": true
+  },
+  {
+    "name": "fastify",
+    "ok": true
+  },
+  {
+    "name": "axios",
+    "ok": true
+  },
+  {
+    "name": "zod",
+    "ok": true
+  },
+  {
+    "name": "framer-motion",
+    "ok": true
+  },
+  {
+    "name": "radix-react-dialog",
+    "ok": true
+  },
+  {
+    "name": "react-remove-scroll",
+    "ok": true
+  },
+  {
+    "name": "vitest",
+    "ok": true
+  },
+  {
+    "name": "jest",
+    "ok": true
+  },
+  {
+    "name": "ts-jest",
+    "ok": true
+  },
+  {
+    "name": "pg",
+    "ok": true
+  },
+  {
+    "name": "redis",
+    "ok": true
+  },
+  {
+    "name": "drizzle-orm",
+    "ok": true
+  },
+  {
+    "name": "ts-node",
+    "ok": true
+  },
+  {
+    "name": "tailwindcss-vite",
+    "ok": true
+  },
+  {
+    "name": "remix-react",
+    "ok": true
+  },
+  {
+    "name": "astro",
+    "ok": true
+  },
+  {
+    "name": "jsdom",
+    "ok": true
+  },
+  {
+    "name": "puppeteer-core",
+    "ok": true
+  },
+  {
+    "name": "express",
+    "ok": true
+  }
+]

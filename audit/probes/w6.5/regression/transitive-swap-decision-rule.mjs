@@ -71,8 +71,18 @@ group('top-level esbuild also swaps', () => {
 
 group('no false-positive swaps for non-registered deps', () => {
   const out = walkApply('vite');
-  ok('rollup is NOT swapped', !out.swaps.some((s) => s.from === 'rollup'));
+  // X.5-G G2: rollup is now in WASM_SWAPS (rollup → @rollup/wasm-node).
+  // It IS expected to swap — moved to the positive-test group below.
   ok('postcss is NOT swapped', !out.swaps.some((s) => s.from === 'postcss'));
+});
+
+group('X5G G2: rollup transitive swap fires', () => {
+  // vite has rollup as a dep; after X5G the rollup swap should fire
+  // at depth>0 just like the esbuild one.
+  const out = walkApply('vite');
+  const rollupSwap = out.swaps.find((s) => s.from === 'rollup');
+  ok('rollup swap detected at depth>0', !!rollupSwap);
+  if (rollupSwap) eq('rollup swap target is @rollup/wasm-node', rollupSwap.to, '@rollup/wasm-node');
 });
 
 summary('transitive-swap-decision-rule');

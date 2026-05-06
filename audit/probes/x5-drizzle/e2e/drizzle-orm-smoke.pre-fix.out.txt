@@ -1,0 +1,51 @@
+==== PROBE: x5-drizzle drizzle-orm-smoke ====
+==== TIMESTAMP: 2026-05-06T08:29:31.620Z ====
+==== SID: smart-bear-7428 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install drizzle-orm ----
+user@nimbus:~$ cd app && npm install drizzle-orm
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet failed: npm install rejected: lightningcss — Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.
+npm install failed: resolver-facet failed: npm install rejected: lightningcss — Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.
+user@nimbus:~/app$ 
+---- step done in 3004ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_motsqijn.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbSA9IHJlcXVpcmUoJ2RyaXp6bGUtb3JtJyk7IGNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKG0pLnNsaWNlKDAsIDgpKTs=' && node /tmp/p_1_motsqijn.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_motsqijn.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3QgbSA9IHJlcXVpcmUoJ2RyaXp6bGUtb3JtJyk7IGNvbnNvbGUubG9nKCdrZXlzOicsIE9iamVjdC5rZXlzKG0pLnNsaWNlKDAsIDgpKTs=' && node /tmp/p_1_motsqijn.js
+[facet started: pid=2 cmd="node /tmp/p_1_motsqijn.js"]
+Error: Cannot find module 'drizzle-orm' (from /tmp)
+    at __requireFrom (runner.js:2965:24)
+    at __require (runner.js:2975:10)
+    at eval (eval at __mkCompiledFn (runner.js:29:10), <anonymous>:3:11)
+    at NodeProcess.run (runner.js:3005:7)
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_motsqijn.js) exited with code 1
+────────────────────────────────────────────────────────────
+Error: Cannot find module 'drizzle-orm' (from /tmp)
+    at __requireFrom (runner.js:2965:24)
+    at __require (runner.js:2975:10)
+    at eval (eval at __mkCompiledFn (runner.js:29:10), <anonymous>:3:11)
+    at NodeProcess.run (runner.js:3005:7)
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: x5-drizzle drizzle-orm-smoke ====

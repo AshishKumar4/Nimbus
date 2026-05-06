@@ -1,0 +1,50 @@
+==== PROBE: x5f-ts-jest ====
+==== TIMESTAMP: 2026-05-05T02:33:32.391Z ====
+==== SID: fiery-orchid-5611 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install ts-jest ----
+user@nimbus:~$ cd app && npm install ts-jest
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 254 resolved, 254 packuments fetched (70.4 MiB), peak in-flight=4, cache writes=1292, R2 packument cache wins=33/254, elapsed=6.6s
+[npm] Resolved 254 packages.
+[npm] To fetch: 254, to restore: 0, already installed: 0
+[npm] Fetching 254 packages... (path: batch-facet)
+[npm] Dispatching 254 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 254/254 packages, 5573 files, 11.9 MiB tarball bytes, peak in-flight=3, R2 cache wins=254/254, 5.5s
+[npm] Done! 254 packages, 5573 files in 12.1s
+
+added 254 packages (5573 files) in 12.1s
+user@nimbus:~/app$ 
+---- step done in 12512ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.x5fsmoke_mos0kuzr_b498zz.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgbSA9IHJlcXVpcmUoJ3RzLWplc3QnKTsgY29uc29sZS5sb2coJ3R5cGVvZjonLCB0eXBlb2YgbSk7IH0gY2F0Y2goZSl7IGNvbnNvbGUubG9nKCdyZXF1aXJlLXRocm93OicsIGUubWVzc2FnZSk7IH0=' && cd /home/user/app && node .x5fsmoke_mos0kuzr_b498zz.js ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.x5fsmoke_mos0kuzr_b498zz.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'dHJ5IHsgY29uc3QgbSA9IHJlcXVpcmUoJ3RzLWplc3QnKTsgY29uc29sZS5sb2coJ3R5cGVvZjonLCB0eXBlb2YgbSk7IH0gY2F0Y2goZSl7IGNvbnNvbGUubG9nKCdyZXF1aXJlLXRocm93OicsIGUubWVzc2FnZSk7IH0=' && cd /home/user/app && node .x5fsmoke_mos0kuzr_b498zz.js
+[facet started: pid=2 cmd="node /home/user/app/.x5fsmoke_mos0kuzr_b498zz.js"]
+require-throw: Cannot read properties of undefined (reading 'native')
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.x5fsmoke_mos0kuzr_b498zz.js) exited with code 0
+────────────────────────────────────────────────────────────
+require-throw: Cannot read properties of undefined (reading 'native')
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 2001ms (wsClosed=false) ----
+
+==== END PROBE: x5f-ts-jest ====

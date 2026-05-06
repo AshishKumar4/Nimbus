@@ -1,0 +1,8 @@
+==== X5F single-resolver-source regression probe ====
+==== TIMESTAMP: 2026-05-05T23:50:33.957Z ====
+grep matches: ["/workspace/lifo-edge-os/src/_shared/exports-resolver.ts","/workspace/lifo-edge-os/src/real-vite-bundle.generated.ts"]
+  /workspace/lifo-edge-os/src/real-vite-bundle.generated.ts: has the substring but no export-function declaration
+real TS impls: ["/workspace/lifo-edge-os/src/_shared/exports-resolver.ts"]
+exactly-one-impl:                PASS
+impl is _shared/exports-resolver.ts: PASS
+OVERALL: PASS

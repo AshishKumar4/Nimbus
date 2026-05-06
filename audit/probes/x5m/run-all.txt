@@ -1,0 +1,145 @@
+==== X5M RUN-ALL ====
+==== 2026-05-06T00:25:41.775Z ====
+
+==== M-1 functional ====
+$ bun audit/probes/x5m/functional/m1-http-server-setTimeout.mjs
+# http.Server class is present in shim source
+  ok  extractClass("Server") found a block
+  ok  Server extends __eventsMod
+# Server.setTimeout method declaration is present
+  ok  serverClass body contains "setTimeout"
+  ok  serverClass.setTimeout returns this (chainable)
+# Server.setKeepAlive method declaration is present (defensive partner)
+  ok  serverClass body contains setKeepAlive
+# regression: net.Socket.setTimeout still present
+  ok  net.Socket class still present
+  ok  net.Socket.setTimeout still no-op (return this)
+
+# m1-http-server-setTimeout: 7 passed, 0 failed
+
+EXIT=0
+
+==== M-2 functional ====
+$ bun audit/probes/x5m/functional/m2-dns-promises-subpath.mjs
+# dns/promises subpath builtin registration
+  ok  builtins["dns/promises"] registration line is present
+  ok  builtins["node:dns/promises"] alias is present
+# regression: ordering — dns/promises after dns
+  ok  builtins.dns block declared before builtins["dns/promises"]
+# regression: timers/promises pattern still present (sanity)
+  ok  builtins["timers/promises"] still registered
+  ok  builtins["node:timers/promises"] alias still registered
+
+# m2-dns-promises-subpath: 5 passed, 0 failed
+
+EXIT=0
+
+==== M-3 functional ====
+$ bun audit/probes/x5m/functional/m3-url-lenient-null-base.mjs
+# M-3 wrap is present in shim source
+  ok  marker comment "X.5-M (M-3)" present
+  ok  wrap IIFE assigns globalThis.URL = <Shim>
+  ok  __urlMod.URL is updated post-wrap
+  ok  loadWrappedURL extracted a URL constructor
+# lenient URL constructor accepts null base
+  ok  new URL("foo/bar.txt", null) does not throw
+  ok  result is a URL instance
+  ok  href starts with file:///
+# lenient URL constructor accepts undefined base
+  ok  new URL("foo/bar.txt", undefined) does not throw
+# regression: valid absolute URL still works
+  ok  new URL("https://example.com/path?q=1") works
+  ok  hostname is example.com
+# regression: relative + valid base still works
+  ok  relative + valid base produces correct URL
+  ok  href is base+rel
+# regression: invalid input still throws
+  ok  new URL("not://valid url") with no base throws
+# regression: instanceof URL preserved
+  ok  wrapped URL instance is instanceof globalThis.URL
+# regression: static URL methods passthrough
+  ok  URL.canParse exists on wrapper
+  ok  URL.canParse("https://x") === true
+
+# m3-url-lenient-null-base: 16 passed, 0 failed
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x5m/regression/single-resolver-source.mjs
+# resolveExports declarations: 1
+#   - _shared/exports-resolver.ts:49
+  ok  resolveExports declared exactly once
+  ok  declaration is in _shared/exports-resolver.ts
+
+# single-resolver-source: 2 passed, 0 failed
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5m/regression/install-pipeline-coverage-shim.mjs
+# SCENARIOS list contains the expected 4 scenarios
+  ok  SCENARIOS contains label "fastify"
+  ok  SCENARIOS contains label "express"
+  ok  SCENARIOS contains label "ts-jest"
+  ok  SCENARIOS contains label "redis"
+# mustHaveAtLeastOne lists unchanged for fastify/redis (the M-1/M-2 packages)
+  ok  fastify scenario expects 'fastify' visible
+  ok  redis scenario expects '@redis/client' visible
+
+# install-pipeline-coverage-shim: 6 passed, 0 failed
+
+EXIT=0
+
+==== builtins-coverage ====
+$ bun audit/probes/x5m/regression/builtins-coverage.mjs
+# Required builtins[] keys are all registered
+  ok  builtins["fs"] registered
+  ok  builtins["path"] registered
+  ok  builtins["os"] registered
+  ok  builtins["process"] registered
+  ok  builtins["events"] registered
+  ok  builtins["stream"] registered
+  ok  builtins["crypto"] registered
+  ok  builtins["util"] registered
+  ok  builtins["assert"] registered
+  ok  builtins["querystring"] registered
+  ok  builtins["string_decoder"] registered
+  ok  builtins["buffer"] registered
+  ok  builtins["http"] registered
+  ok  builtins["https"] registered
+  ok  builtins["net"] registered
+  ok  builtins["dns"] registered
+  ok  builtins["tls"] registered
+  ok  builtins["tty"] registered
+  ok  builtins["module"] registered
+  ok  builtins["timers"] registered
+  ok  builtins["zlib"] registered
+  ok  builtins["readline"] registered
+  ok  builtins["perf_hooks"] registered
+  ok  builtins["worker_threads"] registered
+  ok  builtins["vm"] registered
+  ok  builtins["http2"] registered
+  ok  builtins["repl"] registered
+  ok  builtins["diagnostics_channel"] registered
+  ok  builtins["async_hooks"] registered
+  ok  builtins["url"] registered
+  ok  builtins["fs/promises"] registered
+  ok  builtins["node:fs/promises"] registered
+  ok  builtins["timers/promises"] registered
+  ok  builtins["node:timers/promises"] registered
+
+# builtins-coverage: 34 passed, 0 failed
+
+EXIT=0
+
+### Skipping E2E (set BASE=http://... to enable) ###
+
+==== SUMMARY ====
+  ✓  M-1 functional
+  ✓  M-2 functional
+  ✓  M-3 functional
+  ✓  single-resolver-source
+  ✓  install-pipeline-coverage-shim
+  ✓  builtins-coverage
+## ALL OK

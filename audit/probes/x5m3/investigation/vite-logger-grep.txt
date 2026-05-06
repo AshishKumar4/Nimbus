@@ -1,0 +1,25 @@
+2:import { readFileSync } from "node:fs";
+75:const { version } = JSON.parse(readFileSync(new URL("../../package.json", new URL("../../../src/node/constants.ts", import.meta.url))).toString());
+165:const VITE_PACKAGE_DIR = resolve(fileURLToPath(new URL("../../../src/node/constants.ts", import.meta.url)), "../../..");
+import { o as __toESM, t as __commonJSMin } from "./chunk.js";
+import { readFileSync } from "node:fs";
+import path, { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import readline from "node:readline";
+//#region ../../node_modules/.pnpm/picocolors@1.1.1/node_modules/picocolors/picocolors.js
+var require_picocolors = /* @__PURE__ */ __commonJSMin(((exports, module) => {
+	let p = process || {}, argv = p.argv || [], env = p.env || {};
+	let isColorSupported = !(!!env.NO_COLOR || argv.includes("--no-color")) && (!!env.FORCE_COLOR || argv.includes("--color") || p.platform === "win32" || (p.stdout || {}).isTTY && env.TERM !== "dumb" || !!env.CI);
+	let formatter = (open, close, replace = open) => (input) => {
+---
+	module.exports = createColors();
+	module.exports.createColors = createColors;
+}));
+//#endregion
+//#region src/node/constants.ts
+const { version } = JSON.parse(readFileSync(new URL("../../package.json", new URL("../../../src/node/constants.ts", import.meta.url))).toString());
+const ROLLUP_HOOKS = [
+	"options",
+	"buildStart",
+	"buildEnd",
+	"renderStart",

@@ -1,0 +1,217 @@
+=== src/facet-manager.ts greedyAddMainEntries body ===
+598: export function greedyAddMainEntries(
+599:   vfs: SqliteVFS,
+600:   cwd: string,
+601:   bundle: Record<string, string>,
+602:   budgetState: { totalBytes: number; fileCount: number },
+603: ): { added: number } {
+604:   let added = 0;
+605:   const cwdStripped = cwd.replace(/^\/+/, '');
+606:   const nmDir = cwdStripped + '/node_modules';
+607:   if (!(vfs.exists(nmDir) && vfs.isDirectory(nmDir))) return { added };
+608: 
+609:   const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
+610: 
+611:   function addOne(path: string): boolean {
+612:     const stripped = path.replace(/^\/+/, '');
+613:     if (stripped in bundle) return false;
+614:     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
+615:     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
+616:     try {
+617:       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+618:       const content = vfs.readFileString(stripped);
+619:       if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return false;
+620:       bundle[stripped] = content;
+621:       budgetState.totalBytes += content.length;
+622:       budgetState.fileCount++;
+623:       added++;
+624:       return true;
+625:     } catch { return false; }
+626:   }
+627: 
+628:   // X.5-C Fix #2 helper: walk a (possibly nested) exports value and
+629:   // collect every string-leaf path. unbuild-shaped packages like pathe
+630:   // nest two deep — `exports."."`.{require,import}.{types,default} —
+631:   // and the previous one-level loop only caught the inner string leaves
+632:   // when default was at the top, missing the unbuild shape entirely.
+633:   function collectExportLeaves(node: any, out: Set<string>): void {
+634:     if (typeof node === 'string') { out.add(node); return; }
+635:     if (!node || typeof node !== 'object') return;
+636:     // Order matters for the "most likely usable" leaf: prefer require
+637:     // (most CJS-friendly), then default, then node, then import. We add
+638:     // ALL of them to the candidate set — addPkgEntry will probe each.
+639:     for (const k of ['require', 'node', 'default', 'import']) {
+640:       if (k in node) collectExportLeaves(node[k], out);
+641:     }
+642:   }
+643: 
+644:   function addPkgEntry(pkgDir: string) {
+645:     addOne(pkgDir + '/package.json');
+646:     let meta: any;
+647:     try { meta = JSON.parse(vfs.readFileString(pkgDir + '/package.json')); }
+648:     catch { meta = null; }
+649:     const candidates = new Set<string>();
+650:     if (meta) {
+651:       if (typeof meta.main === 'string') candidates.add(meta.main);
+652:       if (typeof meta.module === 'string') candidates.add(meta.module);
+653:       const exp = meta.exports;
+654:       if (typeof exp === 'string') candidates.add(exp);
+655:       else if (exp && typeof exp === 'object') {
+656:         const dot = (exp as any)['.'];
+657:         // X.5-C Fix #2: walk nested condition trees recursively. Without
+658:         // this, packages with two-level exports (pathe, magic-string,
+659:         // most unbuild-emitted libs) miss their actual entry leaf and
+660:         // greedyAddMainEntries falls back to /index.js probing — which
+661:         // doesn't exist for those packages.
+662:         collectExportLeaves(dot, candidates);
+663:       }
+664:     }
+665:     if (candidates.size === 0) candidates.add('index.js');
+666:     for (const rel of candidates) {
+667:       const norm = rel.replace(/^\.\//, '');
+668:       const base = pkgDir + '/' + norm;
+669:       let landed = false;
+670:       const tries = /\.[a-z]+$/.test(norm) ? [base] : exts.map((e) => base + e);
+671:       for (const candidate of tries) {
+672:         if (vfs.exists(candidate.replace(/^\/+/, '')) &&
+673:             !vfs.isDirectory(candidate.replace(/^\/+/, ''))) {
+674:           if (addOne(candidate)) { landed = true; break; }
+675:         }
+676:       }
+677:       if (landed) {
+678:         // X.5-C Fix #2: when an entry lands, also pull in sibling files
+679:         // that match unbuild's hash-chunk pattern (`<base>.<hash>.cjs|mjs|js`)
+680:         // AND walk one level into a `shared/` subdir if the package has
+681:         // one. The unbuild bundler emits chunked CJS like:
+682:         //   dist/index.cjs        (entry)
+683:         //   dist/shared/<base>.<hash>.cjs  (chunk required by entry)
+684:         //
+685:         // Without this, even when Fix #1 lets the prefetch walker reach
+686:         // the entry, the package's required chunks land OUTSIDE the
+687:         // walker's MAX_FILES/MAX_BYTES budget on big trees (nuxt 516
+688:         // pkgs / 10k+ files). The greedy oversample is the defensive
+689:         // safety net for hash-chunk reachability.
+690:         const entryDir = base.replace(/\/[^/]+$/, '');
+691:         try {
+692:           const sibs = vfs.readdir(entryDir);
+693:           for (const sib of sibs) {
+694:             if (sib.type !== 'file') continue;
+695:             // Hash-chunk pattern: <name>.<hash>.<cjs|mjs|js>. Hash must
+696:             // be 6+ chars AND look like a hash, not an English word —
+697:             // either contain digits/underscore/dash, or contain BOTH
+698:             // uppercase AND lowercase letters (real bundler hashes are
+699:             // mixed-case base64-shaped: `BSlhyZSM`, `M-eThtNZ`, ...). This
+700:             // discriminator keeps us from false-positiving on common
+701:             // suffixes that happen to be 6+ chars all-lowercase like
+702:             // `minified`, `modern`, `production`, `compiled`.
+703:             const hashMatch = sib.name.match(/\.([A-Za-z0-9_-]{6,})\.(cjs|mjs|js)$/);
+704:             if (!hashMatch) continue;
+705:             const seg = hashMatch[1];
+706:             const hasDigitOrDash = /[0-9_-]/.test(seg);
+707:             const hasMixedCase = /[A-Z]/.test(seg) && /[a-z]/.test(seg);
+708:             if (!hasDigitOrDash && !hasMixedCase) continue;
+709:             addOne(entryDir + '/' + sib.name);
+710:           }
+711:           // Walk one level into `shared/` — unconditionally, since the
+712:           // pattern is well-known across unbuild/rolldown/rollup chunked
+713:           // outputs. Bounded by addOne's budget checks; readdir of a
+714:           // typical shared/ dir returns 1-5 files.
+715:           const sharedDir = entryDir + '/shared';
+716:           const sharedStripped = sharedDir.replace(/^\/+/, '');
+717:           if (vfs.exists(sharedStripped) && vfs.isDirectory(sharedStripped)) {
+718:             for (const sh of vfs.readdir(sharedDir)) {
+719:               if (sh.type !== 'file') continue;
+720:               if (!/\.(cjs|mjs|js)$/.test(sh.name)) continue;
+721:               addOne(sharedDir + '/' + sh.name);
+722:             }
+723:           }
+724:         } catch { /* unreadable dir — drop sibling oversample, entry
+725:                        file is enough */ }
+726:         break;
+727:       }
+728:     }
+729:   }
+730: 
+731:   try {
+732:     for (const pkg of vfs.readdir(nmDir)) {
+733:       if (pkg.type !== 'directory') continue;
+734:       const pkgDir = nmDir + '/' + pkg.name;
+735:       if (pkg.name.startsWith('@')) {
+736:         try {
+737:           for (const sub of vfs.readdir(pkgDir)) {
+738:             if (sub.type === 'directory') addPkgEntry(pkgDir + '/' + sub.name);
+739:           }
+740:         } catch { /* ignore */ }
+741:       } else {
+742:         addPkgEntry(pkgDir);
+743:       }
+744:     }
+745:   } catch { /* ignore */ }
+746:   return { added };
+747: }
+
+=== count parseAndResolve / prefetchForRequire references inside greedyAddMainEntries ===
+  parseAndResolve / prefetchForRequire calls inside greedyAddMainEntries: 0
+
+=== contrast: src/require-resolver.ts addFile DOES recurse ===
+441:   function addFile(vfsPath: string): void {
+442:     if (visited.has(vfsPath)) return;
+443:     if (fileCount >= MAX_FILES || totalBytes >= MAX_BYTES) {
+444:       truncated = true;
+445:       return;
+446:     }
+447:     visited.add(vfsPath);
+448:     let content: string;
+449:     try { content = vfs.readFileString(vfsPath); }
+450:     catch { return; }
+451:     if (totalBytes + content.length > MAX_BYTES) {
+452:       truncated = true;
+453:       return;
+454:     }
+455:     bundle[vfsPath] = content;
+456:     totalBytes += content.length;
+457:     fileCount++;
+458:     trackPkgDir(vfsPath);
+459: 
+460:     // Also add the package.json for the enclosing node_modules package
+461:     // so the runtime resolver can read the same exports/main field we
+462:     // walked here.
+463:     if (vfsPath.includes('node_modules/')) {
+464:       const parts = vfsPath.split('/');
+465:       const nmIdx = parts.lastIndexOf('node_modules');
+466:       if (nmIdx >= 0) {
+467:         const pkgEnd = parts[nmIdx + 1]?.startsWith('@') ? nmIdx + 3 : nmIdx + 2;
+468:         const pkgJsonPath = parts.slice(0, pkgEnd).join('/') + '/package.json';
+469:         if (!visited.has(pkgJsonPath) && vfs.exists(pkgJsonPath)) {
+470:           visited.add(pkgJsonPath);
+471:           try {
+472:             const pkgContent = vfs.readFileString(pkgJsonPath);
+473:             if (totalBytes + pkgContent.length <= MAX_BYTES) {
+474:               bundle[pkgJsonPath] = pkgContent;
+475:               totalBytes += pkgContent.length;
+476:               fileCount++;
+477:             }
+478:           } catch { /* ignore */ }
+479:         }
+480:       }
+481:     }
+482: 
+483:     // Recursively resolve require() calls in this file
+484:     if (vfsPath.endsWith('.js') || vfsPath.endsWith('.mjs') || vfsPath.endsWith('.cjs')) {
+485:       const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
+486:       parseAndResolve(content, fromDir);
+487:     }
+488:   }
+489: 
+
+=== conclusion ===
+Greedy oversample lands ONE main entry per package without
+walking that entry's requires. For packages whose main field
+points at a thin shim (defu/lib/defu.cjs → ../dist/defu.cjs,
+a 278-byte re-export wrapper), the *real* implementation in
+dist/ is never added by the greedy pass. The require-walker
+only reaches dist/defu.cjs if the consumer's require chain
+CJS-traverses lib/defu.cjs first — which doesn't happen for
+nuxt because nuxt's ESM index does `import { defu } from 'defu'`,
+which exports.import.default routes to dist/defu.mjs (ESM),
+not lib/defu.cjs (CJS shim).

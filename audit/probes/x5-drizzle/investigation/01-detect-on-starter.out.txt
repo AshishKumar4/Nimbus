@@ -1,0 +1,43 @@
+==== Starter app/package.json (from seed-project.ts) ====
+{
+  "name": "nimbus-starter",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "framer-motion": "^11.11.0",
+    "lucide-react": "^0.460.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}
+==== detectFramework() verdict ====
+{
+  "framework": "vite",
+  "confidence": 0.7,
+  "reason": "found 'vite' in dependencies (no specific framework)",
+  "devCommand": "vite-real"
+}
+==== detectFrameworkAware() decision (current behavior) ====
+frameworkAware = true   (returns true for ANY non-unknown framework, including generic vite)
+
+==== Diagnosis ====
+CONFIRMED: starter app triggers framework=vite (step 8, generic).
+  This is what causes [npm install drizzle-orm] to run with frameworkAware=true.
+  In that mode, transitive vite is exempted from SKIP_PACKAGES and gets pulled
+  into the resolution → vite\u2019s transitive lightningcss hits X.5-26b REJECT_INSTALL.
+  Refinement target: detectFrameworkAware should NOT treat generic-vite as framework-aware,
+  because no framework CLI is in play here — bundled real-vite handles `npm run dev`.

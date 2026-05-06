@@ -1,0 +1,35 @@
+==== Tracing transitive paths from drizzle-orm to lightningcss ====
+drizzle-orm@0.45.2
+  optional peers (X.5-J top-level enqueue candidates): 28
+  trace pg ... no
+  trace gel ... no
+  trace knex ... no
+  trace kysely ... no
+  trace mysql2 ... no
+  trace sql.js ... no
+  trace sqlite3 ... no
+  trace postgres ... no
+  trace @types/pg ... no
+  trace bun-types ... no
+  trace expo-sqlite ... HIT  expo-sqlite → expo (peer) → @expo/metro-config (dep) → lightningcss (dep)
+  trace @types/sql.js ... no
+  trace @libsql/client ... no
+  trace @prisma/client ... no
+  trace @upstash/redis ... no
+  trace better-sqlite3 ... no
+  trace @xata.io/client ... no
+  trace @vercel/postgres ... no
+  trace @opentelemetry/api ... no
+  trace @libsql/client-wasm ... no
+  trace @electric-sql/pglite ... no
+  trace @planetscale/database ... no
+  trace @tidbcloud/serverless ... no
+  trace @types/better-sqlite3 ... no
+  trace @aws-sdk/client-rds-data ... no
+  trace @neondatabase/serverless ... no
+  trace @cloudflare/workers-types ... no
+  trace @op-engineering/op-sqlite ... no
+
+==== Summary ====
+1 optional peer(s) of drizzle-orm transitively pull lightningcss:
+  expo-sqlite: expo-sqlite → expo (peer) → @expo/metro-config (dep) → lightningcss (dep)

@@ -1,0 +1,171 @@
+==== X526B RUN-ALL ====
+==== 2026-05-06T07:11:11.208Z ====
+
+==== oxide-rejected ====
+$ bun audit/probes/x526b/functional/oxide-rejected.mjs
+# @tailwindcss/oxide is in REJECT_INSTALL
+  ok  @tailwindcss/oxide rejected
+  ok    transitive === fail
+  ok    reason mentions native
+  ok    suggest present
+# shouldWarnSkipTransitive("@tailwindcss/oxide") returns undefined (fail tier)
+  ok  not warn-tier
+# formatRejectError handles @tailwindcss/oxide
+  ok  formatRejectError contains "❌ @tailwindcss/oxide"
+  ok  formatRejectError contains reason
+
+# x526b oxide-rejected: 7 passed, 0 failed
+
+EXIT=0
+
+==== lightningcss-rejected ====
+$ bun audit/probes/x526b/functional/lightningcss-rejected.mjs
+# lightningcss is in REJECT_INSTALL
+  ok  lightningcss rejected
+  ok    transitive === fail
+  ok    reason mentions native
+  ok    suggest present
+# shouldWarnSkipTransitive("lightningcss") returns undefined (fail tier)
+  ok  not warn-tier
+# formatRejectError handles lightningcss
+  ok  formatRejectError contains "❌ lightningcss"
+  ok  formatRejectError contains reason
+
+# x526b lightningcss-rejected: 7 passed, 0 failed
+
+EXIT=0
+
+==== preamble-mirror-sync ====
+$ bun audit/probes/x526b/functional/preamble-mirror-sync.mjs
+# preamble mirrors @tailwindcss/oxide entry
+  ok  canonical registry has @tailwindcss/oxide
+  ok    transitive matches
+  ok  preamble has @tailwindcss/oxide w/ transitive=fail
+# preamble mirrors lightningcss entry
+  ok  canonical registry has lightningcss
+  ok    transitive matches
+  ok  preamble has lightningcss w/ transitive=fail
+# preamble has every transitive=fail entry from canonical registry
+  ok  preamble mirrors fail-tier 'sharp'
+  ok  preamble mirrors fail-tier 'sqlite3'
+  ok  preamble mirrors fail-tier 'better-sqlite3'
+  ok  preamble mirrors fail-tier 'canvas'
+  ok  preamble mirrors fail-tier 'sodium-native'
+  ok  preamble mirrors fail-tier 'node-pty'
+  ok  preamble mirrors fail-tier 'robotjs'
+  ok  preamble mirrors fail-tier 'electron'
+  ok  preamble mirrors fail-tier 'bcrypt'
+  ok  preamble mirrors fail-tier 'argon2'
+  ok  preamble mirrors fail-tier 'node-sass'
+  ok  preamble mirrors fail-tier 'grpc'
+  ok  preamble mirrors fail-tier '@swc/core'
+  ok  preamble mirrors fail-tier 'prisma'
+  ok  preamble mirrors fail-tier '@prisma/client'
+  ok  preamble mirrors fail-tier 'puppeteer'
+  ok  preamble mirrors fail-tier 'playwright'
+  ok  preamble mirrors fail-tier 'sql.js'
+  ok  preamble mirrors fail-tier '@swc/wasm-web'
+  ok  preamble mirrors fail-tier '@img/sharp-wasm32'
+  ok  preamble mirrors fail-tier '@napi-rs/canvas'
+  ok  preamble mirrors fail-tier '@napi-rs/canvas-wasm32-wasi'
+  ok  preamble mirrors fail-tier '@tailwindcss/oxide'
+  ok  preamble mirrors fail-tier 'lightningcss'
+
+# x526b preamble-mirror-sync: 30 passed, 0 failed
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x526b/regression/single-resolver-source.mjs
+==== X5F single-resolver-source regression probe ====
+==== TIMESTAMP: 2026-05-06T07:11:11.339Z ====
+grep matches: ["/workspace/worktrees/x526b-cap-fix/src/_shared/exports-resolver.ts","/workspace/worktrees/x526b-cap-fix/src/real-vite-bundle.generated.ts"]
+  /workspace/worktrees/x526b-cap-fix/src/real-vite-bundle.generated.ts: has the substring but no export-function declaration
+real TS impls: ["/workspace/worktrees/x526b-cap-fix/src/_shared/exports-resolver.ts"]
+exactly-one-impl:                PASS
+impl is _shared/exports-resolver.ts: PASS
+OVERALL: PASS
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x526b/regression/install-pipeline-coverage-shim.mjs
+==== X5F install-pipeline-coverage shim regression ====
+==== TIMESTAMP: 2026-05-06T07:11:11.484Z ====
+BASE=http://127.0.0.1:8789
+==== INSTALL PIPELINE COVERAGE PROBE ====
+==== TIMESTAMP: 2026-05-06T07:11:11.537Z ====
+
+--- scenario: fastify ---
+install: npm install fastify
+  PASS — all 15 expected packages visible
+
+--- scenario: express ---
+install: npm install express
+  PASS — all 7 expected packages visible
+
+--- scenario: ts-jest ---
+install: npm install ts-jest jest typescript
+  PASS — all 3 expected packages visible
+
+--- scenario: redis ---
+install: npm install redis
+  PASS — all 4 expected packages visible
+
+=========================================
+SUMMARY:
+  PASS  fastify
+  PASS  express
+  PASS  ts-jest
+  PASS  redis
+=========================================
+Overall: 4/4 scenarios pass
+==== END PROBE ====
+canonical probe exited 0
+
+EXIT=0
+
+==== oxide e2e ====
+$ bun audit/probes/x526b/e2e/oxide-e2e.mjs
+  ok  probe ran (POST /new succeeded)
+  ok  install output contains "❌ @tailwindcss/oxide"
+  ok  install output mentions npm install rejected
+  ok  NO runtime "Cannot find native binding" message (since install rejected)
+
+# x526b oxide-e2e: 4 passed, 0 failed
+
+EXIT=0
+
+==== lightningcss e2e ====
+$ bun audit/probes/x526b/e2e/lightningcss-e2e.mjs
+  ok  probe ran (POST /new succeeded)
+  ok  install output contains "❌ lightningcss"
+  ok  install output mentions npm install rejected
+  ok  NO runtime "out.split is not a function" message
+
+# x526b lightningcss-e2e: 4 passed, 0 failed
+
+EXIT=0
+
+==== tailwindcss-vite transitive e2e ====
+$ bun audit/probes/x526b/e2e/tailwindcss-vite-transitive-e2e.mjs
+  ok  probe ran (POST /new succeeded)
+  ok  install output mentions transitive reject of @tailwindcss/oxide
+  ok  install output mentions "npm install rejected" (any form)
+  ok  install output mentions "resolver-facet failed" (transitive bubble path)
+
+# x526b tailwindcss-vite-transitive-e2e: 4 passed, 0 failed
+
+EXIT=0
+
+==== SUMMARY ====
+  PASS  oxide-rejected
+  PASS  lightningcss-rejected
+  PASS  preamble-mirror-sync
+  PASS  single-resolver-source
+  PASS  install-pipeline-coverage-shim
+  PASS  oxide e2e
+  PASS  lightningcss e2e
+  PASS  tailwindcss-vite transitive e2e
+
+Total: 8 pass, 0 fail (out of 8)

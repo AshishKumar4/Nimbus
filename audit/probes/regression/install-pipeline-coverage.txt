@@ -1,225 +1,40 @@
 ==== INSTALL PIPELINE COVERAGE PROBE ====
-==== TIMESTAMP: 2026-05-04T02:56:17.290Z ====
+==== TIMESTAMP: 2026-05-06T00:23:51.073Z ====
 
 --- scenario: fastify ---
 install: npm install fastify
 ==== PROBE: cov-fastify ====
-==== TIMESTAMP: 2026-05-04T02:56:17.292Z ====
-==== SID: tireless-ridge-9142 ====
----- initial banner ----
-╔════════════════════════════════════════════════╗
-║  Nimbus v2.0.0 — Cloud Dev Environment          ║
-║  node · npm · esbuild · vite · wrangler dev   ║
-║  10 GB VFS · Dynamic Workers · HMR             ║
-╚════════════════════════════════════════════════╝
-
-Starter app ready at ~/app — try:
-  cd app && npm install && npm run dev
-
-user@nimbus:~$ 
----- end banner ----
-
----- STEP cmd: cd app && npm install fastify ----
-user@nimbus:~$ cd app && npm install fastify
-Installing 1 packages (npm v2 — batched writes)...
-[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
-[npm] Checking lockfile...
-[npm] Resolving 1 dependencies (path: facet, fetch: global)...
-[npm]   resolver-facet: shipping 0 cached entries
-[npm]   resolver-facet: 46 resolved, 46 packuments fetched (7.3 MiB), peak in-flight=4, cache writes=215, elapsed=1.0s
-[npm] Resolved 46 packages.
-[npm] To fetch: 46, to restore: 0, already installed: 0
-[npm] Fetching 46 packages... (path: batch-facet)
-[npm] Dispatching 46 packages to batch-facet (single worker, internal pLimit=3)...
-[npm] Batch-facet complete: 46/46 packages, 1928 files, 1.3 MiB tarball bytes, peak in-flight=3, 1.1s
-[npm] Done! 46 packages, 1928 files in 2.1s
-
-added 46 packages (1928 files) in 2.1s
-user@nimbus:~/app$ 
----- step done in 2507ms (wsClosed=false) ----
-
----- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_moqly9hn.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJmYXN0aWZ5IiwiYXZ2aW8iLCJmYXN0cSIsInBpbm8iLCJzZW12ZXIiLCJmYXN0LWpzb24tc3RyaW5naWZ5IiwicmZkYyIsInRvYWQtY2FjaGUiLCJzZWN1cmUtanNvbi1wYXJzZSIsInByb2Nlc3Mtd2FybmluZyIsImZpbmQtbXktd2F5IiwibGlnaHQtbXktcmVxdWVzdCIsIkBmYXN0aWZ5L2Vycm9yIiwiQGZhc3RpZnkvYWp2LWNvbXBpbGVyIiwiYWJzdHJhY3QtbG9nZ2luZyJdOwpjb25zdCByZXN1bHQgPSB7fTsKZm9yIChjb25zdCBuIG9mIGV4cGVjdGVkKSB7CiAgY29uc3QgZSA9IGxzKE5NICsgJy8nICsgbik7CiAgcmVzdWx0W25dID0gZSA/IGUubGVuZ3RoIDogLTE7Cn0KLy8gU2luZ2xlLWxpbmUgbWFya...[truncated] ----
-user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_1_moqly9hn.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJmYXN0aWZ5IiwiYXZ2aW8iLCJmYXN0cSIsInBpbm8iLCJzZW12ZXIiLCJmYXN0LWpzb24tc3RyaW5naWZ5IiwicmZkYyIsInRvYWQtY2FjaGUiLCJzZWN1cmUtanNvbi1wYXJzZSIsInByb2Nlc3Mtd2FybmluZyIsImZpbmQtbXktd2F5IiwibGlnaHQtbXktcmVxdWVzdCIsIkBmYXN0aWZ5L2Vycm9yIiwiQGZhc3RpZnkvYWp2LWNvbXBpbGVyIiwiYWJzdHJhY3QtbG9nZ2luZyJdOwpjb25zdCByZXN1bHQgPSB7fTsKZm9yIChjb25zdCBuIG9mIGV4cGVjdGVkKSB7CiAgY29uc3QgZSA9IGxzKE5NICsgJy8nICsgbik7CiAgcmVzdWx0W25dID0gZSA/IGUubGVuZ3RoIDogLTE7Cn0KLy8gU2luZ2xlLWxpbmUgbWFya2VyK3BheWxvYWQgdG8gZGVmZWF0IHN1cGVydmlzb3Igc3Rkb3V0LXN0cmVhbSBpbnRlcmxlYXZpbmcKLy8gKGNvbmN1cnJlbnQgY29uc29sZS5sb2cgY2FsbHMgd2VyZSBhcnJpdmluZyBpbiBub24tZGV0ZXJtaW5pc3RpYyBvcmRlciBpbgovLyB0aGUgYXJ0aWZhY3QsIGhpZGluZyBzdWNjZXNzZnVsIGNvdmVyYWdlIG1hcHMgZnJvbSB0aGUgcmVnZXggcGFyc2VyKS4KY29uc29sZS5sb2coJy0tLUNPVkVSQUdFLU1BUC0tLScgKyBKU09OLnN0cmluZ2lmeShyZXN1bHQpICsgJy0tLUVORC1DT1ZFUkFHRS1NQVAtLS0nKTsK' && node /tmp/p_1_moqly9hn.js
-[facet started: pid=2 cmd="node /tmp/p_1_moqly9hn.js"]
----COVERAGE-MAP---{"fastify":21,"avvio":12,"fastq":11,"pino":24,"semver":11,"fast-json-stringify":13,"rfdc":9,"toad-cache":6,"secure-json-parse":11,"process-warning":11,"find-my-way":10,"light-my-request":12,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}---END-COVERAGE-MAP---
-
-────────────────────────────────────────────────────────────
-Process 2 (node /tmp/p_1_moqly9hn.js) exited with code 0
-────────────────────────────────────────────────────────────
----COVERAGE-MAP---{"fastify":21,"avvio":12,"fastq":11,"pino":24,"semver":11,"fast-json-stringify":13,"rfdc":9,"toad-cache":6,"secure-json-parse":11,"process-warning":11,"find-my-way":10,"light-my-request":12,"@fastify/error":10,"@fastify/ajv-compiler":12,"abstract-logging":4}---END-COVERAGE-MAP---
-────────────────────────────────────────────────────────────
-user@nimbus:~/app$ 
----- step done in 500ms (wsClosed=false) ----
-
-==== END PROBE: cov-fastify ====
-  PASS — all 15 expected packages visible
+==== TIMESTAMP: 2026-05-06T00:23:51.076Z ====
+==== POST /new FAILED: Unable to connect. Is the computer able to access the url? ====
+  !! could not parse coverage map; scenario inconclusive
 
 --- scenario: express ---
 install: npm install express
 ==== PROBE: cov-express ====
-==== TIMESTAMP: 2026-05-04T02:56:25.619Z ====
-==== SID: obsidian-breeze-8708 ====
----- initial banner ----
-╔════════════════════════════════════════════════╗
-║  Nimbus v2.0.0 — Cloud Dev Environment          ║
-║  node · npm · esbuild · vite · wrangler dev   ║
-║  10 GB VFS · Dynamic Workers · HMR             ║
-╚════════════════════════════════════════════════╝
-
-Starter app ready at ~/app — try:
-  cd app && npm install && npm run dev
-
-user@nimbus:~$ 
----- end banner ----
-
----- STEP cmd: cd app && npm install express ----
-user@nimbus:~$ cd app && npm install express
-Installing 1 packages (npm v2 — batched writes)...
-[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
-[npm] Checking lockfile...
-[npm] Resolving 1 dependencies (path: facet, fetch: global)...
-[npm]   resolver-facet: shipping 0 cached entries
-[npm]   resolver-facet: 68 resolved, 68 packuments fetched (4.1 MiB), peak in-flight=4, cache writes=299, elapsed=1.0s
-[npm] Resolved 68 packages.
-[npm] To fetch: 68, to restore: 0, already installed: 0
-[npm] Fetching 68 packages... (path: batch-facet)
-[npm] Dispatching 68 packages to batch-facet (single worker, internal pLimit=3)...
-[npm] Batch-facet complete: 68/68 packages, 628 files, 0.7 MiB tarball bytes, peak in-flight=3, 0.9s
-[npm] Done! 68 packages, 628 files in 1.9s
-
-added 68 packages (628 files) in 1.9s
-user@nimbus:~/app$ 
----- step done in 2505ms (wsClosed=false) ----
-
----- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_2_moqlyfwz.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJleHByZXNzIiwiZ2V0LWludHJpbnNpYyIsImVzLW9iamVjdC1hdG9tcyIsImhhcy1zeW1ib2xzIiwiZnVuY3Rpb24tYmluZCIsIm1pbWUtdHlwZXMiLCJtaW1lLWRiIl07CmNvbnN0IHJlc3VsdCA9IHt9Owpmb3IgKGNvbnN0IG4gb2YgZXhwZWN0ZWQpIHsKICBjb25zdCBlID0gbHMoTk0gKyAnLycgKyBuKTsKICByZXN1bHRbbl0gPSBlID8gZS5sZW5ndGggOiAtMTsKfQovLyBTaW5nbGUtbGluZSBtYXJrZXIrcGF5bG9hZCB0byBkZWZlYXQgc3VwZXJ2aXNvciBzdGRvdXQtc3RyZWFtIGludGVybGVhdmluZwovLyAoY29uY3VycmVudCBjb25zb2xlLmxvZyBjYWxscyB3ZXJlIGFycml2aW5nIGluIG5vbi1kZXRlc...[truncated] ----
-user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_2_moqlyfwz.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJleHByZXNzIiwiZ2V0LWludHJpbnNpYyIsImVzLW9iamVjdC1hdG9tcyIsImhhcy1zeW1ib2xzIiwiZnVuY3Rpb24tYmluZCIsIm1pbWUtdHlwZXMiLCJtaW1lLWRiIl07CmNvbnN0IHJlc3VsdCA9IHt9Owpmb3IgKGNvbnN0IG4gb2YgZXhwZWN0ZWQpIHsKICBjb25zdCBlID0gbHMoTk0gKyAnLycgKyBuKTsKICByZXN1bHRbbl0gPSBlID8gZS5sZW5ndGggOiAtMTsKfQovLyBTaW5nbGUtbGluZSBtYXJrZXIrcGF5bG9hZCB0byBkZWZlYXQgc3VwZXJ2aXNvciBzdGRvdXQtc3RyZWFtIGludGVybGVhdmluZwovLyAoY29uY3VycmVudCBjb25zb2xlLmxvZyBjYWxscyB3ZXJlIGFycml2aW5nIGluIG5vbi1kZXRlcm1pbmlzdGljIG9yZGVyIGluCi8vIHRoZSBhcnRpZmFjdCwgaGlkaW5nIHN1Y2Nlc3NmdWwgY292ZXJhZ2UgbWFwcyBmcm9tIHRoZSByZWdleCBwYXJzZXIpLgpjb25zb2xlLmxvZygnLS0tQ09WRVJBR0UtTUFQLS0tJyArIEpTT04uc3RyaW5naWZ5KHJlc3VsdCkgKyAnLS0tRU5ELUNPVkVSQUdFLU1BUC0tLScpOwo=' && node /tmp/p_2_moqlyfwz.js
-[facet started: pid=2 cmd="node /tmp/p_2_moqlyfwz.js"]
----COVERAGE-MAP---{"express":5,"get-intrinsic":9,"es-object-atoms":16,"has-symbols":13,"function-bind":10,"mime-types":6,"mime-db":6}---END-COVERAGE-MAP---
-
-────────────────────────────────────────────────────────────
-Process 2 (node /tmp/p_2_moqlyfwz.js) exited with code 0
-────────────────────────────────────────────────────────────
----COVERAGE-MAP---{"express":5,"get-intrinsic":9,"es-object-atoms":16,"has-symbols":13,"function-bind":10,"mime-types":6,"mime-db":6}---END-COVERAGE-MAP---
-────────────────────────────────────────────────────────────
-user@nimbus:~/app$ 
----- step done in 501ms (wsClosed=false) ----
-
-==== END PROBE: cov-express ====
-  PASS — all 7 expected packages visible
+==== TIMESTAMP: 2026-05-06T00:23:51.091Z ====
+==== POST /new FAILED: Unable to connect. Is the computer able to access the url? ====
+  !! could not parse coverage map; scenario inconclusive
 
 --- scenario: ts-jest ---
 install: npm install ts-jest jest typescript
 ==== PROBE: cov-ts-jest ====
-==== TIMESTAMP: 2026-05-04T02:56:32.522Z ====
-==== SID: rapid-quail-6328 ====
----- initial banner ----
-╔════════════════════════════════════════════════╗
-║  Nimbus v2.0.0 — Cloud Dev Environment          ║
-║  node · npm · esbuild · vite · wrangler dev   ║
-║  10 GB VFS · Dynamic Workers · HMR             ║
-╚════════════════════════════════════════════════╝
-
-Starter app ready at ~/app — try:
-  cd app && npm install && npm run dev
-
-user@nimbus:~$ 
----- end banner ----
-
----- STEP cmd: cd app && npm install ts-jest jest typescript ----
-user@nimbus:~$ cd app && npm install ts-jest jest typescript
-Installing 3 packages (npm v2 — batched writes)...
-[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
-[npm] Checking lockfile...
-[npm] Resolving 3 dependencies (path: facet, fetch: global)...
-[npm]   resolver-facet: shipping 0 cached entries
-[npm]   resolver-facet: 245 resolved, 245 packuments fetched (55.2 MiB), peak in-flight=4, cache writes=1248, elapsed=3.5s
-[npm] Resolved 245 packages.
-[npm] To fetch: 245, to restore: 0, already installed: 0
-[npm] Fetching 245 packages... (path: batch-facet)
-[npm] Dispatching 245 packages to batch-facet (single worker, internal pLimit=3)...
-[npm] Batch-facet complete: 245/245 packages, 5367 files, 5.8 MiB tarball bytes, peak in-flight=3, 5.2s
-[npm] Done! 245 packages, 5367 files in 8.8s
-
-added 245 packages (5367 files) in 8.8s
-user@nimbus:~/app$ 
----- step done in 9073ms (wsClosed=false) ----
-
----- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_3_moqlyl8q.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJ0cy1qZXN0IiwiamVzdCIsInR5cGVzY3JpcHQiXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY3RlZCkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG4pOwogIHJlc3VsdFtuXSA9IGUgPyBlLmxlbmd0aCA6IC0xOwp9Ci8vIFNpbmdsZS1saW5lIG1hcmtlcitwYXlsb2FkIHRvIGRlZmVhdCBzdXBlcnZpc29yIHN0ZG91dC1zdHJlYW0gaW50ZXJsZWF2aW5nCi8vIChjb25jdXJyZW50IGNvbnNvbGUubG9nIGNhbGxzIHdlcmUgYXJyaXZpbmcgaW4gbm9uLWRldGVybWluaXN0aWMgb3JkZXIgaW4KLy8gdGhlIGFydGlmYWN0LCBoaWRpbmcgc3VjY2Vzc2Z1bCBjb3ZlcmFnZSBtYXBzI...[truncated] ----
-user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_3_moqlyl8q.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJ0cy1qZXN0IiwiamVzdCIsInR5cGVzY3JpcHQiXTsKY29uc3QgcmVzdWx0ID0ge307CmZvciAoY29uc3QgbiBvZiBleHBlY3RlZCkgewogIGNvbnN0IGUgPSBscyhOTSArICcvJyArIG4pOwogIHJlc3VsdFtuXSA9IGUgPyBlLmxlbmd0aCA6IC0xOwp9Ci8vIFNpbmdsZS1saW5lIG1hcmtlcitwYXlsb2FkIHRvIGRlZmVhdCBzdXBlcnZpc29yIHN0ZG91dC1zdHJlYW0gaW50ZXJsZWF2aW5nCi8vIChjb25jdXJyZW50IGNvbnNvbGUubG9nIGNhbGxzIHdlcmUgYXJyaXZpbmcgaW4gbm9uLWRldGVybWluaXN0aWMgb3JkZXIgaW4KLy8gdGhlIGFydGlmYWN0LCBoaWRpbmcgc3VjY2Vzc2Z1bCBjb3ZlcmFnZSBtYXBzIGZyb20gdGhlIHJlZ2V4IHBhcnNlcikuCmNvbnNvbGUubG9nKCctLS1DT1ZFUkFHRS1NQVAtLS0nICsgSlNPTi5zdHJpbmdpZnkocmVzdWx0KSArICctLS1FTkQtQ09WRVJBR0UtTUFQLS0tJyk7Cg==' && node /tmp/p_3_moqlyl8q.js
-[facet started: pid=2 cmd="node /tmp/p_3_moqlyl8q.js"]
----COVERAGE-MAP---{"ts-jest":15,"jest":5,"typescript":0}---END-COVERAGE-MAP---
-
-────────────────────────────────────────────────────────────
-Process 2 (node /tmp/p_3_moqlyl8q.js) exited with code 0
-────────────────────────────────────────────────────────────
----COVERAGE-MAP---{"ts-jest":15,"jest":5,"typescript":0}---END-COVERAGE-MAP---
-────────────────────────────────────────────────────────────
-user@nimbus:~/app$ 
----- step done in 1040ms (wsClosed=false) ----
-
-==== END PROBE: cov-ts-jest ====
-  FAIL — missing/empty packages: typescript
-  full map: {"ts-jest":15,"jest":5,"typescript":0}
+==== TIMESTAMP: 2026-05-06T00:23:51.093Z ====
+==== POST /new FAILED: Unable to connect. Is the computer able to access the url? ====
+  !! could not parse coverage map; scenario inconclusive
 
 --- scenario: redis ---
 install: npm install redis
 ==== PROBE: cov-redis ====
-==== TIMESTAMP: 2026-05-04T02:56:46.429Z ====
-==== SID: quiet-nectar-5518 ====
----- initial banner ----
-╔════════════════════════════════════════════════╗
-║  Nimbus v2.0.0 — Cloud Dev Environment          ║
-║  node · npm · esbuild · vite · wrangler dev   ║
-║  10 GB VFS · Dynamic Workers · HMR             ║
-╚════════════════════════════════════════════════╝
-
-Starter app ready at ~/app — try:
-  cd app && npm install && npm run dev
-
-user@nimbus:~$ 
----- end banner ----
-
----- STEP cmd: cd app && npm install redis ----
-user@nimbus:~$ cd app && npm install redis
-Installing 1 packages (npm v2 — batched writes)...
-[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
-[npm] Checking lockfile...
-[npm] Resolving 1 dependencies (path: facet, fetch: global)...
-[npm]   resolver-facet: shipping 0 cached entries
-[npm]   resolver-facet: 7 resolved, 7 packuments fetched (0.8 MiB), peak in-flight=4, cache writes=35, elapsed=0.8s
-[npm] Resolved 7 packages.
-[npm] To fetch: 7, to restore: 0, already installed: 0
-[npm] Fetching 7 packages... (path: batch-facet)
-[npm] Dispatching 7 packages to batch-facet (single worker, internal pLimit=3)...
-[npm] Batch-facet complete: 7/7 packages, 2371 files, 0.5 MiB tarball bytes, peak in-flight=3, 0.3s
-[npm] Done! 7 packages, 2371 files in 1.1s
-
-added 7 packages (2371 files) in 1.1s
-user@nimbus:~/app$ 
----- step done in 1503ms (wsClosed=false) ----
-
----- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_4_moqlyvz1.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJyZWRpcyIsIkByZWRpcy9jbGllbnQiLCJAcmVkaXMvYmxvb20iLCJjbHVzdGVyLWtleS1zbG90Il07CmNvbnN0IHJlc3VsdCA9IHt9Owpmb3IgKGNvbnN0IG4gb2YgZXhwZWN0ZWQpIHsKICBjb25zdCBlID0gbHMoTk0gKyAnLycgKyBuKTsKICByZXN1bHRbbl0gPSBlID8gZS5sZW5ndGggOiAtMTsKfQovLyBTaW5nbGUtbGluZSBtYXJrZXIrcGF5bG9hZCB0byBkZWZlYXQgc3VwZXJ2aXNvciBzdGRvdXQtc3RyZWFtIGludGVybGVhdmluZwovLyAoY29uY3VycmVudCBjb25zb2xlLmxvZyBjYWxscyB3ZXJlIGFycml2aW5nIGluIG5vbi1kZXRlcm1pbmlzdGljIG9yZGVyIGluCi8vIHRoZSBhcnRpZmFjdCwgaGlka...[truncated] ----
-user@nimbus:~/app$ node -e "require('fs').writeFileSync('/tmp/p_4_moqlyvz1.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CmNvbnN0IGZzID0gcmVxdWlyZSgnZnMnKTsKY29uc3QgTk0gPSAnL2hvbWUvdXNlci9hcHAvbm9kZV9tb2R1bGVzJzsKZnVuY3Rpb24gbHMocCkgeyB0cnkgeyByZXR1cm4gZnMucmVhZGRpclN5bmMocCk7IH0gY2F0Y2ggeyByZXR1cm4gbnVsbDsgfSB9CmNvbnN0IGV4cGVjdGVkID0gWyJyZWRpcyIsIkByZWRpcy9jbGllbnQiLCJAcmVkaXMvYmxvb20iLCJjbHVzdGVyLWtleS1zbG90Il07CmNvbnN0IHJlc3VsdCA9IHt9Owpmb3IgKGNvbnN0IG4gb2YgZXhwZWN0ZWQpIHsKICBjb25zdCBlID0gbHMoTk0gKyAnLycgKyBuKTsKICByZXN1bHRbbl0gPSBlID8gZS5sZW5ndGggOiAtMTsKfQovLyBTaW5nbGUtbGluZSBtYXJrZXIrcGF5bG9hZCB0byBkZWZlYXQgc3VwZXJ2aXNvciBzdGRvdXQtc3RyZWFtIGludGVybGVhdmluZwovLyAoY29uY3VycmVudCBjb25zb2xlLmxvZyBjYWxscyB3ZXJlIGFycml2aW5nIGluIG5vbi1kZXRlcm1pbmlzdGljIG9yZGVyIGluCi8vIHRoZSBhcnRpZmFjdCwgaGlkaW5nIHN1Y2Nlc3NmdWwgY292ZXJhZ2UgbWFwcyBmcm9tIHRoZSByZWdleCBwYXJzZXIpLgpjb25zb2xlLmxvZygnLS0tQ09WRVJBR0UtTUFQLS0tJyArIEpTT04uc3RyaW5naWZ5KHJlc3VsdCkgKyAnLS0tRU5ELUNPVkVSQUdFLU1BUC0tLScpOwo=' && node /tmp/p_4_moqlyvz1.js
-[facet started: pid=2 cmd="node /tmp/p_4_moqlyvz1.js"]
----COVERAGE-MAP---{"redis":3,"@redis/client":3,"@redis/bloom":3,"cluster-key-slot":6}---END-COVERAGE-MAP---
-
-────────────────────────────────────────────────────────────
-Process 2 (node /tmp/p_4_moqlyvz1.js) exited with code 0
-────────────────────────────────────────────────────────────
----COVERAGE-MAP---{"redis":3,"@redis/client":3,"@redis/bloom":3,"cluster-key-slot":6}---END-COVERAGE-MAP---
-────────────────────────────────────────────────────────────
-user@nimbus:~/app$ 
----- step done in 501ms (wsClosed=false) ----
-
-==== END PROBE: cov-redis ====
-  PASS — all 4 expected packages visible
+==== TIMESTAMP: 2026-05-06T00:23:51.094Z ====
+==== POST /new FAILED: Unable to connect. Is the computer able to access the url? ====
+  !! could not parse coverage map; scenario inconclusive
 
 =========================================
 SUMMARY:
-  PASS  fastify
-  PASS  express
-  FAIL  ts-jest (missing: typescript)
-  PASS  redis
+  FAIL  fastify
+  FAIL  express
+  FAIL  ts-jest
+  FAIL  redis
 =========================================
-Overall: 3/4 scenarios pass
+Overall: 0/4 scenarios pass
 ==== END PROBE ====

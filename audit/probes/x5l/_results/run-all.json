@@ -1,0 +1,47 @@
+{
+  "passed": 10,
+  "failed": 0,
+  "total": 10,
+  "results": [
+    {
+      "probe": "functional/f1-bare-subpath-walker.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "functional/f2-bare-subpath-with-exports.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "functional/f3-bare-subpath-fallback-index.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "functional/f4-bare-subpath-up-pointing.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r1-single-resolver-source.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r2-install-pipeline-coverage.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "regression/r3-x5c-fixes-still-green.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "e2e/e1-react-remove-scroll-real.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "e2e/e2-radix-react-dialog-real.mjs",
+      "status": "✓"
+    },
+    {
+      "probe": "e2e/e3-nuxt-defu-investigation.mjs",
+      "status": "✓"
+    }
+  ]
+}

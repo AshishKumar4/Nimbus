@@ -1,0 +1,218 @@
+==== X5Z5-BUILD RUN-ALL ====
+==== 2026-05-06T00:25:42.558Z ====
+
+==== express-stream-prototype ====
+$ bun audit/probes/x5z5-build/functional/e-express-stream-prototype.mjs
+  ok  shim scope evaluates without error
+  ok  require("stream").Readable is a function
+  ok  require("stream").Writable is a function
+  ok  require("stream").prototype is defined (Defect-A fixed)
+  ok  Object.create(require("stream").prototype, ...) does NOT throw (express unblocker)
+
+# e-express-stream-prototype: 5 passed, 0 failed
+
+EXIT=0
+
+==== express-inherits-guard ====
+$ bun audit/probes/x5z5-build/functional/e-express-inherits-guard.mjs
+  ok  shim scope evaluates without error
+  ok  util.inherits(C, null) does not throw (Defect-B fixed)
+  ok  util.inherits(C, {}) does not throw on parent-with-no-prototype (Defect-B fixed)
+  ok  util.inherits happy-path no-throw
+  ok  util.inherits happy-path wires prototype chain (regression-safe)
+  ok  util.inherits happy-path sets super_
+
+# e-express-inherits-guard: 6 passed, 0 failed
+
+EXIT=0
+
+==== events-shim-lazy-init ====
+$ bun audit/probes/x5z5-build/functional/e-events-shim-lazy-init.mjs
+  ok  shim scope evaluates without error
+  ok  app.on() (mixin-copied) does not throw
+  ok  app.emit() (mixin-copied) does not throw
+  ok  app.off() (mixin-copied) does not throw
+  ok  app.removeAllListeners() (mixin-copied) does not throw
+  ok  app.listenerCount() (mixin-copied) returns a number
+  ok  app.on("roundtrip", fn) + app.emit("roundtrip", 42) → fn receives 42
+
+# e-events-shim-lazy-init: 7 passed, 0 failed
+
+EXIT=0
+
+==== tailwindcss-vite-looksLikeEsm ====
+$ bun audit/probes/x5z5-build/functional/v-tailwindcss-vite-looks-like-esm.mjs
+  ok  looksLikeEsm DETECTS minified ;import{} (Z5 regex blind-spot A+B)
+  ok  looksLikeEsm DETECTS no-whitespace import{ (blind-spot B)
+  ok  looksLikeEsm REGRESSION: still detects newline ESM
+  ok  looksLikeEsm REGRESSION: rejects plain CJS
+  ok  looksLikeEsm REGRESSION: rejects "importedX" identifier (no false positive)
+  ok  looksLikeEsm REGRESSION: rejects comment-only "// import"
+
+# v-tailwindcss-vite-looks-like-esm: 6 passed, 0 failed
+
+EXIT=0
+
+==== tailwindcss-vite-prefetch-walker ====
+$ bun audit/probes/x5z5-build/functional/v-tailwindcss-vite-prefetch-walker.mjs
+# prefetched 7 files (truncated=false)
+#  home/user/app/node_modules/@tailwindcss/node/dist/index.js
+#  home/user/app/node_modules/@tailwindcss/node/package.json
+#  home/user/app/node_modules/@tailwindcss/oxide/dist/index.js
+#  home/user/app/node_modules/@tailwindcss/oxide/package.json
+#  home/user/app/node_modules/@tailwindcss/vite/dist/index.mjs
+#  home/user/app/node_modules/@tailwindcss/vite/package.json
+#  home/user/app/package.json
+  ok  vite/dist/index.mjs in bundle
+  ok  @tailwindcss/node/dist/index.js in bundle (walker followed minified ;import{)
+  ok  @tailwindcss/oxide/dist/index.js in bundle (multiple ;import{ on same line)
+
+# v-tailwindcss-vite-prefetch-walker: 3 passed, 0 failed
+
+EXIT=0
+
+==== v8-shim-stub ====
+$ bun audit/probes/x5z5-build/functional/v-v8-shim-stub.mjs
+  ok  shim scope evaluates without error
+  ok  require("v8") returns a non-null object
+  ok  require("node:v8") returns a non-null object
+  ok  v8.startupSnapshot is present
+  ok  v8.startupSnapshot.isBuildingSnapshot() returns false (workerd never builds snapshots)
+
+# v-v8-shim-stub: 5 passed, 0 failed
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x5z5-build/regression/single-resolver-source.mjs
+# resolveExports declarations: 1
+#   - _shared/exports-resolver.ts:49
+  ok  resolveExports declared exactly once
+  ok  declaration is in _shared/exports-resolver.ts
+
+# z5-single-resolver-source: 2 passed, 0 failed
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5z5-build/regression/install-pipeline-coverage-shim.mjs
+# SCENARIOS list contains the expected 4 scenarios
+  ok  SCENARIOS contains label "fastify"
+  ok  SCENARIOS contains label "express"
+  ok  SCENARIOS contains label "ts-jest"
+  ok  SCENARIOS contains label "redis"
+# mustHaveAtLeastOne lists unchanged for fastify/redis (the P-bucket packages)
+  ok  fastify scenario expects 'fastify' visible
+  ok  redis scenario expects '@redis/client' visible
+
+# z5-install-pipeline-coverage-shim: 6 passed, 0 failed
+
+EXIT=0
+
+==== builtins-coverage ====
+$ bun audit/probes/x5z5-build/regression/builtins-coverage.mjs
+# Required builtins[] keys are all registered
+  ok  builtins["fs"] registered
+  ok  builtins["path"] registered
+  ok  builtins["os"] registered
+  ok  builtins["process"] registered
+  ok  builtins["events"] registered
+  ok  builtins["stream"] registered
+  ok  builtins["crypto"] registered
+  ok  builtins["util"] registered
+  ok  builtins["assert"] registered
+  ok  builtins["querystring"] registered
+  ok  builtins["string_decoder"] registered
+  ok  builtins["buffer"] registered
+  ok  builtins["http"] registered
+  ok  builtins["https"] registered
+  ok  builtins["net"] registered
+  ok  builtins["dns"] registered
+  ok  builtins["tls"] registered
+  ok  builtins["tty"] registered
+  ok  builtins["module"] registered
+  ok  builtins["timers"] registered
+  ok  builtins["zlib"] registered
+  ok  builtins["readline"] registered
+  ok  builtins["perf_hooks"] registered
+  ok  builtins["worker_threads"] registered
+  ok  builtins["vm"] registered
+  ok  builtins["http2"] registered
+  ok  builtins["repl"] registered
+  ok  builtins["diagnostics_channel"] registered
+  ok  builtins["async_hooks"] registered
+  ok  builtins["url"] registered
+  ok  builtins["fs/promises"] registered
+  ok  builtins["node:fs/promises"] registered
+  ok  builtins["timers/promises"] registered
+  ok  builtins["node:timers/promises"] registered
+  ok  builtins["dns/promises"] registered
+  ok  builtins["node:dns/promises"] registered
+  ok  builtins["util/types"] registered
+  ok  builtins["node:util/types"] registered
+
+# z5-builtins-coverage: 38 passed, 0 failed
+
+EXIT=0
+
+==== express e2e ====
+$ bun audit/probes/x5z5-build/e2e/express.mjs
+X.5-Z5 e2e/express — express loads end-to-end (REAL files)
+  fixture: 383 files loaded
+  prefetched 217 files (truncated=false)
+  express files in bundle: 13
+  readable-stream files in bundle: 0
+  ok  express main file landed in bundle
+  ok  send/index.js (util.inherits(X, require("stream")) site) landed in bundle
+  transformed 0 ESM → CJS (0 failed)
+  result: {"err":null,"errStack":"","type":"function","isFunction":true,"appType":"function","appHasUse":true,"appHasGet":true,"appHasListen":true}
+  ok  no hard exception during runtime require chain
+  ok  require("express") returns a function (Z5 §1 Defect-A unblocker)
+  ok  express() returns an app callable (Z5 §1 Defect-A+B unblocker)
+  ok  Z5 §1 verbatim error message no longer surfaces
+  ok  [downstream — out of Z5 scope] express app has .use
+  ok  [downstream — out of Z5 scope] express app has .get
+  ok  [downstream — out of Z5 scope] express app has .listen
+
+# z5-e2e-express: 9 passed, 0 failed
+
+EXIT=0
+
+==== tailwindcss-vite e2e ====
+$ bun audit/probes/x5z5-build/e2e/tailwindcss-vite.mjs
+X.5-Z5 e2e/tailwindcss-vite — @tailwindcss/vite loads end-to-end
+  fixture: 288 files loaded
+  prefetched 122 files (truncated=false)
+  @tailwindcss files in bundle: 12
+  ok  @tailwindcss/vite/dist/index.mjs landed in bundle
+  index.mjs head bytes: 1500, has-minified-import-shape: true
+  ok  @tailwindcss/vite/dist/index.mjs IS minified-ESM with ;import{ shape (Z5 §3 target)
+  transformed 2 ESM→CJS, 0 failed, 0 .mjs files missed by looksLikeEsm
+  ok  zero .mjs files missed by looksLikeEsm (Z5 §3 fix metric)
+  result: {"err":"Cannot find module '../lightningcss.linux-x64-gnu.node' (from home/user/app/node_modules/lightningcss/node)","type":"object","isFn":false,"hasDefault":null,"defaultIsFn":null,"keys":[]}
+  ok  no hard exception during runtime require chain
+  ok  Z5 §3 verbatim error message no longer surfaces
+  NOT OK  [downstream — out of Z5 scope] no soft error from require('@tailwindcss/vite') — Cannot find module '../lightningcss.linux-x64-gnu.node' (from home/user/app/node_modules/lightningcss/node)
+  NOT OK  [downstream — out of Z5 scope] @tailwindcss/vite has a callable export — {"err":"Cannot find module '../lightningcss.linux-x64-gnu.node' (from home/user/app/node_modules/lightningcss/node)","type":"object","isFn":false,"hasDefault":null,"defaultIsFn":null,"keys":[]}
+
+# z5-e2e-tailwindcss-vite: 5 passed, 2 failed
+# failures:
+#   - [downstream — out of Z5 scope] no soft error from require('@tailwindcss/vite'): Cannot find module '../lightningcss.linux-x64-gnu.node' (from home/user/app/node_modules/lightningcss/node)
+#   - [downstream — out of Z5 scope] @tailwindcss/vite has a callable export: {"err":"Cannot find module '../lightningcss.linux-x64-gnu.node' (from home/user/app/node_modules/lightningcss/node)","type":"object","isFn":false,"hasDefault":null,"defaultIsFn":null,"keys":[]}
+
+EXIT=1
+
+==== SUMMARY ====
+  PASS  express-stream-prototype
+  PASS  express-inherits-guard
+  PASS  events-shim-lazy-init
+  PASS  tailwindcss-vite-looksLikeEsm
+  PASS  tailwindcss-vite-prefetch-walker
+  PASS  v8-shim-stub
+  PASS  single-resolver-source
+  PASS  install-pipeline-coverage-shim
+  PASS  builtins-coverage
+  PASS  express e2e
+  FAIL  tailwindcss-vite e2e
+
+OVERALL: FAIL

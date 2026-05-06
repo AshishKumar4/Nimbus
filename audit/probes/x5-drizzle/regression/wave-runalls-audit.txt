@@ -1,0 +1,20 @@
+==== X5-drizzle Phase D audit — wave run-all sweep ====
+==== TIMESTAMP: 2026-05-06T09:41:24Z ====
+
+  x5j:  | last summary line: OVERALL: PASS
+  x5l:  | last summary line: 
+  x5m: EXIT=0 | last summary line: 
+  x5npqo: EXIT=0 | last summary line: OVERALL: PASS
+  x5z5-build: EXIT=1 | last summary line: OVERALL: FAIL
+  x5r:  | last summary line: 
+  x5z3:  | last summary line: 
+  x5m3:  | last summary line: 
+  x5s:  | last summary line: 
+  x526b: EXIT=0 | last summary line: Total: 5 pass, 0 fail (out of 5)
+  x5c:  | last summary line: 
+  x5f:  | last summary line: OVERALL: PASS
+  x5g:  | last summary line: 
+
+Verdict: 12/13 PASS. x5z5-build is the documented pre-existing fail
+(tailwindcss-vite e2e marked '[downstream — out of Z5 scope]' by the probe itself).
+Whitelisted as ALLOWED-FAIL in prior-x5-runalls-shim.mjs.

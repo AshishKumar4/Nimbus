@@ -17,8 +17,8 @@ const PREAMBLE = path.resolve(HERE, '../../../../src/parallel/npm-resolve-preamb
 // The curated post-W6 set. Anything NOT in here must NOT be in SKIP_PACKAGES.
 // Anything in here must remain in SKIP_PACKAGES.
 const POST_W6_SKIP = new Set([
-  // Build tools
-  'typescript', 'vite', 'rollup', 'webpack', 'parcel',
+  // Build tools (X.5-G: rollup migrated to WASM_SWAPS)
+  'typescript', 'vite', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
   'prettier', 'eslint', 'stylelint',
   // Native dev-only / build (chokidar = real-vite intercepts; node-gyp/pre-gyp = build-time)
@@ -27,11 +27,12 @@ const POST_W6_SKIP = new Set([
   '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
   // Lifecycle hooks
   'husky', 'lint-staged', 'commitlint',
-  // NOTE: 'esbuild' moved to WASM_SWAPS
-  // NOTE: 'fsevents' moved to REJECT_INSTALL (transitive=warn)
+  // NOTE: 'esbuild' moved to WASM_SWAPS (W6)
+  // NOTE: 'fsevents' moved to REJECT_INSTALL (W6, transitive=warn)
+  // NOTE: 'rollup'   moved to WASM_SWAPS (X.5-G; → @rollup/wasm-node)
 ]);
 
-const REMOVED_FROM_SKIP = ['esbuild', 'fsevents'];
+const REMOVED_FROM_SKIP = ['esbuild', 'fsevents', 'rollup'];
 
 function extractSkipSet(src) {
   // Find `const SKIP_PACKAGES = new Set([...])` block; pull all quoted strings.

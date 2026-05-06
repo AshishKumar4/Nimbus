@@ -1,0 +1,12 @@
+── X.5-M3 functional + regression ─────────────────────────
+[PASS] functional/f1-url-null-base-current-module.mjs
+[PASS] functional/f2-url-null-base-no-context.mjs
+[PASS] functional/f3-loadmodule-saves-restores.mjs
+[PASS] regression/install-pipeline-coverage-shim.mjs
+[PASS] regression/single-resolver-source.mjs
+[PASS] regression/cross-wave-x5-runalls.mjs
+── heavy regressions skipped (NIMBUS_X5M3_HEAVY=1 to run)
+── e2e (NIMBUS_X5M3_E2E=1) ────────────────────────────────
+[PASS] e2e/e1-vite-loads.mjs
+
+──── x5m3 run-all: 7 pass / 0 fail

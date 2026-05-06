@@ -1,0 +1,108 @@
+FAIL  audit/probes/w3/run-all.mjs  exit=1 (152418ms)
+  stdout (last 2KB):
+est error code + msg, got:
+Error: Cannot find module 'vm' (from /tmp)
+    at __requireFrom (runner.js:1680:24)
+    at __require (runner.js:1690:10)
+    at eval (eval at <anonymous> (runner
+  - functional/vm-static-surface :: expected all 4 typeof checks, got:
+Error: Cannot find module 'vm' (from /tmp)
+    at __requireFrom (runner.js:1680:24)
+    at __require (runner.js:1690:10)
+    at eval (eval at <anonymous> (runner.js:
+  - regression/crypto-fnv-regression :: expected NO FNV signature ("abdd62852c5bd7fc9fa116d64f0254ec") AND REAL sha256 ("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824") in output, got:
+REG_SHA256=abdd62852c5bd7fc9fa116d64
+  - e2e/axios :: expected axios surface, got:
+Error: Cannot find module 'http2' (from home/user/app/node_modules/axios/dist/node)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:1601:33)
+    a
+  - e2e/fastify-runStores :: expected fastify inject success, got:
+Error: Cannot find module 'node:diagnostics_channel' (from home/user/app/node_modules/fastify)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runn
+  - e2e/fastify :: expected fastify instance surface, got:
+Error: Cannot find module 'node:diagnostics_channel' (from home/user/app/node_modules/fastify)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (ru
+  - e2e/jsdom :: expected JSDOM constructor, got:
+Error: Cannot find module 'vm' (from home/user/app/node_modules/jsdom/lib)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:1601:33)
+    at eva
+  - e2e/puppeteer-core :: expected puppeteer-core surface, got:
+Error: Cannot find module 'node:fs/promises' (from home/user/app/node_modules/puppeteer-core/lib/cjs/puppeteer/node)
+    at __requireFrom (runner.js:1680:24)
+    
+  - e2e/ts-node :: expected ts-node surface, got:
+Error: Cannot find module 'repl' (from home/user/app/node_modules/ts-node/dist)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:1601:33)
+    at 
+
+FAIL  audit/probes/w3.5/run-all.mjs  exit=1 (47115ms)
+  stdout (last 2KB):
+23ms — expected redis.createClient to be a function, got:
+Error: Cannot read module: home/user/app/node_modules/@redis/client/dist/lib/client
+    at __loadModule (runner.js:1590:28)
+    at __requireFrom (run
+
+========================================
+W3.5 run-all summary:
+  total:   7
+  passed:  0
+  failed:  7
+========================================
+
+Failed probes:
+  - functional/directory-as-index :: expected directory-as-index require to work, got:
+Error: Cannot find module './fixture' (from /home/user/app)
+    at __requireFrom (runner.js:1680:24)
+    at __require (runner.js:1690:10)
+    at eval 
+  - functional/esm-in-bundle :: expected ESM file to load via require, got:
+Error: Cannot load module 'home/user/app/esm-mod.mjs': file was not pre-bundled. Add it to the VFS bundle.
+    at __loadModule (runner.js:1624:17)
+    at __
+  - functional/silent-compile-failure-surfaces :: still emits the misleading "file was not pre-bundled" error:
+CAUGHT_MSG=Cannot load module 'home/user/app/broken.js': file was not pre-bundled. Add it to the VFS bundle.
+  - regression/install-pipeline-coverage :: expected three packages to load, got:
+Error: Cannot find module 'http2' (from home/user/app/node_modules/axios/dist/node)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:1601:
+  - e2e/fastify-instantiate :: expected fastify + route registration, got:
+Error: Cannot find module 'node:diagnostics_channel' (from home/user/app/node_modules/fastify)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire
+  - e2e/jsdom-load-and-instantiate :: expected JSDOM to instantiate + parse HTML, got:
+Error: Cannot find module 'vm' (from home/user/app/node_modules/jsdom/lib)
+    at __requireFrom (runner.js:1680:24)
+    at scopedRequire (runner.js:160
+  - e2e/redis-typeof :: expected redis.createClient to be a function, got:
+Error: Cannot read module: home/user/app/node_modules/@redis/client/dist/lib/client
+    at __loadModule (runner.js:1590:28)
+    at __requireFrom (run
+
+PASS  audit/probes/w4/run-all.mjs  (233ms)
+PASS  audit/probes/w5/run-all.mjs  (230ms)
+PASS  audit/probes/w6/run-all.mjs  (472ms)
+PASS  audit/probes/x5c/run-all.mjs  (1909ms)
+PASS  audit/probes/x5f/run-all.mjs  (367ms)
+PASS  audit/probes/x5g/run-all.mjs  (363ms)
+PASS  audit/probes/x5j/run-all.mjs  (2750ms)
+PASS  audit/probes/x5l/run-all.mjs  (3363ms)
+PASS  audit/probes/x5m/run-all.mjs  (344ms)
+PASS  audit/probes/x5m3/run-all.mjs  (12115ms)
+PASS  audit/probes/x5npqo/run-all.mjs  (283ms)
+PASS  audit/probes/x5r/run-all.mjs  (509ms)
+PASS  audit/probes/x5s/run-all.mjs  (24444ms)
+PASS  audit/probes/x5z3/run-all.mjs  (433ms)
+ALLOWED-FAIL  audit/probes/x5z5-build/run-all.mjs  exit=1 (1329ms) — pre-existing per retro
+PASS  audit/probes/x526b/run-all.mjs  (356ms)
+
+Summary: 15 pass / 2 new-fail / 1 allowed-fail
+  NOT OK  prior-x5-runalls (excl. 1 known) — new failures: audit/probes/w3/run-all.mjs, audit/probes/w3.5/run-all.mjs
+
+# x5-drizzle/regression/prior-x5-runalls-shim: 0 passed, 1 failed
+# failures:
+#   - prior-x5-runalls (excl. 1 known): new failures: audit/probes/w3/run-all.mjs, audit/probes/w3.5/run-all.mjs

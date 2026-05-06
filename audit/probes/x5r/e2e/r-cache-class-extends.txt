@@ -1,0 +1,30 @@
+==== PROBE: r-cache-class-extends ====
+==== TIMESTAMP: 2026-05-05T23:00:01.743Z ====
+==== SID: cloudy-pebble-2259 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/tmp/p_1_mot8e4we.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3Qgc3RyZWFtID0gcmVxdWlyZSgnc3RyZWFtJyk7CmNsYXNzIENTQ1AgZXh0ZW5kcyBzdHJlYW0uRXZlbnRFbWl0dGVyIHt9CmNvbnN0IGluc3QgPSBuZXcgQ1NDUCgpOwpsZXQgZ290ID0gbnVsbDsKaW5zdC5vbigncGluZycsICh2KSA9PiB7IGdvdCA9IHY7IH0pOwppbnN0LmVtaXQoJ3BpbmcnLCA0Mik7CmNvbnNvbGUubG9nKCdvazonICsgQ1NDUC5uYW1lICsgJzonICsgZ290KTsK' && node /tmp/p_1_mot8e4we.js ----
+user@nimbus:~$ node -e "require('fs').writeFileSync('/tmp/p_1_mot8e4we.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'Y29uc3Qgc3RyZWFtID0gcmVxdWlyZSgnc3RyZWFtJyk7CmNsYXNzIENTQ1AgZXh0ZW5kcyBzdHJlYW0uRXZlbnRFbWl0dGVyIHt9CmNvbnN0IGluc3QgPSBuZXcgQ1NDUCgpOwpsZXQgZ290ID0gbnVsbDsKaW5zdC5vbigncGluZycsICh2KSA9PiB7IGdvdCA9IHY7IH0pOwppbnN0LmVtaXQoJ3BpbmcnLCA0Mik7CmNvbnNvbGUubG9nKCdvazonICsgQ1NDUC5uYW1lICsgJzonICsgZ290KTsK' && node /tmp/p_1_mot8e4we.js
+[facet started: pid=2 cmd="node /tmp/p_1_mot8e4we.js"]
+ok:CSCP:42
+
+────────────────────────────────────────────────────────────
+Process 2 (node /tmp/p_1_mot8e4we.js) exited with code 0
+────────────────────────────────────────────────────────────
+ok:CSCP:42
+────────────────────────────────────────────────────────────
+user@nimbus:~$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: r-cache-class-extends ====

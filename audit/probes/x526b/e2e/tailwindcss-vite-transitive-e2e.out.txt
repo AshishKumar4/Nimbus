@@ -1,0 +1,30 @@
+==== PROBE: x526b tailwindcss-vite-transitive ====
+==== TIMESTAMP: 2026-05-06T07:11:51.384Z ====
+==== SID: valiant-tree-3743 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install @tailwindcss/vite ----
+user@nimbus:~$ cd app && npm install @tailwindcss/vite
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet failed: npm install rejected: @tailwindcss/oxide — Native Rust Tailwind v4 oxide engine; only platform-specific .node bindings + wasm32-wasi shard; workerd has no node:wasi.
+npm install failed: resolver-facet failed: npm install rejected: @tailwindcss/oxide — Native Rust Tailwind v4 oxide engine; only platform-specific .node bindings + wasm32-wasi shard; workerd has no node:wasi.
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+==== END PROBE: x526b tailwindcss-vite-transitive ====

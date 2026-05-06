@@ -1,0 +1,196 @@
+==== PROBE: vite-url-stack-investigate ====
+==== TIMESTAMP: 2026-05-05T18:59:56.644Z ====
+==== SID: brisk-meteor-2404 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install vite ----
+user@nimbus:~$ cd app && npm install vite
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm] [npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers.
+[npm] [npm] [swap] esbuild → esbuild-wasm
+[npm] [resolve-facet] [skip] lightningcss-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=lightningcss.darwin-x64.node)
+[npm] [resolve-facet] [skip] lightningcss-win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=lightningcss.win32-x64-msvc.node)
+[npm] [resolve-facet] [skip] lightningcss-win32-arm64-msvc — optional native binding (os=win32, cpu=arm64, libc=*, main=lightningcss.win32-arm64-msvc.node)
+[npm] [resolve-facet] [skip] lightningcss-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=lightningcss.darwin-arm64.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=glibc, main=lightningcss.linux-x64-gnu.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=glibc, main=lightningcss.linux-arm64-gnu.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=lightningcss.linux-arm64-musl.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=lightningcss.linux-arm-gnueabihf.node)
+[npm] [resolve-facet] [skip] lightningcss-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=lightningcss.linux-x64-musl.node)
+[npm] [resolve-facet] [skip] lightningcss-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=lightningcss.freebsd-x64.node)
+[npm] [resolve-facet] [skip] lightningcss-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=lightningcss.android-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=rolldown-binding.darwin-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=rolldown-binding.darwin-x64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=rolldown-binding.freebsd-x64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-wasm32-wasi — optional native binding (os=*, cpu=wasm32, libc=*, main=rolldown-binding.wasi.cjs)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=glibc, main=rolldown-binding.linux-x64-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=rolldown-binding.android-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=rolldown-binding.linux-x64-musl.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=rolldown-binding.win32-x64-msvc.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-ppc64-gnu — optional native binding (os=linux, cpu=ppc64, libc=glibc, main=rolldown-binding.linux-ppc64-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=glibc, main=rolldown-binding.linux-arm64-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-s390x-gnu — optional native binding (os=linux, cpu=s390x, libc=glibc, main=rolldown-binding.linux-s390x-gnu.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=rolldown-binding.linux-arm64-musl.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-openharmony-arm64 — optional native binding (os=openharmony, cpu=arm64, libc=*, main=rolldown-binding.openharmony-arm64.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=rolldown-binding.linux-arm-gnueabihf.node)
+[npm] [resolve-facet] [skip] @rolldown/binding-win32-arm64-msvc — optional native binding (os=win32, cpu=arm64, libc=*, main=rolldown-binding.win32-arm64-msvc.node)
+[npm] [resolve-facet] [skip] sass-embedded-all-unknown — optional native binding (os=*, cpu=!arm,!arm64,!riscv64,!x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-arm — optional native binding (os=android, cpu=arm, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-riscv64 — optional native binding (os=android, cpu=riscv64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-x64 — optional native binding (os=android, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-arm — optional native binding (os=linux, cpu=arm, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-arm64 — optional native binding (os=linux, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-arm64 — optional native binding (os=linux, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-riscv64 — optional native binding (os=linux, cpu=riscv64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-x64 — optional native binding (os=linux, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-musl-arm — optional native binding (os=linux, cpu=arm, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-x64 — optional native binding (os=linux, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-unknown-all — optional native binding (os=!android,!darwin,!linux,!win32, cpu=*, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-linux-riscv64 — optional native binding (os=linux, cpu=riscv64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-win32-arm64 — optional native binding (os=win32, cpu=arm64, libc=*, main=?)
+[npm] [resolve-facet] [skip] sass-embedded-win32-x64 — optional native binding (os=win32, cpu=x64, libc=*, main=?)
+[npm] [resolve-facet] [skip] @parcel/watcher-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-win32-x64 — optional native binding (os=win32, cpu=x64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-win32-ia32 — optional native binding (os=win32, cpu=ia32, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-win32-arm64 — optional native binding (os=win32, cpu=arm64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-x64-glibc — optional native binding (os=linux, cpu=x64, libc=glibc, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm64-glibc — optional native binding (os=linux, cpu=arm64, libc=glibc, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm-musl — optional native binding (os=linux, cpu=arm, libc=musl, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-linux-arm-glibc — optional native binding (os=linux, cpu=arm, libc=glibc, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @parcel/watcher-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=watcher.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=parser.darwin-x64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-freebsd-x64 — optional native binding (os=freebsd, cpu=x64, libc=*, main=parser.freebsd-x64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-wasm32-wasi — optional native binding (os=*, cpu=wasm32, libc=*, main=parser.wasi.cjs)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=parser.darwin-arm64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=glibc, main=parser.linux-x64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-android-arm64 — optional native binding (os=android, cpu=arm64, libc=*, main=parser.android-arm64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-ppc64-gnu — optional native binding (os=linux, cpu=ppc64, libc=glibc, main=parser.linux-ppc64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=parser.win32-x64-msvc.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=glibc, main=parser.linux-arm64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=musl, main=parser.linux-x64-musl.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-win32-ia32-msvc — optional native binding (os=win32, cpu=ia32, libc=*, main=parser.win32-ia32-msvc.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-s390x-gnu — optional native binding (os=linux, cpu=s390x, libc=glibc, main=parser.linux-s390x-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=musl, main=parser.linux-arm64-musl.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-android-arm-eabi — optional native binding (os=android, cpu=arm, libc=*, main=parser.android-arm-eabi.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-riscv64-gnu — optional native binding (os=linux, cpu=riscv64, libc=glibc, main=parser.linux-riscv64-gnu.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-riscv64-musl — optional native binding (os=linux, cpu=riscv64, libc=musl, main=parser.linux-riscv64-musl.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-openharmony-arm64 — optional native binding (os=openharmony, cpu=arm64, libc=*, main=parser.openharmony-arm64.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-win32-arm64-msvc — optional native binding (os=win32, cpu=arm64, libc=*, main=parser.win32-arm64-msvc.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm-musleabihf — optional native binding (os=linux, cpu=arm, libc=*, main=parser.linux-arm-musleabihf.node)
+[npm] [resolve-facet] [skip] @oxc-parser/binding-linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=parser.linux-arm-gnueabihf.node)
+[npm]   resolver-facet: 227 resolved, 304 packuments fetched (122.5 MiB), peak in-flight=4, cache writes=1533, elapsed=10.3s
+[npm] Resolved 227 packages.
+[npm] To fetch: 227, to restore: 0, already installed: 0
+[npm] Fetching 227 packages... (path: batch-facet)
+[npm] Dispatching 227 packages to batch-facet (single worker, internal pLimit=3)...
+[npm] Batch-facet complete: 227/227 packages, 7411 files, 24.1 MiB tarball bytes, peak in-flight=3, 12.5s
+[npm] Done! 227 packages, 7411 files in 22.8s
+
+added 227 packages (7411 files) in 22.8s
+user@nimbus:~/app$ 
+---- step done in 23030ms (wsClosed=false) ----
+
+---- STEP cmd: node -e "require('fs').writeFileSync('/home/user/app/.vite_inv_mosztdur.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CkVycm9yLnN0YWNrVHJhY2VMaW1pdCA9IEluZmluaXR5Owpjb25zdCBwYXRoID0gcmVxdWlyZSgncGF0aCcpOwpjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CgpsZXQgdml0ZUVudHJ5Owp0cnkgeyB2aXRlRW50cnkgPSByZXF1aXJlLnJlc29sdmUoJ3ZpdGUnKTsgfSBjYXRjaCAoZSkgeyBjb25zb2xlLmxvZygnUkVTT0xWRV9GQUlMOicsIGUubWVzc2FnZSk7IHByb2Nlc3MuZXhpdCgwKTsgfQpjb25zb2xlLmxvZygnUkVTT0xWRURfRU5UUlk6Jywgdml0ZUVudHJ5KTsKCi8vIFByaW50IHRoZSBlbnRyeSBmaWxlJ3MgZmlyc3QgNSBsaW5lcy4KdHJ5IHsKICBjb25zdCBzcmMgPSBmcy5yZWFkRmlsZVN5bmModml0ZUVudHJ5LCAndXRmOCcpOwogIGNvbnNvbGUubG9nKCdFTlRSWV9TSVpFOicsIHNyYy5sZW5ndGgpOwogIGNvbnNvbGUubG9nKCdFTlRSWV9IRUFEOicpOwogIGNvbnNvbGUubG9nKHNyYy5zcGxpdCgnXG4nKS5zbGljZSgwLDE1KS5qb2luKCdcbicpKTsKfSBjYXRja...[truncated] ----
+user@nimbus:~/app$ node -e "require('fs').writeFileSync('/home/user/app/.vite_inv_mosztdur.js', Buffer.from(process.argv[1],'base64').toString('utf8'))" 'CkVycm9yLnN0YWNrVHJhY2VMaW1pdCA9IEluZmluaXR5Owpjb25zdCBwYXRoID0gcmVxdWlyZSgncGF0aCcpOwpjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CgpsZXQgdml0ZUVudHJ5Owp0cnkgeyB2aXRlRW50cnkgPSByZXF1aXJlLnJlc29sdmUoJ3ZpdGUnKTsgfSBjYXRjaCAoZSkgeyBjb25zb2xlLmxvZygnUkVTT0xWRV9GQUlMOicsIGUubWVzc2FnZSk7IHByb2Nlc3MuZXhpdCgwKTsgfQpjb25zb2xlLmxvZygnUkVTT0xWRURfRU5UUlk6Jywgdml0ZUVudHJ5KTsKCi8vIFByaW50IHRoZSBlbnRyeSBmaWxlJ3MgZmlyc3QgNSBsaW5lcy4KdHJ5IHsKICBjb25zdCBzcmMgPSBmcy5yZWFkRmlsZVN5bmModml0ZUVudHJ5LCAndXRmOCcpOwogIGNvbnNvbGUubG9nKCdFTlRSWV9TSVpFOicsIHNyYy5sZW5ndGgpOwogIGNvbnNvbGUubG9nKCdFTlRSWV9IRUFEOicpOwogIGNvbnNvbGUubG9nKHNyYy5zcGxpdCgnXG4nKS5zbGljZSgwLDE1KS5qb2luKCdcbicpKTsKfSBjYXRjaCAoZSkgeyBjb25zb2xlLmxvZygnRU5UUllfUkVBRF9GQUlMOicsIGUubWVzc2FnZSk7IH0KCi8vIFdhbGsgbm9kZV9tb2R1bGVzL3ZpdGUsIGZpbmQgZXZlcnkgLmpzLy5janMvLm1qcyBmaWxlIHdpdGggPiAxNDQgbGluZXMsIGR1bXAgbGluZSAxNDQuCmNvbnN0IFZJVEVfUk9PVCA9ICcvaG9tZS91c2VyL2FwcC9ub2RlX21vZHVsZXMvdml0ZSc7CmZ1bmN0aW9uIHdhbGsoZCwgb3V0KSB7CiAgbGV0IGVudHJpZXM7CiAgdHJ5IHsgZW50cmllcyA9IGZzLnJlYWRkaXJTeW5jKGQsIHsgd2l0aEZpbGVUeXBlczogdHJ1ZSB9KTsgfQogIGNhdGNoIHsgcmV0dXJuOyB9CiAgZm9yIChjb25zdCBlIG9mIGVudHJpZXMpIHsKICAgIGNvbnN0IHAgPSBkICsgJy8nICsgZS5uYW1lOwogICAgaWYgKGUuaXNEaXJlY3RvcnkoKSkgd2FsayhwLCBvdXQpOwogICAgZWxzZSBpZiAoL1wuKGM/anN8bWpzKSQvLnRlc3QoZS5uYW1lKSkgb3V0LnB1c2gocCk7CiAgfQp9CmNvbnN0IGZpbGVzID0gW107CndhbGsoVklURV9ST09ULCBmaWxlcyk7CmNvbnNvbGUubG9nKCdWSVRFX0ZJTEVfQ09VTlQ6JywgZmlsZXMubGVuZ3RoKTsKCi8vIE5vdyBhY3R1YWxseSB0cnkgdG8gcmVxdWlyZSB2aXRlIGFuZCBjYXB0dXJlIHRoZSBmdWxsIHVucm9sbGVkIHN0YWNrLgpjb25zb2xlLmxvZygnQUJPVVRfVE9fUkVRVUlSRScpOwp0cnkgewogIGNvbnN0IG0gPSByZXF1aXJlKCd2aXRlJyk7CiAgY29uc29sZS5sb2coJ1NVQ0NFU1Mga2V5czonLCBPYmplY3Qua2V5cyhtKS5zbGljZSgwLDgpKTsKfSBjYXRjaCAoZSkgewogIGNvbnNvbGUubG9nKCdGQUlMX01FU1NBR0U6JywgZS5tZXNzYWdlKTsKICBjb25zb2xlLmxvZygnRkFJTF9OQU1FOicsIGUubmFtZSk7CiAgY29uc29sZS5sb2coJ0ZBSUxfU1RBQ0tfQkVHSU4nKTsKICBjb25zb2xlLmxvZyhlLnN0YWNrIHx8ICc8bm8gc3RhY2s+Jyk7CiAgY29uc29sZS5sb2coJ0ZBSUxfU1RBQ0tfRU5EJyk7CgogIC8vIFRyeSB0byBmaW5kIHRoZSBzb3VyY2UgbGluZS4gU3RhY2sgZnJhbWVzIGxvb2sgbGlrZQogIC8vICJldmFsIChldmFsIGF0IDxhbm9ueW1vdXM+IChydW5uZXIuanM6MzQ6MzQpLCA8YW5vbnltb3VzPjoxNDQ6OTUpIi4KICAvLyBFYWNoIG1vZHVsZSBsb2FkZWQgZ2V0cyBjb21waWxlZCB3aXRoIHRoZSBmaWxlIHBhdGggaW50ZXJwb2xhdGVkLCBzbwogIC8vIHRoZSBhY3R1YWwgZmlsZSBuYW1lIHNob3VsZCBiZSBpbiBtb2R1bGVDYWNoZSBvciBhY2Nlc3NpYmxlIHZpYSB0aGUKICAvLyByZXF1aXJlIHRyYWNlLiBXaXRob3V0IGFuIGludmVyc2UgbWFwcGluZywgc2NhbiBhbGwgbG9hZGVkIHZpdGUgZmlsZXMKICAvLyBmb3Igb25lIHdob3NlIDE0NHRoIGxpbmUgY29sdW1uIDk1IGNvbnRhaW5zICJVUkwiLgogIGNvbnN0IHN1cyA9IFtdOwogIGZvciAoY29uc3QgZiBvZiBmaWxlcykgewogICAgbGV0IHM7CiAgICB0cnkgeyBzID0gZnMucmVhZEZpbGVTeW5jKGYsICd1dGY4Jyk7IH0gY2F0Y2ggeyBjb250aW51ZTsgfQogICAgY29uc3QgbGluZXMgPSBzLnNwbGl0KCdcbicpOwogICAgaWYgKGxpbmVzLmxlbmd0aCA8IDE0NCkgY29udGludWU7CiAgICBjb25zdCBMMTQ0ID0gbGluZXNbMTQzXTsKICAgIGlmICghTDE0NCkgY29udGludWU7CiAgICAvLyBIZXVyaXN0aWM6IGxpbmVzIGNvbnRhaW5pbmcgJ25ldyBVUkwoJyBvciAncGF0aFRvRmlsZVVSTCcgbmVhciBjb2wgOTUKICAgIGlmICgvbmV3IFVSTFwoLy50ZXN0KEwxNDQpIHx8IC9wYXRoVG9GaWxlVVJMLy50ZXN0KEwxNDQpIHx8IC9VUkxcKC8udGVzdChMMTQ0KSkgewogICAgICBzdXMucHVzaCh7IGZpbGU6IGYucmVwbGFjZShWSVRFX1JPT1QsICc8dml0ZT4nKSwgTDE0NCwgY29sOTVBcm91bmQ6IEwxNDQuc2xpY2UoODUsIDEzMCkgfSk7CiAgICB9CiAgfQogIGNvbnNvbGUubG9nKCdTVVNQSUNJT1VTX0ZJTEVTX0NPVU5UOicsIHN1cy5sZW5ndGgpOwogIGZvciAoY29uc3QgcyBvZiBzdXMuc2xpY2UoMCwgMTApKSB7CiAgICBjb25zb2xlLmxvZygnLS0tJyk7CiAgICBjb25zb2xlLmxvZygnRklMRTonLCBzLmZpbGUpOwogICAgY29uc29sZS5sb2coJ0wxNDQ6Jywgcy5MMTQ0KTsKICAgIGNvbnNvbGUubG9nKCdBUk9VTkRfQ09MOTU6Jywgcy5jb2w5NUFyb3VuZCk7CiAgfQp9Cg==' && cd /home/user/app && node .vite_inv_mosztdur.js
+[facet started: pid=2 cmd="node /home/user/app/.vite_inv_mosztdur.js"]
+RESOLVED_ENTRY: /home/user/app/node_modules/vite/dist/node/index.js
+ENTRY_SIZE: 3449
+ENTRY_HEAD:
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+VITE_FILE_COUNT: 17
+ABOUT_TO_REQUIRE
+FAIL_MESSAGE: Invalid URL string.
+FAIL_NAME: TypeError
+FAIL_STACK_BEGIN
+TypeError: Invalid URL string.
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:144:95)
+    at __loadModule (runner.js:2584:7)
+    at __requireFrom (runner.js:2664:10)
+    at scopedRequire (runner.js:2569:33)
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:84:21)
+    at __loadModule (runner.js:2584:7)
+    at __requireFrom (runner.js:2664:10)
+    at __require (runner.js:2672:10)
+    at eval (eval at <anonymous> (runner.js:11:22), <anonymous>:39:13)
+    at NodeProcess.run (runner.js:2702:7)
+FAIL_STACK_END
+SUSPICIOUS_FILES_COUNT: 0
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/.vite_inv_mosztdur.js) exited with code 0
+────────────────────────────────────────────────────────────
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+VITE_FILE_COUNT: 17
+ABOUT_TO_REQUIRE
+FAIL_MESSAGE: Invalid URL string.
+FAIL_NAME: TypeError
+FAIL_STACK_BEGIN
+TypeError: Invalid URL string.
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:144:95)
+    at __loadModule (runner.js:2584:7)
+    at __requireFrom (runner.js:2664:10)
+    at scopedRequire (runner.js:2569:33)
+    at eval (eval at <anonymous> (runner.js:34:34), <anonymous>:84:21)
+    at __loadModule (runner.js:2584:7)
+    at __requireFrom (runner.js:2664:10)
+    at __require (runner.js:2672:10)
+    at eval (eval at <anonymous> (runner.js:11:22), <anonymous>:39:13)
+    at NodeProcess.run (runner.js:2702:7)
+FAIL_STACK_END
+SUSPICIOUS_FILES_COUNT: 0
+────────────────────────────────────────────────────────────
+user@nimbus:~/app$ 
+---- step done in 7047ms (wsClosed=false) ----
+
+==== END PROBE: vite-url-stack-investigate ====

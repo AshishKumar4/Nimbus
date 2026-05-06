@@ -1,0 +1,26 @@
+==== X5F e2e packages probe ====
+==== TIMESTAMP: 2026-05-05T02:32:56.161Z ====
+==== BASE: http://127.0.0.1:8787 ====
+  webpack (R1): ✅
+  rollup (R1): ⚠
+  parcel (R1): ⛔
+  radix-react-dialog (R2): ⚠
+  framer-motion (R2): ✅
+  ts-jest (R2): ⚠
+  nuxt (R3): ⚠
+
+=========================================
+SUMMARY:
+  ✅  webpack (R1)
+  ⚠  rollup (R1)
+  ⛔  parcel (R1)
+  ⚠  radix-react-dialog (R2)
+  ✅  framer-motion (R2)
+  ⚠  ts-jest (R2)
+  ⚠  nuxt (R3)
+-----------------------------------------
+✅ 2   ⛔ 1   ⚠ 4   ❌-OLD-SHAPE 0   ? 0
+
+done-criterion[≥4 ✅]:        FAIL
+done-criterion[no OLD-SHAPE]: PASS
+OVERALL: FAIL

@@ -1,0 +1,28 @@
+==== PROBE: x526b oxide-e2e ====
+==== TIMESTAMP: 2026-05-06T07:11:44.214Z ====
+==== SID: golden-marsh-0161 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd app && npm install @tailwindcss/oxide ----
+user@nimbus:~$ cd app && npm install @tailwindcss/oxide
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+npm install failed: npm install rejected: 1 package not supported on Nimbus.
+  ❌ @tailwindcss/oxide — Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings (linux-x64-gnu/musl, darwin-x64/arm64, freebsd-x64, win32-x64-msvc, etc.) plus a wasm32-wasi shard. workerd has no node:wasi (W6.5 hard limit; see audit/sections/07-workerd-hard-limits.md), and bare native bindings cannot dlopen. The parent index.js throws an npm-4828 message at runtime when no sibling shard loads.
+     try: no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine.
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+==== END PROBE: x526b oxide-e2e ====

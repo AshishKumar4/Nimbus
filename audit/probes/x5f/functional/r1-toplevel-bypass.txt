@@ -1,0 +1,14 @@
+==== X5F R1 toplevel-bypass functional probe ====
+==== TIMESTAMP: 2026-05-06T00:25:30.498Z ====
+baseline: shouldSkipPackage("webpack") = true
+baseline: shouldSkipPackage("rollup")  = false
+baseline: shouldSkipPackage("parcel")  = true
+  webpack: resolved.size=1 has(webpack)=true
+  rollup: resolved.size=1 has(rollup)=true
+  parcel: resolved.size=1 has(parcel)=true
+
+SUMMARY:
+  t1 webpack top-level installs:    PASS
+  t2 rollup top-level installs:     PASS
+  t3 parcel top-level installs:     PASS
+OVERALL: PASS

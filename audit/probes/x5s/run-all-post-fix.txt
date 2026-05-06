@@ -1,0 +1,12 @@
+── X.5-S functional + regression ──────────────────────────
+[PASS] functional/f1-conditional-param-drop-marker.mjs
+[PASS] functional/f2-eval-no-collision.mjs
+[PASS] functional/f3-clean-body-still-binds-dirname.mjs
+[PASS] investigation/repro.mjs
+[PASS] regression/install-pipeline-coverage-shim.mjs
+[PASS] regression/single-resolver-source.mjs
+[PASS] regression/cross-wave-x5-runalls.mjs
+── heavy regressions skipped (NIMBUS_X5S_HEAVY=1 to run)
+── e2e skipped (NIMBUS_X5S_E2E=1 to run; BASE=http://127.0.0.1:8787 required)
+
+──── x5s run-all: 7 pass / 0 fail

@@ -1,0 +1,48 @@
+
+==== functional: functional/r-stream-eventemitter-shape.mjs ====
+  ok  shim scope evaluates without error
+  ok  require("stream").EventEmitter is a function
+  ok  require("stream").EventEmitter === require("events").EventEmitter
+  ok  stream.EventEmitter.prototype.on is a function
+  ok  class CSCP extends stream.EventEmitter {} succeeds (redis cache.js shape)
+  ok  on→emit roundtrip on instance of EE-extending class
+
+# r-stream-eventemitter-shape: 6 passed, 0 failed
+---- functional/r-stream-eventemitter-shape.mjs exit=0 dur=50ms ----
+
+==== functional: functional/r-stream-prototype-still-pointed.mjs ====
+  ok  shim scope evaluates without error
+  ok  stream.prototype exists and is an object
+  ok  stream.prototype === stream.Readable.prototype (Z5 Defect-A invariant)
+  ok  Object.create(stream.prototype, ...) succeeds (Z5 Defect-A workload)
+  ok  child object inherits .on through stream.prototype chain
+  ok  stream.prototype descriptor remains non-enumerable
+
+# r-stream-prototype-still-pointed: 6 passed, 0 failed
+---- functional/r-stream-prototype-still-pointed.mjs exit=0 dur=50ms ----
+
+==== functional: functional/r-ee-lazy-init-still-works.mjs ====
+  ok  shim scope evaluates without error
+  ok  mixin app.on→app.emit roundtrip works
+  ok  mixin app.once fires on first emit, not on second
+
+# r-ee-lazy-init-still-works: 3 passed, 0 failed
+---- functional/r-ee-lazy-init-still-works.mjs exit=0 dur=46ms ----
+
+==== regression: regression/r-single-resolver-source.mjs ====
+  ok  audit/probes/x5f/regression/single-resolver-source.mjs exits 0
+  ok  audit/probes/x5j/regression/single-resolver-source.mjs exits 0
+  ok  audit/probes/x5npqo/regression/single-resolver-source.mjs exits 0
+
+# r-single-resolver-source: 3 passed, 0 failed
+---- regression/r-single-resolver-source.mjs exit=0 dur=365ms ----
+
+==== regression: regression/r-install-pipeline-coverage.mjs ====
+  ok  install-pipeline-coverage-shim exits 0
+
+# r-install-pipeline-coverage: 1 passed, 0 failed
+---- regression/r-install-pipeline-coverage.mjs exit=0 dur=77ms ----
+
+====================================================
+x5r run-all: 5 passed, 0 failed of 5 probes
+====================================================

@@ -1,0 +1,166 @@
+==== X5NPQO RUN-ALL ====
+==== 2026-05-06T00:25:42.209Z ====
+
+==== P functional ====
+$ bun audit/probes/x5npqo/functional/p-parent-dir.mjs
+# __resolveFrom: function discoverable
+  ok  __resolveFrom function source extracted
+# X.5-P fix: literal "." / ".." normalization
+  ok  handles literal "." (id === "." or equivalent)
+  ok  handles literal ".." (id === ".." or equivalent)
+  ok  "." / ".." normalization occurs before startsWith("./") guard
+# regression: existing relative-guard branches still present
+  ok  startsWith("./") guard still present
+  ok  startsWith("../") guard still present
+  ok  startsWith("/") absolute guard still present
+  ok  startsWith("#") imports-field branch still present
+  ok  __resolveNodeModule bare-spec fallback still present
+
+# p-parent-dir: 9 passed, 0 failed
+
+EXIT=0
+
+==== Q functional ====
+$ bun audit/probes/x5npqo/functional/q-util-types.mjs
+# util.types literal: discoverable
+  ok  util.types literal extracted
+# X.5-Q fix part 1: util.types polyfill expansion
+  ok  util.types contains isUint8Array
+  ok  util.types contains isArrayBuffer
+  ok  util.types contains isProxy
+  ok  util.types contains isAnyArrayBuffer
+  ok  util.types contains isArrayBufferView
+  ok  util.types contains isTypedArray
+  ok  util.types contains isMap
+  ok  util.types contains isSet
+  ok  util.types contains isWeakMap
+  ok  util.types contains isWeakSet
+  ok  util.types contains isNativeError
+  ok  util.types contains isAsyncFunction
+  ok  util.types contains isGeneratorFunction
+  ok  util.types contains isBoxedPrimitive
+# regression: util.types baseline 3 methods preserved
+  ok  util.types still contains isDate
+  ok  util.types still contains isRegExp
+  ok  util.types still contains isPromise
+# X.5-Q fix part 2: util/types subpath registration
+  ok  builtins["util/types"] registration line present
+  ok  builtins["node:util/types"] alias present
+# regression: dns/promises subpath (M-2) still registered
+  ok  builtins["dns/promises"] still registered
+  ok  builtins["node:dns/promises"] still registered
+# regression: util module shape (parent module not corrupted)
+  ok  util module still defines format
+  ok  util module still defines inspect
+  ok  util module still defines promisify
+  ok  util module still defines callbackify
+  ok  util module still defines inherits
+  ok  util module still defines TextEncoder
+  ok  util module still defines TextDecoder
+
+# q-util-types: 29 passed, 0 failed
+
+EXIT=0
+
+==== O functional ====
+$ bun audit/probes/x5npqo/functional/o-fs-url.mjs
+# fs._resolve: function discoverable
+  ok  fs._resolve function source extracted
+# X.5-O fix: file:// prefix strip
+  ok  fs._resolve strips "file://" prefix
+  ok  fs._resolve uses slice(7) to drop "file://" prefix
+# X.5-O fix: URL instance handling
+  ok  fs._resolve checks URL instance / protocol === "file:"
+# X.5-O fix: ordering — strip happens before "/" guard
+  ok  file:// strip occurs before startsWith("/") absolute guard
+# regression: existing _resolve branches still present
+  ok  startsWith("/") absolute branch still present
+  ok  cwd-fallback path.resolve(…) still present
+  ok  __pathMod.normalize for absolute paths still present
+
+# o-fs-url: 8 passed, 0 failed
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x5npqo/regression/single-resolver-source.mjs
+# resolveExports declarations: 1
+#   - _shared/exports-resolver.ts:49
+  ok  resolveExports declared exactly once
+  ok  declaration is in _shared/exports-resolver.ts
+
+# npqo-single-resolver-source: 2 passed, 0 failed
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5npqo/regression/install-pipeline-coverage-shim.mjs
+# SCENARIOS list contains the expected 4 scenarios
+  ok  SCENARIOS contains label "fastify"
+  ok  SCENARIOS contains label "express"
+  ok  SCENARIOS contains label "ts-jest"
+  ok  SCENARIOS contains label "redis"
+# mustHaveAtLeastOne lists unchanged for fastify/redis (the P-bucket packages)
+  ok  fastify scenario expects 'fastify' visible
+  ok  redis scenario expects '@redis/client' visible
+
+# install-pipeline-coverage-shim: 6 passed, 0 failed
+
+EXIT=0
+
+==== builtins-coverage ====
+$ bun audit/probes/x5npqo/regression/builtins-coverage.mjs
+# Required builtins[] keys are all registered
+  ok  builtins["fs"] registered
+  ok  builtins["path"] registered
+  ok  builtins["os"] registered
+  ok  builtins["process"] registered
+  ok  builtins["events"] registered
+  ok  builtins["stream"] registered
+  ok  builtins["crypto"] registered
+  ok  builtins["util"] registered
+  ok  builtins["assert"] registered
+  ok  builtins["querystring"] registered
+  ok  builtins["string_decoder"] registered
+  ok  builtins["buffer"] registered
+  ok  builtins["http"] registered
+  ok  builtins["https"] registered
+  ok  builtins["net"] registered
+  ok  builtins["dns"] registered
+  ok  builtins["tls"] registered
+  ok  builtins["tty"] registered
+  ok  builtins["module"] registered
+  ok  builtins["timers"] registered
+  ok  builtins["zlib"] registered
+  ok  builtins["readline"] registered
+  ok  builtins["perf_hooks"] registered
+  ok  builtins["worker_threads"] registered
+  ok  builtins["vm"] registered
+  ok  builtins["http2"] registered
+  ok  builtins["repl"] registered
+  ok  builtins["diagnostics_channel"] registered
+  ok  builtins["async_hooks"] registered
+  ok  builtins["url"] registered
+  ok  builtins["fs/promises"] registered
+  ok  builtins["node:fs/promises"] registered
+  ok  builtins["timers/promises"] registered
+  ok  builtins["node:timers/promises"] registered
+  ok  builtins["dns/promises"] registered
+  ok  builtins["node:dns/promises"] registered
+  ok  builtins["util/types"] registered
+  ok  builtins["node:util/types"] registered
+
+# npqo-builtins-coverage: 38 passed, 0 failed
+
+EXIT=0
+
+==== E2E SKIPPED (no BASE env) ====
+==== SUMMARY ====
+  PASS  P functional
+  PASS  Q functional
+  PASS  O functional
+  PASS  single-resolver-source
+  PASS  install-pipeline-coverage-shim
+  PASS  builtins-coverage
+
+OVERALL: PASS
