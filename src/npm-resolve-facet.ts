@@ -76,6 +76,9 @@ export interface FacetCachedEntry {
   tarballUrl: string;
   integrity: string;
   depsJson: string;
+  /** X.5-F R2: required peerDependencies (optionals filtered). Optional
+   *  for backward compat with supervisor builds that pre-date X.5-F. */
+  peerDepsJson?: string;
   exportsJson: string;
   main: string;
   moduleField: string;
@@ -278,22 +281,59 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     const bin: Record<string, string> = typeof binField === 'string'
       ? { [vData.name.split('/').pop()!]: binField }
       : binField;
-    return {
+    // X.5-F R2: surface required peerDeps (optionals filtered) so the
+    // BFS walk can enqueue them. Mirrors npm-resolver.ts versionToResolved.
+    let peerDependencies: Record<string, string> | undefined;
+    let allPeers: Record<string, string> | undefined;
+    const peers = vData.peerDependencies;
+    if (peers && typeof peers === 'object') {
+      const meta = vData.peerDependenciesMeta;
+      const required: Record<string, string> = {};
+      const all: Record<string, string> = {};
+      for (const [n, r] of Object.entries(peers)) {
+        if (typeof r !== 'string') continue;
+        all[n] = r;
+        if (meta && meta[n] && meta[n].optional === true) continue;
+        required[n] = r;
+      }
+      if (Object.keys(required).length > 0) peerDependencies = required;
+      if (Object.keys(all).length > 0) allPeers = all;
+    }
+    // X.5-G G1: optionalDependencies + platform constraints (mirror of
+    // npm-resolver.ts:504). Surfaced for the BFS walk so the resolver
+    // knows which deps are best-effort and can apply silent-skip rules.
+    const optionalDependencies =
+      vData.optionalDependencies && typeof vData.optionalDependencies === 'object'
+        ? Object.fromEntries(
+            Object.entries(vData.optionalDependencies)
+              .filter(([, r]) => typeof r === 'string'),
+          ) as Record<string, string>
+        : undefined;
+
+    const out: any = {
       name: vData.name,
       version: vData.version,
       tarballUrl: vData.dist?.tarball || '',
       integrity: vData.dist?.integrity || vData.dist?.shasum || '',
       dependencies: vData.dependencies || {},
+      peerDependencies,
+      optionalDependencies,
+      os:   Array.isArray(vData.os)   ? vData.os   : undefined,
+      cpu:  Array.isArray(vData.cpu)  ? vData.cpu  : undefined,
+      libc: Array.isArray(vData.libc) ? vData.libc : undefined,
       exports: vData.exports ?? null,
       main: vData.main || '',
       module: vData.module || '',
       bin,
     };
+    if (allPeers) out.__allPeerDependencies = allPeers;
+    return out as ResolvedPackage;
   };
 
   const cachedEntryToResolved = (entry: FacetCachedEntry): ResolvedPackage => {
-    let deps: any = {}, exp: any = null, bin: any = {};
+    let deps: any = {}, peers: any = {}, exp: any = null, bin: any = {};
     try { deps = JSON.parse(entry.depsJson); } catch {}
+    try { peers = entry.peerDepsJson ? JSON.parse(entry.peerDepsJson) : {}; } catch {}
     try { exp = JSON.parse(entry.exportsJson); } catch {}
     try { bin = JSON.parse(entry.binJson); } catch {}
     return {
@@ -302,6 +342,9 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       tarballUrl: entry.tarballUrl,
       integrity: entry.integrity,
       dependencies: deps,
+      // X.5-F R2: surface peerDeps from cache hits so the BFS still
+      // enqueues peers when we don't re-fetch the packument.
+      peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
       exports: exp,
       main: entry.main,
       module: entry.moduleField,
@@ -429,10 +472,15 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     return entry ? cachedEntryToResolved(entry) : null;
   };
 
+  // X.5-F R1: names the user typed at the top level + required peer-deps
+  // bypass SKIP_PACKAGES. Populated lazily as the BFS walk discovers
+  // peer-deps. See audit/sections/X5F-plan.md §6.1-§6.2.
+  const topLevelNames = new Set<string>(Object.keys(spec.specs));
+
   /** Resolve one spec: cache-hit or fetch packument. */
   const resolveOne = async (name: string, range: string): Promise<ResolvedPackage | null> => {
     // @ts-ignore — SHOULD_SKIP_PACKAGE provided by preamble.
-    if (SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware)) return null;
+    if (!topLevelNames.has(name) && SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware)) return null;
 
     // W6: registry transitive policy. Swap rewrites name in flight;
     // 'fail' rejects throw; 'warn' rejects log [skip] and drop.
@@ -514,6 +562,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       tarballUrl: pkg.tarballUrl,
       integrity: pkg.integrity,
       depsJson: JSON.stringify(pkg.dependencies),
+      peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
       exportsJson: JSON.stringify(pkg.exports ?? {}),
       main: pkg.main,
       moduleField: pkg.module,
@@ -541,6 +590,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
           tarballUrl: otherPkg.tarballUrl,
           integrity: otherPkg.integrity,
           depsJson: JSON.stringify(otherPkg.dependencies),
+          peerDepsJson: JSON.stringify(otherPkg.peerDependencies ?? {}),
           exportsJson: JSON.stringify(otherPkg.exports ?? {}),
           main: otherPkg.main,
           moduleField: otherPkg.module,
@@ -556,6 +606,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
           tarballUrl: otherPkg.tarballUrl,
           integrity: otherPkg.integrity,
           depsJson: JSON.stringify(otherPkg.dependencies),
+          peerDepsJson: JSON.stringify(otherPkg.peerDependencies ?? {}),
           exportsJson: JSON.stringify(otherPkg.exports ?? {}),
           main: otherPkg.main,
           moduleField: otherPkg.module,
@@ -568,9 +619,50 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     return pkg;
   };
 
+  // X.5-G G1: facet-side mirror of isOptionalNativeBinding from
+  // src/wasm-swap-registry.ts. The facet body is serialised via
+  // fn.toString() and cannot import — local helpers are inlined here.
+  // Keep this byte-equivalent in shape with the registry export.
+  const NATIVE_SHARD_PREFIXES_FACET = [
+    '@rollup/rollup-', '@parcel/watcher-', '@swc/core-', '@next/swc-',
+    '@tailwindcss/oxide-', '@img/sharp-', '@napi-rs/canvas-',
+    '@biomejs/cli-', '@esbuild/',
+  ];
+  const isOptionalNativeBindingFacet = (p: any): boolean => {
+    if (!p) return false;
+    if (Array.isArray(p.os)   && p.os.length   > 0) return true;
+    if (Array.isArray(p.cpu)  && p.cpu.length  > 0) return true;
+    if (Array.isArray(p.libc) && p.libc.length > 0) return true;
+    if (typeof p.main === 'string' && /\.node$/.test(p.main)) return true;
+    if (typeof p.name === 'string') {
+      for (const prefix of NATIVE_SHARD_PREFIXES_FACET) {
+        if (p.name.startsWith(prefix) && p.name.length > prefix.length) {
+          if (p.name === '@rollup/wasm-node') return false;
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   // ── Breadth-first walk (mirror of npm-resolver.ts:resolveTree) ───────
   const resolved = new Map<string, ResolvedPackage>();
   const seen = new Set<string>();
+  const optionalNames = new Set<string>();  // X.5-G G1
+  // X.5-drizzle: names enqueued by the X.5-J top-level optional-peer
+  // path (R2.5) and ALL their transitive descendants. The user did not
+  // explicitly ask for them — npm CLI's --include=peer pulls them as a
+  // best-effort convenience. When a `transitive: 'fail'` REJECT_INSTALL
+  // fires for a name in this set, we silent-skip the offending name +
+  // log a notice, instead of throwing and killing the parent install.
+  // Pre-X.5-drizzle, drizzle-orm's optional peer `expo-sqlite` (its
+  // peer `expo` → dep `@expo/metro-config` → dep `lightningcss`) hard-
+  // killed the install once X.5-26b made lightningcss `transitive:
+  // 'fail'`. The user only typed `npm install drizzle-orm`; expo-sqlite
+  // and its mobile-build chain are best-effort by intent. See
+  // audit/sections/X5-drizzle-plan.md §2 (revised) and the trace probe
+  // audit/probes/x5-drizzle/investigation/04-trace-lightningcss-from-drizzle.mjs.
+  const bestEffortNames = new Set<string>();
   const queue2: [string, string][] = Object.entries(spec.specs);
 
   while (queue2.length > 0) {
@@ -581,9 +673,25 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
           if (seen.has(name)) return null;
           seen.add(name);
           // @ts-ignore — preamble.
-          if (SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware)) return null;
+          // X.5-F R1: top-level + required peer-deps bypass SKIP_PACKAGES.
+          if (!topLevelNames.has(name) && SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware)) return null;
+          const isOptional = optionalNames.has(name);
           try {
-            return await resolveOne(name, range);
+            const pkg = await resolveOne(name, range);
+            // X.5-G G1: silent-skip platform-native bindings sourced
+            // from optionalDependencies. Mirrors npm-resolver.ts.
+            if (pkg && isOptional && isOptionalNativeBindingFacet({
+              name: pkg.name,
+              os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc,
+              main: pkg.main,
+            })) {
+              const reason = `optional native binding (os=${(pkg as any).os ?? '*'}, cpu=${(pkg as any).cpu ?? '*'}, libc=${(pkg as any).libc ?? '*'}, main=${pkg.main || '?'})`;
+              messages.push(`[resolve-facet] [skip] ${name} — ${reason}`);
+              // @ts-ignore — preamble.
+              __EMIT_EVENT({ type: 'transitive-skip', from: name, reason });
+              return null;
+            }
+            return pkg;
           } catch (e: any) {
             // W6: REJECT_INSTALL with transitive='fail' throws from
             // resolveOne tagged with `__w6_reject = true`. Propagate
@@ -593,7 +701,34 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
             // postMessage / fn.toString() boundary (prototype is lost
             // on that boundary, so `instanceof` would not work).
             if (e && typeof e === 'object' && (e as any).__w6_reject === true) {
+              // X.5-drizzle: REJECT_INSTALL transitive='fail' that fires
+              // INSIDE an X.5-J best-effort optional-peer subtree
+              // (R2.5 enqueue) softly skips the offending package
+              // instead of failing the parent install. The user did
+              // not explicitly ask for the optional-peer-rooted
+              // subtree; mirror npm's --omit=optional behaviour for
+              // its descendants. See VERIFY-9D4B61D §6 + the trace
+              // probe at audit/probes/x5-drizzle/investigation/
+              // 04-trace-lightningcss-from-drizzle.mjs for the
+              // canonical drizzle-orm → expo-sqlite → expo → @expo/
+              // metro-config → lightningcss chain.
+              if (bestEffortNames.has(name)) {
+                const reason = `inside best-effort optional-peer subtree (X.5-drizzle): ${e?.message ?? 'reject'}`;
+                messages.push(`[resolve-facet] [skip] ${name} — ${reason}`);
+                // @ts-ignore — preamble.
+                __EMIT_EVENT({ type: 'transitive-skip', from: name, reason });
+                return null;
+              }
               throw e;
+            }
+            // X.5-G G1: optional-dep fetch failures silent-skip rather
+            // than propagating as UNHANDLED.
+            if (isOptional) {
+              const reason = `optional dep fetch failed: ${e?.message ?? 'unknown'}`;
+              messages.push(`[resolve-facet] [skip] ${name} — ${reason}`);
+              // @ts-ignore — preamble.
+              __EMIT_EVENT({ type: 'transitive-skip', from: name, reason });
+              return null;
             }
             const msg = e?.message || String(e);
             messages.push(`[resolve-facet] ${name}: UNHANDLED: ${msg}`);
@@ -606,9 +741,84 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     for (const pkg of results) {
       if (!pkg || resolved.has(pkg.name)) continue;
       resolved.set(pkg.name, pkg);
+      // X.5-drizzle: when this pkg was best-effort (a child of an
+      // X.5-J optional-peer subtree), its newly-enqueued descendants
+      // inherit the best-effort flag so a deep `transitive: 'fail'`
+      // REJECT_INSTALL silent-skips instead of killing the parent.
+      const inheritBestEffort = bestEffortNames.has(pkg.name);
       for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
         if (!resolved.has(depName) && !seen.has(depName)) {
+          if (inheritBestEffort) bestEffortNames.add(depName);
           queue2.push([depName, depRange as string]);
+        }
+      }
+      // X.5-G G1: enqueue transitive optionalDependencies (tagged so
+      // resolveOne silent-skips platform-native bindings). Mirrors
+      // npm-resolver.ts.
+      const optDeps = (pkg as any).optionalDependencies as Record<string, string> | undefined;
+      if (optDeps) {
+        for (const [depName, depRange] of Object.entries(optDeps)) {
+          if (!resolved.has(depName) && !seen.has(depName)) {
+            optionalNames.add(depName);
+            if (inheritBestEffort) bestEffortNames.add(depName);
+            queue2.push([depName, depRange as string]);
+          }
+        }
+      }
+      // X.5-F R2: enqueue REQUIRED peerDeps. Mirrors npm-resolver.ts
+      // resolveTree. Mark them as topLevel so they bypass SKIP_PACKAGES
+      // (typescript is a peer of ts-jest).
+      if (pkg.peerDependencies) {
+        for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
+          if (resolved.has(peerName) || seen.has(peerName)) continue;
+          topLevelNames.add(peerName);
+          if (inheritBestEffort) bestEffortNames.add(peerName);
+          queue2.push([peerName, peerRange as string]);
+        }
+      }
+      // X.5-F R2.5: when THIS pkg is the user's top-level request,
+      // also enqueue OPTIONAL peer-deps (npm CLI's --include=peer
+      // default). Without this, framer-motion installs but its
+      // compiled CJS still imports react/jsx-runtime.
+      //
+      // X.5-J: optional peers whose target is in REJECT_INSTALL get
+      // SOFT-SKIPPED at enqueue time. Mirror of npm-resolver.ts:R2.5.
+      // Uses preamble-injected SHOULD_REJECT_FAIL +
+      // SHOULD_WARN_SKIP_TRANSITIVE accessors (the facet body is
+      // serialised via fn.toString() and cannot import lookupReject).
+      // See audit/sections/X5J-plan.md §3 for the full rationale and
+      // §3.6 for why we soft-skip BOTH transitive='fail' (loud reject)
+      // and transitive='warn' optional peers — symmetry with the
+      // existing transitive walk's silent-skip of warn-tier peers, plus
+      // a small efficiency win (no resolveOne roundtrip needed).
+      if (topLevelNames.has(pkg.name)) {
+        const allPeers = (pkg as any).__allPeerDependencies as Record<string, string> | undefined;
+        if (allPeers) {
+          for (const [peerName, peerRange] of Object.entries(allPeers)) {
+            if (resolved.has(peerName) || seen.has(peerName)) continue;
+            // X.5-J: filter optional peers through REJECT_INSTALL.
+            // @ts-ignore — preamble.
+            const __peerFail = SHOULD_REJECT_FAIL(peerName);
+            // @ts-ignore — preamble.
+            const __peerWarn = SHOULD_WARN_SKIP_TRANSITIVE(peerName);
+            const __peerReject = __peerFail || __peerWarn;
+            if (__peerReject) {
+              const reason = `optional peer in REJECT_INSTALL: ${peerName} — ${__peerReject.reason}`;
+              messages.push(`[resolve-facet] [skip] ${peerName} — ${reason}`);
+              // @ts-ignore — preamble.
+              __EMIT_EVENT({ type: 'transitive-skip', from: peerName, reason });
+              continue;  // do NOT seen.add — let a later required-dep
+                         // walk hit it via its own resolveOne path.
+            }
+            topLevelNames.add(peerName);
+            // X.5-drizzle: tag the optional-peer enqueue as best-effort
+            // so a deep `transitive: 'fail'` REJECT (e.g.,
+            // expo-sqlite → expo → @expo/metro-config → lightningcss)
+            // silent-skips the offending sub-tree instead of killing
+            // the parent (drizzle-orm) install.
+            bestEffortNames.add(peerName);
+            queue2.push([peerName, peerRange as string]);
+          }
         }
       }
     }

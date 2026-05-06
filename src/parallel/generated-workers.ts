@@ -15,7 +15,7 @@
  * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,
  *   W7_MAGIC, W7_TRAILER.
  *
- * Generated at: 2026-05-04T23:05:33.977Z
+ * Generated at: 2026-05-05T18:50:47.658Z
  * Tar size: 3.84 KiB
  * W7 size:  7.77 KiB
  */

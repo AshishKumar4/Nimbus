@@ -37,7 +37,8 @@ export const NPM_RESOLVE_PREAMBLE: string = `
 // W11: vite is exempted when frameworkAware=true so framework CLIs can
 //      import('vite') from node_modules. See audit/sections/W11-plan.md §3.0.
 const __SKIP_PACKAGES = new Set([
-  'typescript', 'vite', 'rollup', 'webpack', 'parcel',
+  // X.5-G: rollup migrated to WASM_SWAPS to own the rollup → @rollup/wasm-node swap.
+  'typescript', 'vite', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
   'prettier', 'eslint', 'stylelint',
   'chokidar', 'node-gyp', 'node-pre-gyp',
@@ -65,6 +66,10 @@ function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
 // Gated by audit/probes/w6/functional/preamble-parity.mjs.
 const __WASM_SWAPS = new Map([
   ['esbuild', { from: 'esbuild', to: 'esbuild-wasm' }],
+  // X.5-G G2: rollup → @rollup/wasm-node (drop-in WASM build).
+  // See src/wasm-swap-registry.ts:73 for full WASM_SWAPS canonical entry
+  // and X5G-plan.md §3 for the npm 4828 / .node-can't-dlopen rationale.
+  ['rollup',  { from: 'rollup',  to: '@rollup/wasm-node' }],
 ]);
 // Mirror of REJECT_INSTALL in src/wasm-swap-registry.ts. Entries with
 // transitive='warn' are tagged so the resolver can decide skip-vs-throw.
@@ -97,6 +102,10 @@ const __REJECT_INSTALL = new Map([
   ['@img/sharp-wasm32',              { from: '@img/sharp-wasm32',              reason: 'WASM build of sharp; wasm32-cpu-only AND libvips initThreads() fails under workerd (no pthread).', transitive: 'fail' }],
   ['@napi-rs/canvas',                { from: '@napi-rs/canvas',                reason: 'Native bindings only; no WASM build published.', transitive: 'fail' }],
   ['@napi-rs/canvas-wasm32-wasi',    { from: '@napi-rs/canvas-wasm32-wasi',    reason: 'Package does not exist on npm (404); @napi-rs/canvas has no WASM/WASI build.', transitive: 'fail' }],
+  // X.5-26b additions: Tailwind v4 oxide + lightningcss native parents.
+  // Mirror of REJECT_INSTALL adds in src/wasm-swap-registry.ts.
+  ['@tailwindcss/oxide',             { from: '@tailwindcss/oxide',             reason: 'Native Rust Tailwind v4 oxide engine; only platform-specific .node bindings + wasm32-wasi shard; workerd has no node:wasi.', transitive: 'fail' }],
+  ['lightningcss',                   { from: 'lightningcss',                   reason: 'Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.', transitive: 'fail' }],
 ]);
 function SHOULD_SWAP(name) {
   return __WASM_SWAPS.get(name);

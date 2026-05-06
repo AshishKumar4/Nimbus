@@ -88,9 +88,17 @@ const __pathMod = (() => {
     while (c < f.length && c < t.length && f[c] === t[c]) c++;
     return [...Array(f.length - c).fill(".."), ...t.slice(c)].join("/") || ".";
   }
-  return { join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, sep: "/", delimiter: ":", posix: null };
+  return { join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, sep: "/", delimiter: ":", posix: null, win32: null };
 })();
 __pathMod.posix = __pathMod;
+// X.5-Z5 §3 follow-on: enhanced-resolve (transitive via @tailwindcss/vite
+// → vite → enhanced-resolve) reads path.win32.normalize / .dirname at
+// import time. We have no real win32 paths in workerd's VFS, so the
+// posix implementation is functionally correct for any path content the
+// workers will ever see. Aliasing posix to win32 satisfies the structural
+// contract without spawning a separate code path. See
+// audit/sections/X5Z5-build-retro.md §3.
+__pathMod.win32 = __pathMod;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Buffer shim ────────────────────────────────────────────────────
@@ -157,7 +165,26 @@ const __fsMod = (() => {
   // ── helpers ──
   function _strip(p) { return String(p).replace(/^\\/+/, ""); }
   function _resolve(p) {
-    const s = String(p);
+    // X.5-O: WHATWG-URL → POSIX path coercion. Pre-fix String(p) on
+    // a URL instance or 'file://' string produced 'file:///package.json';
+    // that failed the startsWith('/') guard below and got misrouted via
+    // path.resolve(cwd, 'file:///…') → corrupt path → ENOENT (verify-90993b3
+    // §3 bucket O: vite). Strip 'file://' and unwrap URL instances first.
+    // See audit/probes/x5npqo/functional/o-fs-url.mjs.
+    let s;
+    if (p && typeof p === "object" && p.protocol === "file:" && typeof p.pathname === "string") {
+      // URL instance — pathname is already a POSIX path with leading /
+      try { s = decodeURIComponent(p.pathname); } catch { s = p.pathname; }
+    } else {
+      s = String(p);
+      if (s.startsWith("file://")) {
+        // 'file:///abs' → '/abs', 'file://host/abs' → '/abs'
+        const tail = s.slice(7);
+        const slashIdx = tail.indexOf("/");
+        const pathPart = tail.startsWith("/") ? tail : (slashIdx >= 0 ? tail.slice(slashIdx) : "/" + tail);
+        try { s = decodeURIComponent(pathPart); } catch { s = pathPart; }
+      }
+    }
     if (s.startsWith("/")) return __pathMod.normalize(s);
     return __pathMod.resolve(cwd || "/home/user", s);
   }
@@ -390,6 +417,13 @@ const __fsMod = (() => {
     writeFileSync(dest, readFileSync(src, "utf8"));
   }
 
+  // ── realpathSync (X.5-T per X5Z5-plan §4.3 + X526b-retro §3.1) ──
+  // VFS has no symlinks; identity-resolve to the absolute path. The
+  // .native static is required by TypeScript's getNodeSystem at
+  // typescript.js:8291 (see audit/probes/x5t/functional/realpath-native-defined.mjs).
+  function realpathSync(p, opts) { return _resolve(String(p)); }
+  realpathSync.native = realpathSync;
+
   // ── Async variants (thin wrappers returning via callback) ──
   function readFile(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
@@ -580,6 +614,7 @@ const __fsMod = (() => {
   return {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
+    realpathSync,
     readFile, writeFile, stat, readdir, exists, mkdir, unlink, access,
     promises, constants,
     createReadStream: (p, opts) => {
@@ -656,22 +691,30 @@ const __osMod = {
 // ──  events module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __eventsMod = (() => {
+  // X.5-Z5 (Z5 §1 follow-on): every method that reads/writes \`this._e\`
+  // lazy-initializes it. Userland (notably express's createApplication
+  // — express/lib/express.js:36-42) mixin-copies EventEmitter.prototype
+  // onto a plain function via merge-descriptors; the EE constructor
+  // never runs on that target so \`_e\` is undefined. The lazy guard
+  // \`(this._e ??= {})\` matches Node's behaviour (Node initializes
+  // _events on first use too) and makes mixin-copy patterns safe.
+  // See audit/sections/X5Z5-build-retro.md §3.
   class EE {
     constructor() { this._e = {}; this._maxListeners = 10; }
-    on(n, fn) { (this._e[n] = this._e[n] || []).push(fn); return this; }
+    on(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).push(fn); return this; }
     addListener(n, fn) { return this.on(n, fn); }
     once(n, fn) { const w = (...a) => { this.off(n, w); fn(...a); }; w.__orig = fn; return this.on(n, w); }
-    off(n, fn) { if (this._e[n]) this._e[n] = this._e[n].filter(f => f !== fn && f.__orig !== fn); return this; }
+    off(n, fn) { const e = (this._e ??= {}); if (e[n]) e[n] = e[n].filter(f => f !== fn && f.__orig !== fn); return this; }
     removeListener(n, fn) { return this.off(n, fn); }
-    removeAllListeners(n) { if (n) delete this._e[n]; else this._e = {}; return this; }
-    emit(n, ...a) { const fns = this._e[n]; if (!fns || !fns.length) return false; for (const fn of [...fns]) fn(...a); return true; }
-    listeners(n) { return (this._e[n] || []).map(f => f.__orig || f); }
-    listenerCount(n) { return (this._e[n] || []).length; }
-    eventNames() { return Object.keys(this._e).filter(k => this._e[k].length > 0); }
+    removeAllListeners(n) { if (n) { const e = (this._e ??= {}); delete e[n]; } else this._e = {}; return this; }
+    emit(n, ...a) { const e = (this._e ??= {}); const fns = e[n]; if (!fns || !fns.length) return false; for (const fn of [...fns]) fn(...a); return true; }
+    listeners(n) { const e = (this._e ??= {}); return (e[n] || []).map(f => f.__orig || f); }
+    listenerCount(n) { const e = (this._e ??= {}); return (e[n] || []).length; }
+    eventNames() { const e = (this._e ??= {}); return Object.keys(e).filter(k => e[k].length > 0); }
     setMaxListeners(n) { this._maxListeners = n; return this; }
     getMaxListeners() { return this._maxListeners; }
-    prependListener(n, fn) { (this._e[n] = this._e[n] || []).unshift(fn); return this; }
-    rawListeners(n) { return this._e[n] || []; }
+    prependListener(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).unshift(fn); return this; }
+    rawListeners(n) { const e = (this._e ??= {}); return e[n] || []; }
   }
   EE.EventEmitter = EE;
   EE.defaultMaxListeners = 10;
@@ -704,8 +747,48 @@ const __utilMod = {
   },
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
-  types: { isDate: (v) => v instanceof Date, isRegExp: (v) => v instanceof RegExp, isPromise: (v) => v instanceof Promise },
-  inherits: (c, s) => { c.super_ = s; c.prototype = Object.create(s.prototype, { constructor: { value: c } }); },
+  // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape
+  // (isDate, isRegExp, isPromise) was insufficient for jsdom's bundled
+  // undici, which dereferences isUint8Array (lib/web/fetch/util.js +
+  // body.js), isArrayBuffer (lib/web/websocket/websocket.js), and
+  // util.types.isProxy (lib/web/fetch/headers.js). Expanding to the
+  // 17-method shape below mirrors Node.js's util.types surface for the
+  // common cases; isProxy returns false (no userland Proxy detection).
+  // See audit/probes/x5npqo/investigate/Q-undici-types-survey.md and
+  // audit/probes/x5npqo/functional/q-util-types.mjs.
+  types: {
+    isDate: (v) => v instanceof Date,
+    isRegExp: (v) => v instanceof RegExp,
+    isPromise: (v) => v instanceof Promise,
+    isUint8Array: (v) => v instanceof Uint8Array,
+    isArrayBuffer: (v) => v instanceof ArrayBuffer,
+    isAnyArrayBuffer: (v) => v instanceof ArrayBuffer
+      || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
+    isArrayBufferView: (v) => ArrayBuffer.isView(v),
+    isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
+    isMap: (v) => v instanceof Map,
+    isSet: (v) => v instanceof Set,
+    isWeakMap: (v) => v instanceof WeakMap,
+    isWeakSet: (v) => v instanceof WeakSet,
+    isNativeError: (v) => v instanceof Error,
+    isAsyncFunction: (v) => v && v.constructor && v.constructor.name === "AsyncFunction",
+    isGeneratorFunction: (v) => v && v.constructor && v.constructor.name === "GeneratorFunction",
+    isProxy: (v) => false,
+    isBoxedPrimitive: (v) => v instanceof Boolean || v instanceof Number
+      || v instanceof String || (typeof v === "object" && v !== null && (v.constructor === Symbol || v.constructor === BigInt)),
+  },
+  inherits: (c, s) => {
+    // X.5-Z5 Defect-B fix: guard against null/undefined superCtor or a
+    // superCtor whose .prototype is null/undefined. Without this guard,
+    // Object.create(undefined.prototype, ...) and Object.create(null, ...)
+    // both throw 'Object prototype may only be an Object or null: undefined'
+    // — same surface as Defect A but for shim namespaces with no synthetic
+    // .prototype. Mirrors the canonical inherits_browser.js fallback.
+    // See audit/sections/X5Z5-plan.md §1.3 Defensive fix.
+    if (s == null || s.prototype == null) return;
+    c.super_ = s;
+    c.prototype = Object.create(s.prototype, { constructor: { value: c, enumerable: false, writable: true, configurable: true } });
+  },
   deprecate: (fn, msg) => fn,
   debuglog: () => () => {},
   isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
@@ -716,6 +799,75 @@ const __utilMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  url module ─────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// X.5-M (M-3): lenient URL constructor for rolldown-bundled CJS packages.
+//
+// Rolldown/rollup-bundled CJS packages (vite v7, esbuild plugins, …)
+// emit at module top-level:
+//
+//     const X = new URL("../../../src/node/constants.ts", import.meta.url);
+//
+// where the rolldown-CJS polyfill for import.meta.url evaluates to literal
+// null (the bare word) in our facet (no document, no location, polyfill doesn't reach
+// __filename for CJS-loaded modules — see audit/sections/X5M-plan.md §1
+// M-3 + audit/probes/x5m/investigate/vite-url-stack{5,A,B,D}.txt).
+//
+// workerd's URL constructor strict-rejects null/undefined base, throwing
+// "Invalid URL string." at module top-level eval — breaks require('vite').
+//
+// Fix: wrap globalThis.URL so null/undefined base for a string input
+// defaults to "file:///" (after first trying the input as an absolute
+// URL). All other URL behaviour is passthrough; instanceof checks and
+// static methods (canParse, parse, createObjectURL, ...) preserved.
+//
+// Stage A (this commit): vite no longer throws at the URL constructor;
+// it now progresses to a deeper fs-URL composition gap (vite passes URL
+// instances / file:// strings to fs.readFileSync, which our fs shim
+// doesn't strip) — that's out-of-charter, see X5M-retro §3.
+//
+// X.5-M3 (this section): when esbuild ESM-to-CJS pre-compile substitutes
+// import.meta.url with undefined (its documented empty-import-meta
+// warning behavior), new URL(rel, undefined) falls into the null-base
+// branch below. Pre-M3 the fallback was a literal "file:///", which
+// resolved every new URL("../foo", import.meta.url) to root-relative
+// file:///foo — wrong for vite/dist/node/chunks/logger.js:75 et al.
+//
+// M3 plumbs the currently-loading module's path via globalThis.__currentModulePath
+// (set+restored by __loadModule per call). When set, the fallback becomes
+// "file:///" + __currentModulePath so relative URLs resolve against
+// the real on-VFS module location — restoring proper import.meta.url
+// semantics for ESM-transformed CJS. See audit/sections/X5M3-plan.md §3.
+(() => {
+  const _Orig = globalThis.URL;
+  class _Shim extends _Orig {
+    constructor(input, base) {
+      if (base == null && typeof input === "string") {
+        try { super(input); return; }
+        catch {
+          // X.5-M3: prefer current module path when known, so
+          //   new URL(rel, undefined) === new URL(rel, "file:///" + __filename)
+          // matches real ESM import-meta-url resolution.
+          const cur = globalThis.__currentModulePath;
+          const fallback = (typeof cur === "string" && cur.length > 0)
+            ? "file:///" + cur.replace(/^\\/+/, "")
+            : "file:///";
+          super(input, fallback);
+          return;
+        }
+      }
+      super(input, base);
+    }
+  }
+  for (const k of Object.getOwnPropertyNames(_Orig)) {
+    if (typeof _Orig[k] === "function" && !(k in _Shim)) {
+      try { _Shim[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    }
+  }
+  // NOTE: cannot reassign _Shim.prototype = _Orig.prototype — workerd treats
+  // class.prototype as read-only. Inheritance via "extends _Orig" is enough:
+  // _Shim instances are instanceof _Orig, and _Shim.prototype's __proto__ is
+  // _Orig.prototype (so all native URL methods are reachable via the chain).
+  globalThis.URL = _Shim;
+})();
 const __urlMod = {
   URL: globalThis.URL, URLSearchParams: globalThis.URLSearchParams,
   parse: (s) => { try { const u = new URL(s); return { protocol: u.protocol, hostname: u.hostname, port: u.port, pathname: u.pathname, search: u.search, hash: u.hash, href: u.href, host: u.host }; } catch { return { href: s }; } },
@@ -724,6 +876,7 @@ const __urlMod = {
   pathToFileURL: (p) => new URL("file://" + p),
   fileURLToPath: (u) => (typeof u === "string" ? u : u.pathname).replace(/^file:\\/\\//, ""),
 };
+__urlMod.URL = globalThis.URL;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  crypto module (W3: forward to workerd's real node:crypto) ──────
@@ -1657,6 +1810,18 @@ builtins.path = __pathMod;
 builtins.os = __osMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
+// X.5-R: real Node's \`require('stream')\` re-exports EventEmitter
+// (verified: \`require('stream').EventEmitter === require('events').EventEmitter\`
+// in Node 20). Older CJS code reads EE off the stream module instead of
+// events — e.g., @redis/client/dist/lib/client/cache.js:301:
+// \`class ClientSideCacheProvider extends stream_1.EventEmitter {}\` where
+// \`stream_1 = require("stream")\`. Without this re-export, \`stream_1.EventEmitter\`
+// is undefined and \`class … extends undefined\` throws "Class extends value
+// undefined is not a constructor or null". See audit/sections/X5R-plan.md §3
+// + audit/probes/x5r/functional/r-stream-eventemitter-shape.mjs.
+// Idempotent guard so a future streams.ts revision that already exposes
+// EventEmitter doesn't get clobbered.
+if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = { Buffer: __BufferMod };
 builtins.util = __utilMod;
 builtins.url = __urlMod;
@@ -1686,6 +1851,16 @@ builtins.http = (() => {
     listen(port, host, cb) { if (typeof host === "function") { cb = host; } this._port = port || 0; this._listening = true; globalThis.__portRegistry.set(this._port, this); if (cb) queueMicrotask(cb); this.emit("listening"); return this; }
     close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); if (cb) cb(); this.emit("close"); }
     get listening() { return this._listening; }
+    // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
+    // fastify's lib/server.js calls server.setTimeout(connectionTimeout)
+    // immediately after createServer(). Pre-X5M the Server class lacked
+    // this method → "TypeError: server.setTimeout is not a function".
+    // Mirror the net.Socket.setTimeout pattern at the bottom of this file
+    // (same builtins/net IIFE): no-op + chainable. Idle timeouts have no
+    // facet-side meaning (we don't own outbound TCP), but we honour the
+    // 1-arg callback form so listeners that emit on 'timeout' still run.
+    setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
+    setKeepAlive() { return this; }
     address() { return { address: "0.0.0.0", port: this._port, family: "IPv4" }; }
     _handleRequest(u, m, h, b) { const req = new IncomingMessage(u, m, h); const res = new ServerResponse(); this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } return res; }
   }
@@ -1785,6 +1960,29 @@ builtins.readline = (() => {
   return { createInterface, Interface: __eventsMod };
 })();
 builtins.perf_hooks = { performance: globalThis.performance || { now:()=>Date.now(), mark:()=>{}, measure:()=>{}, getEntriesByName:()=>[], clearMarks:()=>{}, clearMeasures:()=>{} } };
+// X.5-Z5 §3 follow-on: minimal v8 stub for jiti (used transitively by
+// @tailwindcss/vite). jiti reads v8.startupSnapshot.isBuildingSnapshot()
+// to decide whether to skip JIT compilation; workerd never builds v8
+// snapshots, so 'false' is the correct answer. Other v8 introspection
+// APIs (cachedDataVersionTag, getHeapStatistics, etc.) return inert
+// values that satisfy the shape contract without offering real data.
+// See audit/sections/X5Z5-build-retro.md §3.
+builtins.v8 = {
+  startupSnapshot: {
+    isBuildingSnapshot: () => false,
+    addSerializeCallback: () => {},
+    addDeserializeCallback: () => {},
+    setDeserializeMainFunction: () => {},
+    setDeserializeData: () => {},
+  },
+  cachedDataVersionTag: () => 0,
+  getHeapStatistics: () => ({ total_heap_size: 0, used_heap_size: 0, heap_size_limit: 0, malloced_memory: 0 }),
+  getHeapSpaceStatistics: () => [],
+  setFlagsFromString: () => {},
+  serialize: (v) => __BufferMod.from(JSON.stringify(v)),
+  deserialize: (b) => JSON.parse(__BufferMod.from(b).toString()),
+  writeHeapSnapshot: () => "",
+};
 builtins.worker_threads = { isMainThread:true, parentPort:null, workerData:null, threadId:0, Worker: class extends __eventsMod { constructor(){super();} terminate(){return Promise.resolve(0);} postMessage(){} } };
 
 // ── W3 additions: builtins forwarded/shimmed for axios/jsdom/fastify/
@@ -1811,6 +2009,29 @@ builtins["timers/promises"] = (() => {
   };
 })();
 builtins["node:timers/promises"] = builtins["timers/promises"];
+
+// X.5-M (M-2): dns/promises subpath registration for redis.
+// @redis/client/dist/lib/client does require('dns/promises') to do
+// hostname → IP resolution. Pre-fix the only exposure was
+// builtins.dns.promises (an object property of the parent dns shim);
+// __requireFrom matches keys exactly, so 'dns/promises' missed.
+// Mirror the timers/promises pattern above. builtins.dns.promises is
+// already a complete object (DoH-backed lookup/resolve/resolve4) —
+// re-exposing it as a subpath builtin is a 2-line registration.
+builtins["dns/promises"] = builtins.dns.promises;
+builtins["node:dns/promises"] = builtins["dns/promises"];
+
+// X.5-Q: util/types subpath registration for jsdom's bundled undici.
+// undici@7.x calls require('node:util/types').{isUint8Array,isArrayBuffer}
+// directly from lib/web/fetch/util.js + body.js + websocket/websocket.js.
+// __requireFrom matches keys exactly; pre-fix the only exposure was
+// builtins.util.types (object property of parent util shim), so the
+// subpath missed. Mirror the dns/promises (M-2) pattern. The
+// builtins.util.types object is the X.5-Q-expanded 17-method polyfill
+// (see line 707), sufficient for undici@7.25.0 + undici@8.2.0.
+// See audit/probes/x5npqo/investigate/Q-undici-types-survey.md.
+builtins["util/types"] = builtins.util.types;
+builtins["node:util/types"] = builtins["util/types"];
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
@@ -1916,6 +2137,18 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
     return __resolveFile(pkgDir + "/" + subpath.replace(/^\\.\\/+/, ""));
   }
   let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
+  // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
+  // dist/.mjs files were transformed to CJS by transformEsmInBundle
+  // at install time (facet-manager.ts:842, W3.5 Fix B). Without this,
+  // packages like nuxt — whose exports map only contains
+  // {types, import} for the root subpath — return null from the CJS
+  // walk and dead-end with "Cannot find module 'nuxt'" even though
+  // dist/index.mjs is in the bundle and runnable as CJS. We only fall
+  // back when the package actually declares an exports map (so we
+  // don't shadow legit "package not installed" misses).
+  if (entry == null && pkg.exports != null) {
+    entry = resolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
+  }
   if (entry != null) {
     // Strip leading ./ from the resolver result
     const stripped = entry.replace(/^\\.\\/+/, "");
@@ -2034,6 +2267,37 @@ function __resolveImportsField(name, fromDir) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ──  X.5-S: __mkCompiledFn — conditional-param-rename wrap for new Function
+// ═══════════════════════════════════════════════════════════════════════
+//
+// vite's chunks/node.js (transitive bundle of open@10.2.0) contains the
+// ESM idiom \`const __dirname = path.dirname(fileURLToPath(import.meta.url))\`.
+// W3.5 Fix B's esbuild ESM→CJS transform preserves that line verbatim
+// while substituting \`import.meta\` with \`const import_meta = {}\`. Wrapping
+// the body in \`new Function("exports","require","module","__filename","__dirname", code)\`
+// then collides at parse time:
+//
+//     SyntaxError: Identifier '__dirname' has already been declared
+//
+// (VERIFY-23417C5 §4 #1 / X5M3-retro §"Next bucket".) The helper RENAMES
+// the conflicting param to a placeholder name so the body's own
+// \`const __dirname\` becomes the single declarer. We rename rather than
+// drop because callers pass 5 positional arguments and dropping a slot
+// would mis-align downstream slots (e.g. the USER_CODE wrap appends
+// \`console\` / \`process\` / etc. after \`__dirname\`). Renaming preserves
+// slot alignment while letting the body's binding win.
+//
+// Symmetric for \`__filename\` because open@10's idiom often emits both.
+// See audit/sections/X5S-plan.md §3, audit/probes/x5s/investigation/repro.mjs.
+function __mkCompiledFn(code) {
+  const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
+  const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
+  const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
+  const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
+  return new Function("exports", "require", "module", fnName, dnName, code);
+}
+
 /**
  * Load and execute a JS/JSON module from VFS.
  * Returns the module.exports value.
@@ -2066,6 +2330,14 @@ function __loadModule(resolvedPath) {
   scopedRequire.cache = __moduleCache;
   scopedRequire.main = null;
 
+  // X.5-M3: thread currently-loading module path through globalThis so the
+  // URL shim null-base fallback (in node-shims url module) can compose
+  // relative URLs against the real module location — synthesizing
+  // import.meta.url semantics for ESM that esbuild CJS-emit reduced to
+  // const import_meta = {}. Save+restore for recursive __loadModule.
+  // See audit/sections/X5M3-plan.md §3.
+  const __prevModulePath = globalThis.__currentModulePath;
+  globalThis.__currentModulePath = resolvedPath;
   try {
     // Use pre-compiled function from startup (new Function allowed at module eval time)
     // Normalize path to match VFS bundle key format (no leading /)
@@ -2075,8 +2347,12 @@ function __loadModule(resolvedPath) {
       precompiled(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
     } else {
       // Fallback: try new Function at request time (works if eval is permitted)
+      // X.5-S: conditional-param-rename via __mkCompiledFn — see helper
+      // comment above. Without this, esbuild-transformed ESM that declares
+      // \`const __dirname = …\` at top level (e.g. vite's chunks/node.js)
+      // collides with the previously hardcoded \`__dirname\` parameter.
       try {
-        const fn = new Function("exports", "require", "module", "__filename", "__dirname", code);
+        const fn = __mkCompiledFn(code);
         fn(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
       } catch (evalErr) {
         // W3.5 Fix C: if the file was in the bundle but its pre-compile
@@ -2102,6 +2378,8 @@ function __loadModule(resolvedPath) {
   } catch (e) {
     __moduleCache.delete(resolvedPath);
     throw e;
+  } finally {
+    globalThis.__currentModulePath = __prevModulePath;
   }
 
   // Update cache with final exports (module.exports may have been reassigned)
@@ -2114,6 +2392,17 @@ function __loadModule(resolvedPath) {
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir) {
+  // X.5-P: literal "." / ".." are CommonJS aliases for "./" / "../".
+  // Pre-fix they slipped past the startsWith("./")/("../") guards (which
+  // require >= 3 / >= 4 chars respectively) and fell into the bare-spec
+  // branch — querying __resolveNodeModule for a package literally named
+  // "." → "Cannot find module '.'" (verify-90993b3 §3 bucket P:
+  // fastify via ajv/dist/compile/jtd, redis via @redis/client/dist/lib/client).
+  // Normalize so they take the relative-resolve branch (which then probes
+  // index.js / package.json#main via __resolveFile). See
+  // audit/probes/x5npqo/functional/p-parent-dir.mjs.
+  if (id === ".") id = "./";
+  else if (id === "..") id = "../";
   // Relative path
   if (id.startsWith("./") || id.startsWith("../") || id.startsWith("/")) {
     let base;
