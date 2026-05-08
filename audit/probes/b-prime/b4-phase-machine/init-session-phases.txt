@@ -1,0 +1,24 @@
+==== B'.4 init-session-phases probe ====
+==== TIMESTAMP: 2026-05-08T18:04:39.270Z ====
+BASE: http://127.0.0.1:8792
+SID: forgiving-daisy-4204
+stage 1: cold debug.phase = null
+PASS: cold session: phase = null
+stage 2: post-WS debug.phase = "hydrated"
+PASS: post-WS phase = 'hydrated' (init complete)
+PASS: isolateGen stable at 1 across close
+stage 3: post-close debug.phase = "drained"
+PASS: post-close phase = 'drained'
+stage 4: post-reconnect debug.phase = "hydrated"
+PASS: post-reconnect phase = 'hydrated' (warm re-init complete)
+stage 5: recoveryEvents (count=48)
+stage 5: toState sequence (newest-first) = ["hydrated","wire","rehydrate","drained","hydrated","online","build","wire","rehydrate","drained","hydrated","wire","rehydrate","drained","hydrated","wire","rehydrate","drained","hydrated","online","build","wire","rehydrate","drained","hydrated","wire","rehydrate","drained","hydrated","online","build","wire","rehydrate","drained","hydrated","wire","rehydrate","drained","hydrated","online","build","wire","rehydrate","drained","hydrated","wire","rehydrate","drained"]
+stage 5: toState set = ["build","drained","hydrated","online","rehydrate","wire"]
+PASS: recovery_event ring contains toState='rehydrate'
+PASS: recovery_event ring contains toState='build'
+PASS: recovery_event ring contains toState='wire'
+PASS: recovery_event ring contains toState='online'
+PASS: recovery_event ring contains toState='hydrated'
+PASS: recovery_event ring contains toState='drained'
+PASS: phase ordering: hydrated (newer) → drained → online (older) — re-init follows close follows cold-init
+==== EXIT 0 ====

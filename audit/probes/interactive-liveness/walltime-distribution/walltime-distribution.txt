@@ -1,0 +1,18 @@
+==== interactive-liveness / walltime-distribution ====
+==== TIMESTAMP: 2026-05-08T18:04:48.346Z ====
+BASE: http://127.0.0.1:8792
+SAMPLES: 60
+POLL_INTERVAL_MS: 100
+SID: lively-hummingbird-5439
+--- distribution ---
+p50: 7 ms
+p95: 12 ms
+p99: 19 ms
+histogram: {
+  "<100": 60
+}
+PASS: p99 19 ms < 500 ms ceiling
+PASS: 100.0% of frames in <100 ms bucket (target ≥ 90%)
+PASS: 0.0% of frames in ~5s bucket (target < 5%)
+PASS: zero frames > 60 s (catastrophic outlier bucket clean)
+==== EXIT 0 ====

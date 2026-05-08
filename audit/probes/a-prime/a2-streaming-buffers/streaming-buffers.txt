@@ -1,0 +1,17 @@
+==== A'.2 streaming-buffers probe ====
+==== TIMESTAMP: 2026-05-08T18:04:29.991Z ====
+BASE: http://127.0.0.1:8792
+SID: carbon-chipmunk-8689
+heap.breakdown = {
+  "supervisorBaselineBytes": 9437184,
+  "vfsLruBytes": 0,
+  "vfsInFlightBytes": 0,
+  "resolverInFlightBytes": 0,
+  "preBundleSliceBytes": 0,
+  "esbuildResidentBytes": 0,
+  "streamingBuffersBytes": 0
+}
+PASS: breakdown.streamingBuffersBytes exists
+PASS: streamingBuffersBytes = 0 bytes ≤ 1 MiB at idle
+PASS: breakdown components sum (9437184) equals estimatedBytes
+==== EXIT 0 ====

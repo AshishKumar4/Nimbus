@@ -22,8 +22,14 @@ import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
 } from './process-logs-api.js';
 import { readDiagCounters } from './diag-counters.js';
-import { getFailures, getLastRpcFrame, getLastFacetId } from './oom-discriminator.js';
+import {
+  getFailures, getLastRpcFrame, getLastFacetId,
+  getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents,
+} from './oom-discriminator.js';
 import { LRU_MAX_ENTRIES } from './constants.js';
+import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from './observability/heap-estimate.js';
+import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './session/state-store.js';
+import { isWarmRejoin, joinExistingSession } from './session/init-phases.js';
 import { handleSupervisorRpc } from './supervisor-rpc.js';
 import { EsbuildService } from './esbuild-service.js';
 import { ViteDevServer } from './vite-dev-server.js';
@@ -82,14 +88,36 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket', { status: 426 });
       }
-      // Audit F2 (STABILITY-AUDIT.md C-S2): reject a second /ws upgrade
-      // while the session already has an attached terminal. Previously
-      // initSession unconditionally overwrote self.terminal / self.shell
-      // / self.kernel, silently cross-wiring two browser tabs to the
-      // same session DO (tab A's keystrokes routed to tab B's shell).
-      // There is no per-ws terminal map today, so the safe behaviour
-      // is to keep one-at-a-time and tell the client.
+      // [B'.5] Three-way decision on a /ws upgrade:
+      //   1. Warm rejoin: a wsClose/wsError fired earlier and left
+      //      kernel/shell/terminal alive in-memory. Re-attach the
+      //      new ws to the existing Shell — Phase B skipped.
+      //   2. Cold init: no shell yet (first connect, or post-DO-
+      //      eviction). Run the full R/B/W/O sequence.
+      //   3. Active conflict: Shell is non-null AND phase != drained,
+      //      meaning some other /ws is already attached. 409 to
+      //      prevent two-tab cross-wiring (multi-tab share is a
+      //      separate feature; B'.5 doesn't enable it).
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      self.ctx.acceptWebSocket(server);
+      try { (server as any).serializeAttachment?.({ kind: 'shell' }); } catch {}
+
+      if (isWarmRejoin(self as any)) {
+        // Warm rejoin path. The existing Shell is alive; we just
+        // swap the WebSocketTerminal's ws ref + replay scrollback.
+        try {
+          joinExistingSession(self as any, server, appendScrollback, loadScrollback);
+        } catch (err: any) {
+          console.error('warm-rejoin error:', err?.message, err?.stack);
+          return new Response('Rejoin failed: ' + err?.message, { status: 500 });
+        }
+        return new Response(null, { status: 101, webSocket: client });
+      }
+
       if (self.shell != null) {
+        // Active conflict — Shell exists and isn't drained. Some
+        // other /ws is attached; reject this one.
         return new Response(
           JSON.stringify({
             error: 'session already has active terminal',
@@ -101,16 +129,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           },
         );
       }
-      const pair = new WebSocketPair();
-      const [client, server] = Object.values(pair);
-      self.ctx.acceptWebSocket(server);
-      // Audit F1: tag the shell socket so webSocketClose/webSocketError
-      // can discriminate it from HMR sockets (which tag themselves
-      // 'cirrus-hmr' at :1239). Without this, a hibernation-attached
-      // shell socket's attachment is undefined — indistinguishable
-      // from any other untagged hibernation socket — and the close
-      // handler can't tell whether to null the terminal.
-      try { (server as any).serializeAttachment?.({ kind: 'shell' }); } catch {}
+
+      // Cold init path — first ever /ws (or post-DO-eviction).
       try {
         self.initSession(server);
       } catch (err: any) {
@@ -176,29 +196,30 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
 
     // ── Diagnostic memory probe ──────────────────────────────────────────
-    // /api/_diag/memory — supervisor heap pressure with peak tracking.
+    // /api/_diag/memory — supervisor heap estimate, eviction taxonomy,
+    // and recovery-event ring.
     //
-    // Why a second endpoint when /api/memory already exists:
-    //   1. /api/memory is a snapshot only. To prove an OOM hypothesis
-    //      we need the PEAK heap during a workload, captured even if
-    //      the kill happens microseconds after the high-water mark.
-    //   2. Peak survives across many polls; one poll right after the
-    //      crash's reboot will report peak=0 (this isolate just started),
-    //      itself a positive signal that the prior isolate was killed.
-    //   3. Never colocate diagnostic state with the prod /api/memory
-    //      contract — keep behavioural endpoints stable, evolve
-    //      /api/_diag/* freely.
+    // Why this endpoint exists
+    // ────────────────────────
+    // workerd's process.memoryUsage() returns zero for every field inside
+    // a DO class context (verified at audit/sections/PROD-RESET-RESEARCH-
+    // R1.md §R1.4). The previous endpoint reported nodeMem/perfMem from
+    // process.memoryUsage() and they were always zero — useless.
     //
-    // Returns the same nodeMem/perfMem fields as /api/memory plus:
-    //   - peak: { rssBytes, heapUsedBytes, atMs, samples } — high-water
-    //     marks observed since this isolate started. Updated on every
-    //     call to this endpoint (cheap; pre-bundle and install paths
-    //     can call it themselves to record their own peaks).
-    //   - limitBytes: workerd's hard DO heap cap (128 MiB) for context.
-    //   - usagePctOfLimit: heapUsed / limit, for at-a-glance reading.
+    // C'.1 replaces the zero-everywhere readout with a deterministic
+    // estimator (src/observability/heap-estimate.ts) that sums known
+    // supervisor allocations from runtime counters. Every byte has a
+    // named contributor.
     //
-    // Permanent infra: keep this endpoint even after the prebundle OOM
-    // is fixed. Future memory regressions will use it the same way.
+    // C'.2 adds a recovery_event ring (src/oom-discriminator.ts) so
+    // probes can assert that lifecycle transitions preserve session
+    // state without data loss.
+    //
+    // Schema (v3, additive over v2):
+    //   - heap: deterministic estimate + per-source breakdown + ceiling.
+    //   - evictionLabels: workerd taxonomy (5 reasons).
+    //   - recoveryEvents: ring of session lifecycle transitions.
+    //   - All v1/v2 fields preserved for back-compat with existing tools.
     if (url.pathname === '/api/_diag/memory') {
       self.ensureSqliteFs();
       self._diagSampleMemory();
@@ -207,24 +228,24 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       const vfs = self.sqliteFs!.getStats();
       const DO_HEAP_LIMIT_BYTES = 128 * 1024 * 1024;
       const heapUsed = nodeMem?.heapUsed ?? 0;
-      // Application-level counters from src/diag-counters.ts. workerd's
-      // process.memoryUsage() returns 0 for all fields inside DO class
-      // contexts (only dynamic-worker isolates under nodejs_compat get
-      // the real implementation). These deterministic counters are the
-      // primary signal for OOM-hypothesis verification —
-      // `cumulativePackumentBytesDecoded` in particular is the smoking
-      // gun for the resolver-phase OOM. Pre-fix it climbs into hundreds
-      // of MB on the supervisor; post-fix (resolver moved to facet) it
-      // stays near 0.
       const counters = readDiagCounters();
-      // W5 Lever 5: cause-discriminated last-failures + last-RPC-frame
-      // + last-facet-id + LRU shrink state. Back-compat with v1: every
-      // existing field preserved; new fields are additive. See
-      // audit/sections/W5-plan.md §5.
-      // `vfs` here is the getStats() result (line 1268). vfs.cache holds
-      // the LRU stats including the W5-augmented maxEntries/lruShrunk.
       const cacheStats = (vfs as any).cache ?? {};
       const lastFailures = getFailures();
+
+      // ── C'.1 deterministic heap estimate ─────────────────────────────
+      // Sources every contributing byte from a runtime counter — never
+      // calls process.memoryUsage(). Ceiling is the architectural soft
+      // budget (SUPERVISOR_HEAP_CEILING_BYTES = 64 MiB), half the
+      // workerd hard cap of 128 MiB.
+      const heap = estimateSupervisorHeap(counters, {
+        cacheHotBytes: cacheStats.hotBytes ?? 0,
+        // SqliteVFS doesn't surface a single "current in-flight write
+        // bytes" counter; the recordFailure call inside the VFS includes
+        // it on a failure path. For a steady-state read this is 0, which
+        // matches reality (writes are flushed in microseconds).
+        inFlightWriteBytes: 0,
+      });
+
       return Response.json({
         // ── v1 fields (preserved) ─────────────────────────────────
         vfs: { files: vfs.files, usedBytes: vfs.usedBytes },
@@ -243,7 +264,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           : 0,
         ts: Date.now(),
 
-        // ── v2 / W5 additions ─────────────────────────────────────
+        // ── v2 / W5 additions (preserved) ─────────────────────────
         lastFailures,
         vfsDetail: {
           lruBytes: cacheStats.hotBytes ?? 0,
@@ -259,6 +280,11 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         facet: {
           lastDispatch: getLastFacetId(),
         },
+
+        // ── v3 / C' observability foundation ──────────────────────
+        heap,
+        evictionLabels: WORKERD_EVICTION_LABELS,
+        recoveryEvents: getRecoveryEvents(),
 
         // ── W9: hibernation observability ───────────────────────────
         // `hib.isolateGen` increments per fresh isolate (cold start or
@@ -289,6 +315,72 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // / git clone in flight) per CF research §G.4 + ~lambros feedback.
         replica: self.getReplicaState(),
       });
+    }
+
+    // ── /api/_diag/session — Track B' state-store debug surface [B'.1] ──
+    //
+    // Exposes the persisted shell state so the probe at
+    // audit/probes/b-prime/b1-shell-state/ can verify the SQL row
+    // shape directly. Read-only; no side effects. Always returns
+    // 200 even when no row exists (the snapshot just shows
+    // hasPersistedState=false).
+    if (url.pathname === '/api/_diag/session') {
+      const snap = loadShellState(self.ctx);
+      const mounts = loadKernelMounts(self.ctx);
+      const sbStats = getScrollbackStats(self.ctx);
+      return Response.json({
+        cwd: snap.cwd,
+        env: snap.env,
+        hydratedAt: snap.hydratedAt,
+        hasPersistedState: snap.hasPersistedState,
+        // [B'.2] persisted kernel mount list — empty before first
+        // initSession, populated after.
+        mounts,
+        // [B'.3] scrollback stats — rows, total bytes, byte cap.
+        scrollbackRows: sbStats.rows,
+        scrollbackBytes: sbStats.bytes,
+        scrollbackMaxBytes: sbStats.maxBytes,
+        // [B'.4] live initSession phase. null pre-first-init;
+        // 'rehydrate'/'build'/'wire'/'online' during init progress;
+        // 'hydrated' after init completes; 'drained' after wsClose.
+        phase: (self as any)._b4Phase ?? null,
+        // [B'.5] count of /ws upgrades that took the warm-rejoin
+        // path (Phase B skipped). Probes assert ≥1 after a forced
+        // close + reconnect on the same isolate.
+        warmJoinCount: (self as any)._b4WarmJoinCount ?? 0,
+        // Live shell state — useful for confirming the in-memory
+        // shell agrees with SQL. Null when no shell is currently
+        // attached (between wsClose and next /ws upgrade).
+        liveCwd: (() => { try { return self.shell?.getCwd() ?? null; } catch { return null; } })(),
+        liveEnvKeys: (() => {
+          try {
+            const e = self.shell?.getEnv();
+            return e ? Object.keys(e).sort() : null;
+          } catch { return null; }
+        })(),
+        ts: Date.now(),
+      });
+    }
+
+    // ── [D'.1] /api/_diag/cirrus — cirrus-real DO Facet diagnostics ─────
+    //
+    // Returns null when cirrus-real is not running (no NIMBUS_REAL_VITE
+    // session yet). When running, returns the supervisor-side dispatch
+    // shape (kind = 'do-facet') + the in-facet identity cookie (proves
+    // own-SQLite is working and survives ctx.facets warm reuse).
+    //
+    // Probe at audit/probes/d-prime/d1-cirrus-real-facet/ asserts kind
+    // and cookie persistence across forced supervisor reconnect.
+    if (url.pathname === '/api/_diag/cirrus') {
+      if (!self.cirrusReal) {
+        return Response.json({ running: false, kind: null });
+      }
+      try {
+        const diag = await self.cirrusReal.getDiag();
+        return Response.json({ running: true, ...diag });
+      } catch (e: any) {
+        return Response.json({ running: true, error: e?.message || String(e) }, { status: 500 });
+      }
     }
 
     // ── W9: hibernation simulation + diagnostic spawn (NIMBUS_DEBUG=1) ──
@@ -347,6 +439,39 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         const allText = chunks.map((c: any) => c.data).join('');
         const lines = allText.split('\n').filter((l: string) => l !== '');
         return Response.json({ pid, lines, chunkCount: chunks.length });
+      }
+      // ── C'.2 recovery-event test endpoints ────────────────────────────
+      // Used by audit/probes/c-prime/recovery-events/ to verify the ring
+      // schema works pre-Track-B'. Once Track B' transitions land, real
+      // events flow through the ring naturally — these endpoints stay
+      // for synthetic-trigger probes (audit/probes/interactive-liveness/
+      // error-recovery/).
+      if (url.pathname === '/api/_test/recovery-event/record' && request.method === 'POST') {
+        const body = await request.json() as any;
+        recordRecoveryEvent({
+          at: Number(body.at) || Date.now(),
+          fromState: String(body.fromState ?? 'cold') as any,
+          toState: String(body.toState ?? 'hydrated') as any,
+          trigger: String(body.trigger ?? 'manual-test'),
+          isolateGen: Number(body.isolateGen) || self._w9IsolateGen,
+          dataLoss: !!body.dataLoss,
+          snapshotKeysRehydrated: Number(body.snapshotKeysRehydrated) || 0,
+          notes: body.notes ? String(body.notes) : undefined,
+        });
+        return Response.json({ recorded: true, ringSize: getRecoveryEvents().length });
+      }
+      if (url.pathname === '/api/_test/recovery-event/reset' && request.method === 'POST') {
+        resetRecoveryEvents();
+        return Response.json({ reset: true });
+      }
+      // ── B'.1 session-state reset ─────────────────────────────────────
+      // Drops every nimbus_session_kv / nimbus_kernel_mounts /
+      // nimbus_terminal_scrollback row so the next /ws upgrade
+      // takes the cold-start path (Phase O fires; banner reprints).
+      // Used by probes to start each scenario from a known-empty state.
+      if (url.pathname === '/api/_test/session/reset' && request.method === 'POST') {
+        clearSessionState(self.ctx);
+        return Response.json({ reset: true });
       }
       return new Response('unknown _test endpoint', { status: 404 });
     }

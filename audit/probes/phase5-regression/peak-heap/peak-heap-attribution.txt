@@ -1,0 +1,27 @@
+==== P5.4 peak-heap-attribution ====
+==== TIMESTAMP: 2026-05-08T18:06:37.932Z ====
+source: /workspace/worktrees/prod-reset-investigation/audit/probes/interactive-liveness/long-form-replay/long-form-replay.jsonl
+loaded 345 JSONL events
+baseline @ 2026-05-08T17:48:08.503Z: heap=15975158 (23.8%)
+baseline breakdown:
+  esbuildResidentBytes         =            0 bytes
+  preBundleSliceBytes          =            0 bytes
+  resolverInFlightBytes        =            0 bytes
+  streamingBuffersBytes        =            0 bytes
+  supervisorBaselineBytes      =      9437184 bytes
+  vfsInFlightBytes             =            0 bytes
+  vfsLruBytes                  =      6537974 bytes
+---- peak across 20 probe rows ----
+  peak_heap_bytes        : 15975734
+  peak_heap_mib          : 15.24 MiB
+  peak_heap_pct          : 23.8%
+  peak_at                : 2026-05-08T17:58:23.031Z
+  peak_probe_n           : 20
+  ceiling_bytes          : 67108864 (64 MiB)
+PASS: peak heap 15.24 MiB ≤ 64.00 MiB ceiling
+PASS: peak heap ≤ 95% stretch goal (60.80 MiB)
+PASS: heap.breakdown.* sum=total invariant held all 20 polls
+recovery events tracked across run: 50
+  first → last heap drift: 275 bytes (0.3 KiB)
+PASS: heap drift ≤ 1 MiB across 20 polls (no leak signature)
+==== EXIT 0 ====

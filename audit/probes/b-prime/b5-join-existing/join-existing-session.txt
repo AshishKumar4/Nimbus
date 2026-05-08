@@ -1,0 +1,25 @@
+==== B'.5 join-existing-session probe ====
+==== TIMESTAMP: 2026-05-08T18:04:40.946Z ====
+BASE: http://127.0.0.1:8792
+SID: tireless-cavern-9101
+stage 1: cwd="~/app"
+PASS: stage 1: cd into ~/app succeeded
+stage 1: ring count = 50 (sinceMs = 1778263481070)
+PASS: isolateGen stable at 1 across close
+stage 2: post-close debug.phase = "drained"
+PASS: post-close phase = 'drained'
+stage 3: post-warmjoin debug.phase = "hydrated"
+stage 3: warmJoinCount = 1
+PASS: post-warmjoin phase = 'hydrated'
+PASS: warmJoinCount = 1 (≥1 — join path executed)
+stage 4: total ring count = 50
+stage 4: post-close toState sequence (newest-first) = ["hydrated","wire","rehydrate","drained"]
+PASS: warm init: ring shows rehydrate
+PASS: warm init: ring shows wire
+PASS: warm init: ring shows hydrated
+PASS: warm init: ring shows drained from close
+PASS: warm init: 'build' SKIPPED (join path executed — kernel reused)
+PASS: warm init: 'online' SKIPPED (Phase O not reprinted)
+PASS: env NIMBUS_B5_TEST=joined survived warm rejoin (live Shell preserved)
+PASS: cwd ~/app survived warm rejoin
+==== EXIT 0 ====

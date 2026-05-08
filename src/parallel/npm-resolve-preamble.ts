@@ -1,8 +1,8 @@
 /**
- * npm-resolve-preamble.ts — preamble injected into NimbusFacetPool isolates
+ * npm-resolve-preamble.ts — preamble injected into NimbusLoaderPool isolates
  * that run src/npm-resolve-facet.ts.
  *
- * NimbusFacetPool serialises the user function via fn.toString() and runs
+ * NimbusLoaderPool serialises the user function via fn.toString() and runs
  * it inside a dynamic worker. Names referenced by the function at module
  * scope are NOT in that worker's lexical scope at runtime — they must be
  * re-declared in the preamble.
@@ -26,7 +26,7 @@
  * The W6 registry data is duplicated below — gated by
  * `audit/probes/w6/functional/preamble-parity.mjs`.
  *
- * Preamble bytes are part of the loader-cache key for NimbusFacetPool —
+ * Preamble bytes are part of the loader-cache key for NimbusLoaderPool —
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */

@@ -25,7 +25,7 @@ import type { EsbuildService } from './esbuild-service.js';
 import { BUNDLER_VERSION } from './esbuild-service.js';
 import { NpmCache, type LockfileEntry } from './npm-cache.js';
 import {
-  resolveTree, computeHoistPlan, shouldSkipPackage,
+  computeHoistPlan, shouldSkipPackage,
   type ResolvedPackage, type HoistPlan, type FetchFn,
 } from './npm-resolver.js';
 import {
@@ -34,12 +34,10 @@ import {
   emitRegistryEvent,
 } from './wasm-swap-registry.js';
 import { resolvePackageEntry } from './_shared/exports-resolver.js';
-import {
-  fetchWaves, buildBatchPayload, buildCacheRestorePayload,
-} from './npm-tarball.js';
-import { NimbusFacetPool } from './parallel/facet-pool.js';
+import { buildCacheRestorePayload } from './npm-tarball.js';
+import { NimbusLoaderPool } from './parallel/loader-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from './parallel/generated-workers.js';
-import { fetchAndStagePackage, type FacetPackageSpec, type FacetPackageResult } from './npm-install-facet.js';
+import type { FacetPackageSpec } from './npm-install-facet.js';
 import {
   installPackagesInFacet,
   type InstallBatchSpec,
@@ -66,7 +64,7 @@ import {
   type PrebundleResult,
 } from './pre-bundle-facet.js';
 import { PRE_BUNDLE_PREAMBLE } from './parallel/pre-bundle-preamble.js';
-import { getEsbuildWasmBytes } from './esbuild-wasm-bytes.js';
+import { fetchEsbuildWasmBytes } from './esbuild-wasm-bytes.js';
 import { CHUNK_SIZE } from './constants.js';
 import { waitForLowAllocPressure } from './heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from './barrel-detect.js';
@@ -225,21 +223,16 @@ export class NpmInstaller {
       phases['lock-check'] = Date.now() - phaseStart;
 
       // ── Phase 1: Resolve ──────────────────────────────────────────
+      // Single resolver path: a NimbusLoaderPool isolate runs the BFS
+      // walker (src/npm-resolve-facet.ts). The supervisor never holds
+      // packument bytes — they live in the facet's own 128 MiB
+      // envelope. There is no fallback: env.LOADER + ctx are platform
+      // requirements; absence is a deploy bug, not a runtime branch.
       phaseStart = Date.now();
       setInstallPhase('resolve');
-      const useFacetResolver = this.shouldUseFacetResolver();
-      setResolverPath(useFacetResolver ? 'in-facet' : 'in-supervisor');
-      log(`Resolving ${Object.keys(specs).length} dependencies (path: ${useFacetResolver ? 'facet' : 'in-supervisor'}, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
-
-      if (useFacetResolver) {
-        // Facet resolver runs in a worker without easy access to the VFS
-        // detection result; we pass frameworkAware via an env var the
-        // facet preamble reads. For now, mirror behaviour by also calling
-        // the in-supervisor path's flag here.
-        resolved = await this.resolveTreeViaFacet(specs, log, { frameworkAware });
-      } else {
-        resolved = await resolveTree(specs, this.cache, undefined, log, this.fetchFn, { frameworkAware });
-      }
+      setResolverPath('in-facet');
+      log(`Resolving ${Object.keys(specs).length} dependencies (path: facet, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
+      resolved = await this.resolveTreeViaFacet(specs, log, { frameworkAware });
       phases['resolve'] = Date.now() - phaseStart;
 
       if (resolved.size === 0) {
@@ -315,56 +308,23 @@ export class NpmInstaller {
 
     // Then, fetch + extract + write new packages.
     //
-    // Two paths:
-    //   (a) Facet pool (NIMBUS_FACET_NPM_INSTALL=1, default on): dispatch
-    //       each package to its own isolate via NimbusFacetPool. Each
-    //       facet fetches the tarball, verifies sha-integrity, streams
-    //       the gunzip+tar into a writeBatch payload, and calls
-    //       env.SUPERVISOR.writeBatch() exactly once. The supervisor's
-    //       heap never holds a full tarball — only the inbound RPC
-    //       payload, one package at a time. See WORKERD-CRASH.md (H2).
+    // Single fetch path: one NimbusLoaderPool isolate (the batch facet)
+    // runs the entire install. The facet streams each tarball through
+    // gunzip+tar and emits one writeBatch RPC per package; supervisor
+    // heap only sees one inbound RPC payload at a time.
     //
-    //   (b) Legacy wave path (NIMBUS_FACET_NPM_INSTALL=0): the old
-    //       fetchWaves + buildBatchPayload loop that ran in-process on
-    //       the supervisor. Retained as a rollback for any workerd
-    //       regression we haven't anticipated. This path does NOT
-    //       benefit from distributed-heap isolation, but it is known to
-    //       be correct end-to-end prior to H2 (H1 streaming landed
-    //       before this commit).
+    // No fallback paths: env.LOADER + ctx are platform requirements
+    // (their absence is a deploy bug, not a runtime branch). Per-package
+    // pool.map and the legacy in-supervisor fetchWaves loop were both
+    // removed in Phase 2 A'.1 — they re-introduced the supervisor-heap
+    // pressure the facet path eliminates.
     if (toFetch.length > 0) {
-      const useFacetPool = this.shouldUseFacetPool();
-      const useBatchFacet = useFacetPool && this.shouldUseBatchFacet();
-      const pathLabel = useBatchFacet
-        ? 'batch-facet'
-        : useFacetPool ? 'pool.map (legacy)' : 'legacy-waves';
-      // Record path so /api/_diag/memory surfaces which dispatcher
-      // served the request — useful for proving prod is on the new
-      // architecture and not silently falling back.
-      setInstallFacetPath(useBatchFacet ? 'batch-facet' : useFacetPool ? 'pool.map' : 'legacy-waves');
-      log(`Fetching ${toFetch.length} packages... (path: ${pathLabel})`);
-      if (useBatchFacet) {
-        const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
-        totalFiles += batchResult.filesWritten;
-        for (const name of batchResult.installed) installed.push(name);
-        for (const name of batchResult.failed) failed.push(name);
-      } else if (useFacetPool) {
-        const poolResult = await this.fetchViaFacetPool(toFetch, hoistPlan, nmDir);
-        totalFiles += poolResult.filesWritten;
-        for (const name of poolResult.installed) installed.push(name);
-        for (const name of poolResult.failed) failed.push(name);
-      } else {
-        for await (const wave of fetchWaves(toFetch, this.cache, this.ctx, 15, log, this.fetchFn)) {
-          if (wave.fetched.length > 0) {
-            const payload = buildBatchPayload(wave.fetched, hoistPlan, nmDir);
-            const result = this.vfs.writeBatch(payload);
-            totalFiles += result.inodes;
-            for (const f of wave.fetched) {
-              installed.push(`${f.pkg.name}@${f.pkg.version}`);
-            }
-          }
-          failed.push(...wave.failed);
-        }
-      }
+      setInstallFacetPath('batch-facet');
+      log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
+      const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
+      totalFiles += batchResult.filesWritten;
+      for (const name of batchResult.installed) installed.push(name);
+      for (const name of batchResult.failed) failed.push(name);
     }
 
     phases['fetch+write'] = Date.now() - phaseStart;
@@ -436,76 +396,25 @@ export class NpmInstaller {
     return { installed, failed, totalFiles, elapsed, cachedHits, phases };
   }
 
-  // ── Facet-pool fetch path (H2) ────────────────────────────────────────
+  // ── Single-resolver / single-fetcher invariant (Phase 2 A'.1) ─────────
+  //
+  // Pre-rebuild this section had three feature flags that gated the
+  // facet paths and fell back to in-supervisor resolveTree /
+  // fetchWaves / pool.map when off. The fallback paths re-introduced
+  // exactly the supervisor heap pressure the rebuild aims to remove,
+  // so they were deleted along with their feature flags.
+  //
+  // Single resolver: src/npm-resolve-facet.ts (called from
+  // resolveTreeViaFacet below).
+  // Single fetcher : src/npm-install-batch-facet.ts (called from
+  // fetchViaBatchFacet below).
+  //
+  // env.LOADER and ctx are platform requirements; if either is
+  // missing the install fails loud at the first await on the facet
+  // pool — that's a deploy bug, not a runtime branch.
 
   /**
-   * Feature flag: `NIMBUS_FACET_NPM_INSTALL` defaults to on. Read from env
-   * (either a var binding at build-time or a hardcoded env string in
-   * wrangler.jsonc). Any falsy literal value ('', '0', 'false') turns it
-   * off; anything else (including the absence of the var, for back-compat
-   * with deployed configs) leaves it on.
-   */
-  private shouldUseFacetPool(): boolean {
-    // Guard: we need both env.LOADER for the pool AND ctx for SupervisorRPC
-    // binding metadata. If either is missing, fall back to the legacy path.
-    if (!this.env?.LOADER || !this.ctx) return false;
-    const raw = (this.env as any)?.NIMBUS_FACET_NPM_INSTALL;
-    if (raw === undefined || raw === null) return true; // default on
-    const s = String(raw).toLowerCase();
-    if (s === '0' || s === '' || s === 'false' || s === 'off' || s === 'no') return false;
-    return true;
-  }
-
-  /**
-   * Whether the install phase uses the SINGLE-FACET batch path (one
-   * dynamic worker for the whole install) vs. the legacy per-package
-   * pool.map (4 workers in parallel). Default ON.
-   *
-   * Workerd has a per-DO cap on concurrent dynamic workers (~5-6
-   * empirically; see WORKERD-CRASH.md). Each pool slot in pool.map
-   * spawns its own loader entry; loader.get() entries are PERMANENT
-   * for the DO lifetime (src/parallel/facet-pool.ts:328-348 — dispose()
-   * only releases SUPERVISOR binding stubs, NOT the underlying worker).
-   * Combine resolver-facet (1) + fetch-proxy (1) + install pool.map (4)
-   * + pre-bundle (1) = 7 workers, tripping the cap with "Too many
-   * concurrent dynamic workers" right when install-pool fires its 4th slot.
-   *
-   * Single-facet batch (this path) collapses install to 1 worker, same
-   * pattern proven by resolver-facet (commit 9194998).
-   *
-   * Set NIMBUS_FACET_NPM_INSTALL_BATCH=0 to fall back to the legacy
-   * pool.map path. Same emergency-rollback posture as
-   * NIMBUS_FACET_NPM_INSTALL / NIMBUS_FACET_RESOLVER.
-   */
-  private shouldUseBatchFacet(): boolean {
-    if (!this.env?.LOADER || !this.ctx) return false;
-    const raw = (this.env as any)?.NIMBUS_FACET_NPM_INSTALL_BATCH;
-    if (raw === undefined || raw === null) return true;
-    const s = String(raw).toLowerCase();
-    if (s === '0' || s === '' || s === 'false' || s === 'off' || s === 'no') return false;
-    return true;
-  }
-
-  /**
-   * Whether the resolver phase runs in a NimbusFacetPool isolate.
-   * Default ON so prod gets the OOM fix without a config change. Set
-   * NIMBUS_FACET_RESOLVER=0 in wrangler.jsonc (or the env binding) to
-   * fall back to the legacy in-supervisor resolveTree — useful as an
-   * emergency rollback if the facet path surfaces a workerd quirk we
-   * didn't anticipate. Same posture as NIMBUS_FACET_NPM_INSTALL.
-   */
-  private shouldUseFacetResolver(): boolean {
-    if (!this.env?.LOADER || !this.ctx) return false;
-    const raw = (this.env as any)?.NIMBUS_FACET_RESOLVER;
-    if (raw === undefined || raw === null) return true; // default on
-    const s = String(raw).toLowerCase();
-    if (s === '0' || s === '' || s === 'false' || s === 'off' || s === 'no') return false;
-    return true;
-  }
-
-  /**
-   * Resolve the dep graph in a NimbusFacetPool isolate. Mirrors the
-   * legacy resolveTree contract: returns Map<name, ResolvedPackage>.
+   * Resolve the dep graph in a NimbusLoaderPool isolate.
    *
    * Cache strategy: pre-load ALL cached registry entries from
    * pkg_registry_cache and ship them to the facet so cache hits don't
@@ -557,7 +466,7 @@ export class NpmInstaller {
       retries: 3,
     };
 
-    const pool = new NimbusFacetPool(this.env, this.ctx!, {
+    const pool = new NimbusLoaderPool(this.env, this.ctx!, {
       // One facet for the whole walk — the facet itself runs pLimit(6)
       // internally. Per the plan's topology choice; per-spec dispatch
       // would multiply cold-start costs across 456+ transitive deps.
@@ -626,7 +535,7 @@ export class NpmInstaller {
 
   /**
    * Single-facet batch install. Builds per-package specs, dispatches
-   * ONE facet via NimbusFacetPool.submit (concurrency=1), and lets the
+   * ONE facet via NimbusLoaderPool.submit (concurrency=1), and lets the
    * facet loop internally with pLimit(3).
    *
    * One dynamic worker total. Combined with resolver-facet (1) and the
@@ -656,7 +565,12 @@ export class NpmInstaller {
         mtime,
         chunkSize: CHUNK_SIZE,
       }));
-    void hoistPlan; // flat hoisting only — see fetchViaFacetPool comment.
+    // hoistPlan is intentionally unused: the current installer maps
+    // every package to `${nmDir}/${name}` (flat hoisting). Accepting
+    // the plan as a parameter keeps the caller agnostic of the hoist
+    // strategy and lets a future nested-install variant slot in
+    // without changing the call site.
+    void hoistPlan;
 
     if (specs.length === 0) {
       return { installed, failed, filesWritten };
@@ -664,7 +578,7 @@ export class NpmInstaller {
 
     log(`Dispatching ${specs.length} packages to batch-facet (single worker, internal pLimit=3)...`);
 
-    const pool = new NimbusFacetPool(this.env, this.ctx!, {
+    const pool = new NimbusLoaderPool(this.env, this.ctx!, {
       // ONE facet for the whole batch — collapses what was 4 concurrent
       // dynamic workers (pool.map slots) into 1. The facet itself runs
       // pLimit(3) to keep its heap peak under ~87 MiB inside its 128 MiB cap.
@@ -745,114 +659,6 @@ export class NpmInstaller {
         `, ${(result.elapsed / 1000).toFixed(1)}s` +
         (failCount > 0 ? ` (${failCount} failed)` : ''),
       );
-      return { installed, failed, filesWritten };
-    } finally {
-      try { pool.dispose(); } catch { /* best-effort */ }
-    }
-  }
-
-  private async fetchViaFacetPool(
-    toFetch: ResolvedPackage[],
-    hoistPlan: HoistPlan,
-    nmDir: string,
-  ): Promise<{ installed: string[]; failed: string[]; filesWritten: number }> {
-    const log = (msg: string) => this.onProgress?.(msg);
-    const installed: string[] = [];
-    const failed: string[] = [];
-    let filesWritten = 0;
-
-    // Build per-package specs. Each gets its absolute install directory
-    // resolved here (using hoistPlan) so the facet doesn't need the plan.
-    // CHUNK_SIZE imported from ./constants.js (single source of truth).
-    const mtime = Date.now();
-    const specs: FacetPackageSpec[] = toFetch
-      .filter((p) => !!p.tarballUrl)
-      .map((p) => ({
-        name: p.name,
-        version: p.version,
-        tarballUrl: p.tarballUrl,
-        integrity: p.integrity || '',
-        // hoistPlan.root is a Set<string> of names installed flat at nmDir;
-        // current installer maps every package to `${nmDir}/${name}` (nested
-        // installs are not yet implemented — see comment in buildBatchPayload).
-        pkgDir: nmDir + '/' + p.name,
-        mtime,
-        chunkSize: CHUNK_SIZE,
-      }));
-
-    // Note: `hoistPlan` is intentionally unused in the current flat mapping
-    // (see above). Accepting it in this method's signature keeps the caller
-    // agnostic of the hoist strategy and lets a future nested-install
-    // variant plug in without changing the call site. Silence the
-    // unused-parameter warning.
-    void hoistPlan;
-
-    if (specs.length === 0) {
-      return { installed, failed, filesWritten };
-    }
-
-    // 4 concurrent facets per H2 plan (guardrail #4). Each isolate gets its
-    // own 128 MB budget on edge; in wrangler-dev all share one process but
-    // memory is still distributed across isolates.
-    const pool = new NimbusFacetPool(this.env, this.ctx!, {
-      concurrency: 4,
-      timeoutMs: 60_000,
-      retries: 0,
-      tag: 'npm-install',
-      preamble: TAR_STREAM_PREAMBLE,
-    });
-
-    let done = 0;
-    const total = specs.length;
-    log(`Dispatching ${total} packages to ${pool.defaultConcurrency}-way facet pool...`);
-
-    // Guardrail #8: onError 'throw' + retries 0 — install-time failures must
-    // surface loudly, not be silently skipped. We wrap the whole map() in a
-    // try so the caller sees which package failed and why. Other in-flight
-    // facets are NOT cancelled (workerd RPC has no cancellation primitive),
-    // but they complete into ignored results — the failed install is
-    // reported immediately.
-    //
-    // The outer try/finally ensures pool.dispose() runs on BOTH the success
-    // and failure paths so the SUPERVISOR binding's RPC stub is released
-    // back to workerd. Without this, each install leaves a live stub in
-    // the deferred-destruction queue; across a full session (git clone +
-    // npm install + wrangler dev) that accumulation trips the
-    // QueueState::ACTIVE fatal documented in
-    // memory/nimbus-internal/INSTALL-PERSISTENCE-STATUS.md.
-    let results: Array<Awaited<FacetPackageResult> | null>;
-    try {
-      try {
-        results = await pool.map<FacetPackageSpec, FacetPackageResult>(
-          fetchAndStagePackage,
-          specs,
-          { onError: 'throw' },
-        );
-      } catch (e: any) {
-        const msg = e?.remoteMessage || e?.message || String(e);
-        log(`  [facet-pool] aborted: ${msg}`);
-        throw new Error(`facet-pool install failed: ${msg}`);
-      }
-
-      for (let i = 0; i < specs.length; i++) {
-        const r = results[i];
-        const spec = specs[i];
-        if (!r) {
-          // With onError:'throw' this branch is unreachable; defensive.
-          failed.push(`${spec.name}@${spec.version}`);
-          continue;
-        }
-        installed.push(`${r.name}@${r.version}`);
-        filesWritten += r.fileCount;
-        done += 1;
-        if (r.warnings && r.warnings.length > 0) {
-          for (const w of r.warnings) {
-            log(`  [warn] ${r.name}@${r.version}: ${w}`);
-          }
-        }
-      }
-
-      log(`Facet pool complete: ${done}/${total} packages, ${filesWritten} files written.`);
       return { installed, failed, filesWritten };
     } finally {
       try { pool.dispose(); } catch { /* best-effort */ }
@@ -1210,7 +1016,7 @@ export class NpmInstaller {
     projDir: string,
     installed: Map<string, ResolvedPackage>,
   ): Promise<void> {
-    // Pre-bundle now runs in NimbusFacetPool isolates (src/pre-bundle-facet.ts);
+    // Pre-bundle now runs in NimbusLoaderPool isolates (src/pre-bundle-facet.ts);
     // each facet ships its own bundled esbuild-wasm via the preamble. The
     // supervisor's EsbuildService is no longer on the bundle path — it
     // still serves the transform path (TS/JSX → JS) which is small and
@@ -1437,11 +1243,14 @@ export class NpmInstaller {
     const PRE_BUNDLE_CONCURRENCY = 1;
     const SLICE_CAP_BYTES = 28 * 1024 * 1024;
 
-    // Fetch the esbuild-wasm bytes once. Decoded once per supervisor
-    // isolate; subsequent calls return the cached ArrayBuffer reference
-    // so passing it across multiple pool dispatches is free.
+    // Fetch the esbuild-wasm bytes from the static-assets layer.
+    // The supervisor briefly holds the 12 MiB ArrayBuffer between this
+    // line and the LOADER hand-off below; after pool construction
+    // returns, the only reference is inside workerd's loader cache
+    // (where it should live). No supervisor-side caching — see
+    // src/esbuild-wasm-bytes.ts for the full architectural rationale.
     //
-    // Bytes are shipped into each facet via NimbusFacetPool's
+    // Bytes are shipped into each facet via NimbusLoaderPool's
     // `wasmModules` option which workerd registers in the LOADER
     // `modules` map as `{ wasm: ArrayBuffer }`. Workerd compiles at
     // module-load (startup phase, where wasm code generation is
@@ -1458,6 +1267,7 @@ export class NpmInstaller {
     //     refuses ("Unable to deserialize cloned data")
     //   - LOADER modules-map: bytes ride INSIDE the worker code blob
     //     before workerd compiles it; bypasses all three failure modes.
+    //
     // Defensive logger: onProgress is user-supplied and can throw
     // (downstream WS write, JSON.stringify on a circular value, etc.).
     // A throw here would unwind through the iteration, drop other
@@ -1471,17 +1281,15 @@ export class NpmInstaller {
       }
     };
 
-    let wasmBytes: ArrayBuffer | null = null;
-    try {
-      wasmBytes = await getEsbuildWasmBytes();
-    } catch (e: any) {
-      safeProgress(`Pre-bundle skipped: failed to load esbuild wasm bytes: ${e?.message || e}`);
-      return;
-    }
+    // No fallback: a missing wasm asset is a deploy bug. Surface
+    // loudly via the thrown error from fetchEsbuildWasmBytes — the
+    // pre-bundle phase aborts cleanly and the install completes
+    // without pre-bundle (vite then serves modules un-pre-bundled).
+    const wasmBytes: ArrayBuffer = await fetchEsbuildWasmBytes(this.env as any);
 
-    let pool: NimbusFacetPool;
+    let pool: NimbusLoaderPool;
     try {
-      pool = new NimbusFacetPool(this.env, this.ctx!, {
+      pool = new NimbusLoaderPool(this.env, this.ctx!, {
         concurrency: PRE_BUNDLE_CONCURRENCY,
         timeoutMs: 60_000,
         retries: 0,

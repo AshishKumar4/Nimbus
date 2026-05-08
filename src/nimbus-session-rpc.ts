@@ -19,7 +19,6 @@
 import { enc } from './_shared/bytes.js';
 import { getInnerDoClass } from './inner-do-registry.js';
 import { NpmCache } from './npm-cache.js';
-import { getEsbuildWasmBytes as _getCachedEsbuildWasmBytes } from './esbuild-wasm-bytes.js';
 import { EsbuildService } from './esbuild-service.js';
 import { notifyTerminalEvent } from './process-logs-api.js';
 import {
@@ -268,38 +267,6 @@ export async function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): Pro
     const npmCache = new NpmCache(self.ctx.storage.sql);
     if (!Array.isArray(entries)) return { written: 0, failed: 0 };
     return npmCache.putRegistryEntries(entries);
-}
-
-  /**
-   * Return the raw esbuild-wasm bytes (~11.4 MiB) as an ArrayBuffer.
-   *
-   * Kept for compatibility — the production pre-bundle path no longer
-   * uses this (commit: pre-bundle wasm via modules-map). Bytes are
-   * shipped to the facet via the LOADER's `modules` map shape
-   * `{ name: { wasm: ArrayBuffer } }` instead, which workerd compiles
-   * at facet module-load (startup phase, eval permitted) and exposes
-   * via a standard ESM import.
-   *
-   * Earlier attempts that DIDN'T work (history kept for context):
-   *   1. Inline 16 MiB base64 in preamble → OOM via per-dispatch
-   *      module-source allocation. (commit dead0e3 removed it.)
-   *   2. RPC returning Uint8Array, facet calls WebAssembly.compile →
-   *      "Wasm code generation disallowed by embedder" at request time.
-   *      (commit 7636995 moved JS eval to startup; this one couldn't
-   *      be similarly relocated because the bytes are async.)
-   *   3. RPC returning pre-compiled WebAssembly.Module from supervisor
-   *      → "Unable to deserialize cloned data" — workerd's
-   *      structured-clone refuses Module transfer in this deploy.
-   *      (commit f9e321e tried; reverted to bytes here.)
-   *
-   * The modules-map approach (current) sidesteps all three failure
-   * modes because the bytes are bundled into the worker code object
-   * BEFORE workerd compiles the worker, so compile happens in the
-   * permitted module-load phase via workerd's own internal pipeline,
-   * not via JS-side eval or cross-isolate transfer.
-   */
-export async function _rpcGetEsbuildWasm(self: RpcHost, ): Promise<ArrayBuffer> {
-    return _getCachedEsbuildWasmBytes();
 }
 
 export async function _rpcStdout(self: RpcHost, pid: number, data: string): Promise<void> {

@@ -1,43 +1,35 @@
 /**
- * npm-tarball.ts — Tarball fetching, extraction, and cache integration for Nimbus npm.
+ * npm-tarball.ts — tarball extraction + cache-restore payload builder.
  *
- * Features:
- *   - Separate fetch + extract for composability
- *   - Wave-based concurrent fetching with pLimit concurrency control
- *   - Integrates with NpmCache for per-package file caching
- *   - Produces BatchWritePayload for atomic VFS writes
- *   - **Streaming extraction** (H1): gunzip + tar parsing happen as bytes
- *     arrive from the fetch Response body, so we never materialize the full
- *     decompressed tarball as one Uint8Array. Worst-case transient heap per
- *     package is ~1 file's bytes instead of ~3× the compressed tarball size.
- *     STABILITY-AUDIT / WORKERD-CRASH H1.
+ * Phase 2 A'.1 reduced this module to:
+ *   - extractTarball / extractTarballFromResponse — streaming gunzip+tar.
+ *     Used by the install-batch facet (which holds the bytes inside its
+ *     own 128 MiB envelope, not the supervisor's).
+ *   - buildCacheRestorePayload — supervisor-side BatchWritePayload
+ *     builder for the cached-tarball fast path. Runs only on a cache
+ *     hit; the bytes already live in the per-DO npm cache rather than
+ *     being fetched off the network.
+ *
+ * The legacy `fetchWaves` async generator + `buildBatchPayload` builder
+ * were removed — they ran in supervisor heap and held tarball bytes long
+ * enough to OOM the DO on large installs. The single batch-facet path
+ * (src/npm-install-batch-facet.ts) supersedes them.
  */
 
 import type { NpmCache } from './npm-cache.js';
-import { pLimit, type ResolvedPackage, type HoistPlan, type FetchFn } from './npm-resolver.js';
+import type { ResolvedPackage, HoistPlan } from './npm-resolver.js';
 import type { BatchInodeEntry, BatchChunkEntry, BatchWritePayload } from './sqlite-vfs.js';
 import {
   streamTarEntries,
   readableStreamToAsyncIterable,
 } from './npm-tarball-stream.js';
-import { retryableFetch, DEFAULT_RETRIES } from './retry.js';
 import { CHUNK_SIZE } from './constants.js';
-
-/** Max concurrent tarball downloads. Bounded to avoid port exhaustion. */
-const FETCH_CONCURRENCY = 5;
-/** Timeout for tarball fetches (ms). */
-const TARBALL_TIMEOUT_MS = 30_000;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
 export interface FetchedPackage {
   pkg: ResolvedPackage;
   files: Map<string, Uint8Array>;
-}
-
-export interface WaveResult {
-  fetched: FetchedPackage[];
-  failed: string[];
 }
 
 // ── Tarball extraction ──────────────────────────────────────────────────
@@ -132,187 +124,23 @@ export async function extractTarball(
   return files;
 }
 
-// ── Wave-based fetching ─────────────────────────────────────────────────
-
-/**
- * Fetch tarballs in waves of `waveSize` packages.
- * Each wave is fully fetched + extracted before yielding its results.
- * This bounds memory usage (only one wave's tarballs in memory at once).
- */
-export async function* fetchWaves(
-  packages: ResolvedPackage[],
-  cache: NpmCache,
-  ctx: DurableObjectState | undefined,
-  waveSize: number = 15,
-  onProgress?: (msg: string) => void,
-  fetchFn?: FetchFn,
-): AsyncGenerator<WaveResult, void, undefined> {
-  for (let waveStart = 0; waveStart < packages.length; waveStart += waveSize) {
-    const wave = packages.slice(waveStart, waveStart + waveSize);
-    const waveNum = Math.floor(waveStart / waveSize) + 1;
-    const totalWaves = Math.ceil(packages.length / waveSize);
-    onProgress?.(`Fetching wave ${waveNum}/${totalWaves} (${wave.length} packages)...`);
-
-    const fetched: FetchedPackage[] = [];
-    const failed: string[] = [];
-    const limit = pLimit(FETCH_CONCURRENCY);
-
-    // Concurrent fetch within the wave, bounded by pLimit
-    await Promise.all(
-      wave.map((pkg) => limit(async () => {
-        // Check tarball cache first
-        if (cache.hasTarballCache(pkg.name, pkg.version)) {
-          onProgress?.(`  cached ${pkg.name}@${pkg.version}`);
-          // Don't fetch — will be restored from cache in the write phase
-          return;
-        }
-
-        if (!pkg.tarballUrl) {
-          failed.push(`${pkg.name}@${pkg.version}`);
-          return;
-        }
-
-        onProgress?.(`  fetching ${pkg.name}@${pkg.version}...`);
-        try {
-          // retryableFetch: 3 retries on 5xx/network errors with
-          // jittered exponential backoff, per-attempt timeout equal to
-          // the prior single-attempt budget (TARBALL_TIMEOUT_MS) so a
-          // slow failure doesn't consume the whole retry window.
-          // `fetchFn` (proxy) is forwarded; defaults to global fetch.
-          const resp = await retryableFetch(pkg.tarballUrl, undefined, {
-            retries: DEFAULT_RETRIES,
-            name: `${pkg.name}@${pkg.version}`,
-            fetchImpl: fetchFn,
-            perAttemptTimeoutMs: TARBALL_TIMEOUT_MS,
-            onRetry: (attempt, total, delayMs, reason) => {
-              onProgress?.(
-                `  ${pkg.name}@${pkg.version}: retry ${attempt}/${total} after ${delayMs}ms (${reason})`,
-              );
-            },
-          });
-          // Dispose the (possibly RPC-backed) Response stub after we've
-          // drained its body via extractTarballFromResponse. See the
-          // matching comment in npm-resolver.ts — without this, stubs
-          // accumulate within the install's event-handler context and
-          // trip workerd's "RPC result was not disposed" warning which
-          // precedes the queueState != ACTIVE fatal.
-          try {
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const files = await extractTarballFromResponse(resp);
-
-            if (files.size === 0) {
-              failed.push(`${pkg.name}@${pkg.version}`);
-              return;
-            }
-
-            // Store in tarball cache for future installs (non-fatal)
-            try {
-              cache.putTarballFiles(pkg.name, pkg.version, files, ctx);
-            } catch (cacheErr: any) {
-              console.error(`[npm-tarball] cache write failed for ${pkg.name}@${pkg.version}:`, cacheErr?.message);
-            }
-
-            fetched.push({ pkg, files });
-          } finally {
-            // Dispose the RPC stub once body is drained. Symbol.dispose
-            // is ES2023; tsconfig targets ES2022 so we any-cast. On
-            // non-RPC Response objects the lookup yields undefined and
-            // the branch is skipped.
-            const disposerKey = (Symbol as any).dispose;
-            const disposer = disposerKey ? (resp as any)?.[disposerKey] : undefined;
-            if (typeof disposer === 'function') {
-              try { disposer.call(resp); } catch { /* best-effort */ }
-            }
-          }
-        } catch (e: any) {
-          onProgress?.(`  FAILED ${pkg.name}@${pkg.version}: ${e?.message}`);
-          failed.push(`${pkg.name}@${pkg.version}`);
-        }
-      })),
-    );
-
-    yield { fetched, failed };
-  }
-}
+// ── Removed Phase 2 A'.1 ─────────────────────────────────────────────────
+//
+// The supervisor-resident `fetchWaves` async generator and its companion
+// `buildBatchPayload` BatchWritePayload builder were deleted when the
+// install became single-path (batch-facet only). Both ran in supervisor
+// heap and held tarball bytes in memory long enough to OOM the DO on
+// large installs. The single batch-facet path
+// (src/npm-install-batch-facet.ts) streams gunzip+tar inside a dynamic-
+// worker isolate with its own 128 MiB envelope and emits one writeBatch
+// RPC per package — the supervisor's heap only sees one inbound RPC
+// payload at a time.
+//
+// `WaveResult` is also gone (no other consumers). `FetchedPackage` is
+// retained because `extractTarballFromResponse` returns a `Files` map
+// that the cache restore path still uses.
 
 // ── Batch payload construction ──────────────────────────────────────────
-
-/**
- * Build a BatchWritePayload from fetched packages.
- * Computes all inodes (dirs + files) and chunks for a single wave.
- */
-export function buildBatchPayload(
-  packages: FetchedPackage[],
-  hoistPlan: HoistPlan,
-  nodeModulesDir: string,
-): BatchWritePayload {
-  const inodes: BatchInodeEntry[] = [];
-  const chunks: BatchChunkEntry[] = [];
-  const dirs = new Set<string>();
-  const mtime = Date.now();
-
-  for (const { pkg, files } of packages) {
-    // Determine install path from hoist plan
-    const pkgDir = hoistPlan.root.has(pkg.name)
-      ? nodeModulesDir + '/' + pkg.name
-      : nodeModulesDir + '/' + pkg.name; // nested not yet implemented
-
-    // Add package directory itself
-    dirs.add(pkgDir);
-
-    for (const [relPath, data] of files) {
-      const filePath = pkgDir + '/' + relPath;
-
-      // Collect all parent directories
-      const parts = filePath.split('/');
-      for (let i = 1; i < parts.length; i++) {
-        dirs.add(parts.slice(0, i).join('/'));
-      }
-
-      // File inode
-      const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
-      inodes.push({
-        path: filePath,
-        parentPath: parentOf(filePath),
-        isDir: false,
-        size: data.length,
-        mtime,
-        mode: 0o644,
-        chunkCount,
-      });
-
-      // File chunks
-      if (data.length <= CHUNK_SIZE) {
-        if (data.length > 0) {
-          chunks.push({ path: filePath, chunkId: 0, data });
-        }
-      } else {
-        for (let c = 0; c < chunkCount; c++) {
-          chunks.push({
-            path: filePath,
-            chunkId: c,
-            data: data.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE),
-          });
-        }
-      }
-    }
-  }
-
-  // Add directory inodes
-  for (const dir of dirs) {
-    inodes.push({
-      path: dir,
-      parentPath: parentOf(dir),
-      isDir: true,
-      size: 0,
-      mtime,
-      mode: 0o755,
-      chunkCount: 0,
-    });
-  }
-
-  return { inodes, chunks };
-}
 
 /**
  * Build a BatchWritePayload from the tarball cache (for packages that were

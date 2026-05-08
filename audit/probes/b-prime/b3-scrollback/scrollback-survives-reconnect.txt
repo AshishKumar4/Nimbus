@@ -1,0 +1,30 @@
+==== B'.3 scrollback-survives-reconnect probe ====
+==== TIMESTAMP: 2026-05-08T18:04:33.275Z ====
+BASE: http://127.0.0.1:8792
+SID: wary-badger-9973
+stage 1: cold debug = {"scrollbackRows":0,"scrollbackBytes":0,"scrollbackMaxBytes":1048576}
+PASS: cold session: scrollback table is empty
+PASS: scrollbackMaxBytes = 1048576
+stage 2: after-2-cmds debug = {"rows":3,"bytes":913}
+PASS: scrollback table populated (rows=3, bytes=913)
+PASS: scrollbackBytes within cap (913 ≤ 1048576)
+PASS: isolateGen stable at 1 across close
+stage 4: post-reconnect banner=1
+stage 4: post-reconnect buf head 200 = "\u001b[1;36m╔════════════════════════════════════════════════╗\r\n║  Nimbus v2.0.0 — Cloud Dev Environment          ║\r\n║  node · npm · esbuild · vite · wrangler dev   ║\r\n║  10 GB VFS · Dynamic Workers · HMR "
+PASS: banner appears exactly once on rehydrate (replayed, not reprinted)
+PASS: scrollback replay contains SENTINEL_ALPHA_42 (cmd 1 output)
+PASS: scrollback replay contains SENTINEL_BETA_xyz (cmd 2 output)
+stage 5: flood chunk 0 done in 52ms
+stage 5: flood chunk 1 done in 53ms
+stage 5: flood chunk 2 done in 54ms
+stage 5: flood chunk 3 done in 53ms
+stage 5: flood chunk 4 done in 55ms
+stage 5: flood chunk 5 done in 56ms
+stage 5: post-flood debug = {"rows":5,"bytes":786720,"max":1048576}
+PASS: scrollback bytes capped (786720 ≤ 1048576)
+PASS: flood pushed scrollback to 786720 bytes (≥ 40% of cap — eviction was actually exercised)
+stage 6: post-eviction reconnect buf len=786720
+PASS: SENTINEL_ALPHA_42 evicted (oldest scrollback dropped on flood)
+PASS: SENTINEL_BETA_xyz evicted
+PASS: recent flood output preserved (newer rows survive eviction)
+==== EXIT 0 ====

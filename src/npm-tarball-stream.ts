@@ -4,7 +4,7 @@
  * Extracted from npm-tarball.ts so these helpers can be esbuild-bundled
  * WITHOUT dragging in NpmCache / NpmResolver / SqliteVFS. Consumed by
  * scripts/bundle-facet-workers.mjs which emits a string constant the
- * NimbusFacetPool uses to inject the tar parser into dynamic workers.
+ * NimbusLoaderPool uses to inject the tar parser into dynamic workers.
  *
  * Zero dependencies. Works identically on the supervisor and inside a
  * facet isolate. Never buffers the full decompressed tarball — peak

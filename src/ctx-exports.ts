@@ -7,7 +7,7 @@
  * a plain Node/Bun process.
  *
  * The fetch handler in src/index.ts calls `setCtxExports(ctx.exports)` on
- * the first request; callers like NimbusFacetPool read via `getCtxExports()`.
+ * the first request; callers like NimbusLoaderPool read via `getCtxExports()`.
  * If the pool is constructed before the first fetch (unlikely) it just gets
  * null — the caller decides how to degrade.
  */

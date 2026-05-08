@@ -1,0 +1,48 @@
+==== P5.2 multi-isolate-sweep ====
+==== TIMESTAMP: 2026-05-08T18:00:14.636Z ====
+BASE: http://127.0.0.1:8792
+N_SESSIONS: 4
+baseline supervisor heap on fresh session = 9437184 (9.00 MiB)
+---- session 1/4: loyal-oak-9696 ----
+  duration: 3134ms
+  cookieA: 7582ae36-6e09-4a93-932b-4dddc649eb4b
+  cookieB: 9259d954-a8b8-41ea-a92e-0df6ea8096e8
+  stopOk:  true
+  heap1:   9468749
+  heap2:   9468774
+  heapDelta: 25
+PASS: session loyal-oak-9696: cookieA != cookieB (SQL slot reclaimed and re-minted)
+---- session 2/4: merry-petal-1648 ----
+  duration: 3125ms
+  cookieA: f7d23ea0-93da-460b-b665-9fe4a335de69
+  cookieB: add5c5ff-ca75-4bcb-abab-40dd0af32d94
+  stopOk:  true
+  heap1:   9468749
+  heap2:   9468774
+  heapDelta: 25
+PASS: session merry-petal-1648: cookieA != cookieB (SQL slot reclaimed and re-minted)
+---- session 3/4: classic-quokka-4172 ----
+  duration: 3130ms
+  cookieA: 3e7f3dea-2c7a-4728-89ef-1ac34badc17e
+  cookieB: c391c2e3-b601-43d9-a3ab-42323b39a0e9
+  stopOk:  true
+  heap1:   9468749
+  heap2:   9468774
+  heapDelta: 25
+PASS: session classic-quokka-4172: cookieA != cookieB (SQL slot reclaimed and re-minted)
+---- session 4/4: bouncy-vole-5994 ----
+  duration: 3153ms
+  cookieA: baa485e4-10d0-4289-9f44-782685659007
+  cookieB: 7a8fb5dd-c709-4bea-9557-b5e176294073
+  stopOk:  true
+  heap1:   9468749
+  heap2:   9468774
+  heapDelta: 25
+PASS: session bouncy-vole-5994: cookieA != cookieB (SQL slot reclaimed and re-minted)
+---- summary across 4 sessions ----
+unique cookies seen: 8 (expected 8)
+PASS: all 8 cookies were unique (no facet identity collisions)
+PASS: no per-session heap leak detected (each restart cycle within 1 MiB delta)
+  cross-DO drift (first → last heap1): 0 bytes
+PASS: cross-DO heap stable (drift 0 bytes within 2 MiB tolerance)
+==== EXIT 0 ====

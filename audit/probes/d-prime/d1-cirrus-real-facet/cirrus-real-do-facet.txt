@@ -1,0 +1,16 @@
+==== D'.1 cirrus-real-do-facet probe ====
+==== TIMESTAMP: 2026-05-08T18:04:42.516Z ====
+BASE: http://127.0.0.1:8792
+SID: brave-mockingbird-3407
+stage 1: shell prompt ready
+stage 1: cirrus diag = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"3eb22080-fcfc-44a9-a5f0-274e2f1838d1","bootMs":11,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":502,"hmrClients":0}
+PASS: kind='do-facet' (cirrus-real running as DO Facet)
+PASS: cookie=3eb22080-fcf... (facet's own SQLite working)
+PASS: facet booted without error
+PASS: cold-start = 11ms ≤ 200ms regression budget
+PASS: isolateGen stable at 1 across close
+stage 3: cirrus diag post-reconnect = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"3eb22080-fcfc-44a9-a5f0-274e2f1838d1","bootMs":11,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2905,"hmrClients":0}
+PASS: post-reconnect: kind=do-facet
+PASS: cookie preserved across supervisor reconnect (facet survived independently)
+PASS: warm-fetch latency = 0ms ≤ 50ms
+==== EXIT 0 ====

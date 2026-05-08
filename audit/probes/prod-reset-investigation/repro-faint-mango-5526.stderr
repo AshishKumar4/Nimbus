@@ -1,0 +1,13 @@
+[repro] connecting wss://nimbus.ashishkmr472.workers.dev/s/faint-mango-5526/ws
+[t=0.08s] WS open
+[t=0.09s] *** BANNER #1 (Δ=1778216909965ms since prev) ***
+[t=0.10s] waiting for first prompt...
+[t=0.36s] first prompt seen, pwd at: "y:\u001b[0m\r\n  \u001b[36mcd app && npm install && npm run dev\u001b[0m\r\n\r\n\u001b[1m\u001b[32muser@nimbus\u001b[0m:\u001b[1m\u001b[34m~\u001b[0m$ "
+[t=0.86s] === stage 1: cd app ===
+[t=1.66s] === stage 2: npm i ===
+[t=7.16s] npm i appears complete
+[t=8.66s] === stage 3: npm run dev ===
+[t=10.17s] vite ready signal seen
+[t=10.17s] === stage 4: idle hold 60s with active dev server ===
+[t=70.17s] done. total banners=1
+[t=70.17s] WS closed 1000 

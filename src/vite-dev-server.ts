@@ -71,7 +71,7 @@ export interface ViteDevServerOptions {
   /**
    * Worker bindings env. Required for the on-demand-bundle facet path
    * (LOADER + ctx-exports). When provided, /preview/@modules/<spec>
-   * misses bundle in a NimbusFacetPool isolate instead of the
+   * misses bundle in a NimbusLoaderPool isolate instead of the
    * supervisor's EsbuildService — same architecture as the
    * pre-bundle path. Without this option, the supervisor falls back
    * to in-process esbuild (legacy behaviour).
@@ -1289,7 +1289,7 @@ export class ViteDevServer {
   }
 
   /**
-   * Lazily construct the NimbusFacetPool used for on-demand bundling
+   * Lazily construct the NimbusLoaderPool used for on-demand bundling
    * of /preview/@modules/<spec> requests that miss both the in-memory
    * and pkg_esm_bundles caches. Mirrors the pre-bundle pool's
    * configuration: 1 worker, internal pLimit not needed (one bundle
@@ -1302,11 +1302,11 @@ export class ViteDevServer {
     if (this.onDemandPoolPromise) return this.onDemandPoolPromise;
     if (!this.env || !this.ctx) return null;
     this.onDemandPoolPromise = (async () => {
-      const { NimbusFacetPool } = await import('./parallel/facet-pool.js');
+      const { NimbusLoaderPool } = await import('./parallel/loader-pool.js');
       const { PRE_BUNDLE_PREAMBLE } = await import('./parallel/pre-bundle-preamble.js');
-      const { getEsbuildWasmBytes } = await import('./esbuild-wasm-bytes.js');
-      const wasmBytes = await getEsbuildWasmBytes();
-      const pool = new NimbusFacetPool(this.env, this.ctx!, {
+      const { fetchEsbuildWasmBytes } = await import('./esbuild-wasm-bytes.js');
+      const wasmBytes = await fetchEsbuildWasmBytes(this.env as any);
+      const pool = new NimbusLoaderPool(this.env, this.ctx!, {
         concurrency: 1,
         timeoutMs: 60_000,
         retries: 0,
@@ -1713,7 +1713,7 @@ export class ViteDevServer {
     // supervisor isolate. For large modules (lucide-react, ~18 MiB
     // unpacked) that OOM'd the supervisor and surfaced as CF error
     // 1101 on /preview/@modules/lucide-react, taking down the entire
-    // preview. We now dispatch the bundle work to a NimbusFacetPool
+    // preview. We now dispatch the bundle work to a NimbusLoaderPool
     // isolate via its own 128 MiB heap — same pattern as install-time
     // pre-bundling. Supervisor never bundles esbuild for any path.
     //

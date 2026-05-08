@@ -1,0 +1,16 @@
+==== D'.2 loader-pool-rename probe ====
+==== TIMESTAMP: 2026-05-08T18:04:45.571Z ====
+ROOT: /workspace/worktrees/prod-reset-investigation
+stage 1: NimbusFacetPool hits in src/ = 0
+PASS: grep -rn "NimbusFacetPool" src/ → 0 hits (rename complete)
+stage 1: NimbusFacetPoolOptions hits in src/ = 0
+PASS: grep -rn "NimbusFacetPoolOptions" src/ → 0 hits
+stage 2: NimbusLoaderPool hits in src/ = 56
+PASS: new class name 'NimbusLoaderPool' present (56 hits)
+PASS: src/parallel/index.ts exports NimbusLoaderPool
+PASS: src/parallel/index.ts does NOT export NimbusFacetPool (clean break)
+stage 3: tsc errors = 2
+  src/esbuild-service.ts(153,28): error TS2307: Cannot find module 'esbuild-wasm/esbuild.wasm' or its corresponding type declarations.
+  src/nimbus-session-init.ts(150,39): error TS2345: Argument of type 'SqliteVFSProvider' is not assignable to parameter of type 'VirtualProvider | MountProvider'.
+PASS: tsc errors = 2 baseline only (esbuild-wasm.wasm + SqliteVFSProvider)
+==== EXIT 0 ====

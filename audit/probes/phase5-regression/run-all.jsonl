@@ -1,0 +1,28 @@
+{"t":1778263468235,"kind":"probe","name":"C'.1 heap-estimator","status":"PASS","dur":78,"exitCode":0,"passLines":20,"failLines":0}
+{"t":1778263468842,"kind":"probe","name":"C'.2 recovery-events","status":"PASS","dur":607,"exitCode":0,"passLines":13,"failLines":0}
+{"t":1778263469892,"kind":"probe","name":"C'.3 error-recovery","status":"PASS","dur":1050,"exitCode":0,"passLines":8,"failLines":0}
+{"t":1778263469960,"kind":"probe","name":"A'.1 resolver-fallback","status":"PASS","dur":67,"exitCode":0,"passLines":17,"failLines":0}
+{"t":1778263470031,"kind":"probe","name":"A'.2 streaming-buffers","status":"PASS","dur":70,"exitCode":0,"passLines":3,"failLines":0}
+{"t":1778263470090,"kind":"probe","name":"A'.3 barrel-synth","status":"PASS","dur":59,"exitCode":0,"passLines":5,"failLines":0}
+{"t":1778263470152,"kind":"probe","name":"A'.5 esbuild-bytes","status":"PASS","dur":61,"exitCode":0,"passLines":3,"failLines":0}
+{"t":1778263472064,"kind":"probe","name":"B'.1 shell-state","status":"PASS","dur":1911,"exitCode":0,"passLines":12,"failLines":0}
+{"t":1778263473232,"kind":"probe","name":"B'.2 kernel-mounts","status":"PASS","dur":1168,"exitCode":0,"passLines":4,"failLines":0}
+{"t":1778263479225,"kind":"probe","name":"B'.3 scrollback","status":"PASS","dur":5993,"exitCode":0,"passLines":13,"failLines":0}
+{"t":1778263480906,"kind":"probe","name":"B'.4 phase-machine","status":"PASS","dur":1680,"exitCode":0,"passLines":12,"failLines":0}
+{"t":1778263482475,"kind":"probe","name":"B'.5 join-existing","status":"PASS","dur":1567,"exitCode":0,"passLines":13,"failLines":0}
+{"t":1778263485541,"kind":"probe","name":"D'.1 cirrus-real-do-facet","status":"PASS","dur":3066,"exitCode":0,"passLines":8,"failLines":0}
+{"t":1778263488298,"kind":"probe","name":"D'.2 loader-pool-rename","status":"PASS","dur":2756,"exitCode":0,"passLines":6,"failLines":0}
+{"t":1778263494933,"kind":"probe","name":"interactive-liveness/walltime-distribution","status":"PASS","dur":6634,"exitCode":0,"passLines":4,"failLines":0}
+{"t":1778263494963,"kind":"probe","name":"W5 ring-persistence","status":"PASS","dur":29,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263494998,"kind":"probe","name":"W5 lru-shrink-restore","status":"PASS","dur":35,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495031,"kind":"probe","name":"W5 sqlite-nomem-retry","status":"PASS","dur":32,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495056,"kind":"probe","name":"W5 diag-shape","status":"PASS","dur":24,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495091,"kind":"probe","name":"W7 frame-roundtrip","status":"PASS","dur":35,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495257,"kind":"probe","name":"W7 large-payload","status":"PASS","dur":165,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495793,"kind":"probe","name":"W7 backpressure","status":"PASS","dur":536,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495823,"kind":"probe","name":"W7 cancel-mid-stream","status":"PASS","dur":30,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495853,"kind":"probe","name":"W7 error-propagation","status":"PASS","dur":28,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495888,"kind":"probe","name":"W7 empty-batches","status":"PASS","dur":35,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495924,"kind":"probe","name":"W7 bytes-source-type","status":"PASS","dur":35,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263495963,"kind":"probe","name":"W7 writestream-on-vfs","status":"PASS","dur":39,"exitCode":0,"passLines":0,"failLines":0}
+{"t":1778263499047,"kind":"probe","name":"refactor-gate (tsc baseline + RPC + cmds + exports)","status":"PASS","dur":3083,"exitCode":0,"passLines":0,"failLines":0}

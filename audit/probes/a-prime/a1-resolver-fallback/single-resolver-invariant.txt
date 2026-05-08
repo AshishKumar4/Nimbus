@@ -1,0 +1,23 @@
+==== A'.1 single-resolver-invariant probe ====
+==== TIMESTAMP: 2026-05-08T18:04:29.924Z ====
+PASS: src/npm-installer.ts does not contain "shouldUseFacetResolver"
+PASS: src/npm-installer.ts does not contain "shouldUseFacetPool"
+PASS: src/npm-installer.ts does not contain "shouldUseBatchFacet"
+PASS: src/npm-installer.ts does not contain "NIMBUS_FACET_RESOLVER"
+PASS: src/npm-installer.ts does not contain "NIMBUS_FACET_NPM_INSTALL"
+PASS: src/npm-installer.ts does not contain "NIMBUS_FACET_NPM_INSTALL_BATCH"
+PASS: src/npm-installer.ts does not contain "'in-supervisor'"
+PASS: src/npm-installer.ts does not contain "'pool.map'"
+PASS: src/npm-installer.ts does not contain "'legacy-waves'"
+PASS: src/npm-installer.ts does not contain "fetchViaFacetPool"
+PASS: src/npm-installer.ts does not contain "fetchWaves("
+PASS: src/npm-installer.ts does not contain "buildBatchPayload("
+PASS: src/diag-counters.ts does not contain "'in-supervisor'"
+PASS: src/diag-counters.ts does not contain "'pool.map'"
+PASS: src/diag-counters.ts does not contain "'legacy-waves'"
+SID: good-marble-1613
+counters.resolverPath: "in-facet"
+counters.installFacet.path: "batch-facet"
+PASS: resolverPath "in-facet" ∈ {in-facet, unset}
+PASS: installFacet.path "batch-facet" ∈ {batch-facet, unset}
+==== EXIT 0 ====

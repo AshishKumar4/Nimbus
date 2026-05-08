@@ -59,6 +59,33 @@ export const WRANGLER_DEBOUNCE_MS = 250;
 // ── Compatibility ───────────────────────────────────────────────────────
 export const CF_COMPAT_DATE = '2026-04-01';
 
+// ── Supervisor heap budget [C'.1] ───────────────────────────────────────
+//
+// The supervisor isolate's 128 MiB workerd cap is a HARD platform ceiling
+// (per docs/research/cf-primitives-dossier.md §6 invariant I1 — 128 MiB
+// per V8 isolate, may be shared across same-class peer DOs co-tenanting in
+// one process). Nimbus targets HALF of that as a self-imposed soft ceiling
+// so the supervisor always has runway when workerd LRU-evicts neighbours
+// or AIR (Asynchronous Isolate Recreation) folds growing isolates.
+//
+// 64 MiB is a budget, not a measurement. Every supervisor allocation
+// site is accounted for in src/observability/heap-estimate.ts which sums
+// known contributors (VFS LRU, in-flight writes, resolver, pre-bundle
+// slice, esbuild residency, supervisor baseline). When the estimator
+// surpasses this ceiling, plan §3 Track A' has a target to chase down.
+//
+// Components that contribute (current architecture, before A'):
+//   supervisorBaselineBytes  ~30 MiB  ← static module bundle + runtime
+//   esbuildResidentBytes     ~16 MiB  ← addressed by A'.5 (move to R2)
+//   vfsLruBytes (max)        ~32 MiB  ← LRU_MAX_ENTRIES × CHUNK_SIZE
+//   vfsInFlightBytes (peak)  ~few MiB ← bounded by SqliteVFS batch size
+//   resolverInFlightBytes    ~few MiB ← addressed by A'.1 (facet-only)
+//   preBundleSliceBytes (max) 28 MiB  ← addressed by A'.2 (streaming)
+//
+// Pre-A' worst-case: 30 + 16 + 32 + 28 ≈ 106 MiB → over budget. Phase 2
+// A' brings it under 64 MiB by removing supervisor-resident components.
+export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
+
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';
 export const DEFAULT_HOME = '/home/user';

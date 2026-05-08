@@ -20,7 +20,7 @@
  *      Caller opts in to leniency.
  *
  * This wrapper does NOT re-export the upstream surface. Users import
- * NimbusFacetPool via src/parallel/index.ts; the vendored directory is
+ * NimbusLoaderPool via src/parallel/index.ts; the vendored directory is
  * an implementation detail.
  */
 
@@ -38,8 +38,8 @@ import {
 } from './vendor/errors.js';
 import type { WorkerLoader } from './vendor/types.js';
 
-/** Options handed to NimbusFacetPool's constructor. */
-export interface NimbusFacetPoolOptions {
+/** Options handed to NimbusLoaderPool's constructor. */
+export interface NimbusLoaderPoolOptions {
   /** Maximum concurrent in-flight facets. Default 4. */
   concurrency?: number;
   /** Per-task timeout in ms. Default 60_000. */
@@ -113,7 +113,7 @@ export interface NimbusFacetPoolOptions {
 }
 
 /** Per-call override (merged with pool defaults). */
-export interface NimbusFacetCallOptions {
+export interface NimbusLoaderCallOptions {
   timeoutMs?: number;
   retries?: number;
   /**
@@ -124,7 +124,7 @@ export interface NimbusFacetCallOptions {
 }
 
 /** Per-map override. Adds onError strategy for partial failures. */
-export interface NimbusFacetMapOptions extends NimbusFacetCallOptions {
+export interface NimbusLoaderMapOptions extends NimbusLoaderCallOptions {
   /** Concurrency override for this call. Defaults to pool's concurrency. */
   concurrency?: number;
   /**
@@ -166,7 +166,7 @@ const ESBUILD_RUNTIME_SHIM = [
  *
  * Typical use:
  *
- *   const pool = new NimbusFacetPool(env, ctx, {
+ *   const pool = new NimbusLoaderPool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -175,7 +175,7 @@ const ESBUILD_RUNTIME_SHIM = [
  *     toFetch,
  *   );
  */
-export class NimbusFacetPool {
+export class NimbusLoaderPool {
   private readonly loader: WorkerLoader;
   private readonly concurrency: number;
   private readonly defaultTimeoutMs: number;
@@ -187,7 +187,7 @@ export class NimbusFacetPool {
   private readonly preambleHash: string;
   /**
    * WASM modules to ship in the LOADER `modules` map. See
-   * NimbusFacetPoolOptions.wasmModules for the rationale. Stored in
+   * NimbusLoaderPoolOptions.wasmModules for the rationale. Stored in
    * insertion order so the per-import preamble we generate matches
    * across pool dispatches (cache-key stability).
    */
@@ -220,12 +220,12 @@ export class NimbusFacetPool {
   constructor(
     env: any,
     ctx: DurableObjectState,
-    opts?: NimbusFacetPoolOptions,
+    opts?: NimbusLoaderPoolOptions,
   ) {
     const loader = env?.LOADER as WorkerLoader | undefined;
     if (!loader || typeof loader.get !== 'function') {
       throw new BindingError(
-        'NimbusFacetPool: env.LOADER binding missing or invalid. ' +
+        'NimbusLoaderPool: env.LOADER binding missing or invalid. ' +
           'Add a [[worker_loaders]] entry to wrangler.jsonc.',
       );
     }
@@ -251,14 +251,14 @@ export class NimbusFacetPool {
       for (const [name, bytes] of Object.entries(opts.wasmModules)) {
         if (!(bytes instanceof ArrayBuffer)) {
           throw new BindingError(
-            `NimbusFacetPool: wasmModules['${name}'] must be ArrayBuffer ` +
+            `NimbusLoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
             `(got ${(bytes as any)?.constructor?.name || typeof bytes}).`,
           );
         }
         const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
         if (seenIds.has(id)) {
           throw new BindingError(
-            `NimbusFacetPool: wasmModules key '${name}' collides with another after ` +
+            `NimbusLoaderPool: wasmModules key '${name}' collides with another after ` +
             `identifier-sanitisation (id='${id}'). Pick distinct module names.`,
           );
         }
@@ -310,7 +310,7 @@ export class NimbusFacetPool {
     return this.concurrency;
   }
 
-  #resolve(opts?: NimbusFacetCallOptions): ResolvedResilience {
+  #resolve(opts?: NimbusLoaderCallOptions): ResolvedResilience {
     return {
       timeoutMs: Math.max(0, opts?.timeoutMs ?? this.defaultTimeoutMs),
       retries: Math.max(0, opts?.retries ?? this.defaultRetries),
@@ -581,7 +581,7 @@ export class NimbusFacetPool {
   async submit<T, R>(
     fn: (arg: T, env: any) => R | Promise<R>,
     arg: T,
-    opts?: NimbusFacetCallOptions,
+    opts?: NimbusLoaderCallOptions,
   ): Promise<Awaited<R>> {
     const { fnSource, fnHash } = this.#prepare(fn);
     const resilience = this.#resolve(opts);
@@ -604,7 +604,7 @@ export class NimbusFacetPool {
   async map<T, R>(
     fn: (item: T, env: any) => R | Promise<R>,
     items: T[],
-    opts?: NimbusFacetMapOptions,
+    opts?: NimbusLoaderMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     if (items.length === 0) return [];
 

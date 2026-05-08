@@ -66,7 +66,7 @@ export {
  * Set once on the first fetch() call.
  *
  * Storage lives in `./ctx-exports.ts` (a leaf module) so helpers like the
- * NimbusFacetPool can read it without importing the full DO class graph.
+ * NimbusLoaderPool can read it without importing the full DO class graph.
  */
 export function getCtxExports(): any {
   return _getCtxExports();

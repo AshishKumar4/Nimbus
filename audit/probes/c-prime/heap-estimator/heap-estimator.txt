@@ -1,0 +1,40 @@
+==== C'.1 heap-estimator probe ====
+==== TIMESTAMP: 2026-05-08T18:04:28.187Z ====
+BASE: http://127.0.0.1:8792
+SID: faint-lilac-8809
+diag.heap = {
+  "estimatedBytes": 9437184,
+  "ceilingBytes": 67108864,
+  "percentOfCeiling": 14.1,
+  "breakdown": {
+    "supervisorBaselineBytes": 9437184,
+    "vfsLruBytes": 0,
+    "vfsInFlightBytes": 0,
+    "resolverInFlightBytes": 0,
+    "preBundleSliceBytes": 0,
+    "esbuildResidentBytes": 0,
+    "streamingBuffersBytes": 0
+  }
+}
+diag.evictionLabels = ["lru","condemned","inactive","dynamic_worker","dynamic_worker_banned"]
+PASS: diag response contains .heap object
+PASS: d.heap.estimatedBytes is present
+PASS: d.heap.breakdown is present
+PASS: d.heap.ceilingBytes is present
+PASS: d.heap.percentOfCeiling is present
+PASS: d.heap.ceilingBytes = 64 MiB
+PASS: d.heap.breakdown.supervisorBaselineBytes = 9437184
+PASS: d.heap.breakdown.vfsLruBytes = 0
+PASS: d.heap.breakdown.vfsInFlightBytes = 0
+PASS: d.heap.breakdown.resolverInFlightBytes = 0
+PASS: d.heap.breakdown.preBundleSliceBytes = 0
+PASS: d.heap.breakdown.esbuildResidentBytes = 0
+PASS: d.heap.breakdown.streamingBuffersBytes = 0
+PASS: d.heap.estimatedBytes equals sum of breakdown components (9437184)
+PASS: idle session at 14.1% of ceiling
+PASS: evictionLabels contains "lru"
+PASS: evictionLabels contains "condemned"
+PASS: evictionLabels contains "inactive"
+PASS: evictionLabels contains "dynamic_worker"
+PASS: evictionLabels contains "dynamic_worker_banned"
+==== EXIT 0 ====

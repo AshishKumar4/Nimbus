@@ -1,0 +1,12 @@
+==== A'.5 esbuild-bytes probe ====
+==== TIMESTAMP: 2026-05-08T18:04:30.117Z ====
+BASE: http://127.0.0.1:8792
+SID: solemn-teal-6442
+heap.estimatedBytes:            9437184  (9.0 MiB)
+heap.percentOfCeiling:          14.1%
+breakdown.esbuildResidentBytes: 0  (0.0 MiB)
+breakdown.supervisorBaseline:   9437184  (9.0 MiB)
+PASS: esbuildResidentBytes = 0.0 MiB ≤ 1 MiB ceiling
+PASS: idle heap percentOfCeiling = 14.1% ≤ 50%
+PASS: breakdown components sum to estimatedBytes (9437184)
+==== EXIT 0 ====

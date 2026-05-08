@@ -1,0 +1,21 @@
+==== interactive-liveness / error-recovery ====
+==== TIMESTAMP: 2026-05-08T18:04:28.883Z ====
+BASE: http://127.0.0.1:8792
+SID: obsidian-heron-4941
+stage 1: bannerCount=1 cwd="~"
+stage 2: after 'cd app' cwd="~/app"
+stage 3: isolateGen baseline = 1
+stage 3: heap.estimatedBytes = 9439157
+stage 3: heap.percentOfCeiling = 14.1
+stage 4: client WS closed (synthetic webSocketError equivalent)
+stage 5: bannerCount=1 cwd="~/app" isolateGen=1
+PASS: isolateGen stable at 1 across reconnect (same-isolate recovery)
+PASS: banner appears exactly once on rehydrate (replayed via scrollback, not reprinted by Phase O)
+PASS: cwd preserved as ~/app across reconnect (Track B' invariant)
+stage 5: recoveryEvents.length = 4
+PASS: drained transition present (trigger=ws-close)
+PASS: drained transition reports dataLoss=false
+PASS: hydrated transition present (trigger=warm-rejoin, snapshotKeysRehydrated=0)
+PASS: hydrated transition reports dataLoss=false
+PASS: event ordering: hydrated newer than drained (newest-first)
+==== EXIT 0 ====

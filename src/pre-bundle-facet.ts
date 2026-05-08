@@ -1,5 +1,5 @@
 /**
- * pre-bundle-facet.ts — NimbusFacetPool entry for esbuild pre-bundling.
+ * pre-bundle-facet.ts — NimbusLoaderPool entry for esbuild pre-bundling.
  *
  * Why this exists
  * ───────────────
@@ -14,7 +14,7 @@
  * the previous isolate.
  *
  * The fix is to dispatch each per-specifier `esbuild.build` to a
- * NimbusFacetPool isolate. Each facet has its own 128 MB budget and
+ * NimbusLoaderPool isolate. Each facet has its own 128 MB budget and
  * stable-slot reuse keeps the warm-up cost amortized across the 8
  * concurrent specs of a typical install. Same pattern as
  * src/npm-install-facet.ts (tarball extraction).
@@ -284,16 +284,20 @@ export function externalsForSpecifier(specifier: string): string[] {
 
 // ── Facet function ──────────────────────────────────────────────────────
 //
-// `prebundleOne` runs inside a NimbusFacetPool isolate. cloudflare-parallel
+// `prebundleOne` runs inside a NimbusLoaderPool isolate. cloudflare-parallel
 // serialises it via fn.toString(); the helpers it references at module
 // scope (ESBUILD_WASM_JS_FN_BODY, resolvePackageEntry) are NOT in the
 // facet's lexical scope at runtime. Instead they're injected by the
 // pre-bundle preamble; see src/parallel/pre-bundle-preamble.ts.
 //
 // The wasm BYTES are NOT in the preamble (intentionally — that was a
-// 16 MiB allocation per dispatch which OOM'd the DO). They're fetched
-// at first-call boot via env.SUPERVISOR.getEsbuildWasm() and the
-// compiled module is cached on globalThis for warm reuse.
+// 16 MiB allocation per dispatch which OOM'd the DO). They live in
+// env.ASSETS, the supervisor fetches once at pool construction
+// (src/esbuild-wasm-bytes.ts), and the bytes flow into the facet via
+// the LOADER `modules` map. workerd compiles at facet module-load
+// (startup phase, eval permitted) and exposes the resulting
+// WebAssembly.Module via the standard ESM import the pool's
+// generated worker.js performs.
 
 /**
  * Bundle one specifier in a facet isolate. Returns the ESM bundle output
@@ -355,7 +359,7 @@ export const prebundleOne = async function prebundleOne(
   //    runs that at module-load time (where eval is permitted) and
   //    stashes the result on the module-scope const __NIMBUS_ESBUILD_NS.
   //
-  //    The WASM module is shipped into the facet via NimbusFacetPool's
+  //    The WASM module is shipped into the facet via NimbusLoaderPool's
   //    `wasmModules` option, registered in the LOADER's modules map as
   //    { wasm: ArrayBuffer }. Workerd compiles it during the worker's
   //    module-load phase (eval permitted there), and the pool's
@@ -390,7 +394,7 @@ export const prebundleOne = async function prebundleOne(
   if (!initPromise) {
     initPromise = (async () => {
       // Read the WebAssembly.Module the pool registered. The key matches
-      // the name passed to NimbusFacetPool's `wasmModules` option (see
+      // the name passed to NimbusLoaderPool's `wasmModules` option (see
       // src/npm-installer.ts:prebundleUsedModules dispatch site).
       const wasmRegistry = (globalThis as any).__NIMBUS_WASM;
       const wasmModule = wasmRegistry && wasmRegistry['esbuild.wasm'];

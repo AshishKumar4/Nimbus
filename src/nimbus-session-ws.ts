@@ -30,8 +30,9 @@
  */
 
 import { dec } from './_shared/bytes.js';
-import { recordFailure, getLastRpcFrame, getLastFacetId } from './oom-discriminator.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from './oom-discriminator.js';
 import { flushOnClose as _w9DoFlushOnClose } from './nimbus-session-hib.js';
+import { persistShellState } from './session/state-store.js';
 import type { ProcessLogStore } from './process-logs.js';
 import type { SqliteVFS } from './sqlite-vfs.js';
 import type { CirrusReal } from './cirrus-real.js';
@@ -61,8 +62,56 @@ export interface WsHost {
   _diagPeakHeapUsed: number;
   _w5LastPersistAt: number;
   _w5LastPersistRingSize: number;
+  /** [B'.4] live phase indicator — see nimbus-session-internal.d.ts */
+  _b4Phase: import('./oom-discriminator.js').SessionState | null;
   _w5PersistRing(): Promise<void> | null;
   _w9FlushOnClose(): void;
+}
+
+/**
+ * Snapshot the live Shell state and write it through to DO SQLite
+ * [Phase 3 B'.1].
+ *
+ * Called from wsMessage (post-process, every inbound keystroke) and
+ * once more in the wsClose / wsError shell-kind branch as a final
+ * safety net before the in-memory Shell is torn down.
+ *
+ * Read-only and synchronous (DO storage SQL is sync inside a request
+ * context). Cheap: one read of `shell.getCwd()` + `shell.getEnv()`,
+ * a JSON.stringify of env, and an INSERT-OR-REPLACE into the small
+ * nimbus_session_kv table. Skips the SQL write entirely when nothing
+ * has changed since the previous snapshot — the comparison is
+ * pointer-equality on cwd plus env reference, since Shell.getEnv()
+ * returns a live Record and `cd` mutates `this.cwd` in place.
+ *
+ * Failure model: persistShellState throws ONLY on env-too-large
+ * (the SESSION_ENV_MAX_BYTES gate). We surface that via console.warn
+ * — it indicates a misbehaving session that's exporting unbounded
+ * data, not an architectural bug. Suppressing the throw keeps the
+ * WS message handler running; the next snapshot retries.
+ */
+function snapshotShellState(self: WsHost): void {
+  const shell = self.shell;
+  if (!shell) return;
+  const ctx = (self as any).ctx;
+  if (!ctx?.storage?.sql) return;
+  let cwd: string | null = null;
+  let env: Record<string, string> | null = null;
+  try { cwd = shell.getCwd() || null; } catch { /* best-effort */ }
+  try {
+    const rawEnv = shell.getEnv();
+    if (rawEnv && typeof rawEnv === 'object') {
+      // Defensive copy. The Shell mutates this.env in place on
+      // export; we want the SQL write to reflect a stable view.
+      env = { ...rawEnv } as Record<string, string>;
+    }
+  } catch { /* best-effort */ }
+  if (!cwd && !env) return;
+  try {
+    persistShellState(ctx, { cwd, env });
+  } catch (e: any) {
+    console.warn('[nimbus/B\'.1] persistShellState failed:', e?.message || e);
+  }
 }
 
 /**
@@ -100,6 +149,14 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     const data = typeof message === 'string' ? message : dec.decode(message);
     const msg = JSON.parse(data);
     if (self.terminal) self.terminal.handleMessage(msg);
+    // ── B'.1 snapshot ───────────────────────────────────────────────
+    // Persist Shell state to DO SQLite after the terminal has handled
+    // the user's keystroke. The Shell builtin `cd` mutates this.cwd
+    // synchronously inside executeLine, so by the time we reach this
+    // line a `cd app\r` has already taken effect and we capture the
+    // new cwd. Cheap when nothing has changed; SESSION_ENV_MAX_BYTES
+    // is the only failure mode and is logged, not thrown.
+    snapshotShellState(self);
   } catch (e: any) {
     // Never let a message parsing error crash the DO
     console.error('[nimbus] webSocketMessage error:', e?.message);
@@ -140,6 +197,34 @@ export async function wsClose(
   // wrangler dev) + long-running facets must still survive the
   // terminal reconnect (see 607e472 — do NOT kill running processes
   // here). Only reap per-tab state.
+
+  // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
+  // The Track B' state-machine transition. Persist final shell
+  // state + record a recovery_event BEFORE we null the in-memory
+  // Shell instance. The next /ws upgrade reads the SQL row and
+  // rebuilds the Shell with cwd + env intact — that's what makes
+  // recovery transparent.
+  //
+  // Order matters: snapshot first (so SQL has the latest cwd),
+  // then record the lifecycle event (so the C'.2 ring shows the
+  // transition AFTER the persist completed).
+  snapshotShellState(self);
+  try {
+    recordRecoveryEvent({
+      at: Date.now(),
+      fromState: 'active',
+      toState: 'drained',
+      trigger: 'ws-close',
+      isolateGen: self._w9IsolateGen,
+      dataLoss: false,
+      snapshotKeysRehydrated: 0,
+    });
+  } catch { /* observability is non-critical */ }
+  // [B'.4] Update live phase indicator. The recordRecoveryEvent above
+  // is the legacy ring entry (active→drained); the field assignment
+  // surfaces the live phase via /api/_diag/session.phase.
+  self._b4Phase = 'drained';
+
   if (self.sqliteFs) {
     // Audit C1: flushAll() now throws when any chunk failed both
     // its first attempt and the one-shot retry. Log loudly and
@@ -162,9 +247,20 @@ export async function wsClose(
   // typical buffer sizes); blocking is safer than racing waitUntil
   // because flush() is what makes the logs survive.
   self._w9FlushOnClose();
-  self.shell = null;
-  self.terminal = null;
-  self.kernel = null;
+  // [B'.5] Do NOT null self.shell / self.terminal / self.kernel. The
+  // DO is still alive (we're running this code right now); only the
+  // WS connection died. The Shell instance still holds the live
+  // cwd/env/lineBuffer state — keeping it in-memory means the next
+  // /ws upgrade can JOIN it (skip Phase B) instead of rebuilding from
+  // SQL. The terminal's underlying ws ref is stale, but a write
+  // attempt will throw on send() and be swallowed; the next /ws
+  // upgrade calls terminal.attach(newWs) to swap in the new socket.
+  //
+  // Pre-B'.5 we nulled these three fields to avoid two-tab cross-
+  // wiring (the 409 in nimbus-session-routes.ts:97 protected against
+  // overwriting an active shell). With phase=drained surfaced on the
+  // host, the /ws handler can disambiguate "warm session waiting for
+  // rejoin" (warmJoin path) from "active session busy" (still 409).
   // Reset the one-shot "wrangler alias" banner so a reconnecting user
   // sees it again — terminal-lifetime state, not session-lifetime.
   self.wranglerAliasBannerShown = false;
@@ -186,6 +282,28 @@ export async function wsError(self: WsHost, ws: WebSocket, _error?: any): Promis
     } catch { /* best-effort */ }
     return;
   }
+
+  // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
+  // Same architectural step as wsClose: persist shell state + record
+  // a drained event before nulling. wsError is a different physical
+  // trigger (workerd cancelled the WS handler — typically the 5-s
+  // setHibernatableWebSocketEventTimeout cap) but the recovery
+  // shape is identical. The trigger label distinguishes them in
+  // the recovery_event ring.
+  snapshotShellState(self);
+  try {
+    recordRecoveryEvent({
+      at: Date.now(),
+      fromState: 'active',
+      toState: 'drained',
+      trigger: 'ws-error',
+      isolateGen: self._w9IsolateGen,
+      dataLoss: false,
+      snapshotKeysRehydrated: 0,
+    });
+  } catch { /* observability is non-critical */ }
+  // [B'.4] Live phase indicator — same as wsClose path.
+  self._b4Phase = 'drained';
 
   if (self.sqliteFs) {
     try {
@@ -218,9 +336,9 @@ export async function wsError(self: WsHost, ws: WebSocket, _error?: any): Promis
   // W9: same flush rationale as webSocketClose. An error on the shell
   // socket commonly precedes hibernation by milliseconds.
   self._w9FlushOnClose();
-  self.shell = null;
-  self.terminal = null;
-  self.kernel = null;
+  // [B'.5] Do NOT null shell/terminal/kernel — same rationale as
+  // wsClose. The Shell stays alive in-memory for the next /ws to
+  // join via the warmJoin path.
 }
 
 /**

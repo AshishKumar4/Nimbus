@@ -1,0 +1,9 @@
+==== A'.3 barrel-synth-bound probe ====
+==== TIMESTAMP: 2026-05-08T18:04:30.058Z ====
+PASS: buildScopedSliceForSynthetic transitiveCap = 800 (≤ 1000)
+PASS: synthesis call site is gated on synthetic+syntheticReferencedFiles
+PASS: regular slice path uses 28 MiB SLICE_CAP_BYTES
+SID: coastal-crystal-2420
+PASS: idle preBundleSliceBytes = 0 (synthesis only happens during install)
+PASS: preBundleFacet counters exist (attempted=32, completed=32)
+==== EXIT 0 ====

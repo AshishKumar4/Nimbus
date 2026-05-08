@@ -1,0 +1,18 @@
+==== C'.2 recovery-events probe ====
+==== TIMESTAMP: 2026-05-08T18:04:28.268Z ====
+BASE: http://127.0.0.1:8792
+SID: loyal-beetle-9826
+PASS: fresh session has empty recovery-events ring
+PASS: ring contains 1 event after one record()
+PASS: fromState = cold
+PASS: toState = hydrated
+PASS: trigger = first-fetch
+PASS: dataLoss is boolean false
+PASS: snapshotKeysRehydrated = 7
+PASS: at is a positive ms timestamp
+PASS: notes preserved
+PASS: ring contains 3 events
+PASS: events are ordered newest-first
+PASS: ring bounded at 50 even after 60 records (got 50)
+PASS: LRU-style: newest 50 retained, oldest 10 dropped
+==== EXIT 0 ====

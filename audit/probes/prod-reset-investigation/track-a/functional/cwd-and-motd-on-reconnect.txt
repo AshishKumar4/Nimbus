@@ -1,0 +1,12 @@
+==== FUNCTIONAL PROBE: cwd-and-motd-on-reconnect ====
+==== TIMESTAMP: 2026-05-08T05:36:13.575Z ====
+SID: ancient-wombat-8932
+first connect: bannerCount=1 cwd="~"
+after cd app: cwd="~/app"
+isolateGen before disconnect: 1
+s1 closed
+isolateGen after disconnect: 1
+second connect: bannerCount=1 cwd="~"
+FAIL: MOTD reprinted on same-isolate re-init (bannerCount=1; expected 0)
+FAIL: cwd reset to "~" (expected ~/app)
+==== EXIT 1 ====

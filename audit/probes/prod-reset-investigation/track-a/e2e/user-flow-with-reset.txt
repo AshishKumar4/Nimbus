@@ -1,0 +1,12 @@
+==== E2E PROBE: user-flow-with-reset ====
+==== TIMESTAMP: 2026-05-08T05:36:20.299Z ====
+SID: zealous-oak-5297
+stage 1 connect: bannerCount=1 cwd="~"
+stage 1 after npm i: cwd="~/app"
+stage 2 isolateGen baseline: 1
+stage 3: client WS closed (synthetic reset)
+stage 3 isolateGen post-close: 1
+stage 4 reconnect: bannerCount=1 cwd="~"
+FAIL: MOTD reprinted on reconnect (banner=1; expected 0 for silent re-init)
+FAIL: cwd reset to "~" (expected ~/app)
+==== EXIT 1 ====

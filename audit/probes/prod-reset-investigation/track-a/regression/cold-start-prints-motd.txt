@@ -1,0 +1,12 @@
+==== REGRESSION PROBE: cold-start-prints-motd ====
+==== TIMESTAMP: 2026-05-08T05:36:07.866Z ====
+trial 1 SID: feisty-zebra-1278
+trial 1: bannerCount=1
+PASS: trial 1: MOTD printed on cold start
+trial 2 SID: clever-flint-5571
+trial 2: bannerCount=1
+PASS: trial 2: MOTD printed on cold start
+trial 3 SID: tangerine-mouse-3343
+trial 3: bannerCount=1
+PASS: trial 3: MOTD printed on cold start
+==== EXIT 0 ====

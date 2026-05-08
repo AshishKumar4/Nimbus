@@ -31,7 +31,11 @@ const EXPECTED_METHODS = [
   '_rpcReadFile', '_rpcReadFileBytes', '_rpcInnerDoFetch',
   '_rpcWriteFile', '_rpcStat', '_rpcReaddir', '_rpcExists', '_rpcMkdir',
   '_rpcHmrRelay', '_rpcUnlink', '_rpcWriteBatch', '_rpcWriteBatchStream',
-  '_rpcPutRegistryEntries', '_rpcGetEsbuildWasm',
+  '_rpcPutRegistryEntries',
+  // [Phase 2 A'.5] _rpcGetEsbuildWasm REMOVED — esbuild wasm bytes
+  // are now fetched in-facet via env.ASSETS instead of round-tripping
+  // through the supervisor. See src/parallel/pre-bundle-preamble.ts:86
+  // and the A'.5 retro for why this is the right shape.
   '_rpcStdout', '_rpcStderr', '_rpcReportExit',
   '_rpcPrefetch', '_rpcRegisterPort', '_rpcUnregisterPort', '_rpcTransform',
   // W8 child_process RPC
