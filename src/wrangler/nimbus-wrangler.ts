@@ -17,6 +17,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import type { VfsEvent } from '../vfs/events.js';
+import { normalizeVfsPath } from '../vfs/path.js';
 import { registerInnerDoClass, clearInnerDoClasses } from '../facets/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
@@ -340,13 +341,37 @@ export class NimbusWrangler {
 
   // ── Build & load ──────────────────────────────────────────────────────
 
+  /**
+   * Resolve the user's `main:` entry to a canonical VFS-key path.
+   *
+   * The wrangler.jsonc `main` field is user-controlled and templates
+   * commonly emit any of:
+   *   - "src/index.ts"     — clean relative
+   *   - "./src/index.ts"   — npm-style with leading dot
+   *   - "/src/index.ts"    — workspace-absolute mistake
+   *   - "src//index.ts"    — accidental double-slash
+   *
+   * Naive `this.root + '/' + main` concatenation produced a malformed
+   * VFS key for every shape except the first, so vfs.exists() returned
+   * false even when the file was present at the canonical location.
+   *
+   * normalizeVfsPath collapses '.', '..', '//' runs and strips leading
+   * slashes — exactly the canonicalization SqliteVFS expects (every
+   * inode key in the live store is no-leading-slash, no internal
+   * doubles; src/vfs/sqlite-vfs.ts:_mkdirSingle uses the same
+   * `path.split('/').filter(Boolean)` shape via `normalizePath`).
+   */
+  private resolveEntryPath(): string {
+    return normalizeVfsPath(this.root + '/' + (this.config?.main ?? ''));
+  }
+
   private async buildAndLoad(): Promise<boolean> {
     if (!this.config?.main) {
       this.onLog('\x1b[31mNo "main" entry point in wrangler config\x1b[0m\n');
       return false;
     }
 
-    const entryPoint = this.root + '/' + this.config.main;
+    const entryPoint = this.resolveEntryPath();
     if (!this.vfs.exists(entryPoint)) {
       this.onLog(`\x1b[31mEntry point not found: ${entryPoint}\x1b[0m\n`);
       return false;
@@ -935,7 +960,9 @@ export class NimbusWrangler {
       this.rebuildTimer = setTimeout(async () => {
         this.rebuildTimer = null;
         try {
-          await this.esbuild.build([this.root + '/' + (this.config?.main || 'src/index.ts')], {
+          // Same canonicalization as the initial build — see
+          // resolveEntryPath().
+          await this.esbuild.build([this.resolveEntryPath()], {
             bundle: true, format: 'esm', target: 'esnext', platform: 'neutral',
           } as any);
           this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });

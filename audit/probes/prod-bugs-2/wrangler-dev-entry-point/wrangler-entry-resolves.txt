@@ -1,0 +1,14 @@
+==== Bug 2 probe: wrangler dev entry-point resolution ====
+==== TIMESTAMP: 2026-05-08T23:41:48.097Z ====
+BASE: http://127.0.0.1:8792
+SID: elated-butler-3676
+[main="src/index.ts"] hasError=false hasBuilt=true reportedPath=null
+[main="./src/index.ts"] hasError=false hasBuilt=true reportedPath=null
+[main="/src/index.ts"] hasError=false hasBuilt=true reportedPath=null
+[main="src//index.ts"] hasError=false hasBuilt=true reportedPath=null
+---- assertions ----
+PASS: main="src/index.ts" built without "Entry point not found"
+PASS: main="./src/index.ts" built without "Entry point not found"
+PASS: main="/src/index.ts" built without "Entry point not found"
+PASS: main="src//index.ts" built without "Entry point not found"
+==== EXIT 0 ====

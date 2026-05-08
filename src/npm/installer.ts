@@ -48,7 +48,9 @@ import {
   setInstallFacetPath, recordInstallFacetCounters,
   recordPreBundleSummary,
   recordR2RaceCounters,
+  readDiagCounters,
 } from '../observability/diag-counters.js';
+import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
 import {
   resolveTreeInFacet,
   type ResolveFacetSpec,
@@ -372,18 +374,88 @@ export class NpmInstaller {
     if (this.esbuild) {
       phaseStart = Date.now();
       setInstallPhase('bundle');
-      // Fire-and-forget. Capture rejections to log but never await.
+      // ── Bug 1 (prod-bugs-2 P4) — late-progress gating ───────────────
+      //
+      // Background:
+      //   The install command MUST resolve immediately (see the long
+      //   note above re: workerd isolate-kill paths that defeat
+      //   try/catch on awaits). We keep that invariant intact.
+      //
+      // Symptom we are fixing:
+      //   prebundleUsedModules's `finally` block emits a "Pre-bundle
+      //   complete:" line via this.onProgress (installer.ts:1548).
+      //   onProgress is the closure
+      //   `(msg) => ctx.stdout.write('[npm] ' + msg + '\n')` captured
+      //   from the npm registry handler in
+      //   src/session/init.ts:1228 / :1723. After install() returns,
+      //   the npm command-handler returns to the shell, the shell
+      //   prints its prompt, and THEN the orphan promise's safeProgress
+      //   fires — visually corrupting the freshly-rendered prompt
+      //   ("user@nimbus:~/app$ [npm] Pre-bundle complete: ...").
+      //
+      // Fix:
+      //   Suppress writes to ctx.stdout once install() has returned.
+      //   Pre-bundle progress is still observable via wrangler dev
+      //   console (console.log) and via /api/_diag/memory's
+      //   recordPreBundleSummary aggregate, but it does NOT touch the
+      //   user's interactive terminal after the prompt has redrawn.
+      //
+      // Why a flag instead of swapping `this.onProgress`:
+      //   ensureNpmInstaller (nimbus-session.ts:892) caches the
+      //   installer on `this.npmInstaller` for the DO's lifetime. A
+      //   subsequent `npm install` invocation has a different ctx,
+      //   so the persistent onProgress reference is doubly wrong:
+      //   it's stale-after-this-invocation AND it would clobber the
+      //   next install's progress channel. Gating without mutating
+      //   keeps the swap simple and idempotent.
+      const installInvocationActive = { v: true };
+      // Replace this.onProgress (the persistent ctx.stdout closure)
+      // with a wrapper for the duration of pre-bundle. While the
+      // outer install() call is on the stack the wrapper forwards to
+      // the original; once we flip the flag in the cleanup below,
+      // the wrapper drops to a console.log fallback so traces aren't
+      // lost but ctx.stdout never sees them.
+      const persistentProgress = this.onProgress;
+      this.onProgress = (msg: string) => {
+        if (installInvocationActive.v) {
+          persistentProgress?.(msg);
+        } else {
+          // Late progress — pre-bundle finished AFTER install()
+          // returned. Surface to the wrangler dev console only so
+          // the user's shell prompt isn't corrupted.
+          try { console.log('[npm:late] ' + msg); } catch {}
+        }
+      };
+      // Fire-and-forget. Capture rejections so the orphan promise
+      // never raises an "unhandled rejection" warning. We do NOT
+      // await here — see Phase 7 design note above for why.
       const prebundlePromise = this.prebundleUsedModules(projDir, resolved)
         .catch((e: any) => {
-          // log() goes through onProgress which writes to the install
-          // output channel — the user sees this in their npm install
-          // tail. Safe to call from a background promise.
-          log(`[npm] pre-bundle skipped: ${e?.message || String(e)}`);
+          // Routes through the installInvocationActive gate above,
+          // so this is safe to call from after-return: it lands on
+          // console.log instead of ctx.stdout.
+          log(`pre-bundle skipped: ${e?.message || String(e)}`);
+        })
+        .finally(() => {
+          // Always restore the persistent reference so a subsequent
+          // ensureNpmInstaller call (which doesn't reconstruct the
+          // installer) can still wire a fresh ctx.stdout closure.
+          this.onProgress = persistentProgress;
         });
       // Mark `void` so the linter / human reader knows we intentionally
       // don't await this. The promise outlives the install command.
       void prebundlePromise;
       phases['bundle'] = Date.now() - phaseStart;
+      // The flag flip happens AFTER install() returns its result.
+      // We schedule it inline by closing over the same object;
+      // the `finally` at install()'s top level (line 173) gets us
+      // to the right boundary. We piggyback there via a deferred
+      // microtask: when the outer try{} returns the result object,
+      // the microtask flips the flag; pre-bundle's safeProgress
+      // calls after this point land on console.log.
+      queueMicrotask(() => {
+        installInvocationActive.v = false;
+      });
     }
 
     setInstallPhase('done');
@@ -1177,14 +1249,23 @@ export class NpmInstaller {
     // takes over. After A′ lands the supervisor heap should stay flat
     // through this phase; if a future regression brings esbuild back
     // onto the supervisor we'll see it spike here.
-    const memBefore = readSupervisorHeap();
-    if (memBefore) {
-      this.onProgress?.(
-        `Pre-bundling ${pending.length} modules... (supervisor heap ${(memBefore.heapUsed / (1024 * 1024)).toFixed(1)} MiB)`,
-      );
-    } else {
-      this.onProgress?.(`Pre-bundling ${pending.length} modules...`);
-    }
+    //
+    // P5 (prod-bugs-2): switched from process.memoryUsage() to the
+    // C'.1 deterministic estimator. process.memoryUsage() returns 0
+    // for every field inside a Durable Object class context (only
+    // dynamic-worker isolates under nodejs_compat get the real
+    // implementation — see src/observability/diag-counters.ts:4 and
+    // heap-estimate.ts:6). The previous "supervisor heap 0.0 MiB"
+    // line was actively misleading: it printed every time, regardless
+    // of what was actually in the heap, and could not be used to
+    // verify the A′ memory-containment work the message claims to
+    // surface. estimateSupervisorHeap sums known supervisor-side
+    // allocation sources from runtime counters that ARE accurate
+    // (DiagCounters singleton + SqliteVFS.getStats()).
+    const memBefore = this._estimateSupervisorHeapMiB();
+    this.onProgress?.(
+      `Pre-bundling ${pending.length} modules... (supervisor heap ${memBefore.toFixed(1)} MiB)`,
+    );
 
     // ── Phase B+C: lazy slice + dispatch (memory-bounded) ─────────────
     //
@@ -1538,19 +1619,15 @@ export class NpmInstaller {
       } catch (e: any) {
         try { console.error('[pre-bundle] recordPreBundleSummary threw:', e?.message || e); } catch {}
       }
-      // readSupervisorHeap returns null on any throw (its own internal
-      // try/catch — see line 1525), but we still guard the
-      // arithmetic and onProgress call below for completeness.
+      // P5 (prod-bugs-2): switched both `memBefore` and `memAfter`
+      // to the C'.1 deterministic estimator (see entry-point note
+      // above). Both are floats in MiB; delta is post − pre.
       try {
-        const memAfter = readSupervisorHeap();
-        if (memAfter && memBefore) {
-          const delta = (memAfter.heapUsed - memBefore.heapUsed) / (1024 * 1024);
-          safeProgress(
-            `Pre-bundle complete: ${okCount}/${attempted} succeeded. (supervisor heap ${(memAfter.heapUsed / (1024 * 1024)).toFixed(1)} MiB, Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} MiB)`,
-          );
-        } else {
-          safeProgress(`Pre-bundle complete: ${okCount}/${attempted} succeeded.`);
-        }
+        const memAfter = this._estimateSupervisorHeapMiB();
+        const delta = memAfter - memBefore;
+        safeProgress(
+          `Pre-bundle complete: ${okCount}/${attempted} succeeded. (supervisor heap ${memAfter.toFixed(1)} MiB, Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} MiB)`,
+        );
       } catch (e: any) {
         try { console.error('[pre-bundle] final-progress threw:', e?.message || e); } catch {}
       }
@@ -1719,27 +1796,57 @@ export class NpmInstaller {
     return null;
   }
 
+  /**
+   * P5 (prod-bugs-2) — deterministic supervisor-heap estimate in MiB.
+   *
+   * Routes through observability/heap-estimate.ts which sums KNOWN
+   * supervisor heap allocation sources from runtime counters that
+   * ARE accurate inside a DO context (DiagCounters singleton +
+   * SqliteVFS.getStats()). This replaces a previous use of
+   * process.memoryUsage() which returned 0 for every field inside a
+   * Durable Object class context, making the printed
+   * "supervisor heap N MiB" lines actively misleading (they always
+   * read 0.0 MiB regardless of actual heap state).
+   *
+   * The estimator is INTENTIONALLY conservative — peak-or-current
+   * components, sum may overestimate — but it never under-reports.
+   * Returns 0 if the estimator throws (defensive: a counter
+   * regression must not block install completion).
+   *
+   * Same call shape used by /api/_diag/memory in
+   * src/session/routes.ts:247, so the value printed in the
+   * pre-bundle banner is comparable to the value the diag endpoint
+   * reports for the same isolate.
+   */
+  private _estimateSupervisorHeapMiB(): number {
+    try {
+      const counters = readDiagCounters();
+      const vfsStats = this.vfs.getStats() as any;
+      const cacheStats = vfsStats.cache ?? {};
+      const heap = estimateSupervisorHeap(counters, {
+        cacheHotBytes: cacheStats.hotBytes ?? 0,
+        // Steady-state in-flight write bytes are 0 by the time we
+        // reach the pre-bundle phase boundary (writeBatch has
+        // already flushed before bundle dispatches). Same value
+        // routes.ts uses for its read.
+        inFlightWriteBytes: 0,
+      });
+      return heap.estimatedBytes / (1024 * 1024);
+    } catch {
+      return 0;
+    }
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-/**
- * Read the supervisor isolate's process.memoryUsage() if available.
- * Returns null when nodejs_compat doesn't expose it (older compat dates,
- * non-Workers test harnesses). Used to log heap pressure at pre-bundle
- * phase boundaries so /api/_diag/memory's peak tracker has clear
- * before/after values to compare. Cost is microseconds per call.
- */
-function readSupervisorHeap(): { rss: number; heapUsed: number; heapTotal: number } | null {
-  try {
-    const g: any = globalThis as any;
-    if (g.process && typeof g.process.memoryUsage === 'function') {
-      const mu = g.process.memoryUsage();
-      return { rss: mu.rss | 0, heapUsed: mu.heapUsed | 0, heapTotal: mu.heapTotal | 0 };
-    }
-  } catch { /* ignore */ }
-  return null;
-}
+// P5 (prod-bugs-2): readSupervisorHeap() removed. It called
+// process.memoryUsage() which returns 0 for every field inside a
+// Durable Object class context (only dynamic-worker isolates under
+// nodejs_compat get the real implementation — see
+// src/observability/diag-counters.ts:4). The deterministic
+// supervisor-heap estimator is the C'.1 replacement; see
+// NpmInstaller._estimateSupervisorHeapMiB.
 
 function parentOf(path: string): string {
   return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';

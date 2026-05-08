@@ -1,0 +1,14 @@
+==== Bug 1 probe: log queue drain ordering ====
+==== TIMESTAMP: 2026-05-08T23:42:06.135Z ====
+BASE: http://127.0.0.1:8792
+SID: trusty-seal-9712
+captured 1 frames
+---- frames (ts offset relative to prompt-detection wall time) ----
+  [ 0] t   -8ms  "\\ruser@nimbus:~/app$ npm install\\r\\r\\nInstalling dependencies from package.json (npm v2 — batched writes)...\\r\\n[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)\\r\\n[npm] Checking ..."
+---- byte-level positions ----
+stream length: 961 chars
+last "[npm]" at: 859
+last prompt suffix at: 942
+---- assertions ----
+PASS: last "[npm]" (idx=859) precedes last prompt (idx=942)
+==== EXIT 0 ====
