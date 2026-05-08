@@ -16,7 +16,7 @@ const log = (s) => { fs.appendFileSync(ARTIFACT, s + '\n'); console.log(s); };
 log('==== PROBE: r2-cache-expire ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
-const srcPath = path.resolve(HERE, '../../../../src/r2-cache.ts');
+const srcPath = path.resolve(HERE, '../../../../src/npm/r2-cache.ts');
 if (!fs.existsSync(srcPath)) {
   log('FAIL: src/r2-cache.ts missing (pre-implementation)');
   log('VERDICT: FAIL');

@@ -13,13 +13,13 @@
 //   check the contract. Disabled by default to keep the suite
 //   network-free.
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { makeMockCtx } from '../_mock-sql.mjs';
 import { ok, eq, gte, group, summary } from '../_tap.mjs';
 
 let dis;
 try {
-  dis = await import('../../../../src/oom-discriminator.ts');
+  dis = await import('../../../../src/observability/oom-discriminator.ts');
 } catch (e) {
   ok('oom-discriminator module exists', false, e.message);
   summary('w5/e2e/oom-stress');

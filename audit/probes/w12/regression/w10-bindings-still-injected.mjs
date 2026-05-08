@@ -10,10 +10,10 @@ import { ok, group, summary } from '../_tap.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
-const KV = path.join(ROOT, 'src', 'binding-kv.ts');
-const D1 = path.join(ROOT, 'src', 'binding-d1.ts');
-const R2 = path.join(ROOT, 'src', 'binding-r2.ts');
-const WRANGLER = path.join(ROOT, 'src', 'nimbus-wrangler.ts');
+const KV = path.join(ROOT, 'src', 'bindings', 'kv.ts');
+const D1 = path.join(ROOT, 'src', 'bindings', 'd1.ts');
+const R2 = path.join(ROOT, 'src', 'bindings', 'r2.ts');
+const WRANGLER = path.join(ROOT, 'src', 'wrangler', 'nimbus-wrangler.ts');
 
 await group('W10 binding sources still present', () => {
   ok('binding-kv.ts exists', fs.existsSync(KV));

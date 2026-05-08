@@ -6,7 +6,7 @@
 import { ok, lte, group, summary } from '../_tap.mjs';
 
 let mod;
-try { mod = await import('../../../../src/replica-routing.ts'); }
+try { mod = await import('../../../../src/replica/routing.ts'); }
 catch (e) { ok('replica-routing module imports', false, e.message); summary('w12/functional/eventual-consistency-window-ms'); }
 
 const { REPLICA_POLICIES, getEventualConsistencyToleranceMs } = mod;

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(HERE, '..', '..', '..', '..');
-const sessionTs = fs.readFileSync(path.join(repoRoot, 'src/nimbus-session.ts'), 'utf-8');
+const sessionTs = fs.readFileSync(path.join(repoRoot, 'src/session/nimbus-session.ts'), 'utf-8');
 
 // Find the WRANGLER_UNSUPPORTED_CONFIG_FIELDS array.
 const m = sessionTs.match(/const WRANGLER_UNSUPPORTED_CONFIG_FIELDS\s*=\s*\[([^\]]+)\]/);

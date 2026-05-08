@@ -1,7 +1,7 @@
 // X.5-M3 functional probe helper. Loads the generated runner.js source so
 // probes can do source-text + targeted IIFE-extraction assertions.
 
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 export function getShimSource() {
   return generateShimsCode();

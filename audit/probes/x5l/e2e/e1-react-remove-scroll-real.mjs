@@ -19,8 +19,8 @@
 //          finds and walks the back-pointer.
 
 import { makeFacet, getOrInstallFixture, check, summary, reset } from '../_helpers.mjs';
-import { prefetchForRequire } from '../../../../src/require-resolver.ts';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { prefetchForRequire } from '../../../../src/runtime/require-resolver.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 import * as esbuildWasm from 'esbuild-wasm';
 
 reset();

@@ -22,7 +22,7 @@ const log = (s) => { fs.appendFileSync(ARTIFACT, s + '\n'); console.log(s); };
 log('==== X5J r25-still-installs-non-rejected-peers ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
-const { resolveTree } = await import(new URL('../../../../src/npm-resolver.ts', import.meta.url).href);
+const { resolveTree } = await import(new URL('../../../../src/npm/resolver.ts', import.meta.url).href);
 
 const MOCK_REGISTRY = {
   // synth-FM mimics framer-motion: optional peers are react + sql.js.

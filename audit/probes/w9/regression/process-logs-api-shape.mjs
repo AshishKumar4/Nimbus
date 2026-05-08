@@ -15,7 +15,7 @@ import { ok, eq, group, summary } from '../_tap.mjs';
 
 let api;
 try {
-  api = await import('../../../../src/process-logs-api.ts');
+  api = await import('../../../../src/runtime/process-logs-api.ts');
 } catch (e) {
   ok('process-logs-api imports', false, e.message);
   summary('w9/regression/process-logs-api-shape');

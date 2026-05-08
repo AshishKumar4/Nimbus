@@ -36,7 +36,7 @@ const slotIdShape = find(pool, /^.*const id = `nfp:/);
 slotIdShape.forEach((l) => note(`  src/parallel/facet-pool.ts:${l.line} → cache-key shape: ${l.text}`));
 
 // 2. CHILD_PROCESS_MAX_DEPTH.
-const fp = read('src/facet-process.ts');
+const fp = read('src/facets/process.ts');
 const depthCap = find(fp, /CHILD_PROCESS_MAX_DEPTH\s*=/);
 note('');
 note('child_process recursion cap:');
@@ -46,7 +46,7 @@ const depthGuard = find(fp, /depthIn >= CHILD_PROCESS_MAX_DEPTH/);
 depthGuard.forEach((l) => note(`  src/facet-process.ts:${l.line} → guard: ${l.text}`));
 
 // 3. NIMBUS_FORK_IPC env propagation site.
-const shims = read('src/node-shims.ts');
+const shims = read('src/runtime/node-shims.ts');
 const forkIpcSite = find(shims, /NIMBUS_FORK_IPC|NIMBUS_CP_DEPTH/);
 note('');
 note('Fork/IPC env-propagation sites in node-shims.ts:');
@@ -60,14 +60,14 @@ wt.forEach((l) => note(`  src/node-shims.ts:${l.line} → ${l.text}`));
 
 // 5. FacetManager facets.get + delete sites — webpack pool would
 //    spawn N facets via these calls.
-const fm = read('src/facet-manager.ts');
+const fm = read('src/facets/manager.ts');
 const facetGet = find(fm, /facets\.get\(/);
 note('');
 note('FacetManager facets.get() callsites (each is one DO facet allocated):');
 facetGet.forEach((l) => note(`  src/facet-manager.ts:${l.line} → ${l.text}`));
 
 // 6. Hibernation surface — would tear down in-flight webpack workers.
-const hib = read('src/nimbus-session-hib.ts');
+const hib = read('src/session/hibernation.ts');
 const hibAlarm = find(hib, /alarm|hibern|webSocketHib/i);
 note('');
 note('Hibernation surface (would terminate child facets mid-build):');
@@ -75,7 +75,7 @@ hibAlarm.slice(0, 6).forEach((l) => note(`  src/nimbus-session-hib.ts:${l.line} 
 
 // 7. Webpack as a known parallelism consumer — list the place webpack
 //    is named in skip lists / preambles.
-const npmResolver = read('src/npm-resolver.ts');
+const npmResolver = read('src/npm/resolver.ts');
 const wp = find(npmResolver, /webpack/);
 note('');
 note('webpack mentions in npm-resolver:');

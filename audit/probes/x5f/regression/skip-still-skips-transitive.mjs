@@ -24,7 +24,7 @@ log('==== X5F skip-still-skips-transitive regression probe ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
 const { resolveTree } = await import(
-  new URL('../../../../src/npm-resolver.ts', import.meta.url).href
+  new URL('../../../../src/npm/resolver.ts', import.meta.url).href
 );
 
 const fakeCache = new Proxy({}, { get: () => () => null });

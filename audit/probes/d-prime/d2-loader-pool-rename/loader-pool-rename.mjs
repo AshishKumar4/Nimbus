@@ -39,10 +39,12 @@ const pass = (m) => { log('PASS: ' + m); };
 
 function grepCount(pattern, dir) {
   // -r recursive, -c per-file count; sum to total. --include patterns
-  // restrict to .ts files (avoid generated bundles + node_modules).
+  // restrict to non-generated .ts files (the *.generated.ts files
+  // have stale narrative comments that get rewritten on next bundle;
+  // we don't gate on those for the architectural assertion).
   try {
     const out = execSync(
-      `grep -rn --include="*.ts" "${pattern}" ${dir} 2>/dev/null || true`,
+      `grep -rn --include="*.ts" --exclude="*.generated.ts" "${pattern}" ${dir} 2>/dev/null || true`,
       { encoding: 'utf8', cwd: ROOT },
     );
     if (!out.trim()) return { total: 0, lines: [] };

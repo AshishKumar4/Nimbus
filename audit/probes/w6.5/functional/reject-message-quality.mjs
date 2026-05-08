@@ -20,7 +20,7 @@ import { ok, eq, group, summary } from '../../w6/_tap.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
 
 // The set of canonical "no alternative" phrases. Adding a new phrase requires
 // updating this whitelist; removing one requires an honest commit message.

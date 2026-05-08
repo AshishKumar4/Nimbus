@@ -1,10 +1,10 @@
 ==== B'.5 join-existing-session probe ====
-==== TIMESTAMP: 2026-05-08T18:04:40.946Z ====
+==== TIMESTAMP: 2026-05-08T20:24:22.575Z ====
 BASE: http://127.0.0.1:8792
-SID: tireless-cavern-9101
+SID: loyal-channel-1346
 stage 1: cwd="~/app"
 PASS: stage 1: cd into ~/app succeeded
-stage 1: ring count = 50 (sinceMs = 1778263481070)
+stage 1: ring count = 50 (sinceMs = 1778271862697)
 PASS: isolateGen stable at 1 across close
 stage 2: post-close debug.phase = "drained"
 PASS: post-close phase = 'drained'

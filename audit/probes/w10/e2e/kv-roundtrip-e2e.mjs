@@ -9,7 +9,7 @@
 import { ok, eq, summary } from '../_tap.mjs';
 import { makeMockVfs } from '../_mock-vfs.mjs';
 import { makeMockSql } from '../_mock-sql.mjs';
-import { NimbusWrangler } from '../../../../src/nimbus-wrangler.ts';
+import { NimbusWrangler } from '../../../../src/wrangler/nimbus-wrangler.ts';
 
 // Worker source — uses env.MY_KV
 const workerSrc = `

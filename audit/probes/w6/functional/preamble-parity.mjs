@@ -16,7 +16,7 @@ const PREAMBLE_PATH = path.resolve(HERE, '../../../../src/parallel/npm-resolve-p
 
 let registry;
 try {
-  registry = await import('../../../../src/wasm-swap-registry.ts');
+  registry = await import('../../../../src/facets/wasm-swap-registry.ts');
 } catch (e) {
   ok('wasm-swap-registry module exists', false, e.message);
   summary('w6/functional/preamble-parity');
@@ -43,7 +43,7 @@ group('preamble exposes swap helpers', () => {
 // at CI rather than at facet runtime (where it would surface as a
 // ReferenceError with no source-map).
 group('npm-resolve-facet.ts SHOULD_* references all exist in preamble', () => {
-  const FACET_PATH = path.resolve(HERE, '../../../../src/npm-resolve-facet.ts');
+  const FACET_PATH = path.resolve(HERE, '../../../../src/npm/resolve-facet.ts');
   let facetSrc;
   try { facetSrc = readFileSync(FACET_PATH, 'utf8'); }
   catch (e) { ok('facet readable', false, e.message); return; }

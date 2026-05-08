@@ -9,7 +9,7 @@ import { ok, eq, group, summary } from '../_tap.mjs';
 
 let mod;
 try {
-  mod = await import('../../../../src/replica-routing.ts');
+  mod = await import('../../../../src/replica/routing.ts');
 } catch (e) {
   ok('replica-routing module imports', false, e.message);
   summary('w12/functional/replica-policy-classification');

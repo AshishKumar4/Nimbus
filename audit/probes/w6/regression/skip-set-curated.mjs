@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { ok, eq, group, summary } from '../_tap.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const RESOLVER = path.resolve(HERE, '../../../../src/npm-resolver.ts');
+const RESOLVER = path.resolve(HERE, '../../../../src/npm/resolver.ts');
 const PREAMBLE = path.resolve(HERE, '../../../../src/parallel/npm-resolve-preamble.ts');
 
 // The curated post-W6 set. Anything NOT in here must NOT be in SKIP_PACKAGES.

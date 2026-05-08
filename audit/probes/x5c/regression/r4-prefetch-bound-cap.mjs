@@ -12,7 +12,7 @@
 //   - Total bytes in returned bundle ≤ MAX_BYTES (24 MiB)
 
 import { makeVfs, check, summary, reset } from '../_helpers.mjs';
-import { prefetchForRequire } from '../../../../src/require-resolver.ts';
+import { prefetchForRequire } from '../../../../src/runtime/require-resolver.ts';
 
 reset();
 

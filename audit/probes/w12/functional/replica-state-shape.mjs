@@ -7,7 +7,7 @@ import {
 } from '../_mock-replica-ctx.mjs';
 
 let mod;
-try { mod = await import('../../../../src/replica-routing.ts'); }
+try { mod = await import('../../../../src/replica/routing.ts'); }
 catch (e) { ok('replica-routing module imports', false, e.message); summary('w12/functional/replica-state-shape'); }
 
 const { tryEnableReplicas, inspectReplicaState } = mod;

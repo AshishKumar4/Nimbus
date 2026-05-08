@@ -145,13 +145,15 @@ async function main() {
   } catch (e) {
     log('stage 2: npm i timeout: ' + e.message);
   }
-  await s.waitForPrompt(10_000);
+  // npm install emits a post-install pre-bundle pass that can keep
+  // streaming output for 30+ s; allow generous time for the prompt.
+  await s.waitForPrompt(45_000);
 
   // Stage 2.5: pin the cwd to ~/app via export so warm-rejoin can
   // verify it survived. Also export a probe-specific env var.
   s.reset();
   s.send('export NIMBUS_LFR_TEST=phase5\r');
-  await s.waitForNewPrompt(5000);
+  await s.waitForNewPrompt(15_000);
 
   // Stage 3: npm run dev
   s.reset();

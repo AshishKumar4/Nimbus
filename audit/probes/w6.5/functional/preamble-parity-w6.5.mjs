@@ -12,9 +12,9 @@ import { ok, group, summary } from '../../w6/_tap.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
 const preambleSrc = readFileSync(
-  path.join(ROOT, 'src', 'parallel', 'npm-resolve-preamble.ts'),
+  path.join(ROOT, 'src', 'loaders', 'npm-resolve-preamble.ts'),
   'utf8',
 );
 

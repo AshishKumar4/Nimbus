@@ -14,7 +14,7 @@
 
 import { ok, eq, summary, group } from '../../w6/_tap.mjs';
 import { makeFacet } from '../../x5c/_helpers.mjs';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 const fixture = {
   'home/user/app/script.js':

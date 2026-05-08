@@ -1,7 +1,7 @@
 ==== B'.4 init-session-phases probe ====
-==== TIMESTAMP: 2026-05-08T18:04:39.270Z ====
+==== TIMESTAMP: 2026-05-08T20:24:20.900Z ====
 BASE: http://127.0.0.1:8792
-SID: forgiving-daisy-4204
+SID: easy-oriole-2505
 stage 1: cold debug.phase = null
 PASS: cold session: phase = null
 stage 2: post-WS debug.phase = "hydrated"

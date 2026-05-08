@@ -21,8 +21,8 @@
 
 import { makeFacet, getOrInstallFixture, makeVfs } from '../../x5l/_helpers.mjs';
 import { ok, summary } from '../../w6/_tap.mjs';
-import { prefetchForRequire } from '../../../../src/require-resolver.ts';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { prefetchForRequire } from '../../../../src/runtime/require-resolver.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 import * as esbuildWasm from 'esbuild-wasm';
 
 console.log('X.5-Z5 e2e/express — express loads end-to-end (REAL files)');

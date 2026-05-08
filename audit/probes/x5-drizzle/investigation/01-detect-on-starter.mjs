@@ -31,14 +31,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..', '..', '..');
 
 // Load detector + the starter PACKAGE_JSON directly from src.
-const { detectFramework } = await import(path.join(REPO, 'src', 'framework-detect.ts'));
-const seedProject = await import(path.join(REPO, 'src', 'seed-project.ts'));
+const { detectFramework } = await import(path.join(REPO, 'src', 'runtime', 'framework-detect.ts'));
+const seedProject = await import(path.join(REPO, 'src', 'vfs', 'seed-project.ts'));
 
 // seed-project.ts exposes its starter pkg.json source-of-truth via the
 // PACKAGE_JSON constant — but it's NOT exported. Re-derive by reading the
 // source text. (Pure-data; doesn't require running the seeder.)
 import fs from 'node:fs';
-const seedSrc = fs.readFileSync(path.join(REPO, 'src', 'seed-project.ts'), 'utf8');
+const seedSrc = fs.readFileSync(path.join(REPO, 'src', 'vfs', 'seed-project.ts'), 'utf8');
 const m = seedSrc.match(/const PACKAGE_JSON = `(\{[\s\S]*?\})\s*\n`;/);
 if (!m) {
   console.error('FAIL: could not extract PACKAGE_JSON literal from seed-project.ts');

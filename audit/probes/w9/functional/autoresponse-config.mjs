@@ -13,11 +13,11 @@ import { makeMockCtx } from '../_mock-sql.mjs';
 
 let mod;
 try {
-  mod = await import('../../../../src/process-logs.ts');
+  mod = await import('../../../../src/runtime/process-logs.ts');
 } catch {}
 let cfgMod;
 try {
-  cfgMod = await import('../../../../src/ws-hibernation-config.ts');
+  cfgMod = await import('../../../../src/session/ws-hibernation-config.ts');
 } catch (e) {
   // The module may live elsewhere — fail with the expected name so the
   // build phase knows what to satisfy.

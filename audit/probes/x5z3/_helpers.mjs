@@ -15,7 +15,7 @@ export { makeVfs, check, summary, reset, results };
  */
 export async function tryRealAssetHelper() {
   try {
-    const fm = await import('../../../src/facet-manager.ts');
+    const fm = await import('../../../src/facets/manager.ts');
     if (typeof fm.addStaticReadFileAssets === 'function') {
       return fm.addStaticReadFileAssets;
     }
@@ -29,7 +29,7 @@ export async function tryRealAssetHelper() {
  */
 export async function tryRealBuildPrefetchBundle() {
   try {
-    const fm = await import('../../../src/facet-manager.ts');
+    const fm = await import('../../../src/facets/manager.ts');
     if (typeof fm.buildPrefetchBundle === 'function') {
       return fm.buildPrefetchBundle;
     }

@@ -17,8 +17,8 @@ const PREAMBLE_PATH = path.resolve(HERE, '../../../../src/parallel/npm-resolve-p
 
 let registry, resolverMod;
 try {
-  registry = await import('../../../../src/wasm-swap-registry.ts');
-  resolverMod = await import('../../../../src/npm-resolver.ts');
+  registry = await import('../../../../src/facets/wasm-swap-registry.ts');
+  resolverMod = await import('../../../../src/npm/resolver.ts');
 } catch (e) {
   ok('modules importable', false, e.message);
   summary('w6/regression/resolver-paths-symmetric');

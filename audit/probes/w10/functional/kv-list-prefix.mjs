@@ -2,7 +2,7 @@
 
 import { ok, eq, gte, summary } from '../_tap.mjs';
 import { makeMockVfs } from '../_mock-vfs.mjs';
-import { KvEmulator } from '../../../../src/binding-kv.ts';
+import { KvEmulator } from '../../../../src/bindings/kv.ts';
 
 const vfs = makeMockVfs();
 const kv = new KvEmulator({ vfs, root: 'home/user', binding: 'MY_KV', onLog: () => {} });

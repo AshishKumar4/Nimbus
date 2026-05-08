@@ -5,7 +5,7 @@
 import { ok, eq, group, summary } from '../_tap.mjs';
 
 let mod;
-try { mod = await import('../../../../src/replica-suspension.ts'); }
+try { mod = await import('../../../../src/replica/suspension.ts'); }
 catch (e) { ok('replica-suspension module imports', false, e.message); summary('w12/functional/replicas-suspension-counter'); }
 
 const { suspendReplicas, replicasSuspended, _resetSuspensionForTests } = mod;

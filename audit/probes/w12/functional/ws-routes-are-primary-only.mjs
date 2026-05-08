@@ -6,7 +6,7 @@
 import { ok, eq, group, summary } from '../_tap.mjs';
 
 let mod;
-try { mod = await import('../../../../src/replica-routing.ts'); }
+try { mod = await import('../../../../src/replica/routing.ts'); }
 catch (e) { ok('replica-routing module imports', false, e.message); summary('w12/functional/ws-routes-are-primary-only'); }
 
 const { classifyReplicaPolicy } = mod;

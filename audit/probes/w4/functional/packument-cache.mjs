@@ -19,8 +19,8 @@ const log = (s) => { fs.appendFileSync(ARTIFACT, s + '\n'); console.log(s); };
 log('==== PROBE: packument-cache ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
-const supRpcPath = path.resolve(HERE, '../../../../src/supervisor-rpc.ts');
-const facetPath = path.resolve(HERE, '../../../../src/npm-resolve-facet.ts');
+const supRpcPath = path.resolve(HERE, '../../../../src/session/supervisor-rpc.ts');
+const facetPath = path.resolve(HERE, '../../../../src/npm/resolve-facet.ts');
 
 let ok = true;
 const failIfMissing = (p) => {

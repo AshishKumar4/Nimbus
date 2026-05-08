@@ -19,7 +19,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
 await group('npm-install-batch-facet has the streams call shape', () => {
-  const txt = fs.readFileSync(path.join(ROOT, 'src/npm-install-batch-facet.ts'), 'utf8');
+  const txt = fs.readFileSync(path.join(ROOT, 'src/npm/install-batch-facet.ts'), 'utf8');
   // Either the facet calls writeBatchStream directly, OR a typeof check
   // gates it with backwards-compat fallback to writeBatch. Both are
   // acceptable shapes per W7-plan §8.5.
@@ -31,7 +31,7 @@ await group('npm-install-batch-facet has the streams call shape', () => {
 });
 
 await group('SupervisorRPC interface signature retained on env type', () => {
-  const txt = fs.readFileSync(path.join(ROOT, 'src/npm-install-batch-facet.ts'), 'utf8');
+  const txt = fs.readFileSync(path.join(ROOT, 'src/npm/install-batch-facet.ts'), 'utf8');
   // The env: { SUPERVISOR: ... } type literal (around line 100) must
   // declare both the new and the legacy method.
   includes('env type declares writeBatch', txt,
@@ -48,7 +48,7 @@ await group('preamble carries encodeWriteBatchStream symbol (or facet inlines it
   // the facet can access.
   let foundInPreamble = false;
   let foundInFacet = false;
-  const facetTxt = fs.readFileSync(path.join(ROOT, 'src/npm-install-batch-facet.ts'), 'utf8');
+  const facetTxt = fs.readFileSync(path.join(ROOT, 'src/npm/install-batch-facet.ts'), 'utf8');
   if (facetTxt.includes('encodeWriteBatchStream')) foundInFacet = true;
 
   // Walk src/parallel for the preamble file.

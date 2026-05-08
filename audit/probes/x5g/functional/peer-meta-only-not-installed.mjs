@@ -12,8 +12,8 @@
 
 import { ok, eq, group, summary } from '../../w6/_tap.mjs';
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
-const resolver = await import('../../../../src/npm-resolver.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
+const resolver = await import('../../../../src/npm/resolver.ts');
 
 // We can't directly invoke the private versionToResolved, but we can
 // use the public versionToResolved-via-applySwaps shape. Instead, we
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const RESOLVER_SRC = path.join(HERE, '../../../../src/npm-resolver.ts');
+const RESOLVER_SRC = path.join(HERE, '../../../../src/npm/resolver.ts');
 const src = fs.readFileSync(RESOLVER_SRC, 'utf8');
 
 group('X5F R2.5 baseline: __allPeerDependencies iterates peerDependencies only', () => {

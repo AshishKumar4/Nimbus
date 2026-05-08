@@ -23,7 +23,7 @@ log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 let ok = true;
 
 // Locate src/r2-cache.ts via filesystem; if missing, probe fails (TDD red).
-const srcPath = path.resolve(HERE, '../../../../src/r2-cache.ts');
+const srcPath = path.resolve(HERE, '../../../../src/npm/r2-cache.ts');
 if (!fs.existsSync(srcPath)) {
   log('FAIL: src/r2-cache.ts not found at ' + srcPath);
   log('VERDICT: FAIL (pre-implementation; expected during Phase B)');

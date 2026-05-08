@@ -24,19 +24,19 @@ function read(rel) {
 }
 
 await group('SupervisorRPC has both writeBatch and writeBatchStream', () => {
-  const txt = read('src/supervisor-rpc.ts');
+  const txt = read('src/session/supervisor-rpc.ts');
   includes('writeBatch present', txt, 'async writeBatch(');
   includes('writeBatchStream present', txt, 'writeBatchStream');
 });
 
 await group('NimbusSession has both _rpcWriteBatch and _rpcWriteBatchStream', () => {
-  const txt = read('src/nimbus-session.ts');
+  const txt = read('src/session/nimbus-session.ts');
   includes('_rpcWriteBatch present', txt, '_rpcWriteBatch(');
   includes('_rpcWriteBatchStream present', txt, '_rpcWriteBatchStream');
 });
 
 await group('SqliteVFS has both writeBatch and writeStream', () => {
-  const txt = read('src/sqlite-vfs.ts');
+  const txt = read('src/vfs/sqlite-vfs.ts');
   includes('writeBatch present', txt, 'writeBatch(');
   includes('writeStream present', txt, 'writeStream');
 });

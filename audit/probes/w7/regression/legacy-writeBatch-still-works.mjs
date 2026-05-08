@@ -6,7 +6,7 @@
 // npm-install-facet's legacy path) still call writeBatch directly.
 // Removing or breaking it would silently break all of them.
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { makeMockCtx } from '../../w5/_mock-sql.mjs';
 import { ok, eq, gte, group, summary } from '../_tap.mjs';
 

@@ -15,7 +15,7 @@ const REPO = path.resolve(HERE, '..', '..', '..');
 function note(s) { console.log('# ' + s); }
 function tap(name, ok, detail) { console.log(`${ok ? 'ok' : 'not ok'} - ${name}${detail ? ' # ' + detail : ''}`); }
 
-const shims = readFileSync(path.join(REPO, 'src/node-shims.ts'), 'utf8');
+const shims = readFileSync(path.join(REPO, 'src/runtime/node-shims.ts'), 'utf8');
 const has_v8 = /v8\.serialize|node:v8.*serialize/i.test(shims);
 const has_json = /JSON\.stringify\(msg\)\s*\+\s*['"]\\\\n['"]/.test(shims) ||
                  shims.includes('JSON.stringify(msg)+"\\n"') ||

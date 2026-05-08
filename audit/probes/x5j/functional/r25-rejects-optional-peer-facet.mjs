@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const FACET_SRC = path.join(HERE, '../../../../src/npm-resolve-facet.ts');
+const FACET_SRC = path.join(HERE, '../../../../src/npm/resolve-facet.ts');
 const src = fs.readFileSync(FACET_SRC, 'utf8');
 
 group('R2.5 facet block exists', () => {

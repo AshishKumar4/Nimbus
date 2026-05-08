@@ -52,7 +52,7 @@ async function main() {
 
   // ── Static check ────────────────────────────────────────────────────
   const installer = fs.readFileSync(
-    path.join(REPO_ROOT, 'src', 'npm-installer.ts'),
+    path.join(REPO_ROOT, 'src', 'npm', 'installer.ts'),
     'utf8',
   );
 
@@ -87,7 +87,7 @@ async function main() {
 
   // Also assert the diag-counters taxonomy is narrowed.
   const diagCounters = fs.readFileSync(
-    path.join(REPO_ROOT, 'src', 'diag-counters.ts'),
+    path.join(REPO_ROOT, 'src', 'observability', 'diag-counters.ts'),
     'utf8',
   );
   const counterForbidden = [

@@ -5,7 +5,7 @@
 // so this list must be unchanged.
 
 import { ok, group, summary } from '../../w6/_tap.mjs';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 const src = generateShimsCode();
 

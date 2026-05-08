@@ -6,7 +6,7 @@
 //   (a) source-text presence/structure assertions (regex over generated source)
 //   (b) targeted IIFE / object-literal extraction where feasible
 
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 export function getShimSource() {
   return generateShimsCode();

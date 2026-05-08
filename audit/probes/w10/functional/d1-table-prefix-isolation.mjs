@@ -10,7 +10,7 @@
 
 import { eq, ok, summary } from '../_tap.mjs';
 import { makeMockSql } from '../_mock-sql.mjs';
-import { D1Emulator } from '../../../../src/binding-d1.ts';
+import { D1Emulator } from '../../../../src/bindings/d1.ts';
 
 const { sql } = makeMockSql();
 

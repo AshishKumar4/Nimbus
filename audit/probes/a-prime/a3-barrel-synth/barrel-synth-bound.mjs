@@ -71,7 +71,7 @@ async function main() {
 
   // ── Static check: synthesis call site is bounded by transitiveCap ────
   const synth = fs.readFileSync(
-    path.join(REPO_ROOT, 'src', 'barrel-synthesizer.ts'),
+    path.join(REPO_ROOT, 'src', 'runtime', 'barrel-synthesizer.ts'),
     'utf8',
   );
 
@@ -90,7 +90,7 @@ async function main() {
 
   // Verify the call site only fires when next.synthetic is true.
   const installer = fs.readFileSync(
-    path.join(REPO_ROOT, 'src', 'npm-installer.ts'),
+    path.join(REPO_ROOT, 'src', 'npm', 'installer.ts'),
     'utf8',
   );
   if (installer.includes('next.synthetic && next.syntheticReferencedFiles')) {

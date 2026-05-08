@@ -1,41 +1,41 @@
 ==== interactive-liveness / long-form-replay ====
-==== TIMESTAMP: 2026-05-08T17:47:59.916Z ====
+==== TIMESTAMP: 2026-05-08T19:39:39.658Z ====
 BASE: http://127.0.0.1:8792
-HOLD_MINUTES: 10
-PROBE_INTERVAL_S: 30
+HOLD_MINUTES: 2
+PROBE_INTERVAL_S: 15
 PREVIEW_FETCH_HZ: 0.5
 SHELL_CMD_INTERVAL_S: 10
-WS_KILL_INTERVAL_S: 75
+WS_KILL_INTERVAL_S: 45
 WS_KILLS_ENABLED: true
-SID: rosy-summit-5076
+SID: fleeting-caribou-4642
 stage 1: WS open, MOTD count=1
 stage 2: npm i appears complete
 stage 3: vite ready
 stage 3.5: isolateGen=1 heap=15975158 pct=23.8
-stage 4: hold loop for 10 minutes
-stage 4 complete: 20 probes, 299 preview fetches, 0 preview errors
-  shell cmds sent: 19 (0 errors)
-  ws-kills triggered: 6 (0 failures)
-PASS: isolateGen stable at 1 for full 10 minutes
+stage 4: hold loop for 2 minutes
+stage 4 complete: 8 probes, 60 preview fetches, 0 preview errors
+  shell cmds sent: 7 (0 errors)
+  ws-kills triggered: 2 (0 failures)
+PASS: isolateGen stable at 1 for full 2 minutes
 PASS: final WS bannerCount=1 (scrollback replay preserved banner)
 PASS: zero recovery events with dataLoss=true (saw 50 clean transitions)
 PASS: peak heap 23.8% of ceiling (≤ 100% — under acceptance bar)
 PASS: peak heap 23.8% ≤ 95% (stretch goal met)
-  peak heap bytes = 15975734 (15.24 MiB / 64.0 MiB)
+  peak heap bytes = 15975557 (15.24 MiB / 64.0 MiB)
 PASS: no heap-overflow probes observed during hold
-PASS: heap.breakdown.* sum=total invariant held for all 20 polls
-PASS: warmJoinCount=6 matches wsKills=6 (B'.5 fired every cycle)
-PASS: env NIMBUS_LFR_TEST survived 6 ws-kill cycles
-PASS: diag-poll p99 wallTime 10 ms < 500 ms ceiling
+PASS: heap.breakdown.* sum=total invariant held for all 8 polls
+PASS: warmJoinCount=2 matches wsKills=2 (B'.5 fired every cycle)
+PASS: env NIMBUS_LFR_TEST survived 2 ws-kill cycles
+PASS: diag-poll p99 wallTime 8 ms < 500 ms ceiling
 ---- Phase 5 metrics ----
-  HOLD_MINUTES        : 10
-  probes              : 20
-  preview_fetches     : 299
-  shell_cmds          : 19
-  ws_kills            : 6
+  HOLD_MINUTES        : 2
+  probes              : 8
+  preview_fetches     : 60
+  shell_cmds          : 7
+  ws_kills            : 2
   peak_heap_pct       : 23.8%
-  peak_heap_bytes     : 15975734 (15.24 MiB)
-  diag_p99_ms         : 10
+  peak_heap_bytes     : 15975557 (15.24 MiB)
+  diag_p99_ms         : 8
   breakdown_sum_drifts: 0
   data_loss_events    : 0
 ==== EXIT 0 ====

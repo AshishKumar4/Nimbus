@@ -12,7 +12,7 @@
 //      OUTERMOST restore actually restores. (i.e. shrink(); shrink();
 //      restore() → still shrunk; restore() → restored)
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { LRU_MAX_ENTRIES } from '../../../../src/constants.ts';
 import { makeMockCtx } from '../_mock-sql.mjs';
 import { ok, eq, gte, lte, group, summary } from '../_tap.mjs';

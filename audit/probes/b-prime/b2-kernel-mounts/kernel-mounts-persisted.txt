@@ -1,6 +1,6 @@
 ==== B'.2 kernel-mounts-persisted probe ====
-==== TIMESTAMP: 2026-05-08T18:04:32.118Z ====
-SID: mighty-wombat-0040
+==== TIMESTAMP: 2026-05-08T20:24:13.585Z ====
+SID: rapid-meridian-6011
 PASS: cold session: mount table is empty (no initSession run yet)
 post-WS mounts: ["bin","etc","home","opt","tmp","usr","var"]
 PASS: mount table populated with 7 entries

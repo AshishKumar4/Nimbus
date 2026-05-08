@@ -10,14 +10,14 @@
  *   which is JSON-only — you cannot pass a helper function through it.
  *
  *   For the npm install facet we need the streaming tar parser
- *   (src/npm-tarball-stream.ts) available as a top-level named export
+ *   (src/npm/tarball-stream.ts) available as a top-level named export
  *   the user function can call. We esbuild-bundle that source file into
  *   a self-contained ES module string, and NimbusFacetPool's `preamble`
  *   option splices it into the generated module between the
  *   WorkerEntrypoint import and the user function.
  *
  * Output:
- *   src/parallel/generated-workers.ts — exports
+ *   src/loaders/generated-workers.ts — exports
  *       TAR_STREAM_PREAMBLE: string
  *       TAR_STREAM_PREAMBLE_SIZE: number
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
@@ -65,7 +65,7 @@ async function bundleAsPreamble(entryPath, label) {
 async function main() {
   // 1. Tar-parser preamble (existing W2.5/W4 hot-path helpers).
   const tarStripped = await bundleAsPreamble(
-    join(root, 'src', 'npm-tarball-stream.ts'),
+    join(root, 'src', 'npm', 'tarball-stream.ts'),
     'tar-stream',
   );
 
@@ -86,17 +86,17 @@ async function main() {
 
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
-  const outPath = join(root, 'src', 'parallel', 'generated-workers.ts');
+  const outPath = join(root, 'src', 'loaders', 'generated-workers.ts');
 
   const tsWrapper = [
     '/**',
     ' * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.',
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
-    ' *   - src/npm-tarball-stream.ts (streaming tar primitives)',
+    ' *   - src/npm/tarball-stream.ts (streaming tar primitives)',
     ' *   - src/_shared/w7-frame.ts   (W7 streaming bulk-write encoder)',
     ' *',
-    ' * Consumed by src/parallel/facet-pool.ts callers via the `preamble`',
+    ' * Consumed by src/loaders/loader-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
     ' * worker module so user functions can reference the exported',
     ' * helpers by name.',

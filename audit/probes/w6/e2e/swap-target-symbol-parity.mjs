@@ -16,7 +16,7 @@ import { ok, group, summary } from '../_tap.mjs';
 
 let registry;
 try {
-  registry = await import('../../../../src/wasm-swap-registry.ts');
+  registry = await import('../../../../src/facets/wasm-swap-registry.ts');
 } catch (e) {
   ok('wasm-swap-registry module exists', false, e.message);
   summary('w6/e2e/swap-target-symbol-parity');

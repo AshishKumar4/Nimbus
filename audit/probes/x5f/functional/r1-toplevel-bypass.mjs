@@ -24,7 +24,7 @@ log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 let resolveTree, shouldSkipPackage, shouldSkipPackageWithFramework;
 try {
   ({ resolveTree, shouldSkipPackage, shouldSkipPackageWithFramework } = await import(
-    new URL('../../../../src/npm-resolver.ts', import.meta.url).href
+    new URL('../../../../src/npm/resolver.ts', import.meta.url).href
   ));
 } catch (e) {
   log('!! could not import npm-resolver: ' + e.message);

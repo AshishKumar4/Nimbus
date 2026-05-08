@@ -25,7 +25,7 @@
 // verified by the per-chunk frame size cap in 02-large-payload.mjs
 // (combined with this e2e exercising the FULL boundary).
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { makeMockCtx } from '../_mock-sql.mjs';
 import { ok, eq, gte, group, summary } from '../_tap.mjs';
 

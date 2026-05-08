@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..');
-const SRC = path.join(ROOT, 'src', 'nimbus-session.ts');
+const SRC = path.join(ROOT, 'src', 'session', 'nimbus-session.ts');
 
 const EXPECTED_METHODS = [
   // DO contract

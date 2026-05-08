@@ -35,7 +35,7 @@ log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
 let resolveTree;
 try {
-  ({ resolveTree } = await import(new URL('../../../../src/npm-resolver.ts', import.meta.url).href));
+  ({ resolveTree } = await import(new URL('../../../../src/npm/resolver.ts', import.meta.url).href));
 } catch (e) {
   log('!! could not import npm-resolver: ' + e.message);
   process.exit(2);

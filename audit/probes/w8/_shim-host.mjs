@@ -10,7 +10,7 @@
 // Function(), and return the resulting __childProcessMod and any
 // auxiliaries the tests need (__pendingIO drain, etc.).
 
-import { generateShimsCode } from '../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../src/runtime/node-shims.ts';
 
 class __ProcessExit extends Error {
   constructor(code) { super(`process.exit(${code})`); this.code = code; }

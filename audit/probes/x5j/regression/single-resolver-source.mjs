@@ -17,8 +17,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const RESOLVER_SRC = path.join(HERE, '../../../../src/npm-resolver.ts');
-const FACET_SRC    = path.join(HERE, '../../../../src/npm-resolve-facet.ts');
+const RESOLVER_SRC = path.join(HERE, '../../../../src/npm/resolver.ts');
+const FACET_SRC    = path.join(HERE, '../../../../src/npm/resolve-facet.ts');
 const supervisor = fs.readFileSync(RESOLVER_SRC, 'utf8');
 const facet      = fs.readFileSync(FACET_SRC, 'utf8');
 

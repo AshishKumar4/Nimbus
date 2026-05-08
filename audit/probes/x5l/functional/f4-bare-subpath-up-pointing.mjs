@@ -15,7 +15,7 @@
 // Post-fix: PASS — normalizePath collapses `constants/..`.
 
 import { makeVfs, check, summary, reset } from '../_helpers.mjs';
-import { prefetchForRequire } from '../../../../src/require-resolver.ts';
+import { prefetchForRequire } from '../../../../src/runtime/require-resolver.ts';
 
 reset();
 

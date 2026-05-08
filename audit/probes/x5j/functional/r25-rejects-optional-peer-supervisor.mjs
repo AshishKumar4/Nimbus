@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const RESOLVER_SRC = path.join(HERE, '../../../../src/npm-resolver.ts');
+const RESOLVER_SRC = path.join(HERE, '../../../../src/npm/resolver.ts');
 const src = fs.readFileSync(RESOLVER_SRC, 'utf8');
 
 // Locate the R2.5 block: `if (topLevelNames.has(pkg.name))` …

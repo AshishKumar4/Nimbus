@@ -8,7 +8,7 @@
 // Pre-fix and post-fix: PASS.
 
 import { makeFacet, check, summary, reset } from '../_helpers.mjs';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 reset();
 

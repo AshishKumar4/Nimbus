@@ -4,14 +4,14 @@
 //
 // Mirrors audit/probes/x5m3/functional/_eval-shims.mjs in spirit.
 
-import { generateShimsCode } from '../../../../src/node-shims.ts';
-import * as facetMod from '../../../../src/facet-manager.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
+import * as facetMod from '../../../../src/facets/manager.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const FACET_SRC = path.resolve(HERE, '../../../../src/facet-manager.ts');
+const FACET_SRC = path.resolve(HERE, '../../../../src/facets/manager.ts');
 
 export function getShimSource() {
   return generateShimsCode();

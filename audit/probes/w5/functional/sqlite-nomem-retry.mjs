@@ -9,14 +9,14 @@
 //     halves and retries; both halves complete; all rows present in SQL.
 //   - Assert: the OOM ring buffer has an entry with cause='sqlite_nomem'.
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { makeMockCtx } from '../_mock-sql.mjs';
 import { ok, eq, gte, group, summary, throws } from '../_tap.mjs';
 
 let getFailures, recordFailure, classifyError;
 try {
-  ({ getFailures, recordFailure } = await import('../../../../src/oom-discriminator.ts'));
-  ({ classifyError } = await import('../../../../src/oom-classify.ts'));
+  ({ getFailures, recordFailure } = await import('../../../../src/observability/oom-discriminator.ts'));
+  ({ classifyError } = await import('../../../../src/observability/oom-classify.ts'));
 } catch (e) {
   ok('oom-discriminator + oom-classify modules exist', false, e.message);
   summary('w5/functional/sqlite-nomem-retry');

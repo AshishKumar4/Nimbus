@@ -21,7 +21,7 @@
 //
 // Run: bun audit/probes/w3.5/_local/integration-shim-eval.mjs
 
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 const code = generateShimsCode();
 

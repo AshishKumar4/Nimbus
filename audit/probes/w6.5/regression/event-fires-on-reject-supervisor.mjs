@@ -10,7 +10,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
 const installerSrc = readFileSync(
-  path.join(ROOT, 'src', 'npm-installer.ts'),
+  path.join(ROOT, 'src', 'npm', 'installer.ts'),
   'utf8',
 );
 
@@ -32,7 +32,7 @@ group('applyW6Registry emits reject before throw', () => {
 });
 
 group('functional contract: emit a reject event then throw', () => {
-  import('../../../../src/wasm-swap-registry.ts').then((reg) => {
+  import('../../../../src/facets/wasm-swap-registry.ts').then((reg) => {
     const captured = [];
     reg.setRegistryEventSink((e) => captured.push(e));
     let threw = false;

@@ -10,7 +10,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
 const resolverSrc = readFileSync(
-  path.join(ROOT, 'src', 'npm-resolver.ts'),
+  path.join(ROOT, 'src', 'npm', 'resolver.ts'),
   'utf8',
 );
 

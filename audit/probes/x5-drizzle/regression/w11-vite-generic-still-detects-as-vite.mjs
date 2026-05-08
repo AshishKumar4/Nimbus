@@ -15,7 +15,7 @@ import { ok, eq, group, summary } from '../../w11/_tap.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..', '..', '..');
-const { detectFramework } = await import(path.join(REPO, 'src', 'framework-detect.ts'));
+const { detectFramework } = await import(path.join(REPO, 'src', 'runtime', 'framework-detect.ts'));
 
 await group('detect-vite-generic invariant', () => {
   const r = detectFramework({

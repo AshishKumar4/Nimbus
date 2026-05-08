@@ -8,7 +8,7 @@
 
 import { ok, eq, group, summary } from '../../w6/_tap.mjs';
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
 
 group('W6 transitive=warn entries still in REJECT_INSTALL', () => {
   for (const name of ['fsevents', 'bufferutil', 'utf-8-validate', 'node-gyp', 'node-pre-gyp']) {

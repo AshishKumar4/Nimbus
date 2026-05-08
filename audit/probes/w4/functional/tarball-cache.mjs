@@ -19,8 +19,8 @@ const log = (s) => { fs.appendFileSync(ARTIFACT, s + '\n'); console.log(s); };
 log('==== PROBE: tarball-cache ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
-const supRpcPath = path.resolve(HERE, '../../../../src/supervisor-rpc.ts');
-const facetPath = path.resolve(HERE, '../../../../src/npm-install-batch-facet.ts');
+const supRpcPath = path.resolve(HERE, '../../../../src/session/supervisor-rpc.ts');
+const facetPath = path.resolve(HERE, '../../../../src/npm/install-batch-facet.ts');
 
 let ok = true;
 const need = (p) => fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : (log('FAIL: missing ' + p), ok = false, null);

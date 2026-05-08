@@ -22,7 +22,7 @@ const log = (s) => { fs.appendFileSync(ARTIFACT, s + '\n'); console.log(s); };
 log('==== PROBE: pipelining-ordering ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
-const facetPath = path.resolve(HERE, '../../../../src/npm-install-batch-facet.ts');
+const facetPath = path.resolve(HERE, '../../../../src/npm/install-batch-facet.ts');
 if (!fs.existsSync(facetPath)) {
   log('FAIL: missing src/npm-install-batch-facet.ts');
   log('VERDICT: FAIL');

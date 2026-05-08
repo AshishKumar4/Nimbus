@@ -17,8 +17,8 @@
 // happy-path proof for the pathe RESOLUTION shape (post-Fix #1 + Fix #2).
 
 import { makeVfs, makeFacet, check, summary, reset } from '../_helpers.mjs';
-import { prefetchForRequire } from '../../../../src/require-resolver.ts';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { prefetchForRequire } from '../../../../src/runtime/require-resolver.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 reset();
 

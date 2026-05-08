@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const RESOLVER = path.join(HERE, '../../../../src/npm-resolver.ts');
+const RESOLVER = path.join(HERE, '../../../../src/npm/resolver.ts');
 const src = fs.readFileSync(RESOLVER, 'utf8');
 
 group('SKIP_PACKAGES still contains the expected build-tools', () => {

@@ -49,9 +49,12 @@ if (tscErrors.length !== BASELINE_TSC_COUNT) {
   console.error(tscErrors.join('\n'));
   allGreen = false;
 } else {
+  // Post-cleanup paths: esbuild-service.ts → src/runtime/,
+  // nimbus-session-init.ts → src/session/init.ts. Match on basename
+  // not directory so future moves don't churn this gate.
   const hasEsbuild = tscErrors.some((e) => e.includes('esbuild-service.ts') && e.includes('TS2307'));
   const hasSqliteVfs = tscErrors.some((e) =>
-    /nimbus-session(-init)?\.ts/.test(e) && e.includes('TS2345')
+    /(nimbus-session(-init)?|session\/init)\.ts/.test(e) && e.includes('TS2345')
   );
   if (!hasEsbuild || !hasSqliteVfs) {
     console.error(`!! tsc errors changed shape (NOT the baseline pair)`);

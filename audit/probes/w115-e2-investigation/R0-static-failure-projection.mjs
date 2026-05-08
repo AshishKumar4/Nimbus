@@ -64,7 +64,7 @@ const steps = [
   {
     name: 'S1. shell→`next dev` resolves bin',
     nimbus: '_CP_FACET_DIRECT extension already added in W11 (next is in the list)',
-    file: 'src/nimbus-session-helpers.ts',
+    file: 'src/session/helpers.ts',
     lineHint: 'BUNDLER_BIN_PREFIXES @ ~352',
     expectsPass: true,
     note: 'verified GREEN in W11 detect-next.mjs probe',
@@ -72,7 +72,7 @@ const steps = [
   {
     name: 'S2. `next dev` does cp.fork(`./dist/server/lib/start-server.js`)',
     nimbus: 'fork() shim (node-shims.ts:1543) does spawn `node modulePath`; IPC over stdin queue + stdout newline-JSON',
-    file: 'src/node-shims.ts',
+    file: 'src/runtime/node-shims.ts',
     lineHint: 'fork @ 1543-1648',
     expectsPass: 'partial — fork CALL works; IPC SHAPE will mismatch in S6',
     note: 'this is the gate W11.5-E1 owns; orthogonal to E2 BUT must complete first',
@@ -80,7 +80,7 @@ const steps = [
   {
     name: 'S3. start-server.js spawns "render-server" via createWorker → cp.fork(render-server.js)',
     nimbus: 'recursive fork: child_process.fork() called from inside a facet → routes back to SUPERVISOR.cpSpawn',
-    file: 'src/facet-process.ts',
+    file: 'src/facets/process.ts',
     lineHint: 'CHILD_PROCESS_MAX_DEPTH=8 @ 191',
     expectsPass: 'depth budget OK at this layer (depth=2)',
     note: 'W8 NIMBUS_CP_DEPTH propagation is in place (facet-process.ts:232-241)',
@@ -88,7 +88,7 @@ const steps = [
   {
     name: 'S4. render-server requires next/dist/compiled/webpack',
     nimbus: 'webpack 5 imports @ load time: terser-webpack-plugin, css-minimizer-webpack-plugin',
-    file: 'src/require-resolver.ts',
+    file: 'src/runtime/require-resolver.ts',
     lineHint: 'prefetchForRequire',
     expectsPass: 'unverified — webpack is in SKIP_PACKAGES (npm-resolver.ts:886). Parallel skip lists list webpack alongside vite/parcel/typescript. A fresh next install MAY put webpack into node_modules anyway since next bundles its own copy under next/dist/compiled/webpack/',
     note: 'X.5-F retro recorded webpack ✅ install. Confirm via next-dev-probe-attempted.md',
@@ -104,7 +104,7 @@ const steps = [
   {
     name: 'S6. jest-worker child_process.fork(... stdio: [..., "ipc"])',
     nimbus: 'IPC channel: real Node v8.serialize over Unix domain socket; Nimbus\'s fork() does JSON-newline over stdin queue',
-    file: 'src/node-shims.ts',
+    file: 'src/runtime/node-shims.ts',
     lineHint: 'fork @ 1556 — NIMBUS_FORK_IPC=1; stdin/stdout multiplexed',
     expectsPass: false,
     note: 'W11.5-E1 GATE: ipc shape mismatch. jest-worker uses parent.send({type:0, args:[...]}) and child.send({type:1, ok}). Buffers in args become {type:"Buffer", data:[]} — terser-webpack-plugin receives malformed input. Tracked separately.',
@@ -120,7 +120,7 @@ const steps = [
   {
     name: 'S8. Each jest-worker child reloads webpack itself + tries to compile ITS chunks',
     nimbus: 'webpack inside a child cp facet: needs another fork()? NO — it uses worker_threads.Worker for thread-loader OR keeps it inline.',
-    file: 'src/node-shims.ts',
+    file: 'src/runtime/node-shims.ts',
     lineHint: 'worker_threads stub @ 1845',
     expectsPass: false,
     note: 'H5 hypothesis: terser+babel may use worker_threads for sub-parallelism. Our worker_threads stub is a NO-OP class (Worker class with terminate() returning Promise.resolve(0)). Anything that postMessage()s and waits for a reply will hang.',
@@ -128,7 +128,7 @@ const steps = [
   {
     name: 'S9. webpack writes .next/cache + emits .next/server/* + .next/static/*',
     nimbus: 'fs.writeFileSync from inside facet → __vfsWrites → flushed on facet exit',
-    file: 'src/facet-manager.ts',
+    file: 'src/facets/manager.ts',
     lineHint: '_flushVfsWrites @ 1317',
     expectsPass: true,
     note: 'works; but vfs flush is at facet exit, so HMR-style incremental writes during a long-running webpack server are NOT live until exit. Causes the dev server to never see its own emitted bundle.',
@@ -136,7 +136,7 @@ const steps = [
   {
     name: 'S10. dev server hibernates if idle 30 s before first request',
     nimbus: 'DO hibernation: facets get torn down; in-flight webpack pool dies mid-build',
-    file: 'src/nimbus-session-hib.ts',
+    file: 'src/session/hibernation.ts',
     lineHint: 'W9 hibernation surface',
     expectsPass: false,
     note: 'H6 hypothesis: hibernation mid-build kills child facets. webpack first build can take 10-45 s on a non-trivial app; well within idle-window if the user only types `npm run dev` and waits for the URL.',

@@ -178,7 +178,7 @@ log('  test4 __resolvePkgSubpath_fixed==mjs:     ' + (test4OK ? 'PASS' : 'FAIL')
 // __resolvePkgSubpath source and check whether it contains the ESM
 // fallback. Today it does not → RED. After Phase C → GREEN.
 const shimsSrc = fs.readFileSync(
-  path.join(HERE, '../../../../src/node-shims.ts'),
+  path.join(HERE, '../../../../src/runtime/node-shims.ts'),
   'utf8',
 );
 const HAS_ESM_FALLBACK_RE = /entry\s*==\s*null\s*&&\s*pkg\.exports\s*!=\s*null/;

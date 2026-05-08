@@ -19,7 +19,7 @@ const REPO = path.resolve(HERE, '..', '..', '..');
 function note(s) { console.log('# ' + s); }
 function tap(name, ok, detail) { console.log(`${ok ? 'ok' : 'not ok'} - ${name}${detail ? ' # ' + detail : ''}`); }
 
-const fp = readFileSync(path.join(REPO, 'src/facet-process.ts'), 'utf8');
+const fp = readFileSync(path.join(REPO, 'src/facets/process.ts'), 'utf8');
 const m = fp.match(/CHILD_PROCESS_MAX_DEPTH\s*=\s*(\d+)/);
 const cap = m ? Number(m[1]) : NaN;
 note(`Cap: CHILD_PROCESS_MAX_DEPTH = ${cap} (src/facet-process.ts)`);

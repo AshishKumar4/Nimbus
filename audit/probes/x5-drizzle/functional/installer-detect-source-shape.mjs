@@ -15,8 +15,8 @@ import { ok, group, summary } from '../../w11/_tap.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..', '..', '..');
 
-const resolverSrc = fs.readFileSync(path.join(REPO, 'src', 'npm-resolver.ts'), 'utf8');
-const facetSrc = fs.readFileSync(path.join(REPO, 'src', 'npm-resolve-facet.ts'), 'utf8');
+const resolverSrc = fs.readFileSync(path.join(REPO, 'src', 'npm', 'resolver.ts'), 'utf8');
+const facetSrc = fs.readFileSync(path.join(REPO, 'src', 'npm', 'resolve-facet.ts'), 'utf8');
 
 await group('npm-resolver.ts: bestEffortNames declared', () => {
   ok('bestEffortNames Set declared', /const bestEffortNames\s*=\s*new Set<string>\(\)/.test(resolverSrc));

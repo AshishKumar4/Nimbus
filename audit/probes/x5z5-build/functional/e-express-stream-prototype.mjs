@@ -18,7 +18,7 @@
 
 import { ok, summary } from '../../w6/_tap.mjs';
 import { makeFacet, makeVfs } from '../../x5c/_helpers.mjs';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 // We don't need a VFS payload — just the shim scope. But makeFacet expects
 // bundle/dirs. Smoke-test fixture: a single CJS file that pokes

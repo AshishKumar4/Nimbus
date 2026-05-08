@@ -5,7 +5,7 @@ import { ok, eq, group, summary } from '../_tap.mjs';
 
 let mod;
 try {
-  mod = await import('../../../../src/wasm-swap-registry.ts');
+  mod = await import('../../../../src/facets/wasm-swap-registry.ts');
 } catch (e) {
   ok('wasm-swap-registry module exists', false, e.message);
   summary('w6/e2e/build-specs-integration');

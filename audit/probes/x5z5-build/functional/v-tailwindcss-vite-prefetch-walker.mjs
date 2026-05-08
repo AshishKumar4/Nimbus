@@ -18,7 +18,7 @@
 
 import { ok, summary } from '../../w6/_tap.mjs';
 import { makeVfs } from '../../x5c/_helpers.mjs';
-import { prefetchForRequire } from '../../../../src/require-resolver.ts';
+import { prefetchForRequire } from '../../../../src/runtime/require-resolver.ts';
 
 // Synth fixture mirroring the tw-vite shape:
 //   /home/user/app/script.js does `require('@tailwindcss/vite')`

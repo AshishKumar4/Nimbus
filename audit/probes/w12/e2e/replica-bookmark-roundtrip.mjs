@@ -10,7 +10,7 @@ import { ok, eq, group, summary } from '../_tap.mjs';
 import { makePrimaryCtx, makeReplicaCtx } from '../_mock-replica-ctx.mjs';
 
 let mod;
-try { mod = await import('../../../../src/replica-routing.ts'); }
+try { mod = await import('../../../../src/replica/routing.ts'); }
 catch (e) { ok('replica-routing module imports', false, e.message); summary('w12/e2e/replica-bookmark-roundtrip'); }
 
 const { inspectReplicaState, captureBookmarkAfterWrite } = mod;

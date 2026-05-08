@@ -6,7 +6,7 @@
 // functional probes therefore work by: (a) source-text presence/structure
 // assertions, (b) targeted IIFE extraction where feasible.
 
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 export function getShimSource() {
   return generateShimsCode();

@@ -3,7 +3,7 @@
 
 import { ok, eq, group, summary } from '../../w6/_tap.mjs';
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
 
 group('telemetry hook exports', () => {
   ok('exports setRegistryEventSink', typeof reg.setRegistryEventSink === 'function');

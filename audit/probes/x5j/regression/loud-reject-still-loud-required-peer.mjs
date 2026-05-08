@@ -21,7 +21,7 @@ const log = (s) => { fs.appendFileSync(ARTIFACT, s + '\n'); console.log(s); };
 log('==== X5J loud-reject-still-loud-required-peer ====');
 log('==== TIMESTAMP: ' + new Date().toISOString() + ' ====');
 
-const { resolveTree } = await import(new URL('../../../../src/npm-resolver.ts', import.meta.url).href);
+const { resolveTree } = await import(new URL('../../../../src/npm/resolver.ts', import.meta.url).href);
 
 const MOCK_REGISTRY = {
   // P declares REQUIRED peer sharp (peerDependenciesMeta.sharp.optional = false / absent).

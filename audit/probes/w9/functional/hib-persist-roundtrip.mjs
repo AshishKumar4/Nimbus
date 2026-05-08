@@ -23,7 +23,7 @@ import { makeMockCtx } from '../_mock-sql.mjs';
 
 let mod;
 try {
-  mod = await import('../../../../src/process-logs.ts');
+  mod = await import('../../../../src/runtime/process-logs.ts');
 } catch (e) {
   ok('process-logs module imports', false, e.message);
   summary('w9/functional/hib-persist-roundtrip');

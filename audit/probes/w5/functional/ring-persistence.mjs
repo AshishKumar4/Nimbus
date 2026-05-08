@@ -9,7 +9,7 @@ import { ok, eq, gte, lte, group, summary } from '../_tap.mjs';
 
 let mod;
 try {
-  mod = await import('../../../../src/oom-discriminator.ts');
+  mod = await import('../../../../src/observability/oom-discriminator.ts');
 } catch (e) {
   ok('oom-discriminator module exists', false, e.message);
   summary('w5/functional/ring-persistence');

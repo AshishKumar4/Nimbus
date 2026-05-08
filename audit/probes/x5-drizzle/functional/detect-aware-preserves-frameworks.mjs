@@ -14,7 +14,7 @@ import { ok, eq, group, summary } from '../../w11/_tap.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..', '..', '..');
-const { detectFramework } = await import(path.join(REPO, 'src', 'framework-detect.ts'));
+const { detectFramework } = await import(path.join(REPO, 'src', 'runtime', 'framework-detect.ts'));
 
 const cases = [
   { label: 'next.js', pkg: { dependencies: { next: '14.2.0', react: '18.3.1' }, devDependencies: {}, scripts: {} }, files: ['package.json', 'next.config.js'], expectFw: 'next' },

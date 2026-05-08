@@ -5,7 +5,7 @@
 // same inodes inserted, same chunks inserted, same deletePaths
 // honoured.
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { makeMockCtx } from '../_mock-sql.mjs';
 import { ok, eq, gte, group, summary } from '../_tap.mjs';
 

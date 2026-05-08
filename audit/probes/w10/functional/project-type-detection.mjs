@@ -4,7 +4,7 @@ import { ok, eq, summary } from '../_tap.mjs';
 import { makeMockVfs } from '../_mock-vfs.mjs';
 // Imports the detector from the leaf module project-detect.ts (Bun can't
 // load nimbus-session.ts because it pulls cloudflare:workers).
-import { detectCloudflareWorkersProject } from '../../../../src/project-detect.ts';
+import { detectCloudflareWorkersProject } from '../../../../src/runtime/project-detect.ts';
 
 // Case 1: empty project — false
 {

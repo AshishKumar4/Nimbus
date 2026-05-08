@@ -7,7 +7,7 @@
 
 import { ok, group, summary } from '../../w6/_tap.mjs';
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
 
 group('helper exists', () => {
   ok('exports isOptionalNativeBinding', typeof reg.isOptionalNativeBinding === 'function');

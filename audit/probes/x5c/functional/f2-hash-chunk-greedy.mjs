@@ -178,7 +178,7 @@ let bundle;
 let usedReal = false;
 try {
   // Try to import the real one (will be added in Phase C).
-  const fm = await import('../../../../src/facet-manager.ts');
+  const fm = await import('../../../../src/facets/manager.ts');
   if (typeof fm.greedyAddMainEntries === 'function') {
     const b = {};
     fm.greedyAddMainEntries(vfs, '/home/user/app', b, { totalBytes: 0, fileCount: 0 });

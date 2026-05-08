@@ -11,7 +11,7 @@
 // Pre-fix and post-fix: PASS (X.5-C is additive, doesn't regress W3).
 
 import { makeFacet, check, summary, reset } from '../_helpers.mjs';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 reset();
 

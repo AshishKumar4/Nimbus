@@ -14,9 +14,9 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const INSTALLER_SRC = path.join(HERE, '../../../../src/npm-installer.ts');
-const RESOLVER_SRC  = path.join(HERE, '../../../../src/npm-resolver.ts');
-const REGISTRY_SRC  = path.join(HERE, '../../../../src/wasm-swap-registry.ts');
+const INSTALLER_SRC = path.join(HERE, '../../../../src/npm/installer.ts');
+const RESOLVER_SRC  = path.join(HERE, '../../../../src/npm/resolver.ts');
+const REGISTRY_SRC  = path.join(HERE, '../../../../src/facets/wasm-swap-registry.ts');
 const installer = fs.readFileSync(INSTALLER_SRC, 'utf8');
 const resolver  = fs.readFileSync(RESOLVER_SRC, 'utf8');
 const registry  = fs.readFileSync(REGISTRY_SRC, 'utf8');

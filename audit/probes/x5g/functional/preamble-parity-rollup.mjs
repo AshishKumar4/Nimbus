@@ -10,7 +10,7 @@ import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PREAMBLE = path.join(HERE, '../../../../src/parallel/npm-resolve-preamble.ts');
-const REGISTRY = path.join(HERE, '../../../../src/wasm-swap-registry.ts');
+const REGISTRY = path.join(HERE, '../../../../src/facets/wasm-swap-registry.ts');
 
 const preamble = fs.readFileSync(PREAMBLE, 'utf8');
 const registry = fs.readFileSync(REGISTRY, 'utf8');

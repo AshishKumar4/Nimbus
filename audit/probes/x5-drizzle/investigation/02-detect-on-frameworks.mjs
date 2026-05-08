@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..', '..', '..');
-const { detectFramework } = await import(path.join(REPO, 'src', 'framework-detect.ts'));
+const { detectFramework } = await import(path.join(REPO, 'src', 'runtime', 'framework-detect.ts'));
 
 const cases = [
   {

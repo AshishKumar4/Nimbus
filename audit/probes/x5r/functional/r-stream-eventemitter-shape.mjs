@@ -24,7 +24,7 @@
 
 import { ok, summary } from '../../w6/_tap.mjs';
 import { makeFacet, makeVfs } from '../../x5c/_helpers.mjs';
-import { generateShimsCode } from '../../../../src/node-shims.ts';
+import { generateShimsCode } from '../../../../src/runtime/node-shims.ts';
 
 // Synth fixture that exercises the redis cache.js failure mode in isolation.
 const fixture = {

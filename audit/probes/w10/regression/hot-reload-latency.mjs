@@ -8,7 +8,7 @@
 import { ok, lte, summary } from '../_tap.mjs';
 import { makeMockVfs } from '../_mock-vfs.mjs';
 import { makeMockSql } from '../_mock-sql.mjs';
-import { NimbusWrangler } from '../../../../src/nimbus-wrangler.ts';
+import { NimbusWrangler } from '../../../../src/wrangler/nimbus-wrangler.ts';
 
 const vfs = makeMockVfs();
 vfs.writeFile('home/user/wrangler.jsonc', JSON.stringify({

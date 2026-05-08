@@ -36,7 +36,7 @@
  * byob-readable, which is the precise requirement for RPC transit.
  */
 
-import type { BatchInodeEntry, BatchChunkEntry, BatchWritePayload } from '../sqlite-vfs.js';
+import type { BatchInodeEntry, BatchChunkEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
 
 // ── Constants ──────────────────────────────────────────────────────────
 

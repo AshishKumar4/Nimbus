@@ -25,8 +25,8 @@ const EXPECTED_CMDS = [
 ];
 
 const candidates = [
-  path.join(ROOT, 'src', 'nimbus-session.ts'),
-  path.join(ROOT, 'src', 'nimbus-session-init.ts'),
+  path.join(ROOT, 'src', 'session', 'nimbus-session.ts'),
+  path.join(ROOT, 'src', 'session', 'init.ts'),
 ];
 
 const sources = candidates

@@ -9,7 +9,7 @@
 // inject a SQLITE_NOMEM-and-retry cycle, walk inodes, assert counters
 // match.
 
-import { SqliteVFS } from '../../../../src/sqlite-vfs.ts';
+import { SqliteVFS } from '../../../../src/vfs/sqlite-vfs.ts';
 import { makeMockCtx } from '../_mock-sql.mjs';
 import { ok, eq, gte, group, summary } from '../_tap.mjs';
 

@@ -18,9 +18,9 @@ import { ok, group, summary } from '../../w6/_tap.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
-const facetSrc = readFileSync(path.join(ROOT, 'src', 'npm-resolve-facet.ts'), 'utf8');
-const preambleSrc = readFileSync(path.join(ROOT, 'src', 'parallel', 'npm-resolve-preamble.ts'), 'utf8');
-const installerSrc = readFileSync(path.join(ROOT, 'src', 'npm-installer.ts'), 'utf8');
+const facetSrc = readFileSync(path.join(ROOT, 'src', 'npm', 'resolve-facet.ts'), 'utf8');
+const preambleSrc = readFileSync(path.join(ROOT, 'src', 'loaders', 'npm-resolve-preamble.ts'), 'utf8');
+const installerSrc = readFileSync(path.join(ROOT, 'src', 'npm', 'installer.ts'), 'utf8');
 
 group('ResolveFacetResult interface adds registryEvents', () => {
   ok(

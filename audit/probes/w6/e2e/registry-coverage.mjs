@@ -16,7 +16,7 @@ if (process.env.NIMBUS_W6_E2E_PROD !== '1') {
 
 let registry;
 try {
-  registry = await import('../../../../src/wasm-swap-registry.ts');
+  registry = await import('../../../../src/facets/wasm-swap-registry.ts');
 } catch (e) {
   ok('wasm-swap-registry module exists', false, e.message);
   summary('w6/e2e/registry-coverage');

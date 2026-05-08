@@ -17,9 +17,9 @@ import { ok, eq, group, summary } from '../../w6/_tap.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..', '..', '..');
 
-const reg = await import('../../../../src/wasm-swap-registry.ts');
+const reg = await import('../../../../src/facets/wasm-swap-registry.ts');
 const preambleSrc = fs.readFileSync(
-  path.join(REPO, 'src', 'parallel', 'npm-resolve-preamble.ts'),
+  path.join(REPO, 'src', 'loaders', 'npm-resolve-preamble.ts'),
   'utf8',
 );
 

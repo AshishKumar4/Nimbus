@@ -1,3 +1,30 @@
+/**
+ * index.ts — Workers entrypoint.
+ *
+ * Two responsibilities, kept here because both must execute on every
+ * request before any DO dispatch:
+ *
+ *   1. Re-export the DO classes + RPC service bindings so wrangler
+ *      bundles them and `enable_ctx_exports` (compat date 2026-04-01+)
+ *      auto-populates them under ctx.exports. NimbusSession
+ *      (the Durable Object) and SupervisorRPC + the inner-Worker
+ *      binding shims (NimbusAssetsRPC, NimbusLoaderRPC,
+ *      NimbusLoadedWorker, NimbusLoadedEntrypoint,
+ *      NimbusDurableObjectNamespace, NimbusDOStub) all need to be
+ *      reachable as exports of the entrypoint module.
+ *
+ *   2. Route HTTP/WS requests to the right session via the session
+ *      ID embedded in /s/<id>/* paths. The session ID is the sole
+ *      identity of the user's Durable Object; URL → DO mapping is
+ *      a stable contract.
+ *
+ * The fetch handler also installs the default w6.5 registry-event
+ * sink at module-load time (line ~50), so any installer-event
+ * (registry swap, drain) shows up in `wrangler tail` as a single
+ * JSON line. F-observability will replace it with
+ * env.INSTALL_METRICS.writeDataPoint().
+ */
+
 import {
   NimbusSession,
   NimbusAssetsRPC,
@@ -6,18 +33,18 @@ import {
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
   NimbusDOStub,
-} from './nimbus-session.js';
-import { SupervisorRPC } from './supervisor-rpc.js';
-import { CirrusHmrRPC } from './real-vite-hmr.js';
-import { generateSessionId, isValidSessionId } from './session-id.js';
+} from './session/nimbus-session.js';
+import { SupervisorRPC } from './session/supervisor-rpc.js';
+import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
+import { generateSessionId, isValidSessionId } from './_shared/session-id.js';
 import {
   parseSessionRoute,
   forwardToSession,
   renderInvalidSessionHtml,
   SESSION_ROUTE_PREFIX,
-} from './session-router.js';
-import { setCtxExports, getCtxExports as _getCtxExports } from './ctx-exports.js';
-import { setRegistryEventSink } from './wasm-swap-registry.js';
+} from './_shared/session-router.js';
+import { setCtxExports, getCtxExports as _getCtxExports } from './session/ctx-exports.js';
+import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)

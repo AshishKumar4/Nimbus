@@ -2,7 +2,7 @@
 
 import { eq, ok, summary } from '../_tap.mjs';
 import { makeMockVfs } from '../_mock-vfs.mjs';
-import { R2Emulator } from '../../../../src/binding-r2.ts';
+import { R2Emulator } from '../../../../src/bindings/r2.ts';
 
 const vfs = makeMockVfs();
 const r2 = new R2Emulator({ vfs, root: 'home/user', binding: 'BUCKET', onLog: () => {} });

@@ -9,7 +9,7 @@ import { ok, eq, group, summary } from '../_tap.mjs';
 
 let registry;
 try {
-  registry = await import('../../../../src/wasm-swap-registry.ts');
+  registry = await import('../../../../src/facets/wasm-swap-registry.ts');
 } catch (e) {
   ok('wasm-swap-registry module exists', false, e.message);
   summary('w6/functional/no-conflict-with-skip');
@@ -17,7 +17,7 @@ try {
 
 let resolverMod;
 try {
-  resolverMod = await import('../../../../src/npm-resolver.ts');
+  resolverMod = await import('../../../../src/npm/resolver.ts');
 } catch (e) {
   ok('npm-resolver module exists', false, e.message);
   summary('w6/functional/no-conflict-with-skip');
