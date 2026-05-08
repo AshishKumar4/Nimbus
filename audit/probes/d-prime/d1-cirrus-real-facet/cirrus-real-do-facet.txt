@@ -1,15 +1,15 @@
 ==== D'.1 cirrus-real-do-facet probe ====
-==== TIMESTAMP: 2026-05-08T20:24:24.141Z ====
+==== TIMESTAMP: 2026-05-08T22:03:56.808Z ====
 BASE: http://127.0.0.1:8792
-SID: steep-koala-2491
+SID: endless-teal-2649
 stage 1: shell prompt ready
-stage 1: cirrus diag = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"f8154368-da90-4a58-9337-07bb908fe172","bootMs":21,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":317,"hmrClients":0}
+stage 1: cirrus diag = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"3726bfd7-1f4c-498c-8d2a-100936e36d70","bootMs":7,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":439,"hmrClients":0}
 PASS: kind='do-facet' (cirrus-real running as DO Facet)
-PASS: cookie=f8154368-da9... (facet's own SQLite working)
+PASS: cookie=3726bfd7-1f4... (facet's own SQLite working)
 PASS: facet booted without error
-PASS: cold-start = 21ms ≤ 200ms regression budget
+PASS: cold-start = 7ms ≤ 200ms regression budget
 PASS: isolateGen stable at 1 across close
-stage 3: cirrus diag post-reconnect = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"f8154368-da90-4a58-9337-07bb908fe172","bootMs":21,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2717,"hmrClients":0}
+stage 3: cirrus diag post-reconnect = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"3726bfd7-1f4c-498c-8d2a-100936e36d70","bootMs":7,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2846,"hmrClients":0}
 PASS: post-reconnect: kind=do-facet
 PASS: cookie preserved across supervisor reconnect (facet survived independently)
 PASS: warm-fetch latency = 0ms ≤ 50ms

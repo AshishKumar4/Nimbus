@@ -1,17 +1,17 @@
 ==== interactive-liveness / walltime-distribution ====
-==== TIMESTAMP: 2026-05-08T20:24:30.661Z ====
+==== TIMESTAMP: 2026-05-08T22:04:02.919Z ====
 BASE: http://127.0.0.1:8792
 SAMPLES: 60
 POLL_INTERVAL_MS: 100
-SID: elegant-briar-1815
+SID: famous-cascade-0049
 --- distribution ---
-p50: 7 ms
-p95: 13 ms
-p99: 18 ms
+p50: 8 ms
+p95: 12 ms
+p99: 17 ms
 histogram: {
   "<100": 60
 }
-PASS: p99 18 ms < 500 ms ceiling
+PASS: p99 17 ms < 500 ms ceiling
 PASS: 100.0% of frames in <100 ms bucket (target ≥ 90%)
 PASS: 0.0% of frames in ~5s bucket (target < 5%)
 PASS: zero frames > 60 s (catastrophic outlier bucket clean)

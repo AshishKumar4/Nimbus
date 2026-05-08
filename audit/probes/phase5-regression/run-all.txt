@@ -1,41 +1,42 @@
 ==== Phase 5 P5.3 — full regression run ====
-==== TIMESTAMP: 2026-05-08T20:24:09.861Z ====
+==== TIMESTAMP: 2026-05-08T22:03:42.482Z ====
 BASE: http://127.0.0.1:8792
 QUICK: false
-probes to run: 28 of 28 total
+probes to run: 29 of 29 total
 
-PASS    C'.1 heap-estimator                                  20/20     80ms
-PASS    C'.2 recovery-events                                 13/13    386ms
-PASS    C'.3 error-recovery                                    8/8   1046ms
-PASS    A'.1 resolver-fallback                               17/17     58ms
-PASS    A'.2 streaming-buffers                                 3/3     75ms
-PASS    A'.3 barrel-synth                                      5/5     65ms
-PASS    A'.5 esbuild-bytes                                     3/3     67ms
-PASS    B'.1 shell-state                                     12/12   1902ms
-PASS    B'.2 kernel-mounts                                     4/4   1161ms
-PASS    B'.3 scrollback                                      13/13   6156ms
-PASS    B'.4 phase-machine                                   12/12   1665ms
-PASS    B'.5 join-existing                                   13/13   1567ms
-PASS    D'.1 cirrus-real-do-facet                              8/8   3221ms
-PASS    D'.2 loader-pool-rename                                4/4   3293ms
-PASS    interactive-liveness/walltime-distribution             4/4   6589ms
+PASS    C'.1 heap-estimator                                  20/20     83ms
+PASS    C'.2 recovery-events                                 13/13    448ms
+PASS    C'.3 error-recovery                                    8/8   1060ms
+PASS    A'.1 resolver-fallback                               17/17     70ms
+PASS    A'.2 streaming-buffers                                 3/3     79ms
+PASS    A'.3 barrel-synth                                      5/5     67ms
+PASS    A'.5 esbuild-bytes                                     3/3     87ms
+PASS    B'.1 shell-state                                     12/12   1914ms
+PASS    B'.2 kernel-mounts                                     4/4   1167ms
+PASS    B'.3 scrollback                                      13/13   6049ms
+PASS    B'.4 phase-machine                                   12/12   1679ms
+PASS    B'.5 join-existing                                   13/13   1561ms
+PASS    D'.1 cirrus-real-do-facet                              8/8   3077ms
+PASS    D'.2 loader-pool-rename                                4/4   3037ms
+PASS    interactive-liveness/walltime-distribution             4/4   6662ms
 PASS    W5 ring-persistence                                    0/0     29ms
-PASS    W5 lru-shrink-restore                                  0/0     33ms
-PASS    W5 sqlite-nomem-retry                                  0/0     31ms
-PASS    W5 diag-shape                                          0/0     30ms
-PASS    W7 frame-roundtrip                                     0/0     35ms
-PASS    W7 large-payload                                       0/0    173ms
-PASS    W7 backpressure                                        0/0    546ms
-PASS    W7 cancel-mid-stream                                   0/0     29ms
-PASS    W7 error-propagation                                   0/0     29ms
-PASS    W7 empty-batches                                       0/0     34ms
-PASS    W7 bytes-source-type                                   0/0     28ms
-PASS    W7 writestream-on-vfs                                  0/0     29ms
-PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   2950ms
+PASS    W5 lru-shrink-restore                                  0/0     37ms
+PASS    W5 sqlite-nomem-retry                                  0/0     37ms
+PASS    W5 diag-shape                                          0/0     25ms
+PASS    W7 frame-roundtrip                                     0/0     32ms
+PASS    W7 large-payload                                       0/0    190ms
+PASS    W7 backpressure                                        0/0    549ms
+PASS    W7 cancel-mid-stream                                   0/0     30ms
+PASS    W7 error-propagation                                   0/0     31ms
+PASS    W7 empty-batches                                       0/0     32ms
+PASS    W7 bytes-source-type                                   0/0     32ms
+PASS    W7 writestream-on-vfs                                  0/0     36ms
+PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   3422ms
+PASS    deploy-validation/no-experimental-flags                0/0     37ms
 
 ==== SUMMARY ====
-total runtime: 31.3s
-  PASS    : 28
+total runtime: 31.6s
+  PASS    : 29
   FAIL    : 0
   TIMEOUT : 0
   SKIP    : 0

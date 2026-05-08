@@ -25,26 +25,36 @@ await group('placement.mode = smart', () => {
   eq('placement.mode === smart', parsed?.placement?.mode, 'smart');
 });
 
-await group('top-level compat flags (CWB-1 hotfix: replica_routing moved to env.production)', () => {
-  // Top-level flags are what `wrangler dev` (no --env) consumes.
-  // `replica_routing` was moved out of the top-level list because the
-  // bundled workerd in many local dev installs predates GA replica
-  // routing and rejects the flag at config-time. Production deploys
-  // pick up `replica_routing` via the `env.production` overlay (next
-  // group). See audit/sections/POST-PHASE5-CROSS-WAVE-AUDIT §CWB-1.
+await group('top-level compat flags (DEPLOY-FLAG-FIX 2026-05-08: $experimental flags removed)', () => {
+  // Both `experimental` and `replica_routing` are tagged $experimental
+  // in workerd (compatibility-date.capnp:replicaRouting@60 +
+  // workerdExperimental@24). Cloudflare's deploy validator rejects
+  // $experimental flags for non-team accounts (the validator started
+  // enforcing this between the 2026-05-08T19:19Z deploy that succeeded
+  // and the 21:43Z deploy that failed with [code: 10021]).
+  //
+  // Runtime invariants are preserved: `experimental` was never
+  // functionally exercised (zero `allowExperimental: true` call sites
+  // in src/), and `replica_routing` graceful-degrades via
+  // src/replica/routing.ts::tryEnableReplicas → state: 'unsupported'.
+  //
+  // See audit/sections/DEPLOY-FLAG-FIX-retro.md for full evidence.
   const flags = parsed?.compatibility_flags ?? [];
   ok('compatibility_flags is an array', Array.isArray(flags));
   ok('includes nodejs_compat (W3 carry)', flags.includes('nodejs_compat'));
-  ok('includes experimental (W10 carry)', flags.includes('experimental'));
-  ok('top-level does NOT include replica_routing (CWB-1: prod-only)',
+  ok('does NOT include experimental ($experimental, platform-rejected)',
+     !flags.includes('experimental'));
+  ok('does NOT include replica_routing ($experimental, platform-rejected)',
      !flags.includes('replica_routing'));
 });
 
-await group('env.production overlay carries replica_routing (W12 add)', () => {
-  // Wrangler-env-overlay shape introduced by CWB-1 hotfix
-  // (2026-05-05). `wrangler deploy --env production` is the prod
-  // deploy command; the orchestrator at audit/probes/_deploy-and-
-  // verify-all.mjs was updated to invoke it.
+await group('env.production overlay (no $experimental flags)', () => {
+  // env.production used to overlay `replica_routing` for prod-only
+  // deploys (CWB-1 hotfix, 2026-05-05). Post DEPLOY-FLAG-FIX the flag
+  // is removed at both layers; env.production's compat_flags is now
+  // identical to the top-level. The overlay still exists for the
+  // non-inheritable bindings (durable_objects, r2_buckets,
+  // worker_loaders, vars).
   const prod = parsed?.env?.production;
   ok('env.production block present', prod && typeof prod === 'object');
   ok('env.production.name === nimbus (no env-name suffix)',
@@ -52,21 +62,22 @@ await group('env.production overlay carries replica_routing (W12 add)', () => {
   const prodFlags = prod?.compatibility_flags ?? [];
   ok('env.production.compatibility_flags is an array',
      Array.isArray(prodFlags));
-  // Wrangler env overlays REPLACE inheritable keys (not merge), so the
-  // full superset must be present in the env block.
   ok('env.production includes nodejs_compat',
      prodFlags.includes('nodejs_compat'));
-  ok('env.production includes experimental',
-     prodFlags.includes('experimental'));
-  ok('env.production includes replica_routing',
-     prodFlags.includes('replica_routing'));
+  ok('env.production does NOT include experimental',
+     !prodFlags.includes('experimental'));
+  ok('env.production does NOT include replica_routing',
+     !prodFlags.includes('replica_routing'));
 });
 
 await group('env.production redeclares non-inheritable bindings', () => {
   // Per https://developers.cloudflare.com/workers/wrangler/configuration/
-  // §"Non-inheritable keys", `durable_objects`, `r2_buckets`, and `vars`
-  // do NOT inherit from the top level — they must be redeclared in the
-  // env block so the deployed Worker actually has the bindings wired.
+  // §"Non-inheritable keys", `durable_objects`, `r2_buckets`,
+  // `worker_loaders`, and `vars` do NOT inherit from the top level —
+  // they must be redeclared in the env block so the deployed Worker
+  // actually has the bindings wired. (DEPLOY-FLAG-FIX added
+  // worker_loaders to env.production after `wrangler deploy --dry-run
+  // -e production` warned it was missing.)
   const prod = parsed?.env?.production;
   ok('env.production.durable_objects.bindings has NIMBUS_SESSION',
      !!prod?.durable_objects?.bindings?.find((b) => b.name === 'NIMBUS_SESSION'));
@@ -74,6 +85,8 @@ await group('env.production redeclares non-inheritable bindings', () => {
      !!prod?.r2_buckets?.find((b) => b.binding === 'NPM_TARBALL_CACHE'));
   ok('env.production.r2_buckets has NPM_PACKUMENT_CACHE',
      !!prod?.r2_buckets?.find((b) => b.binding === 'NPM_PACKUMENT_CACHE'));
+  ok('env.production.worker_loaders has LOADER',
+     !!prod?.worker_loaders?.find((b) => b.binding === 'LOADER'));
   ok('env.production.vars present',
      prod?.vars && typeof prod.vars === 'object');
 });

@@ -1,6 +1,6 @@
 ==== D'.2 loader-pool-rename probe ====
-==== TIMESTAMP: 2026-05-08T20:24:27.349Z ====
-ROOT: /workspace/worktrees/cleanup-and-readme
+==== TIMESTAMP: 2026-05-08T22:03:59.879Z ====
+ROOT: /workspace/worktrees/deploy-flag-fix
 stage 1: NimbusFacetPool hits in src/ = 0
 PASS: grep -rn "NimbusFacetPool" src/ → 0 hits (rename complete)
 stage 1: NimbusFacetPoolOptions hits in src/ = 0

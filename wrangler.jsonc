@@ -3,24 +3,54 @@
   "name": "nimbus",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-01",
-  // `experimental` enables ServiceStub serialization for WorkerEntrypoint-
-  // returning-WorkerEntrypoint patterns (used by NimbusLoaderRPC to return
-  // chained stubs without serializing raw WorkerStub objects). Required
-  // for `wrangler dev` inside Nimbus to proxy env.LOADER.load() calls.
+  // [DEPLOY-FLAG-FIX 2026-05-08] Removed `experimental` and `replica_routing`.
   //
-  // [CWB-1 hotfix, 2026-05-05] `replica_routing` MOVED to env.production
-  // overlay below. The bundled workerd in many local dev installs predates
-  // GA replica routing and rejects the flag at config-time, breaking every
-  // `wrangler dev` (no `--env`) DO request with `Error: workerd does not
-  // support replica routing.` See audit/sections/POST-PHASE5-CROSS-WAVE-AUDIT
-  // §CWB-1 for the full root cause. Production deploys MUST use
-  // `wrangler deploy --env production` to pick up replica_routing
-  // (see env.production.compatibility_flags below). The W12 DO code path
-  // graceful-degrades when the flag is absent: replica-routing.ts reports
-  // `state: 'unsupported'` and the DO falls back to the pre-W12 single-
-  // primary path. So `wrangler dev` without --env loses W12 read-replica
-  // benefit but functions correctly.
-  "compatibility_flags": ["nodejs_compat", "experimental"],
+  // Both flags are tagged `$experimental` in workerd
+  // (src/workerd/io/compatibility-date.capnp:replicaRouting@60 +
+  //  workerdExperimental@24); per the same file's `experimental`
+  // annotation: "Experimental flags cannot be used in Workers
+  // deployed on Cloudflare except by test accounts belonging to
+  // Cloudflare team members." The platform validator started
+  // enforcing this for our account between the 2026-05-08T19:19Z
+  // deploy (succeeded) and 21:43Z deploy (rejected with [code: 10021]).
+  // Same wrangler.jsonc, same wrangler 4.80.0 — server-side change.
+  //
+  // Runtime evidence both flags are dead config from Nimbus's POV:
+  //
+  //   `experimental`: the workerd source comment ("catch-all
+  //   compatibility flag for experimental development... do not
+  //   ignore this warning") describes its actual role as gating
+  //   `allowExperimental: true` on child Worker Loaders
+  //   (src/workerd/api/worker-loader.c++:267-274). `grep
+  //   "allowExperimental" src/` finds zero call sites — Nimbus
+  //   only declares the field in src/loaders/vendor/types.ts:25
+  //   for type-shape parity with the upstream cloudflare-parallel
+  //   library, never sets it. The ctx.exports loopback bindings
+  //   (NimbusLoaderRPC, NimbusAssetsRPC, etc.) work via
+  //   `enable_ctx_exports` which is implied by the 2026-04-01
+  //   compatibility_date.
+  //
+  //   `replica_routing`: enables a runtime-side opt-in for DO read
+  //   replica routing. src/replica/routing.ts::tryEnableReplicas
+  //   probes `ctx.storage.enableReplicas()` and
+  //   `ctx.storage.configureReadReplication()`; both throw or
+  //   return undefined when the platform-side feature is
+  //   unavailable. The probe catches and returns
+  //   `state: 'unsupported'`, exposed via /api/_diag/replica-routing.
+  //   Without the flag, runtime code paths land on this graceful-
+  //   degrade — DO continues serving requests via the pre-W12
+  //   single-primary path. Risk R1 was anticipated in
+  //   audit/sections/W12-plan.md:452 ("flag rejected by prod runtime
+  //   → Graceful-degrade: probe at runtime; log 'unsupported'.
+  //   No user-visible breakage.").
+  //
+  // The `replica_routing` flag was previously held in env.production
+  // overlay as a CWB-1 hotfix (2026-05-05) so local `wrangler dev`
+  // could run without it. With the deploy validator now also rejecting
+  // it, the env.production overlay's only remaining purpose was that
+  // flag — so the env overlay collapses too. Both top-level and
+  // env.production now carry the same `compatibility_flags`.
+  "compatibility_flags": ["nodejs_compat"],
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
   // [docs](https://developers.cloudflare.com/workers/configuration/placement/),
   // Cloudflare measures the Worker's request duration in different colos
@@ -111,35 +141,39 @@
       "bucket_name": "nimbus-npm-packument-cache"
     }
   ],
-  // [CWB-1 hotfix, 2026-05-05] env.production overlay carries the
-  // W12 `replica_routing` compatibility flag. Production deploys MUST
-  // use `wrangler deploy --env production` to apply this overlay.
-  // `audit/probes/_deploy-and-verify-all.mjs` was updated in the same
-  // commit to invoke `wrangler deploy --env production`.
+  // [DEPLOY-FLAG-FIX 2026-05-08] env.production overlay no longer
+  // carries any flags the top-level doesn't. Pre-fix it held
+  // `replica_routing` (CWB-1 hotfix). With that flag now removed at
+  // both layers, the env overlay's only role is to redeclare
+  // non-inheritable bindings (vars, durable_objects, r2_buckets,
+  // worker_loaders) so they reach the deployed Worker.
   //
   // Wrangler env-overlay rules:
-  // - **Inheritable keys** (`compatibility_date`, `placement`, `assets`,
-  //   `alias`, `worker_loaders`, `main`, `name`, `compatibility_flags`):
-  //   if absent in env block, inherited from top level. If present, the
-  //   env value REPLACES the top-level value entirely (no merge for
-  //   array fields). So `compatibility_flags` here MUST be the FULL list,
-  //   not just the additional flag.
-  // - **Non-inheritable keys** (`vars`, `durable_objects`, `r2_buckets`,
-  //   `kv_namespaces`, `services`, etc.): MUST be redeclared in the env
-  //   block to reach the deployed Worker. Verified per
-  //   https://developers.cloudflare.com/workers/wrangler/configuration/#non-inheritable-keys
-  //   (top-level docs section "Non-inheritable keys").
-  // - **Top-level only keys** (`migrations`): cannot appear in env blocks;
-  //   `migrations` is shared across all envs by definition (same DO class
-  //   migrations run once per Worker name).
+  // - **Inheritable keys** (`compatibility_date`, `placement`,
+  //   `assets`, `alias`, `worker_loaders` *), `main`, `name`,
+  //   `compatibility_flags`): if absent in env block, inherited from
+  //   top level. If present, the env value REPLACES the top-level
+  //   value entirely (no merge for array fields).
+  // - **Non-inheritable keys** (`vars`, `durable_objects`,
+  //   `r2_buckets`, `kv_namespaces`, `services`, etc.): MUST be
+  //   redeclared in the env block to reach the deployed Worker. Verified
+  //   per https://developers.cloudflare.com/workers/wrangler/configuration/#non-inheritable-keys
+  // - **Top-level only keys** (`migrations`): cannot appear in env
+  //   blocks; `migrations` is shared across all envs by definition.
+  //
+  // *) Note: `worker_loaders` was originally treated as inheritable,
+  // but `wrangler deploy -e production --dry-run` warns that it is
+  // not actually inherited at deploy time and recommends
+  // redeclaration in env.production. Done below.
   //
   // The `name` field is duplicated explicitly so the deployed Worker
-  // is `nimbus`, not `nimbus-production` (wrangler's default behavior is
-  // to append the env name unless `name` is explicitly set in the env block).
+  // is `nimbus`, not `nimbus-production` (wrangler's default behavior
+  // is to append the env name unless `name` is explicitly set in the
+  // env block).
   "env": {
     "production": {
       "name": "nimbus",
-      "compatibility_flags": ["nodejs_compat", "experimental", "replica_routing"],
+      "compatibility_flags": ["nodejs_compat"],
       "vars": {
         "NIMBUS_DIAG_INSTALL_PIPELINE": ""
       },
@@ -148,6 +182,9 @@
           { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
         ]
       },
+      "worker_loaders": [
+        { "binding": "LOADER" }
+      ],
       "r2_buckets": [
         {
           "binding": "NPM_TARBALL_CACHE",

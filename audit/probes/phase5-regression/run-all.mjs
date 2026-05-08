@@ -147,6 +147,14 @@ const PROBES = [
   { name: 'refactor-gate (tsc baseline + RPC + cmds + exports)',
     file: 'audit/probes/regression/_refactor-gate.mjs',
     timeoutMs: 90_000, needsBase: false },
+
+  // ── Deploy validation (wrangler.jsonc has no $experimental flags) ─
+  // Added 2026-05-08 after DEPLOY-FLAG-FIX. Pre-flight that prevents
+  // a $experimental flag from sneaking back into wrangler.jsonc; the
+  // platform-side validator rejects them at upload with [code: 10021].
+  { name: 'deploy-validation/no-experimental-flags',
+    file: 'audit/probes/deploy-validation/no-experimental-flags.mjs',
+    timeoutMs: 30_000, needsBase: false },
 ];
 
 const results = [];
