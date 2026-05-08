@@ -1,6 +1,9 @@
 node_modules/
 .wrangler/
 bun.lock
+# Local dev environment vars (NIMBUS_DEBUG=1 enables /api/_test/* probe
+# endpoints — never commit, never deploy with this file present).
+.dev.vars
 # Build-time scratch dir for scripts/bundle-plugin-react.mjs
 .cirrus-plugin-react-src/
 .cirrus-npm-cjs-src/

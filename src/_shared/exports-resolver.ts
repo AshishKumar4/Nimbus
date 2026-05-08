@@ -7,7 +7,7 @@
  *   1. Install-time supervisor (TS) — `src/npm-resolver.ts` re-exports the
  *      typed functions for tree resolution.
  *
- *   2. NimbusFacetPool isolates (JS string) — `src/parallel/pre-bundle-preamble.ts`
+ *   2. NimbusLoaderPool isolates (JS string) — `src/parallel/pre-bundle-preamble.ts`
  *      embeds `getExportsResolverJS()` as part of the pool preamble so the
  *      pre-bundle facet uses identical resolution semantics to the supervisor.
  *

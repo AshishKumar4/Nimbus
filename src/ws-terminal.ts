@@ -1,16 +1,43 @@
 /**
  * WebSocket-backed terminal matching Nimbus's ITerminal interface.
  * HeadlessTerminal has: write, writeln, onData, sendData, cols, rows, focus, clear
+ *
+ * [B'.5] The `ws` ref is no longer readonly: a wsClose leaves the
+ * Shell + this terminal alive in-memory; the next /ws upgrade calls
+ * `attach(newWs, ...)` to swap in the new socket. The buffer/flush
+ * timer state is preserved across the swap so any in-flight
+ * coalescing continues seamlessly.
  */
 export class WebSocketTerminal {
-  public readonly ws: WebSocket;
+  public ws: WebSocket;
   private dataCallback: ((data: string) => void) | null = null;
   private _cols: number = 80;
   private _rows: number = 24;
   private buffer: string[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** [B'.3] Optional tee called from flush() with the final coalesced
+   *  frame data. Used by initSession to mirror every WS output frame
+   *  into nimbus_terminal_scrollback. Single-frame granularity (not
+   *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
+  private onFlush: ((data: string) => void) | null;
 
-  constructor(ws: WebSocket) { this.ws = ws; }
+  constructor(ws: WebSocket, onFlush?: (data: string) => void) {
+    this.ws = ws;
+    this.onFlush = onFlush ?? null;
+  }
+
+  /**
+   * [B'.5] Swap the underlying WebSocket on a warm rejoin. The Shell
+   * keeps `terminal` as a stable instance reference (it stored
+   * `this.terminal = e` in its ctor); we just point our ws ref at
+   * the new socket. The optional onFlush replaces the prior tee
+   * (initSession passes a fresh closure capturing the same
+   * self.ctx, but TypeScript-wise it's a fresh function value).
+   */
+  attach(ws: WebSocket, onFlush?: (data: string) => void): void {
+    this.ws = ws;
+    if (onFlush !== undefined) this.onFlush = onFlush;
+  }
 
   get cols(): number { return this._cols; }
   get rows(): number { return this._rows; }
@@ -30,6 +57,13 @@ export class WebSocketTerminal {
     const combined = this.buffer.join('');
     this.buffer = [];
     try { this.ws.send(JSON.stringify({ type: 'output', data: combined })); } catch {}
+    // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
+    // tee can't break the live stream. Fail-soft on the call: any
+    // throw is swallowed; appendScrollback itself catches its own
+    // SQL errors via try/catch in initSession's wrapper.
+    if (this.onFlush) {
+      try { this.onFlush(combined); } catch {}
+    }
   }
 
   onData(callback: (data: string) => void): void { this.dataCallback = callback; }

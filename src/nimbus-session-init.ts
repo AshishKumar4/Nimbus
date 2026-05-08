@@ -41,6 +41,15 @@ import {
   NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE,
 } from './constants.js';
 import { enc } from './_shared/bytes.js';
+import {
+  ensureSessionStateSchema, loadShellState, persistShellState,
+  stampHydratedAt, countSessionStateKeys,
+  loadKernelMounts, persistKernelMounts,
+  appendScrollback, loadScrollback,
+  type ShellStateSnapshot,
+} from './session/state-store.js';
+import { recordRecoveryEvent } from './oom-discriminator.js';
+import { setPhase } from './session/init-phases.js';
 import type { SessionInternal } from './nimbus-session-internal.js';
 
 /**
@@ -61,18 +70,90 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     self.ensureFacetManager();
     self.seedFilesystem();
 
-    self.terminal = new WebSocketTerminal(ws);
+    // ── Phase R: rehydrate session state from DO SQLite [B'.1] ──────────
+    //
+    // Track B' invariant: every observable session field has a SQL-backed
+    // source of truth. The fresh Shell/Kernel/Terminal we build below are
+    // CACHES of those rows — initialised from the snapshot if a row
+    // exists (silent re-init), defaults otherwise (true cold start).
+    //
+    // hasPersistedState is the cold-vs-rehydrate discriminator. The
+    // `hydratedAt` field lets the /api/_diag/session debug endpoint
+    // surface "this DO instance found a row at <ts>" for forensic
+    // tooling.
+    // [B'.4] Phase R — Rehydrate. Read persisted state values from DO
+    // SQLite. Pure SQL reads; the actual application of these values
+    // (Shell ctor params, mount list, scrollback bytes) happens in
+    // later phases.
+    setPhase(self, 'rehydrate', 'init-session');
+    ensureSessionStateSchema(self.ctx);
+    const persisted: ShellStateSnapshot = loadShellState(self.ctx);
+
+    // [B'.4] Phase W (early-wire) — construct WebSocketTerminal with
+    // the B'.3 scrollback tee. Marked as 'wire' here even though
+    // 'build' hasn't run yet because the terminal is the WS-facing
+    // facet and the scrollback replay below is wire-phase work.
+    // Phase B will tag in once we start building the kernel.
+    setPhase(self, 'wire', 'init-session');
+    self.terminal = new WebSocketTerminal(ws, (frame: string) => {
+      try { appendScrollback(self.ctx, frame, Date.now()); }
+      catch (e: any) {
+        try { console.warn('[B\'.3] appendScrollback failed:', e?.message || e); } catch {}
+      }
+    });
+
+    // [B'.3] Replay persisted scrollback BEFORE the cold-start UI gate.
+    // On rehydrate (hasPersistedState=true) we emit the prior
+    // session's terminal contents as a single batched write — the
+    // user reconnects to "where they left off" + a fresh prompt.
+    // On cold start (no row) loadScrollback returns '' so this is a
+    // no-op and the MOTD/Phase O block below runs normally.
+    //
+    // The replay itself goes through terminal.write → flush → tee,
+    // so the replayed bytes also re-append to scrollback. That's the
+    // correct semantics: a user who reconnects twice should see the
+    // same scrollback both times. The cap eviction keeps total bytes
+    // bounded.
+    if (persisted.hasPersistedState) {
+      try {
+        const replay = loadScrollback(self.ctx);
+        if (replay.length > 0) self.terminal.write(replay);
+      } catch (e: any) {
+        try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
+      }
+    }
+
+    // [B'.4] Phase B — Build. Construct Kernel + Shell + registry +
+    // install all commands. CPU-intensive phase. Spans from here
+    // through ~line 1925 (just before Phase O).
+    setPhase(self, 'build', 'init-session');
 
     // ── Boot kernel with in-memory VFS (mounts delegate to SqliteFS) ──
     self.kernel = new Kernel(new MemoryPersistenceBackend());
     self.kernel.initFilesystem();
 
-    // ── Mount SqliteFSProvider at all top-level directories ──
-    const mountPoints = DEFAULT_MOUNT_POINTS;
+    // ── Mount SqliteFSProvider at all top-level directories [B'.2] ──
+    //
+    // Mount list = DEFAULT_MOUNT_POINTS ∪ persisted-mounts. The
+    // defaults are always present (they're platform invariants);
+    // any extras a future custom-mount feature might add survive
+    // reconnect via the nimbus_kernel_mounts table. The persist
+    // step at the end writes the merged list back so the table
+    // tracks the live mount tree.
+    const persistedMounts = loadKernelMounts(self.ctx);
+    const mountPoints = Array.from(new Set([
+      ...DEFAULT_MOUNT_POINTS,
+      ...persistedMounts,
+    ]));
     for (const mp of mountPoints) {
       const provider = new SqliteVFSProvider(self.sqliteFs!, mp);
       self.kernel.vfs.mount('/' + mp, provider);
     }
+    // Persist the mount-tree. Today this writes the same
+    // DEFAULT_MOUNT_POINTS list every initSession (idempotent — the
+    // table just keeps the same 7 rows). Future custom mounts will
+    // flow through the same code path.
+    try { persistKernelMounts(self.ctx, mountPoints); } catch { /* fail-soft */ }
 
     // ── Monkey-patch appendFile to go through mount provider ──
     const vfs = self.kernel.vfs;
@@ -636,7 +717,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       if (args[0] === 'stop') {
         let stopped = false;
         if (self.cirrusReal?.isRunning) {
-          self.cirrusReal.stop();
+          self.cirrusReal.stop(self.ctx);
           self.cirrusReal = null;
           stopped = true;
         }
@@ -710,7 +791,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       const sessionEnv = (ctx && ctx.env) || {};
       const useReal = shouldUseRealVite({ env: sessionEnv, viteConfigSource: realViteCfgSource });
       if (useReal) {
-        if (self.cirrusReal?.isRunning) self.cirrusReal.stop();
+        if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
         // 5173 is Vite's default; under workerd it's a routing key, not
         // a real socket, so we reuse the same number per session.
         const vitePort = viteConfig.port || 5173;
@@ -1149,7 +1230,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       return result.failed.length > 0 ? 1 : 0;
     });
 
-    // ── Set up environment ──
+    // ── Set up environment [B'.1: rehydrate from SQL] ──
+    //
+    // Cold start: env is the platform default below.
+    // Silent re-init (persisted env present): the Shell's constructor
+    // does `this.env = { ...n }`, so we layer the persisted env over
+    // the defaults — defaults provide PATH/PS1/etc. (which the user
+    // never sets explicitly), persisted overlays whatever the user
+    // did set (NIMBUS_TEST=cool, etc.).
     const env: Record<string, string> = {
       HOME: '/home/user',
       USER: 'user',
@@ -1167,11 +1255,25 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       XDG_CONFIG_HOME: '/home/user/.config',
       XDG_DATA_HOME: '/home/user/.local/share',
       npm_config_prefix: '/usr/local',
+      // Persisted env keys win over defaults — the user's `export FOO=bar`
+      // survives reconnect.
+      ...(persisted.env || {}),
     };
 
     // ── Create shell ──
     const processRegistry = new ProcessRegistry();
     self.shell = new Shell(self.terminal, self.kernel.vfs, registry, env, processRegistry);
+
+    // Rehydrate cwd if persisted. The Shell ctor defaults this.cwd to
+    // env.HOME (which we did NOT override in the persisted overlay
+    // above — HOME stays the platform default). setCwd is exposed in
+    // the Shell's public API; cd-builtin assigns this.cwd directly
+    // bypassing setCwd (verified in node_modules/@lifo-sh/core), but
+    // restoring AFTER construction is fine because nothing has called
+    // cd yet. The next user `cd` will of course work as expected.
+    if (persisted.cwd) {
+      try { self.shell.setCwd(persisted.cwd); } catch { /* fail-soft */ }
+    }
 
     // ── Heredoc support (<<) — all logic lives in shell-features.ts ──
     HeredocHandler.install(self.shell, self.terminal, self.sqliteFs!);
@@ -1868,57 +1970,119 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       rehydrateGlobalPackages(self.kernel.vfs, registry);
     } catch {}
 
-    // ── Show MOTD ──
-    try {
-      const motd = self.sqliteFs!.readFileString('etc/motd');
-      self.terminal.write(motd + '\r\n');
-    } catch {}
-
-    // ── Starter-app hint (only if seed sentinel still exists) ──
-    // We check the live VFS, not a static file, so that if the user deletes
-    // ~/.nimbus-seeded (or ~/app) the hint stops appearing on next login.
-    try {
-      if (hasSeededProject(self.sqliteFs!) && self.sqliteFs!.exists(SEED_PROJECT_DIR)) {
-        self.terminal.write(
-          '\x1b[2mStarter app ready at \x1b[36m~/app\x1b[0m\x1b[2m — try:\x1b[0m\r\n' +
-          '  \x1b[36mcd app && npm install && npm run dev\x1b[0m\r\n\r\n'
-        );
-      }
-    } catch {}
-
-    // ── W11: framework detection MOTD line ──
-    // If ~/app has a recognizable framework, print one informational line.
-    // Purely advisory — does not change boot behaviour. Fire-and-forget
-    // because initSession is sync; any failure is silently swallowed.
-    void (async () => {
+    // ── Phase O: one-shot online output [B'.1] ─────────────────────────
+    //
+    // Only emit cold-start UI (MOTD, starter-app hint, framework-detect)
+    // when this initSession is actually a cold start. A silent re-init —
+    // the same DO instance reaccepting a /ws upgrade after wsClose —
+    // skips this block entirely. The user sees their persisted shell
+    // (cwd preserved, env preserved) without a banner reprint that would
+    // make the recovery look like a reset.
+    //
+    // The cold-vs-rehydrate discriminator is `persisted.hasPersistedState`
+    // — true iff at least one nimbus_session_kv row was found at Phase R.
+    // A truly cold DO (or one whose session-state was explicitly cleared
+    // via /api/_test/session/reset) reads zero rows and falls through to
+    // the cold-start path below.
+    // [B'.4] Phase boundary: Build complete, transition to either
+    // Online (cold start) or hydrated (warm re-init). Phase O runs
+    // only on cold start; warm sessions skip the MOTD block and go
+    // directly to hydrated.
+    if (!persisted.hasPersistedState) {
+      setPhase(self, 'online', 'init-session');
+      // ── Show MOTD ──
       try {
-        const projDir = SEED_PROJECT_DIR;
-        const pkgPath = projDir + '/package.json';
-        if (!self.sqliteFs!.exists(pkgPath)) return;
-        const pkg = JSON.parse(self.sqliteFs!.readFileString(pkgPath));
-        const files = new Set<string>();
-        try {
-          for (const e of self.sqliteFs!.readdir(projDir)) files.add(e.name);
-        } catch {}
-        const fileContents: Record<string, string> = {};
-        for (const c of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
-          if (files.has(c)) {
-            try { fileContents[c] = self.sqliteFs!.readFileString(projDir + '/' + c); } catch {}
-          }
-        }
-        const { detectFramework, describeDetect } = await import('./framework-detect.js');
-        const result = detectFramework({
-          pkg: { dependencies: pkg.dependencies, devDependencies: pkg.devDependencies, scripts: pkg.scripts },
-          files,
-          fileContents,
-        });
-        if (result.framework !== 'unknown' && result.framework !== 'vite' && self.terminal) {
+        const motd = self.sqliteFs!.readFileString('etc/motd');
+        self.terminal.write(motd + '\r\n');
+      } catch {}
+
+      // ── Starter-app hint (only if seed sentinel still exists) ──
+      // We check the live VFS, not a static file, so that if the user
+      // deletes ~/.nimbus-seeded (or ~/app) the hint stops appearing on
+      // next login.
+      try {
+        if (hasSeededProject(self.sqliteFs!) && self.sqliteFs!.exists(SEED_PROJECT_DIR)) {
           self.terminal.write(
-            '\x1b[2m[nimbus]\x1b[0m \x1b[36m' + describeDetect(result) + '\x1b[0m\r\n\r\n'
+            '\x1b[2mStarter app ready at \x1b[36m~/app\x1b[0m\x1b[2m — try:\x1b[0m\r\n' +
+            '  \x1b[36mcd app && npm install && npm run dev\x1b[0m\r\n\r\n'
           );
         }
-      } catch { /* MOTD line is non-critical */ }
-    })();
+      } catch {}
+
+      // ── W11: framework detection MOTD line ──
+      // If ~/app has a recognizable framework, print one informational line.
+      // Purely advisory — does not change boot behaviour. Fire-and-forget
+      // because initSession is sync; any failure is silently swallowed.
+      void (async () => {
+        try {
+          const projDir = SEED_PROJECT_DIR;
+          const pkgPath = projDir + '/package.json';
+          if (!self.sqliteFs!.exists(pkgPath)) return;
+          const pkg = JSON.parse(self.sqliteFs!.readFileString(pkgPath));
+          const files = new Set<string>();
+          try {
+            for (const e of self.sqliteFs!.readdir(projDir)) files.add(e.name);
+          } catch {}
+          const fileContents: Record<string, string> = {};
+          for (const c of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
+            if (files.has(c)) {
+              try { fileContents[c] = self.sqliteFs!.readFileString(projDir + '/' + c); } catch {}
+            }
+          }
+          const { detectFramework, describeDetect } = await import('./framework-detect.js');
+          const result = detectFramework({
+            pkg: { dependencies: pkg.dependencies, devDependencies: pkg.devDependencies, scripts: pkg.scripts },
+            files,
+            fileContents,
+          });
+          if (result.framework !== 'unknown' && result.framework !== 'vite' && self.terminal) {
+            self.terminal.write(
+              '\x1b[2m[nimbus]\x1b[0m \x1b[36m' + describeDetect(result) + '\x1b[0m\r\n\r\n'
+            );
+          }
+        } catch { /* MOTD line is non-critical */ }
+      })();
+    }
+
+    // ── Phase O cont.: record the lifecycle transition [B'.1] ──────────
+    //
+    // C'.2 recovery_event ring entry — every initSession call records
+    // either a cold→hydrated (first connect) or drained→hydrated
+    // (silent re-init) transition. The probe at audit/probes/
+    // interactive-liveness/error-recovery/ asserts both states show
+    // dataLoss=false. Track B' guarantees this for in-isolate transitions;
+    // a true cold-isolate boot reads no SQL row and shows
+    // snapshotKeysRehydrated=0 (still dataLoss=false because there was
+    // no state to lose).
+    //
+    // [B'.4] We also set the live phase indicator to 'hydrated' here.
+    // For cold starts, the prior phase was 'online' (Phase O ran);
+    // for warm re-inits, the prior phase was 'build' (Phase O
+    // skipped). Setting to 'hydrated' is the terminal init phase
+    // both paths end on.
+    {
+      const fromState = persisted.hasPersistedState ? 'drained' : 'cold';
+      const snapshotKeys = countSessionStateKeys(self.ctx);
+      try {
+        recordRecoveryEvent({
+          at: Date.now(),
+          fromState: fromState as any,
+          toState: 'hydrated',
+          trigger: 'init-session',
+          isolateGen: self._w9IsolateGen,
+          dataLoss: false,
+          snapshotKeysRehydrated: snapshotKeys,
+        });
+      } catch { /* observability is non-critical */ }
+      // [B'.4] Update live phase. setPhase records its own transition
+      // recovery_event; this one is the legacy/coarse marker that
+      // C'.3 + B'.1 probes look for.
+      self._b4Phase = 'hydrated';
+      // Stamp hydrated_at for the /api/_diag/session debug endpoint.
+      try {
+        stampHydratedAt(self.ctx, Date.now());
+      } catch { /* non-critical */ }
+    }
 
     // ── Start shell ──
     self.shell.start();

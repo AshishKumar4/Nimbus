@@ -50,8 +50,11 @@ import { readDiagCounters } from './diag-counters.js';
 // snapshotForStorage + rehydrateFromStorage; -routes uses getFailures +
 // getLastRpcFrame + getLastFacetId for /api/_diag/memory). Class file
 // no longer references any of them directly.
-// S10: classifyError, LRU_MAX_ENTRIES, getEsbuildWasmBytes moved to sibling
-// modules (-rpc, -routes); class file no longer references them directly.
+// S10: classifyError, LRU_MAX_ENTRIES, fetchEsbuildWasmBytes moved to
+// sibling modules (-rpc, -routes, esbuild-wasm-bytes); class file no
+// longer references them directly. Phase 2 A'.5 renamed the function
+// (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
+// supervisor cache; goes through env.ASSETS on demand).
 import { handleSupervisorRpc } from './supervisor-rpc.js';
 import { setCtxExports } from './ctx-exports.js';
 import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from './constants.js';
@@ -138,8 +141,9 @@ import * as _diag from './nimbus-session-diag.js';
 // re-exported (so external callers importing them from
 // `./nimbus-session.js` keep working — back-compat).
 //
-// (esbuild wasm bytes cache lives in src/esbuild-wasm-bytes.ts; imported
-//  above. _rpcGetEsbuildWasm delegates there.)
+// (esbuild wasm bytes are fetched from env.ASSETS by
+//  src/esbuild-wasm-bytes.ts at pool-construction time; A'.5 dropped
+//  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
 import {
   renderNoDevServerHtml,
   BUNDLER_BIN_PREFIXES,
@@ -452,7 +456,6 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
   async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatchStream(this as any, stream); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
-  async _rpcGetEsbuildWasm(): Promise<ArrayBuffer> { return _rpc._rpcGetEsbuildWasm(this as any); }
   async _rpcStdout(pid: number, data: string): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
   async _rpcStderr(pid: number, data: string): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
   async _rpcReportExit(pid: number, code: number, tail: string): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail); }
@@ -601,6 +604,15 @@ export class NimbusSession extends CloudflareDurableObject {
   _w5LastPersistAt: number = 0;
   /** Track ring size at last persist; skip write if unchanged. */
   _w5LastPersistRingSize: number = -1;
+
+  /** B'.4 — live initSession phase. Surfaced via
+   *  /api/_diag/session.phase. null pre-first-init. */
+  _b4Phase: import('./oom-discriminator.js').SessionState | null = null;
+
+  /** B'.5 — count of warm-rejoin /ws upgrades. Increments each
+   *  time the join path is taken (Phase B skipped). 0 means no
+   *  warm rejoins yet. Surfaced via /api/_diag/session.warmJoinCount. */
+  _b4WarmJoinCount: number = 0;
 
   async _w5RehydrateRingFromStorage(): Promise<void> {
     return _diag.rehydrateRingFromStorage(this, this.ctx);

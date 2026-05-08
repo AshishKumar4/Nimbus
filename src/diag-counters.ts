@@ -48,6 +48,25 @@ export interface DiagCounters {
    *  decremented at dispose / explicit drop). Should track close to
    *  inFlightPackumentFetches; a divergence means we're leaking. */
   liveResponseStubs: number;
+  /**
+   * Sum of payload bytes claimed by RPCs currently in flight on the
+   * SUPERVISOR boundary [Phase 2 A'.2].
+   *
+   * Bumped at RPC entry by `rpcPayloadStart(bytes)` (called from
+   * src/supervisor-rpc.ts handlers); debited at exit by
+   * `rpcPayloadEnd(bytes)`. Goes back to zero after every RPC settles.
+   *
+   * The C'.1 heap estimator surfaces this as
+   * `breakdown.streamingBuffersBytes` so any RPC path that buffers
+   * MORE than the W7 streaming guarantee shows up as supervisor heap
+   * pressure rather than disappearing into the bundle baseline.
+   *
+   * Streamed payloads (writeBatchStream over W7 frames) report -1
+   * up-front; we substitute 0 here because the bytes flow with
+   * backpressure and the supervisor-resident buffer is bounded by
+   * the W7 chunk size (a few KiB), not by the total payload.
+   */
+  inFlightRpcPayloadBytes: number;
   /** Bytes returned by the most recent packument fetch (Content-Length
    *  if advertised, else final buffer size). Spot indicator for the
    *  current spike. */
@@ -62,18 +81,20 @@ export interface DiagCounters {
   /** Most recent packument name + size — useful for narrowing which
    *  registry entry tripped a spike. */
   lastPackumentName: string;
-  /** Whether the resolver-facet path is in use. Set by npm-installer at
-   *  resolve-phase entry; surfaces in the diag payload so a repro can
-   *  confirm which code path served the request. */
-  resolverPath: 'in-supervisor' | 'in-facet' | 'unset';
+  /** Whether the resolver-facet path executed for the most recent
+   *  install. Phase 2 A'.1 made the facet resolver the single
+   *  resolver path — the union narrowed from 3 values to 2.
+   *  'unset' before any install runs in the lifetime of the DO; flips
+   *  to 'in-facet' on the first install. */
+  resolverPath: 'in-facet' | 'unset';
   /** Install-facet counters. Populated by npm-installer after a
    *  successful batch-facet dispatch returns. Confirms the install ran
    *  in the facet (tarballsCompleted > 0) and surfaces the
-   *  facet-internal byte count for the same kind of "smoking gun"
-   *  comparison we use for the resolver. */
+   *  facet-internal byte count. */
   installFacet: {
-    /** Path used for the most recent install fetch phase. */
-    path: 'batch-facet' | 'pool.map' | 'legacy-waves' | 'unset';
+    /** Path used for the most recent install fetch phase. Phase 2 A'.1
+     *  made batch-facet the single fetch path. */
+    path: 'batch-facet' | 'unset';
     /** Number of tarballs the install-batch-facet successfully streamed. */
     tarballsCompleted: number;
     /** Cumulative tarball body bytes the facet decoded (gunzip input). */
@@ -151,6 +172,7 @@ const _counters: DiagCounters = {
   resolverPhase: 'idle',
   inFlightPackumentFetches: 0,
   liveResponseStubs: 0,
+  inFlightRpcPayloadBytes: 0,
   lastPackumentBytes: 0,
   cumulativePackumentBytesDecoded: 0,
   packumentsDecoded: 0,
@@ -236,6 +258,48 @@ export function packumentFetchEnd(bytesDecoded: number): void {
  *  before they finish reading bytes. */
 export function responseStubDisposed(): void {
   if (_counters.liveResponseStubs > 0) _counters.liveResponseStubs--;
+}
+
+/**
+ * Track an in-flight supervisor RPC payload [Phase 2 A'.2].
+ *
+ * Call at RPC entry, BEFORE awaiting any work that depends on
+ * `payload`. Pair with `rpcPayloadEnd(bytes)` in the matching `finally`
+ * so the counter goes back to zero on both success and failure.
+ *
+ * `bytes` is the supervisor-resident byte cost of the RPC's argument
+ * (or return value, whichever is bigger). For structured-clone RPCs
+ * this is the size of the cloned payload in bytes.
+ *
+ * Streamed payloads (ReadableStream-over-RPC) flow with backpressure
+ * and the supervisor-resident bound is the chunk size, not the total
+ * payload. Pass the chunk-size estimate (typically ≤ 1 MiB) — never
+ * the unknown total. -1 is silently coerced to 0 to keep the counter
+ * non-negative; callers that don't know the size should call this
+ * with 0 explicitly rather than relying on coercion.
+ */
+export function rpcPayloadStart(bytes: number): void {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return;
+  _counters.inFlightRpcPayloadBytes += n;
+}
+
+/**
+ * Release an in-flight supervisor RPC payload [Phase 2 A'.2].
+ * Pass the same byte count given to the matching `rpcPayloadStart`.
+ *
+ * Floors at 0 to absorb arithmetic drift (e.g. if a payload-byte
+ * counter rounding gave a slightly different number on entry vs.
+ * exit). Drift in routine paths should be zero — a non-zero floor
+ * hit is a bug worth investigating.
+ */
+export function rpcPayloadEnd(bytes: number): void {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return;
+  _counters.inFlightRpcPayloadBytes -= n;
+  if (_counters.inFlightRpcPayloadBytes < 0) {
+    _counters.inFlightRpcPayloadBytes = 0;
+  }
 }
 
 /** Set the install-fetch path label. Called at fetch-phase entry by
@@ -335,6 +399,7 @@ export function resetDiagCounters(): void {
   _counters.resolverPhase = 'idle';
   _counters.inFlightPackumentFetches = 0;
   _counters.liveResponseStubs = 0;
+  _counters.inFlightRpcPayloadBytes = 0;
   _counters.lastPackumentBytes = 0;
   _counters.cumulativePackumentBytesDecoded = 0;
   _counters.packumentsDecoded = 0;

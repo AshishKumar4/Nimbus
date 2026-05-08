@@ -117,6 +117,22 @@ export interface SessionInternal {
   _w5LastPersistAt: number;
   _w5LastPersistRingSize: number;
 
+  // ── B'.4 session phase (R/B/W/O state machine) ─────────────────────
+  // Live phase indicator surfaced via /api/_diag/session.phase. Values
+  // are 'cold' (pre-init) | 'rehydrate' | 'build' | 'wire' | 'online'
+  // | 'hydrated' | 'drained'. Updated in initSession at each phase
+  // boundary; reset to 'drained' in wsClose. Pre-first-init the field
+  // is null so the diag endpoint can distinguish "never inited" from
+  // "init returned but didn't set a phase".
+  _b4Phase: import('./oom-discriminator.js').SessionState | null;
+
+  // ── B'.5 warm-join counter ─────────────────────────────────────────
+  // Increments each time /ws takes the warm-rejoin path (skipping
+  // Phase B by reusing the still-alive kernel/shell). Probes assert
+  // this is ≥1 after a forced wsClose + reconnect on the same
+  // isolate. 0 on cold isolates / first connect.
+  _b4WarmJoinCount: number;
+
   // ── Convenience getters ─────────────────────────────────────────────
   readonly nimbusDebug: boolean;
   readonly viteBasePath: string;

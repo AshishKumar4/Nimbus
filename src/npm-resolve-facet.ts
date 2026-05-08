@@ -1,5 +1,5 @@
 /**
- * npm-resolve-facet.ts — NimbusFacetPool entry for the npm resolver phase.
+ * npm-resolve-facet.ts — NimbusLoaderPool entry for the npm resolver phase.
  *
  * Why this exists
  * ───────────────
@@ -16,7 +16,7 @@
  *      With 6 concurrent calls in flight, ONE 128 MB isolate holds
  *      6 × packument-bytes simultaneously.
  *
- * The fix is to dispatch the entire resolver phase to a NimbusFacetPool
+ * The fix is to dispatch the entire resolver phase to a NimbusLoaderPool
  * isolate. The facet has its own 128 MB; the supervisor's heap stays
  * flat through phase 1 (the smoking gun: cumulativePackumentBytesDecoded
  * stays near 0 in the supervisor counters post-fix).
@@ -152,7 +152,7 @@ export interface ResolveFacetResult {
 // ── Facet function ──────────────────────────────────────────────────────
 //
 // `resolveTreeInFacet` is serialised via fn.toString() and run inside a
-// NimbusFacetPool isolate. It references the following symbols by bare
+// NimbusLoaderPool isolate. It references the following symbols by bare
 // identifier; they are declared in the preamble
 // (src/parallel/npm-resolve-preamble.ts) at facet-load time:
 //

@@ -20,7 +20,7 @@
  * IMPORTANT: This module is the single source of truth in the supervisor
  * isolate. The same data is *duplicated* into
  * `src/parallel/npm-resolve-preamble.ts` because that preamble is shipped
- * into NimbusFacetPool isolates as a string (cannot `import`). The
+ * into NimbusLoaderPool isolates as a string (cannot `import`). The
  * `audit/probes/w6/functional/preamble-parity.mjs` snapshot test gates
  * the duplication.
  *
@@ -489,7 +489,7 @@ export function formatTransitiveSkip(r: RejectEntry): string {
  *   Both are detected via `isRegistryReject()`.
  *
  * The own-property `__w6_reject = true` survives any boundary that
- * preserves error own-properties (NimbusFacetPool's loadable contract
+ * preserves error own-properties (NimbusLoaderPool's loadable contract
  * is checked in audit/probes/w6/ ...).
  */
 export class RegistryRejectError extends Error {

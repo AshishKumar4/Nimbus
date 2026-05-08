@@ -60,7 +60,7 @@ function hashCode(s: string): string {
 // superseded by the supervisor-side pipeline: npm-installer.ts orchestrates,
 // npm-resolver.ts handles packument + semver, npm-tarball.ts handles tarball
 // fetch/extract, and npm-install-facet.ts is the small pure-fn facet body
-// dispatched via NimbusFacetPool. A ~193-line dead stub used to live here;
+// dispatched via NimbusLoaderPool. A ~193-line dead stub used to live here;
 // it was removed in Arc A Phase 1 of the refactor.
 
 /**

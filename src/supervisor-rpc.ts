@@ -26,6 +26,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from './oom-discriminator.js';
+// Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
+import { rpcPayloadStart, rpcPayloadEnd } from './diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from './r2-cache.js';
 import {
@@ -128,13 +130,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async writeBatch(payload: any): Promise<{ inodes: number; chunks: number }> {
     // W5 Lever 5: record the frame on entry so /api/_diag/memory has
-    // last-known-RPC context if the supervisor crashes mid-RPC. Single
-    // slot — overwritten on every entry. Best-effort; never fails the
-    // RPC itself.
+    // last-known-RPC context if the supervisor crashes mid-RPC.
+    // Phase 2 A'.2: bump the in-flight RPC payload counter so the
+    // supervisor's heap estimate accounts for the bytes claimed by
+    // this RPC for the duration of the await.
+    const payloadBytes = _estimateWriteBatchBytes(payload);
+    setLastRpcFrame('writeBatch', payloadBytes);
+    rpcPayloadStart(payloadBytes);
     try {
-      setLastRpcFrame('writeBatch', _estimateWriteBatchBytes(payload));
-    } catch { /* best-effort */ }
-    return this._getStub()._rpcWriteBatch(payload);
+      return await this._getStub()._rpcWriteBatch(payload);
+    } finally {
+      rpcPayloadEnd(payloadBytes);
+    }
   }
 
   /**
@@ -157,10 +164,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
   ): Promise<{ inodes: number; chunks: number }> {
+    // The streaming bytes flow with backpressure (W7_HIGHWATER_BYTES =
+    // 256 KiB per active encoder per src/_shared/w7-frame.ts:53). The
+    // supervisor-resident bound is the queue highwater, NOT the total
+    // payload — the LastRpcFrame surfaces -1 to mark "stream"; the
+    // RPC payload counter sees the bounded chunk-size estimate.
+    const STREAM_RESIDENT_BYTES = 256 * 1024;
+    setLastRpcFrame('writeBatchStream', -1);
+    rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {
-      setLastRpcFrame('writeBatchStream', -1);
-    } catch { /* best-effort */ }
-    return this._getStub()._rpcWriteBatchStream(stream);
+      return await this._getStub()._rpcWriteBatchStream(stream);
+    } finally {
+      rpcPayloadEnd(STREAM_RESIDENT_BYTES);
+    }
   }
 
   /**
@@ -177,7 +193,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * ResolvedPackage[], not on cache hits).
    */
   async putRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> {
-    return this._getStub()._rpcPutRegistryEntries(entries);
+    // Phase 2 A'.2: track the inbound array's resident byte cost.
+    // Each registry entry is ~500 B (deps + integrity + tarballUrl);
+    // a wave of 100 entries is ~50 KiB. Bounded; counted in
+    // streamingBuffersBytes for visibility.
+    const REGISTRY_ENTRY_BYTES = 512;
+    const payloadBytes = (Array.isArray(entries) ? entries.length : 0) * REGISTRY_ENTRY_BYTES;
+    rpcPayloadStart(payloadBytes);
+    try {
+      return await this._getStub()._rpcPutRegistryEntries(entries);
+    } finally {
+      rpcPayloadEnd(payloadBytes);
+    }
   }
 
   // ── R2-backed npm cache RPC [W4] ─────────────────────────────────────
@@ -301,19 +328,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async purgeCachedPackument(name: string): Promise<boolean> {
     const r2 = this._r2();
     return r2.deletePackument(name);
-  }
-
-  /**
-   * Return raw esbuild-wasm bytes as an ArrayBuffer.
-   *
-   * The production pre-bundle path no longer uses this RPC — bytes
-   * are shipped via NimbusFacetPool's `wasmModules` option which
-   * registers them in the LOADER `modules` map for workerd to
-   * compile at facet startup. Kept for compatibility / future
-   * non-pool consumers.
-   */
-  async getEsbuildWasm(): Promise<ArrayBuffer> {
-    return this._getStub()._rpcGetEsbuildWasm();
   }
 
   // ── Process I/O ───────────────────────────────────────────────────────
