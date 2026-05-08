@@ -38,14 +38,14 @@ Nimbus stands on the shoulders of [**LIFO OS**](https://github.com/lifo-sh/lifo)
 
 | Subsystem | LIFO OS | Nimbus |
 |-----------|---------|--------|
-| **Storage** | In-memory inode tree + optional IndexedDB snapshot | **10 GB SQLite VFS** inside a Durable Object — demand-paged, LRU-cached, batched transactions, durable on every write (`src/sqlite-vfs.ts`) |
-| **npm** | — | Production installer with content-addressed cache, pipelined resolution, bounded concurrency (`pLimit`), batched VFS writes, singleton fetch proxy (`src/npm-*.ts`) |
-| **Module resolution** | Basic | Full Node compat — `exports` with conditions, subpath imports (`#foo`), legacy flat subpaths, `../` normalization |
-| **Git** | — | [isomorphic-git](https://github.com/AshishKumar4/cf-git) (Cloudflare fork) inlined into a dedicated facet worker with pre-bundled runtime (`src/git-network-facet.ts`) |
-| **Dev server** | — | In-process Vite-compatible server: esbuild-wasm transforms, `@/` aliases, Tailwind Play CDN (auto-skipped for real projects), SPA routing, auto-injected React Router basename, runtime error overlay (`src/vite-dev-server.ts`) |
-| **Bundler** | — | `esbuild-wasm` with a VFS plugin for in-process transforms and dependency pre-bundling (shared React runtime — no duplicate instances across pre-bundled packages) |
-| **Isolation model** | Single JS isolate | Supervisor DO + dynamic-worker facets via `LOADER` — heavy I/O (registry fetches, tarball decompression, git packfile work) runs in sandboxed isolates; storage stays with the supervisor (`src/facet-manager.ts`, `src/supervisor-rpc.ts`) |
-| **IPC** | — | `WorkerEntrypoint` RPC with `ctx.exports` loopback between supervisor and facets |
+| **Storage** | In-memory inode tree + optional IndexedDB snapshot | **10 GB SQLite VFS** inside a Durable Object — demand-paged, LRU-cached, batched transactions, durable on every write (`src/vfs/sqlite-vfs.ts`) |
+| **npm** | — | Production installer with content-addressed cache, pipelined resolution, bounded concurrency (`pLimit`), batched VFS writes, singleton fetch proxy (`src/npm/`) |
+| **Module resolution** | Basic | Full Node compat — `exports` with conditions, subpath imports (`#foo`), legacy flat subpaths, `../` normalization (`src/runtime/require-resolver.ts`) |
+| **Git** | — | [isomorphic-git](https://github.com/AshishKumar4/cf-git) (Cloudflare fork) inlined into a dedicated facet worker with pre-bundled runtime (`src/git/network-facet.ts`) |
+| **Dev server** | — | Real Vite as a DO Facet (own SQLite, own hibernation lifecycle) — `src/facets/cirrus-real.ts`. Plus an in-process Vite-compatible fallback (`src/facets/vite-dev-server.ts`) for the Cirrus mode: esbuild-wasm transforms, `@/` aliases, Tailwind Play CDN, SPA routing, auto-injected React Router basename, runtime error overlay |
+| **Bundler** | — | `esbuild-wasm` with a VFS plugin for in-process transforms and dependency pre-bundling — shared React runtime, no duplicate instances across pre-bundled packages (`src/runtime/esbuild-service.ts`, `src/npm/pre-bundle-facet.ts`) |
+| **Isolation model** | Single JS isolate | Supervisor DO + dynamic-worker facets via Worker Loader (`env.LOADER.get`) for stateless fan-out, plus DO Facets (`ctx.facets.get`) for stateful children — heavy I/O (registry fetches, tarball decompression, git packfile work) runs in sandboxed isolates; storage stays with the supervisor (`src/facets/manager.ts`, `src/session/supervisor-rpc.ts`, `src/loaders/loader-pool.ts`) |
+| **IPC** | — | `WorkerEntrypoint` RPC with `ctx.exports` loopback between supervisor and facets — `src/session/supervisor-rpc.ts` |
 | **Seed + UX** | — | Polished Vite + React + TS starter project seeded on first boot, auto-refreshing preview placeholders, install guard rails |
 
 Remove `@lifo-sh/core` and the shell plus coreutils would break; everything else — SQLite VFS, npm installer, facet-based git, in-process dev server, preview UX, multi-session routing — is Nimbus's own work.
@@ -108,47 +108,224 @@ Remove `@lifo-sh/core` and the shell plus coreutils would break; everything else
 
 ## Architecture
 
-```
-  Browser                        Cloudflare Edge
- ┌──────────────┐               ┌──────────────────────────────────────────┐
- │  xterm.js    │               │         NimbusSession (Durable Object)   │
- │  terminal    │◄──WebSocket──►│                                          │
- │              │               │  ┌─────────┐  ┌──────────┐  ┌────────┐  │
- │  Split-pane  │               │  │  Shell   │  │  VFS     │  │ SQLite │  │
- │  preview     │               │  │  60+ cmd │  │  10 GB   │──│ pages  │  │
- └──────┬───────┘               │  └────┬────┘  └────┬─────┘  └────────┘  │
-        │                       │       │             │                    │
-        │  /preview/* ─────────►│  ┌────┴─────────────┴──────────────┐     │
-        │  /port/:n/* ─────────►│  │         SupervisorRPC           │     │
-        │  /worker/*  ─────────►│  │  readFile · writeFile · stdout  │     │
-        │                       │  │  transform · prefetch · ports   │     │
-        │                       │  └────┬────────────────────────────┘     │
-        │                       │       │                                  │
-        │                       │  ┌────▼──────────────────────────────┐   │
-        │                       │  │  Facets (Dynamic Workers / LOADER) │   │
-        │                       │  │                                    │   │
-        │                       │  │  ┌──────┐  ┌─────┐  ┌──────────┐ │   │
-        │                       │  │  │ Node │  │ npm │  │ Vite Dev │ │   │
-        │                       │  │  │ V8   │  │ pkg │  │ Server   │ │   │
-        │                       │  │  └──────┘  └─────┘  └──────────┘ │   │
-        │                       │  └───────────────────────────────────┘   │
-        │                       │                                          │
-        │                       │  ┌──────────────┐  ┌─────────────────┐   │
-        │                       │  │ esbuild-wasm │  │ isomorphic-git  │   │
-        │                       │  └──────────────┘  └─────────────────┘   │
-        │                       └──────────────────────────────────────────┘
+Four diagrams cover the architecture surface: system topology, session lifecycle, memory budget, and primitive fitness. Each one cites the concrete `src/` path you can read for details. Citations point to files under the post-rebuild directory structure (`src/session/`, `src/facets/`, `src/loaders/`, etc.).
+
+### 1. System topology
+
+Browser ↔ Worker entrypoint ↔ supervisor DO ↔ {LOADER fleet, DO Facet, R2, DO SQLite}. Each isolate (supervisor + every loader-spawned worker + every DO Facet) runs in its own V8 sandbox with a **128 MiB working memory cap** ([cf-internal-dossier.md §Memory pressure eviction](docs/research/cf-internal-dossier.md#L701)). The supervisor enforces a tighter **64 MiB ceiling** at the application layer (`src/constants.ts:87` `SUPERVISOR_HEAP_CEILING_BYTES`).
+
+```mermaid
+flowchart LR
+    Browser["🌐 Browser<br/>xterm.js + preview iframe"]
+
+    subgraph CFEdge["Cloudflare Edge"]
+        Entry["Worker entrypoint<br/><i>src/index.ts</i><br/>session-router"]
+
+        subgraph SupCage["⏺ NimbusSession (Durable Object) — 128 MiB isolate"]
+            Sup["Supervisor<br/><i>src/session/nimbus-session.ts</i><br/>64 MiB app ceiling"]
+            VFS["10 GB SQLite VFS<br/><i>src/vfs/sqlite-vfs.ts</i><br/>64 KiB pages, 32 MiB LRU"]
+            DOSql[("DO SQLite storage<br/>session-state + scrollback +<br/>npm cache + recovery_event ring")]
+            Sup --> VFS --> DOSql
+        end
+
+        subgraph Loaders["Worker Loader fleet — each 128 MiB isolate"]
+            direction TB
+            NpmRes["npm-resolve facet<br/><i>src/npm/resolve-facet.ts</i>"]
+            NpmInst["npm-install batch facet<br/><i>src/npm/install-batch-facet.ts</i>"]
+            PreBnd["pre-bundle facet<br/><i>src/npm/pre-bundle-facet.ts</i>"]
+            Tar["tarball-stream worker<br/><i>src/npm/tarball.ts</i>"]
+            NodeExec["Node exec worker<br/><i>src/facets/manager.ts</i>"]
+            Git["git network facet<br/><i>src/git/network-facet.ts</i>"]
+        end
+
+        subgraph DOFacet["DO Facet (cirrus-real) — 128 MiB isolate, own SQLite"]
+            Vite["Real Vite dev server<br/><i>src/facets/cirrus-real.ts</i><br/>own ctx.storage.sql"]
+        end
+
+        subgraph R2["R2 — multi-tenant storage"]
+            R2Tar[("nimbus-npm-cache<br/>tarballs")]
+            R2Pkg[("nimbus-npm-packument-cache<br/>packuments")]
+            Assets[("env.ASSETS<br/>esbuild-wasm + UI shell")]
+        end
+    end
+
+    Browser <-->|WebSocket /ws| Entry
+    Browser <-->|/preview/*| Entry
+    Browser <-->|/port/:n/*| Entry
+    Entry -->|SID routing| Sup
+
+    Sup -->|env.LOADER.get<br/>+ SupervisorRPC| Loaders
+    Sup -->|ctx.facets.get<br/>cirrus-real-vite| DOFacet
+    Sup <-->|stream tarballs<br/>+ packuments| R2
+    Sup -->|fetch wasm bytes<br/>at facet boot| Assets
+
+    Loaders -.->|RPC: readFile / writeFile<br/>stdout / stderr / transform| Sup
+    DOFacet -.->|HMR long-poll<br/>preview fetch| Sup
+
+    classDef cf fill:#1f2937,stroke:#f97316,color:#f9fafb
+    classDef stor fill:#0c4a6e,stroke:#0ea5e9,color:#f0f9ff
+    classDef facet fill:#581c87,stroke:#a855f7,color:#faf5ff
+    class CFEdge,SupCage cf
+    class DOSql,R2Tar,R2Pkg,Assets stor
+    class Loaders,DOFacet facet
 ```
 
-**Facets** are dynamically spawned Workers (via `LOADER`) that run CPU/network-heavy work — npm resolution, tarball fetching, Node.js script execution, and the Vite dev server — in isolated V8 contexts. They communicate back to the supervisor DO through `SupervisorRPC`, a service binding that provides VFS access, terminal I/O, and esbuild transforms.
+The supervisor is the single source of truth (filesystem, npm cache, port registry, process table). Every worker isolate spawned by `env.LOADER.get(...)` is sandboxed and stateless — heavy I/O (CPU-bound resolver BFS, tarball decompression, esbuild bundling) happens there and the result streams back via `SupervisorRPC` (`src/session/supervisor-rpc.ts`). The cirrus-real Vite facet is the one stateful child: a DO Facet via `ctx.facets.get('cirrus-real-vite', {class})`, with its own SQLite for HMR-cycle state and a per-facet identity cookie ([D'.1 retro](audit/sections/PROD-RESET-INVESTIGATION-retro.md#phase-4-d1--cirrus-real--ctxfacets-do-facet--2026-05-08)).
 
-| Operation | Execution Context | I/O Method |
-|-----------|------------------|------------|
-| Shell commands | Supervisor DO | Direct VFS access |
-| `node` scripts | Facet (LOADER) | Pre-compiled VFS bundle |
-| `npm install` | Facet (LOADER) | RPC writeFile per package |
-| `vite` dev server | Facet (FacetManager) | RPC readFile + transform |
-| `git clone` | Supervisor (background) | Direct VFS access |
-| `esbuild` | Supervisor | Direct VFS access |
+### 2. R-B-W-O session lifecycle (Phase 3 B'.4 state machine)
+
+`initSession` walks four phases on every `/ws` upgrade. Cold-start runs **R → B → W → O → hydrated**; warm rejoin (after `webSocketError`) runs **R → W → hydrated** — Phase B (kernel/shell rebuild) and Phase O (cold-start banner) are skipped because the in-memory Shell survives the WS close. The phase indicator is surfaced live via `/api/_diag/session.phase`.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> cold
+
+    cold --> rehydrate: /ws upgrade<br/>(no shell)
+    rehydrate --> wire: load cwd/env/<br/>mounts/scrollback<br/><i>src/session/state-store.ts</i>
+    wire --> build: terminal attached<br/>scrollback replayed<br/><i>src/facets/ws-terminal.ts</i>
+    build --> online: kernel + shell built<br/>commands registered<br/><i>src/session/init.ts:129</i>
+    online --> hydrated: MOTD + framework hint<br/>(cold-only)<br/><i>src/session/init.ts:1992</i>
+    hydrated --> active: shell.start()<br/>ws.send({type:'ready'})
+
+    active --> drained: webSocketClose<br/>or webSocketError<br/><i>src/session/ws.ts</i>
+
+    drained --> rehydrate_warm: /ws upgrade<br/>(shell still alive)
+    rehydrate_warm --> wire_warm: SQL re-read<br/>(no-op; live state OK)
+    wire_warm --> hydrated_warm: terminal.attach(newWs)<br/>+ scrollback replay<br/><i>src/session/init-phases.ts:99</i>
+    hydrated_warm --> active: warmJoinCount++<br/><i>Phase B + O SKIPPED</i>
+
+    state rehydrate_warm <<choice>>
+    state wire_warm <<choice>>
+    state hydrated_warm <<choice>>
+```
+
+Recovery correctness: every transition is recorded in a 50-entry `recovery_event` ring (`src/observability/oom-discriminator.ts`) with `dataLoss=false` as an architectural invariant. Forced `webSocketError` over a 10-minute realistic-load run produced **6 ws-kill cycles, warmJoinCount=6, zero dataLoss events** ([P5.1 retro](audit/sections/PROD-RESET-INVESTIGATION-retro.md#p51--long-form-replay-at-10-minutes)).
+
+### 3. Memory budget breakdown
+
+The supervisor heap ceiling is **64 MiB** (`src/constants.ts:87`). Every contributor reports through one of seven slots in `HeapBreakdown` (`src/observability/heap-estimate.ts:76`). The estimator's invariant: **`sum(breakdown.*) === estimatedBytes`** at every poll — verified across 20 polls in the Phase 5 long-form-replay run.
+
+```mermaid
+flowchart TB
+    Ceil["64 MiB ceiling<br/>SUPERVISOR_HEAP_CEILING_BYTES"]
+
+    subgraph Static["Static (constant per build)"]
+        Base["supervisorBaselineBytes<br/>9.0 MiB<br/><i>worker bundle + module sources</i>"]
+        Ebd["esbuildResidentBytes<br/>0 MiB post-A'.5<br/><i>moved to env.ASSETS</i>"]
+    end
+
+    subgraph DynamicVfs["VFS (live counters)"]
+        Lru["vfsLruBytes<br/>≤ 32 MiB<br/><i>cache.hotBytes</i>"]
+        VfsIn["vfsInFlightBytes<br/>peak write payload"]
+    end
+
+    subgraph DynamicPkg["npm pipeline (peak counters)"]
+        Res["resolverInFlightBytes<br/>0 post-A'.1<br/><i>resolver runs in facet</i>"]
+        Pre["preBundleSliceBytes<br/>0 post-A'.2<br/><i>streamed via RSoRPC</i>"]
+    end
+
+    subgraph DynamicRpc["Supervisor RPC (live counter)"]
+        Stream["streamingBuffersBytes<br/>0 idle<br/><i>diag-counters: in-flight RPC payload</i>"]
+    end
+
+    Base & Ebd & Lru & VfsIn & Res & Pre & Stream --> Sum["estimatedBytes = sum(7 components)"]
+    Sum --> Pct["percentOfCeiling = estimated / 64 MiB"]
+    Pct --> Ceil
+
+    classDef static fill:#0c4a6e,stroke:#0ea5e9,color:#f0f9ff
+    classDef dyn fill:#7c2d12,stroke:#fb923c,color:#fff7ed
+    classDef gate fill:#14532d,stroke:#22c55e,color:#f0fdf4
+    class Static static
+    class DynamicVfs,DynamicPkg,DynamicRpc dyn
+    class Ceil,Sum,Pct gate
+```
+
+**Phase 5 measured peak** (10-minute hold under realistic load — vite running, 299 preview fetches, 19 shell commands, 6 forced webSocketError cycles): **15.24 MiB / 64.0 MiB (23.8%)**, with heap drift = 275 bytes over 10 minutes ([P5.4 retro](audit/sections/PROD-RESET-INVESTIGATION-retro.md#p54--peak-heap-attribution)). Of that 15.24 MiB, 9.00 MiB is the static baseline and 6.23 MiB is the user's VFS LRU; all five dynamic slots are 0 at idle and stay bounded under load.
+
+### 4. Architectural layers
+
+Five concentric layers, each constrained by a different platform invariant. Read top-down for the request flow; the inner-most layer (DO SQLite) is the only one that survives DO eviction without re-fetching.
+
+```mermaid
+flowchart TB
+    subgraph L1["1. Edge / routing — &lt;1 ms"]
+        direction LR
+        L1A["Static UI shell<br/>env.ASSETS"]
+        L1B["session-router<br/>SID → DO instance<br/><i>src/_shared/session-router.ts</i>"]
+    end
+
+    subgraph L2["2. Supervisor — Durable Object — 64 MiB app ceiling"]
+        direction LR
+        L2A["Shell + 60 unix cmds<br/><i>src/shell/</i> + @lifo-sh/core"]
+        L2B["VFS + LRU<br/><i>src/vfs/sqlite-vfs.ts</i>"]
+        L2C["Process table + port reg<br/><i>src/runtime/process-*.ts</i>"]
+        L2D["Heap estimator + ring<br/><i>src/observability/</i>"]
+    end
+
+    subgraph L3["3. Compute fan-out — Worker Loader — 128 MiB / isolate"]
+        direction LR
+        L3A["npm-resolve facet<br/>BFS + R2 cache check"]
+        L3B["npm-install batches<br/>tarball decode + write"]
+        L3C["pre-bundle facet<br/>esbuild dep deps"]
+        L3D["git network facet<br/>isomorphic-git over HTTP"]
+        L3E["Node exec worker<br/>require + node-shims"]
+    end
+
+    subgraph L4["4. Stateful child — DO Facet — own SQLite"]
+        L4A["cirrus-real Vite<br/><i>src/facets/cirrus-real.ts</i><br/>HMR long-poll + module graph"]
+    end
+
+    subgraph L5["5. Durable storage"]
+        direction LR
+        L5A[("DO SQLite — 10 GB / instance<br/>VFS pages + session state +<br/>recovery_event ring")]
+        L5B[("R2 — multi-tenant<br/>npm tarballs + packuments")]
+        L5C[("env.ASSETS<br/>esbuild-wasm + UI shell")]
+    end
+
+    L1 --> L2
+    L2 -- env.LOADER.get --> L3
+    L2 -- ctx.facets.get --> L4
+    L2 -- direct --> L5A
+    L2 -- streamed --> L5B
+    L2 -- fetched --> L5C
+    L3 -.-> L5B
+    L3 -.->|SupervisorRPC| L2
+
+    classDef edge fill:#0c4a6e,stroke:#0ea5e9,color:#f0f9ff
+    classDef sup fill:#14532d,stroke:#22c55e,color:#f0fdf4
+    classDef loader fill:#7c2d12,stroke:#fb923c,color:#fff7ed
+    classDef facet fill:#581c87,stroke:#a855f7,color:#faf5ff
+    classDef store fill:#1f2937,stroke:#9ca3af,color:#f9fafb
+    class L1 edge
+    class L2 sup
+    class L3 loader
+    class L4 facet
+    class L5 store
+```
+
+The cross-isolate invariants reify the dossier's primitive boundaries: layer 3 (Worker Loader) and layer 4 (DO Facet) are independent V8 isolates with their own 128 MiB caps; only layer 2 (the supervisor) sees the entire request chain. The 64 MiB application ceiling on layer 2 is the architectural promise of the [Phase 1-5 rebuild](audit/sections/PROD-RESET-INVESTIGATION-retro.md) — measured peak under realistic load is 23.8% of that ceiling.
+
+### 5. Primitive fitness scorecard
+
+Every subsystem maps to one of four Cloudflare primitives. The choice is anchored to `docs/research/cf-primitives-dossier.md` — primitives 1-4 in the dossier's executive summary.
+
+| Subsystem | Primitive | Code | Why this primitive (per dossier) |
+|---|---|---|---|
+| `npm-resolve` (BFS resolver) | **Worker Loader** | `src/npm/resolve-facet.ts` + `src/loaders/loader-pool.ts` | "Best primitive for ephemeral fan-out" (§1). Per-spec hash → stable LOADER ID; isolate dies when work completes |
+| `npm-install` batch | **Worker Loader** | `src/npm/install-batch-facet.ts` | Stateless extract+write batches; no per-batch state to preserve |
+| `pre-bundle` (esbuild deps) | **Worker Loader** | `src/npm/pre-bundle-facet.ts` | One isolate per dep being pre-bundled; result streamed back via ReadableStream-over-RPC (`src/_shared/w7-frame.ts`) |
+| `tarball` decompression | **Worker Loader** | `src/npm/tarball-stream.ts` (preamble) | Streaming tar parse; pure compute, fits Loader's stateless model |
+| `git` clone/fetch | **Worker Loader** | `src/git/network-facet.ts` | isomorphic-git pre-bundled into the loader code; no per-clone state survives the operation |
+| **`cirrus-real` Vite** | **DO Facet** | `src/facets/cirrus-real.ts` | "Best primitive for stateful in-memory thread pool sharing one host" (§2). Has own SQLite, hibernation, and preserves identity across supervisor reconnects (D'.1) |
+| Session state (cwd/env/mounts/scrollback) | **DO SQLite** | `src/session/state-store.ts` | Source-of-truth for everything that must survive `webSocketError`. Track B' invariant |
+| Recovery event ring + OOM forensics | **DO SQLite** | `src/observability/oom-discriminator.ts` | Bounded ring (50 entries) + W5 ring-persistence; survives DO eviction |
+| npm tarball cache (cross-tenant) | **R2** | `src/npm/r2-cache.ts` | "Storage capacity beyond 1 DO's 10 GB; cross-tenant L3 cache shared by all sessions" — packages > 30 MiB skip the path due to RPC 32 MiB cap |
+| npm packument cache | **R2** | `src/npm/r2-cache.ts` | Same rationale; small JSON metadata blobs |
+| esbuild-wasm bytes (~12 MiB) | **R2 (env.ASSETS)** | `src/runtime/esbuild-wasm-bytes.ts` | A'.5 moved this off supervisor heap; fetched on demand at facet boot |
+| Supervisor IPC | **WorkerEntrypoint RPC** | `src/session/supervisor-rpc.ts` | "Universal transport" (§4). Promise pipelining; ReadableStream-over-RPC bypasses the 32 MiB structured-clone limit |
+
+The supervisor itself is a **Durable Object** — the only stateful root in the architecture. Everything else is either (a) ephemeral compute via Worker Loader, (b) stateful child via DO Facet, (c) durable storage via DO SQLite or R2, or (d) transport via WorkerEntrypoint RPC.
 
 ## Quick Start
 
@@ -249,32 +426,109 @@ Node scripts execute in isolated V8 facet workers. The supervisor pre-bundles th
 
 ## Project Structure
 
+`src/` is organised by domain. Open the directory matching the architectural concern; everything inside is part of that subsystem.
+
 ```
 src/
-├── index.ts              # Workers entry point, HTTP/WebSocket routing
-├── nimbus-session.ts     # NimbusSession Durable Object — the supervisor
-├── sqlite-vfs.ts         # 10 GB SQLite-backed virtual filesystem
-├── shell-features.ts     # Pipes, redirects, globs, heredoc, env expansion
-├── unix-commands.ts      # 50+ coreutil implementations
-├── git-commands.ts       # Git operations via isomorphic-git
-├── npm-resolver.ts       # Dependency tree resolution
-├── npm-installer.ts      # Package extraction and VFS writes
-├── npm-tarball.ts        # Tarball fetching and decompression
-├── npm-cache.ts          # Content-addressed SQLite cache
-├── require-resolver.ts   # Node.js require() with full module resolution
-├── node-shims.ts         # fs, path, os, crypto, http, net, etc. shims
-├── vite-dev-server.ts    # In-process Vite with JSX/TSX transforms
-├── esbuild-service.ts    # esbuild-wasm integration
-├── facet-manager.ts      # Dynamic worker lifecycle management
-├── supervisor-rpc.ts     # Facet ↔ Supervisor IPC protocol
-├── ws-terminal.ts        # WebSocket ↔ xterm.js terminal bridge
-├── nimbus-wrangler.ts    # wrangler dev on the actual Workers runtime
-├── port-registry.ts      # Node HTTP server port mapping
-├── process-table.ts      # Process tracking for ps/kill/jobs
-├── vfs-events.ts         # File change events for HMR
-├── streams.ts            # Stream utilities
-└── constants.ts          # Version, defaults, compatibility flags
+├── index.ts                   # Workers entry point, HTTP/WebSocket routing
+├── constants.ts               # Version, ceilings, defaults, compatibility flags
+│
+├── session/                   # NimbusSession Durable Object — the supervisor
+│   ├── nimbus-session.ts      # DO class; lifecycle + delegation
+│   ├── init.ts                # initSession (R/B/W/O state machine)
+│   ├── init-phases.ts         # setPhase + isWarmRejoin + joinExistingSession
+│   ├── state-store.ts         # cwd/env/mounts/scrollback in DO SQLite
+│   ├── routes.ts              # /ws upgrade + /api/* + /preview/* dispatch
+│   ├── rpc.ts, ws.ts          # SupervisorRPC + WS lifecycle delegators
+│   ├── hibernation.ts         # W9 isolate-gen + flush-on-close
+│   ├── replica-routes.ts      # W12 read-replica routing
+│   ├── supervisor-rpc.ts      # Facet → supervisor RPC class (WorkerEntrypoint)
+│   ├── ctx-exports.ts         # ctx.exports plumbing for facet bindings
+│   ├── ws-hibernation-config.ts # hibernatable WS config
+│   └── helpers.ts, diag.ts, keys.ts, bindings.ts, internal.d.ts
+│
+├── facets/                    # Child isolates (Worker Loader + DO Facet)
+│   ├── cirrus-real.ts         # Real Vite as a DO Facet (D'.1)
+│   ├── ws-terminal.ts         # WS ↔ xterm.js bridge (used by supervisor)
+│   ├── vite-dev-server.ts     # In-process Cirrus Vite (legacy in-supervisor)
+│   ├── manager.ts             # Node-script facet lifecycle (LOADER.get + ctx.facets)
+│   ├── process.ts             # facet-side child_process broker
+│   ├── inner-do-registry.ts   # ctx.facets registry for inner DOs
+│   ├── wasm-swap-registry.ts  # WASM module swap registry for facets
+│   └── real-vite-fs-shim.ts, real-vite-hmr.ts
+│
+├── loaders/                   # Worker Loader pool (was src/parallel/)
+│   ├── loader-pool.ts         # NimbusLoaderPool — env.LOADER.get/load
+│   ├── npm-resolve-preamble.ts, pre-bundle-preamble.ts # injected JS
+│   ├── generated-workers.ts   # AUTO-GENERATED tar+W7 preambles
+│   ├── index.ts               # public re-exports
+│   └── vendor/                # vendored cloudflare-parallel
+│
+├── npm/                       # npm subsystem (resolver + installer + cache)
+│   ├── resolver.ts            # supervisor-side BFS coordinator
+│   ├── resolve-facet.ts       # in-facet resolver body (default prod path)
+│   ├── installer.ts           # install pipeline + facet dispatch
+│   ├── install-batch-facet.ts, install-facet.ts
+│   ├── pre-bundle-facet.ts    # esbuild dep pre-bundling in facet
+│   ├── tarball.ts, tarball-stream.ts
+│   ├── cache.ts               # content-addressed SQLite cache
+│   └── r2-cache.ts            # cross-tenant L3 cache (R2)
+│
+├── git/                       # Git operations
+│   ├── commands.ts            # shell-side git command dispatch
+│   └── network-facet.ts       # isomorphic-git in a loader-spawned facet
+│
+├── vfs/                       # 10 GB SQLite-backed filesystem
+│   ├── sqlite-vfs.ts          # paged VFS + LRU + transactional batches
+│   ├── events.ts              # file-change events for HMR
+│   ├── path.ts                # path normalization helpers
+│   └── seed-project.ts        # starter app seed on first boot
+│
+├── shell/                     # Shell parsing + coreutils
+│   ├── features.ts            # pipes, redirects, globs, heredocs, env expansion
+│   └── unix-commands.ts       # 60+ coreutil implementations
+│
+├── runtime/                   # Node compat + build infrastructure
+│   ├── node-shims.ts, require-resolver.ts # fs/path/http/...; full Node resolution
+│   ├── esbuild-service.ts     # esbuild-wasm integration
+│   ├── esbuild-wasm-bytes.ts  # bytes fetched from env.ASSETS (post-A'.5)
+│   ├── barrel-detect.ts, barrel-synthesizer.ts # barrel-import optimisation
+│   ├── framework-detect.ts, project-detect.ts, router-basename.ts
+│   ├── streams.ts             # stream utilities
+│   ├── port-registry.ts       # Node HTTP server port mapping
+│   ├── process-table.ts, process-logs.ts, process-logs-api.ts
+│
+├── observability/             # Heap budget + recovery_event ring + OOM forensics
+│   ├── heap-estimate.ts       # 7-component HeapBreakdown (sum=total invariant)
+│   ├── oom-discriminator.ts   # SessionState union + recovery_event ring
+│   ├── oom-classify.ts        # error → cause classifier
+│   ├── diag-counters.ts       # in-flight RPC payload counter
+│   └── heavy-alloc-coord.ts   # gate for concurrent heavy allocations
+│
+├── replica/                   # W12 read-replica
+│   ├── routing.ts             # write-routes-to-primary, reads-anywhere
+│   └── suspension.ts          # suspended-replica state-machine
+│
+├── bindings/                  # CF binding shims (D1, KV, R2)
+│   ├── d1.ts, kv.ts, r2.ts
+│
+├── wrangler/                  # nimbus-wrangler — local wrangler dev
+│   └── nimbus-wrangler.ts
+│
+├── frameworks/                # Per-framework helpers (next/nuxt/sveltekit/...)
+│
+├── _shared/                   # Cross-cutting utilities
+│   ├── retry.ts, session-id.ts, session-router.ts
+│   ├── bytes.ts, colors.ts, http.ts
+│   ├── w7-frame.ts            # W7 streaming bulk-write frame format
+│   └── exports-resolver.ts, real-node-imports.ts
+│
+└── *.generated.ts             # Build artifacts under version control;
+                               # touched only by scripts/bundle-*.mjs.
+                               # Keep at top level for stable known paths.
 ```
+
+The post-rebuild structure followed the architectural rebuild Phase 1-5 (heap reduction → recovery correctness → primitive alignment → cross-track verification — see [audit/sections/PROD-RESET-INVESTIGATION-retro.md](audit/sections/PROD-RESET-INVESTIGATION-retro.md)).
 
 ## Status
 

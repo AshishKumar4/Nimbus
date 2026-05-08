@@ -33,7 +33,7 @@
  * additional ring entries, not replacements.
  */
 
-import { recordRecoveryEvent, type SessionState } from '../oom-discriminator.js';
+import { recordRecoveryEvent, type SessionState } from '../observability/oom-discriminator.js';
 
 /**
  * Set the current phase + record a transition. Fail-soft on the

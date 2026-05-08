@@ -38,7 +38,7 @@
  */
 
 import { CHUNK_SIZE, LRU_MAX_ENTRIES, SUPERVISOR_HEAP_CEILING_BYTES } from '../constants.js';
-import type { DiagCounters } from '../diag-counters.js';
+import type { DiagCounters } from './diag-counters.js';
 
 /**
  * Five labelled workerd eviction reasons. Surfaced as a constant
