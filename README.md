@@ -42,7 +42,7 @@ Nimbus stands on the shoulders of [**LIFO OS**](https://github.com/lifo-sh/lifo)
 | **npm** | — | Production installer with content-addressed cache, pipelined resolution, bounded concurrency (`pLimit`), batched VFS writes, singleton fetch proxy (`src/npm/`) |
 | **Module resolution** | Basic | Full Node compat — `exports` with conditions, subpath imports (`#foo`), legacy flat subpaths, `../` normalization (`src/runtime/require-resolver.ts`) |
 | **Git** | — | [isomorphic-git](https://github.com/AshishKumar4/cf-git) (Cloudflare fork) inlined into a dedicated facet worker with pre-bundled runtime (`src/git/network-facet.ts`) |
-| **Dev server** | — | Real Vite as a DO Facet (own SQLite, own hibernation lifecycle) — `src/facets/cirrus-real.ts`. Plus an in-process Vite-compatible fallback (`src/facets/vite-dev-server.ts`) for the Cirrus mode: esbuild-wasm transforms, `@/` aliases, Tailwind Play CDN, SPA routing, auto-injected React Router basename, runtime error overlay |
+| **Dev server** | — | Real Vite running on Worker Loader — `src/facets/cirrus-real.ts`. Target topology is DO Facet (own SQLite, own hibernation lifecycle); current prod runs the `WorkerEntrypoint` fetcher-fallback because the DO-Facet API gating flag is rejected by CF's deploy validator (see "Platform-gated future state" in §5). Plus an in-process Vite-compatible fallback (`src/facets/vite-dev-server.ts`) for the Cirrus mode: esbuild-wasm transforms, `@/` aliases, Tailwind Play CDN, SPA routing, auto-injected React Router basename, runtime error overlay |
 | **Bundler** | — | `esbuild-wasm` with a VFS plugin for in-process transforms and dependency pre-bundling — shared React runtime, no duplicate instances across pre-bundled packages (`src/runtime/esbuild-service.ts`, `src/npm/pre-bundle-facet.ts`) |
 | **Isolation model** | Single JS isolate | Supervisor DO + dynamic-worker facets via Worker Loader (`env.LOADER.get`) for stateless fan-out, plus DO Facets (`ctx.facets.get`) for stateful children — heavy I/O (registry fetches, tarball decompression, git packfile work) runs in sandboxed isolates; storage stays with the supervisor (`src/facets/manager.ts`, `src/session/supervisor-rpc.ts`, `src/loaders/loader-pool.ts`) |
 | **IPC** | — | `WorkerEntrypoint` RPC with `ctx.exports` loopback between supervisor and facets — `src/session/supervisor-rpc.ts` |
@@ -139,8 +139,8 @@ flowchart LR
             Git["git network facet<br/><i>src/git/network-facet.ts</i>"]
         end
 
-        subgraph DOFacet["DO Facet (cirrus-real) — 128 MiB isolate, own SQLite"]
-            Vite["Real Vite dev server<br/><i>src/facets/cirrus-real.ts</i><br/>own ctx.storage.sql"]
+        subgraph DOFacet["DO Facet (cirrus-real) — 128 MiB isolate (target)"]
+            Vite["Real Vite dev server<br/><i>src/facets/cirrus-real.ts</i><br/><b>fetcher-fallback (current)</b><br/>own SQLite cookie pending RM-27238"]
         end
 
         subgraph R2["R2 — multi-tenant storage"]
@@ -171,7 +171,9 @@ flowchart LR
     class Loaders,DOFacet facet
 ```
 
-The supervisor is the single source of truth (filesystem, npm cache, port registry, process table). Every worker isolate spawned by `env.LOADER.get(...)` is sandboxed and stateless — heavy I/O (CPU-bound resolver BFS, tarball decompression, esbuild bundling) happens there and the result streams back via `SupervisorRPC` (`src/session/supervisor-rpc.ts`). The cirrus-real Vite facet is the one stateful child: a DO Facet via `ctx.facets.get('cirrus-real-vite', {class})`, with its own SQLite for HMR-cycle state and a per-facet identity cookie ([D'.1 retro](audit/sections/PROD-RESET-INVESTIGATION-retro.md#phase-4-d1--cirrus-real--ctxfacets-do-facet--2026-05-08)).
+The supervisor is the single source of truth (filesystem, npm cache, port registry, process table). Every worker isolate spawned by `env.LOADER.get(...)` is sandboxed and stateless — heavy I/O (CPU-bound resolver BFS, tarball decompression, esbuild bundling) happens there and the result streams back via `SupervisorRPC` (`src/session/supervisor-rpc.ts`). The cirrus-real Vite facet is the one would-be stateful child: a DO Facet via `ctx.facets.get('cirrus-real-vite', {class})` is the target topology, with its own SQLite for HMR-cycle state and a per-facet identity cookie ([D'.1 retro](audit/sections/PROD-RESET-INVESTIGATION-retro.md#phase-4-d1--cirrus-real--ctxfacets-do-facet--2026-05-08)).
+
+> *Prod reality (since 2026-05-08T22:07Z): the DO Facet topology requires `worker.getDurableObjectClass()`, which is gated on the `$experimental` compatibility flag. Cloudflare's deploy validator rejects `$experimental` flags for non-CF-team accounts (error code 10021), so cirrus-real currently runs the **fetcher-fallback** path (`kind = 'fetcher-fallback'`) — a `WorkerEntrypoint` default export that shares all module-scope vite-bootstrap state with the DurableObject path. User-visible /preview/ behavior is identical; only the per-instance own-SQLite cookie + lifecycle is N/A. Tracked: [D'.1-fix retro](audit/sections/D1-FIX-retro.md), unblocked by [RM-27238](https://jira.cfdata.org/browse/RM-27238) (Dynamic Worker Loader GA promotion of the experimental APIs).*
 
 ### 2. R-B-W-O session lifecycle (Phase 3 B'.4 state machine)
 
@@ -280,8 +282,8 @@ flowchart TB
         L3PC["...<br/>up to MAX_PEER_FANOUT=32"]
     end
 
-    subgraph L4["4. Stateful child — DO Facet — own SQLite"]
-        L4A["cirrus-real Vite<br/><i>src/facets/cirrus-real.ts</i><br/>HMR long-poll + module graph"]
+    subgraph L4["4. Child isolate — DO Facet (target) / fetcher-fallback (current)"]
+        L4A["cirrus-real Vite<br/><i>src/facets/cirrus-real.ts</i><br/>HMR long-poll + module graph<br/><b>kind=fetcher-fallback</b> in prod*"]
     end
 
     subgraph L5["5. Durable storage + per-colo cache"]
@@ -322,28 +324,42 @@ flowchart TB
 
 The cross-isolate invariants reify the dossier's primitive boundaries: layer 3 (Worker Loader) and layer 4 (DO Facet) are independent V8 isolates with their own 128 MiB caps; only layer 2 (the supervisor) sees the entire request chain. The 64 MiB application ceiling on layer 2 is the architectural promise of the [Phase 1-5 rebuild](audit/sections/PROD-RESET-INVESTIGATION-retro.md) — measured peak under realistic load is 23.8% of that ceiling.
 
+> *L4 footnote: cirrus-real Vite currently runs `kind = 'fetcher-fallback'` (a stateless `WorkerEntrypoint` default export) rather than the DO Facet target topology. Reason: the `worker.getDurableObjectClass()` API needed for `ctx.facets.get(name, {class})` is `$experimental` in workerd and rejected by Cloudflare's deploy validator for non-CF-team accounts. User-visible /preview/ behavior is identical; cookie persistence + per-instance hibernation are platform-gated. See "Platform-gated future state" in §5.*
+
 ### 5. Primitive fitness scorecard
 
 Every subsystem maps to one of four Cloudflare primitives. The choice is anchored to `docs/research/cf-primitives-dossier.md` — primitives 1-4 in the dossier's executive summary.
 
-| Subsystem | Primitive | Code | Why this primitive (per dossier) |
-|---|---|---|---|
-| `npm-resolve` (BFS resolver) | **Worker Loader** | `src/npm/resolve-facet.ts` + `src/loaders/loader-pool.ts` | "Best primitive for ephemeral fan-out" (§1). Per-spec hash → stable LOADER ID; isolate dies when work completes |
-| `npm-install` batch | **Worker Loader** | `src/npm/install-batch-facet.ts` | Stateless extract+write batches; no per-batch state to preserve |
-| `pre-bundle` (esbuild deps) | **Worker Loader** | `src/npm/pre-bundle-facet.ts` | One isolate per dep being pre-bundled; result streamed back via ReadableStream-over-RPC (`src/_shared/w7-frame.ts`) |
-| `tarball` decompression | **Worker Loader** | `src/npm/tarball-stream.ts` (preamble) | Streaming tar parse; pure compute, fits Loader's stateless model |
-| `git` clone/fetch | **Worker Loader** | `src/git/network-facet.ts` | isomorphic-git pre-bundled into the loader code; no per-clone state survives the operation |
-| **`cirrus-real` Vite** | **DO Facet** | `src/facets/cirrus-real.ts` | "Best primitive for stateful in-memory thread pool sharing one host" (§2). Has own SQLite, hibernation, and preserves identity across supervisor reconnects (D'.1) |
-| Session state (cwd/env/mounts/scrollback) | **DO SQLite** | `src/session/state-store.ts` | Source-of-truth for everything that must survive `webSocketError`. Track B' invariant |
-| Recovery event ring + OOM forensics | **DO SQLite** | `src/observability/oom-discriminator.ts` | Bounded ring (50 entries) + W5 ring-persistence; survives DO eviction |
-| npm tarball cache (cross-tenant) | **R2** | `src/npm/r2-cache.ts` | "Storage capacity beyond 1 DO's 10 GB; cross-tenant L3 cache shared by all sessions" — packages > 30 MiB skip the path due to RPC 32 MiB cap |
-| npm packument cache | **R2** | `src/npm/r2-cache.ts` | Same rationale; small JSON metadata blobs |
-| **Per-colo L2 — packument + tarball + esbuild-wasm** | **`caches.default`** | `src/npm/r2-cache.ts` (W-A, W-B), `src/runtime/esbuild-wasm-bytes.ts` (W-D) | "Per-colo edge cache for in-memory hot reads" (cache-and-scrub wave). Awaited write-back ensures subsequent reads strictly hit L2; key shapes are URL-pinned (synthetic `nimbus-cache.invalid` host) and TTLs match upstream semantics (packument 5 min mirroring R2 customMetadata, tarball/wasm eternal immutable since both are content-addressed). [Audit](audit/sections/CACHE-AUDIT.md) · [Wins](audit/sections/CACHE-WINS.md) |
-| esbuild-wasm bytes (~12 MiB) | **R2 (env.ASSETS) + L2** | `src/runtime/esbuild-wasm-bytes.ts` | A'.5 moved this off supervisor heap; fetched on demand at facet boot. L2 wrap landed in cache-and-scrub W-D — 6×–20× hit-vs-miss latency drop measured locally |
-| Supervisor IPC | **WorkerEntrypoint RPC** | `src/session/supervisor-rpc.ts` | "Universal transport" (§4). Promise pipelining; ReadableStream-over-RPC bypasses the 32 MiB structured-clone limit |
-| **Two-tier fan-out (npm install batch + future wide sites)** | **Worker Loader + DO peer pool** | `src/loaders/fanout-pool.ts` | Routes by width: POC C in-DO (`< 5` loaders) for small N; POC B peer-DO (`≥ 5`) for large N. Each peer DO gets its own 4-loader budget — cap-sidestep documented in §6 above. 5.09×–5.94× measured speedup at N=8 (matches POC B's predicted 7.75× minus local-dev RPC overhead). [Audit](audit/sections/FANOUT-AUDIT.md) |
+The **Target primitive** column is the architectural intent. The **Current state (prod)** column shows what's actually running today; for most subsystems target = current. The one subsystem where they diverge is `cirrus-real` Vite — see "Platform-gated future state" below.
 
-The supervisor itself is a **Durable Object** — the only stateful root in the architecture. Everything else is either (a) ephemeral compute via Worker Loader, (b) stateful child via DO Facet, (c) durable storage via DO SQLite or R2, or (d) transport via WorkerEntrypoint RPC.
+| Subsystem | Target primitive | Current state (prod) | Code | Why this primitive (per dossier) |
+|---|---|---|---|---|
+| `npm-resolve` (BFS resolver) | **Worker Loader** | ✓ matches | `src/npm/resolve-facet.ts` + `src/loaders/loader-pool.ts` | "Best primitive for ephemeral fan-out" (§1). Per-spec hash → stable LOADER ID; isolate dies when work completes |
+| `npm-install` batch | **Worker Loader** | ✓ matches | `src/npm/install-batch-facet.ts` | Stateless extract+write batches; no per-batch state to preserve |
+| `pre-bundle` (esbuild deps) | **Worker Loader** | ✓ matches | `src/npm/pre-bundle-facet.ts` | One isolate per dep being pre-bundled; result streamed back via ReadableStream-over-RPC (`src/_shared/w7-frame.ts`) |
+| `tarball` decompression | **Worker Loader** | ✓ matches | `src/npm/tarball-stream.ts` (preamble) | Streaming tar parse; pure compute, fits Loader's stateless model |
+| `git` clone/fetch | **Worker Loader** | ✓ matches | `src/git/network-facet.ts` | isomorphic-git pre-bundled into the loader code; no per-clone state survives the operation |
+| **`cirrus-real` Vite** | **DO Facet** | **fetcher-fallback** (`WorkerEntrypoint`) — gated on RM-27238 GA, see "Platform-gated future state" below | `src/facets/cirrus-real.ts` | "Best primitive for stateful in-memory thread pool sharing one host" (§2). Target: own SQLite, hibernation, identity across supervisor reconnects. Today: stateless `WorkerEntrypoint` default export sharing module-scope vite-bootstrap state with the would-be DO Facet path; user-visible /preview/ behavior is identical. ([D'.1-fix retro](audit/sections/D1-FIX-retro.md)) |
+| Session state (cwd/env/mounts/scrollback) | **DO SQLite** | ✓ matches | `src/session/state-store.ts` | Source-of-truth for everything that must survive `webSocketError`. Track B' invariant |
+| Recovery event ring + OOM forensics | **DO SQLite** | ✓ matches | `src/observability/oom-discriminator.ts` | Bounded ring (50 entries) + W5 ring-persistence; survives DO eviction |
+| npm tarball cache (cross-tenant) | **R2** | ✓ matches | `src/npm/r2-cache.ts` | "Storage capacity beyond 1 DO's 10 GB; cross-tenant L3 cache shared by all sessions" — packages > 30 MiB skip the path due to RPC 32 MiB cap |
+| npm packument cache | **R2** | ✓ matches | `src/npm/r2-cache.ts` | Same rationale; small JSON metadata blobs |
+| **Per-colo L2 — packument + tarball + esbuild-wasm** | **`caches.default`** | ✓ matches | `src/npm/r2-cache.ts` (W-A, W-B), `src/runtime/esbuild-wasm-bytes.ts` (W-D) | "Per-colo edge cache for in-memory hot reads" (cache-and-scrub wave). Awaited write-back ensures subsequent reads strictly hit L2; key shapes are URL-pinned (synthetic `nimbus-cache.invalid` host) and TTLs match upstream semantics (packument 5 min mirroring R2 customMetadata, tarball/wasm eternal immutable since both are content-addressed). [Audit](audit/sections/CACHE-AUDIT.md) · [Wins](audit/sections/CACHE-WINS.md) |
+| esbuild-wasm bytes (~12 MiB) | **R2 (env.ASSETS) + L2** | ✓ matches | `src/runtime/esbuild-wasm-bytes.ts` | A'.5 moved this off supervisor heap; fetched on demand at facet boot. L2 wrap landed in cache-and-scrub W-D — 6×–20× hit-vs-miss latency drop measured locally |
+| Supervisor IPC | **WorkerEntrypoint RPC** | ✓ matches | `src/session/supervisor-rpc.ts` | "Universal transport" (§4). Promise pipelining; ReadableStream-over-RPC bypasses the 32 MiB structured-clone limit |
+| **Two-tier fan-out (npm install batch + future wide sites)** | **Worker Loader + DO peer pool** | ✓ matches | `src/loaders/fanout-pool.ts` | Routes by width: POC C in-DO (`< 5` loaders) for small N; POC B peer-DO (`≥ 5`) for large N. Each peer DO gets its own 4-loader budget — cap-sidestep documented in §6 above. 5.09×–5.94× measured speedup at N=8 (matches POC B's predicted 7.75× minus local-dev RPC overhead). [Audit](audit/sections/FANOUT-AUDIT.md) |
+
+The supervisor itself is a **Durable Object** — the only stateful root in the architecture. Everything else is either (a) ephemeral compute via Worker Loader, (b) stateful child via DO Facet (target) / `WorkerEntrypoint` (current, for cirrus-real), (c) durable storage via DO SQLite or R2, or (d) transport via WorkerEntrypoint RPC.
+
+#### Platform-gated future state
+
+One row in the scorecard above (cirrus-real Vite) currently sits at "fetcher-fallback" rather than its target "DO Facet" topology. The gap is platform-gated — fixing it requires a Cloudflare-side change, not a Nimbus-side one:
+
+| Subsystem | Gap | What unblocks |
+|---|---|---|
+| `cirrus-real` Vite | Target topology is `ctx.facets.get(name, {class})` for own-SQLite + per-instance hibernation. Implementation requires `worker.getDurableObjectClass()`, which is only exposed under the `$experimental` compatibility flag. Cloudflare's deploy validator rejects `$experimental` for non-CF-team accounts (error code 10021), so the DO-Facet path is currently unreachable in prod. The src/ runtime feature-probes for the API and falls back to a `WorkerEntrypoint` default export sharing module-scope vite-bootstrap state with the would-be DO Facet path. | [RM-27238 — Dynamic Worker Loader GA](https://jira.cfdata.org/browse/RM-27238) (the experimental APIs are slated for promotion in that GA milestone). When it lands, the runtime feature-probe at `src/facets/cirrus-real.ts:start()` will pick up the DO Facet path automatically; no Nimbus code change needed. ([D'.1-fix retro](audit/sections/D1-FIX-retro.md) tracks the detail.) |
+
+User-visible behavior is identical between current and target: `/preview/` serves vite content, HMR works, snapshot semantics are preserved. The architectural delta is per-instance own-SQLite (which buys cookie persistence + DO-scoped hibernation), not user-feature loss.
 
 ### 6. Horizontal scaling — two-tier fan-out
 
@@ -487,7 +503,7 @@ src/
 │   └── helpers.ts, diag.ts, keys.ts, bindings.ts, internal.d.ts
 │
 ├── facets/                    # Child isolates (Worker Loader + DO Facet)
-│   ├── cirrus-real.ts         # Real Vite as a DO Facet (D'.1)
+│   ├── cirrus-real.ts         # Real Vite — DO Facet target / fetcher-fallback in prod
 │   ├── ws-terminal.ts         # WS ↔ xterm.js bridge (used by supervisor)
 │   ├── vite-dev-server.ts     # In-process Cirrus Vite (legacy in-supervisor)
 │   ├── manager.ts             # Node-script facet lifecycle (LOADER.get + ctx.facets)

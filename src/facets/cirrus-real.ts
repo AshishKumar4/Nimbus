@@ -448,45 +448,99 @@ export class CirrusRealVite extends DurableObject {
   }
 
   async fetch(request) {
-    installBindings(this.env);
-    const fetchUrl = request.url;
-    const fetchPath = (() => { try { return new URL(fetchUrl).pathname; } catch { return '?'; } })();
-    __cirrusMem('fetch.enter ' + fetchPath);
-    try {
-      await bootOnce();
+    return __cirrusFetchImpl(request, this.env, this.ctx, () => {
       if (this.__bootCompletedAt === 0) this.__bootCompletedAt = Date.now();
-    } catch {
-      // readyError set; fall through to error response.
-    }
-    if (readyError) {
-      const msg = '[cirrus-real] Vite failed to boot:\\n' +
-        (readyError && readyError.stack ? readyError.stack : String(readyError));
-      return new Response(msg, {
-        status: 500,
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-      });
-    }
-    // HMR pump: kick once per fetch with a short poll. Events may be
-    // queued from a browser WS connection that attached between
-    // requests, OR VFS events fired since the last pump. We cap at
-    // one iteration per request — pumpHmrOnce re-schedules itself
-    // via waitUntil when clients are connected.
-    const dctx = this.ctx;
-    if (dctx?.waitUntil && _hmrBinding) {
-      dctx.waitUntil(pumpHmrOnce(dctx));
-    }
-    if (!boot) boot = httpServerHandler({ port: PORT });
-    try {
-      const resp = await boot.fetch(request, this.env, dctx);
-      __cirrusMem('fetch.exit ' + fetchPath + ' [' + resp.status + ']');
-      return resp;
-    } catch (e) {
-      return new Response('[cirrus-real] httpServerHandler.fetch threw: ' +
-        (e && e.stack ? e.stack : String(e)), {
-        status: 500,
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-      });
-    }
+    });
+  }
+}
+
+// ── Stateless-fetcher fallback export [d1-fix] ────────────────────────
+// When env.LOADER.get(...) returns a stub WITHOUT
+// getDurableObjectClass (because the \`experimental\` compat flag is
+// absent — the case in production CF deployments since the
+// 2026-05-08 deploy validator change rejecting \$experimental flags
+// for non-CF-team accounts), the supervisor cannot spawn this
+// module as a DO Facet. It falls back to env.LOADER.get(...).
+// getEntrypoint() — a stateless Fetcher.
+//
+// In that mode, the supervisor's fetch() routes here. We share all
+// the module-scope vite-bootstrap state with the DurableObject
+// path (boot, viteServerInstance, readyError, etc.) so the
+// user-visible behavior is identical. The only delta: per-instance
+// state (the cookie + per-instance bootMs) is N/A — the supervisor
+// surfaces \`kind: 'fetcher-fallback'\` in /api/_diag/cirrus and the
+// probe relaxes its assertions accordingly.
+let __statelessBootCompletedAt = 0;
+async function __cirrusFetchImpl(request, env, ctx, onBootComplete) {
+  installBindings(env);
+  const fetchUrl = request.url;
+  const fetchPath = (() => { try { return new URL(fetchUrl).pathname; } catch { return '?'; } })();
+  __cirrusMem('fetch.enter ' + fetchPath);
+  try {
+    await bootOnce();
+    if (typeof onBootComplete === 'function') onBootComplete();
+    if (__statelessBootCompletedAt === 0) __statelessBootCompletedAt = Date.now();
+  } catch {
+    // readyError set; fall through to error response.
+  }
+  if (readyError) {
+    const msg = '[cirrus-real] Vite failed to boot:\\n' +
+      (readyError && readyError.stack ? readyError.stack : String(readyError));
+    return new Response(msg, {
+      status: 500,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    });
+  }
+  // HMR pump: kick once per fetch with a short poll. Events may be
+  // queued from a browser WS connection that attached between
+  // requests, OR VFS events fired since the last pump. We cap at
+  // one iteration per request — pumpHmrOnce re-schedules itself
+  // via waitUntil when clients are connected.
+  if (ctx?.waitUntil && _hmrBinding) {
+    ctx.waitUntil(pumpHmrOnce(ctx));
+  }
+  if (!boot) boot = httpServerHandler({ port: PORT });
+  try {
+    const resp = await boot.fetch(request, env, ctx);
+    __cirrusMem('fetch.exit ' + fetchPath + ' [' + resp.status + ']');
+    return resp;
+  } catch (e) {
+    return new Response('[cirrus-real] httpServerHandler.fetch threw: ' +
+      (e && e.stack ? e.stack : String(e)), {
+      status: 500,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    });
+  }
+}
+
+const __cirrusModuleLoadedAt = Date.now();
+
+// Default export: stateless Fetcher shape. Used when the supervisor
+// falls back to env.LOADER.get(...).getEntrypoint() because the DO
+// Facet path is unavailable (no \`experimental\` flag).
+//
+// We use a WorkerEntrypoint subclass (instead of a plain
+// default-export object) so the supervisor can call BOTH
+// .fetch(req) and .getFacetMeta() via the same RPC stub —
+// matching the API surface the DO Facet variant exposes.
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export default class CirrusRealStateless extends WorkerEntrypoint {
+  async fetch(request) {
+    return __cirrusFetchImpl(request, this.env, this.ctx);
+  }
+  /** Stateless analog of CirrusRealVite.getFacetMeta(). Cookie is
+   *  N/A in this mode (no per-facet SQLite); we surface bootMs and
+   *  viteServerListening so the supervisor's diag still has
+   *  observability. */
+  async getFacetMeta() {
+    return {
+      cookie: null,                    // N/A in stateless mode
+      bootMs: __statelessBootCompletedAt > 0
+        ? __statelessBootCompletedAt - __cirrusModuleLoadedAt
+        : 0,
+      bootError: readyError ? String(readyError?.message || readyError) : null,
+      viteServerListening: viteServerInstance != null,
+    };
   }
 }
 `.trim();
@@ -511,9 +565,19 @@ export class CirrusReal {
   /** [D'.1] facet name used with ctx.facets.get/delete. Set in start(),
    *  cleared in stop(). */
   private _facetName: string | null = null;
-  /** [D'.1] dispatch shape — 'do-facet' (post-D'.1) or 'loader-load'
-   *  (pre-D'.1). Surfaced via /api/_diag/cirrus.kind for the probe. */
-  private _kind: 'do-facet' | 'loader-load' | null = null;
+  /** Dispatch shape:
+   *  - 'do-facet' (post-D'.1, requires `$experimental` compat flag)
+   *  - 'fetcher-fallback' (D'.1 graceful-degrade, when
+   *    getDurableObjectClass is unavailable — the prod and the
+   *    flag-stripped local dev case after the 2026-05-08
+   *    deploy-flag-fix tightening) [d1-fix]
+   *  - 'loader-load' (legacy pre-D'.1 stateless worker; no longer
+   *    used by start() but the type is preserved for any external
+   *    code that switches on it)
+   *  - null (not started, or stop()'d)
+   *  Surfaced via /api/_diag/cirrus.kind for the probe.
+   */
+  private _kind: 'do-facet' | 'fetcher-fallback' | 'loader-load' | null = null;
   /** [D'.1] timestamp when the facet stub was successfully obtained
    *  (after ctx.facets.get returned). Used to compute the supervisor-
    *  side bootMs that includes module compilation + facet binding,
@@ -749,12 +813,73 @@ export class CirrusReal {
           ...(hmrBinding ? { CIRRUS_HMR: hmrBinding } : {}),
         },
       }));
-      const CirrusRealViteClass = worker.getDurableObjectClass('CirrusRealVite');
-      this._facetName = facetName;
-      this.facetStub = (ctx as any).facets.get(facetName, async () => ({
-        class: CirrusRealViteClass,
-      }));
-      this._kind = 'do-facet';
+
+      // [d1-fix] Two-path bind:
+      //
+      // PRIMARY (DO Facet) — requires `experimental` compat flag:
+      //   worker.getDurableObjectClass('CirrusRealVite') →
+      //   ctx.facets.get(name, {class}) → stub with own-SQLite.
+      //   Provides the cookie-persistence + identity story.
+      //
+      // FALLBACK (Fetcher) — used when getDurableObjectClass is
+      //   unavailable (no `experimental` flag — the prod situation
+      //   since the 2026-05-08 deploy validator change rejecting
+      //   $experimental flags for non-CF-team accounts):
+      //   worker.getEntrypoint('CirrusRealStateless') → stateless
+      //   WorkerEntrypoint stub. Vite still serves /preview/ via
+      //   the same module-scope state; cookie persistence is N/A
+      //   (no per-instance SQLite). Probe surfaces this via
+      //   `kind: 'fetcher-fallback'`.
+      //
+      // The detection is by *runtime feature probe* — we try
+      // getDurableObjectClass first and catch the classic
+      // 'is not a function' / facets-related error, mirroring the
+      // pattern at facets/manager.ts:1286-1322. NOT by static
+      // env-var check (the flag is invisible from JS at runtime).
+      let CirrusRealViteClass: any = null;
+      try {
+        CirrusRealViteClass = (worker as any).getDurableObjectClass?.('CirrusRealVite');
+      } catch (cls: any) {
+        // Caller-side throw means the method exists but the class
+        // lookup failed — surface as a real bootError so we don't
+        // silently fall through.
+        this.bootError = 'getDurableObjectClass(CirrusRealVite) threw: ' +
+          (cls?.message || String(cls));
+        return;
+      }
+      if (CirrusRealViteClass && typeof (ctx as any).facets?.get === 'function') {
+        // PRIMARY: DO Facet path.
+        this._facetName = facetName;
+        this.facetStub = (ctx as any).facets.get(facetName, async () => ({
+          class: CirrusRealViteClass,
+        }));
+        this._kind = 'do-facet';
+      } else {
+        // FALLBACK: Fetcher path. The default-exported
+        // CirrusRealStateless WorkerEntrypoint exposes both
+        // `fetch(req)` and `getFacetMeta()` so the supervisor's
+        // handleRequest + getDiag logic Just Works without
+        // branching on `kind`.
+        //
+        // No `experimental` compat flag → no DO-Facet API at runtime.
+        // This is the prod path (CF rejects the flag) and the
+        // local-dev path post-2026-05-08 deploy-flag-fix wave.
+        this._facetName = null; // facets.delete() is N/A here
+        // Default export → getEntrypoint() with no name argument.
+        // Per workerd's WorkerStub semantics: getEntrypoint() →
+        // the default export; getEntrypoint(name) → a named export.
+        // The fallback main.js export is `export default class
+        // CirrusRealStateless extends WorkerEntrypoint { ... }` —
+        // resolved as the DEFAULT, not as a named entrypoint.
+        this.facetStub = (worker as any).getEntrypoint?.();
+        if (!this.facetStub) {
+          this.bootError =
+            'cirrus-real fallback: worker.getEntrypoint() returned no stub. ' +
+            'Worker Loader binding may be missing or incompatible.';
+          return;
+        }
+        this._kind = 'fetcher-fallback';
+      }
       this._bootCompletedAt = Date.now();
     } catch (e: any) {
       this.bootError = e?.stack || e?.message || String(e);
