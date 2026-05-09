@@ -704,6 +704,15 @@ export async function _rpcFanoutExecute(
     wasmModules?: Record<string, ArrayBuffer>;
     extraBindings?: Record<string, unknown>;
     omitSupervisor?: boolean;
+    /**
+     * INSTALL-HONESTY: full doId of the COORDINATOR (the DO that
+     * called NimbusFanoutPool.submitMany). The peer's NimbusLoaderPool
+     * uses this to mint a SUPERVISOR binding that routes back to the
+     * coordinator instead of the peer (default behavior pre-fix).
+     * Without this, install-batch's writeBatchStream calls from inside
+     * a loader isolate land in the PEER's VFS, invisible to the user.
+     */
+    coordinatorDoId?: string;
   } = {},
 ): Promise<{ results: unknown[] }> {
   if (!Array.isArray(args)) {
@@ -725,6 +734,12 @@ export async function _rpcFanoutExecute(
     wasmModules: poolOpts.wasmModules,
     extraBindings: poolOpts.extraBindings,
     omitSupervisor: poolOpts.omitSupervisor,
+    // INSTALL-HONESTY: route SUPERVISOR.* back to the coordinator
+    // (the user's session DO), not the peer DO. When undefined
+    // (back-compat with non-fanout callers), NimbusLoaderPool falls
+    // back to ctx.id.toString() — the legacy behavior, correct for
+    // single-DO callers.
+    supervisorDoIdOverride: poolOpts.coordinatorDoId,
   });
   try {
     // mapSource accepts the pre-serialized fnSource forwarded by the
