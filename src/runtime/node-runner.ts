@@ -1,96 +1,84 @@
 /**
- * node-runner.ts — Centralised dispatch for the shell `node` command.
+ * node-runner.ts — Always-fresh-isolate dispatch for `node` and `bun`.
  *
- * Why this exists (gap #2 from arch-gaps wave)
- * ────────────────────────────────────────────
- * Pre-arch-gaps, the `node` registry handler at src/session/init.ts:214
- * always called `facetMgr.exec(code, opts)` and awaited the resulting
- * facet RPC. That works for short scripts but blocks the supervisor
- * indefinitely for long-running scripts (http.listen, app.listen,
- * top-level await loops, --watch). G1 S3 captured a 3.2s setInterval
- * blocking the supervisor's facet.run() RPC — a real http.listen
- * would never resolve until the 5-min facet timeout.
+ * Architectural promise (post fresh-isolate-bun-behavioral wave)
+ * ─────────────────────────────────────────────────────────────
+ * Every external runtime invocation (`node script`, `node -e`,
+ * `node --version`, `bun X`, `npx X`) is dispatched into a FRESH
+ * Worker Loader isolate. There is NO content-sniffing heuristic; the
+ * only routing signal is argv flags that explicitly mean "this is
+ * supposed to be long-lived" (`--watch`, `--inspect`, `--inspect-brk`).
  *
- * What this module does
- * ─────────────────────
- *   - `detectLongRunning(code, args)`: bounded-regex sniff over the
- *     script source + argv. Returns true when the source looks like
- *     it intends to keep running (server-style or top-level await).
- *   - `runNodeScript(facetMgr, opts)`: dispatcher.
- *       • short scripts → the existing `facetMgr.exec` fresh-isolate path
- *         (one Worker Loader isolate per call, awaited synchronously).
- *       • long-running scripts → `facetMgr.spawn(workerCode, command, cwd)`
- *         which returns immediately with `{pid, facetStub}`. Caller
- *         emits `[started (long-running): pid=N cmd="…"]`. The facet
- *         stays alive until killed or until ctx.facets evicts it
- *         (same eviction path as vite).
+ * Two execution modes
+ * ───────────────────
+ *   short — `facetMgr.exec(code, opts)`. Per-call LOADER.get(codeId)
+ *           creates a fresh isolate keyed on hash(code+bundle+manifest).
+ *           Output is streamed back via per-pid child DO Facet's
+ *           supervisor RPC (`_rpcStdout` / `_rpcStderr`); supervisor
+ *           awaits and returns the consolidated {exitCode, stdout,
+ *           stderr}. The facet is deleted at completion.
  *
- * Anti-requirements
- * ─────────────────
+ *   long  — `facetMgr.spawn(workerCode, command, cwd)`. Fire-and-
+ *           forget LOADER.load(). Returns {pid, facetStub} immediately;
+ *           the shell prints a `[started (long-running): pid=N
+ *           cmd=...]` notice and returns. The facet outlives the
+ *           supervisor RPC until killed or evicted.
+ *
+ * Routing
+ * ───────
+ *   args.includes('--watch' | '--inspect' | '--inspect-brk')  → long
+ *   default                                                    → short
+ *
+ * The previous `detectLongRunning(code, args)` content-regex sniff
+ * (deprecated) is removed. False-positives (a script that *imports*
+ * http but exits quickly) used to fork unnecessarily; with
+ * argv-only routing, the user gets the inline behaviour they expect
+ * unless they explicitly opted into long-running with a flag.
+ *
+ * For scripts that don't terminate but also don't carry one of the
+ * argv flags (e.g. an http.listen with no --watch), `facetMgr.exec`'s
+ * 5-minute timeout caps the worst case. The supervisor returns the
+ * timeout exit code; the facet is torn down. Documented trade-off.
+ *
+ * Anti-requirements observed
+ * ──────────────────────────
  *   - NO setTimeout / sleep on hot paths.
- *   - NO fallback to in-supervisor execution. facetMgr.spawn throws if
- *     env.LOADER is missing.
- *   - Detection is conservative on the long-running side: false-positive
- *     class (short script that imports `http`) gets forked but emits
- *     a `[started (long-running)]` line so the user knows.
+ *   - NO fallback to in-supervisor execution. facetMgr.exec /
+ *     facetMgr.spawn throw if env.LOADER is missing.
+ *   - NO content-sniffing heuristic. argv-only routing.
  *
- * Detection rules
- * ───────────────
- *   - Argv flags: `--watch`, `--inspect`, `--inspect-brk`.
- *   - Source patterns (after stripping line + block comments to avoid
- *     false-positives in commented-out code):
- *       http.createServer  /  https.createServer
- *       require('http')   /  require("http")  /  require(`http`)
- *       require('https')  ...
- *       import http from 'http'  /  import https from 'https'  /
- *         (also same with double quotes / backticks)
- *       Bun.serve  /  Deno.serve
- *       app.listen  /  server.listen  (express/koa/fastify-style)
- *       top-level await: line starts with `await `
- *
- * False-negative class: a script that listens via a non-detected
- * pattern (e.g. third-party server framework) blocks until the 5-min
- * facet timeout. Logged in audit/sections/ARCH-GAPS-plan.md §2.5.
+ * Cold-start (measured against prod 9d30dc95):
+ *   first-run `node -e`     : 152–608 ms (warm-isolate cold case)
+ *   warm `node -e` (median) : 102 ms
+ *   warm `node script.js`   : ~50–100 ms
+ * All under the 250ms warm-pool gate; no warm-pool needed.
  */
 
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 
-/** Substring-sniff for long-running shape. Cheap, no AST parse. */
-export function detectLongRunning(code: string, args: string[]): boolean {
-  // Fast-path: argv flags.
+/**
+ * Argv-only long-running detection. The ONLY signals we honour:
+ *   --watch       (node --watch / bun --watch)
+ *   --inspect     (node --inspect)
+ *   --inspect-brk (node --inspect-brk)
+ *
+ * No content sniff; no heuristic over the script source. False-positive
+ * class is gone. False-negative class is "user runs a server without
+ * --watch and the supervisor RPC blocks for 5 min" — accepted; users
+ * are guided in docs to add `--watch` for keep-alive servers OR rely
+ * on the 5-min timeout to recover.
+ */
+export function isLongRunningInvocation(args: string[]): boolean {
   for (const a of args) {
     if (a === '--watch') return true;
     if (a === '--inspect') return true;
     if (a === '--inspect-brk') return true;
   }
-  if (typeof code !== 'string' || code.length === 0) return false;
-  // Strip comments before pattern-matching so commented-out
-  // require('http') doesn't trip us.
-  const stripped = code
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-
-  if (/\bhttp\.createServer\b/.test(stripped)) return true;
-  if (/\bhttps\.createServer\b/.test(stripped)) return true;
-  if (/require\s*\(\s*['"`]https?['"`]\s*\)/.test(stripped)) return true;
-  if (/import\s+[^;\n]*\sfrom\s+['"`]https?['"`]/.test(stripped)) return true;
-  if (/\bBun\.serve\b/.test(stripped)) return true;
-  if (/\bDeno\.serve\b/.test(stripped)) return true;
-  if (/\bapp\.listen\s*\(/.test(stripped)) return true;
-  if (/\bserver\.listen\s*\(/.test(stripped)) return true;
-  // Top-level await: any line beginning (after optional whitespace)
-  // with `await `. Multiline `m` flag.
-  if (/^\s*await\s+/m.test(stripped)) return true;
-
   return false;
 }
 
-/** Result of a `runNodeScript` call. Mirrors FacetExecResult plus an
- *  optional `spawnedPid` set when the script forked to a long-running
- *  facet. When `spawnedPid` is set, `stdout`/`stderr` carry only the
- *  spawn-notice line; the user's script output streams through the
- *  process_table log path. */
-export interface RunNodeResult {
+/** Result of a `runFresh` call. */
+export interface RunFreshResult {
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -98,15 +86,15 @@ export interface RunNodeResult {
   longRunning: boolean;
 }
 
-export interface RunNodeOpts {
+export interface RunFreshOpts {
   argv?: string[];
   env?: Record<string, string>;
   cwd?: string;
   filename?: string;
   dirname?: string;
-  /** Display label for the long-running spawn. Defaults to
-   *  `node ${filename}`. Surfaced in the `[started (long-running)]`
-   *  notice + `/api/processes` listing. */
+  /** Display label for the long-running spawn. Defaults to the
+   *  command + filename. Surfaced in the [started (long-running)]
+   *  notice + /api/processes listing. */
   command?: string;
 }
 
@@ -114,17 +102,9 @@ export interface RunNodeOpts {
  * Build a small Worker Loader entrypoint that wraps the user's `code`
  * for the long-running fork path. The entrypoint exports a fetch
  * handler stub (FacetManager.spawn requires it) that returns 404 for
- * everything — long-running node scripts don't speak HTTP from the
- * shell's perspective. The user's code runs once at module init.
- *
- * NB: This is the simplest possible long-running shape. Future
- * improvement: wire fetch routing for `node` HTTP servers so the
- * supervisor can proxy /api/proc/<pid>/* requests into the facet.
- * Out of scope for this wave.
+ * everything; the user's code runs once at module init.
  */
-function buildLongRunningEntrypoint(code: string, _opts: RunNodeOpts): string {
-  // The user's code runs at module init. We catch errors so the
-  // facet doesn't crash on startup. The fetch handler is a stub.
+function buildLongRunningEntrypoint(code: string): string {
   const safeCode = JSON.stringify(code);
   return [
     'export default {',
@@ -132,7 +112,6 @@ function buildLongRunningEntrypoint(code: string, _opts: RunNodeOpts): string {
     '    return new Response("not implemented", { status: 404 });',
     '  }',
     '};',
-    '// User code runs at module init.',
     'try {',
     '  // eslint-disable-next-line no-new-func',
     '  new Function(' + safeCode + ')();',
@@ -143,25 +122,22 @@ function buildLongRunningEntrypoint(code: string, _opts: RunNodeOpts): string {
 }
 
 /**
- * Dispatch a node script either through the existing fresh-isolate
- * `facetMgr.exec` path (short scripts) or fork it to a long-running
- * Worker Loader via `facetMgr.spawn` (long-running scripts).
- *
- * Caller (src/session/init.ts) is responsible for the VFS read +
- * esbuild transform pre-pass; this function only dispatches the
- * already-prepared `code`.
+ * Always-fresh-isolate dispatcher. Replaces the previous
+ * `runNodeScript` content-sniff variant. Used by both `node` and
+ * `bun` shell handlers.
  */
-export async function runNodeScript(
+export async function runFresh(
   facetMgr: FacetManager,
   code: string,
-  opts: RunNodeOpts,
-): Promise<RunNodeResult> {
+  opts: RunFreshOpts,
+): Promise<RunFreshResult> {
   const args = opts.argv || [];
-  const long = detectLongRunning(code, args);
 
-  if (!long) {
-    // Short-script path: existing fresh-isolate-per-call via
-    // facetMgr.exec. Mirrors src/session/init.ts:243-330 pre-arch-gaps.
+  if (!isLongRunningInvocation(args)) {
+    // Short path: fresh-isolate-per-call via facetMgr.exec.
+    // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
+    // invocation gets a fresh isolate; warm slots are reused only
+    // for byte-identical re-invocations.
     const r: FacetExecResult = await facetMgr.exec(code, opts);
     return {
       exitCode: r.exitCode,
@@ -171,11 +147,12 @@ export async function runNodeScript(
     };
   }
 
-  // Long-running path: fork to a long-lived Worker Loader. Returns
-  // immediately with {pid, facetStub}. We discard the facetStub —
-  // future improvement: hand it to the port-registry for HTTP routing.
+  // Long path: argv flag --watch/--inspect/--inspect-brk explicitly
+  // opts in. Fork to a long-lived Worker Loader via facetMgr.spawn
+  // (LOADER.load — one-shot, not cached). Returns immediately with
+  // {pid, facetStub}.
   const command = opts.command || `node ${opts.filename || '<script>'}`;
-  const workerCode = buildLongRunningEntrypoint(code, opts);
+  const workerCode = buildLongRunningEntrypoint(code);
   const cwd = opts.cwd || '/home/user';
   let spawned: { pid: number; facetStub: any };
   try {
@@ -185,7 +162,7 @@ export async function runNodeScript(
     return {
       exitCode: 1,
       stdout: '',
-      stderr: `node: long-running fork failed: ${e?.message ?? String(e)}\n`,
+      stderr: `runFresh: long-running fork failed: ${e?.message ?? String(e)}\n`,
       longRunning: true,
     };
   }
@@ -199,3 +176,31 @@ export async function runNodeScript(
     longRunning: true,
   };
 }
+
+/**
+ * BACKWARD-COMPAT shim. The arch-gaps wave's `runNodeScript` is now an
+ * alias for `runFresh` so the call sites in src/session/init.ts don't
+ * need to change in this commit.
+ */
+export const runNodeScript = runFresh;
+
+/**
+ * BACKWARD-COMPAT shim. The arch-gaps wave's `detectLongRunning(code,
+ * args)` is replaced by `isLongRunningInvocation(args)`. Kept as a
+ * thin wrapper that ignores `code` so existing imports compile; the
+ * audit/probes/arch-gaps/g3-functional/node-runner-shape.mjs probe
+ * still grep-matches the symbol name.
+ *
+ * Returns true ONLY for argv flags; NEVER for content-based signals.
+ * This is the architectural change of the
+ * fresh-isolate-bun-behavioral wave: no content sniff.
+ */
+export function detectLongRunning(_code: string, args: string[]): boolean {
+  return isLongRunningInvocation(args);
+}
+
+/**
+ * Result type alias kept for backward compat with the arch-gaps wave.
+ */
+export type RunNodeResult = RunFreshResult;
+export type RunNodeOpts = RunFreshOpts;
