@@ -1,0 +1,26 @@
+==== WAVE 1 REGRESSION POST-W2 ====
+==== TIMESTAMP: 2026-05-09T15:20:46.538Z ====
+==== BASE: http://127.0.0.1:8792 ====
+==== SID: brave-fjord-1173 ====
+!!!! vite never ready !!!!
+buf tail: [J[1m[32muser@nimbus[0m:[1m[34m~[0m$ cd app && npm install && npm run dev[51C
+[36mInstalling dependencies from package.json (npm v2 — batched writes)...[0m
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 5 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm]   resolver-facet: 15 resolved, 15 packuments fetched (39.3 MiB), peak in-flight=4, cache writes=85, elapsed=2.0s
+[npm] Resolved 15 packages.
+[npm] To fetch: 15, to restore: 0, already installed: 0
+[npm] Fetching 15 packages... (path: batch-facet)
+[npm] Dispatching 15 packages across 15 shards (peer-do (POC B), internal pLimit=3)...
+[npm] Batch-facet complete: 15/15 packages, 4097 files, 5.6 MiB tarball bytes, peak in-flight=1, 4.1s
+[npm] Done! 15 packages, 4097 files in 6.3s
+
+[32madded 15 packages (4097 files) in 6.3s[0m
+[31m✘[0m [1mnode_modules/ not found[0m — script "dev" runs [36mvite[0m which needs installed dependencies (10 declared).
+  Run [36mnpm install[0m first,
+  or re-run with [36mnpm run dev -- --force[0m to skip this check.
+[1m[32muser@nimbus[0m:[1m[34m~/app[0m$ 
+==== END (FAIL) ====

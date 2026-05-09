@@ -1,7 +1,7 @@
 ==== C'.2 recovery-events probe ====
-==== TIMESTAMP: 2026-05-08T22:03:42.599Z ====
+==== TIMESTAMP: 2026-05-09T15:13:36.097Z ====
 BASE: http://127.0.0.1:8792
-SID: quiet-rapids-5403
+SID: falling-deer-5462
 PASS: fresh session has empty recovery-events ring
 PASS: ring contains 1 event after one record()
 PASS: fromState = cold

@@ -1,0 +1,12 @@
+==== git-freeze clone-large-repo probe ====
+==== TIMESTAMP: 2026-05-09T15:06:08.331Z ====
+BASE: https://nimbus.ashishkmr472.workers.dev
+REPO: https://github.com/AshishKumar4/Nimbus
+CLONE_TIMEOUT_MS: 180000
+SID: flying-ocean-6349
+shell prompt ready @ 101 ms
+clone wall time: 12012 ms
+PASS: clone completed — 1609 files, 40076.1 KB in 11.1s
+PASS: file count 1609 ≥ 100
+PASS: final progress frame 1601/1601 (loaded === total)
+==== EXIT 0 ====

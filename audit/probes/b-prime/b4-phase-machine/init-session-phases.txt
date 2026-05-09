@@ -1,7 +1,7 @@
 ==== B'.4 init-session-phases probe ====
-==== TIMESTAMP: 2026-05-08T22:03:53.560Z ====
+==== TIMESTAMP: 2026-05-09T15:13:47.038Z ====
 BASE: http://127.0.0.1:8792
-SID: fearless-parrot-3987
+SID: electric-spider-5741
 stage 1: cold debug.phase = null
 PASS: cold session: phase = null
 stage 2: post-WS debug.phase = "hydrated"

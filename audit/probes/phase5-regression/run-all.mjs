@@ -143,6 +143,23 @@ const PROBES = [
     file: 'audit/probes/w7/functional/08-writestream-on-vfs.mjs',
     timeoutMs: 60_000, needsBase: false, slow: true },
 
+  // ── git-freeze regression ────────────────────────────────────────
+  // Locks the post-fix invariant from the git-freeze wave: a real
+  // git clone end-to-end MUST complete (not freeze at a partial-
+  // progress frame). The probe distinguishes infra failures
+  // (CF git-proxy 403/522/timeout) from genuine Nimbus
+  // regressions; only the latter fail the run. See
+  // audit/sections/GIT-FREEZE-retro.md for the original bug.
+  //
+  // Default REPO is octocat/Hello-World — a tiny 10-file repo for
+  // CI speed. Prod verification uses BASE=https://nimbus...
+  // REPO=https://github.com/AshishKumar4/Nimbus and asserts the
+  // 1595-file completion that the original P0 freeze couldn't reach.
+  { name: 'git-freeze clone-large-repo',
+    file: 'audit/probes/git-freeze/clone-large-repo.mjs',
+    timeoutMs: 180_000, needsBase: true,
+    env: { REPO: 'https://github.com/octocat/Hello-World', MIN_FILE_COUNT: '1' } },
+
   // ── Refactor gate (tsc baseline + structural surface) ────────────
   { name: 'refactor-gate (tsc baseline + RPC + cmds + exports)',
     file: 'audit/probes/regression/_refactor-gate.mjs',
@@ -182,7 +199,10 @@ for (const p of PROBES) {
   }
 
   const tStart = Date.now();
-  const env = { ...process.env, BASE };
+  // Per-probe env overrides on top of process.env. Used by
+  // git-freeze/clone-large-repo to set REPO + MIN_FILE_COUNT
+  // defaults without leaking those into other probes.
+  const env = { ...process.env, BASE, ...(p.env || {}) };
   const r = spawnSync('bun', [probePath], {
     cwd: ROOT,
     env,

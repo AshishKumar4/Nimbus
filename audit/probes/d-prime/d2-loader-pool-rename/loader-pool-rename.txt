@@ -1,12 +1,12 @@
 ==== D'.2 loader-pool-rename probe ====
-==== TIMESTAMP: 2026-05-08T22:03:59.879Z ====
-ROOT: /workspace/worktrees/deploy-flag-fix
+==== TIMESTAMP: 2026-05-09T15:13:53.663Z ====
+ROOT: /workspace/worktrees/git-freeze
 stage 1: NimbusFacetPool hits in src/ = 0
 PASS: grep -rn "NimbusFacetPool" src/ → 0 hits (rename complete)
 stage 1: NimbusFacetPoolOptions hits in src/ = 0
 PASS: grep -rn "NimbusFacetPoolOptions" src/ → 0 hits
-stage 2: NimbusLoaderPool hits in src/ = 55
-PASS: new class name 'NimbusLoaderPool' present (55 hits)
+stage 2: NimbusLoaderPool hits in src/ = 83
+PASS: new class name 'NimbusLoaderPool' present (83 hits)
   note: src/parallel/index.ts not found — rename may have moved the file
 stage 3: tsc errors = 2
   src/runtime/esbuild-service.ts(153,28): error TS2307: Cannot find module 'esbuild-wasm/esbuild.wasm' or its corresponding type declarations.

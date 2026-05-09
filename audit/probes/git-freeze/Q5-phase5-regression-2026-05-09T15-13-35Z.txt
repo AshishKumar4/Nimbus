@@ -1,0 +1,47 @@
+==== Phase 5 P5.3 — full regression run ====
+==== TIMESTAMP: 2026-05-09T15:13:35.978Z ====
+BASE: http://127.0.0.1:8792
+QUICK: false
+probes to run: 30 of 30 total
+
+PASS    C'.1 heap-estimator                                  20/20     82ms
+PASS    C'.2 recovery-events                                 13/13    400ms
+PASS    C'.3 error-recovery                                    8/8   1054ms
+PASS    A'.1 resolver-fallback                               17/17     65ms
+PASS    A'.2 streaming-buffers                                 3/3     72ms
+PASS    A'.3 barrel-synth                                      5/5     74ms
+PASS    A'.5 esbuild-bytes                                     3/3     65ms
+PASS    B'.1 shell-state                                     12/12   1926ms
+PASS    B'.2 kernel-mounts                                     4/4   1159ms
+PASS    B'.3 scrollback                                      13/13   6101ms
+PASS    B'.4 phase-machine                                   12/12   1693ms
+PASS    B'.5 join-existing                                   13/13   1581ms
+PASS    D'.1 cirrus-real-do-facet                              8/8   3354ms
+PASS    D'.2 loader-pool-rename                                4/4   3194ms
+PASS    interactive-liveness/walltime-distribution             4/4   6530ms
+PASS    W5 ring-persistence                                    0/0     29ms
+PASS    W5 lru-shrink-restore                                  0/0     34ms
+PASS    W5 sqlite-nomem-retry                                  0/0     31ms
+PASS    W5 diag-shape                                          0/0     25ms
+PASS    W7 frame-roundtrip                                     0/0     30ms
+PASS    W7 large-payload                                       0/0    182ms
+PASS    W7 backpressure                                        0/0    519ms
+PASS    W7 cancel-mid-stream                                   0/0     33ms
+PASS    W7 error-propagation                                   0/0     29ms
+PASS    W7 empty-batches                                       0/0     34ms
+PASS    W7 bytes-source-type                                   0/0     28ms
+PASS    W7 writestream-on-vfs                                  0/0     30ms
+PASS    git-freeze clone-large-repo                            3/3   1677ms
+PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   3220ms
+PASS    deploy-validation/no-experimental-flags                0/0     36ms
+
+==== SUMMARY ====
+total runtime: 33.3s
+  PASS    : 30
+  FAIL    : 0
+  TIMEOUT : 0
+  SKIP    : 0
+  MISS    : 0
+  total PASS lines: 142
+  total FAIL lines: 0
+==== EXIT 0 ====

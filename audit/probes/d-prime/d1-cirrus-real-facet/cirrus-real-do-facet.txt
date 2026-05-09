@@ -1,16 +1,16 @@
 ==== D'.1 cirrus-real-do-facet probe ====
-==== TIMESTAMP: 2026-05-09T01:35:42.631Z ====
-BASE: http://127.0.0.1:8795
-SID: twilight-opal-9634
+==== TIMESTAMP: 2026-05-09T15:13:50.302Z ====
+BASE: http://127.0.0.1:8792
+SID: faithful-gecko-6605
 stage 1: shell prompt ready
-stage 1: cirrus diag = {"running":true,"kind":"fetcher-fallback","facetName":null,"cookie":null,"bootMs":14,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":460,"hmrClients":0}
-PASS: kind='fetcher-fallback' (cirrus-real running as stateless WorkerEntrypoint — `experimental` compat flag absent; this IS the prod path)
-PASS: cookie=null is correct for kind='fetcher-fallback' (no per-instance SQLite by design)
+stage 1: cirrus diag = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"57838d55-b28e-4763-afce-64ccfaad8a65","bootMs":50,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":421,"hmrClients":0}
+PASS: kind='do-facet' (cirrus-real running as DO Facet — full feature)
+PASS: cookie=57838d55-b28... (facet's own SQLite working)
 PASS: facet booted without error
-PASS: cold-start = 14ms ≤ 200ms regression budget
+PASS: cold-start = 50ms ≤ 200ms regression budget
 PASS: isolateGen stable at 1 across close
-stage 3: cirrus diag post-reconnect = {"running":true,"kind":"fetcher-fallback","facetName":null,"cookie":null,"bootMs":14,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2860,"hmrClients":0}
-PASS: post-reconnect: kind='fetcher-fallback' (cirrus-real survived supervisor close)
-info: cookie persistence N/A for kind='fetcher-fallback' (no per-instance SQLite; the prod path)
+stage 3: cirrus diag post-reconnect = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"57838d55-b28e-4763-afce-64ccfaad8a65","bootMs":50,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2822,"hmrClients":0}
+PASS: post-reconnect: kind='do-facet' (cirrus-real survived supervisor close)
+PASS: cookie preserved across supervisor reconnect (facet survived independently)
 PASS: warm-fetch latency = 0ms ≤ 50ms
 ==== EXIT 0 ====

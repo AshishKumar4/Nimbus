@@ -1,7 +1,7 @@
 ==== interactive-liveness / error-recovery ====
-==== TIMESTAMP: 2026-05-08T22:03:43.061Z ====
+==== TIMESTAMP: 2026-05-09T15:13:36.512Z ====
 BASE: http://127.0.0.1:8792
-SID: grateful-lavender-8663
+SID: vivid-narwhal-0544
 stage 1: bannerCount=1 cwd="~"
 stage 2: after 'cd app' cwd="~/app"
 stage 3: isolateGen baseline = 1

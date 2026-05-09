@@ -1,0 +1,11 @@
+==== git-freeze clone-large-repo probe ====
+==== TIMESTAMP: 2026-05-09T15:02:30.127Z ====
+BASE: https://nimbus.ashishkmr472.workers.dev
+REPO: https://github.com/AshishKumar4/Nimbus
+CLONE_TIMEOUT_MS: 180000
+SID: balmy-cherry-3824
+shell prompt ready @ 101 ms
+clone wall time: 2002 ms
+FAIL: clone failed with: Cannot perform Construct on a detached ArrayBuffer
+FAIL: no Updating workdir frame found in stream — probe scenario broken
+==== EXIT 1 ====
