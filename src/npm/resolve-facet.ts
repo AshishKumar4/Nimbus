@@ -665,8 +665,21 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   const bestEffortNames = new Set<string>();
   const queue2: [string, string][] = Object.entries(spec.specs);
 
+  // F-2 profiling: emit per-layer width when host marks the diag flag.
+  // The facet doesn't see process.env directly (preamble), so we
+  // surface via messages array (already piped to install log via
+  // result.messages → for (const m of result.messages) log(m)).
+  // Probe sets spec.__f2DiagWidths = true to opt-in.
+  // @ts-ignore — extra field on spec for diag opt-in.
+  const __f2Diag = !!(spec as any).__f2DiagWidths;
+  let __f2LayerN = 0;
+
   while (queue2.length > 0) {
     const batch = queue2.splice(0, Math.min(queue2.length, concurrency));
+    if (__f2Diag) {
+      messages.push(`[f2-layer-width] N=${__f2LayerN} width=${batch.length} queueRemain=${queue2.length} resolved=${resolved.size} seen=${seen.size}`);
+      __f2LayerN++;
+    }
     const results = await Promise.all(
       batch.map(([name, range]) =>
         limit(async () => {

@@ -931,6 +931,172 @@ export function addStaticReadFileAssets(
 }
 
 /**
+ * X.5-U: scan every JS source already in `bundle` for static
+ * readFileSync of a `__dirname`-relative dotfile or "digest/hash/version/
+ * sha/md5"-shaped sentinel, AND match the SWC/TypeScript-compiled
+ * `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
+ * call shape that X.5-Z3's `addStaticReadFileAssets` regex misses.
+ *
+ * Motivating case: ts-jest@29.x's
+ * `package/dist/legacy/config/config-set.js:105`:
+ *
+ *   var fs_1 = require("fs");
+ *   var path_1 = require("path");
+ *   exports.MY_DIGEST = (0, fs_1.readFileSync)(
+ *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
+ *
+ * The install pipeline writes `.ts-jest-digest` to VFS correctly
+ * (manifest pass at buildManifest enumerates it). But the runtime
+ * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
+ * `__vfsBundle` only, and none of the existing bundle-population
+ * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
+ * (pkg main entries), `addStaticReadFileAssets` (X.5-Z3, restricted to
+ * `.css|html|svg|txt|json` and to direct `path.resolve(__dirname,…)`)
+ * — picks the dotfile up. Result: ENOENT at facet runtime even though
+ * `fs.readdirSync` and `fs.statSync` both see the file via the manifest.
+ *
+ * Bounded heuristic: filename must EITHER start with `.` (dotfile) OR
+ * match `/digest|hash|version|sha|md5/i` (small-metadata-sentinel
+ * pattern). Without this gate, an unconstrained "match any
+ * __dirname-relative readFileSync filename" would pull arbitrary large
+ * runtime-loaded files (compiled WASM, JSON dictionaries, …) on
+ * packages that read them via this exact shape — bundle bloat with no
+ * payoff. The heuristic narrows to the ts-jest class. Trade-off
+ * documented; future packages outside this shape can extend the
+ * predicate.
+ *
+ * Quote chars supported: `'`, `"`, and backticks WITHOUT `${}`
+ * interpolation. Dynamic specifiers (variable, concatenation,
+ * interpolation) are deliberately skipped.
+ *
+ * Same budget shape as `greedyAddMainEntries` /
+ * `addStaticReadFileAssets` — shares the same VFS_BUNDLE_MAX_FILES /
+ * VFS_BUNDLE_MAX_BYTES caps via `budgetState`. Returns the count of
+ * files added (for diagnostics).
+ *
+ * Errors are swallowed: missing assets, unreadable VFS, and
+ * non-string readFile inputs are silent skips — matches Z3 posture.
+ */
+export function addStaticReadFileDotfilesAndCompiled(
+  vfs: SqliteVFS,
+  cwd: string,
+  bundle: Record<string, string>,
+  budgetState: { totalBytes: number; fileCount: number },
+): { added: number } {
+  let added = 0;
+
+  // The heuristic gate. Filenames matching either branch are eligible.
+  //   - Leading `.` covers `.ts-jest-digest`, `.cache-marker`, `.lintstagedrc`-ish
+  //     sentinel files. Note: `package.json` etc are NOT dotfiles.
+  //   - `digest|hash|version|sha|md5` covers compiled-loose sentinel
+  //     filenames like `version.txt`, `git-sha`, `build-hash`, …
+  //     (Phase B regression matrix §5: bounded to the actual class.)
+  const FILENAME_GATE = /(^\.[^/]+$|digest|hash|version|sha|md5)/i;
+
+  // Match shapes:
+  //   readFileSync(path.resolve(__dirname, "<rel>"))                  (X.5-Z3)
+  //   fs.readFileSync(path.resolve(__dirname, "<rel>"))               (X.5-Z3)
+  //   (0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>")) (X.5-U new — SWC)
+  //   readFileSync(path.join(__dirname, "<rel>"))                     (X.5-U new — join also)
+  //   readFileSync((0, path_1.resolve)(__dirname, "<rel>"))            (mixed)
+  //
+  // Strategy: anchor the ENTIRE call on `readFileSync` (with optional
+  // `(0, x.y)` wrap or `x.` prefix), then look for either `resolve` OR
+  // `join` (with optional `(0, x.y)` wrap or `x.` prefix), then
+  // `__dirname` and the literal. Capture group 1 = quote, group 2 =
+  // body.
+  //
+  // The regex is permissive about whitespace + parens because
+  // SWC/TypeScript emit varies (extra parens in some output flags,
+  // tighter spacing in production). Tested against:
+  //   ts-jest@29.1.4/dist/legacy/config/config-set.js:105
+  //   synth `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "X"))`
+  //   plain `fs.readFileSync(path.resolve(__dirname, "X"))`
+  //   plain `readFileSync(path.join(__dirname, "X"))`
+  const RX = new RegExp(
+    // optional `(0, ` wrap then `<x.>?readFileSync` or bare `readFileSync`
+    '(?:\\(\\s*0\\s*,\\s*)?(?:[\\w$]+\\s*\\.\\s*)?readFileSync\\s*\\)?\\s*\\(' +
+      // call args: optional outer paren, optional `(0, ` wrap then
+      // `<x.>?(resolve|join)` then required `(`
+      '\\s*(?:\\(\\s*0\\s*,\\s*)?(?:[\\w$]+\\s*\\.\\s*)?(?:resolve|join)\\s*\\)?\\s*\\(' +
+      // required __dirname
+      '\\s*__dirname\\s*,\\s*' +
+      // literal: ' " ` (no ${ for backtick)
+      '([\'"`])([^\'"`]+)\\1',
+    'g',
+  );
+
+  function addOneAsset(absPath: string): boolean {
+    const stripped = absPath.replace(/^\/+/, '');
+    if (stripped in bundle) return false;
+    if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
+    if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
+    try {
+      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+      const content = vfs.readFileString(stripped);
+      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return false;
+      bundle[stripped] = content;
+      budgetState.totalBytes += content.length;
+      budgetState.fileCount++;
+      added++;
+      return true;
+    } catch { return false; }
+  }
+
+  // Snapshot keys; we mutate `bundle` during the loop.
+  const sourceKeys = Object.keys(bundle).filter((k) =>
+    k.endsWith('.js') || k.endsWith('.mjs') || k.endsWith('.cjs'),
+  );
+
+  for (const sourcePath of sourceKeys) {
+    const src = bundle[sourcePath];
+    if (!src || src.length === 0) continue;
+    // Strip line + block comments before regex-matching so the pattern
+    // doesn't fire inside `// fs.readFileSync(...)` etc.
+    const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    // Quick reject: skip files that don't even contain readFileSync.
+    if (stripped.indexOf('readFileSync') < 0) continue;
+    const sourceDir = sourcePath.includes('/')
+      ? sourcePath.substring(0, sourcePath.lastIndexOf('/'))
+      : '';
+    RX.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = RX.exec(stripped)) !== null) {
+      const quote = match[1];
+      const rel = match[2];
+      // Reject template-literal interpolation inside backticks.
+      if (quote === '`' && rel.indexOf('${') >= 0) continue;
+
+      // Resolve relative to the source file's __dirname (matches runtime).
+      let resolved: string;
+      if (rel.startsWith('/')) {
+        resolved = rel.replace(/^\/+/, '');
+      } else {
+        const parts = (sourceDir + '/' + rel).split('/');
+        const out: string[] = [];
+        for (const seg of parts) {
+          if (seg === '' || seg === '.') continue;
+          if (seg === '..') { if (out.length > 0) out.pop(); continue; }
+          out.push(seg);
+        }
+        resolved = out.join('/');
+      }
+
+      // Apply the bounded-heuristic gate on the BASENAME so we don't
+      // overshoot. Z3's `ASSET_EXT` filter overlaps but doesn't cover
+      // dotfiles or no-extension sentinels, which is X.5-U's class.
+      const slash = resolved.lastIndexOf('/');
+      const basename = slash >= 0 ? resolved.slice(slash + 1) : resolved;
+      if (!FILENAME_GATE.test(basename)) continue;
+
+      addOneAsset(resolved);
+    }
+  }
+
+  return { added };
+}
+
+/**
  * W3.5 Fix B helper — detect ESM source by sniffing for top-level
  * `import` / `export` STATEMENTS. Identifier/property uses (`obj.import`,
  * `pkg.export`) won't match because we anchor at start-of-line / `^\s*`.
@@ -1104,6 +1270,19 @@ async function buildPrefetchBundle(
   //      the manifest. See audit/sections/X5Z3-plan.md §3.
   const assetAdd = addStaticReadFileAssets(vfs, cwd, bundle, budgetState);
   void assetAdd;
+  totalBytes = budgetState.totalBytes;
+  fileCount = budgetState.fileCount;
+
+  // 2.27 X.5-U: dotfile + SWC-shape readFileSync sentinel prefetch.
+  //      Sibling of `addStaticReadFileAssets` (X.5-Z3) — same call shape,
+  //      different match space. Covers the SWC/TS-compiled
+  //      `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
+  //      pattern AND filenames outside the Z3 ASSET_EXT whitelist
+  //      (dotfiles, no-extension sentinels, "digest/hash/version/sha/md5"
+  //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
+  //      audit/sections/X5U-plan.md §4.
+  const dotAdd = addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState);
+  void dotAdd;
   totalBytes = budgetState.totalBytes;
   fileCount = budgetState.fileCount;
 
@@ -1603,6 +1782,11 @@ export class FacetManager {
   ): { pid: number; facetStub: any } {
     this.processTable.reap();
     const entry = this.processTable.spawn(command, [], cwd);
+    // arch-gaps gap #2: stamp the explicit longRunning flag on the
+    // process_table entry so /api/processes returns longRunning=true
+    // independent of the LONG_RUNNING_CMD_RE heuristic. Vite, wrangler,
+    // node servers, --watch, etc. all flow through this primitive.
+    this.processTable.setLongRunning(entry.pid);
     // Long-running facets (vite, nimbus-wrangler, node servers) always
     // get a spawn notification — they're visible and users want to know
     // the PID for later `logs`/`kill`.

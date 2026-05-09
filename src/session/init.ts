@@ -36,6 +36,7 @@ import {
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { runNodeScript } from '../runtime/node-runner.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
@@ -240,12 +241,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           ctx.stderr.write('node: -e requires an argument\n');
           return 1;
         }
-        const result = await facetMgr.exec(code, {
+        // arch-gaps gap #2: dispatch via runNodeScript so long-running
+        // -e snippets (rare but possible — e.g. `node -e
+        // 'http.createServer(…).listen(3000)'`) fork to a long-lived
+        // Worker Loader instead of blocking the supervisor's
+        // facet.run() RPC.
+        const result = await runNodeScript(facetMgr, code, {
           argv: args.slice(evalIdx + 2),
           env: ctx.env,
           cwd: ctx.cwd,
           filename: '<eval>',
           dirname: ctx.cwd,
+          command: 'node -e ...',
         });
         if (result.stdout) ctx.stdout.write(result.stdout);
         if (result.stderr) ctx.stderr.write(result.stderr);
@@ -318,12 +325,20 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       const filename = '/' + resolvedPath;
       const dirname = filename.includes('/') ? filename.substring(0, filename.lastIndexOf('/')) : '/';
 
-      const result = await facetMgr.exec(code, {
+      // arch-gaps gap #2: dispatch via runNodeScript. detectLongRunning
+      // sniffs for http.createServer / app.listen / Bun.serve /
+      // Deno.serve / top-level await / --watch and forks long-running
+      // scripts to a long-lived Worker Loader via FacetManager.spawn
+      // (returns immediately with [started (long-running)] notice).
+      // Short scripts continue through the existing facetMgr.exec
+      // fresh-isolate path.
+      const result = await runNodeScript(facetMgr, code, {
         argv: [filename, ...args.slice(1)],
         env: ctx.env,
         cwd: ctx.cwd,
         filename,
         dirname,
+        command: `node ${scriptPath}`,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);

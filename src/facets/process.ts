@@ -185,6 +185,22 @@ export interface FacetProcessManagerDeps {
   commandRegistry: CommandRegistryLike;
   /** Optional: ctx for facets.abort/delete in production. */
   ctx?: { facets?: { abort?: (name: string, e?: any) => void; delete?: (name: string) => void } };
+  /**
+   * arch-gaps gap #1: optional ChildProcessSpawnPool. When supplied,
+   * `_dispatch` routes each spawn through the pool (one-task
+   * NimbusFanoutPool.submitMany call per spawn), giving each spawn a
+   * fresh Worker Loader isolate. When omitted, falls back to the
+   * legacy in-supervisor dispatch (unit-test path; production wiring
+   * always supplies it).
+   */
+  spawnPool?: {
+    runOne: (
+      req: any,
+      kind: 'pure-builtin' | 'facet-direct' | 'unknown',
+      hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+      childId: number | string,
+    ) => Promise<number>;
+  };
 }
 
 /** Cap recursion depth to defend against runaway spawn loops. */
@@ -300,6 +316,45 @@ export class FacetProcessManager {
       onStdout: (d) => this._appendOutput(child, 1, d),
       onStderr: (d) => this._appendOutput(child, 2, d),
     };
+
+    // arch-gaps gap #1: if a spawnPool is configured (production
+    // wiring), route the dispatch through a fresh Worker Loader
+    // isolate via NimbusFanoutPool. The pool's task body emits a
+    // per-isolate marker token + delegates the actual command back
+    // to the supervisor via env.SUPERVISOR.cpDispatchInline (preserves
+    // pure-builtin / facet-direct correctness; only the dispatch
+    // envelope moves to a fresh isolate).
+    if (this.deps.spawnPool) {
+      // Pure-builtins consume stdin; drain before dispatch. facet-direct
+      // reads stdin lazily via cpReadStdin so we don't block on it here.
+      const stdin = kind === 'pure-builtin'
+        ? await this._drainStdinForBuiltin(child)
+        : '';
+      // Single-ownership: build a fresh request payload (not a reference
+      // to the caller's req) at the boundary.
+      const reqCopy = {
+        command: String(req.command),
+        args: Array.isArray(req.args) ? [...req.args] : [],
+        env: { ...child.env },
+        cwd: String(req.cwd),
+        stdio: req.stdio,
+        detached: !!req.detached,
+        shell: req.shell ?? false,
+        stdin,
+      };
+      // Register the facet-slot so kill() can find the abort handle.
+      child.facetSlot = { abort: undefined, killed: false };
+      try {
+        const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks, child.pid);
+        this._stampExit(child, code, null);
+      } catch (e: any) {
+        this._appendOutput(child, 2, `spawn-pool error: ${e?.message || String(e)}\n`);
+        this._stampExit(child, 1, null);
+      }
+      return;
+    }
+
+    // ── Legacy in-supervisor dispatch (unit-test path) ─────────────
     if (kind === 'pure-builtin') {
       // Drain stdin synchronously — pure builtins are sync-style; they
       // expect a complete stdin string. The parent must call stdinEnd()
@@ -340,6 +395,72 @@ export class FacetProcessManager {
     } catch (e: any) {
       this._appendOutput(child, 2, `facet error: ${e?.message || String(e)}\n`);
       this._stampExit(child, 1, null);
+    }
+  }
+
+  /**
+   * arch-gaps gap #1: inline dispatch — runs the existing
+   * pure-builtin / facet-direct logic with string-collecting hooks
+   * and returns the final {exitCode, stdout, stderr} envelope.
+   *
+   * Called by _rpcCpDispatchInline (src/session/rpc.ts) which is in
+   * turn called by the spawn-facet running inside a fresh Worker
+   * Loader isolate. The dispatch envelope is in a fresh isolate; the
+   * actual command logic still uses the existing registry paths.
+   *
+   * Single-ownership: stdin/stdout/stderr returned as strings; no
+   * shared buffers cross the RPC boundary.
+   */
+  async dispatchInline(
+    req: SpawnReq,
+    kind: string,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    if (kind === 'unknown') {
+      return { exitCode: 127, stdout: '', stderr: `${req.command}: command not found\n` };
+    }
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    const hooks: OutputHooks = {
+      onStdout: (d) => { stdoutBuf += d; },
+      onStderr: (d) => { stderrBuf += d; },
+    };
+    const childEnv: Record<string, string> = {
+      ...(req.env || {}),
+    };
+    if (kind === 'pure-builtin') {
+      try {
+        const code = await this.deps.commandRegistry.runPureBuiltin(
+          req.command, req.args, childEnv,
+          String(req.cwd || '/home/user'),
+          typeof (req as any).stdin === 'string' ? (req as any).stdin : '',
+          hooks,
+        );
+        return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
+      } catch (e: any) {
+        stderrBuf += `Error: ${e?.message || String(e)}\n`;
+        return { exitCode: 1, stdout: stdoutBuf, stderr: stderrBuf };
+      }
+    }
+    // facet-direct
+    const payload = JSON.stringify({
+      command: req.command,
+      args: req.args,
+      env: childEnv,
+      cwd: String(req.cwd || '/home/user'),
+      stdin: typeof (req as any).stdin === 'string' ? (req as any).stdin : '',
+    });
+    try {
+      const code = await this.deps.facetMgr.execStream(
+        payload,
+        // facetName: synthetic identity so adapter callers that key off
+        // it don't collide; not used by the inline path.
+        { facetName: `cp-inline-${Date.now().toString(36)}`, cwd: req.cwd, env: childEnv, argv: req.args },
+        hooks,
+      );
+      return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
+    } catch (e: any) {
+      stderrBuf += `facet error: ${e?.message || String(e)}\n`;
+      return { exitCode: 1, stdout: stdoutBuf, stderr: stderrBuf };
     }
   }
 

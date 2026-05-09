@@ -29,10 +29,12 @@ import {
   type ResolvedPackage, type HoistPlan, type FetchFn,
 } from './resolver.js';
 import {
-  applySwaps, findRejects, lookupSwap,
-  formatSwapNotice, RegistryRejectError,
+  applySwaps, findRejects, lookupSwap, lookupReject,
+  shouldWarnSkipTransitive,
+  formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
+import { shouldSkipPackageWithFramework } from './resolver.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
@@ -58,6 +60,11 @@ import {
   type ResolveFacetResult,
   type FacetCachedEntry,
 } from './resolve-facet.js';
+import {
+  resolveOnePackumentInFacet,
+  type ResolveOneSpec,
+  type ResolveOneResult,
+} from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import {
   prebundleOne,
@@ -226,16 +233,27 @@ export class NpmInstaller {
       phases['lock-check'] = Date.now() - phaseStart;
 
       // ── Phase 1: Resolve ──────────────────────────────────────────
-      // Single resolver path: a NimbusLoaderPool isolate runs the BFS
-      // walker (src/npm-resolve-facet.ts). The supervisor never holds
-      // packument bytes — they live in the facet's own 128 MiB
-      // envelope. There is no fallback: env.LOADER + ctx are platform
-      // requirements; absence is a deploy bug, not a runtime branch.
+      // F-2 (cleanup-not-done): frontier-coordinator path. Each BFS
+      // layer dispatches to NimbusFanoutPool.submitMany — width <5 in-DO
+      // (POC C), width ≥5 peer-DO (POC B). Per-package task body is
+      // self-contained (resolveOnePackumentInFacet), supervisor builds
+      // layer N+1 from layer N's edges. Replaces the pre-F-2 single
+      // resolve-facet path. See audit/sections/F2-RESOLVER-FANOUT-plan.md.
+      //
+      // Selection: env NIMBUS_RESOLVER_PATH=facet forces the legacy
+      // single-facet path. Default is `fanout`. The legacy path lives
+      // ONLY for A/B profile measurement (see profile-layer-widths.mjs);
+      // it is NOT a runtime auto-fallback (per anti-requirement).
+      // Missing env.LOADER throws at construction either way; missing
+      // env.NIMBUS_SESSION throws at the first wide-layer submitMany.
+      const __resolverPathSel = ((globalThis as any).process?.env?.NIMBUS_RESOLVER_PATH === 'facet') ? 'facet' : 'fanout';
       phaseStart = Date.now();
       setInstallPhase('resolve');
       setResolverPath('in-facet');
-      log(`Resolving ${Object.keys(specs).length} dependencies (path: facet, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
-      resolved = await this.resolveTreeViaFacet(specs, log, { frameworkAware });
+      log(`Resolving ${Object.keys(specs).length} dependencies (path: ${__resolverPathSel}, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
+      resolved = __resolverPathSel === 'facet'
+        ? await this.resolveTreeViaFacet(specs, log, { frameworkAware })
+        : await this.resolveTreeViaFanout(specs, log, { frameworkAware });
       phases['resolve'] = Date.now() - phaseStart;
 
       if (resolved.size === 0) {
@@ -524,6 +542,10 @@ export class NpmInstaller {
     }));
     log(`  resolver-facet: shipping ${cachedEntries.length} cached entries`);
 
+    // F-2 profiling: forward NIMBUS_DIAG_INSTALL_PIPELINE=1 into the
+    // facet so the in-DO BFS emits per-layer-width lines into messages.
+    // Same env-gated diag posture as resolver.ts. Zero cost in prod.
+    const __f2Diag = ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
     const facetSpec: ResolveFacetSpec = {
       specs,
       cachedEntries,
@@ -537,6 +559,7 @@ export class NpmInstaller {
       concurrency: 4,
       fetchTimeoutMs: 15_000,
       retries: 3,
+      ...(__f2Diag ? { __f2DiagWidths: true } as any : {}),
     };
 
     const pool = new NimbusLoaderPool(this.env, this.ctx!, {
@@ -603,6 +626,298 @@ export class NpmInstaller {
 
     const resolved = new Map<string, ResolvedPackage>();
     for (const pkg of result.resolved) resolved.set(pkg.name, pkg);
+    return resolved;
+  }
+
+  /**
+   * F-2 frontier-coordinator path. Replaces the single-resolve-facet
+   * dispatch with a per-package fanout: each BFS layer becomes ONE
+   * `NimbusFanoutPool.submitMany` call, layer N+1 builds from the
+   * resolved metadata of layer N.
+   *
+   * Topology auto-routes per layer:
+   *   width <  IN_DO_THRESHOLD (5)  → POC C in-DO loader-pool
+   *   width >= IN_DO_THRESHOLD       → POC B peer-DO (sibling NimbusSession DOs)
+   *
+   * The supervisor still owns:
+   *   - cycle detection (`seen`),
+   *   - X.5-F top-level / required-peer policy,
+   *   - X.5-G G1 optional-native silent-skip,
+   *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
+   *   - W6 swap / warn / reject decisions (top-level enforcement; the
+   *     per-package task ALSO checks these for transitive correctness),
+   *   - cache flushing (one batched putRegistryEntries at end).
+   *
+   * The per-package task (resolveOnePackumentInFacet) owns ONLY the
+   * fetch + version pick + edge extraction. See
+   * audit/sections/F2-RESOLVER-FANOUT-plan.md.
+   *
+   * Anti-requirements (cleanup-not-done charter): NO setTimeout
+   * between layers, NO fallback to single-facet on missing bindings.
+   */
+  private async resolveTreeViaFanout(
+    specs: Record<string, string>,
+    log: (msg: string) => void,
+    opts: { frameworkAware?: boolean } = {},
+  ): Promise<Map<string, ResolvedPackage>> {
+    const t0 = Date.now();
+    const frameworkAware = !!opts.frameworkAware;
+    const __f2Diag = ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
+
+    // Per-walk state — supervisor side.
+    const resolved = new Map<string, ResolvedPackage>();
+    const seen = new Set<string>();
+    const topLevelNames = new Set<string>(Object.keys(specs));
+    const optionalNames = new Set<string>();   // X.5-G G1
+    const bestEffortNames = new Set<string>(); // X.5-drizzle
+    let queue: Array<[string, string]> = Object.entries(specs);
+    const cacheWritesPending: any[] = [];
+    let totalPackumentBytes = 0;
+    let totalPackumentsDecoded = 0;
+    let layerN = 0;
+    let totalLayers = 0;
+    let r2Wins = 0;
+    let r2Losses = 0;
+
+    // Counter for diagnostics — peak in-flight inside a layer = layer
+    // width (parallelism mirrors the in-DO/peer-DO pool's task count).
+    let inFlightPeak = 0;
+
+    // F-2 fanout pool. One construction reused across every layer; the
+    // pool is stateless across submitMany calls.
+    const fanoutPool = new NimbusFanoutPool(this.env, this.ctx!, {
+      tag: 'npm-resolve-fanout',
+      // 5 minutes per layer is generous; typical layers complete in
+      // 1-3 s. Per-task this gates each packument fetch + R2 race.
+      timeoutMs: 5 * 60_000,
+      preamble: NPM_RESOLVE_PREAMBLE,
+    });
+
+    // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
+    // submitMany batch.
+    while (queue.length > 0) {
+      // Dedupe + filter the layer up front. The task body also filters
+      // (defensive), but doing it here avoids dispatching wasted RPC
+      // for already-seen names.
+      const layer: Array<[string, string]> = [];
+      const layerSeenLocal = new Set<string>();
+      for (const [name, range] of queue) {
+        if (seen.has(name) || layerSeenLocal.has(name)) continue;
+        layerSeenLocal.add(name);
+        seen.add(name);
+        layer.push([name, range]);
+      }
+      queue = [];
+
+      if (__f2Diag) {
+        log(`[f2-frontier] N=${layerN} width=${layer.length} resolved-so-far=${resolved.size} seen=${seen.size}`);
+      }
+
+      if (layer.length === 0) break;
+
+      // Track peak — the layer is dispatched in parallel inside the pool.
+      if (layer.length > inFlightPeak) inFlightPeak = layer.length;
+      totalLayers++;
+
+      // Build per-package tasks. Each task gets its own pre-loaded
+      // cache slice (only entries for THIS name) so the per-task RPC
+      // stays small. Bounded to 16 versions per name — enough to cover
+      // ~2 majors of typical packages, well under any RPC arg size cap.
+      const tasks = layer.map(([name, range]) => {
+        const cachedRows = this.cache.getRegistryVersions(name).slice(0, 16);
+        const cachedEntries: FacetCachedEntry[] = cachedRows.map((e) => ({
+          name: e.name,
+          version: e.version,
+          tarballUrl: e.tarballUrl,
+          integrity: e.integrity,
+          depsJson: e.depsJson,
+          peerDepsJson: e.peerDepsJson,
+          exportsJson: e.exportsJson,
+          main: e.main,
+          moduleField: e.moduleField,
+          binJson: e.binJson,
+          fetchedAt: e.fetchedAt,
+        }));
+        const taskSpec: ResolveOneSpec = {
+          name,
+          range,
+          cachedEntries,
+          topLevel: topLevelNames.has(name),
+          isOptional: optionalNames.has(name),
+          frameworkAware,
+          fetchTimeoutMs: 15_000,
+          retries: 3,
+        };
+        return { key: name, args: taskSpec };
+      });
+
+      // Dispatch the layer. NimbusFanoutPool routes:
+      //   <5 → POC C in-DO (NimbusLoaderPool), concurrency = layer.length (capped at 4)
+      //   ≥5 → POC B peer-DO, N peers = min(layer.length, 32)
+      let results: ResolveOneResult[];
+      try {
+        results = await fanoutPool.submitMany<ResolveOneSpec, ResolveOneResult>(
+          tasks,
+          resolveOnePackumentInFacet,
+        );
+      } catch (e: any) {
+        // Per anti-requirement: no fallback. Log + propagate.
+        const msg = e?.remoteMessage || e?.message || String(e);
+        log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
+        try { /* fanoutPool has no dispose; constructor is stateless */ } catch {}
+        throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`);
+      }
+
+      // Stitch per-package results into supervisor state.
+      for (let i = 0; i < results.length; i++) {
+        const res = results[i];
+        const [taskName] = layer[i];
+
+        // Forward messages + events.
+        for (const m of res.messages) log(m);
+        for (const ev of res.events) {
+          try { emitRegistryEvent(ev); } catch { /* swallow sink errors */ }
+        }
+
+        // Accumulate cache writes for end-of-walk flush.
+        for (const cw of res.cacheWrites) cacheWritesPending.push(cw);
+        totalPackumentBytes += res.packumentBytesDecoded;
+        if (res.packumentSource === 'r2-cache') r2Wins++;
+        else if (res.packumentSource === 'network') r2Losses++;
+        if (res.packumentBytesDecoded > 0) totalPackumentsDecoded++;
+
+        // W6 reject error handling — mirrors resolve-facet.ts:716.
+        if (res.error && res.error.type === 'w6-reject') {
+          if (bestEffortNames.has(taskName)) {
+            // X.5-drizzle: silent-skip inside best-effort optional-peer
+            // subtree.
+            const reason = `inside best-effort optional-peer subtree (X.5-drizzle): ${res.error.reason}`;
+            log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
+            emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
+            continue;
+          }
+          // Real reject: throw RegistryRejectError to abort install.
+          const rejectEntry: any = {
+            from: res.error.from,
+            reason: res.error.reason,
+            suggest: res.error.suggest,
+            transitive: 'fail',
+          };
+          throw new RegistryRejectError([rejectEntry]);
+        }
+
+        // Optional-dep fetch failure → silent-skip (X.5-G G1).
+        if (res.error && res.error.type === 'fetch-exhausted' && optionalNames.has(taskName)) {
+          const reason = `optional dep fetch failed: ${res.error.message}`;
+          log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
+          emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
+          continue;
+        }
+
+        const pkg = res.pkg;
+        if (!pkg) continue;
+
+        // X.5-G G1: silent-skip platform-native bindings sourced from
+        // optionalDependencies. The task returns the pkg raw; the
+        // supervisor checks isOptional + os/cpu/libc/main.
+        if (optionalNames.has(taskName)) {
+          const isNativeBinding =
+            (Array.isArray((pkg as any).os) && (pkg as any).os.length > 0) ||
+            (Array.isArray((pkg as any).cpu) && (pkg as any).cpu.length > 0) ||
+            (Array.isArray((pkg as any).libc) && (pkg as any).libc.length > 0) ||
+            (typeof pkg.main === 'string' && /\.node$/.test(pkg.main));
+          if (isNativeBinding) {
+            const reason = `optional native binding (os=${(pkg as any).os ?? '*'}, cpu=${(pkg as any).cpu ?? '*'}, libc=${(pkg as any).libc ?? '*'}, main=${pkg.main || '?'})`;
+            log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
+            emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
+            continue;
+          }
+        }
+
+        if (resolved.has(pkg.name)) continue;
+        resolved.set(pkg.name, pkg);
+
+        // Edge extraction — mirrors resolve-facet.ts:754-836.
+        const inheritBestEffort = bestEffortNames.has(pkg.name);
+        for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
+          if (resolved.has(depName) || seen.has(depName)) continue;
+          if (inheritBestEffort) bestEffortNames.add(depName);
+          queue.push([depName, depRange as string]);
+        }
+        const optDeps = (pkg as any).optionalDependencies as Record<string, string> | undefined;
+        if (optDeps) {
+          for (const [depName, depRange] of Object.entries(optDeps)) {
+            if (resolved.has(depName) || seen.has(depName)) continue;
+            optionalNames.add(depName);
+            if (inheritBestEffort) bestEffortNames.add(depName);
+            queue.push([depName, depRange as string]);
+          }
+        }
+        if (pkg.peerDependencies) {
+          for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
+            if (resolved.has(peerName) || seen.has(peerName)) continue;
+            topLevelNames.add(peerName);
+            if (inheritBestEffort) bestEffortNames.add(peerName);
+            queue.push([peerName, peerRange as string]);
+          }
+        }
+        // X.5-F R2.5 + X.5-J: optional peers when THIS pkg is the
+        // user's top-level. Filter through REJECT_INSTALL.
+        if (topLevelNames.has(pkg.name)) {
+          const allPeers = (pkg as any).__allPeerDependencies as Record<string, string> | undefined;
+          if (allPeers) {
+            for (const [peerName, peerRange] of Object.entries(allPeers)) {
+              if (resolved.has(peerName) || seen.has(peerName)) continue;
+              const peerFail = lookupReject(peerName);
+              const peerWarn = shouldWarnSkipTransitive(peerName);
+              const peerReject = peerFail || peerWarn;
+              if (peerReject) {
+                const reason = `optional peer in REJECT_INSTALL: ${peerName} — ${peerReject.reason}`;
+                log(`[resolve-fanout] [skip] ${peerName} — ${reason}`);
+                emitRegistryEvent({ type: 'transitive-skip', from: peerName, reason });
+                continue;
+              }
+              topLevelNames.add(peerName);
+              bestEffortNames.add(peerName);
+              queue.push([peerName, peerRange as string]);
+            }
+          }
+        }
+      }
+
+      layerN++;
+    }
+
+    // End-of-walk: flush all cache writes in one RPC-equivalent call
+    // (this.cache is a SQLite handle; one putRegistryEntries call =
+    // O(N) prepared statements within a single DO event-loop turn,
+    // atomically committed by the storage layer).
+    let cacheWriteCount = 0;
+    if (cacheWritesPending.length > 0) {
+      const r = this.cache.putRegistryEntries(cacheWritesPending);
+      cacheWriteCount = r.written;
+      if (r.failed > 0) log(`  resolver-fanout cache write: ${r.failed} entries failed`);
+    }
+
+    // Diag/counters parity with resolveTreeViaFacet.
+    recordR2RaceCounters({
+      pipelinedTarballRaceWins: 0,
+      pipelinedTarballRaceLosses: 0,
+      pipelinedPackumentRaceWins: r2Wins,
+      pipelinedPackumentRaceLosses: r2Losses,
+    });
+    const r2WinSuffix = r2Wins > 0 ? `, R2 packument cache wins=${r2Wins}/${r2Wins + r2Losses}` : '';
+    log(
+      `  resolver-fanout: ${resolved.size} resolved, ` +
+      `${totalPackumentsDecoded} packuments fetched (` +
+      `${(totalPackumentBytes / (1024 * 1024)).toFixed(1)} MiB), ` +
+      `peak in-flight=${inFlightPeak}, ` +
+      `cache writes=${cacheWriteCount}` +
+      r2WinSuffix +
+      `, layers=${totalLayers}, ` +
+      `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    );
+
     return resolved;
   }
 
