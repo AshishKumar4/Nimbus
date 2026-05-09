@@ -1,0 +1,37 @@
+==== F-1 NimbusFanoutPool speedup probe ====
+==== TIMESTAMP: 2026-05-09T01:02:53.096Z ====
+BASE: http://127.0.0.1:8794
+SID: silent-juniper-6761
+target ratio: 5× (T_serial / T_parallel ≥ 5)
+workload:     N=8 tasks, 200 ms sleep each
+
+---- topology routing ----
+topology for n=8: {
+  n: 8,
+  topology: "peer-do",
+  inDoThreshold: 5,
+  maxPeerFanout: 32,
+}
+PASS: N=8 routes to peer-do
+PASS: N=3 routes to in-do
+
+---- deterministic stable-id router ----
+placement: [{"key":"task-0","shard":5},{"key":"task-1","shard":6},{"key":"task-2","shard":7},{"key":"task-3","shard":0},{"key":"task-4","shard":1},{"key":"task-5","shard":2},{"key":"task-6","shard":3},{"key":"task-7","shard":4}]
+unique shards: 8 of 8 possible
+PASS: all 8 keys map to distinct shards
+PASS: routing deterministic (same shards across calls)
+
+---- speedup measurement ----
+run 1: serial=1615ms parallel=281ms ratio=5.75×
+run 2: serial=1613ms parallel=289ms ratio=5.58×
+run 3: serial=1613ms parallel=282ms ratio=5.72×
+run 4: serial=1614ms parallel=294ms ratio=5.49×
+run 5: serial=1616ms parallel=285ms ratio=5.67×
+min ratio: 5.49×; median: 5.67×
+PASS: min ratio 5.49× ≥ 5× target across 5 runs
+
+---- backpressure: N=50 in-flight ----
+bigBench: n=50 wallTime=444ms
+PASS: 50 tasks completed without crashing
+
+==== EXIT 0 ====

@@ -273,6 +273,13 @@ flowchart TB
         L3E["Node exec worker<br/>require + node-shims"]
     end
 
+    subgraph L3P["3a. Peer-DO sibling pool — POC B (width ≥ 5)"]
+        direction LR
+        L3PA["NimbusSession sibling DO<br/>1 loader / DO<br/><i>nbf:&lt;tag&gt;:&lt;coordId&gt;:0</i>"]
+        L3PB["NimbusSession sibling DO<br/>1 loader / DO<br/><i>nbf:&lt;tag&gt;:&lt;coordId&gt;:1</i>"]
+        L3PC["...<br/>up to MAX_PEER_FANOUT=32"]
+    end
+
     subgraph L4["4. Stateful child — DO Facet — own SQLite"]
         L4A["cirrus-real Vite<br/><i>src/facets/cirrus-real.ts</i><br/>HMR long-poll + module graph"]
     end
@@ -286,7 +293,9 @@ flowchart TB
     end
 
     L1 --> L2
-    L2 -- env.LOADER.get --> L3
+    L2 -- env.LOADER.get<br/>(width &lt; 5) --> L3
+    L2 -- env.NIMBUS_SESSION.get<br/>(width ≥ 5) --> L3P
+    L3P -- env.LOADER.get<br/>(1 / peer DO) --> L3
     L2 -- ctx.facets.get --> L4
     L2 -- direct --> L5A
     L2 -- streamed via L2 --> L5B
@@ -295,15 +304,18 @@ flowchart TB
     L5D -. L2 fronts .- L5C
     L3 -.-> L5B
     L3 -.->|SupervisorRPC| L2
+    L3P -.->|SupervisorRPC| L2
 
     classDef edge fill:#0c4a6e,stroke:#0ea5e9,color:#f0f9ff
     classDef sup fill:#14532d,stroke:#22c55e,color:#f0fdf4
     classDef loader fill:#7c2d12,stroke:#fb923c,color:#fff7ed
+    classDef peer fill:#9a3412,stroke:#f97316,color:#fff7ed
     classDef facet fill:#581c87,stroke:#a855f7,color:#faf5ff
     classDef store fill:#1f2937,stroke:#9ca3af,color:#f9fafb
     class L1 edge
     class L2 sup
     class L3 loader
+    class L3P peer
     class L4 facet
     class L5 store
 ```
@@ -329,8 +341,30 @@ Every subsystem maps to one of four Cloudflare primitives. The choice is anchore
 | **Per-colo L2 — packument + tarball + esbuild-wasm** | **`caches.default`** | `src/npm/r2-cache.ts` (W-A, W-B), `src/runtime/esbuild-wasm-bytes.ts` (W-D) | "Per-colo edge cache for in-memory hot reads" (cache-and-scrub wave). Awaited write-back ensures subsequent reads strictly hit L2; key shapes are URL-pinned (synthetic `nimbus-cache.invalid` host) and TTLs match upstream semantics (packument 5 min mirroring R2 customMetadata, tarball/wasm eternal immutable since both are content-addressed). [Audit](audit/sections/CACHE-AUDIT.md) · [Wins](audit/sections/CACHE-WINS.md) |
 | esbuild-wasm bytes (~12 MiB) | **R2 (env.ASSETS) + L2** | `src/runtime/esbuild-wasm-bytes.ts` | A'.5 moved this off supervisor heap; fetched on demand at facet boot. L2 wrap landed in cache-and-scrub W-D — 6×–20× hit-vs-miss latency drop measured locally |
 | Supervisor IPC | **WorkerEntrypoint RPC** | `src/session/supervisor-rpc.ts` | "Universal transport" (§4). Promise pipelining; ReadableStream-over-RPC bypasses the 32 MiB structured-clone limit |
+| **Two-tier fan-out (npm install batch + future wide sites)** | **Worker Loader + DO peer pool** | `src/loaders/fanout-pool.ts` | Routes by width: POC C in-DO (`< 5` loaders) for small N; POC B peer-DO (`≥ 5`) for large N. Each peer DO gets its own 4-loader budget — cap-sidestep documented in §6 above. 5.09×–5.94× measured speedup at N=8 (matches POC B's predicted 7.75× minus local-dev RPC overhead). [Audit](audit/sections/FANOUT-AUDIT.md) |
 
 The supervisor itself is a **Durable Object** — the only stateful root in the architecture. Everything else is either (a) ephemeral compute via Worker Loader, (b) stateful child via DO Facet, (c) durable storage via DO SQLite or R2, or (d) transport via WorkerEntrypoint RPC.
+
+### 6. Horizontal scaling — two-tier fan-out
+
+Nimbus's compute fan-out (npm install, pre-bundle, etc.) is constrained by a hard V8 invariant: **at most 4 concurrent `env.LOADER.get(...)` calls per DO method invocation** (3 from a Worker handler context). Beyond that, additional dispatches serialise against the cap and produce `Too many concurrent dynamic workers` errors. See `audit/sections/FANOUT-AUDIT.md` for the per-site enumeration and `docs/research/poc-multi-backend-findings.md` for the measurement data.
+
+The previous "fan-out within one DO" mental model was a retreat: every wide install-batch / resolver / pre-bundle dispatch was collapsed to `concurrency: 1` LOADER pool with an internal `pLimit` inside ONE facet, specifically because going wider risked the 4-cap. The collapse worked but bounded throughput.
+
+**Two-tier rule** (per POC findings):
+
+- **In-DO fan-out (POC C)** — 1 coordinator DO + N≤4 loaders inside. Best for small N (`width < 5`). Measured 4.03× at N=4. Used by `NimbusFanoutPool` automatically when `tasks.length < IN_DO_THRESHOLD`.
+- **DO Pool + 1 Loader-per-DO (POC B)** — N peer DOs, each spawning 1 loader. Best for large N (`width ≥ 5`). Measured 7.75× at N=8, flat to N=32. Used by `NimbusFanoutPool` automatically when `tasks.length ≥ IN_DO_THRESHOLD`.
+
+`NimbusFanoutPool` (`src/loaders/fanout-pool.ts`) exposes a single `submitMany` API that routes automatically. The cap-sidestep mechanic for POC B: the coordinator makes N RPC calls to N peer NimbusSession sibling DOs. Each call is a stub.fetch / RPC method invocation, NOT an `env.LOADER.get()` from the supervisor's own method context — those N calls don't count against the V8 4-loaders-per-method cap. Each peer DO then runs its OWN `env.LOADER.get()` in its own method context (where it gets a fresh 4-loader budget).
+
+**Stable-id router**: `hash(taskKey) mod N` via djb2. Same key → same peer DO across runs; tests can predict placement.
+
+**Backpressure**: hard cap at MAX_PEER_FANOUT = 32 peer DOs per submitMany call (POC B's flat zone). Tasks beyond N=32 shard into existing buckets — each peer's bucket then runs through its in-DO `NimbusLoaderPool.map` (concurrency capped at 4 there too).
+
+**Hard-fail policy**: missing `env.LOADER` or `env.NIMBUS_SESSION` throws BindingError at construction / dispatch. NO fallback — callers get a deterministic error rather than silently collapsing back to width-1.
+
+Currently used at: `src/npm/installer.ts:fetchViaBatchFacet` (npm install batch — POC B at width ≥ 5). Probes at `audit/probes/two-tier-fanout/install-batch-fanout/` (peer-DO 5×+ speedup) and `audit/probes/two-tier-fanout/in-do-fanout/` (in-DO POC-C structural). [Audit](audit/sections/FANOUT-AUDIT.md) · [Wins](audit/sections/FANOUT-WINS.md) · [Retro](audit/sections/TWO-TIER-FANOUT-retro.md).
 
 ## Quick Start
 

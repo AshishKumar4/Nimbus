@@ -27,6 +27,7 @@ import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
+import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
 } from '../observability/oom-discriminator.js';
@@ -636,4 +637,81 @@ export function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): vo
     self.ensureSqliteFs();
     const stripped = path.replace(/^\/+/, '');
     self.sqliteFs!.writeFile(stripped, new Uint8Array(data));
+}
+
+/**
+ * RPC: peer-DO execute leg of NimbusFanoutPool's POC B topology.
+ *
+ * Called by a coordinator NimbusSession DO via
+ * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
+ * THIS DO instance acts as a peer worker: it runs ONE NimbusLoaderPool
+ * over its assigned shard and returns the per-task results.
+ *
+ * Cap-sidestep mechanic
+ * ─────────────────────
+ * The supervisor's `submitMany` makes N RPC calls to N peer DOs.
+ * Each RPC is a stub.fetch / RPC method invocation, NOT an
+ * `env.LOADER.get()` from the supervisor's own method context — so
+ * those N calls don't count against the V8 4-loaders-per-method cap.
+ * Inside this RPC handler, we run a SINGLE LoaderPool with concurrency
+ * matching the shard size — and since the shard arrived via the peer
+ * router (capped at MAX_PEER_FANOUT = 32 peers, so each shard is
+ * ⌈totalTasks / 32⌉ wide), the in-DO pool stays well under 4.
+ *
+ * Failure model
+ * ─────────────
+ * Throws bubble back to the coordinator's RPC promise (rejects on
+ * the supervisor side). The coordinator's `submitMany` Promise.all
+ * surfaces the first reject; the install path treats it as a hard
+ * failure (matching today's single-facet `pool.submit` posture).
+ *
+ * Bytes-isolation
+ * ───────────────
+ * The fnSource string is forwarded verbatim into a fresh
+ * NimbusLoaderPool, which serializes it into the loader's worker
+ * code. No supervisor-side eval. Same trust posture as every other
+ * NimbusLoaderPool dispatch.
+ */
+export async function _rpcFanoutExecute(
+  self: RpcHost,
+  fnSource: string,
+  args: unknown[],
+  poolOpts: {
+    tag?: string;
+    timeoutMs?: number;
+    preamble?: string;
+    wasmModules?: Record<string, ArrayBuffer>;
+    extraBindings?: Record<string, unknown>;
+    omitSupervisor?: boolean;
+  } = {},
+): Promise<{ results: unknown[] }> {
+  if (!Array.isArray(args)) {
+    throw new TypeError('_rpcFanoutExecute: args must be an array');
+  }
+  if (args.length === 0) return { results: [] };
+
+  // Concurrency = shard size, capped at 4 (the V8 in-DO ceiling).
+  // Shard size on the coordinator side is at most ⌈totalTasks / N⌉
+  // where N <= MAX_PEER_FANOUT (32) — for typical 50-pkg installs
+  // with N=8 peers, that's 7 tasks per peer, capped to 4 here so
+  // each peer DO stays safely below the cap.
+  const concurrency = Math.min(args.length, 4);
+  const pool = new NimbusLoaderPool(self.env, self.ctx, {
+    concurrency,
+    timeoutMs: poolOpts.timeoutMs,
+    tag: poolOpts.tag ?? 'fanout-peer',
+    preamble: poolOpts.preamble,
+    wasmModules: poolOpts.wasmModules,
+    extraBindings: poolOpts.extraBindings,
+    omitSupervisor: poolOpts.omitSupervisor,
+  });
+  try {
+    // mapSource accepts the pre-serialized fnSource forwarded by the
+    // coordinator (the function was already validated +
+    // serialized via serializeFunction on the coordinator side).
+    const results = await pool.mapSource(fnSource, args);
+    return { results };
+  } finally {
+    try { pool.dispose(); } catch { /* best-effort */ }
+  }
 }

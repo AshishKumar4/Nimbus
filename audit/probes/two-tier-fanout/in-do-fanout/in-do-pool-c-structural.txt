@@ -1,0 +1,26 @@
+==== F-3 NimbusFanoutPool in-DO POC-C structural probe ====
+==== TIMESTAMP: 2026-05-09T01:05:10.338Z ====
+BASE: http://127.0.0.1:8794
+SID: curious-oak-8392
+
+---- topology routing ----
+topology for n=4: {
+  n: 4,
+  topology: "in-do",
+  inDoThreshold: 5,
+  maxPeerFanout: 32,
+}
+PASS: N=4 routes to in-do (POC C)
+PASS: N=5 routes to peer-do (POC B threshold boundary)
+
+---- in-DO dispatch (N=4, sleepMs=100) ----
+wallTime: 123 ms
+analysis.topology: in-do
+per-task durations: [ 102, 102, 101, 101 ]
+PASS: bench reported in-do topology
+PASS: 4 task results returned
+PASS: results in input order (in-DO pool.map invariant)
+sum of task durations: 406 ms; wallTime: 123 ms; ratio: 3.30×
+PASS: parallelism ratio 3.30× ≥ 2× — tasks ran concurrently
+
+==== EXIT 0 ====
