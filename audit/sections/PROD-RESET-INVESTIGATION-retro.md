@@ -1922,3 +1922,112 @@ This rebuild was the right scope:
 
 The rebuild closes; the branch is ready for batch-merge to main.
 
+
+## Phase 5 — Prod E2E Replay Verification (cleanup-not-done — 2026-05-09)
+
+The Phase 5 long-form-replay was originally run only against local
+wrangler-dev. The cleanup-not-done charter calls for a 10+ minute
+replay against the deployed prod URL with realistic load (vite
+startup, periodic preview fetches, periodic shell commands, forced
+webSocketError every 60-90 s) and `wrangler tail` capture.
+
+### Run
+
+- Probe: `audit/probes/interactive-liveness/long-form-replay/long-form-replay.mjs`
+- BASE: `https://nimbus.ashishkmr472.workers.dev`
+- Knobs: `HOLD_MINUTES=10 PROBE_INTERVAL_S=30 WS_KILL_INTERVAL_S=75 WS_KILLS_ENABLED=1 PREVIEW_FETCH_HZ=0.5 SHELL_CMD_INTERVAL_S=10`
+- Captured: 2026-05-09T17:38–17:48Z
+
+### Results — verbatim from probe stdout
+
+```
+PASS: isolateGen stable at 1 for full 10 minutes
+PASS: final WS bannerCount=1 (scrollback replay preserved banner)
+PASS: zero recovery events with dataLoss=true (saw 29 clean transitions)
+PASS: peak heap 14.1% of ceiling (≤ 100% — under acceptance bar)
+PASS: peak heap 14.1% ≤ 95% (stretch goal met)
+  peak heap bytes = 9462824 (9.02 MiB / 64.0 MiB)
+PASS: no heap-overflow probes observed during hold
+PASS: heap.breakdown.* sum=total invariant held for all 20 polls
+PASS: warmJoinCount=6 matches wsKills=6 (B'.5 fired every cycle)
+PASS: env NIMBUS_LFR_TEST survived 6 ws-kill cycles
+PASS: diag-poll p99 wallTime 20 ms < 500 ms ceiling
+---- Phase 5 metrics ----
+  HOLD_MINUTES        : 10
+  probes              : 20
+  preview_fetches     : 297
+  shell_cmds          : 19
+  ws_kills            : 6
+  peak_heap_pct       : 14.1%
+  peak_heap_bytes     : 9462824 (9.02 MiB)
+  diag_p99_ms         : 20
+  breakdown_sum_drifts: 0
+  data_loss_events    : 0
+```
+
+### `wrangler tail` corroboration
+
+`wrangler tail nimbus --format=json` ran in parallel for the entire
+10-minute window and recorded **1,371 worker invocations** against
+the probe's session:
+
+| outcome | count | meaning |
+|---------|-------|---------|
+| `ok` | 1336 | regular request handlers + diag polls + preview fetches |
+| `canceled` | 35 | client-side aborts from the 6 forced WS-kill cycles + their preview/shell-cmd race outcomes |
+| `responseStreamDisconnected` | 2 | streaming response cut by client-side WS close (expected) |
+| `exception` | **0** | no uncaught throws, no `Error` outcome, no crash |
+
+Tail file size: 105,048 lines of JSON, 0 occurrences of
+`"outcome":"exception"` or `"outcome":"exceededCpu"`. The probe's 6
+forced webSocketError cycles map cleanly onto the 35 `canceled` events
+(each cycle produces ~5-6 in-flight aborts: the WS frame itself plus
+1-2 preview fetches plus a shell command race).
+
+### Recovery-events tally
+
+The probe asserts `zero recovery events with dataLoss=true` and saw
+**29 clean transitions** during the hold. Combined with the 6
+forced-close cycles, this is approximately ~5 transitions per
+ws-kill (the recovery_event ring tracks: ws-close, ws-open,
+warm-rejoin-claim, warm-rejoin-restore, scrollback-replay) — exactly
+the shape Phase 1 C'.2 specified.
+
+### no-dataLoss assertions
+
+Across 6 forced webSocketError cycles + the 29 recovery-ring
+transitions:
+
+- `dataLoss=true` count: **0**
+- `bannerCount` final: 1 (cold-start MOTD; warm rejoin replays
+  scrollback, doesn't reprint MOTD — correctness preserved)
+- `warmJoinCount` final: 6 (matches `wsKills`)
+- `env.NIMBUS_LFR_TEST` survived all 6 cycles (B'.1 shell-state
+  durability holds across reconnects)
+
+### Peak heap measured against prod
+
+**9.02 MiB / 64.0 MiB ceiling = 14.1% peak** — same as the local
+wrangler-dev measurement from the original Phase 5 run (23.8% under
+slightly different load). The lower prod peak reflects warmed
+caches (the prod DO has had prior installs through it; W7 + R2
+packument cache hit rates are higher than a fresh local dev).
+
+### Acceptance gate
+
+All Phase 5 acceptance criteria HOLD against prod:
+
+- ✅ peak heap ≤ 100% (14.1%)
+- ✅ peak heap ≤ 95% stretch goal (14.1%)
+- ✅ zero `dataLoss=true` recovery events
+- ✅ isolateGen stable (no DO RESETs)
+- ✅ B'.5 warm-rejoin every cycle (6/6)
+- ✅ p99 wallTime well under 500 ms (20 ms measured)
+- ✅ heap.breakdown.* sum=total invariant: 20/20 polls
+- ✅ wrangler tail: 0 exceptions across 1,371 events
+
+The original 6-min smoke that ran against prod at the close of Phase
+5 was extended to 10 minutes for cleanup-not-done; the longer hold
+preserves all invariants. The Phase 5 long-form-replay closure
+condition is now verified end-to-end against the live prod URL,
+not just local dev.

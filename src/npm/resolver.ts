@@ -625,6 +625,14 @@ export async function resolveTree(
   const queue: [string, string][] = Object.entries(specs);
   const limit = pLimit(RESOLVE_CONCURRENCY);
 
+  // F-2 profiling support: emit per-layer width when
+  // NIMBUS_DIAG_INSTALL_PIPELINE=1 (same flag used by VFS pipeline diag).
+  // Used by audit/probes/f2-resolver-fanout/ to measure the BFS-frontier
+  // width distribution against the top-30 cohort. Zero cost in prod
+  // (env not set). See audit/sections/F2-RESOLVER-FANOUT-plan.md.
+  const __f2Diag = ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
+  let __f2LayerN = 0;
+
   while (queue.length > 0) {
     // Drain queue in bounded batches. Math.min ensures we process at most
     // RESOLVE_CONCURRENCY packages per iteration; transitive deps enqueued
@@ -634,6 +642,11 @@ export async function resolveTree(
     // / stream pipeline through the RPC proxy, overwhelming the workerd
     // loopback fabric with too many concurrent in-flight streams.
     const batch = queue.splice(0, Math.min(queue.length, RESOLVE_CONCURRENCY));
+    if (__f2Diag) {
+      // queueRemain is the post-splice frontier still pending.
+      onProgress?.(`[f2-layer-width] N=${__f2LayerN} width=${batch.length} queueRemain=${queue.length} resolved=${resolved.size} seen=${seen.size}`);
+      __f2LayerN++;
+    }
     const results = await Promise.all(
       batch.map(([name, range]) => limit(async () => {
         if (seen.has(name)) return null;

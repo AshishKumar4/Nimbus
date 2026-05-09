@@ -1,0 +1,33 @@
+==== node-long-running-isolation @ 2026-05-09T19:19:01.889Z ====
+SID: snowy-fern-0703
+---- node command tail ----
+[7A[J[1m[32muser@nimbus[0m:[1m[34m~/app[0m$ node /home/user/app/server.js[48C
+[2m[facet started (long-running): pid=2 cmd="node /home/user/app/server.js"][0m
+[2m[started (long-running): pid=2 cmd="node /home/user/app/server.js"][0m
+[1m[32muser@nimbus[0m:[1m[34m~/app[0m$ 
+----
+PASS: shell returned within 3s (fork-to-loader)
+PASS: output contains [started (long-running)] marker
+procs: [
+  {
+    "pid": 1,
+    "command": "node -e ...",
+    "state": "exited",
+    "exitCode": 0,
+    "longRunning": false,
+    "hasLogs": false,
+    "logBytes": 0,
+    "startTime": 1778354344115
+  },
+  {
+    "pid": 2,
+    "command": "node /home/user/app/server.js",
+    "state": "running",
+    "exitCode": null,
+    "longRunning": true,
+    "hasLogs": false,
+    "logBytes": 0,
+    "startTime": 1778354344268
+  }
+]
+PASS: a process has longRunning=true

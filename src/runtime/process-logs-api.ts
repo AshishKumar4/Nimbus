@@ -262,7 +262,10 @@ export function handleProcessesListRequest(
       command: p.command,
       state: p.state,
       exitCode: p.exitCode,
-      longRunning: LONG_RUNNING_CMD_RE.test(p.command),
+      // arch-gaps gap #2: prefer the explicit longRunning flag set by
+      // FacetManager.spawn; fall back to the command-string heuristic
+      // for legacy entries that didn't go through that primitive.
+      longRunning: p.longRunning === true || LONG_RUNNING_CMD_RE.test(p.command),
       hasLogs: !!snap && snap.chunks > 0,
       logBytes: snap?.bytes ?? 0,
       startTime: p.startTime,

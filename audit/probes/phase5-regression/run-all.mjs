@@ -143,6 +143,66 @@ const PROBES = [
     file: 'audit/probes/w7/functional/08-writestream-on-vfs.mjs',
     timeoutMs: 60_000, needsBase: false, slow: true },
 
+  // ── X.5-U dotfile + SWC-shape readFileSync prefetch ──────────────
+  // Adds `addStaticReadFileDotfilesAndCompiled` helper + call site in
+  // src/facets/manager.ts. Pulls dotfiles (`.ts-jest-digest`) and
+  // compiled-loose sentinels through the pre-bundle pass so the runtime
+  // fs shim can serve them. Functional + regression tier — no BASE
+  // required. See audit/sections/X5U-plan.md / X5U-retro.md.
+  { name: 'X.5-U f1-dotfile-prefetch',
+    file: 'audit/probes/x5u/functional/f1-dotfile-prefetch.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'X.5-U f2-tsjest-shape',
+    file: 'audit/probes/x5u/functional/f2-tsjest-shape.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'X.5-U r1-no-overshoot',
+    file: 'audit/probes/x5u/regression/r1-no-overshoot.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'X.5-U r2-budget-respected',
+    file: 'audit/probes/x5u/regression/r2-budget-respected.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'X.5-U r3-z3-untouched',
+    file: 'audit/probes/x5u/regression/r3-z3-untouched.mjs',
+    timeoutMs: 30_000, needsBase: false },
+
+  // ── arch-gaps (gap #1 + gap #2) ──────────────────────────────────
+  // Per-spawn fresh-isolate envelope (gap #1) + long-running fork-to-
+  // loader (gap #2). Structural probes grep src/ for the expected
+  // shape; e2e probes drive the real behaviour against wrangler dev.
+  // See audit/sections/ARCH-GAPS-{plan,retro}.md.
+  { name: 'arch-gaps spawn-pool-shape',
+    file: 'audit/probes/arch-gaps/g3-functional/spawn-pool-shape.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'arch-gaps node-runner-shape',
+    file: 'audit/probes/arch-gaps/g3-functional/node-runner-shape.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'arch-gaps child-spawn-isolation',
+    file: 'audit/probes/arch-gaps/g3-e2e/child-spawn-isolation.mjs',
+    timeoutMs: 90_000, needsBase: true },
+  { name: 'arch-gaps node-long-running-isolation',
+    file: 'audit/probes/arch-gaps/g3-e2e/node-long-running-isolation.mjs',
+    timeoutMs: 90_000, needsBase: true },
+  { name: 'arch-gaps node-short-script-fast-path',
+    file: 'audit/probes/arch-gaps/g3-e2e/node-short-script-fast-path.mjs',
+    timeoutMs: 90_000, needsBase: true },
+  { name: 'arch-gaps spawn-backpressure',
+    file: 'audit/probes/arch-gaps/g3-e2e/spawn-backpressure.mjs',
+    timeoutMs: 90_000, needsBase: true },
+
+  // ── F-2 resolver fan-out (cleanup-not-done) ─────────────────────
+  // Replaces the single resolve-facet path with a frontier coordinator
+  // that submits each BFS layer to NimbusFanoutPool.submitMany. See
+  // audit/sections/F2-RESOLVER-FANOUT-{plan,retro}.md.
+  // These are STRUCTURAL probes — they grep src/ for the expected
+  // shapes. The end-to-end behaviour is covered by the full install
+  // pipeline in clone-large-repo + the cohort profile probe.
+  { name: 'F-2 frontier-coordinator-shape',
+    file: 'audit/probes/f2-resolver-fanout/functional/f1-frontier-coordinator-shape.mjs',
+    timeoutMs: 30_000, needsBase: false },
+  { name: 'F-2 task-shape',
+    file: 'audit/probes/f2-resolver-fanout/functional/f2-task-shape.mjs',
+    timeoutMs: 30_000, needsBase: false },
+
   // ── git-freeze regression ────────────────────────────────────────
   // Locks the post-fix invariant from the git-freeze wave: a real
   // git clone end-to-end MUST complete (not freeze at a partial-

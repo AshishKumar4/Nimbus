@@ -1,0 +1,26 @@
+{
+  "name": "s2-node-script",
+  "sid": "bashful-flint-5412",
+  "mainCmd": "node /home/user/app/s2.js",
+  "mainElapsedMs": 52,
+  "totalMs": 997,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 1,
+  "procsAfter": [
+    {
+      "pid": 1,
+      "command": "node /home/user/app/s2.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 6,
+      "startTime": 1778351281467
+    }
+  ]
+}

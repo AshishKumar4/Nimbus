@@ -1,18 +1,19 @@
 ==== interactive-liveness / walltime-distribution ====
-==== TIMESTAMP: 2026-05-09T15:13:56.855Z ====
+==== TIMESTAMP: 2026-05-09T19:18:50.793Z ====
 BASE: http://127.0.0.1:8792
 SAMPLES: 60
 POLL_INTERVAL_MS: 100
-SID: jolly-stream-0559
+SID: peachy-wharf-0558
 --- distribution ---
-p50: 6 ms
-p95: 10 ms
+p50: 7 ms
+p95: 9 ms
 p99: 11 ms
 histogram: {
-  "<100": 60
+  "<100": 59,
+  "100-500": 1
 }
 PASS: p99 11 ms < 500 ms ceiling
-PASS: 100.0% of frames in <100 ms bucket (target ≥ 90%)
+PASS: 98.3% of frames in <100 ms bucket (target ≥ 90%)
 PASS: 0.0% of frames in ~5s bucket (target < 5%)
 PASS: zero frames > 60 s (catastrophic outlier bucket clean)
 ==== EXIT 0 ====

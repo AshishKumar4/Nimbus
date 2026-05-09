@@ -1,0 +1,91 @@
+==== PROBE: f2-compare-fanout-express ====
+==== TIMESTAMP: 2026-05-09T17:28:41.427Z ====
+==== SID: bashful-channel-1026 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json ----
+user@nimbus:~$ cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: npm install express ----
+user@nimbus:~/app$ npm install express
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: fanout, fetch: global)...
+[npm] [f2-frontier] N=0 width=1 resolved-so-far=0 seen=1
+[npm] [f2-frontier] N=1 width=28 resolved-so-far=1 seen=29
+[npm] [f2-frontier] N=2 width=17 resolved-so-far=29 seen=46
+[npm] [f2-frontier] N=3 width=7 resolved-so-far=46 seen=53
+[npm] [f2-frontier] N=4 width=2 resolved-so-far=53 seen=55
+[npm] [f2-frontier] N=5 width=12 resolved-so-far=55 seen=67
+[npm] [f2-frontier] N=6 width=1 resolved-so-far=67 seen=68
+[npm]   resolver-fanout: 68 resolved, 68 packuments fetched (4.1 MiB), peak in-flight=28, cache writes=299, R2 packument cache wins=68/68, layers=7, elapsed=0.8s
+[npm] Resolved 68 packages.
+[npm] To fetch: 68, to restore: 0, already installed: 0
+[npm] Fetching 68 packages... (path: batch-facet)
+[npm] Dispatching 68 packages across 32 shards (peer-do (POC B), internal pLimit=3)...
+[npm] Batch-facet complete: 68/68 packages, 628 files, 0.7 MiB tarball bytes, peak in-flight=3, R2 cache wins=68/68, 0.7s
+[npm] Done! 68 packages, 628 files in 1.8s
+
+added 68 packages (628 files) in 1.8s
+user@nimbus:~/app$ 
+---- step done in 2002ms (wsClosed=false) ----
+
+==== END PROBE: f2-compare-fanout-express ====
+==== PROBE: f2-compare-fanout-express ====
+==== TIMESTAMP: 2026-05-09T18:01:41.178Z ====
+==== SID: stellar-horizon-1498 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json ----
+user@nimbus:~$ cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: npm install express ----
+user@nimbus:~/app$ npm install express
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: fanout, fetch: global)...
+[npm]   resolver-fanout: 68 resolved, 68 packuments fetched (4.1 MiB), peak in-flight=28, cache writes=299, R2 packument cache wins=11/68, layers=7, elapsed=5.7s
+[npm] Resolved 68 packages.
+[npm] To fetch: 68, to restore: 0, already installed: 0
+[npm] Fetching 68 packages... (path: batch-facet)
+[npm] Dispatching 68 packages across 32 shards (peer-do (POC B), internal pLimit=3)...
+[npm] Batch-facet complete: 68/68 packages, 628 files, 0.7 MiB tarball bytes, peak in-flight=3, R2 cache wins=5/68, 0.9s
+[npm] Done! 68 packages, 628 files in 7.6s
+
+added 68 packages (628 files) in 7.6s
+user@nimbus:~/app$ 
+---- step done in 8016ms (wsClosed=false) ----
+
+==== END PROBE: f2-compare-fanout-express ====

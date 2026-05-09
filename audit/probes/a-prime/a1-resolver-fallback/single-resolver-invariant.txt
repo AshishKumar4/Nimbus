@@ -1,5 +1,5 @@
 ==== A'.1 single-resolver-invariant probe ====
-==== TIMESTAMP: 2026-05-09T15:13:37.550Z ====
+==== TIMESTAMP: 2026-05-09T19:18:31.909Z ====
 PASS: src/npm-installer.ts does not contain "shouldUseFacetResolver"
 PASS: src/npm-installer.ts does not contain "shouldUseFacetPool"
 PASS: src/npm-installer.ts does not contain "shouldUseBatchFacet"
@@ -15,7 +15,7 @@ PASS: src/npm-installer.ts does not contain "buildBatchPayload("
 PASS: src/diag-counters.ts does not contain "'in-supervisor'"
 PASS: src/diag-counters.ts does not contain "'pool.map'"
 PASS: src/diag-counters.ts does not contain "'legacy-waves'"
-SID: velvet-toad-0563
+SID: fast-bison-3587
 counters.resolverPath: "unset"
 counters.installFacet.path: "unset"
 PASS: resolverPath "unset" ∈ {in-facet, unset}

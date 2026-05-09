@@ -1,0 +1,35 @@
+==== s3-node-keepalive @ 2026-05-09T18:28:02.059Z ====
+SID: faithful-magnolia-9274
+---- main output ----
+user@nimbus:~/app$ node /home/user/app/s3.js
+[facet started: pid=1 cmd="node /home/user/app/s3.js"]
+[facet exited: pid=1 code=0 cmd="node /home/user/app/s3.js"]
+user@nimbus:~/app$ 
+----
+---- summary ----
+{
+  "name": "s3-node-keepalive",
+  "sid": "faithful-magnolia-9274",
+  "mainCmd": "node /home/user/app/s3.js",
+  "mainElapsedMs": 50,
+  "totalMs": 995,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 1,
+  "procsAfter": [
+    {
+      "pid": 1,
+      "command": "node /home/user/app/s3.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": false,
+      "logBytes": 0,
+      "startTime": 1778351284532
+    }
+  ]
+}

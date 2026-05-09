@@ -1,0 +1,11 @@
+==== node-short-script-fast-path @ 2026-05-09T19:19:04.895Z ====
+SID: sage-reindeer-0078
+run #1: 103ms
+run #2: 103ms
+run #3: 102ms
+run #4: 103ms
+run #5: 104ms
+elapsed: [103,103,102,103,104]; median=103; p95=104
+PASS: median(103ms) ≤ 1500ms (warm short-script budget)
+PASS: first-run(103ms) ≤ 2000ms (cold-start budget)
+PASS: no [started (long-running)] line for short scripts

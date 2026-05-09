@@ -1,41 +1,41 @@
 ==== interactive-liveness / long-form-replay ====
-==== TIMESTAMP: 2026-05-08T19:39:39.658Z ====
-BASE: http://127.0.0.1:8792
-HOLD_MINUTES: 2
-PROBE_INTERVAL_S: 15
+==== TIMESTAMP: 2026-05-09T18:03:11.009Z ====
+BASE: https://nimbus.ashishkmr472.workers.dev
+HOLD_MINUTES: 5
+PROBE_INTERVAL_S: 30
 PREVIEW_FETCH_HZ: 0.5
 SHELL_CMD_INTERVAL_S: 10
-WS_KILL_INTERVAL_S: 45
+WS_KILL_INTERVAL_S: 75
 WS_KILLS_ENABLED: true
-SID: fleeting-caribou-4642
+SID: tender-boulder-5639
 stage 1: WS open, MOTD count=1
 stage 2: npm i appears complete
-stage 3: vite ready
-stage 3.5: isolateGen=1 heap=15975158 pct=23.8
-stage 4: hold loop for 2 minutes
-stage 4 complete: 8 probes, 60 preview fetches, 0 preview errors
-  shell cmds sent: 7 (0 errors)
-  ws-kills triggered: 2 (0 failures)
-PASS: isolateGen stable at 1 for full 2 minutes
+stage 3: vite-ready timeout: waitFor timeout after 90000ms: vite ready (last 200 chars: "hich needs installed dependencies (10 declared).\r\n  Run \u001b[36mnpm install\u001b[0m first,\r\n  or re-run with \u001b[36mnpm run dev -- --force\u001b[0m to skip this check.\r\n\u001b[1m\u001b[32muser@nimbus\u001b[0m:\u001b[1m\u001b[34m~/app\u001b[0m$ ")
+stage 3.5: isolateGen=1 heap=9462549 pct=14.1
+stage 4: hold loop for 5 minutes
+stage 4 complete: 10 probes, 149 preview fetches, 0 preview errors
+  shell cmds sent: 9 (0 errors)
+  ws-kills triggered: 3 (0 failures)
+PASS: isolateGen stable at 1 for full 5 minutes
 PASS: final WS bannerCount=1 (scrollback replay preserved banner)
-PASS: zero recovery events with dataLoss=true (saw 50 clean transitions)
-PASS: peak heap 23.8% of ceiling (≤ 100% — under acceptance bar)
-PASS: peak heap 23.8% ≤ 95% (stretch goal met)
-  peak heap bytes = 15975557 (15.24 MiB / 64.0 MiB)
+PASS: zero recovery events with dataLoss=true (saw 17 clean transitions)
+PASS: peak heap 14.1% of ceiling (≤ 100% — under acceptance bar)
+PASS: peak heap 14.1% ≤ 95% (stretch goal met)
+  peak heap bytes = 9462675 (9.02 MiB / 64.0 MiB)
 PASS: no heap-overflow probes observed during hold
-PASS: heap.breakdown.* sum=total invariant held for all 8 polls
-PASS: warmJoinCount=2 matches wsKills=2 (B'.5 fired every cycle)
-PASS: env NIMBUS_LFR_TEST survived 2 ws-kill cycles
-PASS: diag-poll p99 wallTime 8 ms < 500 ms ceiling
+PASS: heap.breakdown.* sum=total invariant held for all 10 polls
+PASS: warmJoinCount=3 matches wsKills=3 (B'.5 fired every cycle)
+PASS: env NIMBUS_LFR_TEST survived 3 ws-kill cycles
+PASS: diag-poll p99 wallTime 17 ms < 500 ms ceiling
 ---- Phase 5 metrics ----
-  HOLD_MINUTES        : 2
-  probes              : 8
-  preview_fetches     : 60
-  shell_cmds          : 7
-  ws_kills            : 2
-  peak_heap_pct       : 23.8%
-  peak_heap_bytes     : 15975557 (15.24 MiB)
-  diag_p99_ms         : 8
+  HOLD_MINUTES        : 5
+  probes              : 10
+  preview_fetches     : 149
+  shell_cmds          : 9
+  ws_kills            : 3
+  peak_heap_pct       : 14.1%
+  peak_heap_bytes     : 9462675 (9.02 MiB)
+  diag_p99_ms         : 17
   breakdown_sum_drifts: 0
   data_loss_events    : 0
 ==== EXIT 0 ====

@@ -15,6 +15,7 @@ import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
+import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { ProcessTable } from '../runtime/process-table.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
@@ -471,6 +472,8 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
   async _rpcCpWait(childPid: number, waitMs: number) { return _rpc._rpcCpWait(this as any, childPid, waitMs); }
+  // arch-gaps gap #1: per-spawn fresh-isolate dispatch.
+  async _rpcCpDispatchInline(req: any, kind: string) { return _rpc._rpcCpDispatchInline(this as any, req, kind); }
 
   // Legacy VFS (direct method calls)
   vfsReadFile(path: string): ArrayBuffer | null { return _rpc.vfsReadFile(this as any, path); }
@@ -776,6 +779,21 @@ export class NimbusSession extends CloudflareDurableObject {
         }
       },
     };
+    // arch-gaps gap #1: per-spawn fresh-isolate envelope. The pool wraps
+    // NimbusFanoutPool — auto-routes <5 → POC C in-DO, ≥5 → POC B
+    // peer-DO. Hard-fails at construction if env.LOADER missing (no
+    // fallback). The pool is constructed lazily on the same path that
+    // builds FacetProcessManager so unit tests that don't supply
+    // env.LOADER still work via the legacy in-supervisor dispatch.
+    let spawnPool: ChildProcessSpawnPool | undefined;
+    try {
+      const envAny = this.env as any;
+      if (envAny?.LOADER && typeof envAny.LOADER.get === 'function') {
+        spawnPool = new ChildProcessSpawnPool(this.env, this.ctx as any);
+      }
+    } catch {
+      spawnPool = undefined;
+    }
     this.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processTable: this.processTable,
@@ -783,6 +801,7 @@ export class NimbusSession extends CloudflareDurableObject {
       vfs: this.sqliteFs!,
       commandRegistry: cmdRegistryAdapter,
       ctx: this.ctx as any,
+      spawnPool,
     });
     return this.facetProcessManager;
   }

@@ -1,0 +1,41 @@
+==== s1-node-eval @ 2026-05-09T18:27:56.113Z ====
+SID: mild-sable-0870
+---- main output ----
+user@nimbus:~/app$ node -e "console.log('hi from S1')"
+hi from S1
+
+────────────────────────────────────────────────────────────
+Process 1 (node -e ...) exited with code 0
+────────────────────────────────────────────────────────────
+hi from S1
+────────────────────────────────────────────────────────────
+[facet exited: pid=1 code=0 cmd="node -e ..."]
+user@nimbus:~/app$ 
+----
+---- summary ----
+{
+  "name": "s1-node-eval",
+  "sid": "mild-sable-0870",
+  "mainCmd": "node -e \"console.log('hi from S1')\"",
+  "mainElapsedMs": 52,
+  "totalMs": 792,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 1,
+  "procsAfter": [
+    {
+      "pid": 1,
+      "command": "node -e ...",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 11,
+      "startTime": 1778351278404
+    }
+  ]
+}

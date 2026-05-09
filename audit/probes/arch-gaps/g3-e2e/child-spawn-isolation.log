@@ -1,0 +1,26 @@
+==== child-spawn-isolation @ 2026-05-09T19:18:58.823Z ====
+SID: simple-parrot-6055
+---- driver output (last 1200 chars) ----
+[13A[J[1m[32muser@nimbus[0m:[1m[34m~/app[0m$ node /home/user/app/driver.js[48C
+[2m[facet started: pid=2 cmd="node /home/user/app/driver.js"][0m
+[2m[facet exited: pid=11 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=12 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=13 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=14 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=15 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=16 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=17 code=0 cmd="node -e ..."][0m
+[2m[facet exited: pid=18 code=0 cmd="node -e ..."][0m
+TOKENS=["bwu6fx9brfb3"]
+
+[2;33m────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/driver.js) exited with code 0
+────────────────────────────────────────────────────────────[0m
+TOKENS=["bwu6fx9brfb3"]
+[2;33m────────────────────────────────────────────────────────────[0m
+[2m[facet exited: pid=2 code=0 cmd="node /home/user/app/driver.js"][0m
+[1m[32muser@nimbus[0m:[1m[34m~/app[0m$ 
+tokens: ["bwu6fx9brfb3"]
+PASS: TOKENS line present in driver output
+PASS: ≥1 distinct isolate token captured (spawn-pool fired)
+PASS: captured tokens are well-formed

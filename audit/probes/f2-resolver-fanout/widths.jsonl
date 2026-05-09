@@ -1,0 +1,5 @@
+{"name":"vite","pkg":"vite","elapsed_ms":485573,"path":"fanout","resolver_elapsed_s":null,"layers":2,"width_max":18,"width_p50":18,"width_p95":18,"width_avg":9.5,"final_resolved":1,"final_seen":19,"captured_lines":2,"probe_ok":true}
+{"name":"webpack","pkg":"webpack","elapsed_ms":11049,"path":"fanout","resolver_elapsed_s":2.4,"layers":5,"width_max":24,"width_p50":17,"width_p95":24,"width_avg":14,"final_resolved":62,"final_seen":70,"captured_lines":5,"probe_ok":true}
+{"name":"drizzle","pkg":"drizzle-orm","elapsed_ms":77164,"path":"fanout","resolver_elapsed_s":20.5,"layers":12,"width_max":156,"width_p50":35,"width_p95":156,"width_avg":51.92,"final_resolved":600,"final_seen":623,"captured_lines":12,"probe_ok":true}
+{"name":"express","pkg":"express","elapsed_ms":8028,"path":"fanout","resolver_elapsed_s":1,"layers":7,"width_max":28,"width_p50":7,"width_p95":28,"width_avg":9.71,"final_resolved":67,"final_seen":68,"captured_lines":7,"probe_ok":true}
+{"name":"zod","pkg":"zod","elapsed_ms":6031,"path":"fanout","resolver_elapsed_s":0.1,"layers":1,"width_max":1,"width_p50":1,"width_p95":1,"width_avg":1,"final_resolved":0,"final_seen":1,"captured_lines":1,"probe_ok":true}

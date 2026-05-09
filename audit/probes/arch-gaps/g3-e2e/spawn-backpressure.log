@@ -1,0 +1,44 @@
+==== spawn-backpressure @ 2026-05-09T19:19:07.660Z ====
+SID: solid-thrush-6028
+---- burst output (last 1500 chars) ----
+md="node -e ..."][0m
+burst-5
+
+[2;33m────────────────────────────────────────────────────────────
+Process 16 (node -e ...) exited with code 0
+────────────────────────────────────────────────────────────[0m
+burst-5
+[2;33m────────────────────────────────────────────────────────────[0m
+[2m[facet exited: pid=16 code=0 cmd="node -e ..."][0m
+burst-6
+
+[2;33m────────────────────────────────────────────────────────────
+Process 17 (node -e ...) exited with code 0
+────────────────────────────────────────────────────────────[0m
+burst-6
+[2;33m────────────────────────────────────────────────────────────[0m
+[2m[facet exited: pid=17 code=0 cmd="node -e ..."][0m
+burst-7
+
+[2;33m────────────────────────────────────────────────────────────
+Process 18 (node -e ...) exited with code 0
+────────────────────────────────────────────────────────────[0m
+burst-7
+[2;33m────────────────────────────────────────────────────────────[0m
+[2m[facet exited: pid=18 code=0 cmd="node -e ..."][0m
+BURST_COMPLETE n=8 errors=0 exits=[0,0,0,0,0,0,0,0]
+
+[2;33m────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/burst.js) exited with code 0
+────────────────────────────────────────────────────────────[0m
+BURST_COMPLETE n=8 errors=0 exits=[0,0,0,0,0,0,0,0]
+[2;33m────────────────────────────────────────────────────────────[0m
+[2m[facet exited: pid=2 code=0 cmd="node /home/user/app/burst.js"][0m
+[1m[32muser@nimbus[0m:[1m[34m~/app[0m$ 
+----
+burst elapsed 406ms
+PASS: all 8 spawns reported close
+PASS: n=8
+PASS: errors=0
+PASS: all exits = 0
+PASS: burst completed within 30s

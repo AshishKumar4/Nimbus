@@ -1,0 +1,313 @@
+==== PROBE: f2-compare-facet-drizzle ====
+==== TIMESTAMP: 2026-05-09T17:29:35.126Z ====
+==== SID: agile-lark-9736 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json ----
+user@nimbus:~$ cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 500ms (wsClosed=false) ----
+
+---- STEP cmd: npm install drizzle-orm ----
+user@nimbus:~/app$ npm install drizzle-orm
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: facet, fetch: global)...
+[npm]   resolver-facet: shipping 0 cached entries
+[npm] [f2-layer-width] N=0 width=1 queueRemain=0 resolved=0 seen=0
+[npm] [resolve-facet] [skip] sql.js — optional peer in REJECT_INSTALL: sql.js — Installs but fails at runtime: ENOENT on dist/sql-wasm.wasm — loader gap (W6.5.x).
+[npm] [resolve-facet] [skip] sqlite3 — optional peer in REJECT_INSTALL: sqlite3 — Native sqlite3 .node binding.
+[npm] [resolve-facet] [skip] @prisma/client — optional peer in REJECT_INSTALL: @prisma/client — Native Prisma query engine.
+[npm] [resolve-facet] [skip] better-sqlite3 — optional peer in REJECT_INSTALL: better-sqlite3 — Native sqlite .node binding.
+[npm] [f2-layer-width] N=1 width=4 queueRemain=20 resolved=1 seen=1
+[npm] [f2-layer-width] N=2 width=4 queueRemain=45 resolved=5 seen=5
+[npm] [f2-layer-width] N=3 width=4 queueRemain=55 resolved=9 seen=9
+[npm] [f2-layer-width] N=4 width=4 queueRemain=66 resolved=13 seen=13
+[npm] [f2-layer-width] N=5 width=4 queueRemain=70 resolved=17 seen=17
+[npm] [f2-layer-width] N=6 width=4 queueRemain=67 resolved=21 seen=21
+[npm] [f2-layer-width] N=7 width=4 queueRemain=107 resolved=25 seen=25
+[npm] [f2-layer-width] N=8 width=4 queueRemain=108 resolved=29 seen=29
+[npm] [f2-layer-width] N=9 width=4 queueRemain=106 resolved=32 seen=32
+[npm] [f2-layer-width] N=10 width=4 queueRemain=103 resolved=36 seen=36
+[npm] [f2-layer-width] N=11 width=4 queueRemain=100 resolved=40 seen=40
+[npm] [f2-layer-width] N=12 width=4 queueRemain=96 resolved=43 seen=43
+[npm] [f2-layer-width] N=13 width=4 queueRemain=92 resolved=46 seen=46
+[npm] [f2-layer-width] N=14 width=4 queueRemain=89 resolved=50 seen=50
+[npm] [f2-layer-width] N=15 width=4 queueRemain=87 resolved=54 seen=54
+[npm] [f2-layer-width] N=16 width=4 queueRemain=84 resolved=58 seen=58
+[npm] [f2-layer-width] N=17 width=4 queueRemain=81 resolved=60 seen=60
+[npm] [f2-layer-width] N=18 width=4 queueRemain=77 resolved=61 seen=61
+[npm] [f2-layer-width] N=19 width=4 queueRemain=131 resolved=64 seen=64
+[npm] [f2-layer-width] N=20 width=4 queueRemain=127 resolved=64 seen=65
+[npm] [f2-layer-width] N=21 width=4 queueRemain=135 resolved=68 seen=69
+[npm] [f2-layer-width] N=22 width=4 queueRemain=131 resolved=71 seen=72
+[npm] [npm] [skip] bufferutil — Native binding for ws speedups; install requires node-gyp.
+[npm] [f2-layer-width] N=23 width=4 queueRemain=127 resolved=72 seen=74
+[npm] [f2-layer-width] N=24 width=4 queueRemain=130 resolved=74 seen=76
+[npm] [f2-layer-width] N=25 width=4 queueRemain=159 resolved=78 seen=80
+[npm] [f2-layer-width] N=26 width=4 queueRemain=175 resolved=82 seen=84
+[npm] [f2-layer-width] N=27 width=4 queueRemain=184 resolved=86 seen=88
+[npm] [f2-layer-width] N=28 width=4 queueRemain=187 resolved=90 seen=92
+[npm] [f2-layer-width] N=29 width=4 queueRemain=187 resolved=94 seen=96
+[npm] [f2-layer-width] N=30 width=4 queueRemain=188 resolved=98 seen=100
+[npm] [f2-layer-width] N=31 width=4 queueRemain=188 resolved=102 seen=104
+[npm] [f2-layer-width] N=32 width=4 queueRemain=188 resolved=106 seen=108
+[npm] [f2-layer-width] N=33 width=4 queueRemain=188 resolved=110 seen=112
+[npm] [f2-layer-width] N=34 width=4 queueRemain=184 resolved=112 seen=114
+[npm] [f2-layer-width] N=35 width=4 queueRemain=180 resolved=114 seen=116
+[npm] [f2-layer-width] N=36 width=4 queueRemain=177 resolved=118 seen=120
+[npm] [f2-layer-width] N=37 width=4 queueRemain=175 resolved=122 seen=124
+[npm] [f2-layer-width] N=38 width=4 queueRemain=175 resolved=126 seen=128
+[npm] [f2-layer-width] N=39 width=4 queueRemain=227 resolved=130 seen=132
+[npm] [f2-layer-width] N=40 width=4 queueRemain=253 resolved=134 seen=136
+[npm] [f2-layer-width] N=41 width=4 queueRemain=251 resolved=138 seen=140
+[npm] [f2-layer-width] N=42 width=4 queueRemain=276 resolved=142 seen=144
+[npm] [f2-layer-width] N=43 width=4 queueRemain=288 resolved=146 seen=148
+[npm] [f2-layer-width] N=44 width=4 queueRemain=298 resolved=150 seen=152
+[npm] [f2-layer-width] N=45 width=4 queueRemain=300 resolved=153 seen=155
+[npm] [f2-layer-width] N=46 width=4 queueRemain=303 resolved=157 seen=159
+[npm] [f2-layer-width] N=47 width=4 queueRemain=300 resolved=161 seen=163
+[npm] [f2-layer-width] N=48 width=4 queueRemain=299 resolved=165 seen=167
+[npm] [f2-layer-width] N=49 width=4 queueRemain=296 resolved=167 seen=169
+[npm] [f2-layer-width] N=50 width=4 queueRemain=299 resolved=171 seen=173
+[npm] [f2-layer-width] N=51 width=4 queueRemain=299 resolved=175 seen=177
+[npm] [f2-layer-width] N=52 width=4 queueRemain=296 resolved=179 seen=181
+[npm] [f2-layer-width] N=53 width=4 queueRemain=301 resolved=183 seen=185
+[npm] [resolve-facet] [skip] @libsql/darwin-x64 — optional native binding (os=darwin, cpu=x64, libc=*, main=index.node)
+[npm] [resolve-facet] [skip] @libsql/darwin-arm64 — optional native binding (os=darwin, cpu=arm64, libc=*, main=index.node)
+[npm] [f2-layer-width] N=54 width=4 queueRemain=297 resolved=185 seen=189
+[npm] [resolve-facet] [skip] @libsql/win32-x64-msvc — optional native binding (os=win32, cpu=x64, libc=*, main=index.node)
+[npm] [resolve-facet] [skip] @libsql/linux-x64-musl — optional native binding (os=linux, cpu=x64, libc=*, main=index.node)
+[npm] [resolve-facet] [skip] @libsql/linux-arm64-gnu — optional native binding (os=linux, cpu=arm64, libc=*, main=index.node)
+[npm] [resolve-facet] [skip] @libsql/linux-x64-gnu — optional native binding (os=linux, cpu=x64, libc=*, main=index.node)
+[npm] [f2-layer-width] N=55 width=4 queueRemain=293 resolved=185 seen=193
+[npm] [resolve-facet] [skip] @libsql/linux-arm-gnueabihf — optional native binding (os=linux, cpu=arm, libc=*, main=index.node)
+[npm] [resolve-facet] [skip] @libsql/linux-arm-musleabihf — optional native binding (os=linux, cpu=arm, libc=*, main=index.node)
+[npm] [resolve-facet] [skip] @libsql/linux-arm64-musl — optional native binding (os=linux, cpu=arm64, libc=*, main=index.node)
+[npm] [f2-layer-width] N=56 width=4 queueRemain=289 resolved=185 seen=196
+[npm] [f2-layer-width] N=57 width=4 queueRemain=285 resolved=186 seen=197
+[npm] [f2-layer-width] N=58 width=4 queueRemain=281 resolved=188 seen=199
+[npm] [f2-layer-width] N=59 width=4 queueRemain=279 resolved=189 seen=200
+[npm] [f2-layer-width] N=60 width=4 queueRemain=275 resolved=191 seen=202
+[npm] [f2-layer-width] N=61 width=4 queueRemain=271 resolved=191 seen=202
+[npm] [f2-layer-width] N=62 width=4 queueRemain=267 resolved=192 seen=203
+[npm] [f2-layer-width] N=63 width=4 queueRemain=273 resolved=196 seen=207
+[npm] [f2-layer-width] N=64 width=4 queueRemain=271 resolved=198 seen=209
+[npm] [f2-layer-width] N=65 width=4 queueRemain=267 resolved=199 seen=210
+[npm] [f2-layer-width] N=66 width=4 queueRemain=263 resolved=199 seen=210
+[npm] [f2-layer-width] N=67 width=4 queueRemain=259 resolved=200 seen=211
+[npm] [f2-layer-width] N=68 width=4 queueRemain=255 resolved=200 seen=211
+[npm] [f2-layer-width] N=69 width=4 queueRemain=251 resolved=200 seen=211
+[npm] [f2-layer-width] N=70 width=4 queueRemain=247 resolved=200 seen=211
+[npm] [f2-layer-width] N=71 width=4 queueRemain=243 resolved=200 seen=211
+[npm] [f2-layer-width] N=72 width=4 queueRemain=239 resolved=200 seen=211
+[npm] [f2-layer-width] N=73 width=4 queueRemain=235 resolved=201 seen=212
+[npm] [f2-layer-width] N=74 width=4 queueRemain=231 resolved=202 seen=213
+[npm] [f2-layer-width] N=75 width=4 queueRemain=227 resolved=203 seen=214
+[npm] [f2-layer-width] N=76 width=4 queueRemain=223 resolved=203 seen=214
+[npm] [f2-layer-width] N=77 width=4 queueRemain=219 resolved=203 seen=214
+[npm] [f2-layer-width] N=78 width=4 queueRemain=215 resolved=203 seen=214
+[npm] [f2-layer-width] N=79 width=4 queueRemain=211 resolved=203 seen=214
+[npm] [f2-layer-width] N=80 width=4 queueRemain=207 resolved=203 seen=214
+[npm] [f2-layer-width] N=81 width=4 queueRemain=203 resolved=203 seen=214
+[npm] [f2-layer-width] N=82 width=4 queueRemain=200 resolved=207 seen=218
+[npm] [f2-layer-width] N=83 width=4 queueRemain=197 resolved=211 seen=222
+[npm] [f2-layer-width] N=84 width=4 queueRemain=213 resolved=215 seen=226
+[npm] [f2-layer-width] N=85 width=4 queueRemain=213 resolved=219 seen=230
+[npm] [f2-layer-width] N=86 width=4 queueRemain=214 resolved=223 seen=234
+[npm] [f2-layer-width] N=87 width=4 queueRemain=210 resolved=227 seen=238
+[npm] [f2-layer-width] N=88 width=4 queueRemain=210 resolved=230 seen=241
+[npm] [f2-layer-width] N=89 width=4 queueRemain=214 resolved=234 seen=245
+[npm] [f2-layer-width] N=90 width=4 queueRemain=212 resolved=236 seen=247
+[npm] [f2-layer-width] N=91 width=4 queueRemain=213 resolved=239 seen=250
+[npm] [f2-layer-width] N=92 width=4 queueRemain=212 resolved=243 seen=254
+[npm] [f2-layer-width] N=93 width=4 queueRemain=215 resolved=247 seen=258
+[npm] [f2-layer-width] N=94 width=4 queueRemain=213 resolved=249 seen=260
+[npm] [f2-layer-width] N=95 width=4 queueRemain=212 resolved=252 seen=263
+[npm] [f2-layer-width] N=96 width=4 queueRemain=218 resolved=256 seen=267
+[npm] [f2-layer-width] N=97 width=4 queueRemain=242 resolved=258 seen=269
+[npm] [f2-layer-width] N=98 width=4 queueRemain=244 resolved=261 seen=272
+[npm] [f2-layer-width] N=99 width=4 queueRemain=245 resolved=264 seen=275
+[npm] [f2-layer-width] N=100 width=4 queueRemain=251 resolved=268 seen=279
+[npm] [f2-layer-width] N=101 width=4 queueRemain=251 resolved=269 seen=280
+[npm] [f2-layer-width] N=102 width=4 queueRemain=247 resolved=271 seen=282
+[npm] [f2-layer-width] N=103 width=4 queueRemain=243 resolved=272 seen=283
+[npm] [f2-layer-width] N=104 width=4 queueRemain=239 resolved=274 seen=285
+[npm] [f2-layer-width] N=105 width=4 queueRemain=236 resolved=275 seen=286
+[npm] [f2-layer-width] N=106 width=4 queueRemain=232 resolved=276 seen=287
+[npm] [f2-layer-width] N=107 width=4 queueRemain=234 resolved=278 seen=289
+[npm] [f2-layer-width] N=108 width=4 queueRemain=288 resolved=282 seen=293
+[npm] [f2-layer-width] N=109 width=4 queueRemain=295 resolved=286 seen=297
+[npm] [f2-layer-width] N=110 width=4 queueRemain=297 resolved=289 seen=300
+[npm] [f2-layer-width] N=111 width=4 queueRemain=303 resolved=293 seen=304
+[npm] [f2-layer-width] N=112 width=4 queueRemain=313 resolved=297 seen=308
+[npm] [f2-layer-width] N=113 width=4 queueRemain=309 resolved=297 seen=308
+[npm] [f2-layer-width] N=114 width=4 queueRemain=317 resolved=298 seen=310
+[npm] [resolve-facet] [skip] lightningcss — inside best-effort optional-peer subtree (X.5-drizzle): npm install rejected: lightningcss — Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.
+[npm] [f2-layer-width] N=115 width=4 queueRemain=319 resolved=301 seen=314
+[npm] [f2-layer-width] N=116 width=4 queueRemain=318 resolved=302 seen=315
+[npm] [f2-layer-width] N=117 width=4 queueRemain=316 resolved=303 seen=316
+[npm] [f2-layer-width] N=118 width=4 queueRemain=314 resolved=304 seen=317
+[npm] [f2-layer-width] N=119 width=4 queueRemain=310 resolved=305 seen=318
+[npm] [f2-layer-width] N=120 width=4 queueRemain=306 resolved=305 seen=318
+[npm] [f2-layer-width] N=121 width=4 queueRemain=302 resolved=307 seen=320
+[npm] [f2-layer-width] N=122 width=4 queueRemain=302 resolved=311 seen=324
+[npm] [f2-layer-width] N=123 width=4 queueRemain=299 resolved=315 seen=328
+[npm] [f2-layer-width] N=124 width=4 queueRemain=295 resolved=317 seen=330
+[npm] [f2-layer-width] N=125 width=4 queueRemain=296 resolved=320 seen=333
+[npm] [f2-layer-width] N=126 width=4 queueRemain=292 resolved=323 seen=336
+[npm] [f2-layer-width] N=127 width=4 queueRemain=288 resolved=324 seen=337
+[npm] [f2-layer-width] N=128 width=4 queueRemain=284 resolved=324 seen=337
+[npm] [f2-layer-width] N=129 width=4 queueRemain=292 resolved=328 seen=341
+[npm] [f2-layer-width] N=130 width=4 queueRemain=291 resolved=331 seen=345
+[npm] [f2-layer-width] N=131 width=4 queueRemain=288 resolved=333 seen=347
+[npm] [f2-layer-width] N=132 width=4 queueRemain=284 resolved=334 seen=348
+[npm] [f2-layer-width] N=133 width=4 queueRemain=280 resolved=335 seen=349
+[npm] [f2-layer-width] N=134 width=4 queueRemain=279 resolved=338 seen=352
+[npm] [f2-layer-width] N=135 width=4 queueRemain=275 resolved=341 seen=355
+[npm] [f2-layer-width] N=136 width=4 queueRemain=272 resolved=345 seen=359
+[npm] [f2-layer-width] N=137 width=4 queueRemain=268 resolved=349 seen=363
+[npm] [f2-layer-width] N=138 width=4 queueRemain=268 resolved=353 seen=367
+[npm] [f2-layer-width] N=139 width=4 queueRemain=266 resolved=356 seen=370
+[npm] [f2-layer-width] N=140 width=4 queueRemain=263 resolved=360 seen=374
+[npm] [f2-layer-width] N=141 width=4 queueRemain=259 resolved=362 seen=376
+[npm] [f2-layer-width] N=142 width=4 queueRemain=258 resolved=365 seen=379
+[npm] [f2-layer-width] N=143 width=4 queueRemain=254 resolved=368 seen=382
+[npm] [f2-layer-width] N=144 width=4 queueRemain=251 resolved=372 seen=386
+[npm] [f2-layer-width] N=145 width=4 queueRemain=249 resolved=375 seen=389
+[npm] [f2-layer-width] N=146 width=4 queueRemain=245 resolved=377 seen=391
+[npm] [f2-layer-width] N=147 width=4 queueRemain=243 resolved=381 seen=395
+[npm] [f2-layer-width] N=148 width=4 queueRemain=241 resolved=384 seen=398
+[npm] [f2-layer-width] N=149 width=4 queueRemain=237 resolved=384 seen=398
+[npm] [f2-layer-width] N=150 width=4 queueRemain=233 resolved=384 seen=398
+[npm] [f2-layer-width] N=151 width=4 queueRemain=235 resolved=388 seen=402
+[npm] [f2-layer-width] N=152 width=4 queueRemain=233 resolved=392 seen=406
+[npm] [f2-layer-width] N=153 width=4 queueRemain=229 resolved=392 seen=406
+[npm] [f2-layer-width] N=154 width=4 queueRemain=227 resolved=394 seen=408
+[npm] [f2-layer-width] N=155 width=4 queueRemain=223 resolved=394 seen=408
+[npm] [f2-layer-width] N=156 width=4 queueRemain=219 resolved=395 seen=409
+[npm] [f2-layer-width] N=157 width=4 queueRemain=215 resolved=397 seen=411
+[npm] [f2-layer-width] N=158 width=4 queueRemain=212 resolved=398 seen=412
+[npm] [f2-layer-width] N=159 width=4 queueRemain=208 resolved=398 seen=412
+[npm] [f2-layer-width] N=160 width=4 queueRemain=209 resolved=402 seen=416
+[npm] [f2-layer-width] N=161 width=4 queueRemain=208 resolved=405 seen=419
+[npm] [f2-layer-width] N=162 width=4 queueRemain=206 resolved=406 seen=420
+[npm] [f2-layer-width] N=163 width=4 queueRemain=202 resolved=406 seen=420
+[npm] [f2-layer-width] N=164 width=4 queueRemain=198 resolved=406 seen=420
+[npm] [f2-layer-width] N=165 width=4 queueRemain=194 resolved=407 seen=421
+[npm] [f2-layer-width] N=166 width=4 queueRemain=191 resolved=409 seen=423
+[npm] [f2-layer-width] N=167 width=4 queueRemain=190 resolved=413 seen=427
+[npm] [f2-layer-width] N=168 width=4 queueRemain=189 resolved=417 seen=431
+[npm] [f2-layer-width] N=169 width=4 queueRemain=185 resolved=418 seen=432
+[npm] [f2-layer-width] N=170 width=4 queueRemain=185 resolved=419 seen=433
+[npm] [f2-layer-width] N=171 width=4 queueRemain=187 resolved=422 seen=436
+[npm] [f2-layer-width] N=172 width=4 queueRemain=183 resolved=423 seen=437
+[npm] [f2-layer-width] N=173 width=4 queueRemain=179 resolved=425 seen=439
+[npm] [f2-layer-width] N=174 width=4 queueRemain=175 resolved=429 seen=443
+[npm] [f2-layer-width] N=175 width=4 queueRemain=173 resolved=433 seen=447
+[npm] [f2-layer-width] N=176 width=4 queueRemain=170 resolved=435 seen=449
+[npm] [f2-layer-width] N=177 width=4 queueRemain=166 resolved=437 seen=451
+[npm] [f2-layer-width] N=178 width=4 queueRemain=164 resolved=439 seen=453
+[npm] [f2-layer-width] N=179 width=4 queueRemain=160 resolved=442 seen=456
+[npm] [f2-layer-width] N=180 width=4 queueRemain=157 resolved=445 seen=459
+[npm] [f2-layer-width] N=181 width=4 queueRemain=154 resolved=447 seen=461
+[npm] [f2-layer-width] N=182 width=4 queueRemain=152 resolved=448 seen=462
+[npm] [f2-layer-width] N=183 width=4 queueRemain=151 resolved=450 seen=464
+[npm] [f2-layer-width] N=184 width=4 queueRemain=152 resolved=453 seen=467
+[npm] [f2-layer-width] N=185 width=4 queueRemain=148 resolved=453 seen=467
+[npm] [f2-layer-width] N=186 width=4 queueRemain=144 resolved=453 seen=467
+[npm] [f2-layer-width] N=187 width=4 queueRemain=141 resolved=454 seen=468
+[npm] [f2-layer-width] N=188 width=4 queueRemain=137 resolved=454 seen=468
+[npm] [f2-layer-width] N=189 width=4 queueRemain=133 resolved=454 seen=468
+[npm] [f2-layer-width] N=190 width=4 queueRemain=131 resolved=455 seen=469
+[npm] [f2-layer-width] N=191 width=4 queueRemain=127 resolved=456 seen=470
+[npm] [f2-layer-width] N=192 width=4 queueRemain=123 resolved=457 seen=471
+[npm] [f2-layer-width] N=193 width=4 queueRemain=119 resolved=458 seen=472
+[npm] [f2-layer-width] N=194 width=4 queueRemain=115 resolved=460 seen=474
+[npm] [f2-layer-width] N=195 width=4 queueRemain=111 resolved=463 seen=477
+[npm] [f2-layer-width] N=196 width=4 queueRemain=108 resolved=467 seen=481
+[npm] [f2-layer-width] N=197 width=4 queueRemain=105 resolved=471 seen=485
+[npm] [f2-layer-width] N=198 width=4 queueRemain=101 resolved=472 seen=486
+[npm] [f2-layer-width] N=199 width=4 queueRemain=97 resolved=474 seen=488
+[npm] [f2-layer-width] N=200 width=4 queueRemain=93 resolved=476 seen=490
+[npm] [f2-layer-width] N=201 width=4 queueRemain=99 resolved=479 seen=493
+[npm] [f2-layer-width] N=202 width=4 queueRemain=101 resolved=482 seen=497
+[npm] [f2-layer-width] N=203 width=4 queueRemain=102 resolved=485 seen=500
+[npm] [f2-layer-width] N=204 width=4 queueRemain=100 resolved=489 seen=504
+[npm] [f2-layer-width] N=205 width=4 queueRemain=99 resolved=493 seen=508
+[npm] [f2-layer-width] N=206 width=4 queueRemain=95 resolved=497 seen=512
+[npm] [f2-layer-width] N=207 width=4 queueRemain=92 resolved=501 seen=516
+[npm] [f2-layer-width] N=208 width=4 queueRemain=88 resolved=503 seen=518
+[npm] [f2-layer-width] N=209 width=4 queueRemain=84 resolved=506 seen=521
+[npm] [f2-layer-width] N=210 width=4 queueRemain=82 resolved=508 seen=523
+[npm] [f2-layer-width] N=211 width=4 queueRemain=78 resolved=511 seen=526
+[npm] [f2-layer-width] N=212 width=4 queueRemain=74 resolved=514 seen=529
+[npm] [f2-layer-width] N=213 width=4 queueRemain=70 resolved=517 seen=532
+[npm] [f2-layer-width] N=214 width=4 queueRemain=69 resolved=521 seen=536
+[npm] [f2-layer-width] N=215 width=4 queueRemain=65 resolved=525 seen=540
+[npm] [f2-layer-width] N=216 width=4 queueRemain=61 resolved=526 seen=541
+[npm] [f2-layer-width] N=217 width=4 queueRemain=57 resolved=527 seen=542
+[npm] [f2-layer-width] N=218 width=4 queueRemain=53 resolved=528 seen=543
+[npm] [f2-layer-width] N=219 width=4 queueRemain=51 resolved=529 seen=544
+[npm] [f2-layer-width] N=220 width=4 queueRemain=49 resolved=531 seen=546
+[npm] [f2-layer-width] N=221 width=4 queueRemain=46 resolved=533 seen=548
+[npm] [f2-layer-width] N=222 width=4 queueRemain=42 resolved=534 seen=549
+[npm] [f2-layer-width] N=223 width=4 queueRemain=38 resolved=536 seen=551
+[npm] [f2-layer-width] N=224 width=4 queueRemain=34 resolved=536 seen=551
+[npm] [f2-layer-width] N=225 width=4 queueRemain=30 resolved=538 seen=553
+[npm] [f2-layer-width] N=226 width=4 queueRemain=32 resolved=541 seen=556
+[npm] [f2-layer-width] N=227 width=4 queueRemain=43 resolved=545 seen=560
+[npm] [f2-layer-width] N=228 width=4 queueRemain=41 resolved=548 seen=563
+[npm] [f2-layer-width] N=229 width=4 queueRemain=37 resolved=548 seen=566
+[npm] [f2-layer-width] N=230 width=4 queueRemain=37 resolved=552 seen=570
+[npm] [f2-layer-width] N=231 width=4 queueRemain=34 resolved=555 seen=573
+[npm] [f2-layer-width] N=232 width=4 queueRemain=31 resolved=559 seen=577
+[npm] [f2-layer-width] N=233 width=4 queueRemain=33 resolved=561 seen=579
+[npm] [npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers.
+[npm] [f2-layer-width] N=234 width=4 queueRemain=30 resolved=564 seen=583
+[npm] [f2-layer-width] N=235 width=4 queueRemain=26 resolved=565 seen=585
+[npm] [f2-layer-width] N=236 width=4 queueRemain=22 resolved=568 seen=589
+[npm] [f2-layer-width] N=237 width=4 queueRemain=18 resolved=572 seen=593
+[npm] [f2-layer-width] N=238 width=4 queueRemain=14 resolved=576 seen=597
+[npm] [f2-layer-width] N=239 width=4 queueRemain=10 resolved=579 seen=600
+[npm] [f2-layer-width] N=240 width=4 queueRemain=9 resolved=582 seen=604
+[npm] [f2-layer-width] N=241 width=4 queueRemain=6 resolved=586 seen=608
+[npm] [f2-layer-width] N=242 width=4 queueRemain=4 resolved=590 seen=612
+[npm] [f2-layer-width] N=243 width=4 queueRemain=1 resolved=594 seen=616
+[npm] [f2-layer-width] N=244 width=1 queueRemain=0 resolved=598 seen=620
+[npm] [f2-layer-width] N=245 width=1 queueRemain=0 resolved=599 seen=621
+[npm] [f2-layer-width] N=246 width=1 queueRemain=0 resolved=600 seen=622
+[npm]   resolver-facet: 601 resolved, 610 packuments fetched (362.3 MiB), peak in-flight=4, cache writes=3223, R2 packument cache wins=25/610, elapsed=28.4s
+[npm] Resolved 601 packages.
+[npm] To fetch: 601, to restore: 0, already installed: 0
+[npm] Fetching 601 packages... (path: batch-facet)
+[npm] Dispatching 601 packages across 32 shards (peer-do (POC B), internal pLimit=3)...
+[npm]   [warn] hermes-compiler@250829098.0.10: skipped "hermesc/win64-bin/icudt64.dll" (27534336 bytes) — exceeds per-file cap; file not installed
+[npm]   [warn] @op-engineering/op-sqlite@15.2.12: skipped "ios/libsql_experimental.xcframework/ios-arm64_x86_64-simulator/libsql_experimental.framework/libsql_experimental" (20113168 bytes) — exceeds per-file cap; file not installed
+[npm]   [warn] @op-engineering/op-sqlite@15.2.12: skipped "ios/turso_sdk_kit.xcframework/ios-arm64_x86_64-simulator/turso_sdk_kit.framework/turso_sdk_kit" (24898224 bytes) — exceeds per-file cap; file not installed
+[npm]   [warn] @op-engineering/op-sqlite@15.2.12: skipped "android/src/main/tursoLibs/arm64-v8a/libturso_sdk_kit.so" (63026832 bytes) — exceeds per-file cap; file not installed
+[npm]   [warn] @op-engineering/op-sqlite@15.2.12: skipped "android/src/main/tursoLibs/armeabi-v7a/libturso_sdk_kit.so" (47671724 bytes) — exceeds per-file cap; file not installed
+[npm]   [warn] @op-engineering/op-sqlite@15.2.12: skipped "android/src/main/tursoLibs/x86_64/libturso_sdk_kit.so" (60768800 bytes) — exceeds per-file cap; file not installed
+[npm]   [warn] @op-engineering/op-sqlite@15.2.12: skipped "android/src/main/tursoLibs/x86/libturso_sdk_kit.so" (50526336 bytes) — exceeds per-file cap; file not installed
+[npm] Batch-facet complete: 601/601 packages, 29386 files, 256.9 MiB tarball bytes, peak in-flight=3, R2 cache wins=599/601, 43.2s
+[npm] Done! 601 packages, 29386 files in 71.9s
+
+added 601 packages (29386 files) in 71.9s
+user@nimbus:~/app$ 
+---- step done in 72067ms (wsClosed=false) ----
+
+==== END PROBE: f2-compare-facet-drizzle ====

@@ -1,0 +1,90 @@
+==== X5U RUN-ALL ====
+==== 2026-05-09T16:17:12.572Z ====
+
+==== FUNCTIONAL ====
+==== f1-dotfile-prefetch ====
+$ bun audit/probes/x5u/functional/f1-dotfile-prefetch.mjs
+X.5-U functional/f1-dotfile-prefetch — SWC-shaped readFileSync(__dirname, "<dotfile>") prefetched
+  ✓ addStaticReadFileDotfilesAndCompiled exists
+  ✓ dotfile is in bundle after the new pass
+  ✓ dotfile content matches VFS source
+  ✓ fileCount counter incremented
+  ✓ helper return shape includes added count
+
+  ────  5 pass / 0 fail
+
+EXIT=0
+
+==== f2-tsjest-shape ====
+$ bun audit/probes/x5u/functional/f2-tsjest-shape.mjs
+X.5-U functional/f2-tsjest-shape — exact ts-jest .ts-jest-digest pattern prefetched
+  ✓ addStaticReadFileDotfilesAndCompiled exists
+  ✓ .ts-jest-digest is in bundle after the new pass
+  ✓ .ts-jest-digest content is the 40-byte sha1
+
+  ────  3 pass / 0 fail
+
+EXIT=0
+
+==== REGRESSION ====
+==== r1-no-overshoot ====
+$ bun audit/probes/x5u/regression/r1-no-overshoot.mjs
+X.5-U regression/r1-no-overshoot — helper bounded to literal + dotfile/digest heuristic
+  ✓ home/user/app/node_modules/dyn/.secret-dotfile NOT pulled by helper (overshoot guard)
+  ✓ home/user/app/node_modules/tpl/data.txt NOT pulled by helper (overshoot guard)
+  ✓ home/user/app/node_modules/plain/relative-thing.txt NOT pulled by helper (overshoot guard)
+  ✓ home/user/app/node_modules/regular/ordinary-file.bin NOT pulled by helper (overshoot guard)
+  ✓ fileCount unchanged (helper added nothing on this synthetic input)
+
+  ────  5 pass / 0 fail
+
+EXIT=0
+
+==== r2-budget-respected ====
+$ bun audit/probes/x5u/regression/r2-budget-respected.mjs
+X.5-U regression/r2-budget-respected — helper honours fileCount + totalBytes caps
+  ✓ A: helper adds 0 files when totalBytes at cap
+  ✓ A: dotfile NOT in bundle when over cap
+  ✓ B: helper adds 0 files when fileCount at 4000
+  ✓ C: dotfile IS in bundle when budget allows
+
+  ────  4 pass / 0 fail
+
+EXIT=0
+
+==== r3-z3-untouched ====
+$ bun audit/probes/x5u/regression/r3-z3-untouched.mjs
+X.5-U regression/r3-z3-untouched — addStaticReadFileAssets still works as in X.5-Z3
+  ✓ addStaticReadFileAssets still exported
+  ✓ Z3 jsdom .css still pulled into bundle
+  ✓ Z3 .css content matches VFS
+
+  ────  3 pass / 0 fail
+
+EXIT=0
+
+==== single-resolver-source ====
+$ bun audit/probes/x5u/regression/single-resolver-source.mjs
+==== X5F single-resolver-source regression probe ====
+==== TIMESTAMP: 2026-05-09T16:17:12.835Z ====
+grep matches: ["/workspace/worktrees/cleanup-not-done/src/_shared/exports-resolver.ts","/workspace/worktrees/cleanup-not-done/src/real-vite-bundle.generated.ts"]
+  /workspace/worktrees/cleanup-not-done/src/real-vite-bundle.generated.ts: has the substring but no export-function declaration
+real TS impls: ["/workspace/worktrees/cleanup-not-done/src/_shared/exports-resolver.ts"]
+exactly-one-impl:                PASS
+impl is _shared/exports-resolver.ts: PASS
+OVERALL: PASS
+
+EXIT=0
+
+==== install-pipeline-coverage-shim ====
+$ bun audit/probes/x5u/regression/install-pipeline-coverage-shim.mjs
+==== X5F install-pipeline-coverage shim regression ====
+==== TIMESTAMP: 2026-05-09T16:17:12.947Z ====
+BASE=http://127.0.0.1:8787
+!! BASE unreachable — SKIP. Phase D will start wrangler dev.
+
+EXIT=0
+
+(skipping E2E — no BASE / --no-e2e)
+
+==== SUMMARY: 7 pass / 0 fail ====

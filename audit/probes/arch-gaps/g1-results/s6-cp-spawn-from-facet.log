@@ -1,0 +1,45 @@
+==== s6-cp-spawn-from-facet @ 2026-05-09T18:28:12.007Z ====
+SID: alert-spider-7092
+---- main output ----
+user@nimbus:~/app$ node /home/user/app/s6.js
+[facet started: pid=1 cmd="node /home/user/app/s6.js"]
+[facet exited: pid=1 code=0 cmd="node /home/user/app/s6.js"]
+user@nimbus:~/app$ 
+----
+---- summary ----
+{
+  "name": "s6-cp-spawn-from-facet",
+  "sid": "alert-spider-7092",
+  "mainCmd": "node /home/user/app/s6.js",
+  "mainElapsedMs": 154,
+  "totalMs": 1099,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 2,
+  "procsAfter": [
+    {
+      "pid": 1,
+      "command": "node /home/user/app/s6.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": false,
+      "logBytes": 0,
+      "startTime": 1778351294483
+    },
+    {
+      "pid": 2,
+      "command": "echo hello-from-spawn",
+      "state": "running",
+      "exitCode": null,
+      "longRunning": false,
+      "hasLogs": false,
+      "logBytes": 0,
+      "startTime": 1778351294520
+    }
+  ]
+}

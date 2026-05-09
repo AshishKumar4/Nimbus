@@ -1,0 +1,37 @@
+==== PROBE: f2-profile-vite ====
+==== TIMESTAMP: 2026-05-09T17:15:48.612Z ====
+==== SID: modern-plateau-8692 ====
+---- initial banner ----
+╔════════════════════════════════════════════════╗
+║  Nimbus v2.0.0 — Cloud Dev Environment          ║
+║  node · npm · esbuild · vite · wrangler dev   ║
+║  10 GB VFS · Dynamic Workers · HMR             ║
+╚════════════════════════════════════════════════╝
+
+Starter app ready at ~/app — try:
+  cd app && npm install && npm run dev
+
+user@nimbus:~$ 
+---- end banner ----
+
+---- STEP cmd: cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json ----
+user@nimbus:~$ cd /home/user/app && rm -rf node_modules package.json package-lock.json 2>/dev/null; echo '{"name":"f2","version":"0.0.0"}' > package.json && cat package.json
+ENOENT: '/dev': no such file or directory
+user@nimbus:~/app$ 
+---- step done in 501ms (wsClosed=false) ----
+
+---- STEP cmd: npm install vite ----
+user@nimbus:~/app$ npm install vite
+Installing 1 packages (npm v2 — batched writes)...
+[npm] [npm] Lazy fetch-proxy: skipped (all facet paths default-on)
+[npm] Checking lockfile...
+[npm] Framework detected — installing framework-required packages (vite, …).
+[npm] Resolving 1 dependencies (path: fanout, fetch: global)...
+[npm] [f2-frontier] N=0 width=1 resolved-so-far=0 seen=1
+[npm] [f2-frontier] N=1 width=18 resolved-so-far=1 seen=19
+npm install failed: npm install rejected: 1 package not supported on Nimbus.
+  ❌ lightningcss — Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.
+user@nimbus:~/app$ 
+---- step done in 480029ms (wsClosed=false) ----
+
+==== END PROBE: f2-profile-vite ====

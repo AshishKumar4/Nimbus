@@ -1,0 +1,201 @@
+{
+  "capturedAt": "2026-05-09T18:28:15.178Z",
+  "base": "http://127.0.0.1:8792",
+  "scenarios": [
+    {
+      "name": "s1-node-eval",
+      "sid": "mild-sable-0870",
+      "mainCmd": "node -e \"console.log('hi from S1')\"",
+      "mainElapsedMs": 52,
+      "totalMs": 792,
+      "heapBeforeBytes": 0,
+      "heapAfterBytes": 0,
+      "heapDeltaBytes": 0,
+      "isolateGenBefore": 1,
+      "isolateGenAfter": 1,
+      "processesBefore": 0,
+      "processesAfter": 1,
+      "procsAfter": [
+        {
+          "pid": 1,
+          "command": "node -e ...",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 11,
+          "startTime": 1778351278404
+        }
+      ]
+    },
+    {
+      "name": "s2-node-script",
+      "sid": "bashful-flint-5412",
+      "mainCmd": "node /home/user/app/s2.js",
+      "mainElapsedMs": 52,
+      "totalMs": 997,
+      "heapBeforeBytes": 0,
+      "heapAfterBytes": 0,
+      "heapDeltaBytes": 0,
+      "isolateGenBefore": 1,
+      "isolateGenAfter": 1,
+      "processesBefore": 0,
+      "processesAfter": 1,
+      "procsAfter": [
+        {
+          "pid": 1,
+          "command": "node /home/user/app/s2.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 6,
+          "startTime": 1778351281467
+        }
+      ]
+    },
+    {
+      "name": "s3-node-keepalive",
+      "sid": "faithful-magnolia-9274",
+      "mainCmd": "node /home/user/app/s3.js",
+      "mainElapsedMs": 50,
+      "totalMs": 995,
+      "heapBeforeBytes": 0,
+      "heapAfterBytes": 0,
+      "heapDeltaBytes": 0,
+      "isolateGenBefore": 1,
+      "isolateGenAfter": 1,
+      "processesBefore": 0,
+      "processesAfter": 1,
+      "procsAfter": [
+        {
+          "pid": 1,
+          "command": "node /home/user/app/s3.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": false,
+          "logBytes": 0,
+          "startTime": 1778351284532
+        }
+      ]
+    },
+    {
+      "name": "s4-node-parallel",
+      "sid": "twinkling-diamond-7245",
+      "mainCmd": "node p.js A & node p.js B & node p.js C & node p.js D & node p.js E & wait; echo PARALLEL_DONE",
+      "mainElapsedMs": 152,
+      "totalMs": 1096,
+      "heapBeforeBytes": 0,
+      "heapAfterBytes": 0,
+      "heapDeltaBytes": 0,
+      "isolateGenBefore": 1,
+      "isolateGenAfter": 1,
+      "processesBefore": 0,
+      "processesAfter": 5,
+      "procsAfter": [
+        {
+          "pid": 1,
+          "command": "node /home/user/app/p.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 15,
+          "startTime": 1778351287596
+        },
+        {
+          "pid": 2,
+          "command": "node /home/user/app/p.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 15,
+          "startTime": 1778351287596
+        },
+        {
+          "pid": 3,
+          "command": "node /home/user/app/p.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 15,
+          "startTime": 1778351287597
+        },
+        {
+          "pid": 4,
+          "command": "node /home/user/app/p.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 15,
+          "startTime": 1778351287597
+        },
+        {
+          "pid": 5,
+          "command": "node /home/user/app/p.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": true,
+          "logBytes": 15,
+          "startTime": 1778351287597
+        }
+      ]
+    },
+    {
+      "name": "s5-npm-install-zod",
+      "sid": "bold-poppy-5125",
+      "mainCmd": "npm install zod",
+      "mainElapsedMs": 711,
+      "totalMs": 1654,
+      "heapBeforeBytes": 0,
+      "heapAfterBytes": 0,
+      "heapDeltaBytes": 0,
+      "isolateGenBefore": 1,
+      "isolateGenAfter": 1,
+      "processesBefore": 0,
+      "processesAfter": 0,
+      "procsAfter": []
+    },
+    {
+      "name": "s6-cp-spawn-from-facet",
+      "sid": "alert-spider-7092",
+      "mainCmd": "node /home/user/app/s6.js",
+      "mainElapsedMs": 154,
+      "totalMs": 1099,
+      "heapBeforeBytes": 0,
+      "heapAfterBytes": 0,
+      "heapDeltaBytes": 0,
+      "isolateGenBefore": 1,
+      "isolateGenAfter": 1,
+      "processesBefore": 0,
+      "processesAfter": 2,
+      "procsAfter": [
+        {
+          "pid": 1,
+          "command": "node /home/user/app/s6.js",
+          "state": "exited",
+          "exitCode": 0,
+          "longRunning": false,
+          "hasLogs": false,
+          "logBytes": 0,
+          "startTime": 1778351294483
+        },
+        {
+          "pid": 2,
+          "command": "echo hello-from-spawn",
+          "state": "running",
+          "exitCode": null,
+          "longRunning": false,
+          "hasLogs": false,
+          "logBytes": 0,
+          "startTime": 1778351294520
+        }
+      ]
+    }
+  ]
+}

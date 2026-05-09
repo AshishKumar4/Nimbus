@@ -18,6 +18,12 @@ export interface ProcessEntry {
   exitCode: number | null;
   startTime: number;
   endTime: number | null;
+  /** arch-gaps: explicit long-running flag set by FacetManager.spawn
+   *  when a script is forked to a long-lived Worker Loader (vite,
+   *  http.listen, --watch, …). Distinct from the regex heuristic in
+   *  process-logs-api.ts:LONG_RUNNING_CMD_RE — when set, the API
+   *  returns this directly. */
+  longRunning?: boolean;
 }
 
 export class ProcessTable {
@@ -59,6 +65,12 @@ export class ProcessTable {
    * disagrees with the ring-buffer footer that still says
    * "[process killed: killed]".
    */
+  /** arch-gaps: mark an existing entry as long-running. Idempotent. */
+  setLongRunning(pid: number): void {
+    const entry = this.processes.get(pid);
+    if (entry) entry.longRunning = true;
+  }
+
   exit(pid: number, exitCode: number): void {
     const entry = this.processes.get(pid);
     if (!entry) return;

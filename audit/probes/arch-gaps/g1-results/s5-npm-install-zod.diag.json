@@ -1,0 +1,15 @@
+{
+  "name": "s5-npm-install-zod",
+  "sid": "bold-poppy-5125",
+  "mainCmd": "npm install zod",
+  "mainElapsedMs": 711,
+  "totalMs": 1654,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 0,
+  "procsAfter": []
+}

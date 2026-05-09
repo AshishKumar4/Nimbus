@@ -1,47 +1,60 @@
 ==== Phase 5 P5.3 — full regression run ====
-==== TIMESTAMP: 2026-05-09T15:13:35.978Z ====
+==== TIMESTAMP: 2026-05-09T19:18:30.342Z ====
 BASE: http://127.0.0.1:8792
 QUICK: false
-probes to run: 30 of 30 total
+probes to run: 43 of 43 total
 
-PASS    C'.1 heap-estimator                                  20/20     82ms
-PASS    C'.2 recovery-events                                 13/13    400ms
-PASS    C'.3 error-recovery                                    8/8   1054ms
-PASS    A'.1 resolver-fallback                               17/17     65ms
-PASS    A'.2 streaming-buffers                                 3/3     72ms
-PASS    A'.3 barrel-synth                                      5/5     74ms
-PASS    A'.5 esbuild-bytes                                     3/3     65ms
-PASS    B'.1 shell-state                                     12/12   1926ms
-PASS    B'.2 kernel-mounts                                     4/4   1159ms
-PASS    B'.3 scrollback                                      13/13   6101ms
-PASS    B'.4 phase-machine                                   12/12   1693ms
-PASS    B'.5 join-existing                                   13/13   1581ms
-PASS    D'.1 cirrus-real-do-facet                              8/8   3354ms
-PASS    D'.2 loader-pool-rename                                4/4   3194ms
-PASS    interactive-liveness/walltime-distribution             4/4   6530ms
-PASS    W5 ring-persistence                                    0/0     29ms
-PASS    W5 lru-shrink-restore                                  0/0     34ms
-PASS    W5 sqlite-nomem-retry                                  0/0     31ms
-PASS    W5 diag-shape                                          0/0     25ms
-PASS    W7 frame-roundtrip                                     0/0     30ms
-PASS    W7 large-payload                                       0/0    182ms
-PASS    W7 backpressure                                        0/0    519ms
-PASS    W7 cancel-mid-stream                                   0/0     33ms
-PASS    W7 error-propagation                                   0/0     29ms
-PASS    W7 empty-batches                                       0/0     34ms
-PASS    W7 bytes-source-type                                   0/0     28ms
-PASS    W7 writestream-on-vfs                                  0/0     30ms
-PASS    git-freeze clone-large-repo                            3/3   1677ms
-PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   3220ms
-PASS    deploy-validation/no-experimental-flags                0/0     36ms
+PASS    C'.1 heap-estimator                                  20/20     81ms
+PASS    C'.2 recovery-events                                 13/13    404ms
+PASS    C'.3 error-recovery                                    8/8   1047ms
+PASS    A'.1 resolver-fallback                               17/17     64ms
+PASS    A'.2 streaming-buffers                                 3/3     85ms
+PASS    A'.3 barrel-synth                                      5/5     60ms
+PASS    A'.5 esbuild-bytes                                     3/3     62ms
+PASS    B'.1 shell-state                                     12/12   1903ms
+PASS    B'.2 kernel-mounts                                     4/4   1151ms
+PASS    B'.3 scrollback                                      13/13   6335ms
+PASS    B'.4 phase-machine                                   12/12   1705ms
+PASS    B'.5 join-existing                                   13/13   1598ms
+PASS    D'.1 cirrus-real-do-facet                              7/7   3261ms
+PASS    D'.2 loader-pool-rename                                4/4   2639ms
+PASS    interactive-liveness/walltime-distribution             4/4   6694ms
+PASS    W5 ring-persistence                                    0/0     27ms
+PASS    W5 lru-shrink-restore                                  0/0     40ms
+PASS    W5 sqlite-nomem-retry                                  0/0     32ms
+PASS    W5 diag-shape                                          0/0     24ms
+PASS    W7 frame-roundtrip                                     0/0     28ms
+PASS    W7 large-payload                                       0/0    169ms
+PASS    W7 backpressure                                        0/0    533ms
+PASS    W7 cancel-mid-stream                                   0/0     26ms
+PASS    W7 error-propagation                                   0/0     25ms
+PASS    W7 empty-batches                                       0/0     25ms
+PASS    W7 bytes-source-type                                   0/0     23ms
+PASS    W7 writestream-on-vfs                                  0/0     32ms
+PASS    X.5-U f1-dotfile-prefetch                              0/0     43ms
+PASS    X.5-U f2-tsjest-shape                                  0/0     52ms
+PASS    X.5-U r1-no-overshoot                                  0/0     46ms
+PASS    X.5-U r2-budget-respected                              0/0     57ms
+PASS    X.5-U r3-z3-untouched                                  0/0     68ms
+PASS    arch-gaps spawn-pool-shape                             0/0     39ms
+PASS    arch-gaps node-runner-shape                            0/0     37ms
+PASS    arch-gaps child-spawn-isolation                        0/0   3057ms
+PASS    arch-gaps node-long-running-isolation                  0/0   3012ms
+PASS    arch-gaps node-short-script-fast-path                  0/0   2760ms
+PASS    arch-gaps spawn-backpressure                           0/0   2959ms
+PASS    F-2 frontier-coordinator-shape                         0/0     36ms
+PASS    F-2 task-shape                                         0/0     34ms
+PASS    git-freeze clone-large-repo                            3/3    687ms
+PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   2890ms
+PASS    deploy-validation/no-experimental-flags                0/0     35ms
 
 ==== SUMMARY ====
-total runtime: 33.3s
-  PASS    : 30
+total runtime: 43.9s
+  PASS    : 43
   FAIL    : 0
   TIMEOUT : 0
   SKIP    : 0
   MISS    : 0
-  total PASS lines: 142
+  total PASS lines: 141
   total FAIL lines: 0
 ==== EXIT 0 ====

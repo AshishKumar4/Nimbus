@@ -1,0 +1,139 @@
+==== s4-node-parallel @ 2026-05-09T18:28:05.121Z ====
+SID: twinkling-diamond-7245
+---- main output ----
+: pid=1 cmd="node /home/user/app/p.js"]
+[facet started: pid=2 cmd="node /home/user/app/p.js"]
+wait: command not found
+[facet started: pid=3 cmd="node /home/user/app/p.js"]
+[facet started: pid=4 cmd="node /home/user/app/p.js"]
+[facet started: pid=5 cmd="node /home/user/app/p.js"]
+PARALLEL_DONE
+user@nimbus:~/app$ pA 0
+pA 1
+pA 2
+pD 0
+pD 1
+pD 2
+pB 0
+pB 1
+pB 2
+pE 0
+pE 1
+pE 2
+pC 0
+pC 1
+pC 2
+
+────────────────────────────────────────────────────────────
+Process 1 (node /home/user/app/p.js) exited with code 0
+────────────────────────────────────────────────────────────
+pA 0
+pA 1
+pA 2
+────────────────────────────────────────────────────────────
+[facet exited: pid=1 code=0 cmd="node /home/user/app/p.js"]
+
+────────────────────────────────────────────────────────────
+Process 4 (node /home/user/app/p.js) exited with code 0
+────────────────────────────────────────────────────────────
+pD 0
+pD 1
+pD 2
+────────────────────────────────────────────────────────────
+[facet exited: pid=4 code=0 cmd="node /home/user/app/p.js"]
+
+────────────────────────────────────────────────────────────
+Process 2 (node /home/user/app/p.js) exited with code 0
+────────────────────────────────────────────────────────────
+pB 0
+pB 1
+pB 2
+────────────────────────────────────────────────────────────
+[facet exited: pid=2 code=0 cmd="node /home/user/app/p.js"]
+
+────────────────────────────────────────────────────────────
+Process 5 (node /home/user/app/p.js) exited with code 0
+────────────────────────────────────────────────────────────
+pE 0
+pE 1
+pE 2
+────────────────────────────────────────────────────────────
+[facet exited: pid=5 code=0 cmd="node /home/user/app/p.js"]
+
+────────────────────────────────────────────────────────────
+Process 3 (node /home/user/app/p.js) exited with code 0
+────────────────────────────────────────────────────────────
+pC 0
+pC 1
+pC 2
+────────────────────────────────────────────────────────────
+[facet exited: pid=3 code=0 cmd="node /home/user/app/p.js"]
+
+----
+---- summary ----
+{
+  "name": "s4-node-parallel",
+  "sid": "twinkling-diamond-7245",
+  "mainCmd": "node p.js A & node p.js B & node p.js C & node p.js D & node p.js E & wait; echo PARALLEL_DONE",
+  "mainElapsedMs": 152,
+  "totalMs": 1096,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 5,
+  "procsAfter": [
+    {
+      "pid": 1,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287596
+    },
+    {
+      "pid": 2,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287596
+    },
+    {
+      "pid": 3,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287597
+    },
+    {
+      "pid": 4,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287597
+    },
+    {
+      "pid": 5,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287597
+    }
+  ]
+}

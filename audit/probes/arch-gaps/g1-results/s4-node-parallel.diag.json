@@ -1,0 +1,66 @@
+{
+  "name": "s4-node-parallel",
+  "sid": "twinkling-diamond-7245",
+  "mainCmd": "node p.js A & node p.js B & node p.js C & node p.js D & node p.js E & wait; echo PARALLEL_DONE",
+  "mainElapsedMs": 152,
+  "totalMs": 1096,
+  "heapBeforeBytes": 0,
+  "heapAfterBytes": 0,
+  "heapDeltaBytes": 0,
+  "isolateGenBefore": 1,
+  "isolateGenAfter": 1,
+  "processesBefore": 0,
+  "processesAfter": 5,
+  "procsAfter": [
+    {
+      "pid": 1,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287596
+    },
+    {
+      "pid": 2,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287596
+    },
+    {
+      "pid": 3,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287597
+    },
+    {
+      "pid": 4,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287597
+    },
+    {
+      "pid": 5,
+      "command": "node /home/user/app/p.js",
+      "state": "exited",
+      "exitCode": 0,
+      "longRunning": false,
+      "hasLogs": true,
+      "logBytes": 15,
+      "startTime": 1778351287597
+    }
+  ]
+}

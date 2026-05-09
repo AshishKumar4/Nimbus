@@ -1,4 +1,4 @@
 ==== X5F install-pipeline-coverage shim regression ====
-==== TIMESTAMP: 2026-05-05T23:50:33.913Z ====
+==== TIMESTAMP: 2026-05-09T16:17:12.947Z ====
 BASE=http://127.0.0.1:8787
 !! BASE unreachable — SKIP. Phase D will start wrangler dev.
