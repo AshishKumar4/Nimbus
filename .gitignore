@@ -1,17 +1,31 @@
 node_modules/
 .wrangler/
 bun.lock
-audit/probes/git-freeze/tmp/
 # Local dev environment vars (NIMBUS_DEBUG=1 enables /api/_test/* probe
 # endpoints — never commit, never deploy with this file present).
 .dev.vars
-# Build-time scratch dir for scripts/bundle-plugin-react.mjs
+# Build-time scratch dirs for scripts/bundle-plugin-react.mjs et al.
 .cirrus-plugin-react-src/
 .cirrus-npm-cjs-src/
 
-# Internal engineering docs — never commit these to the public repo.
-# They live in workspace memory (see memory/nimbus-internal/) for our reference.
+# ── Internal engineering scaffolding — never commit to the public repo. ──
+# These live in workspace memory for our reference; the public repo ships
+# only README.md, src/, scripts/, demo/, public/, .vfs-seed/, docs/architecture/,
+# docs/demo.{gif,png}, wrangler.jsonc, package.json, and tsconfig.json.
+audit/
+docs/research/
+.opencode/
 memory/
+
+# Plan / retro / stuck / progress documents — internal-only naming convention.
+*-plan.md
+*-PLAN.md
+*-retro.md
+*-RETRO.md
+*-stuck.md
+*-progress.md
+
+# Investigation / audit / reference docs that have leaked into the root before.
 ARCHITECTURE.md
 AUDIT.md
 CRASH-INVESTIGATION.md
@@ -25,3 +39,10 @@ WORKERD-*.md
 CIRRUS-OOM-TRACE.txt
 FINAL-*.md
 HYPOTHESIS-*.md
+AGENTS.md
+
+# Root-level probe / repro / verify ad-hoc scripts (the canonical
+# build scripts under scripts/ are tracked).
+/probe-*.mjs
+/repro*.mjs
+/verify-*.mjs
