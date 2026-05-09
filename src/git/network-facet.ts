@@ -25,6 +25,7 @@
 import { getCtxExports } from '../session/ctx-exports.js';
 import { CF_COMPAT_DATE } from '../constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
+import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 
@@ -95,11 +96,21 @@ export async function execGitNetwork(
       compatibilityDate: CF_COMPAT_DATE,
       compatibilityFlags: ['nodejs_compat'],
       mainModule: 'git-network-worker.js',
-      // Facet gets both its own code AND the pre-bundled isomorphic-git.
-      // The facet imports the bundle at runtime — NO node_modules access
-      // is needed in the dynamic worker. Both modules are siblings.
+      // Facet gets:
+      //   - its own worker code (git-network-worker.js), with the
+      //     W7 frame helpers (encodeWriteBatchStream + supporting
+      //     state) prepended so the buffered fs adapter can call
+      //     them as bare identifiers — the same shape NimbusLoaderPool's
+      //     `preamble` option provides for npm install. This is the
+      //     fix for git-freeze: writeBatch via structured-clone
+      //     accumulates ~4 MiB residency per wave in the ctx.exports
+      //     SupervisorRPC wrapper isolate, which OOMs after ~5 waves
+      //     on real repos. writeBatchStream uses a 256 KiB-highwater
+      //     ReadableStream, keeping wrapper-isolate residency
+      //     bounded. See audit/sections/GIT-FREEZE-retro.md.
+      //   - the pre-bundled isomorphic-git (git-bundle.js)
       modules: {
-        'git-network-worker.js': generateGitNetworkFacetCode(),
+        'git-network-worker.js': W7_FRAME_PREAMBLE + '\n' + generateGitNetworkFacetCode(),
         'git-bundle.js': GIT_BUNDLE_CODE,
       },
       env: { SUPERVISOR: supervisorBinding },
@@ -321,19 +332,82 @@ function createBufferedFs(supervisor, stats) {
   const deleteBuffer = new Set();
   let bufferBytes = 0;
 
+  // W7 streaming detection. The supervisor's RPC class exposes
+  // writeBatchStream() when the deployed code carries the W7 frame
+  // protocol. Older supervisors only have writeBatch(). The facet
+  // checks once at boot; subsequent flushWave() invocations branch
+  // on supportsStreaming.
+  //
+  // encodeWriteBatchStream is a top-level function in the W7 frame
+  // preamble that's been prepended to this worker's main module
+  // source (see the modules map at the top of execGitNetwork).
+  // It's a module-local identifier — referenced as a bare name
+  // exactly like the npm install-batch-facet does at
+  // src/npm/install-batch-facet.ts:429.
+  //
+  // Why streaming matters here: writeBatch sends the full payload
+  // through a single structured-clone RPC. For a clone that
+  // produces multiple 4 MiB waves, the wrapper isolate hosting
+  // ctx.exports SupervisorRPC accumulates resident bytes per wave.
+  // After ~5 waves it OOMs at 128 MiB and downstream stat RPCs
+  // hang — exactly the git-freeze symptom. writeBatchStream uses
+  // a type:'bytes' ReadableStream with a 256 KiB highwater, so the
+  // wrapper isolate sees bounded residency regardless of wave size.
+  // Same pattern as src/npm/install-batch-facet.ts:421-440.
+  const supportsStreaming =
+    supervisor && typeof supervisor.writeBatchStream === 'function' &&
+    // @ts-ignore — preamble symbol injected at module-prepend time.
+    typeof encodeWriteBatchStream === 'function';
+
   async function flushWave() {
     if (writeBuffer.size === 0 && dirBuffer.size === 0 && deleteBuffer.size === 0) return;
     const payload = buildPayload(writeBuffer, dirBuffer, deleteBuffer);
-    try {
+    // Snapshot stats counters BEFORE clearing the buffers so the increments
+    // below see the wave's true size, not zero.
+    const wavefilesWritten = writeBuffer.size;
+    const wavebytesWritten = bufferBytes;
+    // Release facet-side buffer references BEFORE awaiting the RPC.
+    //
+    // After buildPayload, payload.chunks aliases each writeBuffer entry's
+    // Uint8Array (the small-file path; large-file path uses fresh slices).
+    // payload is the only consumer that needs those bytes for the duration
+    // of the await. Holding them in writeBuffer too just doubles facet-side
+    // residency during the await.
+    //
+    // Empirically (Q4 prod verification at probe-prod-post-fix-2026-05-09T14-54-31Z.txt)
+    // the facet OOMs around the third long-clone wave on a real repo
+    // with the buffers retained. Releasing them here means the writeBuffer
+    // Map drops to size 0, the underlying Uint8Array entries are reachable
+    // ONLY through payload.chunks, and as the W7 encoder advances past
+    // each chunk the JS engine can collect the consumed entries. Net
+    // facet-side residency during the await drops from ~2× wave bytes
+    // to ~1× wave bytes.
+    //
+    // Safety: if the await throws, the outer fetch handler at
+    // network-facet.ts:644 calls flushWave() again best-effort —
+    // writeBuffer is already empty, so that's a no-op. The error
+    // propagates as the JSON response body. NO data is lost: bytes were
+    // either committed by the supervisor before the throw, or are
+    // forever gone (we can't replay a transferred byte stream anyway).
+    writeBuffer.clear();
+    dirBuffer.clear();
+    deleteBuffer.clear();
+    bufferBytes = 0;
+    if (supportsStreaming) {
+      // W7 streaming path. encodeWriteBatchStream is a top-level
+      // function in the prepended W7_FRAME_PREAMBLE source.
+      // @ts-ignore — preamble symbol.
+      const stream = encodeWriteBatchStream(payload);
+      await supervisor.writeBatchStream(stream);
+    } else {
+      // Pre-W7 supervisor — fall back to legacy structured-clone.
+      // Vulnerable to the wrapper-isolate OOM (the bug this fix
+      // addresses); kept for compatibility with stale deployed
+      // code that hasn't picked up the W7 supervisor RPC.
       await supervisor.writeBatch(payload);
-      stats.filesWritten += writeBuffer.size;
-      stats.bytesWritten += bufferBytes;
-    } finally {
-      writeBuffer.clear();
-      dirBuffer.clear();
-      deleteBuffer.clear();
-      bufferBytes = 0;
     }
+    stats.filesWritten += wavefilesWritten;
+    stats.bytesWritten += wavebytesWritten;
   }
 
   async function maybeFlush() {
@@ -366,9 +440,76 @@ function createBufferedFs(supervisor, stats) {
 
       async writeFile(filepath, data, opts) {
         const p = normalizePath(filepath);
-        const buf = typeof data === 'string'
-          ? new TextEncoder().encode(data)
-          : (data instanceof Uint8Array ? data : new Uint8Array(data));
+        // Single-ownership at ingress (fetch-once-consume-once).
+        //
+        // The W7 streaming path (writeBatchStream) enqueues each chunk's
+        // Uint8Array into a type:'bytes' ReadableStream that traverses the
+        // RPC boundary; workerd transfers each enqueued buffer's underlying
+        // ArrayBuffer to the receiver. If ANY other live reference to that
+        // ArrayBuffer (or any view over it) exists when transfer happens,
+        // the next operation that constructs a typed-array view over the
+        // detached buffer throws
+        //   "Cannot perform Construct on a detached ArrayBuffer"
+        // inside the byte-stream RPC machinery — the prod-only failure
+        // mode in audit/probes/git-freeze/detached-buffer-tail-2026-05-09T14-35-39Z.jsonl
+        // (pre-fix prod d185e0d1).
+        //
+        // Aliasing sources observed (Q4-A first-deploy verification at
+        // probe-prod-post-fix-2026-05-09T14-54-31Z.txt = OK,
+        // Q4-B refined-fix verification at
+        // probe-prod-post-fix-2026-05-09T15-04-00Z.txt = REGRESSED back
+        // to detached-AB at 2 s):
+        //   - isomorphic-git's pack indexer passes subarray() views of a
+        //     packfile-sized parent ArrayBuffer to writeFile. Different
+        //     paths share the same parent. Caught by a subarray-only
+        //     copy strategy.
+        //   - SAME parent ArrayBuffer can also be passed as a WHOLE-view
+        //     Uint8Array (byteOffset=0, length=buffer.byteLength) by
+        //     pako's inflate output reuse pattern (pako pools its output
+        //     buffers). Two consecutive writeFile calls can then share
+        //     a parent without ANY of them being a "subarray" by the
+        //     isolated-view test. NOT caught by subarray-only copy —
+        //     the Q4-B regression confirms this empirically.
+        //
+        // Fix: UNCONDITIONAL copy on the Uint8Array path. ONE invariant
+        // at ONE ingress point: every writeBuffer entry has its own
+        // dedicated ArrayBuffer, no shared parent with anything the
+        // caller owns. Memory cost is real (one O(N) byte copy per
+        // writeFile) but correctness is mandatory.
+        //
+        // Companion fix: flushWave above releases writeBuffer references
+        // BEFORE awaiting the writeBatchStream RPC. Without that, the
+        // copies here would double facet-side residency during the await
+        // and surface a separate latent wrapper-isolate OOM during long
+        // checkouts. Together, the writeFile copy + flushWave clear-
+        // before-await keep the facet's heap bounded by ~1× wave bytes
+        // (the live payload variable), not 2×.
+        //
+        // Q4 prod e2e verification:
+        //   - probe-prod-post-fix-2026-05-09T14-54-31Z.txt: copy WITHOUT
+        //     clear-before-await → OOM at frame 1450/1601, 46 568 ms wall.
+        //     Same 1450 stop-point as the original P3-era freeze, but
+        //     a different cause (now memory, not the OOM-on-stat dead-
+        //     lock the original P3 fix addressed).
+        //   - probe-prod-post-fix-2026-05-09T15-09-30Z.txt: copy WITH
+        //     clear-before-await → CLONE PASS in 11.1 s, 1609 files,
+        //     final frame 1601/1601 (loaded === total).
+        let buf;
+        if (typeof data === 'string') {
+          buf = new TextEncoder().encode(data); // fresh ArrayBuffer
+        } else if (data instanceof Uint8Array) {
+          // new Uint8Array(N) + .set(data) allocates a fresh ArrayBuffer
+          // of length N and copies bytes from data. The result has zero
+          // aliasing relation to data.buffer.
+          buf = new Uint8Array(data.length);
+          buf.set(data);
+        } else {
+          // ArrayBuffer (or ArrayBufferView w/o Uint8Array). Construct a
+          // Uint8Array over a fresh ArrayBuffer, copy bytes in.
+          const src = new Uint8Array(data);
+          buf = new Uint8Array(src.length);
+          buf.set(src);
+        }
         // Remove from deleteBuffer if previously deleted
         deleteBuffer.delete(p);
         // Replace in writeBuffer (size delta tracked)
