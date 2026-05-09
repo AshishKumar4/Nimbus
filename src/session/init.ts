@@ -37,6 +37,7 @@ import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runNodeScript } from '../runtime/node-runner.js';
+import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
@@ -339,6 +340,177 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         filename,
         dirname,
         command: `node ${scriptPath}`,
+      });
+      if (result.stdout) ctx.stdout.write(result.stdout);
+      if (result.stderr) ctx.stderr.write(result.stderr);
+      return result.exitCode;
+    });
+
+    // ── bun command: parallel runtime, same fresh-isolate semantics ──
+    // Mirrors the `node` handler shape (parse args, read file, esbuild
+    // transform for ts/tsx/jsx, dispatch via runBunScript). The bun-
+    // specific surface is the BUN_SHIM_PREAMBLE prepended by
+    // runBunScript, which installs a `Bun` global with serve/file/
+    // write/spawn/password/gunzip/sql/S3 backed by Workers-native
+    // primitives.
+    //
+    // `bun install` and `bun run <script>` are routed through the
+    // existing npm pipeline (delegate to the npm/npm-fast handlers)
+    // so we get the F-2 fanout, R2 caches, and W7 streaming for free.
+    registry.register('bun', async (ctx: any) => {
+      const args: string[] = ctx.args || [];
+
+      // bun --version / -v
+      if (args.includes('-v') || args.includes('--version')) {
+        ctx.stdout.write(BUN_VERSION + '\n');
+        return 0;
+      }
+
+      // bun --help / -h
+      if (args.includes('--help') || args.includes('-h')) {
+        ctx.stdout.write('Usage: bun [options] [script.[js|ts|tsx]] [args...]\n');
+        ctx.stdout.write('       bun -e "code"\n');
+        ctx.stdout.write('       bun install [pkg ...]\n');
+        ctx.stdout.write('       bun run <script>\n\n');
+        ctx.stdout.write('Bun-runtime shim provides Bun.serve/Bun.file/Bun.write/\n');
+        ctx.stdout.write('Bun.spawn/Bun.password/Bun.gunzip backed by Workers-native\n');
+        ctx.stdout.write('primitives. Bun.sql / Bun.S3 throw (use D1/Hyperdrive/R2).\n');
+        ctx.stdout.write('Execution via DO Facets (isolated V8 isolate per call).\n');
+        return 0;
+      }
+
+      // bun install [pkg…] — delegate to npm install (same VFS, same
+      // R2 caches, same fanout pipeline).
+      if (args[0] === 'install' || args[0] === 'i' || args[0] === 'add') {
+        const npmCmd = await registry.resolve('npm');
+        if (npmCmd) {
+          return await npmCmd({ ...ctx, args: ['install', ...args.slice(1)] });
+        }
+        ctx.stderr.write('bun install: npm handler unavailable\n');
+        return 1;
+      }
+
+      // bun run <script> — read package.json scripts.<name>, execute it.
+      if (args[0] === 'run') {
+        const scriptName = args[1];
+        if (!scriptName) {
+          ctx.stderr.write('bun run: missing script name\n');
+          return 1;
+        }
+        const pkgPath = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/package.json';
+        let pkgScript: string | undefined;
+        try {
+          const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
+          pkgScript = pkg.scripts?.[scriptName];
+        } catch {
+          ctx.stderr.write(`bun run: cannot read package.json at ${pkgPath}\n`);
+          return 1;
+        }
+        if (!pkgScript) {
+          ctx.stderr.write(`bun run: script "${scriptName}" not found in package.json\n`);
+          return 1;
+        }
+        // Forward to the live shell registry so commands like `vite` or
+        // `node …` resolve the same way `npm run` would.
+        try {
+          const shellResult = await shell.execute(pkgScript, {
+            cwd: ctx.cwd,
+            env: ctx.env,
+            onStdout: (d: string) => ctx.stdout.write(d),
+            onStderr: (d: string) => ctx.stderr.write(d),
+          });
+          return shellResult.exitCode;
+        } catch (e: any) {
+          ctx.stderr.write(`bun run: ${e?.message ?? String(e)}\n`);
+          return 1;
+        }
+      }
+
+      // bun -e "code" / --eval "code"
+      const evalIdx = args.indexOf('-e') !== -1 ? args.indexOf('-e') : args.indexOf('--eval');
+      if (evalIdx !== -1) {
+        const code = args[evalIdx + 1];
+        if (!code) {
+          ctx.stderr.write('bun: -e requires an argument\n');
+          return 1;
+        }
+        const result = await runBunScript(facetMgr, code, {
+          argv: args.slice(evalIdx + 2),
+          env: ctx.env,
+          cwd: ctx.cwd,
+          filename: '<eval>',
+          dirname: ctx.cwd,
+          command: 'bun -e ...',
+        });
+        if (result.stdout) ctx.stdout.write(result.stdout);
+        if (result.stderr) ctx.stderr.write(result.stderr);
+        return result.exitCode;
+      }
+
+      // bun script.[js|ts|tsx|jsx|mjs] [args...]
+      const scriptPath = args[0];
+      if (!scriptPath) {
+        ctx.stderr.write('bun: REPL not supported. Use bun -e "code" or bun script.js\n');
+        return 1;
+      }
+
+      let resolvedPath = scriptPath;
+      if (!scriptPath.startsWith('/')) {
+        const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+        resolvedPath = cwd + '/' + scriptPath;
+      } else {
+        resolvedPath = scriptPath.replace(/^\/+/, '');
+      }
+      if (scriptPath === '.' || scriptPath === './') {
+        const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+        const pkgPath = cwd + '/package.json';
+        try {
+          const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
+          const main = pkg.main || pkg.module || 'index.js';
+          resolvedPath = cwd + '/' + main;
+        } catch {
+          resolvedPath = cwd + '/index.js';
+        }
+      }
+      if (!sqliteFs.exists(resolvedPath)) {
+        const exts = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
+        for (const ext of exts) {
+          if (sqliteFs.exists(resolvedPath + ext)) { resolvedPath += ext; break; }
+        }
+      }
+      let code: string;
+      try {
+        code = sqliteFs.readFileString(resolvedPath);
+      } catch {
+        ctx.stderr.write(`bun: cannot find module '${scriptPath}'\n`);
+        return 1;
+      }
+      // bun supports TS/TSX natively; we transform via esbuild here so
+      // the loader isolate executes plain JS.
+      if (resolvedPath.endsWith('.ts') || resolvedPath.endsWith('.tsx') || resolvedPath.endsWith('.jsx')) {
+        try {
+          if (!self.esbuildService) {
+            self.ensureSqliteFs();
+            self.esbuildService = new EsbuildService(self.sqliteFs!);
+          }
+          const ext = resolvedPath.split('.').pop()!;
+          const loader = ext === 'tsx' ? 'tsx' : ext === 'jsx' ? 'jsx' : 'ts';
+          const transformed = await self.esbuildService.transform(code, { loader, format: 'cjs' });
+          code = transformed.code;
+        } catch (e: any) {
+          ctx.stderr.write(`bun: transform error for ${scriptPath}: ${e?.message}\n`);
+          return 1;
+        }
+      }
+      const filename = '/' + resolvedPath;
+      const dirname = filename.includes('/') ? filename.substring(0, filename.lastIndexOf('/')) : '/';
+      const result = await runBunScript(facetMgr, code, {
+        argv: [filename, ...args.slice(1)],
+        env: ctx.env,
+        cwd: ctx.cwd,
+        filename,
+        dirname,
+        command: `bun ${scriptPath}`,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
