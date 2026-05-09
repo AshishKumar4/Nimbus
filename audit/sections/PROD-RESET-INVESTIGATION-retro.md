@@ -1370,6 +1370,62 @@ ceiling, unchanged through Track B' and now D'.1.
   isolate, but now its DO class export becomes a child DO of the
   supervisor.
 
+### Correction (2026-05-09) — D'.1 GREEN verdict was time-limited
+
+The "✅ GREEN. 9/9 probe assertions pass" verdict above held at
+the time D'.1 shipped. **The DO Facet topology silently broke
+hours later** when the deploy-flag-fix wave (`1909718`,
+2026-05-08T22:07Z) stripped the `experimental` compatibility flag
+from `compatibility_flags`. `worker.getDurableObjectClass()` is
+gated on `$experimental` and started throwing
+`TypeError: ... is not a function` at the call site at line 1294
+above (Step B). The supervisor controller silently set
+`bootError` and `/api/_diag/cirrus` regressed to returning
+`{running:true}` only — the `kind`/`cookie`/`bootMs` surface
+disappeared.
+
+The D'.1 probe correctly went RED. Four successive cross-wave
+runs (prod-bugs-2 P6, cache-and-scrub P6, two-tier-fanout P6
+each) saw the FAIL but accepted it as "pre-existing on main,
+confirmed unchanged" without git archaeology. The probe's own
+`.txt` artifact showed PASS at 2026-05-08T22:03:56Z and FAIL by
+the next regression run; `git log -p` would have surfaced the
+introducing commit immediately, but no prior P6 ran it.
+
+The d1-fix wave (`9403a4e`, 2026-05-09) shipped a graceful-
+degrade in `src/facets/cirrus-real.ts:start()` that runtime-
+feature-probes `getDurableObjectClass()` and falls back to a
+default-exported `WorkerEntrypoint` (`kind = 'fetcher-fallback'`)
+when the API is unavailable. The probe was updated to accept
+both kinds. Cookie persistence is a DO-Facet-only property; the
+fetcher-fallback path returns `cookie: null` by design.
+
+**Current prod state (2026-05-09 onwards): cirrus-real runs
+`kind = 'fetcher-fallback'`.** The DO Facet topology described
+above (own SQLite, cookie persistence, identity across
+supervisor reconnects) is the TARGET, gated on
+[RM-27238 GA](https://jira.cfdata.org/browse/RM-27238)
+promotion of the experimental APIs. The runtime feature-probe
+will pick up the DO Facet path automatically when available; no
+Nimbus code change required at GA.
+
+User-visible /preview/ behavior is identical between current
+and target — both paths share the extracted
+`__cirrusFetchImpl` helper that runs vite's bootstrap. The
+architectural delta is per-instance own-SQLite, not user-feature
+loss.
+
+See [`audit/sections/D1-FIX-retro.md`](D1-FIX-retro.md) for the
+full root-cause analysis, including the precedent-acceptance
+anti-pattern that hid this regression for 4 cross-wave runs and
+the policy note appended to that retro requiring future P6s to
+challenge any "pre-existing FAIL — unchanged" with git
+archaeology.
+
+The original verdict text above is preserved for audit trail; do
+not rewrite it. Future readers should read the "✅ GREEN" claim
+alongside this correction.
+
 
 ---
 

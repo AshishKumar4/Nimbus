@@ -1,26 +1,43 @@
 // Phase 4 D'.1 functional probe — cirrus-real runs as a DO Facet
-// (ctx.facets.get) instead of a stateless Worker (env.LOADER.load).
+// (ctx.facets.get) instead of a stateless Worker.
+//
+// Two valid kinds (post-d1-fix wave):
+//   'do-facet'           — DO Facet path (requires `experimental` compat
+//                          flag; provides per-instance own-SQLite cookie).
+//   'fetcher-fallback'   — stateless WorkerEntrypoint fallback (used
+//                          when getDurableObjectClass is unavailable —
+//                          the case in production CF deployments since
+//                          the 2026-05-08 deploy validator change
+//                          rejected $experimental flags for non-CF-team
+//                          accounts). User-visible /preview/ behavior
+//                          is identical; cookie is N/A.
+//
+// Why both kinds: D'.1 was originally specified as DO-Facet-only. The
+// deploy-flag-fix wave (commit 1909718) removed `experimental` from
+// compatibility_flags to satisfy the CF deploy validator — which made
+// the DO Facet path unreachable both locally and in prod. The d1-fix
+// wave added the stateless-fetcher fallback so cirrus-real keeps
+// serving in prod (where `experimental` is rejected) while the DO
+// Facet path is preserved for any future CF account that gets
+// whitelisted for `$experimental`.
 //
 // Acceptance bar:
-//   1. /api/_diag/cirrus exposes the new `kind` field. Pre-D'.1 the
-//      endpoint either 404s or returns the legacy { mode: 'real-vite',
-//      ... } shape WITHOUT a `kind`. Post-D'.1 it returns `kind:
-//      'do-facet'` whenever the facet is running.
-//   2. The facet has its own SQLite — a cookie row written once at
-//      first boot and surfaced via diag. Same DO across restarts of
-//      the supervisor's WS connection means same cookie. Reset cookie
-//      means the facet was rebuilt.
-//   3. After a forced ws-close of the supervisor, reconnecting and
-//      re-querying the cirrus-real diag returns the SAME cookie. That
-//      proves the cirrus-real facet survived the supervisor's
-//      reconnect cycle (DO Facets are independent of the supervisor's
-//      WS lifetime).
+//   1. /api/_diag/cirrus exposes the `kind` field. The kind must be
+//      one of {'do-facet', 'fetcher-fallback'}. Pre-D'.1 the endpoint
+//      either 404'd or omitted `kind` entirely.
+//   2. (do-facet only) The facet has its own SQLite — a cookie row
+//      written once at first boot. Same DO across restarts of the
+//      supervisor's WS connection means same cookie.
+//   3. (do-facet only) After a forced ws-close, reconnecting returns
+//      the SAME cookie. Stateless fetcher has no cookie to preserve;
+//      that path skips this check with an explicit info log.
+//   4. (both kinds) /preview/ serves correctly across the reconnect.
 //
-// Pre-build (RED): /api/_diag/cirrus has no `kind` field, no `cookie`
-// field. The probe fails on the first assertion.
+// Pre-build (RED): /api/_diag/cirrus has no `kind` field. Probe
+// fails on assertion 1.
 //
-// Post-build (GREEN): kind='do-facet', cookie persists across
-// supervisor reconnect.
+// Post-build (GREEN): `kind` is one of the two valid values; the
+// kind-appropriate sub-assertions pass.
 
 import {
   BASE, mintSession, getDiag, WsSession, sleep,
@@ -89,20 +106,40 @@ async function main() {
     log('==== EXIT ' + exitCode + ' ====');
     process.exit(exitCode);
   }
+  // Accept BOTH valid kinds: 'do-facet' (full feature, requires
+  // `experimental` flag) and 'fetcher-fallback' (stateless prod path).
+  // ANYTHING ELSE is FAIL — undefined means D'.1 surface missing,
+  // 'loader-load' means the legacy pre-D'.1 path is back (regression).
+  const KIND_DO_FACET = 'do-facet';
+  const KIND_FETCHER_FALLBACK = 'fetcher-fallback';
   if (diag1.kind === undefined) {
     fail("`kind` field missing on /api/_diag/cirrus — D'.1 surface not landed");
-  } else if (diag1.kind === 'do-facet') {
-    pass(`kind='do-facet' (cirrus-real running as DO Facet)`);
+  } else if (diag1.kind === KIND_DO_FACET) {
+    pass(`kind='do-facet' (cirrus-real running as DO Facet — full feature)`);
+  } else if (diag1.kind === KIND_FETCHER_FALLBACK) {
+    pass(`kind='fetcher-fallback' (cirrus-real running as stateless WorkerEntrypoint — \`experimental\` compat flag absent; this IS the prod path)`);
   } else {
-    fail(`kind='${diag1.kind}' (expected 'do-facet')`);
+    fail(`kind='${diag1.kind}' (expected 'do-facet' or 'fetcher-fallback')`);
   }
 
-  if (diag1.cookie === undefined) {
-    fail("`cookie` field missing — facet's own-SQLite identity not surfaced");
-  } else if (typeof diag1.cookie === 'string' && diag1.cookie.length > 0) {
-    pass(`cookie=${diag1.cookie.slice(0, 12)}... (facet's own SQLite working)`);
-  } else {
-    fail(`cookie=${JSON.stringify(diag1.cookie)} (expected non-empty string)`);
+  // Cookie + cookie-persistence assertions ONLY apply when kind is
+  // 'do-facet'. The stateless fetcher fallback has no per-instance
+  // SQLite by design.
+  const kind1 = diag1.kind;
+  if (kind1 === KIND_DO_FACET) {
+    if (diag1.cookie === undefined) {
+      fail("`cookie` field missing — facet's own-SQLite identity not surfaced");
+    } else if (typeof diag1.cookie === 'string' && diag1.cookie.length > 0) {
+      pass(`cookie=${diag1.cookie.slice(0, 12)}... (facet's own SQLite working)`);
+    } else {
+      fail(`cookie=${JSON.stringify(diag1.cookie)} (expected non-empty string for kind='do-facet')`);
+    }
+  } else if (kind1 === KIND_FETCHER_FALLBACK) {
+    if (diag1.cookie === null) {
+      pass(`cookie=null is correct for kind='fetcher-fallback' (no per-instance SQLite by design)`);
+    } else {
+      fail(`cookie=${JSON.stringify(diag1.cookie)} (expected null for kind='fetcher-fallback')`);
+    }
   }
 
   if (diag1.bootError) {
@@ -145,16 +182,24 @@ async function main() {
   log('stage 3: cirrus diag post-reconnect = ' + JSON.stringify(diag2));
   if (!diag2) {
     fail('/api/_diag/cirrus 404 after reconnect');
-  } else if (diag2.kind !== 'do-facet') {
-    fail(`post-reconnect kind='${diag2?.kind}' (expected 'do-facet')`);
+  } else if (diag2.kind === KIND_DO_FACET || diag2.kind === KIND_FETCHER_FALLBACK) {
+    pass(`post-reconnect: kind='${diag2.kind}' (cirrus-real survived supervisor close)`);
   } else {
-    pass('post-reconnect: kind=do-facet');
+    fail(`post-reconnect kind='${diag2?.kind}' (expected 'do-facet' or 'fetcher-fallback')`);
   }
 
-  if (diag2 && diag2.cookie === cookie1) {
-    pass(`cookie preserved across supervisor reconnect (facet survived independently)`);
-  } else if (diag2) {
-    fail(`cookie changed: ${cookie1.slice(0, 12)} → ${diag2.cookie?.slice?.(0, 12)} — facet was rebuilt`);
+  // Cookie persistence is a DO-Facet-only invariant. The stateless
+  // fetcher fallback has no cookie to preserve by design — log
+  // explicitly so the run-all output shows the kind-appropriate
+  // assertion path was taken.
+  if (diag2 && diag2.kind === KIND_DO_FACET) {
+    if (diag2.cookie === cookie1) {
+      pass(`cookie preserved across supervisor reconnect (facet survived independently)`);
+    } else {
+      fail(`cookie changed: ${cookie1?.slice?.(0, 12)} → ${diag2.cookie?.slice?.(0, 12)} — facet was rebuilt`);
+    }
+  } else if (diag2 && diag2.kind === KIND_FETCHER_FALLBACK) {
+    log(`info: cookie persistence N/A for kind='fetcher-fallback' (no per-instance SQLite; the prod path)`);
   }
 
   // ── Stage 4: warm reuse should be fast ──────────────────────────────

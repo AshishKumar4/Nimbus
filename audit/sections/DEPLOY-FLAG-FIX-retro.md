@@ -196,3 +196,56 @@ including them keeps the source-of-truth aligned.
 
 None. The fix is single-config + verified runtime invariants. No
 src/ behaviour change.
+
+---
+
+## Correction (2026-05-09) — `experimental` was NOT dead config
+
+**Subsequent finding from the d1-fix wave** (see
+`audit/sections/D1-FIX-retro.md`):
+
+The verdict above (line 70: "dead config. Removing has zero
+runtime impact") was wrong. `experimental` was the gating flag
+for `worker.getDurableObjectClass()` — an `$experimental` API
+needed by `src/facets/cirrus-real.ts:start()` to spawn cirrus-
+real as a DO Facet via `ctx.facets.get(name, {class})`.
+
+The runtime-evidence audit at lines 61-70 missed this dependency
+because the call site uses `(worker as any).getDurableObjectClass`
+— the `as any` cast bypasses the static type-check. A grep for
+`getDurableObjectClass` against `src/` would have surfaced the
+call sites at `src/facets/cirrus-real.ts:752` and
+`src/facets/manager.ts:1448`. That grep wasn't run in the
+2026-05-08 audit.
+
+After the deploy-flag-fix landed, cirrus-real's start() began
+throwing `TypeError: worker.getDurableObjectClass is not a
+function`. The supervisor's controller silently set `bootError`
+and `/api/_diag/cirrus` returned `{running:true}` only. The
+post-D'.1 surface (`kind`, `cookie`, `bootMs`) disappeared. The
+D'.1 probe FAILed but was waved through 4 successive cross-wave
+runs as "pre-existing on main, confirmed unchanged" — see the
+[d1-fix retro §"Why D'.1 survived 4 prior cross-wave runs
+unchallenged"](D1-FIX-retro.md) for the precedent-acceptance
+anti-pattern that hid this from each P6.
+
+The fix in d1-fix `c0a2b8e` does NOT restore the `experimental`
+flag (the deploy validator still rejects it for our account).
+Instead, `cirrus-real.ts` graceful-degrades via runtime feature-
+probe: try `worker.getDurableObjectClass()` first; on failure,
+fall back to `worker.getEntrypoint()` against a default-exported
+`WorkerEntrypoint` class sharing module-scope vite state. The
+fallback is the actual prod path; the DO Facet target remains
+preserved for any future Nimbus deployment on a CF-team account
+or after `$experimental` promotion (RM-27238).
+
+This correction does NOT change the wave's overall conclusion
+(removing `$experimental` flags from compatibility_flags was
+the correct fix for the deploy validator rejection). It corrects
+the sub-claim at line 70 about runtime impact: removing
+`experimental` had a real cost — the unannounced collapse of
+cirrus-real's stateful child topology to a stateless fallback.
+
+The original verdict text is preserved above for audit trail; do
+not rewrite it. Future readers should read the original claim
+alongside this correction.

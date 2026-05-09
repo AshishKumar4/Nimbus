@@ -1,63 +1,46 @@
 ==== Phase 5 P5.3 — full regression run ====
-==== TIMESTAMP: 2026-05-09T01:08:06.141Z ====
-BASE: http://127.0.0.1:8794
+==== TIMESTAMP: 2026-05-09T01:50:38.676Z ====
+BASE: http://127.0.0.1:8796
 QUICK: false
 probes to run: 29 of 29 total
 
-PASS    C'.1 heap-estimator                                  20/20     73ms
-PASS    C'.2 recovery-events                                 13/13    453ms
-PASS    C'.3 error-recovery                                    8/8   1048ms
-PASS    A'.1 resolver-fallback                               17/17     62ms
-PASS    A'.2 streaming-buffers                                 3/3     55ms
-PASS    A'.3 barrel-synth                                      5/5     74ms
-PASS    A'.5 esbuild-bytes                                     3/3     66ms
-PASS    B'.1 shell-state                                     12/12   1906ms
-PASS    B'.2 kernel-mounts                                     4/4   1148ms
-PASS    B'.3 scrollback                                      13/13   6105ms
+PASS    C'.1 heap-estimator                                  20/20     75ms
+PASS    C'.2 recovery-events                                 13/13    494ms
+PASS    C'.3 error-recovery                                    8/8   1047ms
+PASS    A'.1 resolver-fallback                               17/17    105ms
+PASS    A'.2 streaming-buffers                                 3/3     70ms
+PASS    A'.3 barrel-synth                                      5/5     61ms
+PASS    A'.5 esbuild-bytes                                     3/3     68ms
+PASS    B'.1 shell-state                                     12/12   1904ms
+PASS    B'.2 kernel-mounts                                     4/4   1158ms
+PASS    B'.3 scrollback                                      13/13   6155ms
 PASS    B'.4 phase-machine                                   12/12   1680ms
-PASS    B'.5 join-existing                                   13/13   1561ms
-FAIL    D'.1 cirrus-real-do-facet                              3/7   3124ms
-  ==== D'.1 cirrus-real-do-facet probe ====
-  ==== TIMESTAMP: 2026-05-09T01:08:20.424Z ====
-  BASE: http://127.0.0.1:8794
-  SID: fleeting-jackal-8104
-  stage 1: shell prompt ready
-  stage 1: cirrus diag = {"running":true}
-  FAIL: `kind` field missing on /api/_diag/cirrus — D'.1 surface not landed
-  FAIL: `cookie` field missing — facet's own-SQLite identity not surfaced
-  PASS: facet booted without error
-  FAIL: bootMs not surfaced on diag
-  PASS: isolateGen stable at 1 across close
-  stage 3: cirrus diag post-reconnect = {"running":true}
-  FAIL: post-reconnect kind='undefined' (expected 'do-facet')
-  PASS: cookie preserved across supervisor reconnect (facet survived independently)
-  info: lastFetchMs = undefined (no recent fetch; not asserting)
-  ==== EXIT 1 ====
-  
-PASS    D'.2 loader-pool-rename                                4/4   3066ms
-PASS    interactive-liveness/walltime-distribution             4/4   6570ms
-PASS    W5 ring-persistence                                    0/0     27ms
-PASS    W5 lru-shrink-restore                                  0/0     32ms
-PASS    W5 sqlite-nomem-retry                                  0/0     35ms
-PASS    W5 diag-shape                                          0/0     28ms
+PASS    B'.5 join-existing                                   13/13   1564ms
+PASS    D'.1 cirrus-real-do-facet                              7/7   3536ms
+PASS    D'.2 loader-pool-rename                                4/4   4201ms
+PASS    interactive-liveness/walltime-distribution             4/4   6599ms
+PASS    W5 ring-persistence                                    0/0     29ms
+PASS    W5 lru-shrink-restore                                  0/0     39ms
+PASS    W5 sqlite-nomem-retry                                  0/0     31ms
+PASS    W5 diag-shape                                          0/0     23ms
 PASS    W7 frame-roundtrip                                     0/0     29ms
-PASS    W7 large-payload                                       0/0    195ms
-PASS    W7 backpressure                                        0/0    531ms
-PASS    W7 cancel-mid-stream                                   0/0     33ms
-PASS    W7 error-propagation                                   0/0     34ms
-PASS    W7 empty-batches                                       0/0     31ms
-PASS    W7 bytes-source-type                                   0/0     31ms
-PASS    W7 writestream-on-vfs                                  0/0     37ms
-PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   3398ms
-PASS    deploy-validation/no-experimental-flags                0/0     35ms
+PASS    W7 large-payload                                       0/0    178ms
+PASS    W7 backpressure                                        0/0    529ms
+PASS    W7 cancel-mid-stream                                   0/0     28ms
+PASS    W7 error-propagation                                   0/0     27ms
+PASS    W7 empty-batches                                       0/0     28ms
+PASS    W7 bytes-source-type                                   0/0     26ms
+PASS    W7 writestream-on-vfs                                  0/0     29ms
+PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   2914ms
+PASS    deploy-validation/no-experimental-flags                0/0     40ms
 
 ==== SUMMARY ====
-total runtime: 31.5s
-  PASS    : 28
-  FAIL    : 1
+total runtime: 32.7s
+  PASS    : 29
+  FAIL    : 0
   TIMEOUT : 0
   SKIP    : 0
   MISS    : 0
-  total PASS lines: 134
-  total FAIL lines: 4
-==== EXIT 1 ====
+  total PASS lines: 138
+  total FAIL lines: 0
+==== EXIT 0 ====

@@ -1,16 +1,16 @@
 ==== D'.1 cirrus-real-do-facet probe ====
-==== TIMESTAMP: 2026-05-08T22:03:56.808Z ====
-BASE: http://127.0.0.1:8792
-SID: endless-teal-2649
+==== TIMESTAMP: 2026-05-09T01:35:42.631Z ====
+BASE: http://127.0.0.1:8795
+SID: twilight-opal-9634
 stage 1: shell prompt ready
-stage 1: cirrus diag = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"3726bfd7-1f4c-498c-8d2a-100936e36d70","bootMs":7,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":439,"hmrClients":0}
-PASS: kind='do-facet' (cirrus-real running as DO Facet)
-PASS: cookie=3726bfd7-1f4... (facet's own SQLite working)
+stage 1: cirrus diag = {"running":true,"kind":"fetcher-fallback","facetName":null,"cookie":null,"bootMs":14,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":460,"hmrClients":0}
+PASS: kind='fetcher-fallback' (cirrus-real running as stateless WorkerEntrypoint — `experimental` compat flag absent; this IS the prod path)
+PASS: cookie=null is correct for kind='fetcher-fallback' (no per-instance SQLite by design)
 PASS: facet booted without error
-PASS: cold-start = 7ms ≤ 200ms regression budget
+PASS: cold-start = 14ms ≤ 200ms regression budget
 PASS: isolateGen stable at 1 across close
-stage 3: cirrus diag post-reconnect = {"running":true,"kind":"do-facet","facetName":"cirrus-real-vite","cookie":"3726bfd7-1f4c-498c-8d2a-100936e36d70","bootMs":7,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2846,"hmrClients":0}
-PASS: post-reconnect: kind=do-facet
-PASS: cookie preserved across supervisor reconnect (facet survived independently)
+stage 3: cirrus diag post-reconnect = {"running":true,"kind":"fetcher-fallback","facetName":null,"cookie":null,"bootMs":14,"facetBootMs":0,"lastFetchMs":0,"bootError":null,"facetBootError":null,"viteServerListening":false,"uptimeMs":2860,"hmrClients":0}
+PASS: post-reconnect: kind='fetcher-fallback' (cirrus-real survived supervisor close)
+info: cookie persistence N/A for kind='fetcher-fallback' (no per-instance SQLite; the prod path)
 PASS: warm-fetch latency = 0ms ≤ 50ms
 ==== EXIT 0 ====
