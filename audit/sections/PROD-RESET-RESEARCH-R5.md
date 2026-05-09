@@ -192,10 +192,9 @@ public name is "Cloudflare Containers".
 
 ---
 
-## R5.7 Sandbox SDK — the higher-level wrapper
+## R5.7 Sandbox SDK — REJECTED-BY-CHARTER
 
-The Sandbox SDK is a higher-level wrapper that bundles common
-sandbox patterns:
+The Sandbox SDK is a higher-level wrapper around Cloudflare Containers:
 
 ```js
 import { getSandbox } from "@cloudflare/sandbox";
@@ -204,60 +203,27 @@ const sandbox = getSandbox(env.Sandbox, "my-sandbox");
 const result = await sandbox.exec("python script.py");
 ```
 
-Public APIs include:
-- `sandbox.exec(command)` — run a shell command, get output.
-- `sandbox.readFile()` / `writeFile()` — filesystem access.
-- Preview URL management — exposes container ports as URLs.
+Public APIs include `sandbox.exec()`, `sandbox.readFile()`,
+preview-URL management, etc.
 
-This is **architecturally what Nimbus is reinventing**. Nimbus's
-`Shell`, `Kernel`, vfs-mount, and the LIFO command system are
-JavaScript implementations of capabilities a real Linux container
-provides natively.
+**This is exactly what Nimbus is designed to emulate without.**
+Nimbus's `Shell`, `Kernel`, vfs-mount, and the LIFO command system
+are JavaScript implementations of capabilities a real Linux
+container provides natively — and emulating them inside DO+Loader
+is the project's purpose. Adopting Sandbox SDK / Cloudflare
+Containers as a Nimbus substrate would defeat that purpose.
 
-❗ ARCHITECTURE-IMPACTING DECISION POINT:
+**Verdict: REJECTED.** Cloudchamber container-in-DO (the platform
+substrate behind Cloudflare Containers + Sandbox SDK) is tracked as
+a primitive that exists ([cf-internal-dossier.md §6](../../docs/research/cf-internal-dossier.md))
+but the Nimbus roadmap deliberately does not depend on it.
 
-Should Nimbus migrate from the workerd-isolate-running-LIFO model
-to a Container-running-real-Linux model?
-
-**Pros**:
-- Real bash, real npm, real vite, real node.js. Drop the LIFO shell
-  reimplementation entirely.
-- No 128 MB JS heap cap on the workload — 4-12 GiB available.
-- Real filesystem (8-20 GB) on top of SQLite VFS.
-- No structured-clone walls. No per-isolate budgets.
-- Existing Cloudflare project — Sandbox SDK has documented patterns.
-
-**Cons**:
-- Massive rewrite. Nimbus's identity is "10 GB VFS · Dynamic Workers
-  · HMR" — the dynamic-Workers piece is JS-isolate-specific.
-- Container cold-start is much slower than JS isolate cold-start.
-  R1.2.4's "70-140 s" eviction window is a problem if a session
-  goes idle for that long; container resume is seconds, not
-  microseconds.
-- SQL-backed VFS innovations Nimbus made are valuable; throwing them
-  away to use real disk loses the cool factor.
-- Container billing is per-vCPU-second; the cost model is different
-  from DO billing. Pricing analysis required.
-- The Sandbox SDK is opinionated about HTTP/WS transport between
-  DO and container — the seamless "shell input goes into a JS
-  Kernel" model becomes "shell input goes through HTTP RPC into
-  bash inside the container". UX changes.
-
-**Verdict for plan §3**: NOT RECOMMENDED for the immediate Bug C fix.
-
-The Container migration is a different product, not a fix for Bug C.
-If Nimbus's strategic identity is "Cloud-native Linux-like dev env
-running on Cloudflare Workers + Durable Objects with SQLite VFS",
-then Containers undermine that identity (they're Cloud-native dev
-env running on Containers, which is what every other player in this
-space does).
-
-If Nimbus is willing to PIVOT the product identity, Containers solve
-all of plan §3's memory-pressure problems trivially. But that's a
-strategic product decision, not an architectural fix for Bug C.
-
-Plan §3 should reference Containers as a "for the record, this
-exists" alternative architecture, but not propose migrating to it.
+The pros/cons matrix the original research weighed (real bash vs JS
+shell, 4-12 GiB workload memory vs 128 MiB JS heap, real fs vs
+SQLite VFS, etc.) is moot in the face of the charter: if we wanted
+to ship a Cloud-native dev env running on Containers, we would have
+done that — many other projects already do. Nimbus is the
+DO-only-emulation answer to the same problem.
 
 ---
 
@@ -266,25 +232,26 @@ exists" alternative architecture, but not propose migrating to it.
 | Claim from current plan §3 / current code | R5 verdict |
 |---|---|
 | "Cloudchamber / SHIP-10537" | Public name is "Cloudflare Containers"; ✓ GA, capacity 6 TiB / 1500 vCPU / 30 TB account-wide |
-| "Container memory: 128 MB isolate + N MB container" | ✓ CONFIRMED — DO 128 MB JS heap (routing) + Container 256 MiB-12 GiB+ memory (workload) are SEPARATE envelopes |
-| "Containers solve Bug C trivially" | ✓ True at the architectural level, BUT the migration is a product pivot, not a fix |
-| "Sandbox SDK exists" | ✓ CONFIRMED — `@cloudflare/sandbox` wraps the pattern Nimbus is reinventing in JS |
+| "Container memory: 128 MB isolate + N MB container" | ✓ CONFIRMED — DO 128 MB JS heap (routing) + Container 256 MiB-12 GiB+ memory (workload) are SEPARATE envelopes (reference only — NOT a Nimbus path) |
+| "Containers solve Bug C trivially" | ✓ True at the architectural level, but adopting them is out of charter (Nimbus is DO-only emulation; emulating Cloudchamber is the point) |
+| "Sandbox SDK exists" | ✓ CONFIRMED — `@cloudflare/sandbox` wraps the pattern Nimbus emulates in JS without |
 
 **Plan §3 implications**:
-- Add a brief "Container migration" section to plan §3 / §5
-  ("Not in this plan") explaining that this exists, that it
-  trivially solves the memory-pressure trigger of Bug C, and that
-  it's NOT being pursued as the Bug C fix because it's a product
-  pivot rather than an architectural patch.
-- Track A' should explicitly note that we are CHOOSING to stay in
-  the workerd-isolate model because of the strategic identity —
-  not because we have to.
+- Plan §3 / §5 reference Cloudflare Containers as a primitive that
+  exists at the platform level. Nimbus deliberately does NOT adopt
+  it — the project's identity ("DO-only emulation of a
+  Linux-container dev environment") makes Cloudchamber adoption
+  out-of-charter, not just out-of-this-plan.
+- Track A' is the ONLY substrate Nimbus uses. The "are we choosing
+  to stay in workerd-isolate or do we have to" question has a clean
+  answer: choosing. The project's value is in the choice.
 - The user's question "is supervisor at 64 MiB the right ceiling
   or should we shed supervisor and orchestrate peer DOs?" gets a
-  cleaner answer: **shedding the supervisor entirely is what
-  Container migration would do**. Within the workerd-isolate model,
-  the answer is "minimize supervisor resident set, fan to dynamic
-  Workers". Plan §3 should make this choice explicit.
+  cleaner answer: within Nimbus's DO-only charter, "minimize
+  supervisor resident set, fan to dynamic Workers" is the path.
+  Shedding the supervisor for a container substrate is what
+  Cloudflare Containers does — and that's a different product,
+  not Nimbus.
 
 ---
 

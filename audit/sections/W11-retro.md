@@ -154,15 +154,15 @@ Independently dispatchable; ordered by expected ROI:
    `@astrojs/cloudflare` + `@remix-run/cloudflare` working end-to-end
    when `wrangler.jsonc` is present (rule 0 already routes them; the
    adapter side needs verification). ~3-5 days.
-5. **W11.5-E — Next.js Phase 2 substrate.** Three independent gates:
+5. **W11.5-E — Next.js Phase 2 substrate.** Two Nimbus-roadmap gates
+   (a third item — Cloudchamber container-in-DO — was previously
+   listed but is **not** on the Nimbus roadmap; Cloudchamber is the
+   platform substrate Nimbus deliberately emulates without):
      - **W7.5 (or W11.5-E1):** v8-serializer fork IPC. Needs
        `child_process.fork` to run the v8 serializer over the IPC
        channel instead of W8's JSON projection. Self-contained.
      - **W11.5-E2:** webpack-in-facet. Run webpack inside a W8 facet,
        feed it from the VFS. Likely wants a separate facet pool tag.
-     - **W11.5-E3:** Cloudchamber container-in-DO when SHIP-10537 is
-       GA. The eventual destination for next dev / nuxt full / any
-       framework that wants real `http.Server`.
 
 ## 7. Probe coverage summary
 

@@ -264,18 +264,30 @@ fails the wave acceptance.
    full W3 + W4 + W5 regression suites to confirm no consumers depend
    on the current paused-by-default behavior.
 
-### Phase 2 (gated on SHIP-10537 GA, tracked in CT2)
+### NOT on the Nimbus roadmap (out of scope by project charter)
 
-6. **Real Linux process via Cloudchamber container-in-DO.** The
-   FacetProcessManager's broker pattern translates cleanly: replace
-   the inline supervisor-isolate execution with a container exec.
-   Stdin/stdout/stderr stream over the existing RPC contract.
-   Signals become real signals. fork() can be real fork() if the
-   container runtime exposes it.
+The follow-on items below would each require either a real Linux
+process or a process-group primitive that the DO+Loader substrate
+does not provide. Cloudchamber container-in-DO is the platform's
+container offering; Nimbus deliberately does NOT adopt it because
+emulating that capability inside DO+Loader is the point of the
+project. We track Cloudchamber as a primitive that exists
+([cf-internal-dossier.md §6](../../docs/research/cf-internal-dossier.md))
+but the Nimbus roadmap does not depend on it.
 
-7. **Process group / setsid / detached.** With real processes, kill
-   semantics extend to process groups; concurrently-style wrappers
-   that spawn-and-orphan can be supported.
+The items remain documented here so a future contributor knows the
+shape of what *would* require real Linux processes — not as a
+roadmap promise.
+
+6. ~~**Real Linux process via Cloudchamber container-in-DO.**~~
+   Rejected as substrate. The FacetProcessManager broker pattern
+   stays inside DO+Loader; we layer richer semantics on top
+   (e.g. better signal projection in node-shims, richer fork()
+   shape via E1's v8-IPC work) rather than swap the substrate.
+
+7. **Process group / setsid / detached** — limited to what the
+   facet-supervisor RPC contract can model. Real-process semantics
+   that require kernel-level process groups are out of scope.
 
 ---
 
@@ -286,5 +298,8 @@ should move to ✅, with a note about Phase 1.5 follow-up scoped to
 the 5 W8.5 items above (none are blockers; the headline husky/
 concurrently/cross-spawn use case is solved).
 
-The Phase 2 paragraph "real Linux process via Cloudchamber
-container-in-DO" stays gated on SHIP-10537 GA (CT2 watches that).
+There is no Phase 2 substrate-swap planned. Real-process semantics
+(fork/exec/setsid/process-groups) are emulated within DO+Loader as
+far as the facet-broker pattern can faithfully express them; gaps
+beyond that are documented as known-limitations rather than
+roadmap items.

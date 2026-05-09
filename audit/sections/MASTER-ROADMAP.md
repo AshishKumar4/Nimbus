@@ -692,7 +692,7 @@ Make Nimbus the universal browser-native development environment. Any Node, Vite
 Daily 09:00 UTC: prod regression test (Mossaic + top-30 packages + Wave 1 contract). Output to audit/probes/drift/<date>.txt. Regression → create incident task.
 
 ### CT2 — Platform-gated tracking
-Watch CF-internal items: dedicated-isolate flag, SHIP-3841 memory tiers, SHIP-10537 container-in-DO, polyfill RFC. Move to next phase when GA.
+Watch CF-internal items: dedicated-isolate flag, SHIP-3841 memory tiers, polyfill RFC. Move to next phase when GA. Nimbus is DO-only emulation; Cloudchamber container-in-DO (SHIP-10537) is the platform's container offering and is **not** on the Nimbus roadmap — emulating that capability inside DO+Loader is the project's purpose.
 
 ### CT3 — Pre-flight research per wave
 nimbus-cf-internal-research session continues. Pre-flights each wave's plan with fresh CF docs/wiki context.
@@ -852,7 +852,7 @@ bun install
 - Process exit code propagation
 - Signal handling: SIGTERM, SIGKILL via facet termination
 
-**Phase 2 (gated on SHIP-10537 GA, tracked in CT2):** Real Linux process via Cloudchamber container-in-DO
+**Phase 2:** none planned. Real Linux process semantics that the DO+Loader substrate cannot express (kernel-level process groups, real fork(), real signals) are NOT on the Nimbus roadmap. Cloudchamber container-in-DO is the platform's container offering; Nimbus deliberately emulates that capability inside DO+Loader rather than adopting it (the project's purpose). Gaps beyond the broker pattern are documented as known-limitations rather than future-roadmap items.
 
 **Acceptance Phase 1:**
 - husky install ✅
@@ -1067,7 +1067,7 @@ The orchestrator: (1) checks `wrangler whoami`, (2) deploys current main with `C
                                                               # + Fix #2 bonus 2-level recursive collectExportLeaves
    ```
 7. Update this section: replace each "Pending" entry with "Verified on prod <ISO>".
-8. If any acceptance gate fails, see corresponding `W<N>-retro.md §6` (W3.5 / W4.5 / W5.5 / W6.5 / W7.5 / W8 phase-1.5 / W9 phase-1.5 / W10.5 / W11.5 / W12.5 candidates) and dispatch a follow-up wave. **Specifically for W10:** if real workerd rejects the plain-JS-object `env` projection used by KV/D1/R2 emulators, the fix is to extend `RpcTarget` on each emulator class (5-line diff per file: `binding-kv.ts`, `binding-d1.ts`, `binding-r2.ts`) per W10-retro §2 / §6. **For W11:** Next.js Phase 2 substrate (v8-IPC + webpack-in-facet + Cloudchamber) is tracked in W11.5-E (gated independently on W7.5 / SHIP-10537 GA). **For W12:** if `state` reports `'unsupported'`, the account isn't on the `replica_routing` GA allowlist — Smart Placement still helps; ship the partial and revisit. If `state='enabled'` but p99 still > 500 ms in EU/APAC, see W12.5-A (`waitForBookmark` thread via `X-Nimbus-Bookmark` header).
+8. If any acceptance gate fails, see corresponding `W<N>-retro.md §6` (W3.5 / W4.5 / W5.5 / W6.5 / W7.5 / W8 phase-1.5 / W9 phase-1.5 / W10.5 / W11.5 / W12.5 candidates) and dispatch a follow-up wave. **Specifically for W10:** if real workerd rejects the plain-JS-object `env` projection used by KV/D1/R2 emulators, the fix is to extend `RpcTarget` on each emulator class (5-line diff per file: `binding-kv.ts`, `binding-d1.ts`, `binding-r2.ts`) per W10-retro §2 / §6. **For W11:** Next.js Phase 2 substrate is tracked in W11.5-E1 (v8-IPC, gated on W7.5) and W11.5-E2 (webpack-in-facet, this wave's plan). The previously-listed W11.5-E3 (Cloudchamber container-in-DO) has been removed from the Nimbus roadmap; Cloudchamber is the platform substrate Nimbus deliberately emulates without. **For W12:** if `state` reports `'unsupported'`, the account isn't on the `replica_routing` GA allowlist — Smart Placement still helps; ship the partial and revisit. If `state='enabled'` but p99 still > 500 ms in EU/APAC, see W12.5-A (`waitForBookmark` thread via `X-Nimbus-Bookmark` header).
 
 The daily ops schedule (CT1) attempts auto-deploy every morning. If wrangler auth is fresh, it will deploy autonomously.
 

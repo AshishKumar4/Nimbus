@@ -1,0 +1,25 @@
+==== W-B tarball L2 probe ====
+==== TIMESTAMP: 2026-05-09T00:28:00.924Z ====
+BASE: http://127.0.0.1:8793
+SID: cloudy-garden-6677
+tarball size: 12288 KiB
+seed: {
+  seeded: true,
+  name: "pkg-tar-l2",
+  version: "1.0.0",
+  sizeBytes: 12582912,
+}
+latencies (ms): [
+  42, 11, 7, 20, 23, 7, 6, 6, 15, 25, 19, 7, 6, 6, 5
+]
+null count:     0
+last bytes:     12582912
+stats:          {"l2HitsPackument":0,"l3GetsPackument":0,"l2HitsTarball":14,"l3GetsTarball":1}
+PASS [structural]: l3GetsTarball=1 ≤ 1
+PASS [structural]: l2HitsTarball=14 ≥ 14
+latency cold (t[0]):                  42.00 ms
+latency warm tail [t[10..14]]:        19.0, 7.0, 6.0, 6.0, 5.0 ms
+latency warm median:                  6.00 ms
+latency ratio cold / max(warm, 0.5):  7.00×
+PASS [latency]: ratio 7.00× ≥ 5× target
+==== EXIT 0 ====

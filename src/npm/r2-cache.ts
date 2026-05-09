@@ -1,5 +1,6 @@
 /**
- * r2-cache.ts — L3 cross-tenant npm cache backed by R2 [W4].
+ * r2-cache.ts — L3 cross-tenant npm cache backed by R2 [W4]
+ *               + L2 colo cache via `caches.default` [cache-and-scrub P3]
  *
  * Purpose
  * ───────
@@ -12,7 +13,7 @@
  *
  * Caching layers (top-down):
  *   L1 — per-DO SQLite (warmest, in-memory; ~1 ms per file)
- *   L2 — Cache API (per-colo; ~5-30 ms; not yet wired — gated on D3.5)
+ *   L2 — `caches.default` (per-colo; ~50-500 µs hit / ~5-30 ms cold) ← P3 wins
  *   L3 — R2 (global; ~30-100 ms regional)               ← THIS MODULE
  *   L4 — registry.npmjs.org origin (~100-300 ms cross-region)
  *
@@ -103,6 +104,86 @@ type R2BucketLike = {
   delete(key: string): Promise<unknown>;
 } | null;
 
+// ── L2 (caches.default) helpers ─────────────────────────────────────────
+//
+// The Workers Cache API requires `Request` instances as keys. We
+// synthesize stable URLs in a reserved-invalid namespace so they
+// can't collide with any user-visible request. The TTL is encoded
+// in the wrapped Response's `Cache-Control` header — the cache layer
+// honours it on its own (no manual expiration check needed inside
+// `cacheGetBytes`).
+//
+// Why a dedicated invalid host:
+//   - Prevents accidental collisions with same-origin user requests.
+//   - `nimbus-cache.invalid.` is reserved per RFC 6761 (`.invalid.`
+//     TLD) so it can never resolve and never escapes the worker.
+
+/** Synthetic L2 cache-key host. RFC-6761 reserved TLD. */
+const L2_KEY_HOST = 'https://nimbus-cache.invalid';
+
+/** Build the L2 cache-key Request for a packument name. */
+function packumentL2Key(name: string): Request {
+  // encodeURIComponent on the name so '@scope/pkg' becomes a single
+  // path segment — matches our R2 key shape's `${name}.json` (R2 keys
+  // allow any UTF-8, but URL paths need encoding).
+  return new Request(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/p/${encodeURIComponent(name)}.json`);
+}
+
+/** Build the L2 cache-key Request for a tarball name+version. */
+function tarballL2Key(name: string, version: string): Request {
+  return new Request(
+    `${L2_KEY_HOST}/${R2_CACHE_PREFIX}/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`,
+  );
+}
+
+/** Build the L2 cache-key Request for an asset (e.g. esbuild-wasm). */
+function assetL2Key(assetPath: string): Request {
+  // Caller passes an already-encoded path (e.g. "esbuild-0.24.2.wasm").
+  // Sanitize defensively in case a future caller passes a raw path
+  // with leading slashes or query strings.
+  const clean = assetPath.replace(/^\/+/, '').split('?')[0];
+  return new Request(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/a/${clean}`);
+}
+
+/**
+ * Best-effort `caches.default` lookup. Returns null on miss / when the
+ * Cache API is not exposed (some test harnesses) / on any thrown error.
+ *
+ * The Cache API is bound to `caches.default` in workerd; we tolerate it
+ * being absent (e.g. a test harness with a stripped global) so the
+ * graceful-degrade contract from the original L3 layer extends to L2.
+ */
+async function l2Get(key: Request): Promise<Response | null> {
+  try {
+    const c: any = (globalThis as any).caches;
+    if (!c?.default) return null;
+    const r = await c.default.match(key);
+    return r ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort `caches.default` write. The body Response must have a
+ * `Cache-Control` header with `max-age` for the cache layer to honour
+ * a TTL — without it, the cache MAY refuse to store. We always set it
+ * at call sites (eternal for tarball/asset; 5 min for packument).
+ *
+ * Returns true on success, false on any thrown error. Failure here
+ * MUST NOT block the L3 hit — the wrap is a perf optimisation only.
+ */
+async function l2Put(key: Request, body: Response): Promise<boolean> {
+  try {
+    const c: any = (globalThis as any).caches;
+    if (!c?.default) return false;
+    await c.default.put(key, body);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Key helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -133,20 +214,59 @@ export function packumentKey(name: string): string {
 // ── Client ──────────────────────────────────────────────────────────────
 
 /**
+ * Per-instance counters surfaced for tests / probes. Read via
+ * `R2CacheClient.stats()`. Track at the FUNCTION boundary level so a
+ * call that hits L2 bumps `l2HitsPackument` but NOT `l3GetsPackument`,
+ * and vice versa. The probe at audit/probes/cache-and-scrub/* asserts
+ * "after the first call, no more l3GetsPackument" — structurally
+ * proving the L2 layer is functional even when local-dev wall-clock
+ * latency is too noisy to demonstrate 5×.
+ *
+ * Diag counters (src/observability/diag-counters.ts) bump for the
+ * SupervisorRPC layer (RPC-perspective hit/miss). These per-instance
+ * counters bump for the R2CacheClient call surface itself (L2 vs L3
+ * vs miss), independent of who's calling.
+ */
+export interface R2CacheClientStats {
+  l2HitsPackument: number;
+  l3GetsPackument: number;
+  l2HitsTarball: number;
+  l3GetsTarball: number;
+}
+
+/**
  * R2-backed npm cache client. Wraps two R2 bindings (tarballs + packuments)
- * with the get/put/delete shape the SupervisorRPC methods need.
+ * with the get/put/delete shape the SupervisorRPC methods need, fronted
+ * by an L2 colo cache via `caches.default`.
  *
  * Constructed once per request-scope (typically inside SupervisorRPC
  * methods). Cheap to instantiate — no async init.
  *
  * ALL methods are null-bucket safe: pass `null` for either binding and
- * the corresponding read returns null / write is a no-op.
+ * the corresponding read returns null / write is a no-op. The L2 layer
+ * is also null-safe: missing `caches.default` falls through to the
+ * graceful-degrade path that mirrors today's behaviour.
  */
 export class R2CacheClient {
+  private _l2HitsPackument = 0;
+  private _l3GetsPackument = 0;
+  private _l2HitsTarball = 0;
+  private _l3GetsTarball = 0;
+
   constructor(
     private readonly tarballBucket: R2BucketLike,
     private readonly packumentBucket: R2BucketLike,
   ) {}
+
+  /** Per-instance counter snapshot. Used by the L2 cache probes. */
+  stats(): R2CacheClientStats {
+    return {
+      l2HitsPackument: this._l2HitsPackument,
+      l3GetsPackument: this._l3GetsPackument,
+      l2HitsTarball: this._l2HitsTarball,
+      l3GetsTarball: this._l3GetsTarball,
+    };
+  }
 
   /**
    * Get a cached tarball, or null if absent / oversize-bypassed.
@@ -155,9 +275,25 @@ export class R2CacheClient {
    * for integrity verification before consuming — we do NOT verify here
    * because the caller (batch-facet) has the integrity hash from the
    * resolver's packument.
+   *
+   * L2 (cache-and-scrub W-B): we wrap the R2 read in `caches.default`
+   * with `Cache-Control: public, max-age=31536000, immutable` because
+   * `name@version` is content-addressed (immutable npm contract since
+   * 2018). On miss, fall through to R2 and write through to L2.
    */
   async getTarball(name: string, version: string): Promise<Uint8Array | null> {
+    // ── L2 fast path (per-colo) ───────────────────────────────────
+    const l2Key = tarballL2Key(name, version);
+    const l2Hit = await l2Get(l2Key);
+    if (l2Hit) {
+      this._l2HitsTarball++;
+      const ab = await l2Hit.arrayBuffer();
+      if (ab.byteLength > MAX_R2_TARBALL_BYTES) return null;
+      return new Uint8Array(ab);
+    }
+    // ── L3 path (cross-tenant) ────────────────────────────────────
     if (!this.tarballBucket) return null;
+    this._l3GetsTarball++;
     const key = tarballKey(name, version);
     const obj = await this.tarballBucket.get(key);
     if (!obj) return null;
@@ -168,7 +304,28 @@ export class R2CacheClient {
       // the facet. Treat as miss; original install path will handle it.
       return null;
     }
-    return new Uint8Array(ab);
+    // Write through to L2. Eternal TTL is correct: the npm registry
+    // enforces immutability — `name@version` is content-fixed since
+    // 2018 (the unpublish window only allows hard-delete, never
+    // overwrite). Same posture R2 uses (no TTL on the bucket). Best-
+    // effort write: failure is silent.
+    const wb = new Uint8Array(ab);
+    // Pass a fresh Uint8Array to Response so the underlying buffer
+    // is not detached when the original ArrayBuffer is consumed by
+    // the caller. The caller receives `wb` (the same view), and the
+    // cache writes a copy — workerd serializes through structured
+    // clone for `caches.default.put`.
+    const writeBack = new Response(wb, {
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    });
+    // Await the put so subsequent reads of the same key strictly
+    // hit L2 (no double-fetch race during fill). See the matching
+    // note in getPackument above.
+    await l2Put(l2Key, writeBack);
+    return wb;
   }
 
   /**
@@ -216,9 +373,45 @@ export class R2CacheClient {
    * customMetadata.expiresAt is in the past. Callers MUST honour
    * `expired` — only treat as a hot hit when false. Stale-while-error
    * is the only valid use of expired data.
+   *
+   * L2 (cache-and-scrub W-A): we wrap the R2 read in `caches.default`.
+   * On hit, we read both the packument JSON and the absolute
+   * `expiresAt` timestamp from the L2 entry's headers — the absolute
+   * timestamp matters because L2 may serve a cached response near
+   * the end of its 5-min TTL, and the caller's `expired` check still
+   * needs to fire correctly. On miss, we fall through to R2 and
+   * write back to L2 with a 5-min `Cache-Control: max-age=300`
+   * (matching the existing R2 customMetadata.expiresAt semantic).
    */
   async getPackument(name: string): Promise<CachedPackument | null> {
+    // ── L2 fast path (per-colo) ───────────────────────────────────
+    const l2Key = packumentL2Key(name);
+    const l2Hit = await l2Get(l2Key);
+    if (l2Hit) {
+      this._l2HitsPackument++;
+      const json = await l2Hit.text();
+      const now = Date.now();
+      // Reconstruct ageMs from the L2 response's `Date` header (set
+      // implicitly by the cache layer at put time). Cache API
+      // reflects it back as `Date` on hits; if absent, default to
+      // "fresh enough" (ageMs=0).
+      const dateHdr = l2Hit.headers.get('date');
+      const uploaded = dateHdr ? new Date(dateHdr).getTime() : now;
+      const ageMs = Math.max(0, now - (Number.isFinite(uploaded) ? uploaded : now));
+      // expiresAt is encoded into a custom header (`X-Nimbus-ExpiresAt`)
+      // because Cache-Control's relative max-age is honoured by the
+      // cache layer but doesn't survive readback as an absolute
+      // timestamp. Caller still needs the absolute boundary.
+      const expiresAtRaw = l2Hit.headers.get('x-nimbus-expiresat');
+      const expiresAt = expiresAtRaw ? Number(expiresAtRaw) : 0;
+      const expired = expiresAt > 0
+        ? now >= expiresAt
+        : ageMs >= PACKUMENT_TTL_MS;
+      return { json, ageMs, expired };
+    }
+    // ── L3 path (cross-tenant) ────────────────────────────────────
     if (!this.packumentBucket) return null;
+    this._l3GetsPackument++;
     const obj = await this.packumentBucket.get(packumentKey(name));
     if (!obj) return null;
     const json = await obj.text();
@@ -230,6 +423,28 @@ export class R2CacheClient {
     const expired = expiresAt > 0
       ? now >= expiresAt
       : ageMs >= PACKUMENT_TTL_MS;
+    // Write through to L2 — bounded by max-age=300 to match the
+    // existing R2 customMetadata.expiresAt 5-min TTL. We pass the
+    // absolute expiresAt as a custom header so reads can re-check
+    // the boundary even if the cache layer extends our entry.
+    // Best-effort: failure is silent (false return ignored).
+    if (!expired) {
+      const ttlSec = Math.max(1, Math.floor((expiresAt > 0 ? expiresAt - now : PACKUMENT_TTL_MS) / 1000));
+      const writeBack = new Response(json, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': `public, max-age=${ttlSec}`,
+          'X-Nimbus-ExpiresAt': String(expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS),
+        },
+      });
+      // Await the L2 put so the entry is durable before we return.
+      // Two callers reading the same key back-to-back during the
+      // fill window would otherwise both miss L2 and double-fetch
+      // L3. The cost (~1-3 ms in workerd local; sub-ms at edge) is
+      // bounded by the response size and only paid on cold reads.
+      // Errors are swallowed by l2Put — failure is silent.
+      await l2Put(l2Key, writeBack);
+    }
     return { json, ageMs, expired };
   }
 

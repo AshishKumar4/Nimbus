@@ -605,7 +605,7 @@ Full body: [`audit/_drafts/G-cost-billing.md`](../_drafts/G-cost-billing.md).
 |---|---|---|---|---|---|
 | **H1** | DO read replicas | Beta; pricing TBD | [`~lambros`/Storage](https://wiki.cfdata.org/display/~lambros) | Cross-region reads 200ms → 5-20ms | M (write paths refactor) |
 | **H2** | SQLITE_NOMEM SPEC (per-DO accounting) | MRs linked, ~Q2 2026 | [`~jhoward`/Storage](https://wiki.cfdata.org/display/~jhoward) | Replace silent termination with catchable errors | S |
-| **H3** | Container Workers GA | Spring 2026 | [`~mnomitch`/Cloudchamber](https://wiki.cfdata.org/display/~mnomitch) | Escape hatch for workerd-blocked features | L (architectural) |
+| ~~H3~~ | ~~Container Workers GA — REMOVED FROM NIMBUS ROADMAP~~ | GA | [`~mnomitch`/Cloudchamber](https://wiki.cfdata.org/display/~mnomitch) | Cloudchamber container-in-DO is the platform substrate Nimbus deliberately emulates without; not a Nimbus integration item | n/a (out of charter) |
 | **H4** | Outgoing WS Hibernation | Draft RFC | [`~harris`/Storage](https://wiki.cfdata.org/display/~harris) | Supervisor hibernates with outbound WS | S (await GA) |
 | **H5** | Dynamic Workers Observability | Draft RFC | [`~birvine-broque`](https://wiki.cfdata.org/display/~birvine-broque) | Free per-facet logs/traces | S |
 | **H6** | Dynamic Worker Sharding | RFC; ephemeral facets excluded | [`~pkhanna`](https://wiki.cfdata.org/display/~pkhanna) | Cross-metal load balancing | M |
@@ -626,7 +626,7 @@ When a SHIP-* lands, the Nimbus integration action is:
 |---|---|---|
 | H1 (read replicas) | [STOR/SPEC](https://wiki.cfdata.org/display/STOR/SPEC%3A+Durable+Objects+read+replication+API) | Implement Lever G3 / Section J §6.3 |
 | H2 (SQLITE_NOMEM) | [edgeworker MR 12773](https://gitlab.cfdata.org/cloudflare/ew/edgeworker/-/merge_requests/12773); [workerd PR 6380](https://github.com/cloudflare/workerd/pull/6380) | Implement Lever A3 / Section J §1.3 |
-| H3 (Containers GA) | [CC/The road to Containers](https://wiki.cfdata.org/pages/viewpage.action?pageId=1072726833) | Hybrid integration plan |
+| ~~H3 (Containers GA)~~ | [CC/The road to Containers](https://wiki.cfdata.org/pages/viewpage.action?pageId=1072726833) | NOT a Nimbus integration item — Cloudchamber container-in-DO is what Nimbus emulates without |
 | H4 (Outgoing WS hib) | [STOR/RFC](https://wiki.cfdata.org/spaces/STOR/pages/1372567047/RFC+Outgoing+WebSocket+Hibernation+Design+Options) | Audit outbound WS usage; minimal change |
 | H5 (Dynamic Workers Obs) | [~birvine-broque/[RFC]](https://wiki.cfdata.org/spaces/~birvine-broque/pages/1365394169/RFC+Dynamic+Workers+Observability) | Lever B2 / delete most of `process-logs.ts` |
 | H6 (Sharding) | [~pkhanna/Dynamic worker sharding](https://wiki.cfdata.org/spaces/~pkhanna/pages/1387665545/Dynamic+worker+sharding) | Audit if Nimbus facets qualify (non-ephemeral) |
@@ -650,23 +650,32 @@ Full body: [`audit/_drafts/H-roadmap.md`](../_drafts/H-roadmap.md).
 
 ## I.0 TL;DR — sibling-projects mapping
 
-| Project | Status | Pattern Nimbus could borrow | Contact |
+| Project | Status | Relationship to Nimbus | Contact |
 |---|---|---|---|
-| **Sandbox SDK** | Beta | Three-layer Workers→DO→Container; first-class binding pattern | [`~mnomitch`](https://wiki.cfdata.org/display/~mnomitch), [`~naresh`](https://wiki.cfdata.org/display/~naresh) |
-| **Containers** | Spring 2026 GA | 4 GB RAM / 4 GB disk escape hatch for workerd-blocked features | [`~mnomitch`](https://wiki.cfdata.org/display/~mnomitch), [`~thomasc`](https://wiki.cfdata.org/display/~thomasc) |
+| **Sandbox SDK** | Beta | Cloudchamber container-in-DO substrate; what Nimbus emulates without (NOT a borrowable pattern) | [`~mnomitch`](https://wiki.cfdata.org/display/~mnomitch), [`~naresh`](https://wiki.cfdata.org/display/~naresh) |
+| **Containers** | Spring 2026 GA | Same as above; not on Nimbus roadmap | [`~mnomitch`](https://wiki.cfdata.org/display/~mnomitch), [`~thomasc`](https://wiki.cfdata.org/display/~thomasc) |
 | **Code Mode** | GA via npm | LOADER.get() executor wrapper; tool-call-as-code | Workers AI / Agents team |
 | **Browser Rendering API** | GA | CDP endpoint as universal-protocol exposure | Browser Rendering team |
 | **Workers for Platforms** | GA, migrating onto Worker Loader | Outbound worker; tags; custom limits per isolate (EW-10547) | [`~dkozlov`](https://wiki.cfdata.org/display/~dkozlov) |
 | **OpenCode Worker** | Community | Identical architecture to Nimbus; possible integration | [`~karishnu`](https://wiki.cfdata.org/spaces/~karishnu/pages/1386224119/OpenCode+Worker+%E2%80%94+AI+Coding+Agent+on+Cloudflare+s+Edge) |
 | **Pyodide / Python Workers** | GA | R2-bucket + lockfile pattern (Section D Lever D1) | Python Workers team |
 
-## I.1 Sandbox SDK — the closest sibling
+## I.1 Sandbox SDK — the platform substrate Nimbus emulates without
 
 Per [`~agillie/[KB] Workload: Agents and Sandboxing`](https://wiki.cfdata.org/spaces/~agillie/pages/1386221284/KB+Workload+Agents+and+Sandboxing):
 
 > *"Sandbox SDK (Beta) — A programmable sandbox API built on Containers. Called from any Worker via `getSandbox(env.Sandbox, 'user-id')`. Provides a TypeScript API for executing commands, managing files, running background processes, and exposing services. Three-layer architecture: Workers → Durable Objects → Containers. Ideal for AI code interpreters, dev environments, and data analysis platforms. PM: Mike Nomitch."*
 
-Compare-and-contrast:
+Sandbox SDK and Nimbus solve the same shape of problem (a programmable
+dev/sandbox environment from a Worker) with **opposite substrates**:
+Sandbox SDK runs real Linux in a Cloudchamber-managed container;
+Nimbus runs an emulated Linux-like dev environment inside DO+Loader.
+The two are not collaborators — they are alternatives. Nimbus's
+project charter is to be the DO-only-emulation answer; if a workload
+genuinely needs real Linux, Sandbox SDK is the correct platform tool
+and Nimbus is not.
+
+Compare-and-contrast (for orientation, not as a borrowing list):
 
 | Property | Sandbox SDK | Nimbus |
 |---|---|---|
@@ -1315,7 +1324,7 @@ Roughly sequencing by impact-per-effort, mirroring MOSSAIC reference §11:
 | **W3 day 4** | A3 (SQLITE_NOMEM catch — gated on H2) | S (when H2 ships) |
 | **W3 day 5** | E3 (rpc-types doc) + E5 (heap-aware chunking) | XS-S |
 | **W4** | G3 (DO read replicas — gated on H1 GA) | M |
-| **W4+** | A4 (dedicated isolate — CF dialogue) + A5 (memory pressure API — gated on H8) + B2/F5 (worker_loaders observability — gated on H5) + B3 (polyfill scheme — gated on H10) + B4 (Trust & Safety dialogue with Sandbox SDK team) + H3 (Container Workers integration when GA) | gated |
+| **W4+** | A4 (dedicated isolate — CF dialogue) + A5 (memory pressure API — gated on H8) + B2/F5 (worker_loaders observability — gated on H5) + B3 (polyfill scheme — gated on H10) + B4 (Trust & Safety dialogue with Sandbox SDK team) | gated |
 
 ---
 
@@ -1328,6 +1337,7 @@ Roughly sequencing by impact-per-effort, mirroring MOSSAIC reference §11:
 - **Cross-tenant tarball compression.** Already content-addressed; further compression doesn't pay.
 - **Smart Placement of the supervisor DO.** DOs don't move once placed. Smart Placement applies to Workers.
 - **Increase facet pool size past 6.** Workers per-pipeline subrequest limit is 6 ([Workers Limits](https://wiki.cfdata.org/display/EW/Workers+Limits)).
+- **Adopt Cloudflare Containers / Sandbox SDK / Cloudchamber container-in-DO as a Nimbus substrate.** Cloudchamber container-in-DO is the platform's container offering; emulating that capability inside DO+Loader without taking on a separate container substrate is the project's purpose. We track Cloudchamber as a primitive that exists ([cf-internal-dossier.md §6](../../docs/research/cf-internal-dossier.md)) but do not depend on it.
 
 ---
 

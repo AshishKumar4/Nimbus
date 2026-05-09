@@ -1,46 +1,63 @@
 ==== Phase 5 P5.3 — full regression run ====
-==== TIMESTAMP: 2026-05-08T22:03:42.482Z ====
-BASE: http://127.0.0.1:8792
+==== TIMESTAMP: 2026-05-09T00:28:24.731Z ====
+BASE: http://127.0.0.1:8793
 QUICK: false
 probes to run: 29 of 29 total
 
-PASS    C'.1 heap-estimator                                  20/20     83ms
-PASS    C'.2 recovery-events                                 13/13    448ms
-PASS    C'.3 error-recovery                                    8/8   1060ms
-PASS    A'.1 resolver-fallback                               17/17     70ms
-PASS    A'.2 streaming-buffers                                 3/3     79ms
-PASS    A'.3 barrel-synth                                      5/5     67ms
-PASS    A'.5 esbuild-bytes                                     3/3     87ms
-PASS    B'.1 shell-state                                     12/12   1914ms
-PASS    B'.2 kernel-mounts                                     4/4   1167ms
-PASS    B'.3 scrollback                                      13/13   6049ms
-PASS    B'.4 phase-machine                                   12/12   1679ms
-PASS    B'.5 join-existing                                   13/13   1561ms
-PASS    D'.1 cirrus-real-do-facet                              8/8   3077ms
-PASS    D'.2 loader-pool-rename                                4/4   3037ms
-PASS    interactive-liveness/walltime-distribution             4/4   6662ms
-PASS    W5 ring-persistence                                    0/0     29ms
-PASS    W5 lru-shrink-restore                                  0/0     37ms
-PASS    W5 sqlite-nomem-retry                                  0/0     37ms
-PASS    W5 diag-shape                                          0/0     25ms
-PASS    W7 frame-roundtrip                                     0/0     32ms
-PASS    W7 large-payload                                       0/0    190ms
-PASS    W7 backpressure                                        0/0    549ms
-PASS    W7 cancel-mid-stream                                   0/0     30ms
-PASS    W7 error-propagation                                   0/0     31ms
-PASS    W7 empty-batches                                       0/0     32ms
-PASS    W7 bytes-source-type                                   0/0     32ms
-PASS    W7 writestream-on-vfs                                  0/0     36ms
-PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   3422ms
-PASS    deploy-validation/no-experimental-flags                0/0     37ms
+PASS    C'.1 heap-estimator                                  20/20     72ms
+PASS    C'.2 recovery-events                                 13/13    431ms
+PASS    C'.3 error-recovery                                    8/8   1055ms
+PASS    A'.1 resolver-fallback                               17/17     69ms
+PASS    A'.2 streaming-buffers                                 3/3     72ms
+PASS    A'.3 barrel-synth                                      5/5     60ms
+PASS    A'.5 esbuild-bytes                                     3/3     65ms
+PASS    B'.1 shell-state                                     12/12   1912ms
+PASS    B'.2 kernel-mounts                                     4/4   1173ms
+PASS    B'.3 scrollback                                      13/13   6003ms
+PASS    B'.4 phase-machine                                   12/12   1671ms
+PASS    B'.5 join-existing                                   13/13   1569ms
+FAIL    D'.1 cirrus-real-do-facet                              3/7   3054ms
+  ==== D'.1 cirrus-real-do-facet probe ====
+  ==== TIMESTAMP: 2026-05-09T00:28:38.938Z ====
+  BASE: http://127.0.0.1:8793
+  SID: tiny-cinnamon-2962
+  stage 1: shell prompt ready
+  stage 1: cirrus diag = {"running":true}
+  FAIL: `kind` field missing on /api/_diag/cirrus — D'.1 surface not landed
+  FAIL: `cookie` field missing — facet's own-SQLite identity not surfaced
+  PASS: facet booted without error
+  FAIL: bootMs not surfaced on diag
+  PASS: isolateGen stable at 1 across close
+  stage 3: cirrus diag post-reconnect = {"running":true}
+  FAIL: post-reconnect kind='undefined' (expected 'do-facet')
+  PASS: cookie preserved across supervisor reconnect (facet survived independently)
+  info: lastFetchMs = undefined (no recent fetch; not asserting)
+  ==== EXIT 1 ====
+  
+PASS    D'.2 loader-pool-rename                                4/4   2992ms
+PASS    interactive-liveness/walltime-distribution             4/4   6556ms
+PASS    W5 ring-persistence                                    0/0     23ms
+PASS    W5 lru-shrink-restore                                  0/0     30ms
+PASS    W5 sqlite-nomem-retry                                  0/0     31ms
+PASS    W5 diag-shape                                          0/0     29ms
+PASS    W7 frame-roundtrip                                     0/0     33ms
+PASS    W7 large-payload                                       0/0    180ms
+PASS    W7 backpressure                                        0/0    528ms
+PASS    W7 cancel-mid-stream                                   0/0     26ms
+PASS    W7 error-propagation                                   0/0     28ms
+PASS    W7 empty-batches                                       0/0     33ms
+PASS    W7 bytes-source-type                                   0/0     25ms
+PASS    W7 writestream-on-vfs                                  0/0     30ms
+PASS    refactor-gate (tsc baseline + RPC + cmds + exports)     0/0   2785ms
+PASS    deploy-validation/no-experimental-flags                0/0     31ms
 
 ==== SUMMARY ====
-total runtime: 31.6s
-  PASS    : 29
-  FAIL    : 0
+total runtime: 30.6s
+  PASS    : 28
+  FAIL    : 1
   TIMEOUT : 0
   SKIP    : 0
   MISS    : 0
-  total PASS lines: 139
-  total FAIL lines: 0
-==== EXIT 0 ====
+  total PASS lines: 134
+  total FAIL lines: 4
+==== EXIT 1 ====

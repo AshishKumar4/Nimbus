@@ -1,0 +1,15 @@
+==== W-D esbuild-wasm L2 probe ====
+==== TIMESTAMP: 2026-05-09T00:28:02.106Z ====
+BASE: http://127.0.0.1:8793
+SID: whimsical-crane-9637
+reset: {
+  purged: true,
+}
+latencies (ms): [ 75, 12, 6, 5, 4, 4, 5, 7 ]
+last bytes:     11907565
+latency cold (t[0]):                  75.00 ms
+latency warm tail [t[3..7]]:        5.0, 4.0, 4.0, 5.0, 7.0 ms
+latency warm median (best-3-of-5):    4.00 ms
+latency ratio cold / max(warm, 0.5):  18.75×
+PASS [latency]: ratio 18.75× ≥ 5× target
+==== EXIT 0 ====
