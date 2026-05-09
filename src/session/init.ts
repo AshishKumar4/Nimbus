@@ -260,8 +260,22 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         return result.exitCode;
       }
 
-      // node script.js [args...]
-      const scriptPath = args[0];
+      // node [flags] script.js [args...]
+      // Skip leading flag args (--watch / --inspect / --inspect-brk +
+      // their values where applicable). The flags are passed through
+      // to runFresh via opts.argv so isLongRunningInvocation routes
+      // correctly.
+      let scriptIdx = 0;
+      while (scriptIdx < args.length && args[scriptIdx].startsWith('-')) {
+        const flag = args[scriptIdx];
+        scriptIdx++;
+        // Flags that take a value: --inspect=host:port and --inspect host:port.
+        // We assume = form for value-bearing flags so we don't accidentally
+        // consume the script path as a flag value.
+        // Bare --watch / --inspect / --inspect-brk consume zero values.
+        if (flag === '--inspect-port') scriptIdx++; // safety for variants
+      }
+      const scriptPath = args[scriptIdx];
       if (!scriptPath) {
         ctx.stderr.write('node: REPL not supported. Use node -e "code" or node script.js\n');
         return 1;
@@ -326,20 +340,22 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       const filename = '/' + resolvedPath;
       const dirname = filename.includes('/') ? filename.substring(0, filename.lastIndexOf('/')) : '/';
 
-      // arch-gaps gap #2: dispatch via runNodeScript. detectLongRunning
-      // sniffs for http.createServer / app.listen / Bun.serve /
-      // Deno.serve / top-level await / --watch and forks long-running
-      // scripts to a long-lived Worker Loader via FacetManager.spawn
-      // (returns immediately with [started (long-running)] notice).
-      // Short scripts continue through the existing facetMgr.exec
-      // fresh-isolate path.
+      // fresh-isolate-bun-behavioral wave: dispatch via runFresh. The
+      // argv-only routing (--watch / --inspect / --inspect-brk) routes
+      // to the long-running fork (facetMgr.spawn). Short scripts
+      // continue through the fresh-isolate facetMgr.exec path. NO
+      // content-sniffing heuristic.
+      // opts.argv MUST contain the runtime flags so
+      // isLongRunningInvocation can see them; we put leading flags
+      // before [filename, ...scriptArgs].
+      const leadingFlags = args.slice(0, scriptIdx);
       const result = await runNodeScript(facetMgr, code, {
-        argv: [filename, ...args.slice(1)],
+        argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
         env: ctx.env,
         cwd: ctx.cwd,
         filename,
         dirname,
-        command: `node ${scriptPath}`,
+        command: `node ${args.slice(0, scriptIdx + 1).join(' ')}`,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -447,12 +463,19 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         return result.exitCode;
       }
 
-      // bun script.[js|ts|tsx|jsx|mjs] [args...]
-      const scriptPath = args[0];
+      // bun [flags] script.[js|ts|tsx|jsx|mjs] [args...]
+      // Skip leading flag args (--watch / --inspect / --hot etc.) so
+      // they don't get treated as the script path.
+      let bunScriptIdx = 0;
+      while (bunScriptIdx < args.length && args[bunScriptIdx].startsWith('-')) {
+        bunScriptIdx++;
+      }
+      const scriptPath = args[bunScriptIdx];
       if (!scriptPath) {
         ctx.stderr.write('bun: REPL not supported. Use bun -e "code" or bun script.js\n');
         return 1;
       }
+      const bunLeadingFlags = args.slice(0, bunScriptIdx);
 
       let resolvedPath = scriptPath;
       if (!scriptPath.startsWith('/')) {
@@ -505,12 +528,12 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       const filename = '/' + resolvedPath;
       const dirname = filename.includes('/') ? filename.substring(0, filename.lastIndexOf('/')) : '/';
       const result = await runBunScript(facetMgr, code, {
-        argv: [filename, ...args.slice(1)],
+        argv: [...bunLeadingFlags, filename, ...args.slice(bunScriptIdx + 1)],
         env: ctx.env,
         cwd: ctx.cwd,
         filename,
         dirname,
-        command: `bun ${scriptPath}`,
+        command: `bun ${args.slice(0, bunScriptIdx + 1).join(' ')}`,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
