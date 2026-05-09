@@ -447,6 +447,22 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcUnregisterPort(port: number): Promise<void> { return _rpc._rpcUnregisterPort(this as any, port); }
   async _rpcTransform(code: string, loader: string): Promise<{ code: string; map: string } | null> { return _rpc._rpcTransform(this as any, code, loader); }
 
+  // two-tier-fanout: peer-DO execute leg of NimbusFanoutPool's POC B topology.
+  async _rpcFanoutExecute(
+    fnSource: string,
+    args: unknown[],
+    poolOpts?: {
+      tag?: string;
+      timeoutMs?: number;
+      preamble?: string;
+      wasmModules?: Record<string, ArrayBuffer>;
+      extraBindings?: Record<string, unknown>;
+      omitSupervisor?: boolean;
+    },
+  ): Promise<{ results: unknown[] }> {
+    return _rpc._rpcFanoutExecute(this as any, fnSource, args, poolOpts);
+  }
+
   // W8 child_process RPC
   async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }

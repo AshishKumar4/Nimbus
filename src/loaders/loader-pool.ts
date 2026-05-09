@@ -608,6 +608,42 @@ export class NimbusLoaderPool {
     if (items.length === 0) return [];
 
     const { fnSource, fnHash } = this.#prepare(fn);
+    return this.#mapInternal<T, R>(fnSource, fnHash, items, opts);
+  }
+
+  /**
+   * Same shape as `map`, but accepts a pre-serialized function source
+   * string instead of a live function reference. Used by
+   * `NimbusFanoutPool`'s peer-DO leg, where the function was already
+   * serialized on the coordinator side and forwarded over RPC.
+   *
+   * The fnSource MUST be the output of `serializeFunction(fn)`
+   * (typically forwarded directly from a coordinator RPC). Bytes-
+   * stable invariants:
+   *   - `fnHash = hashSource(fnSource)` must be deterministic so
+   *     warm slots are correctly keyed.
+   *   - `fnSource` must NOT reference `this` — same rule as
+   *     `serializeFunction`.
+   *
+   * No fn-validation runs here (it already ran on the coordinator);
+   * the peer trusts the caller to forward a valid serialization.
+   */
+  async mapSource<T, R>(
+    fnSource: string,
+    items: T[],
+    opts?: NimbusLoaderMapOptions,
+  ): Promise<Array<Awaited<R> | null>> {
+    if (items.length === 0) return [];
+    const fnHash = hashSource(fnSource);
+    return this.#mapInternal<T, R>(fnSource, fnHash, items, opts);
+  }
+
+  async #mapInternal<T, R>(
+    fnSource: string,
+    fnHash: string,
+    items: T[],
+    opts?: NimbusLoaderMapOptions,
+  ): Promise<Array<Awaited<R> | null>> {
     const resilience = this.#resolve(opts);
     const concurrency = Math.max(
       1,

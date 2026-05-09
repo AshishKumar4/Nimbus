@@ -44,6 +44,7 @@ import { ProcessLogStore } from '../runtime/process-logs.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT, hashKeyToShard } from '../loaders/fanout-pool.js';
 
 type RoutesHost = any;
 
@@ -499,6 +500,16 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       if (url.pathname.startsWith('/api/_test/cache/')) {
         return await handleCacheTestEndpoint(self, url, request);
       }
+      // ── two-tier-fanout primitive probe ──────────────────────────────
+      // Used by audit/probes/two-tier-fanout/* to measure the
+      // POC C in-DO and POC B peer-DO speedups via the
+      // NimbusFanoutPool primitive. Independent of any specific
+      // production site (install-batch, pre-bundle, etc.) so the
+      // primitive's behavior can be measured cleanly without
+      // confounders.
+      if (url.pathname.startsWith('/api/_test/fanout/')) {
+        return await handleFanoutTestEndpoint(self, url, request);
+      }
       return new Response('unknown _test endpoint', { status: 404 });
     }
 
@@ -926,4 +937,159 @@ async function handleCacheTestEndpoint(
   }
 
   return new Response('unknown cache _test endpoint', { status: 404 });
+}
+
+// ── two-tier-fanout primitive benchmark endpoint ────────────────────────
+//
+// Routes under /api/_test/fanout/* exercise NimbusFanoutPool's two
+// topologies (POC C in-DO + POC B peer-DO) via a synthetic workload
+// that's independent of the production install-batch / pre-bundle
+// sites. The probe measures speedup, peer-DO routing determinism,
+// and backpressure behavior in isolation.
+//
+// Endpoint surface (all NIMBUS_DEBUG-gated by the parent router):
+//
+//   GET /api/_test/fanout/topology?n=N
+//        → returns which topology N would route to (no dispatch).
+//   GET /api/_test/fanout/route?n=N&keys=k1,k2,...
+//        → returns the deterministic peer-DO sibling-id per key.
+//   POST /api/_test/fanout/bench {n, sleepMs}
+//        → runs N synthetic tasks, each sleeping `sleepMs` inside
+//          its loader isolate. Returns total wall time + per-peer
+//          ledger of how many tasks each peer DO handled.
+//   POST /api/_test/fanout/serial-bench {n, sleepMs}
+//        → runs N synthetic tasks SERIALLY (concurrency=1) inside
+//          ONE loader isolate. Used to compute T_serial for the
+//          5× speedup assertion.
+//
+// The synthetic worker function intentionally doesn't import npm
+// packages or do real I/O — it just sleeps, so the parallelism
+// floor is the loader/RPC overhead, not network jitter.
+async function handleFanoutTestEndpoint(
+  self: RoutesHost,
+  url: URL,
+  request: Request,
+): Promise<Response> {
+  const env: any = self.env;
+  const path = url.pathname;
+
+  if (path === '/api/_test/fanout/topology' && request.method === 'GET') {
+    const n = Math.max(0, parseInt(url.searchParams.get('n') || '0', 10));
+    return Response.json({
+      n,
+      topology: n === 0 ? 'empty' : (n < IN_DO_THRESHOLD ? 'in-do' : 'peer-do'),
+      inDoThreshold: IN_DO_THRESHOLD,
+      maxPeerFanout: MAX_PEER_FANOUT,
+    });
+  }
+
+  if (path === '/api/_test/fanout/route' && request.method === 'GET') {
+    const keysRaw = url.searchParams.get('keys') || '';
+    const keys = keysRaw.split(',').map((k) => k.trim()).filter(Boolean);
+    const peerCount = Math.max(1, Math.min(parseInt(url.searchParams.get('n') || String(keys.length), 10), MAX_PEER_FANOUT));
+    const placement = keys.map((k) => ({
+      key: k,
+      shard: hashKeyToShard(k, peerCount),
+    }));
+    return Response.json({ peerCount, placement });
+  }
+
+  if (path === '/api/_test/fanout/bench' && request.method === 'POST') {
+    const body = await request.json() as any;
+    const n = Math.max(1, Math.min(64, Number(body.n) || 8));
+    const sleepMs = Math.max(0, Math.min(2000, Number(body.sleepMs) || 100));
+
+    const pool = new NimbusFanoutPool(env, self.ctx, {
+      tag: 'fanout-bench',
+      timeoutMs: 60_000,
+    });
+
+    const tasks = Array.from({ length: n }, (_, i) => ({
+      key: `task-${i}`,
+      args: { id: i, sleepMs },
+    }));
+
+    const t0 = performance.now();
+    // The function runs INSIDE each loader isolate; we use Date.now()
+    // (millisecond resolution is fine; we're sleeping for ms-scale)
+    // to record per-task start/end so the supervisor can compute the
+    // distribution after the fact.
+    const results = await pool.submitMany<
+      { id: number; sleepMs: number },
+      { id: number; startMs: number; endMs: number; loaderEnvKeys: string[] }
+    >(tasks, async (item: { id: number; sleepMs: number }, env: any) => {
+      const startMs = Date.now();
+      // Identify which env we're running in. SUPERVISOR is the
+      // RPC stub auto-injected by NimbusLoaderPool; its presence
+      // tells us we're inside a loader isolate (not the supervisor).
+      const loaderEnvKeys = Object.keys(env || {}).sort();
+      // Sleep entirely inside the isolate — no external network.
+      await new Promise((r) => setTimeout(r, item.sleepMs));
+      const endMs = Date.now();
+      return { id: item.id, startMs, endMs, loaderEnvKeys };
+    });
+    const t1 = performance.now();
+
+    // Aggregate per-peer ledger from the response shape. Each task's
+    // result includes its loaderEnvKeys; the SUPERVISOR binding's
+    // doId is observable to confirm peer routing (if peer-DO topology
+    // is in use, each task's SUPERVISOR.doId differs from the
+    // coordinator's). We don't expose doId here directly — we rely
+    // on hashKeyToShard predicting placement and inspecting the
+    // overlap in start/end timestamps to infer parallelism.
+    const startTimes = results.map((r) => r.startMs);
+    const endTimes = results.map((r) => r.endMs);
+    const minStart = Math.min(...startTimes);
+    const maxEnd = Math.max(...endTimes);
+    const totalDurations = results.map((r) => r.endMs - r.startMs);
+    return Response.json({
+      n,
+      sleepMs,
+      wallTimeMs: t1 - t0,
+      results,
+      analysis: {
+        minStart,
+        maxEnd,
+        spanMs: maxEnd - minStart,
+        sumDurations: totalDurations.reduce((a, b) => a + b, 0),
+        topology: n < IN_DO_THRESHOLD ? 'in-do' : 'peer-do',
+      },
+    });
+  }
+
+  if (path === '/api/_test/fanout/serial-bench' && request.method === 'POST') {
+    const body = await request.json() as any;
+    const n = Math.max(1, Math.min(64, Number(body.n) || 8));
+    const sleepMs = Math.max(0, Math.min(2000, Number(body.sleepMs) || 100));
+
+    // Same workload, but FORCE serial dispatch by using a single
+    // NimbusLoaderPool with concurrency=1 and submitting one task
+    // at a time. This is the T_serial reference for the 5× speedup
+    // assertion.
+    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+    const pool = new NimbusLoaderPool(env, self.ctx, {
+      concurrency: 1,
+      timeoutMs: 60_000,
+      tag: 'fanout-serial',
+    });
+
+    const t0 = performance.now();
+    try {
+      for (let i = 0; i < n; i++) {
+        await pool.submit(
+          async (item: { id: number; sleepMs: number }) => {
+            await new Promise((r) => setTimeout(r, item.sleepMs));
+            return item.id;
+          },
+          { id: i, sleepMs },
+        );
+      }
+    } finally {
+      try { pool.dispose(); } catch {}
+    }
+    const t1 = performance.now();
+    return Response.json({ n, sleepMs, wallTimeMs: t1 - t0 });
+  }
+
+  return new Response('unknown fanout _test endpoint', { status: 404 });
 }

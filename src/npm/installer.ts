@@ -36,6 +36,7 @@ import {
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
@@ -606,14 +607,29 @@ export class NpmInstaller {
   }
 
   /**
-   * Single-facet batch install. Builds per-package specs, dispatches
-   * ONE facet via NimbusLoaderPool.submit (concurrency=1), and lets the
-   * facet loop internally with pLimit(3).
+   * Batch install via two-tier fan-out (NimbusFanoutPool).
    *
-   * One dynamic worker total. Combined with resolver-facet (1) and the
-   * lazy fetch-proxy (0 when both facet paths default-on, see commit 2),
-   * the install lifecycle peaks at 2 concurrent dynamic workers — well
-   * under workerd's per-DO cap.
+   * Topology selected automatically based on the spec count:
+   *   specs.length <  IN_DO_THRESHOLD (5)  → POC C in-DO
+   *     1 NimbusLoaderPool with concurrency = specs.length, capped at
+   *     4 by V8 invariant. Each spec is one facet running its own
+   *     installPackagesInFacet over a single-element shard.
+   *   specs.length >= IN_DO_THRESHOLD       → POC B peer-DO
+   *     N peer NimbusSession sibling DOs (N = min(specs.length,
+   *     MAX_PEER_FANOUT = 32)), each running ONE installPackagesInFacet
+   *     against its own shard with internal pLimit(3).
+   *
+   * Sharding strategy: round-robin (`pkgIdx % N`) so every peer DO
+   *   receives roughly equal work. Stable-id router maps each
+   *   `shard-${i}` task key deterministically (tests can predict
+   *   placement).
+   *
+   * Pre-fix lineage: this site previously ran ONE NimbusLoaderPool
+   *   with concurrency=1, internal pLimit(3) — the explicit "collapses
+   *   what was 4 concurrent dynamic workers (pool.map slots) into 1"
+   *   YELLOW retreat documented in audit/sections/FANOUT-AUDIT.md (P1).
+   *   Two-tier topology re-expands the fan-out without re-introducing
+   *   the V8 cap risk.
    */
   private async fetchViaBatchFacet(
     toFetch: ResolvedPackage[],
@@ -648,42 +664,78 @@ export class NpmInstaller {
       return { installed, failed, filesWritten };
     }
 
-    log(`Dispatching ${specs.length} packages to batch-facet (single worker, internal pLimit=3)...`);
+    // Shard count: bounded by both spec count and the peer-DO ceiling.
+    // For small batches (< IN_DO_THRESHOLD), the in-DO path uses
+    // concurrency = specs.length (capped at 4 by NimbusFanoutPool's
+    // in-DO leg) — so each spec gets its own slot. For larger batches,
+    // we shard into N = min(specs.length, MAX_PEER_FANOUT) buckets,
+    // each handled by one peer DO.
+    const shardCount = Math.min(specs.length, MAX_PEER_FANOUT);
+    // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
+    // This produces ⌈specs.length / shardCount⌉ specs per shard at
+    // most, with the imbalance bounded to ±1.
+    const shards: FacetPackageSpec[][] = Array.from(
+      { length: shardCount },
+      () => [],
+    );
+    specs.forEach((spec, idx) => {
+      shards[idx % shardCount].push(spec);
+    });
+    const nonEmptyShards = shards.filter((s) => s.length > 0);
 
-    const pool = new NimbusLoaderPool(this.env, this.ctx!, {
-      // ONE facet for the whole batch — collapses what was 4 concurrent
-      // dynamic workers (pool.map slots) into 1. The facet itself runs
-      // pLimit(3) to keep its heap peak under ~87 MiB inside its 128 MiB cap.
-      concurrency: 1,
-      // Whole-batch timeout. ~456 packages × ~0.5-2 s tarball download
-      // = up to ~15 min worst case at pLimit=3. 10 min covers typical
-      // installs comfortably; pathological networks fall through to the
-      // catch path below.
-      timeoutMs: 10 * 60_000,
-      retries: 0,
+    const topology =
+      nonEmptyShards.length < IN_DO_THRESHOLD ? 'in-do (POC C)' : 'peer-do (POC B)';
+    log(
+      `Dispatching ${specs.length} packages across ${nonEmptyShards.length} ` +
+      `shard${nonEmptyShards.length === 1 ? '' : 's'} (${topology}, internal pLimit=3)...`,
+    );
+
+    const fanoutPool = new NimbusFanoutPool(this.env, this.ctx!, {
       tag: 'npm-install-batch',
-      // W7: tar-stream + W7-frame preambles concatenated. The batch
-      // facet calls encodeWriteBatchStream() to produce a type:'bytes'
-      // ReadableStream, then env.SUPERVISOR.writeBatchStream(stream) to
-      // bypass the 32 MiB structured-clone cap on the bulk-write RPC.
+      // Whole-batch timeout. With per-shard parallelism of N=8 peer
+      // DOs each running pLimit(3), Mossaic-class 456 packages
+      // typical 30-60 s wall clock. 10 min covers pathological cases.
+      timeoutMs: 10 * 60_000,
+      // W7: tar-stream + W7-frame preambles concatenated. Forwarded
+      // to every facet (in-DO and per-peer) so each shard's facet
+      // can encode its own write-batch stream.
       preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
     });
 
-    let result: InstallBatchResult;
+    const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
+      // Stable-id router key. Same shardIdx → same peer DO across
+      // runs. Tests can predict placement via NimbusFanoutPool's
+      // `peerSiblingId(key, peerCount)` helper.
+      key: `shard-${shardIdx}`,
+      args: { packages: shardSpecs, concurrency: 3 } as InstallBatchSpec,
+    }));
+
+    let shardResults: InstallBatchResult[];
     try {
       try {
-        result = await pool.submit<InstallBatchSpec, InstallBatchResult>(
+        shardResults = await fanoutPool.submitMany<InstallBatchSpec, InstallBatchResult>(
+          tasks,
           installPackagesInFacet,
-          { packages: specs, concurrency: 3 },
-          { timeoutMs: 10 * 60_000 },
         );
       } catch (e: any) {
         const msg = e?.remoteMessage || e?.message || String(e);
-        log(`  [batch-facet] aborted: ${msg}`);
+        log(`  [batch-fanout] aborted: ${msg}`);
         // Mark all packages failed; surface to caller to set non-zero exit.
         for (const s of specs) failed.push(`${s.name}@${s.version}`);
-        throw new Error(`batch-facet install failed: ${msg}`);
+        throw new Error(`batch-fanout install failed: ${msg}`);
       }
+
+      // Merge per-shard InstallBatchResult into a single result for
+      // the rest of the function. Maintain input order: the
+      // round-robin sharding means perPackage entries are NOT in
+      // input order, but the rest of fetchViaBatchFacet uses set
+      // semantics (installed/failed are unordered string lists,
+      // filesWritten is summed) so we don't need to re-order.
+      const result: InstallBatchResult = {
+        perPackage: shardResults.flatMap((r) => r.perPackage),
+        elapsed: Math.max(...shardResults.map((r) => r.elapsed)),
+        facetCounters: mergeFacetCounters(shardResults.map((r) => r.facetCounters)),
+      } as InstallBatchResult;
 
       let okCount = 0;
       let failCount = 0;
@@ -732,8 +784,16 @@ export class NpmInstaller {
         (failCount > 0 ? ` (${failCount} failed)` : ''),
       );
       return { installed, failed, filesWritten };
-    } finally {
-      try { pool.dispose(); } catch { /* best-effort */ }
+    } catch (e: any) {
+      // Final catch — preserved from the pre-fix shape so the error
+      // log line shape stays consistent. NimbusFanoutPool's internal
+      // pools dispose themselves at the end of each submitMany call,
+      // so no explicit dispose() is needed here.
+      const msg = e?.remoteMessage || e?.message || String(e);
+      // The earlier inner-catch already logged + threw; if we reach
+      // here, the throw bubbled — re-throw to preserve the install
+      // command's failure semantics.
+      throw e instanceof Error ? e : new Error(msg);
     }
   }
 
@@ -1854,6 +1914,42 @@ function parentOf(path: string): string {
 
 function safeJsonParse<T>(json: string, fallback: T): T {
   try { return JSON.parse(json); } catch { return fallback; }
+}
+
+/**
+ * Merge per-shard `facetCounters` arrays from a fanout install-batch.
+ * Each shard's counters describe the work done by its peer DO's
+ * facet; merging gives the supervisor a single aggregate to fold
+ * into recordInstallFacetCounters / recordR2RaceCounters as if the
+ * batch had run as a single facet (the pre-fanout posture).
+ *
+ * Aggregation rules:
+ *   - tarballsCompleted, cumulativeBytesDecoded, race wins/losses:
+ *     SUM (additive across shards).
+ *   - peakInFlight: MAX (each shard observed its own peak; the
+ *     overall peak is the max of those, since shards run in parallel
+ *     across separate isolates and the supervisor never sees their
+ *     in-flight sum at one moment).
+ */
+function mergeFacetCounters(
+  perShard: Array<InstallBatchResult['facetCounters']>,
+): InstallBatchResult['facetCounters'] {
+  if (perShard.length === 0) {
+    return {
+      tarballsCompleted: 0,
+      cumulativeBytesDecoded: 0,
+      peakInFlight: 0,
+      pipelinedTarballRaceWins: 0,
+      pipelinedTarballRaceLosses: 0,
+    };
+  }
+  return {
+    tarballsCompleted: perShard.reduce((s, c) => s + (c.tarballsCompleted || 0), 0),
+    cumulativeBytesDecoded: perShard.reduce((s, c) => s + (c.cumulativeBytesDecoded || 0), 0),
+    peakInFlight: perShard.reduce((m, c) => Math.max(m, c.peakInFlight || 0), 0),
+    pipelinedTarballRaceWins: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceWins || 0), 0),
+    pipelinedTarballRaceLosses: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceLosses || 0), 0),
+  };
 }
 
 
