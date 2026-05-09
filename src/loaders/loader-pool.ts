@@ -65,6 +65,24 @@ export interface NimbusLoaderPoolOptions {
    */
   omitSupervisor?: boolean;
   /**
+   * Override the `doId` baked into the auto-injected SUPERVISOR binding.
+   * Default: `ctx.id.toString()` (the DO that constructs the pool).
+   *
+   * Used by NimbusFanoutPool's peer-DO branch (POC B): peer DOs
+   * construct their per-task NimbusLoaderPool from inside
+   * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
+   * override the peer's auto-injected SUPERVISOR routes back to the
+   * peer DO itself — so writes (e.g. install-batch-facet's
+   * writeBatchStream) land in the peer's VFS instead of the
+   * COORDINATOR's. The user's terminal session is on the coordinator;
+   * writes-to-peer are invisible. See INSTALL-HONESTY-retro.md.
+   *
+   * When set, the auto-injected SupervisorRPC uses this string as the
+   * `props.doId`, routing all SUPERVISOR.* calls back to the
+   * coordinator. Effective only when `omitSupervisor !== true`.
+   */
+  supervisorDoIdOverride?: string;
+  /**
    * Raw JavaScript source prepended to every generated worker module.
    * Lets callers inject helpers that cannot be captured via `context`
    * (which is JSON-only) — typically a bundled dependency like a tar
@@ -289,8 +307,13 @@ export class NimbusLoaderPool {
     if (!opts?.omitSupervisor) {
       const ctxExports = getCtxExports();
       if (ctxExports?.SupervisorRPC) {
+        // INSTALL-HONESTY: peer-DO branch supplies coordinator's doId
+        // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
+        // to the user's session DO, not the peer DO. Default to the
+        // local ctx.id (single-DO callers and the in-DO POC C path).
+        const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
         bindings.SUPERVISOR = ctxExports.SupervisorRPC({
-          props: { doId: ctx.id.toString(), pid: 0 },
+          props: { doId: supDoId, pid: 0 },
         });
       } else {
         // SupervisorRPC unavailable — likely running without ctx.exports

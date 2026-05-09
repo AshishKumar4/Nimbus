@@ -141,6 +141,7 @@ export class NimbusFanoutPool {
   private readonly env: any;
   private readonly ctx: DurableObjectState;
   private readonly opts: NimbusFanoutPoolOptions;
+  private readonly coordDoId: string;
   private readonly coordDoIdShort: string;
 
   constructor(env: any, ctx: DurableObjectState, opts: NimbusFanoutPoolOptions) {
@@ -156,7 +157,8 @@ export class NimbusFanoutPool {
     this.env = env;
     this.ctx = ctx;
     this.opts = opts;
-    this.coordDoIdShort = ctx.id.toString().slice(0, 12);
+    this.coordDoId = ctx.id.toString();
+    this.coordDoIdShort = this.coordDoId.slice(0, 12);
   }
 
   /**
@@ -320,6 +322,14 @@ export class NimbusFanoutPool {
               wasmModules: this.opts.wasmModules,
               extraBindings: this.opts.extraBindings,
               omitSupervisor: this.opts.omitSupervisor,
+              // INSTALL-HONESTY: forward the COORDINATOR's full doId so
+              // the peer's NimbusLoaderPool can mint a SUPERVISOR
+              // binding that routes back HERE (the user's session DO),
+              // not to the peer DO itself. Without this, peer DOs'
+              // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
+              // ... write into the peer's own VFS — invisible to the
+              // user. See INSTALL-HONESTY-retro.md.
+              coordinatorDoId: this.coordDoId,
             },
           );
           const peerResults = (rpcResp?.results ?? []) as R[];
