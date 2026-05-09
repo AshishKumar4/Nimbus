@@ -42,6 +42,8 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
 import { renderNoDevServerHtml } from './helpers.js';
+import { R2CacheClient } from '../npm/r2-cache.js';
+import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 
 type RoutesHost = any;
 
@@ -480,6 +482,23 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         clearSessionState(self.ctx);
         return Response.json({ reset: true });
       }
+      // ── cache-and-scrub L2 cache benchmark ───────────────────────────
+      // Used by audit/probes/cache-and-scrub/* to measure the latency
+      // contrast between a cold L3-only path and a warm L2-served
+      // path. The probe asserts the warm path is ≥5× faster than the
+      // cold path (the wave's hard ship-gate).
+      //
+      // Pattern (per cache-layer probe):
+      //   1. POST /api/_test/cache/<layer>/reset    — purge L2 entry
+      //   2. POST /api/_test/cache/<layer>/seed     — write L3 entry
+      //   3. GET  /api/_test/cache/<layer>/bench?n=N — N timed reads
+      //
+      // The bench endpoint returns latencies[] in ms (high-res via
+      // `performance.now()`) so the probe can compute median, ratios,
+      // hit-flag from response headers, etc.
+      if (url.pathname.startsWith('/api/_test/cache/')) {
+        return await handleCacheTestEndpoint(self, url, request);
+      }
       return new Response('unknown _test endpoint', { status: 404 });
     }
 
@@ -772,4 +791,139 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
 
     return new Response('Not found', { status: 404 });
+}
+
+// ── cache-and-scrub L2 benchmark endpoint ───────────────────────────────
+//
+// Routes under /api/_test/cache/* exercise the L2 (`caches.default`)
+// layer that wraps R2 packument/tarball reads + the env.ASSETS
+// esbuild-wasm fetch. Probes assert the L2 hit path is ≥5× faster
+// than the cold path (the wave's hard ship-gate).
+//
+// Endpoint surface (all NIMBUS_DEBUG-gated by the parent router):
+//
+//   POST /api/_test/cache/packument/seed    {name, payload}
+//        → write the packument to R2 (so cold reads have something to
+//          serve) AND purge any stale L2 entry (so the first bench
+//          read is guaranteed L3-only).
+//   GET  /api/_test/cache/packument/bench?name=X&n=N
+//        → run N sequential getPackument(X) calls, return latencies[].
+//   POST /api/_test/cache/tarball/seed       {name, version, sizeKb}
+//        → similar; payload is a synthetic Uint8Array of sizeKb*1024.
+//   GET  /api/_test/cache/tarball/bench?name=X&version=Y&n=N
+//        → similar.
+//   GET  /api/_test/cache/wasm/bench?n=N
+//        → run N sequential fetchEsbuildWasmBytes() calls. The first
+//          is asset-fetch + L2 write; subsequent should hit L2.
+async function handleCacheTestEndpoint(
+  self: RoutesHost,
+  url: URL,
+  request: Request,
+): Promise<Response> {
+  const env: any = self.env;
+  const path = url.pathname;
+  // Build a fresh R2CacheClient bound to the request's env (mirrors
+  // SupervisorRPC._r2 in semantics — graceful-degrade on missing
+  // bindings).
+  const r2 = new R2CacheClient(
+    env?.NPM_TARBALL_CACHE ?? null,
+    env?.NPM_PACKUMENT_CACHE ?? null,
+  );
+  const caches: any = (globalThis as any).caches;
+  const purgeL2 = async (synthUrl: string): Promise<void> => {
+    try { await caches?.default?.delete(new Request(synthUrl)); } catch {}
+  };
+
+  if (path === '/api/_test/cache/packument/seed' && request.method === 'POST') {
+    const body = await request.json() as any;
+    const name = String(body.name || '');
+    const payload = String(body.payload || JSON.stringify({ name, versions: {} }));
+    if (!name) return Response.json({ error: 'missing name' }, { status: 400 });
+    // Purge L2 first so the next bench read starts from L3 cold.
+    await purgeL2(`https://nimbus-cache.invalid/v1/p/${encodeURIComponent(name)}.json`);
+    const ok = await r2.putPackument(name, payload);
+    return Response.json({ seeded: ok, name, payloadBytes: payload.length });
+  }
+
+  if (path === '/api/_test/cache/packument/bench' && request.method === 'GET') {
+    const name = url.searchParams.get('name') ?? '';
+    const n = Math.max(1, Math.min(20, parseInt(url.searchParams.get('n') || '5', 10)));
+    if (!name) return Response.json({ error: 'missing name' }, { status: 400 });
+    const latencies: number[] = [];
+    let lastBytes = 0;
+    let nullCount = 0;
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      const got = await r2.getPackument(name);
+      const t1 = performance.now();
+      latencies.push(t1 - t0);
+      if (!got) nullCount++;
+      else lastBytes = got.json.length;
+    }
+    // R2CacheClient instance was constructed at the top of this
+    // handler; counters reflect the N calls just made.
+    const stats = r2.stats();
+    return Response.json({ name, n, latencies, lastBytes, nullCount, stats });
+  }
+
+  if (path === '/api/_test/cache/tarball/seed' && request.method === 'POST') {
+    const body = await request.json() as any;
+    const name = String(body.name || '');
+    const version = String(body.version || '');
+    const sizeKb = Math.max(1, Math.min(15360, Number(body.sizeKb) || 16)); // up to 15 MiB (under MAX_R2_TARBALL_BYTES = 30 MiB)
+    if (!name || !version) return Response.json({ error: 'missing name/version' }, { status: 400 });
+    await purgeL2(`https://nimbus-cache.invalid/v1/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`);
+    // Synthetic payload — bytes are arbitrary; the cache layer doesn't
+    // care about content. Probe just measures fetch latency.
+    const bytes = new Uint8Array(sizeKb * 1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
+    const ok = await r2.putTarball(name, version, bytes);
+    return Response.json({ seeded: ok, name, version, sizeBytes: bytes.length });
+  }
+
+  if (path === '/api/_test/cache/tarball/bench' && request.method === 'GET') {
+    const name = url.searchParams.get('name') ?? '';
+    const version = url.searchParams.get('version') ?? '';
+    const n = Math.max(1, Math.min(20, parseInt(url.searchParams.get('n') || '5', 10)));
+    if (!name || !version) return Response.json({ error: 'missing name/version' }, { status: 400 });
+    const latencies: number[] = [];
+    let lastBytes = 0;
+    let nullCount = 0;
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      const got = await r2.getTarball(name, version);
+      const t1 = performance.now();
+      latencies.push(t1 - t0);
+      if (!got) nullCount++;
+      else lastBytes = got.length;
+    }
+    const stats = r2.stats();
+    return Response.json({ name, version, n, latencies, lastBytes, nullCount, stats });
+  }
+
+  if (path === '/api/_test/cache/wasm/reset' && request.method === 'POST') {
+    // Purge the L2 entry so the next bench call goes cold (re-runs
+    // env.ASSETS.fetch + L2 write-back). The L2 key is exported
+    // from esbuild-wasm-bytes.ts so the test endpoint stays in
+    // lockstep with the runtime module's key shape across any
+    // future ESBUILD_VERSION bump.
+    await purgeL2(ESBUILD_WASM_L2_KEY);
+    return Response.json({ purged: true });
+  }
+
+  if (path === '/api/_test/cache/wasm/bench' && request.method === 'GET') {
+    const n = Math.max(1, Math.min(10, parseInt(url.searchParams.get('n') || '3', 10)));
+    const latencies: number[] = [];
+    let lastBytes = 0;
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      const ab = await fetchEsbuildWasmBytes(env);
+      const t1 = performance.now();
+      latencies.push(t1 - t0);
+      lastBytes = ab.byteLength;
+    }
+    return Response.json({ n, latencies, lastBytes });
+  }
+
+  return new Response('unknown cache _test endpoint', { status: 404 });
 }

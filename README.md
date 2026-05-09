@@ -61,6 +61,7 @@ Remove `@lifo-sh/core` and the shell plus coreutils would break; everything else
 ### npm
 
 - **Production-grade installer** — pipelined dependency resolution, parallel tarball fetching, batched VFS writes
+- **Four-tier cache hierarchy** — L1 per-DO SQLite (in-memory + DO storage), **L2 `caches.default` (per-colo)**, L3 R2 (cross-tenant, global), L4 npm origin. Hot-path reads land at L1/L2 ; cold installs amortize across tenants via L3. ([Audit](audit/sections/CACHE-AUDIT.md) · [Wins](audit/sections/CACHE-WINS.md))
 - **Content-addressed SQLite cache** — previously resolved versions and fetched tarballs are cached in-DO. Reinstalls complete in milliseconds with zero network requests
 - **100+ dependency installs** — tested with Express, React, and other large dependency trees without hitting memory limits
 - **Full lifecycle support** — `npm install`, `npm run`, `npm test`, `npm start`, `npm init`, `npm ls`
@@ -276,19 +277,22 @@ flowchart TB
         L4A["cirrus-real Vite<br/><i>src/facets/cirrus-real.ts</i><br/>HMR long-poll + module graph"]
     end
 
-    subgraph L5["5. Durable storage"]
+    subgraph L5["5. Durable storage + per-colo cache"]
         direction LR
         L5A[("DO SQLite — 10 GB / instance<br/>VFS pages + session state +<br/>recovery_event ring")]
         L5B[("R2 — multi-tenant<br/>npm tarballs + packuments")]
         L5C[("env.ASSETS<br/>esbuild-wasm + UI shell")]
+        L5D{{"caches.default — per-colo L2<br/>fronts R2 packument + tarball<br/>+ env.ASSETS esbuild-wasm<br/><i>src/npm/r2-cache.ts</i>"}}
     end
 
     L1 --> L2
     L2 -- env.LOADER.get --> L3
     L2 -- ctx.facets.get --> L4
     L2 -- direct --> L5A
-    L2 -- streamed --> L5B
-    L2 -- fetched --> L5C
+    L2 -- streamed via L2 --> L5B
+    L2 -- fetched via L2 --> L5C
+    L5D -. L2 fronts .- L5B
+    L5D -. L2 fronts .- L5C
     L3 -.-> L5B
     L3 -.->|SupervisorRPC| L2
 
@@ -322,7 +326,8 @@ Every subsystem maps to one of four Cloudflare primitives. The choice is anchore
 | Recovery event ring + OOM forensics | **DO SQLite** | `src/observability/oom-discriminator.ts` | Bounded ring (50 entries) + W5 ring-persistence; survives DO eviction |
 | npm tarball cache (cross-tenant) | **R2** | `src/npm/r2-cache.ts` | "Storage capacity beyond 1 DO's 10 GB; cross-tenant L3 cache shared by all sessions" — packages > 30 MiB skip the path due to RPC 32 MiB cap |
 | npm packument cache | **R2** | `src/npm/r2-cache.ts` | Same rationale; small JSON metadata blobs |
-| esbuild-wasm bytes (~12 MiB) | **R2 (env.ASSETS)** | `src/runtime/esbuild-wasm-bytes.ts` | A'.5 moved this off supervisor heap; fetched on demand at facet boot |
+| **Per-colo L2 — packument + tarball + esbuild-wasm** | **`caches.default`** | `src/npm/r2-cache.ts` (W-A, W-B), `src/runtime/esbuild-wasm-bytes.ts` (W-D) | "Per-colo edge cache for in-memory hot reads" (cache-and-scrub wave). Awaited write-back ensures subsequent reads strictly hit L2; key shapes are URL-pinned (synthetic `nimbus-cache.invalid` host) and TTLs match upstream semantics (packument 5 min mirroring R2 customMetadata, tarball/wasm eternal immutable since both are content-addressed). [Audit](audit/sections/CACHE-AUDIT.md) · [Wins](audit/sections/CACHE-WINS.md) |
+| esbuild-wasm bytes (~12 MiB) | **R2 (env.ASSETS) + L2** | `src/runtime/esbuild-wasm-bytes.ts` | A'.5 moved this off supervisor heap; fetched on demand at facet boot. L2 wrap landed in cache-and-scrub W-D — 6×–20× hit-vs-miss latency drop measured locally |
 | Supervisor IPC | **WorkerEntrypoint RPC** | `src/session/supervisor-rpc.ts` | "Universal transport" (§4). Promise pipelining; ReadableStream-over-RPC bypasses the 32 MiB structured-clone limit |
 
 The supervisor itself is a **Durable Object** — the only stateful root in the architecture. Everything else is either (a) ephemeral compute via Worker Loader, (b) stateful child via DO Facet, (c) durable storage via DO SQLite or R2, or (d) transport via WorkerEntrypoint RPC.
