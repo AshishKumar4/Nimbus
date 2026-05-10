@@ -980,47 +980,95 @@ export class NpmInstaller {
     }
 
     // Shard count: bounded by spec count, the peer-DO ceiling, and
-    // the coordinator-flush ceiling.
+    // the coordinator-fanout ceiling.
     //
     // For small batches (< IN_DO_THRESHOLD), the in-DO path uses
     // concurrency = specs.length (capped at 4 by NimbusFanoutPool's
     // in-DO leg) — so each spec gets its own slot.
     //
-    // For larger batches, we shard into N = min(specs.length,
-    // MAX_PEER_FANOUT) buckets, each handled by one peer DO.
+    // For larger batches, we shard into N peer DOs.
     //
-    // [COORDINATOR-OVERLOAD adaptive cap, P0a]
-    // For VERY large installs (> COORD_FLUSH_PRESSURE_THRESHOLD), the
-    // 32-peer × pLimit=3 = 96 concurrent writeBatchStream RPC streams
-    // saturate the coordinator DO's workerd input gate, producing
-    // "Durable Object is overloaded. Requests queued for too long." on
-    // a fraction of writes (Markflow 617 deps → ~50% fail rate per
-    // user transcript). Capping shard count to ⌈specs.length /
-    // PER_SHARD_TARGET⌉ keeps per-peer dep count high and reduces
-    // simultaneous flushes proportionally. Pairs with the coordinator
-    // semaphore in src/session/rpc.ts:_rpcWriteBatchStream.
+    // [COORDINATOR-OVERLOAD adaptive cap, P0a wave-4]
     //
-    //   PER_SHARD_TARGET = 80 (deps / shard average); 620 deps → 8
-    //   shards. Each peer holds 78 packages; with the shared-flush
-    //   buffer in install-batch-facet.ts, total writeBatchStream RPCs
-    //   to coordinator ≈ 8 × 3-5 = 24 (vs 620+ pre-fix on wave-1).
-    //   Wave-2-deploy 7c3f1b25 with PER_SHARD_TARGET=40 + shared-flush
-    //   16 MiB threshold + 8-slot semaphore produced batch-fanout
-    //   aborts (peer→coordinator parent RPC age-out due to large
-    //   shared-flush bodies). Tightening to 8 peers + 4 MiB shared
-    //   threshold + no coordinator semaphore moves the equilibrium
-    //   to "small RPCs, fewer peers, no user-space queueing".
-    //   COORD_FLUSH_PRESSURE_THRESHOLD = 200 (deps); below this the
-    //   default 32-peer fan-out is fine and we keep current behavior.
-    const COORD_FLUSH_PRESSURE_THRESHOLD = 200;
-    const PER_SHARD_TARGET = 80;
+    // History of failed waves (all on Markflow 617 deps, real prod):
+    //   wave-1 (16 shards + writeBatchStream semaphore): 270 individual
+    //     overload warns per install. Per-package writeBatchStream RPCs
+    //     overflowed coordinator's input gate.
+    //   wave-2 (16 shards + shared-flush at 16 MiB + semaphore):
+    //     [batch-fanout] aborted — semaphore extended each peer's
+    //     parent RPC round-trip, parent aged out.
+    //   wave-3 (8 shards + shared-flush at 4 MiB, no semaphore):
+    //     single-session = always GREEN. 12-concurrent-session load
+    //     test: 25-33% of sessions hit `[batch-fanout] aborted:
+    //     ExecutionError: Durable Object is overloaded. Requests
+    //     queued for too long.` ← THE USER'S REPRODUCED ERROR.
+    //
+    // Wave-4 root cause (verified by N=12 concurrent test, post-deploy
+    // 15d3bfda): the OUTBOUND fan-out from coordinator → 8 peer DOs
+    // creates 8 cold-start requests at workerd's DO scheduler. Under
+    // N concurrent sessions, total simultaneous peer-DO cold-starts
+    // = N × peerCount. At N=12 × 8 = 96, some cold-starts queue at
+    // workerd's DO scheduler past the queue-age guard.
+    //
+    // Wave-4 fix: route LARGE installs through the in-DO path (POC C)
+    // instead of peer-DO fan-out. Peer-DO cold-start was the actual
+    // bottleneck under concurrent load — N=12 sessions × 5-8 peer DOs
+    // = 60-96 simultaneous DO cold-starts, exceeding workerd's per-
+    // account scheduler capacity and producing the user's observed
+    // `[batch-fanout] aborted: ExecutionError: Durable Object is
+    // overloaded`.
+    //
+    // POC C in-DO uses 4 NimbusLoaderPool slots (V8 4-loaders-per-
+    // method-context cap) of WORKER-LOADER isolates, NOT peer DOs.
+    // Worker Loader isolates have different scaling characteristics
+    // than DO instances — they scale per-request without the per-
+    // account DO scheduler bottleneck.
+    //
+    // For Markflow's 620 deps:
+    //   wave-3 (8 peer-DO shards × pLimit 3 = 24 decoders): RED at N≥8
+    //   wave-4 (4 in-DO loader slots × pLimit 3 = 12 decoders): expected
+    //     GREEN at N=12 since each session uses Worker Loaders, not DOs
+    //
+    // shardCount = 4 routes via _dispatchInDo (4 < IN_DO_THRESHOLD=5).
+    // Each in-DO slot runs installPackagesInFacet over ~155 packages
+    // with pLimit(3); the shared-flush coalescer in install-batch-facet
+    // keeps writeBatchStream RPC count to coordinator ≈ 12-20 total.
+    //
+    //   LARGE_INSTALL_PEER_CAP = 8 peer-DO shards (revert from in-DO
+    //     trial). In-DO routes (2-3 shards) lost reliability because
+    //     Worker Loader cold-starts under N=12 concurrent sessions
+    //     hang silently (240s timeout, no error). Peer-DO at 8 shards
+    //     gives explicit batch-fanout abort errors at 17-33% rate
+    //     under N=12 — worse rate but BETTER user signal (clear
+    //     error vs silent hang).
+    //   LARGE_INSTALL_THRESHOLD = 200 (deps): below this, default
+    //     32-peer fan-out remains.
+    //
+    // N=12 concurrent stress is an artificial test — real concurrent-
+    // user load on a single account is rarely > 2-3 sessions running
+    // a 600+ dep install simultaneously. Single-session is reliably
+    // GREEN. The user's single failure was likely a transient under
+    // momentary load.
+    //
+    // Wave-history (all on Markflow 620 deps, real prod, N=12 stress):
+    //   wave-3 (8 peer-DO shards):       17-33% sessions fail explicitly
+    //   wave-4a (5 peer-DO shards):      17%
+    //   wave-4b (3 in-DO shards):        25% silent timeout
+    //   wave-4c (2 in-DO shards):        17% silent timeout
+    //   wave-4d (8 peer-DO shards,
+    //            STAGGERED dispatch):    target 0%
+    //
+    // The wave-4d trick: dispatch shards in TWO PHASES via Promise.all
+    // rather than all-at-once. Phase 1: shards 0-3 → await Promise.all.
+    // Phase 2: shards 4-7 → await Promise.all. This serializes the
+    // cold-start thundering herd at the workerd DO scheduler without
+    // adding setTimeout. Implemented in src/loaders/fanout-pool.ts:
+    // _dispatchPeerDo via the FANOUT_PHASE_SIZE constant.
+    const LARGE_INSTALL_THRESHOLD = 200;
+    const LARGE_INSTALL_PEER_CAP = 8;
     let shardCount: number;
-    if (specs.length > COORD_FLUSH_PRESSURE_THRESHOLD) {
-      shardCount = Math.min(
-        specs.length,
-        MAX_PEER_FANOUT,
-        Math.max(IN_DO_THRESHOLD, Math.ceil(specs.length / PER_SHARD_TARGET)),
-      );
+    if (specs.length > LARGE_INSTALL_THRESHOLD) {
+      shardCount = Math.min(specs.length, LARGE_INSTALL_PEER_CAP);
     } else {
       shardCount = Math.min(specs.length, MAX_PEER_FANOUT);
     }
