@@ -682,7 +682,11 @@ const MANIFEST_MAX_DEPTH = 12;
  * fs.readdirSync / fs.statSync honest regardless of which subset of
  * file CONTENT we ship.
  */
-function buildManifest(vfs: SqliteVFS, cwd: string): Record<string, string[]> {
+function buildManifest(
+  vfs: SqliteVFS,
+  cwd: string,
+  scriptPath?: string,
+): Record<string, string[]> {
   const manifest: Record<string, string[]> = {};
   function walk(dirPath: string, depth = 0) {
     if (depth > MANIFEST_MAX_DEPTH) return;
@@ -704,6 +708,37 @@ function buildManifest(vfs: SqliteVFS, cwd: string): Record<string, string[]> {
   const nmDir = cwdStripped + '/node_modules';
   if (vfs.exists(nmDir) && vfs.isDirectory(nmDir)) {
     walk(nmDir, 0);
+  }
+  // ── Bin-target package root (e.g. /tmp/.npx-cache/node_modules/<pkg>/) ──
+  //
+  // When the entry script lives in a node_modules outside cwd (npx-cache
+  // packages, globally-installed bins, etc.), buildManifest's cwd walk
+  // misses the package's sibling files. The bin's index.js gets
+  // require-walked + greedy-added to the BUNDLE, but the MANIFEST
+  // (which is the source of truth for `fs.readdirSync`) was empty for
+  // those paths — so `readdirSync('/tmp/.npx-cache/.../template-X')`
+  // returned [] and `create-vite` scaffolded zero files.
+  //
+  // Walk the innermost `node_modules/<pkg>/` of `scriptPath` so its
+  // entire package tree is enumerable via readdir. Bounded by
+  // MANIFEST_MAX_DEPTH; same depth budget as the cwd walk.
+  if (scriptPath) {
+    const sp = scriptPath.replace(/^\/+/, '');
+    const segs = sp.split('/');
+    let nmIdx = -1;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      if (segs[i] === 'node_modules') { nmIdx = i; break; }
+    }
+    if (nmIdx >= 0) {
+      const isScoped = segs[nmIdx + 1]?.startsWith('@');
+      const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
+      if (pkgEnd <= segs.length) {
+        const pkgRoot = segs.slice(0, pkgEnd).join('/');
+        if (vfs.exists(pkgRoot) && vfs.isDirectory(pkgRoot)) {
+          walk(pkgRoot, 0);
+        }
+      }
+    }
   }
   return manifest;
 }
@@ -1486,7 +1521,7 @@ async function buildPrefetchBundle(
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
   //    from content cap so fs.readdirSync remains honest even if the
   //    content for a given file was capped out.
-  const manifest = buildManifest(vfs, cwd);
+  const manifest = buildManifest(vfs, cwd, scriptPath);
 
   // 4. JSON-encoded-size guard. Pre-check via TextEncoder.encode().length
   //    so we measure UTF-8 bytes (not UTF-16 code units), matching what
