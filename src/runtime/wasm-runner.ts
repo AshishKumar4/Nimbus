@@ -492,23 +492,34 @@ export function makeWasmRunner(deps: {
     let stdout: string;
     let stderr: string;
 
-    if (!outcome.ok) {
+    // The facet's `ok` field encodes "clean exit (code 0, no trap)" — but
+    // for WASI mode, a non-zero proc_exit IS legitimate program output,
+    // not a wasm-runner error. Branch on `mode` first so we surface the
+    // program's exit code unchanged.
+    if (outcome.mode === 'wasi') {
+      // WASI mode: pass through stdout/stderr the wasm wrote via
+      // fd_write. Exit code from proc_exit (or 0 on natural fall-through).
+      // If runStart reported an `error` (wasm trapped, _start missing,
+      // …), append it to stderr but still surface its exitCode (default
+      // 1 from runStart on trap) so callers can distinguish.
+      const wasiOut = outcome as Extract<DispatchOutcome, { mode: 'wasi' }> | (DispatchOutcome & { mode: 'wasi' });
+      // Either branch carries optional stdout/stderr/exitCode/error.
+      stdout = (wasiOut as any).stdout || '';
+      stderr = (wasiOut as any).stderr || '';
+      if ((wasiOut as any).error) {
+        stderr = (stderr ? stderr : '') +
+          `wasm-runner: wasi trap: ${(wasiOut as any).error}\n`;
+      }
+      exitCode = (wasiOut as any).exitCode ?? ((wasiOut as any).ok ? 0 : 1);
+    } else if (!outcome.ok) {
+      // Direct-mode failure or pre-instantiate dispatch failure — shell
+      // sees rc=1 + stderr.
       exitCode = 1;
       stdout = '';
       stderr = `wasm-runner: ${outcome.error}\n`;
-    } else if (outcome.mode === 'wasi') {
-      // WASI mode: pass through stdout/stderr the wasm wrote via
-      // fd_write. Exit code from proc_exit (or 0 on natural fall-through).
-      stdout = outcome.stdout || '';
-      stderr = outcome.stderr || '';
-      if (outcome.error) {
-        stderr = (stderr ? stderr : '') +
-          `wasm-runner: wasi trap: ${outcome.error}\n`;
-      }
-      exitCode = outcome.exitCode ?? 0;
     } else {
-      // Direct mode: surface the result on stdout. void-return is
-      // success with no output; callers chain `&& echo OK` to detect.
+      // Direct mode success: surface the result on stdout. void-return
+      // is success with no output; callers chain `&& echo OK` to detect.
       stdout =
         outcome.result === undefined || outcome.result === null
           ? ''
