@@ -151,6 +151,15 @@ export class SqliteVFS {
 
   // ── Deferred write queue (do86 pattern) ───────────────────────────────
   private pendingWrites = new Map<string, { path: string; chunkId: number; data: Uint8Array }>();
+  /**
+   * Sum of `data.length` across pendingWrites entries. Maintained
+   * in lockstep with the Map by every code path that mutates it
+   * (deferWrite/clearPendingWritesForPath/flushPendingWrites/
+   * cleanupAfterDelete). Read by getStats() so /api/_diag/memory's
+   * `heap.breakdown.vfsInFlightBytes` is no longer a hardcoded 0.
+   * (N3, heap-correctness wave.)
+   */
+  private _pendingWriteBytes = 0;
   private writeFlushScheduled = false;
 
   // ── Write-failure tracking (audit C1) ─────────────────────────────────
@@ -274,7 +283,9 @@ export class SqliteVFS {
             // This is simplified: we re-chunk the data we have
             const numNewChunks = Math.ceil(data.length / CHUNK_SIZE);
             for (let i = 0; i < numNewChunks; i++) {
-              const chunk = data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+              // H10: subarray view; SQLite copies the bytes through
+              // its blob-bind boundary so retention ends at exec().
+              const chunk = data.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
               // Offset chunk IDs by the old chunk's position in the new scheme
               const oldStart = chunkIndex * 1_800_000; // old chunk size
               const newBaseChunk = Math.floor(oldStart / CHUNK_SIZE);
@@ -497,7 +508,11 @@ export class SqliteVFS {
     for (const [key, entry] of this.pendingWrites) {
       if (entry.path === path) toRemove.push(key);
     }
-    for (const key of toRemove) this.pendingWrites.delete(key);
+    for (const key of toRemove) {
+      const e = this.pendingWrites.get(key);
+      if (e) this._pendingWriteBytes -= e.data.length;
+      this.pendingWrites.delete(key);
+    }
   }
 
   /**
@@ -533,17 +548,44 @@ export class SqliteVFS {
     for (const [key, entry] of this.pendingWrites) {
       if (paths.has(entry.path)) toRemove.push(key);
     }
-    for (const key of toRemove) this.pendingWrites.delete(key);
+    for (const key of toRemove) {
+      const e = this.pendingWrites.get(key);
+      if (e) this._pendingWriteBytes -= e.data.length;
+      this.pendingWrites.delete(key);
+    }
   }
 
   // ── Deferred batch writes (do86 pattern) ──────────────────────────────
 
   private deferWrite(path: string, chunkId: number, data: Uint8Array): void {
     const key = this.cacheKey(path, chunkId);
-    // Copy data since the cache entry may be reused
+    // SINGLE-OWNERSHIP BOUNDARY (H10 audit, heap-correctness wave).
+    //
+    // `data` is one of:
+    //   - a `subarray` view into the caller's source ArrayBuffer
+    //     (writeFile post-H10), or
+    //   - a fresh Uint8Array (writeBatch chunks come pre-decoded), or
+    //   - any caller-supplied buffer.
+    //
+    // The pendingWrites entry MUST own its bytes outright — until
+    // flush, the supervisor must be free to drop the caller's ref
+    // without losing the not-yet-persisted data. So we materialise a
+    // fresh ArrayBuffer here. This is the ONE copy on the writeFile
+    // path; before the H10 fix it was the second of THREE copies
+    // (slice + this) per chunk.
+    //
+    // _pendingWriteBytes counter is the source-of-truth for N3
+    // (heap-correctness wave): the `vfsInFlightBytes` heap-estimator
+    // contributor reads from it.
     const copy = new Uint8Array(data.length);
     copy.set(data);
+    // Overwrite-correctness for the byte counter: if a prior entry
+    // exists at this key (re-write of the same chunk before flush),
+    // subtract its bytes BEFORE replacing.
+    const prior = this.pendingWrites.get(key);
+    if (prior) this._pendingWriteBytes -= prior.data.length;
     this.pendingWrites.set(key, { path, chunkId, data: copy });
+    this._pendingWriteBytes += copy.length;
 
     // Throttle: if too many writes pending, flush synchronously.
     // 500 threshold balances memory (500 × ~64KB = ~32MB max pending) vs throughput
@@ -564,6 +606,13 @@ export class SqliteVFS {
     if (this.pendingWrites.size === 0) return;
 
     const entries = Array.from(this.pendingWrites.values());
+    // The bytes are about to leave pendingWrites (either land in SQL
+    // on the transactionSync below, or move to failedWrites without
+    // their data — see line 171 comment). Either way, _pendingWriteBytes
+    // drops to 0 here. We do NOT subtract per-entry; clearing in one
+    // shot is the cheapest correct accounting (and matches the .clear
+    // below).
+    this._pendingWriteBytes = 0;
     this.pendingWrites.clear();
     this._batchWrites++;
 
@@ -919,6 +968,29 @@ export class SqliteVFS {
     // Write chunks to cache (clean, not dirty) and defer SQL write.
     // The deferred write handles persistence; cache entry stays clean
     // to avoid double-writing when the entry is eventually evicted.
+    //
+    // H10 (heap-correctness wave) — `data.slice(...)` here used to
+    // allocate a brand-new chunk-sized ArrayBuffer per chunk. Combined
+    // with `deferWrite`'s defensive copy at the persistence boundary
+    // (sqlite-vfs.ts:_deferWriteCopyForOwnership), the loop transient
+    // peaked at 3× the source size:
+    //
+    //     source AB (caller's content)           1 × N
+    //   + per-chunk slice copies                 1 × N
+    //   + per-chunk deferWrite copies            1 × N
+    //   = 3 × N
+    //
+    // `subarray` returns a VIEW into the source AB — zero allocation,
+    // zero copy. The subarray pins the source AB until the last view
+    // (in cache + in pendingWrites) is dropped, but that is exactly
+    // the same retention the caller already had via their `content`
+    // reference. We don't INCREASE pinning; we just stop creating
+    // redundant copies that the GC immediately has to reclaim.
+    //
+    // Single-ownership boundary moved to `deferWrite`: it still does
+    // ONE copy into a fresh ArrayBuffer at the SQLite persistence
+    // boundary so pendingWrites entries don't accidentally extend
+    // the lifetime of the caller's source.
     if (data.length === 0) {
       // Empty file: no chunks to write
     } else if (data.length <= CHUNK_SIZE) {
@@ -926,7 +998,7 @@ export class SqliteVFS {
       this.deferWrite(path, 0, data);
     } else {
       for (let i = 0; i < chunkCount; i++) {
-        const chunk = data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunk = data.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         this.cacheSet(path, i, chunk, false);
         this.deferWrite(path, i, chunk);
       }
@@ -1620,6 +1692,13 @@ export class SqliteVFS {
         batchWrites: this._batchWrites,
         batchWriteRows: this._batchWriteRows,
         pendingWrites: this.pendingWrites.size,
+        // N3 (heap-correctness wave): real byte sum of the
+        // pendingWrites Map. Source-of-truth for the heap-estimator's
+        // vfsInFlightBytes contributor (was hardcoded 0 at routes.ts:347
+        // pre-fix). Adding this AS WELL AS the entry count above so
+        // ops dashboards that already plot the count don't break, while
+        // memory triage gets the actual byte number.
+        pendingWriteBytes: this._pendingWriteBytes,
         failedWrites: this.failedWrites.size,
         totalWriteFailures: this._writeFailures,
       },

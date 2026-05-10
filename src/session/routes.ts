@@ -339,13 +339,23 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // calls process.memoryUsage(). Ceiling is the architectural soft
       // budget (SUPERVISOR_HEAP_CEILING_BYTES = 64 MiB), half the
       // workerd hard cap of 128 MiB.
+      // N3 (heap-correctness wave). Pre-fix, this was hardcoded 0 with
+      // the comment "matches reality (writes are flushed in
+      // microseconds)" — which was wrong: pendingWrites can hold up to
+      // 500 chunks × 64 KiB = 32 MiB at peak, AND writeStream's spool
+      // can buffer the full incoming batch. Both were invisible to the
+      // estimator because there was no counter to read.
+      //
+      // Post-fix, SqliteVFS maintains _pendingWriteBytes as a running
+      // sum across deferWrite/clearPendingWritesForPath/flushPendingWrites/
+      // clearPendingWritesForPaths. The number reflects the live
+      // unflushed-write byte total at this exact tick. (vfs.sql is the
+      // sub-object in getStats() that surfaces SQL-side counters.)
+      const sqlStats = (vfs as any).sql ?? {};
+      const inFlightWriteBytes = sqlStats.pendingWriteBytes ?? 0;
       const heap = estimateSupervisorHeap(counters, {
         cacheHotBytes: cacheStats.hotBytes ?? 0,
-        // SqliteVFS doesn't surface a single "current in-flight write
-        // bytes" counter; the recordFailure call inside the VFS includes
-        // it on a failure path. For a steady-state read this is 0, which
-        // matches reality (writes are flushed in microseconds).
-        inFlightWriteBytes: 0,
+        inFlightWriteBytes,
       });
 
       return Response.json({
@@ -375,6 +385,13 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           lruShrunk: cacheStats.lruShrunk ?? false,
           evictions: cacheStats.evictions ?? 0,
           hitRate: cacheStats.hitRate ?? 0,
+          // N3 (heap-correctness wave): pending-writes observability.
+          // `pendingWrites` is the entry count (unchanged); the new
+          // `pendingWriteBytes` is the live byte total maintained by
+          // SqliteVFS._pendingWriteBytes. Probes use the pair to
+          // distinguish "many small chunks" from "few large chunks".
+          pendingWrites: sqlStats.pendingWrites ?? 0,
+          pendingWriteBytes: sqlStats.pendingWriteBytes ?? 0,
         },
         rpc: {
           lastFrame: getLastRpcFrame(),
