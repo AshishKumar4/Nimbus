@@ -1600,6 +1600,33 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // the defaults — defaults provide PATH/PS1/etc. (which the user
     // never sets explicitly), persisted overlays whatever the user
     // did set (NIMBUS_TEST=cool, etc.).
+    //
+    // Primitive #7 (primitives-extension wave): PORT/HOST and
+    // NIMBUS_SESSION_ID are part of the standard contract.
+    //
+    //   PORT=3000  — the same default Markflow's `${PORT:-3000}` shell
+    //                expansion targets, and what every Express/Hono/
+    //                fastify/Bun.serve script reads when the user
+    //                doesn't set it explicitly. Long-running spawns
+    //                still pull from `--port` argv first (see
+    //                runtime/long-running-handle.ts:resolveLongRunningPort);
+    //                this default is the SOURCE for that fall-through.
+    //
+    //   HOST=0.0.0.0 — Cloudflare Workers / DO have no localhost vs.
+    //                external distinction (the supervisor never opens
+    //                a real socket); 0.0.0.0 is what every tutorial
+    //                tells users to bind to and matches CF docs.
+    //
+    //   NIMBUS_SESSION_ID — derived from sessionBasePath = "/s/<id>".
+    //                Set lazily here as a placeholder ("") and patched
+    //                below right after Shell construction so the user's
+    //                first command sees the real id.
+    //
+    //   Why these aren't optional: package.json scripts that hardcode
+    //   process.env.PORT (Express's default app, every "create-vite"
+    //   template) get `undefined` without this. Sentry / Datadog / any
+    //   ops integration that wants a session-stable token uses
+    //   NIMBUS_SESSION_ID.
     const env: Record<string, string> = {
       HOME: '/home/user',
       USER: 'user',
@@ -1617,6 +1644,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       XDG_CONFIG_HOME: '/home/user/.config',
       XDG_DATA_HOME: '/home/user/.local/share',
       npm_config_prefix: '/usr/local',
+      // Primitive #7 contract additions.
+      PORT: '3000',
+      HOST: '0.0.0.0',
+      NIMBUS_SESSION_ID: '', // patched after Shell ctor — see below.
       // Persisted env keys win over defaults — the user's `export FOO=bar`
       // survives reconnect.
       ...(persisted.env || {}),
@@ -1625,6 +1656,34 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // ── Create shell ──
     const processRegistry = new ProcessRegistry();
     self.shell = new Shell(self.terminal, self.kernel.vfs, registry, env, processRegistry);
+
+    // Primitive #7: patch NIMBUS_SESSION_ID into the live shell env.
+    // sessionBasePath is "/s/<sid>" set by the X-Nimbus-Base header on
+    // the first /ws upgrade — by the time initSession runs (after the
+    // ws handshake), it's populated. Older /ws-pre-base callers see
+    // an empty string, which is the safe placeholder (no false id).
+    //
+    // We patch the live env (not the local `env` map above) so persisted
+    // shell state on warm-rejoin still picks up the SAME session id —
+    // the DO's name is stable across hibernation cycles. Any user
+    // `export NIMBUS_SESSION_ID=...` would have been persisted to
+    // persisted.env and the spread above would have overridden the
+    // empty placeholder; we only set when the live env is empty
+    // (don't clobber a user-set value).
+    const sessionIdFromBase = (self.sessionBasePath || '').replace(/^\/s\//, '');
+    if (sessionIdFromBase) {
+      // Shell.env is declared private but mutable at runtime — there's
+      // no public setter. We `any`-cast deliberately; the alternative
+      // (replacing the whole Shell after ctor) would lose the kernel +
+      // registry wiring. Anti-req note: this is NOT a defensive cast,
+      // it's a deliberate single-write operation to plug the contract
+      // gap that env-construction couldn't fill (sessionBasePath
+      // wasn't yet hydrated at ctor time).
+      const shellAny = self.shell as any;
+      if (!shellAny.env.NIMBUS_SESSION_ID) {
+        shellAny.env.NIMBUS_SESSION_ID = sessionIdFromBase;
+      }
+    }
 
     // Rehydrate cwd if persisted. The Shell ctor defaults this.cwd to
     // env.HOME (which we did NOT override in the persisted overlay
