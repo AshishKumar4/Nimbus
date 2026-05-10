@@ -282,6 +282,79 @@ export function buildSyntheticEntry(
     }
   }
 
+  // Primitives wave (P6) — `export * from './x.js'` support.
+  //
+  // Many barrel packages (date-fns, several utility libraries, some
+  // icon kits) use `export *` aggregation instead of per-name
+  // re-exports. The original synthesizer ignored these → exportMap
+  // stayed empty → /preview/@modules/<pkg> 500'd with "synthetic
+  // entry generation returned null".
+  //
+  // Strategy: harvest each `export *` source's own top-level export
+  // declarations once, and inject them into the same exportMap with
+  // `sourceName === exportedName`. This is not a full ESM resolver
+  // (we don't follow nested `export *` chains), but it covers the
+  // common case where the file at the end of the chain has explicit
+  // `export function X` / `export const X` / `export class X` /
+  // `export { X }` declarations — which matches every barrel
+  // observed in the wild.
+  //
+  // Cap on the number of `export *` sources we walk so a pathological
+  // barrel-of-barrels can't blow the synthesizer's budget.
+  const indexDirForStar = indexPath.substring(0, indexPath.lastIndexOf('/'));
+  const reExportStar = /export\s*\*\s*from\s*["']([^"']+)["']\s*;?/g;
+  const STAR_SOURCE_CAP = 1500; // date-fns has ~290; well within cap
+  let starSourcesWalked = 0;
+  let s: RegExpExecArray | null;
+  while ((s = reExportStar.exec(indexCode)) !== null && starSourcesWalked < STAR_SOURCE_CAP) {
+    const path = s[1];
+    if (!path.startsWith('.')) continue;
+    starSourcesWalked++;
+    const fullPath = normalizeJoin(indexDirForStar, path);
+    let starCode: string | null;
+    try { starCode = vfs.readFileString(fullPath); } catch { starCode = null; }
+    if (!starCode) continue;
+    // Harvest top-level exports from the source file. Order of patterns:
+    //   1. `export { X, Y as Z } from "..."` (re-export from elsewhere)
+    //   2. `export { X, Y as Z };` (re-export of locally-bound names)
+    //   3. `export function|class|const|let|var X` (declaration)
+    // We do NOT walk transitive `export *` chains; that's the
+    // budget cap in exchange for simplicity. esbuild handles the
+    // actual resolution at bundle time anyway — we only need enough
+    // entries in the map to MATCH the user's named imports.
+    const reInnerNamed = /export\s*\{([^}]+)\}\s*(?:from\s*["'][^"']+["'])?\s*;?/g;
+    let im: RegExpExecArray | null;
+    while ((im = reInnerNamed.exec(starCode)) !== null) {
+      for (const partRaw of im[1].split(',')) {
+        const part = partRaw.trim();
+        if (!part) continue;
+        const renamed = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
+        if (renamed) {
+          if (!exportMap.has(renamed[2])) {
+            exportMap.set(renamed[2], { path, sourceName: renamed[2], isDefault: false });
+          }
+          continue;
+        }
+        if (/^[A-Za-z_$][\w$]*$/.test(part)) {
+          if (!exportMap.has(part)) {
+            exportMap.set(part, { path, sourceName: part, isDefault: false });
+          }
+        }
+      }
+    }
+    // Top-level declarations — `export function X`, `export class X`,
+    // `export const X`, `export let X`, `export var X`. Async, generator
+    // and TS modifiers (default, abstract) handled by the prefix opt-out.
+    const reDecl = /export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+    let dm: RegExpExecArray | null;
+    while ((dm = reDecl.exec(starCode)) !== null) {
+      const name = dm[1];
+      if (!exportMap.has(name)) {
+        exportMap.set(name, { path, sourceName: name, isDefault: false });
+      }
+    }
+  }
+
   if (exportMap.size === 0) return null;
 
   // Match user's requested names against the map. Build per-file

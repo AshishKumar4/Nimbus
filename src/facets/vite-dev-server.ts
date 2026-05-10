@@ -1738,8 +1738,11 @@ export class ViteDevServer {
         if (!names || names.size === 0) {
           // No statically-resolvable imports. We refuse to CDN-fallback
           // (100% edge contract) AND we refuse to bundle the whole
-          // barrel (would OOM the facet). Emit a hard error so the
-          // user sees a clear remediation.
+          // barrel (would OOM the facet). Primitives wave (P6): return
+          // a 200 module that throws on first use so the runtime
+          // error surfaces in the BROWSER console (where the user is
+          // looking) AND on the dev-server log (Process tab) — instead
+          // of an opaque 500 in the network panel.
           const diag =
             `[vite-dev] cannot bundle ${specifier}: barrel package (${fileCount} files) ` +
             `with no static named imports detected in user source. ` +
@@ -1748,22 +1751,36 @@ export class ViteDevServer {
             `\`import { IconName } from '${pkgName}'\` so Nimbus can synthesize ` +
             `a tree-shakable entry.`;
           console.error(diag);
+          const escaped = JSON.stringify(diag);
           return new Response(
             `// nimbus: ${diag}\n` +
-            `throw new Error(${JSON.stringify('Nimbus: ' + diag)});\n`,
+            `const __err = new Error(${escaped});\n` +
+            `console.error(${escaped});\n` +
+            `export default new Proxy({}, { get: () => { throw __err; } });\n`,
             {
-              status: 500,
-              headers: { ...headers, 'Content-Type': JS_CT },
+              status: 200,
+              headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'no-static-imports' },
             },
           );
         }
         const nmDirOnDemand = this.root + '/node_modules';
         const synth = buildSyntheticEntry(this.vfs, nmDirOnDemand, pkgName, names);
         if (!synth) {
+          // Primitives wave (P6): emit an honest 200 stub instead of a
+          // 500. The stub has the same effect at runtime (any access
+          // throws), but the network response is a parseable JS module
+          // so the browser's module loader doesn't crash with an
+          // unrelated "failed to fetch" error that obscures the real
+          // diagnostic.
+          const diag = `Nimbus: synthetic entry generation failed for ${specifier} (barrel: ${fileCount} files; ${names.size} static imports). The package's index does not match any pattern Nimbus's barrel synthesizer understands (export {…} from, export * from, top-level decls). File a bug.`;
+          console.error(diag);
+          const escaped = JSON.stringify(diag);
           return new Response(
             `// nimbus: synthetic entry generation returned null for ${specifier}\n` +
-            `throw new Error(${JSON.stringify('Nimbus: synthetic entry generation failed for ' + specifier)});\n`,
-            { status: 500, headers: { ...headers, 'Content-Type': JS_CT } },
+            `console.error(${escaped});\n` +
+            `const __err = new Error(${escaped});\n` +
+            `export default new Proxy({}, { get: () => { throw __err; } });\n`,
+            { status: 200, headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'synth-null' } },
           );
         }
         const synthPath = syntheticEntryPath(this.root, pkgName);
@@ -1771,11 +1788,16 @@ export class ViteDevServer {
           this.vfs.mkdir(synthPath.substring(0, synthPath.lastIndexOf('/')), { recursive: true });
           this.vfs.writeFile(synthPath, synth.code);
         } catch (e: any) {
+          // Primitives wave (P6): same 200-stub pattern as the synth-null
+          // branch above. VFS write failure is rare but distinct from a
+          // synthesizer gap, so we keep the diagnostic header value
+          // separate for log triage.
           const msg = `[vite-dev] failed to write synthetic entry for ${specifier}: ${e?.message || e}`;
           console.error(msg);
+          const escaped = JSON.stringify(msg);
           return new Response(
-            `// nimbus: ${msg}\nthrow new Error(${JSON.stringify('Nimbus: ' + msg)});\n`,
-            { status: 500, headers: { ...headers, 'Content-Type': JS_CT } },
+            `// nimbus: ${msg}\nconsole.error(${escaped});\nconst __err = new Error(${escaped});\nexport default new Proxy({}, { get: () => { throw __err; } });\n`,
+            { status: 200, headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'vfs-write-failed' } },
           );
         }
         bundleEntryPath = synthPath;
