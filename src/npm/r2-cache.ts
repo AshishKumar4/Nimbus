@@ -61,8 +61,37 @@ import { recordHit as _recordCacheHit, recordMiss as _recordCacheMiss } from '..
  *  poisoned a class of keys). */
 export const R2_CACHE_PREFIX = 'v1';
 
-/** Packument TTL — matches FE/Build a private npm registry default. */
-export const PACKUMENT_TTL_MS = 5 * 60_000;
+/** Packument TTL — 60 min (cache-observability wave; was 5 min pre-wave).
+ *
+ *  Rationale for the bump (~12× longer than pre-wave):
+ *
+ *  - npm registry packuments change ONLY when a new version of the
+ *    package is published. For >99% of packages this is sub-weekly.
+ *  - The 5-min TTL fired roughly once per minute on a long install
+ *    session (resolver re-fetches as dep BFS re-encounters cached
+ *    names with new range constraints). 12× fewer re-fetches at
+ *    60 min TTL means ~12× lower registry roundtrip count for an
+ *    equivalent workload.
+ *  - npm registry origin is shared across all Nimbus users; lower
+ *    aggregate load is good citizenship and lowers our risk of being
+ *    rate-limited at the L4 boundary.
+ *
+ *  Trade-off (the cost of the bump):
+ *
+ *  - A package version published less than 60 min ago may not be
+ *    resolvable from a Nimbus session whose colo's L2 cache has a
+ *    pre-publish entry. Worst case: a user `npm i my-fresh@1.0.1`
+ *    seconds after publishing my-fresh@1.0.1 sees the cached 1.0.0
+ *    entry for up to 60 min.
+ *  - Workaround for users hitting freshness issues: open a new
+ *    session in a different colo (cold L2), OR wait for the TTL,
+ *    OR (future) add `NIMBUS_CACHE_TTL_MS` env override.
+ *
+ *  Reversibility: redeploy with this constant restored to 5*60_000
+ *  reverts the behavior instantly (next request reads the new TTL).
+ *  No data migration; existing R2 packument entries' customMetadata
+ *  .expiresAt stamps remain valid against either TTL. */
+export const PACKUMENT_TTL_MS = 60 * 60_000;
 
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
