@@ -1908,19 +1908,34 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             sqliteFs.writeFile(tmpPath, stripped);
             entryAbsPath = tmpPath;
           } else {
-            const relPath = reqMatch[1];
-            // Resolve `..` / `.` against binShimPath's directory.
-            const shimDir = binShimPath.substring(0, binShimPath.lastIndexOf('/'));
-            const parts = (shimDir + '/' + relPath).split('/');
-            const stack: string[] = [];
-            for (const p of parts) {
-              if (p === '' || p === '.') continue;
-              if (p === '..') { stack.pop(); continue; }
-              stack.push(p);
+            const reqArg = reqMatch[1];
+            // Three possible shim shapes we observe in the wild:
+            //   1. `require('../lib/X.js')` — relative; resolve against
+            //      shim's directory. Real-Node convention.
+            //   2. `require('home/user/.../X')` — VFS-absolute (no
+            //      leading slash, no leading dot). This is what
+            //      Nimbus's installer at npm/installer.ts:1453
+            //      generates. Use the path AS-IS.
+            //   3. `require('/abs/path')` — POSIX absolute. Strip the
+            //      leading slash and use directly.
+            //
+            // Discriminator: a leading '.' marks (1); otherwise treat
+            // as already-resolved (2 or 3).
+            if (reqArg.startsWith('./') || reqArg.startsWith('../')) {
+              const shimDir = binShimPath.substring(0, binShimPath.lastIndexOf('/'));
+              const parts = (shimDir + '/' + reqArg).split('/');
+              const stack: string[] = [];
+              for (const p of parts) {
+                if (p === '' || p === '.') continue;
+                if (p === '..') { stack.pop(); continue; }
+                stack.push(p);
+              }
+              entryAbsPath = stack.join('/');
+            } else {
+              entryAbsPath = reqArg.replace(/^\/+/, '');
             }
-            entryAbsPath = stack.join('/');
-            // If the resolved file doesn't exist, try common JS
-            // extensions (some shims drop them).
+            // Try common JS extensions if the file doesn't exist
+            // verbatim (some shims drop them).
             if (!sqliteFs.exists(entryAbsPath)) {
               for (const ext of ['.js', '.cjs', '.mjs']) {
                 if (sqliteFs.exists(entryAbsPath + ext)) {
@@ -1928,6 +1943,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
                   break;
                 }
               }
+            }
+            if (!sqliteFs.exists(entryAbsPath)) {
+              ctx.stderr.write(`${name}: bin entry not found: ${entryAbsPath}\n`);
+              return 1;
             }
           }
         } catch (e: any) {
