@@ -90,18 +90,19 @@ const l3Total =
 console.log(`  post-install: L2 total lookups=${l2Total}, L3 total lookups=${l3Total}`);
 console.log(`  clsx is ~1 KB compressed — well under the 30 MiB MAX_R2_TARBALL_BYTES cap`);
 
-// HONEST LIMITATION (cache-observability wave): L2/L3 events ARE
-// captured by R2CacheClient but DRAINED-AND-DISCARDED by
-// SupervisorRPC because forwarding to the DO singleton triggered
-// workerd's recursion guard mid-install. So even for small packages
-// that DO exercise the L2/L3 path, /api/_diag/cache shows 0.
-// This will be fixed in the next wave via facet-side accumulation.
-A.check('L2 currently surfaces 0 (drained-and-discarded — next wave)',
-  l2Total === 0,
-  `L2 total=${l2Total} (expected 0 until next-wave facet fold)`);
-A.check('L3 currently surfaces 0 (drained-and-discarded — next wave)',
-  l3Total === 0,
-  `L3 total=${l3Total} (expected 0 until next-wave facet fold)`);
+// cache-obs-2: facet-side fold restores L2/L3/L4 visibility. The
+// post-install clsx fetch should have exercised either L2 (warm
+// colo) or L3 (R2 warm) or L4 (registry). At least one of the
+// outer-tier counters must be non-zero.
+const outerTotal = l2Total + l3Total +
+  (after.byTier.L4.tarball.hits + after.byTier.L4.tarball.misses +
+   after.byTier.L4.packument.hits + after.byTier.L4.packument.misses);
+A.check('small package (clsx) sourced from outer tier (L2/L3/L4 non-zero)',
+  outerTotal >= 1,
+  `L2 total=${l2Total} L3 total=${l3Total} L4 total=${
+    after.byTier.L4.tarball.hits + after.byTier.L4.tarball.misses +
+    after.byTier.L4.packument.hits + after.byTier.L4.packument.misses
+  }`);
 
 console.log(`\n[large-tarball-bypass] verdict: 30 MiB bypass cap CONFIRMED in code (audit P1).`);
 console.log(`[large-tarball-bypass] W7 streaming closed OUTBOUND direction only;`);

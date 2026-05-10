@@ -97,50 +97,51 @@ console.log(`  phase1 snapshot:`, JSON.stringify({
   L4: { tarball: p1L4Tarball, packument: p1L4Pack },
 }, null, 0));
 
-// Phase-1 invariants. EMPIRICAL FINDINGS captured here:
+// Phase-1 invariants — cache-obs-2 acceptance gate.
 //
-// 1. L1 BYPASS: install-batch-facet does NOT call
-//    NpmCache.getRegistryEntry / getTarballFiles for fresh installs.
-//    L1 stays at 0 hits / 0 misses for `npm i clsx`-shape installs.
-//    L1 IS exercised by lockfile-bound recovery (installer.ts:1354)
-//    and the legacy non-facet resolver (resolver.ts:249) but not
-//    by the active facet-based install path.
+// v1 captured-and-drained L2/L3/L4 events because DO recursion guard
+// blocked the forward path. v2 fixes this by routing events through
+// FACET RETURN VALUES (recordR2RaceCounters pattern). The probe now
+// asserts non-zero L2/L3/L4 hits.
 //
-// 2. L2/L3/L4 NOT SURFACED: instrumentation IS in r2-cache.ts but
-//    forwarding to /api/_diag/cache from SupervisorRPC hit workerd's
-//    recursion-guard (Subrequest depth limit exceeded). The events
-//    are captured then DISCARDED via _drainCacheEvents — see
-//    src/session/supervisor-rpc.ts honest-limitation note.
-//
-// What we CAN assert this wave:
-//   - The endpoint shape works (snapshot, reset).
-//   - The L1 grid is correctly empty for this install shape.
-//   - The wave architecture provides counters that, when fed by a
-//     future facet-side accumulator, will show real numbers.
+// L1 bypass note still stands: install-batch-facet doesn't call
+// NpmCache.getRegistryEntry/getTarballFiles for fresh installs. L1
+// stays at 0 hits/misses on `npm i clsx` (documented).
 
-// L1 stayed at zero (documented bypass behavior). Record as a
-// regression-guard: if L1 STARTS getting hit for single-package
-// installs, the install path changed and the audit should re-examine.
 A.check('L1 bypassed on single-package install (counters = 0 — documented)',
   p1L1Tarball.hits === 0 && p1L1Tarball.misses === 0 &&
   p1L1Pack.hits === 0 && p1L1Pack.misses === 0,
   `L1.tarball=${JSON.stringify(p1L1Tarball)} L1.packument=${JSON.stringify(p1L1Pack)}`);
 
-// L2/L3/L4 stayed at zero in /api/_diag/cache — events were captured
-// but not forwarded due to the DO recursion-guard limitation. Assert
-// to lock in current behavior so the next wave's facet-side fold
-// flips this from 0 to non-zero (which will RED this assertion and
-// signal the upgrade landed).
-const allOuterTiersZero =
-  (p1L2Tarball.hits + p1L2Tarball.misses) === 0 &&
-  (p1L2Pack.hits + p1L2Pack.misses) === 0 &&
-  (p1L3Tarball.hits + p1L3Tarball.misses) === 0 &&
-  (p1L3Pack.hits + p1L3Pack.misses) === 0 &&
-  (p1L4Tarball.hits + p1L4Tarball.misses) === 0 &&
-  (p1L4Pack.hits + p1L4Pack.misses) === 0;
-A.check('L2/L3/L4 currently surfaces 0 (events drained — next wave folds them)',
-  allOuterTiersZero,
-  `L2.t=${JSON.stringify(p1L2Tarball)} L3.t=${JSON.stringify(p1L3Tarball)} L4.t=${JSON.stringify(p1L4Tarball)}`);
+// CACHE-OBS-2 ACCEPTANCE — at least ONE of L2/L3/L4 across both
+// kinds must be non-zero. The clsx tarball is ~3.9 KB and the
+// packument is ~42 KB; SOMETHING sourced those bytes. Either:
+//   - L2 hit (warm colo cache from prior installs) → expected steady-state
+//   - L3 hit (R2 warm, L2 cold) → expected on colo migration
+//   - L4 hit (registry.npmjs.org) → first install ever / cold-everything
+const outerTierActivity =
+  p1L2Tarball.hits + p1L2Pack.hits +
+  p1L3Tarball.hits + p1L3Pack.hits +
+  p1L4Tarball.hits + p1L4Pack.hits;
+A.check('cache-obs-2 acceptance: L2/L3/L4 hits NON-ZERO after install',
+  outerTierActivity >= 1,
+  `L2.t.hits=${p1L2Tarball.hits} L2.p.hits=${p1L2Pack.hits} ` +
+  `L3.t.hits=${p1L3Tarball.hits} L3.p.hits=${p1L3Pack.hits} ` +
+  `L4.t.hits=${p1L4Tarball.hits} L4.p.hits=${p1L4Pack.hits}`);
+
+// Both tarball AND packument should have been fetched from SOME
+// tier. Asserts both kinds got served (otherwise the install
+// somehow completed without seeing one of them, which is wrong).
+const tarballServed =
+  p1L2Tarball.hits + p1L3Tarball.hits + p1L4Tarball.hits;
+const packumentServed =
+  p1L2Pack.hits + p1L3Pack.hits + p1L4Pack.hits;
+A.check('tarball sourced from at least one of L2/L3/L4',
+  tarballServed >= 1,
+  `L2=${p1L2Tarball.hits} L3=${p1L3Tarball.hits} L4=${p1L4Tarball.hits}`);
+A.check('packument sourced from at least one of L2/L3/L4',
+  packumentServed >= 1,
+  `L2=${p1L2Pack.hits} L3=${p1L3Pack.hits} L4=${p1L4Pack.hits}`);
 
 // ── Phase 2: rm -rf node_modules + re-install in same session ─────────
 console.log(`[hit-rate-tracking] phase 2 — rm node_modules + re-install in session A`);
@@ -150,16 +151,23 @@ await tA.run('npm install clsx', 60_000);
 const phase2 = await getCacheSnapshot(sidA);
 const p2L1Tarball = sumKind(phase2, 'L1', 'tarball');
 const p2L1Pack    = sumKind(phase2, 'L1', 'packument');
+const p2L2Tarball = sumKind(phase2, 'L2', 'tarball');
+const p2L2Pack    = sumKind(phase2, 'L2', 'packument');
 
-console.log(`  phase2: L1 still bypassed (re-install on same install shape); L2/L3/L4 still drained-and-discarded`);
+console.log(`  phase2 deltas: L1.tarball.hits +${p2L1Tarball.hits - p1L1Tarball.hits} L2.tarball.hits +${p2L2Tarball.hits - p1L2Tarball.hits} L2.packument.hits +${p2L2Pack.hits - p1L2Pack.hits}`);
 
-// Phase 2 just verifies the install RAN (terminal got a prompt back)
-// — counters stay at zero because:
-//   - L1 is bypassed on this install shape (same as phase 1)
-//   - L2/L3/L4 events are drained on the SupervisorRPC side (architectural)
-A.check('phase 2: install completed (no terminal error)',
-  true,
-  'check based on probe reaching this step (terminal would have closed otherwise)');
+// cache-obs-2: phase-2 re-install on warmed L2 cache should hit L2
+// for at least one of (tarball, packument) — phase 1 already wrote
+// them through. Asserting BOTH would be stricter but the supervisor
+// caches the install metadata in-memory so the tarball fetch may
+// short-circuit; packument re-resolve through the resolver is the
+// most-reliable signal.
+const l2Delta =
+  (p2L2Tarball.hits - p1L2Tarball.hits) +
+  (p2L2Pack.hits - p1L2Pack.hits);
+A.check('phase 2: L2 cache served re-install (delta >= 1)',
+  l2Delta >= 1,
+  `L2.tarball.delta=${p2L2Tarball.hits - p1L2Tarball.hits} L2.packument.delta=${p2L2Pack.hits - p1L2Pack.hits}`);
 
 await tA.close();
 
@@ -199,15 +207,25 @@ console.log(`  phase3 snapshot:`, JSON.stringify({
   L4: { tarball: p3L4Tarball, packument: p3L4Pack },
 }, null, 0));
 
-// Session B starts with a fresh per-DO state. L1 stays bypassed
-// on this install shape; L2/L3/L4 stay drained-and-discarded.
+// Session B fresh per-DO state. L1 still bypassed on this install
+// shape (documented). The cross-tenant L2/L3 SHOULD serve session
+// B because session A's install warmed them — that's the cache
+// payoff.
 A.check('phase 3: L1 still bypassed on fresh session (documented)',
   p3L1Tarball.hits === 0 && p3L1Tarball.misses === 0 &&
   p3L1Pack.hits === 0 && p3L1Pack.misses === 0,
   `L1.tarball=${JSON.stringify(p3L1Tarball)} L1.packument=${JSON.stringify(p3L1Pack)}`);
-A.check('phase 3: L2/L3/L4 still drained-and-discarded (next wave will surface)',
-  (p3L2Tarball.hits + p3L2Pack.hits + p3L3Tarball.hits + p3L3Pack.hits + p3L4Tarball.hits + p3L4Pack.hits) === 0,
-  `outerTotal=${p3L2Tarball.hits + p3L2Pack.hits + p3L3Tarball.hits + p3L3Pack.hits + p3L4Tarball.hits + p3L4Pack.hits}`);
+
+// CRITICAL cache-obs-2 invariant: cross-tenant cache (L2 or L3)
+// MUST serve session B. Session A warmed those tiers; if session
+// B sees L4-only hits, the cross-tenant cache is broken OR the
+// counters lost the events. Either is a bug.
+const p3CrossTenant =
+  p3L2Tarball.hits + p3L3Tarball.hits +
+  p3L2Pack.hits + p3L3Pack.hits;
+A.check('phase 3: cross-tenant cache (L2 or L3) served at least one lookup',
+  p3CrossTenant >= 1,
+  `L2.t=${p3L2Tarball.hits} L3.t=${p3L3Tarball.hits} L2.p=${p3L2Pack.hits} L3.p=${p3L3Pack.hits}`);
 
 await tB.close();
 
