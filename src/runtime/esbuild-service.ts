@@ -257,10 +257,26 @@ export class EsbuildService {
               'NO CDN fallback (100% edge contract).',
           );
         }
-        await esb.initialize({
-          wasmModule: esbuildWasmUrl as any,
-          worker: false,
-        });
+        // [WRANGLER-DEV-HANG P0b] Time-bound esb.initialize. Workerd
+        // has historically had cases where wasm init blocks indefinitely;
+        // 30 s is well above the typical ~200 ms init time.
+        const INIT_TIMEOUT_MS = 30_000;
+        let initTimeout: ReturnType<typeof setTimeout> | null = null;
+        await Promise.race([
+          esb.initialize({
+            wasmModule: esbuildWasmUrl as any,
+            worker: false,
+          }),
+          new Promise<never>((_, reject) => {
+            initTimeout = setTimeout(() => {
+              reject(new Error(
+                `esbuild init exceeded ${INIT_TIMEOUT_MS / 1000}s. ` +
+                `wasmModule type=${typeof esbuildWasmUrl}; ` +
+                `Likely cause: WebAssembly compile/init stall in workerd.`
+              ));
+            }, INIT_TIMEOUT_MS);
+          }),
+        ]).finally(() => { if (initTimeout) clearTimeout(initTimeout); });
         this.initialized = true;
       } catch (e: any) {
         // "Cannot call initialize more than once" means it's already ready

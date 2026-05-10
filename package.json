@@ -12,6 +12,7 @@
     "predeploy": "node scripts/bundle-git.mjs && node scripts/bundle-facet-workers.mjs && node scripts/bundle-esbuild-wasm.mjs && node scripts/bundle-tailwind-play.mjs",
     "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
     "deploy": "wrangler deploy",
+    "test:behavioral": "bun tests/behavioral/run-all.mjs",
     "postinstall": "node scripts/patch-lifo-ui.mjs && node scripts/bundle-git.mjs && node scripts/bundle-facet-workers.mjs && node scripts/bundle-esbuild-wasm.mjs && node scripts/bundle-tailwind-play.mjs"
   },
   "dependencies": {

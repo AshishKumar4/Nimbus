@@ -979,13 +979,44 @@ export class NpmInstaller {
       return { installed, failed, filesWritten };
     }
 
-    // Shard count: bounded by both spec count and the peer-DO ceiling.
+    // Shard count: bounded by spec count, the peer-DO ceiling, and
+    // the coordinator-flush ceiling.
+    //
     // For small batches (< IN_DO_THRESHOLD), the in-DO path uses
     // concurrency = specs.length (capped at 4 by NimbusFanoutPool's
-    // in-DO leg) — so each spec gets its own slot. For larger batches,
-    // we shard into N = min(specs.length, MAX_PEER_FANOUT) buckets,
-    // each handled by one peer DO.
-    const shardCount = Math.min(specs.length, MAX_PEER_FANOUT);
+    // in-DO leg) — so each spec gets its own slot.
+    //
+    // For larger batches, we shard into N = min(specs.length,
+    // MAX_PEER_FANOUT) buckets, each handled by one peer DO.
+    //
+    // [COORDINATOR-OVERLOAD adaptive cap, P0a]
+    // For VERY large installs (> COORD_FLUSH_PRESSURE_THRESHOLD), the
+    // 32-peer × pLimit=3 = 96 concurrent writeBatchStream RPC streams
+    // saturate the coordinator DO's workerd input gate, producing
+    // "Durable Object is overloaded. Requests queued for too long." on
+    // a fraction of writes (Markflow 617 deps → ~50% fail rate per
+    // user transcript). Capping shard count to ⌈specs.length /
+    // PER_SHARD_TARGET⌉ keeps per-peer dep count high and reduces
+    // simultaneous flushes proportionally. Pairs with the coordinator
+    // semaphore in src/session/rpc.ts:_rpcWriteBatchStream.
+    //
+    //   PER_SHARD_TARGET = 40 (deps / shard average); chosen so 617
+    //   deps maps to ~15 shards (= 45 in-flight flushes), well under
+    //   the empirical knee at 96 producers.
+    //   COORD_FLUSH_PRESSURE_THRESHOLD = 200 (deps); below this the
+    //   default 32-peer fan-out is fine and we keep current behavior.
+    const COORD_FLUSH_PRESSURE_THRESHOLD = 200;
+    const PER_SHARD_TARGET = 40;
+    let shardCount: number;
+    if (specs.length > COORD_FLUSH_PRESSURE_THRESHOLD) {
+      shardCount = Math.min(
+        specs.length,
+        MAX_PEER_FANOUT,
+        Math.max(IN_DO_THRESHOLD, Math.ceil(specs.length / PER_SHARD_TARGET)),
+      );
+    } else {
+      shardCount = Math.min(specs.length, MAX_PEER_FANOUT);
+    }
     // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
     // This produces ⌈specs.length / shardCount⌉ specs per shard at
     // most, with the imbalance bounded to ±1.

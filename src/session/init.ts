@@ -1444,8 +1444,15 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
       }
 
+      // [HONEST INSTALL MESSAGE P0a] Yellow + "(N failed, see above)"
+      // when partial. Green only when failed.length === 0. Pre-fix the
+      // green line printed unconditionally — see user transcript line
+      // 831 ("added 264 packages" with 353 silent failures above).
+      const partial = result.failed.length > 0;
+      const color = partial ? '\x1b[33m' : '\x1b[32m';
+      const suffix = partial ? ` (${result.failed.length} failed, see above)` : '';
       ctx.stdout.write(
-        `\n\x1b[32madded ${result.installed.length} packages (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s\x1b[0m\n`
+        `\n${color}added ${result.installed.length} packages (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s${suffix}\x1b[0m\n`
       );
       if (result.cachedHits > 0) {
         ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
@@ -1942,8 +1949,13 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           if (result.failed?.length > 0) {
             ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
           }
+          // [HONEST INSTALL MESSAGE P0a] Yellow + "(N failed, see above)"
+          // when partial. Green only when failed.length === 0.
+          const partial = (result.failed?.length || 0) > 0;
+          const color = partial ? '\x1b[33m' : '\x1b[32m';
+          const suffix = partial ? ` (${result.failed!.length} failed, see above)` : '';
           ctx.stdout.write(
-            `\n\x1b[32madded ${result.installed?.length || 0} packages (${result.totalFiles || 0} files) in ${((result.elapsed || 0) / 1000).toFixed(1)}s\x1b[0m\n`
+            `\n${color}added ${result.installed?.length || 0} packages (${result.totalFiles || 0} files) in ${((result.elapsed || 0) / 1000).toFixed(1)}s${suffix}\x1b[0m\n`
           );
           if (result.cachedHits > 0) {
             ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);

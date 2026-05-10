@@ -149,6 +149,49 @@ export {
 // import from nimbus-session) continues to work.
 export { detectCloudflareWorkersProject } from '../runtime/project-detect.js';
 
+/**
+ * Render the welcome MOTD banner with column-counted padding so every
+ * line lands the right ║ on the same column regardless of how many
+ * non-ASCII characters (em-dash, middle-dot) the content contains.
+ *
+ * Width model: each "row" is built by left-aligning content into a
+ * fixed inner-width slot, then bracketed by ║ and padded with spaces.
+ * Codepoint count is used as the column count. This is correct for
+ * all characters in the current banner — box-drawing (U+2500-U+257F),
+ * em-dash (U+2014), and middle-dot (U+00B7) are all defined as
+ * 1-cell-wide in the Unicode East Asian Width table (`Na`/`A`/`N`).
+ *
+ * Why this exists: pre-fix, the banner used hand-counted padding
+ * literals. Adding/removing a single character (e.g. version bumping
+ * from "v2.0" to "v2.0.0") shifted line 2 by one column, breaking
+ * the right boundary. See user-debug-transcript.txt lines 1-5.
+ */
+export function renderMotdBanner(version: string): string {
+  const INNER_WIDTH = 48; // columns between the two ║
+  const lines = [
+    `Nimbus v${version} — Cloud Dev Environment`,
+    'node · npm · esbuild · vite · wrangler dev',
+    '10 GB VFS · Dynamic Workers · HMR',
+  ];
+  const padLine = (content: string): string => {
+    // 2-space left margin inside the box, then content, then trailing
+    // spaces to reach INNER_WIDTH columns total.
+    const indented = '  ' + content;
+    const used = [...indented].length;
+    const padding = Math.max(0, INNER_WIDTH - used);
+    return `║${indented}${' '.repeat(padding)}║`;
+  };
+  const top = '╔' + '═'.repeat(INNER_WIDTH) + '╗';
+  const bot = '╚' + '═'.repeat(INNER_WIDTH) + '╝';
+  return (
+    '\x1b[1;36m' +
+    top + '\r\n' +
+    lines.map(padLine).join('\r\n') + '\r\n' +
+    bot +
+    '\x1b[0m\r\n'
+  );
+}
+
 
 export class NimbusSession extends CloudflareDurableObject {
   // this.ctx and this.env are provided by the DurableObject base class
@@ -1031,15 +1074,20 @@ export class NimbusSession extends CloudflareDurableObject {
         '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n'
       );
     }
-    if (!fs.exists('etc/motd')) {
-      fs.writeFile('etc/motd',
-        '\x1b[1;36m' +
-        '╔════════════════════════════════════════════════╗\r\n' +
-        `║  Nimbus v${NIMBUS_VERSION} — Cloud Dev Environment          ║\r\n` +
-        '║  node · npm · esbuild · vite · wrangler dev   ║\r\n' +
-        '║  10 GB VFS · Dynamic Workers · HMR             ║\r\n' +
-        '╚════════════════════════════════════════════════╝\x1b[0m\r\n'
-      );
+    {
+      // [BANNER ALIGNMENT FIX] Always re-render the motd so existing
+      // sessions whose VFS has the pre-fix mis-aligned banner get the
+      // corrected version on next reconnect. Cheap (~200 bytes); no
+      // user-edit collision concern (the file isn't user-owned).
+      const expectedMotd = renderMotdBanner(NIMBUS_VERSION);
+      let needsWrite = !fs.exists('etc/motd');
+      if (!needsWrite) {
+        try {
+          const existing = fs.readFileString('etc/motd');
+          if (existing !== expectedMotd) needsWrite = true;
+        } catch { needsWrite = true; }
+      }
+      if (needsWrite) fs.writeFile('etc/motd', expectedMotd);
     }
     if (!fs.exists('home/user/hello.js')) {
       fs.writeFile('home/user/hello.js',
