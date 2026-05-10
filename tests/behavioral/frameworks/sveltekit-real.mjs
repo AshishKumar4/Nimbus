@@ -4,11 +4,14 @@
 //
 // Category: R (runtime-behavioral)
 //
-// User scenario: `npm create svelte@latest mvp -- --template skeleton
-// --types ts --no-add-prettier --no-add-eslint --no-add-playwright
-// --no-add-vitest` scaffolds a SvelteKit skeleton, then
+// User scenario: `npx sv@latest create mvp --template minimal --types
+// ts --no-add-ons` scaffolds a SvelteKit skeleton, then
 // `npm install && npm run dev` starts the dev server. Real Chrome
 // asserts the home renders without runtime errors.
+//
+// Note: the older `npm create svelte@latest` flow is deprecated by
+// upstream (create-svelte 6.x prints "has been replaced with `npx
+// sv create`" and exits 0). We use the new `sv` tool.
 //
 // Acceptable RED: surfaces SvelteKit gaps for cirrus-real S3+.
 
@@ -27,13 +30,13 @@ await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/sk-probe && cd /home/user/sk-probe', 10_000);
-console.log('[sveltekit-real] npm create svelte@latest...');
+console.log('[sveltekit-real] npx sv@latest create...');
 
-// `npm create svelte@latest` accepts CLI flags non-interactively.
-// The newer create-svelte (sv) tool uses --template skeleton plus
-// flags to skip optional features.
+// `npx sv create` is the new tool (replaces `npm create svelte`).
+// Use --template minimal --types ts --no-add-ons for the simplest
+// non-interactive scaffold.
 const createR = await t.run(
-  'npm create svelte@latest mvp -- --template skeleton --types ts --no-add-prettier --no-add-eslint --no-add-playwright --no-add-vitest',
+  'npx --yes sv@latest create mvp --template minimal --types ts --no-add-ons --no-install',
   360_000,
 );
 const createTail = stripAnsi(createR.output).split(/\r?\n/).slice(-12).join('\n');

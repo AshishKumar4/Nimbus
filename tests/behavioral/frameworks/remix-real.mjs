@@ -4,10 +4,15 @@
 //
 // Category: R (runtime-behavioral)
 //
-// User scenario: `npx create-remix@latest mvp --template remix-run/remix/templates/remix
-// --no-git-init --no-install --yes` scaffolds a Remix project,
-// then `npm install && npm run dev` starts the Vite-based Remix dev
-// server. Real Chrome asserts the home renders without runtime errors.
+// User scenario: `npx create-react-router@latest mvp --template
+// remix-run/remix/templates/remix --no-git-init --no-install --yes`
+// scaffolds a React Router (formerly Remix) project, then
+// `npm install && npm run dev` starts the Vite-based dev server.
+// Real Chrome asserts the home renders without runtime errors.
+//
+// Note: Remix v2 has been upstreamed into React Router and is in
+// maintenance mode. `create-remix@latest` now prints a redirect
+// message to `create-react-router@latest`. We use the new tool.
 //
 // Acceptable RED: surfaces Remix gaps for cirrus-real S3+.
 
@@ -26,17 +31,20 @@ await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/remix-probe && cd /home/user/remix-probe', 10_000);
-console.log('[remix-real] npx create-remix@latest...');
+console.log('[remix-real] npx create-react-router@latest...');
 
+// Remix v2 has been redirected to React Router. The new tool is
+// `create-react-router` (no `remix-run/...` template suffix needed
+// when the user is invoking the default upstream template).
 const createR = await t.run(
-  'npx --yes create-remix@latest mvp --template remix-run/remix/templates/remix --no-git-init --no-install --yes',
+  'npx --yes create-react-router@latest mvp --no-git-init --no-install --yes',
   360_000,
 );
 const createTail = stripAnsi(createR.output).split(/\r?\n/).slice(-12).join('\n');
 console.log('[remix-real] create tail:', createTail.slice(-500));
 
 const pkgCheck = await t.run(
-  `node -e "var fs=require('fs');try{var p=JSON.parse(fs.readFileSync('mvp/package.json','utf8'));var hasRemix=!!(p.dependencies?.['@remix-run/react']||p.devDependencies?.['@remix-run/dev']);console.log('PKG_OK='+(hasRemix?'yes':'no'));}catch(e){console.log('PKG_OK=err:'+e.message);}"`,
+  `node -e "var fs=require('fs');try{var p=JSON.parse(fs.readFileSync('mvp/package.json','utf8'));var hasRouter=!!(p.dependencies?.['react-router']||p.dependencies?.['@react-router/dev']||p.devDependencies?.['@react-router/dev']);console.log('PKG_OK='+(hasRouter?'yes':'no'));}catch(e){console.log('PKG_OK=err:'+e.message);}"`,
   20_000,
 );
 const createSucceeded = /PKG_OK=yes/.test(stripAnsi(pkgCheck.output));
@@ -127,7 +135,7 @@ const findings = {
 console.log(JSON.stringify(findings, null, 2));
 
 const checks = [
-  ['npx create-remix produced a package.json with @remix-run', createSucceeded],
+  ['npx create-react-router produced a package.json with react-router', createSucceeded],
   ['vite/remix dev server ready', viteReady],
   ['Remix home page rendered (non-empty body)', homeRendered],
   ['NO "Preview crashed" overlay on home',
