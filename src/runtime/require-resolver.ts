@@ -531,9 +531,26 @@ export function prefetchForRequire(
     trackPkgDir(stubPath);
   }
 
-  // Start from entry code
+  // Start from entry code.
+  //
+  // Primitive #1 (primitives-extension wave): the relative-require
+  // resolution base is the ENTRY FILE's directory when the caller
+  // supplied one (bin shims under node_modules/.bin/, npx-launched
+  // scripts, etc.), NOT cwd. Pre-fix, `require('../lib/tsc.js')` from
+  // `node_modules/typescript/bin/tsc` resolved against the user's
+  // cwd, finding `<cwd>/../lib/tsc.js` which doesn't exist.
+  //
+  // Falling back to cwd preserves the legacy behaviour for naked
+  // entryCode (no file context) — covers the `node -e '<code>'`
+  // path where opts.filename is '<eval>'.
   const cwdStripped = strip(cwd);
-  parseAndResolve(entryCode, cwdStripped);
+  let entryFromDir = cwdStripped;
+  if (entryFile) {
+    const stripped = strip(entryFile);
+    const slash = stripped.lastIndexOf('/');
+    if (slash > 0) entryFromDir = stripped.substring(0, slash);
+  }
+  parseAndResolve(entryCode, entryFromDir);
 
   // If there's an entry file, add it (and recurse)
   if (entryFile) {
