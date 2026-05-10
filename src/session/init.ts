@@ -388,14 +388,20 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // isLongRunningInvocation can see them; we put leading flags
       // before [filename, ...scriptArgs].
       const leadingFlags = args.slice(0, scriptIdx);
+      // G4 (runtime-pkg wave): if the bin handler in init.ts:1815
+      // already allocated a PID via processTable.spawn, propagate
+      // that into facetMgr.exec via opts.{skipSpawn,callerPid,command}
+      // so we don't end up with TWO rows in `ps` per invocation.
+      const binSpawn = (ctx as any).__nimbusBinSpawn;
       const result = await runNodeScript(facetMgr, code, {
         argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
         env: ctx.env,
         cwd: ctx.cwd,
         filename,
         dirname,
-        command: `node ${args.slice(0, scriptIdx + 1).join(' ')}`,
-      });
+        command: binSpawn?.command || `node ${args.slice(0, scriptIdx + 1).join(' ')}`,
+        ...(binSpawn ? { skipSpawn: true, callerPid: binSpawn.callerPid } : {}),
+      } as any);
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
       return result.exitCode;
@@ -2024,12 +2030,25 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           // entryAbsPath is already VFS-absolute (no leading slash, no
           // ./../); we just adapt to nodeCmd's input contract.
           const entryForNode = '/' + entryAbsPath;
-          exitCode = await nodeCmd({
+          // G4 (runtime-pkg wave): we ALREADY allocated `pid` above;
+          // signal nodeCmd to NOT spawn a duplicate one. Pre-fix,
+          // facetMgr.exec did its own processTable.spawn → ps showed
+          // TWO rows per bin invocation (the wrapper's banner + the
+          // facet's `node /tmp/...`). Now both layers share one PID
+          // and one user-visible "command" string (the typed line).
+          //
+          // Stash the spawn directives on ctx so they propagate
+          // through nodeCmd → runFresh → facetMgr.exec. We cannot
+          // pass them via args; they aren't argv. ctx is the only
+          // arbitrarily-extensible shape.
+          const ctxWithSpawn: any = {
             ...ctx,
             args: [entryForNode, ...argv],
             stdout: { write: tee('stdout', ctx.stdout) },
             stderr: { write: tee('stderr', ctx.stderr) },
-          });
+            __nimbusBinSpawn: { skipSpawn: true, callerPid: pid, command: shellLine },
+          };
+          exitCode = await nodeCmd(ctxWithSpawn);
         } catch (e: any) {
           const msg = (e && (e.stack || e.message)) || String(e);
           tee('stderr', ctx.stderr)(`bin error: ${msg}\n`);

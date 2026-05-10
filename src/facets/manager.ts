@@ -1443,17 +1443,54 @@ export class FacetManager {
       cwd?: string;
       filename?: string;
       dirname?: string;
+      /**
+       * G4 (runtime-pkg wave): caller-supplied display label for the
+       * processTable entry. When set, takes precedence over the
+       * default `node ${filename}`. Used by the .bin handler in
+       * init.ts so `tsc --version` shows up in `ps` as
+       * `tsc --version` (the user's typed line) rather than
+       * `node /home/user/proj/node_modules/typescript/bin/tsc`.
+       *
+       * Also: when `command` is provided AND `skipSpawn` is true,
+       * the caller has already done processTable.spawn (e.g. the
+       * .bin wrapper that needs to allocate a PID before parsing
+       * the shim). exec() reuses that PID instead of spawning a
+       * second one — the G4 double-spawn fix.
+       */
+      command?: string;
+      /** G4: caller already did processTable.spawn; don't double-spawn. */
+      skipSpawn?: boolean;
+      /** G4: when skipSpawn is true, the PID the caller allocated. */
+      callerPid?: number;
     },
   ): Promise<FacetExecResult> {
-    const command = opts.filename && opts.filename !== '<eval>'
-      ? `node ${opts.filename}` : 'node -e ...';
-    this.processTable.reap();
-    const entry = this.processTable.spawn(command, opts.argv || [], opts.cwd || '/home/user');
-    // Short foreground `node -e ...` helpers are quiet by design — only
-    // notify for user-facing `node <file>` invocations, which covers the
-    // real user intent (running scripts, wrangler, etc.).
-    if (opts.filename && opts.filename !== '<eval>') {
-      try { this.hooks.onSpawn?.(entry.pid, command, false); } catch {}
+    const command = opts.command
+      || (opts.filename && opts.filename !== '<eval>'
+        ? `node ${opts.filename}` : 'node -e ...');
+    let entry: ProcessEntry;
+    if (opts.skipSpawn && opts.callerPid != null) {
+      // The caller already allocated the PID via processTable.spawn
+      // (with their own user-facing label). Look up the full entry
+      // from the table — _execWithTimeout etc. need the canonical
+      // ProcessEntry shape. Do NOT reap() either: reaping would
+      // clear the caller's just-spawned entry because its startTime
+      // is recent (< 60s) but reap() ALSO drops 'running' entries
+      // older than the threshold; in any case we don't want side
+      // effects when the caller is delegating PID ownership.
+      const found = this.processTable.get(opts.callerPid);
+      if (!found) {
+        throw new Error(`facetMgr.exec skipSpawn: callerPid=${opts.callerPid} not in processTable`);
+      }
+      entry = found;
+    } else {
+      this.processTable.reap();
+      entry = this.processTable.spawn(command, opts.argv || [], opts.cwd || '/home/user');
+      // Short foreground `node -e ...` helpers are quiet by design — only
+      // notify for user-facing `node <file>` invocations, which covers the
+      // real user intent (running scripts, wrangler, etc.).
+      if (opts.filename && opts.filename !== '<eval>') {
+        try { this.hooks.onSpawn?.(entry.pid, command, false); } catch {}
+      }
     }
 
     // W3.5 Fix B: thread an EsbuildService into buildPrefetchBundle so
