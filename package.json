@@ -12,6 +12,7 @@
     "predeploy": "node scripts/bundle-git.mjs && node scripts/bundle-facet-workers.mjs && node scripts/bundle-esbuild-wasm.mjs && node scripts/bundle-tailwind-play.mjs",
     "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
     "deploy": "wrangler deploy",
+    "test:behavioral": "bun tests/behavioral/run-all.mjs",
     "postinstall": "node scripts/patch-lifo-ui.mjs && node scripts/bundle-git.mjs && node scripts/bundle-facet-workers.mjs && node scripts/bundle-esbuild-wasm.mjs && node scripts/bundle-tailwind-play.mjs"
   },
   "dependencies": {
@@ -36,6 +37,7 @@
     "@biomejs/biome": "2.3.7",
     "@cloudflare/workers-types": "^4.20250327.0",
     "esbuild": "^0.27.0",
+    "puppeteer": "^24.43.0",
     "puppeteer-core": "^24.42.0",
     "typescript": "^5.7.0",
     "wrangler": "^4.0.0"

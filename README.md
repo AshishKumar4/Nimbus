@@ -114,7 +114,7 @@ All numbers measured against the live deploy. Sources: `audit/sections/*-retro.m
 | `git clone` 1 600-file repo | 12–17 s | HTTPS via cf-git fork; W7 writeBatchStream pipeline |
 | `npm install zod` (cold session) | ~6 s | Resolver, fetch, tar decode, VFS write |
 | `node -e 'console.log(…)'` (warm) | 102–152 ms | Fresh Worker Loader isolate per call |
-| Vite hot reload (W10 · `wrangler dev`) | 302 ms median | Target: under 500 ms |
+| Vite hot reload | 302 ms median | Inside the bundled Vite dev server (W10) |
 
 The peak heap figure includes Vite running, 297 preview fetches, 19 shell
 commands, and 6 forced `webSocketError` cycles inside a single 10-minute window.
@@ -133,6 +133,35 @@ Open http://localhost:8787, click **Launch**, and you are inside your own DO.
 The Launch button mints a session ID and 302s to `/s/<id>/`. That URL is the
 identity of your Durable Object — bookmark it, share it, or come back to it
 in a week.
+
+## What works inside a Nimbus session
+
+| Project type | Status |
+|---|:---:|
+| Vite SPA (no CF plugin) | ✅ |
+| Pure Workers (`wrangler dev`) | ✅ |
+| Workers + Static Assets | ✅ |
+| Astro / Next.js / Nuxt | ❌ — CLIs not registered as shell commands |
+| Vite + `@cloudflare/vite-plugin` · Cloudflare Pages · Remix · SvelteKit | ❓ untested |
+
+Full evidence + per-row probe paths in
+[`tests/SUPPORT-MATRIX.md`](./tests/SUPPORT-MATRIX.md). Run
+`bun test:behavioral` against the live deploy to re-verify any row.
+
+## Tests
+
+`tests/behavioral/` contains 12 black-box probes that drive a real session
+via `POST /new` + WebSocket terminal. Run the whole cohort:
+
+```bash
+BASE=https://nimbus.ashishkmr472.workers.dev bun test:behavioral
+```
+
+Or just one probe:
+
+```bash
+BASE=https://nimbus.ashishkmr472.workers.dev bun tests/behavioral/large-install.mjs
+```
 
 ## License + author
 

@@ -380,11 +380,26 @@ export class NimbusWrangler {
     // Bundle via esbuild
     this.onLog('  Building Worker...\n');
     try {
-      const result = await this.esbuild.build([entryPoint], {
+      // [WRANGLER-DEV-HANG P0b] Time-bound the bundle. Pre-fix,
+      // bundling Nimbus's own src/index.ts (~100 .ts files, ~25 MB
+      // closure) hung indefinitely with no error surfaced — neither
+      // result.errors[] nor !result.outputFiles[] paths fired because
+      // the await never returned. Likely cause(s): supervisor isolate
+      // OOM under the 64 MiB ceiling (esbuild-wasm baseline ~15-20 MiB
+      // + the AST of a 100-file source tree), or a vfsPlugin onResolve
+      // cycle. Either way the contract is "fail loud or succeed", not
+      // "hang silent" — see user-debug-transcript.txt lines 79-179
+      // (six attempts all hang at "Building Worker...").
+      //
+      // Timeout is generous (60s) so legitimate large-but-finishing
+      // builds aren't false-tripped. After timeout we surface a clear
+      // diagnostic with remediation hints.
+      const BUILD_TIMEOUT_MS = 60_000;
+      const buildOptions = {
         bundle: true,
-        format: 'esm',
+        format: 'esm' as const,
         target: 'esnext',
-        platform: 'neutral',
+        platform: 'neutral' as const,
         minify: false,
         // `node:*` handles prefixed imports; bare names (fs, path, etc.)
         // are used by legacy CJS packages like esbuild-wasm's main.js.
@@ -398,7 +413,22 @@ export class NimbusWrangler {
           'child_process', 'worker_threads', 'perf_hooks', 'zlib',
           'assert', 'fs/promises', 'process',
         ],
-      });
+      };
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const result = await Promise.race([
+        this.esbuild.build([entryPoint], buildOptions),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(new Error(
+              `esbuild bundle exceeded ${BUILD_TIMEOUT_MS / 1000}s timeout. ` +
+              `entry=${entryPoint}; main='${this.config?.main}'. ` +
+              `Likely cause: supervisor heap pressure (64 MiB ceiling) or ` +
+              `large source closure. Mitigation: split worker into smaller ` +
+              `entries, reduce transitive imports, or bundle externally.`
+            ));
+          }, BUILD_TIMEOUT_MS);
+        }),
+      ]).finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle); });
 
       if (result.errors?.length) {
         for (const e of result.errors) {

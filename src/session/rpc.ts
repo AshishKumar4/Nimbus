@@ -248,9 +248,26 @@ export async function _rpcWriteBatchStream(self: RpcHost,
     stream: ReadableStream<Uint8Array>,
   ): Promise<{ inodes: number; chunks: number }> {
     self.ensureSqliteFs();
-    // Lazy import to keep the supervisor-side dependency graph stable
-    // for callers that never touch the streaming path. The W7 frame
-    // module itself is small (~10 KB compiled).
+    // [P0a — COORDINATOR-OVERLOAD]
+    //
+    // Wave-1 (semaphore here): rejected. Parking peer-side awaits in a
+    // user-space queue extended each peer's _rpcFanoutExecute round-trip
+    // time, which made workerd cancel the peer→coordinator PARENT RPC
+    // with the same overload error (verified prod 7c3f1b25:
+    // "[batch-fanout] aborted: ExecutionError: Durable Object is
+    // overloaded"). The semaphore moved the queue-age problem one layer
+    // up — same symptom, worse blast radius (whole-batch abort instead
+    // of per-package fail).
+    //
+    // Wave-2 (shared flush + adaptive shard cap, no semaphore): the
+    // producer-side fix. The peer-side install-batch-facet now shares
+    // ONE inode/chunk accumulator across all packages in a peer's
+    // shard (src/npm/install-batch-facet.ts), so 39 packages → ~3-5
+    // RPCs to coordinator instead of 39+. Combined with shard cap of 8
+    // (src/npm/installer.ts), 620 deps → 8 peers × ~3 flushes = ~24
+    // total writeBatchStream RPCs at the coordinator (vs 620+ pre-fix).
+    // Workerd's input-gate queue depth on the coordinator stays well
+    // under the queue-age threshold without any user-space semaphore.
     const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
     const decoded = await decodeWriteBatchStream(stream);
     return self.sqliteFs!.writeStream({
