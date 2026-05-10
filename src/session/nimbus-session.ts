@@ -205,6 +205,14 @@ export class NimbusSession extends CloudflareDurableObject {
   esbuildService: EsbuildService | null = null;
   viteDevServer: ViteDevServer | null = null;
   /**
+   * Primitives wave (P5): PID + port the default-Cirrus vite shim is
+   * registered under. Cleared on `vite stop`. See
+   * `runtime/long-running-handle.ts` and the vite handler in
+   * `session/init.ts`.
+   */
+  _viteShimPid: number | null = null;
+  _viteShimPort: number | null = null;
+  /**
    * Opt-in real-vite mode (Phase 0 spike). Activated when the user sets
    * NIMBUS_REAL_VITE=1 in the shell env or `nimbusDevServer: 'real'` in
    * vite.config.ts. Runs real Vite in a dynamic-worker facet, bypassing

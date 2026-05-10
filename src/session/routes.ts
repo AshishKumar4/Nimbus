@@ -656,6 +656,37 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         self.seedFilesystem();
       } catch { /* non-fatal */ }
 
+      // Primitive #3 multi-target routing — `/preview/?port=N` lets a
+      // session with multiple long-running things (vite + Express, two
+      // vites on different ports, …) reach each one without changing
+      // the user-facing URL shape.
+      //
+      // Behaviour:
+      //   /preview/         → first port in PortRegistry by registration
+      //                       time, OR if a non-port-registered cirrus
+      //                       shim / cirrusReal is live (legacy path),
+      //                       use it directly. The legacy path is the
+      //                       fast path because it avoids stub-rebuild.
+      //   /preview/?port=N  → routeRequest(N, …) regardless of legacy.
+      const queryPort = (() => {
+        const raw = url.searchParams.get('port');
+        if (!raw) return null;
+        const n = parseInt(raw, 10);
+        return Number.isFinite(n) && n > 0 && n < 65536 ? n : null;
+      })();
+      if (queryPort != null) {
+        const previewInner = (url.pathname.replace(/^\/preview/, '') || '/') + (() => {
+          // Strip our `?port=N` so the inner handler doesn't re-see it.
+          const sp = new URLSearchParams(url.search);
+          sp.delete('port');
+          const q = sp.toString();
+          return q ? '?' + q : '';
+        })();
+        const proxied = await self.portRegistry.routeRequest(queryPort, request, previewInner);
+        if (proxied) return proxied;
+        return new Response(`No process listening on port ${queryPort}`, { status: 502 });
+      }
+
       // ── Real-vite takes precedence if running ───────────────────────
       // Cirrus shim and real-vite are mutually exclusive per session.
       // cirrusReal is checked first since users explicitly opted in via
@@ -748,7 +779,20 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
 
     // ── Worker route: serves the nimbus-wrangler dev worker output ──
-    if (url.pathname.startsWith('/worker/') || url.pathname === '/worker') {
+    //
+    // Primitives wave (P5): the canonical path is `/__nimbus/worker/*`
+    // so projects with their own `worker/` directory at root (Markflow,
+    // CF Pages projects, …) can serve it via `/preview/worker/*` without
+    // collision. The bare `/worker/*` path remains accepted for
+    // back-compat — same handler — but the response carries a
+    // `Deprecation` and `Sunset` header so callers can migrate. New
+    // sessions are encouraged to use the namespaced form.
+    const workerPathMatch =
+      url.pathname.startsWith('/__nimbus/worker/') || url.pathname === '/__nimbus/worker' ||
+      url.pathname.startsWith('/worker/') || url.pathname === '/worker';
+    const isLegacyWorkerPath =
+      url.pathname.startsWith('/worker/') || url.pathname === '/worker';
+    if (workerPathMatch) {
       if (!self.nimbusWrangler?.isRunning) {
         // Mirror the polished /preview/ placeholder — auto-reloads when
         // nimbus-wrangler starts. The placeholder references BOTH command
@@ -771,15 +815,38 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
         );
       }
-      const workerPath = url.pathname.replace(/^\/worker/, '') || '/';
+      // Strip the matched prefix to compute the inner worker path.
+      // `/__nimbus/worker/*` and `/worker/*` collapse to the same
+      // inner path so the dispatcher logic doesn't need to branch.
+      const innerPrefix = isLegacyWorkerPath ? '/worker' : '/__nimbus/worker';
+      const workerPath = url.pathname.replace(new RegExp('^' + innerPrefix), '') || '/';
       // Full outer-facing prefix for the proxy (e.g.
-      // "/s/nimble-otter-4271/worker"). The proxy uses this to rewrite
+      // "/s/nimble-otter-4271/__nimbus/worker"). Used to rewrite
       // Location headers emitted by the inner Worker so cross-redirects
       // (POST /new → /s/<inner>/) land back on the correctly-prefixed
       // outer URL rather than a bare /s/<inner>/ path that would spawn
       // a different outer session.
-      const outerWorkerBase = (self.sessionBasePath || '') + '/worker';
-      return self.nimbusWrangler.handleRequest(request, workerPath, outerWorkerBase);
+      const outerWorkerBase = (self.sessionBasePath || '') + innerPrefix;
+      const resp = await self.nimbusWrangler.handleRequest(request, workerPath, outerWorkerBase);
+      if (isLegacyWorkerPath) {
+        // Surface the deprecation in headers without rewriting body —
+        // unobtrusive for browsers, visible to tooling.
+        const newHeaders = new Headers(resp.headers);
+        newHeaders.set('Deprecation', 'true');
+        newHeaders.set(
+          'Sunset',
+          'Wed, 01 Jan 2027 00:00:00 GMT',
+        );
+        newHeaders.set(
+          'Link',
+          '<' + (self.sessionBasePath || '') + '/__nimbus/worker' + workerPath +
+            '>; rel="successor-version"',
+        );
+        return new Response(resp.body, {
+          status: resp.status, statusText: resp.statusText, headers: newHeaders,
+        });
+      }
+      return resp;
     }
 
     // ── Port route: routes to facet HTTP servers ──

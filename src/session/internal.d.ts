@@ -75,6 +75,13 @@ export interface SessionInternal {
   facetProcessManager: any;
   esbuildService: EsbuildService | null;
   viteDevServer: ViteDevServer | null;
+  /**
+   * Primitives wave: PID + port the default-Cirrus vite shim is registered
+   * under in the supervisor's process table & port registry. Cleared on
+   * `vite stop` / on-exit teardown. Null when the shim is not running.
+   */
+  _viteShimPid: number | null;
+  _viteShimPort: number | null;
   /** Phase-2 cirrus-real (opt-in real-Vite mode). */
   cirrusReal: CirrusReal | null;
   /** Phase-2 cirrus-hmr WebSocket → clientId map. */

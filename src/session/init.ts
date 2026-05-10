@@ -40,6 +40,12 @@ import { runNodeScript } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
+import {
+  makeLongRunningPortStub,
+  resolveLongRunningPort,
+  expandArgvShellDefaults,
+  pickDefaultPreviewPort,
+} from '../runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import {
@@ -950,6 +956,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           try { await self.ctx.storage.delete('vite-config'); } catch {}
           stopped = true;
         }
+        // Primitive #3 teardown — symmetric with the start path. Always
+        // safe to call: unregisterByPid is idempotent, exit() guards
+        // against re-marking already-terminal entries.
+        if (self._viteShimPid != null) {
+          try { self.portRegistry.unregisterByPid(self._viteShimPid); } catch {}
+          try { self.processTable.exit(self._viteShimPid, 0); } catch {}
+          notifyTerminalEvent(self.terminal, {
+            type: 'exit', pid: self._viteShimPid, code: 0, command: 'vite',
+          });
+          self._viteShimPid = null;
+          self._viteShimPort = null;
+        }
         if (stopped) {
           ctx.stdout.write('\x1b[33mDev server stopped.\x1b[0m\n');
         } else {
@@ -1162,6 +1180,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         });
         // Reserve a PID so `ps`/logs show it like any other facet.
         const entry = self.processTable.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot);
+        self.processTable.setLongRunning(entry.pid);
         try {
           self.cirrusReal.start(self.ctx, entry.pid);
         } finally {
@@ -1171,6 +1190,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           clearTimeout(heavyAllocCeiling);
           heavyAllocRelease();
         }
+        // Primitive #3 — register the cirrus-real port the same way
+        // the default-Cirrus shim does. Same single hook; the only
+        // difference is which handler.handleRequest the stub forwards
+        // into.
+        const cirrusStub = makeLongRunningPortStub(self.cirrusReal);
+        self.portRegistry.register(vitePort, entry.pid, cirrusStub);
+        self._viteShimPid = entry.pid;
+        self._viteShimPort = vitePort;
 
         // ── Boot banner (§4.3 of PHASE2-REAL-VITE-PLAN.md) ──────
         const snap = (self.cirrusReal.stats as any).snapshot;
@@ -1219,10 +1246,40 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
       if (!self.esbuildService) self.esbuildService = new EsbuildService(self.sqliteFs!);
       const previewBasePath = self.viteBasePath;
+
+      // Primitive #3 — long-running PORT-bound process registration.
+      //
+      // BEFORE this wave: vite was a fire-and-forget shell builtin. No
+      // PID, no port, no log buffer, --port silently ignored. Markflow's
+      // `vite --host 0.0.0.0 --port ${PORT:-3000}` printed a banner and
+      // returned the prompt, leaving the user with a blank preview and
+      // no process tab.
+      //
+      // AFTER: vite allocates a real PID via processTable, registers the
+      // resolved port with the supervisor's port-registry, exposes a
+      // handler stub via the generic long-running adapter, and is
+      // visible to `ps` / the Process tab. `vite stop` (or `kill <pid>`)
+      // tears it down via the same primitives that handle every other
+      // long-running facet.
+      //
+      // Argv expansion: package.json scripts commonly write
+      // `--port ${PORT:-3000}`. Nimbus's shell doesn't expand
+      // parameter substitution, so we do it here against ctx.env right
+      // before argv parsing — see runtime/long-running-handle.ts.
+      const expandedArgs = expandArgvShellDefaults(args, ctx.env || {});
+      const vitePortDefault = 5173;
+      const resolvedPort = resolveLongRunningPort({
+        argv: expandedArgs,
+        env: ctx.env,
+        configPort: viteConfig.port,
+        fallback: vitePortDefault,
+      });
+
       self.viteDevServer = new ViteDevServer({
         vfs: self.sqliteFs!,
         esbuild: self.esbuildService!,
         root: vfsRoot,
+        port: resolvedPort,
         aliases: viteConfig.alias,
         define: viteDefine,
         onHmrMessage: (msg) => {
@@ -1235,18 +1292,62 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         ctx: self.ctx,
       });
       self.viteDevServer.start();
-      try { await self.ctx.storage.put('vite-config', { root: vfsRoot, aliases: viteConfig.alias, define: viteDefine, injectBasename: viteConfig.injectBasename, basePath: previewBasePath }); } catch {}
+      try {
+        await self.ctx.storage.put('vite-config', {
+          root: vfsRoot, aliases: viteConfig.alias, define: viteDefine,
+          injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
+          port: resolvedPort,
+        });
+      } catch {}
 
+      // Allocate PID + register port. The stub forwards into the in-
+      // process viteDevServer through the generic long-running adapter
+      // — same hook every future long-running facet uses (Express,
+      // Bun.serve, http.createServer().listen()).
+      const viteProcEntry = self.processTable.spawn(
+        'vite (' + vfsRoot + ')',
+        expandedArgs,
+        vfsRoot,
+      );
+      self.processTable.setLongRunning(viteProcEntry.pid);
+      const viteStub = makeLongRunningPortStub(self.viteDevServer);
+      self.portRegistry.register(resolvedPort, viteProcEntry.pid, viteStub);
+      // Track the wiring so `vite stop` and crash-handlers can tear it
+      // down without searching the registry.
+      self._viteShimPid = viteProcEntry.pid;
+      self._viteShimPort = resolvedPort;
+
+      // Spawn / long-running event for the Process tab UI. Mirrors the
+      // shellExecuteTracked banner so the user sees the same shape no
+      // matter how vite was invoked.
+      if (self.terminal) {
+        self.terminal.write(
+          `\x1b[2m[shell started (long-running): pid=${viteProcEntry.pid} cmd="vite ${expandedArgs.join(' ')}"]\x1b[0m\r\n`,
+        );
+      }
+      notifyTerminalEvent(self.terminal, {
+        type: 'spawn',
+        pid: viteProcEntry.pid,
+        command: 'vite ' + expandedArgs.join(' '),
+        longRunning: true,
+      });
+
+      // Banner — kept for back-compat. Now also reports the resolved
+      // port and PID so the user can verify the multi-target routing.
       ctx.stdout.write('\n\x1b[1;36m  Nimbus Vite Dev Server v2.0\x1b[0m\n\n');
-      ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Preview:    \x1b[36m' + previewBasePath + '/\x1b[0m\n');
+      ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Preview:    \x1b[36m' + previewBasePath + '/\x1b[0m');
+      if (resolvedPort !== vitePortDefault) {
+        ctx.stdout.write('  \x1b[2m(also: ' + previewBasePath + '/?port=' + resolvedPort + ')\x1b[0m');
+      }
+      ctx.stdout.write('\n');
       ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       ' + vfsRoot + '\n');
-      if (viteConfig.port) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Port:       ' + viteConfig.port + '\n');
+      ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Port:       ' + resolvedPort + ' \x1b[2m(pid=' + viteProcEntry.pid + ')\x1b[0m\n');
       ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Transforms: .ts .tsx .jsx (React JSX automatic)\n');
       if (viteConfig.alias) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Aliases:    ' + Object.keys(viteConfig.alias).join(', ') + '\n');
       if (viteDefine) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Define:     ' + Object.keys(viteDefine).join(', ') + '\n');
       const twCfg = [vfsRoot + '/tailwind.config.js', vfsRoot + '/tailwind.config.ts'].find(p => self.sqliteFs!.exists(p));
       if (twCfg) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Tailwind:   edge-vendored Play CDN \x1b[2m(detected)\x1b[0m\n');
-      ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m to stop.\x1b[0m\n\n');
+      ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mkill ' + viteProcEntry.pid + '\x1b[2m, to stop.\x1b[0m\n\n');
       return 0;
     });
 
@@ -1389,7 +1490,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         }
 
         const cfg = self.nimbusWrangler.stats;
-        const workerBase = (self.sessionBasePath || '') + '/worker';
+        // Primitives wave (P5): banner advertises the canonical
+        // `/__nimbus/worker/` route. The legacy `/worker/` URL is still
+        // accepted for one release (Sunset 2027-01-01) but new sessions
+        // are pointed at the namespaced form.
+        const workerBase = (self.sessionBasePath || '') + '/__nimbus/worker';
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Worker:   \x1b[36m' + workerBase + '/\x1b[0m\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Name:     ' + cfg.name + '\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Entry:    ' + cfg.main + '\n');

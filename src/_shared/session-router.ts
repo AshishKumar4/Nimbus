@@ -4,8 +4,9 @@
  * Nimbus sessions live behind friendly URLs like `/s/nimble-otter-4271/`.
  * The Worker's fetch handler delegates to this module for anything that
  * starts with `/s/`. The DO itself remains blissfully ignorant of its
- * public URL: it sees `/ws`, `/api/*`, `/preview/*`, `/worker/*`,
- * `/port/<n>/*` — the same shape it did in the single-session era.
+ * public URL: it sees `/ws`, `/api/*`, `/preview/*`, `/__nimbus/worker/*`
+ * (and the deprecated `/worker/*`), `/port/<n>/*` — the same shape it
+ * did in the single-session era.
  *
  * Session identity flows two places:
  *   1. The DO ID — derived via `env.NIMBUS_SESSION.idFromName(sessionId)`.

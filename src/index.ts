@@ -105,7 +105,7 @@ export function getCtxExports(): any {
  * Old bookmarks to these URLs get a friendly redirect to the landing
  * page rather than a silent 404.
  */
-const LEGACY_ROOT_PATHS = ['/ws', '/api/', '/preview', '/worker', '/port/'];
+const LEGACY_ROOT_PATHS = ['/ws', '/api/', '/preview', '/worker', '/__nimbus/', '/port/'];
 
 function isLegacyRootPath(pathname: string): boolean {
   for (const p of LEGACY_ROOT_PATHS) {

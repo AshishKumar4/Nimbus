@@ -79,6 +79,12 @@ export function classifyReplicaPolicy(
 
   // ── Worker / port routes — facets are owned by the primary; no
   //    replica representation. Always primary-only.
+  //
+  // Primitives wave: `/__nimbus/worker/*` is the canonical route;
+  // `/worker/*` is the deprecated legacy form, kept here for back-
+  // compat (one release sunset; see routes.ts for the Deprecation
+  // header). Both classify the same way.
+  if (pathname === '/__nimbus/worker' || pathname.startsWith('/__nimbus/worker/')) return 'primary-only';
   if (pathname === '/worker' || pathname.startsWith('/worker/')) return 'primary-only';
   if (PORT_RE.test(pathname)) return 'primary-only';
 
@@ -150,6 +156,7 @@ export const REPLICA_POLICIES: Record<string, RoutePolicy> = {
   '/api/start-vite':     { policy: 'primary-only',       toleranceMs: null },
   '/api/supervisor-rpc': { policy: 'primary-only',       toleranceMs: null },
   '/worker/':            { policy: 'primary-only',       toleranceMs: null },
+  '/__nimbus/worker/':   { policy: 'primary-only',       toleranceMs: null },
 };
 
 // ────────────────────────────────────────────────────────────────────────
