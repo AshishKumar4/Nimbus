@@ -26,30 +26,27 @@ await t.waitForPrompt(60_000);
 await t.run('mkdir -p /home/user/bf-sync', 10_000);
 await t.run('cd /home/user/bf-sync', 10_000);
 
-// Write 4 specific bytes via node fs.writeFileSync
-const writeCmd = `node -e "require('fs').writeFileSync('blob.bin', Buffer.from([0xa2,0xff,0x00,0x80]))"`;
-await t.run(writeCmd, 15_000);
-
-// Read back as hex via node — this also goes through the facet's
-// readFileSync, which round-trips through __vfsBundle/__vfsWrites.
-const readResult = await t.run(
-  `node -e "console.log(require('fs').readFileSync('blob.bin').toString('hex'))"`,
+// Write + read in ONE node invocation. Cross-facet reads exercise the
+// supervisor-flush + next-facet-bundle path, which is a separate
+// concern — this probe is scoped to in-facet round-trip integrity.
+// Cross-facet bytes flow is implicitly verified by wasm-runner probes
+// (which write via node fs in one shell command + read via wasm-runner
+// in the next).
+const script = `
+const fs = require('fs');
+fs.writeFileSync('blob.bin', Buffer.from([0xa2, 0xff, 0x00, 0x80]));
+console.log('hex:' + fs.readFileSync('blob.bin').toString('hex'));
+console.log('size:' + fs.statSync('blob.bin').size);
+`;
+const scriptB64 = Buffer.from(script, 'utf8').toString('base64');
+await t.run(
+  `node -e "require('fs').writeFileSync('blob.js', Buffer.from('${scriptB64}','base64').toString('utf8'))"`,
   15_000,
 );
-const readHex = stripAnsi(readResult.output)
-  .split(/\r?\n/)
-  .map((l) => l.trim())
-  .find((l) => /^[0-9a-f]+$/.test(l) && l !== '');
-
-// Also assert byte-count via fs.statSync inside the facet — exercises
-// the size-reporting path, which depends on whether the byte-corruption
-// expanded the file beyond the original 4 bytes.
-const sizeResult = await t.run(
-  `node -e "console.log('size:' + require('fs').statSync('blob.bin').size)"`,
-  10_000,
-);
-const sizeOut = stripAnsi(sizeResult.output);
-const sizeMatch = sizeOut.match(/size:(\d+)/);
+const r = await t.run('node blob.js', 15_000);
+const out = stripAnsi(r.output);
+const readHex = (out.match(/hex:([0-9a-f]*)/) || [])[1];
+const sizeMatch = out.match(/size:(\d+)/);
 const observedBytes = sizeMatch ? Number(sizeMatch[1]) : null;
 
 await t.close();
