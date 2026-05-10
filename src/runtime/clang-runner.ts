@@ -304,6 +304,11 @@ function filterSysrootForCompile(all: Map<string, Uint8Array>): Record<string, U
  * Filter the sysroot to just what the link step needs for a C program:
  *   - lib/wasm32-wasi/crt1.o — the entry-point start file
  *   - lib/wasm32-wasi/libc.a — libc archive (printf etc.)
+ *   - lib/wasm32-wasi/libc.imports — WASI symbol allow-list. Without
+ *     this, wasm-ld treats `__wasi_fd_close` etc. as undefined
+ *     symbols (the symbols are SUPPOSED to be unresolved imports,
+ *     not errors); the .imports file tells lld "these names are
+ *     external WASI imports, not link errors."
  *
  * Excludes libc++/libc++abi (C++-only) and the WASI emulated-mman /
  * pthread / canvas variants we don't drive in v1.1.
@@ -313,6 +318,7 @@ function filterSysrootForLink(all: Map<string, Uint8Array>): Record<string, Uint
   for (const [path, bytes] of all.entries()) {
     if (path === 'lib/wasm32-wasi/crt1.o') { out[path] = bytes; continue; }
     if (path === 'lib/wasm32-wasi/libc.a') { out[path] = bytes; continue; }
+    if (path === 'lib/wasm32-wasi/libc.imports') { out[path] = bytes; continue; }
   }
   return out;
 }
