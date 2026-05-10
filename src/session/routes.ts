@@ -347,13 +347,16 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // can buffer the full incoming batch. Both were invisible to the
       // estimator because there was no counter to read.
       //
-      // Post-fix, SqliteVFS maintains _pendingWriteBytes as a running
-      // sum across deferWrite/clearPendingWritesForPath/flushPendingWrites/
-      // clearPendingWritesForPaths. The number reflects the live
-      // unflushed-write byte total at this exact tick. (vfs.sql is the
-      // sub-object in getStats() that surfaces SQL-side counters.)
+      // Post-fix, SqliteVFS maintains TWO running byte sums:
+      //   - _pendingWriteBytes        : the post-deferWrite queue
+      //   - _writeStreamSpoolBytes    : N2 spool inside writeStream
+      // Both contribute to "in-flight write bytes the supervisor is
+      // currently holding"; the estimator sees their sum.
+      // (vfs.sql is the sub-object in getStats() that surfaces these.)
       const sqlStats = (vfs as any).sql ?? {};
-      const inFlightWriteBytes = sqlStats.pendingWriteBytes ?? 0;
+      const inFlightWriteBytes =
+        (sqlStats.pendingWriteBytes ?? 0) +
+        (sqlStats.writeStreamSpoolBytes ?? 0);
       const heap = estimateSupervisorHeap(counters, {
         cacheHotBytes: cacheStats.hotBytes ?? 0,
         inFlightWriteBytes,
@@ -393,6 +396,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           // distinguish "many small chunks" from "few large chunks".
           pendingWrites: sqlStats.pendingWrites ?? 0,
           pendingWriteBytes: sqlStats.pendingWriteBytes ?? 0,
+          // N2: live byte count inside the writeStream() drain spool.
+          // Visible during a real npm install; ~0 at rest.
+          writeStreamSpoolBytes: sqlStats.writeStreamSpoolBytes ?? 0,
         },
 
         // H7 (heap-correctness wave): _NIMBUS_LOADED_CODES Map state.

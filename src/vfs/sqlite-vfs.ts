@@ -160,6 +160,19 @@ export class SqliteVFS {
    * (N3, heap-correctness wave.)
    */
   private _pendingWriteBytes = 0;
+  /**
+   * N2 (heap-correctness wave). Sum of bytes currently held in the
+   * `chunks: []` spool inside writeStream(). Maintained per-chunk so
+   * a long-running drain shows live, not the steady-state 0.
+   * Reset (or decremented to the drained amount) inside writeStream's
+   * finally block, after transactionSync has either consumed the
+   * bytes or thrown.
+   *
+   * Sums into `heap.breakdown.vfsInFlightBytes` alongside
+   * _pendingWriteBytes so a single value reflects ALL transient
+   * write-bytes the supervisor is holding.
+   */
+  private _writeStreamSpoolBytes = 0;
   private writeFlushScheduled = false;
 
   // ── Write-failure tracking (audit C1) ─────────────────────────────────
@@ -1252,10 +1265,18 @@ export class SqliteVFS {
    * traversed the byte-stream boundary without hitting the 32 MiB
    * structured-clone cap.
    *
-   * Future v2 (deferred — out of W7 scope, see W7-retro.md): chunk
-   * the supervisor-side `transactionSync` calls into N segments
-   * (e.g. every 8 MiB of streamed content) so the supervisor heap
-   * peak also drops.
+   * Heap-correctness wave (N2): the spool is bounded by the peer's
+   * SHARED_RPC_FLUSH_THRESHOLD (4 MiB; see install-batch-facet.ts:196)
+   * — a peer never sends more than ~4 MiB of chunk-bytes per
+   * writeBatchStream RPC, AND workerd's input gate serialises
+   * concurrent RPCs on the same DO. So the supervisor's `chunks: []`
+   * spool peak is ≤ 4 MiB + path-overhead per call.
+   *
+   * What this method DID lack: the spool bytes were invisible to the
+   * heap estimator. We now maintain `_writeStreamSpoolBytes` that
+   * tracks the live spool contents during the drain; the diag's
+   * vfsInFlightBytes contributor now sums pendingWriteBytes +
+   * writeStreamSpoolBytes. The N2 RED probe asserts on this sum.
    *
    * Throws on SQLITE_NOMEM (with halve-retry per writeBatch); any
    * iterator-source error propagates unchanged. Atomicity guarantee
@@ -1270,15 +1291,36 @@ export class SqliteVFS {
     // Drain the iterator. Iterator errors propagate unchanged.
     // We build the chunks array fully BEFORE entering transactionSync
     // because transactionSync is synchronous (cannot await mid-txn).
+    //
+    // N2 (heap-correctness wave): track spool bytes so the diag
+    // estimator's vfsInFlightBytes is no longer a 0 lie. Increment
+    // per chunk pushed; reset to 0 immediately before delegating to
+    // writeBatch (the bytes are now `pendingWrites' problem if they
+    // survive transactionSync).
     const chunks: BatchChunkEntry[] = [];
-    for await (const c of payload.chunkIter) {
-      chunks.push(c);
+    try {
+      for await (const c of payload.chunkIter) {
+        chunks.push(c);
+        this._writeStreamSpoolBytes += c.data.length;
+      }
+      const r = this.writeBatch({
+        inodes: payload.inodes,
+        chunks,
+        deletePaths: payload.deletePaths,
+      });
+      return r;
+    } finally {
+      // The bytes are no longer in `chunks` — they've either been
+      // copied into pendingWrites by writeBatch's inner deferWrite
+      // path, or written directly inside transactionSync. Either
+      // way, the spool counter resets here. Subtract by the actual
+      // sum we tracked, NOT by chunks.length × CHUNK_SIZE — chunks
+      // can be smaller than CHUNK_SIZE on the last entry of a file.
+      let drained = 0;
+      for (const c of chunks) drained += c.data.length;
+      this._writeStreamSpoolBytes -= drained;
+      if (this._writeStreamSpoolBytes < 0) this._writeStreamSpoolBytes = 0;
     }
-    return this.writeBatch({
-      inodes: payload.inodes,
-      chunks,
-      deletePaths: payload.deletePaths,
-    });
   }
 
   private _writeBatchWithRetry(
@@ -1699,6 +1741,12 @@ export class SqliteVFS {
         // ops dashboards that already plot the count don't break, while
         // memory triage gets the actual byte number.
         pendingWriteBytes: this._pendingWriteBytes,
+        // N2 (heap-correctness wave): live byte count inside the
+        // writeStream() drain spool. Non-zero only during the brief
+        // window between the first chunk arriving and writeBatch
+        // returning — bounded by SHARED_RPC_FLUSH_THRESHOLD (4 MiB)
+        // on the peer side.
+        writeStreamSpoolBytes: this._writeStreamSpoolBytes,
         failedWrites: this.failedWrites.size,
         totalWriteFailures: this._writeFailures,
       },
