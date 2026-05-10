@@ -214,6 +214,71 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     const kernel = self.kernel;
     const sqliteFs = self.sqliteFs!;
     const facetMgr = self.facetManager!;
+
+    // ── True-OS Wave-3 v1.1: ./<wasm-binary> shell-side dispatch ──
+    // When the user invokes `./hello` (or any `./X` / `/abs/X`)
+    // shell-form path and the file:
+    //   (a) exists in SqliteFS at that relative-to-cwd path, AND
+    //   (b) starts with the wasm magic bytes `\0asm\1\0\0\0`
+    // we route the invocation to the wasm-runner command with the
+    // user's args. This is how `clang t.c -o hello && ./hello`
+    // closes the True-OS demo: the linker emits a wasm executable,
+    // and the shell knows to run it via the WASI shim.
+    //
+    // Implementation: monkey-patch registry.resolve. If the standard
+    // name lookup misses AND the name has a `/` (path-shaped), we
+    // attempt the wasm-magic check; on hit, return a synthetic
+    // Command that invokes wasm-runner.
+    const __origResolve = registry.resolve.bind(registry);
+    (registry as any).resolve = async (name: string): Promise<any> => {
+      const found = await __origResolve(name);
+      if (found) return found;
+      // Only `./X`, `/abs/X`, `../X` are path-shaped invocations.
+      // Bare-word "X" must come from the registered set.
+      if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
+        return undefined;
+      }
+      // Resolve the path-shape against cwd. cwd is read at every
+      // resolve call (not cached) so `cd` between invocations is
+      // honoured. The wasm-bytes existence check is also live —
+      // recompile produces fresh bytes; we always re-check the
+      // magic on the latest VFS state.
+      const cwdN = ((self.shell && (self.shell as any).getCwd?.()) || '/home/user')
+        .replace(/^\/+/, '').replace(/\/+$/, '');
+      let resolved: string;
+      if (name.startsWith('/')) {
+        resolved = name.replace(/^\/+/, '');
+      } else {
+        const parts = (`${cwdN}/${name}`).split('/');
+        const out: string[] = [];
+        for (const p of parts) {
+          if (!p || p === '.') continue;
+          if (p === '..') { if (out.length) out.pop(); continue; }
+          out.push(p);
+        }
+        resolved = out.join('/');
+      }
+      if (!sqliteFs.exists(resolved) || sqliteFs.isDirectory(resolved)) {
+        return undefined;
+      }
+      // Read first 4 bytes; check for the wasm magic `\0asm`.
+      let bytes: Uint8Array;
+      try { bytes = sqliteFs.readFile(resolved); } catch { return undefined; }
+      const isWasm = bytes.length >= 4
+        && bytes[0] === 0x00 && bytes[1] === 0x61
+        && bytes[2] === 0x73 && bytes[3] === 0x6d;
+      if (!isWasm) return undefined;
+      // Build a synthetic command that delegates to wasm-runner with
+      // the user's args. wasm-runner's contract: args[0] is the .wasm
+      // path (resolves against vfs), args[1..] are forwarded as wasi argv.
+      const wasmRunnerCmd: any = await __origResolve('wasm-runner');
+      if (!wasmRunnerCmd) return undefined;
+      return async (ctx: any): Promise<number> => {
+        const userArgs: string[] = ctx.args || [];
+        const newCtx = { ...ctx, args: [name, ...userArgs] };
+        return await wasmRunnerCmd(newCtx);
+      };
+    };
     // W8: hand the registry to the cp broker so child_process.spawn from
     // a parent facet can resolve and dispatch commands the same way the
     // shell does. Done AFTER all registrations are complete (below).
