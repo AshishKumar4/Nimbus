@@ -61,6 +61,12 @@ import {
 import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
+import {
+  makeNimbusVerbHandler,
+  rehydrateInstalledRuntimes,
+  registerRunnerFactory,
+} from '../runtime/package-manager.js';
+import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '../runtime/process-logs.js';
@@ -220,6 +226,52 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // ctx + env are passed for clone/fetch/pull which run in a facet to avoid
     // exhausting the supervisor DO's CPU budget on large repos.
     registerGitCommands(registry, sqliteFs, self.ctx, self.env);
+
+    // ── True-OS Wave-3: `nimbus install` package manager + runner registry.
+    //
+    // 1. Register the clang-runner factory FIRST so the rehydration step
+    //    below can re-bind `clang` / `wasm-ld` from an already-installed
+    //    manifest.
+    // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
+    // 3. Rehydrate any previously-installed runtimes from VFS so their
+    //    bins reappear in the registry after DO eviction or WS reconnect.
+    registerRunnerFactory('clang-runner', makeClangRunnerFactory({
+      facetMgr,
+      vfs: sqliteFs,
+    }));
+    {
+      // Cast registry to the minimal package-manager shape. lifo-sh's
+      // CommandRegistry has register(name, handler) which matches.
+      const pkgRegistry: any = registry;
+      const nimbusGetHome = (): string => {
+        // Shell env carries HOME; fall back to the lifo-sh convention.
+        const envHome = (self.shell && (self.shell as any).env && (self.shell as any).env.HOME)
+          ? (self.shell as any).env.HOME
+          : '/home/user';
+        return envHome;
+      };
+      registry.register(
+        'nimbus',
+        makeNimbusVerbHandler({
+          env: self.env as any,
+          vfs: sqliteFs,
+          registry: pkgRegistry,
+          getHome: nimbusGetHome,
+        }),
+      );
+      // Rehydration runs here even though the shell hasn't been built
+      // yet — that's fine: it accesses VFS + registry which are both
+      // already initialised. Runs O(installed-runtimes); typically 0
+      // on a fresh session.
+      try {
+        const rehydration = rehydrateInstalledRuntimes(sqliteFs, pkgRegistry, nimbusGetHome());
+        if (rehydration.count > 0) {
+          // Surface to terminal via the standard MOTD-style line so
+          // users see what's been auto-rebound. Not an error path.
+          self.terminal?.write?.(`\x1b[2m[nimbus] rehydrated ${rehydration.count} runtime bin(s): ${rehydration.bins.join(', ')}\x1b[0m\r\n`);
+        }
+      } catch { /* fail-soft: rehydration must not block session boot */ }
+    }
 
     // ── node command: facet-based execution ─────────────────────────────
     // Parses args, reads script from VFS, delegates to FacetManager.

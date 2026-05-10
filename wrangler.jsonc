@@ -156,6 +156,16 @@
     {
       "binding": "NPM_PACKUMENT_CACHE",
       "bucket_name": "nimbus-npm-packument-cache"
+    },
+    {
+      // True-OS Wave-3: per-user-installable runtime cache (`nimbus
+      // install clang`, future `nimbus install python`). Stores
+      // content-addressed wasm blobs + per-version manifest + catalog/v1.json
+      // under `blobs/<name>-<version>/<file>`, `manifests/<name>-<version>.json`,
+      // and `catalog/v1.json` respectively. See plan §2.4 at
+      // /workspace/.seal-internal/2026-05-10-true-os/plan.md.
+      "binding": "NIMBUS_RUNTIME_CACHE",
+      "bucket_name": "nimbus-runtime-cache"
     }
   ],
   // [DEPLOY-FLAG-FIX 2026-05-08] env.production overlay no longer
@@ -211,6 +221,10 @@
         {
           "binding": "NPM_PACKUMENT_CACHE",
           "bucket_name": "nimbus-npm-packument-cache"
+        },
+        {
+          "binding": "NIMBUS_RUNTIME_CACHE",
+          "bucket_name": "nimbus-runtime-cache"
         }
       ]
     }
