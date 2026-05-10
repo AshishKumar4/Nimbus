@@ -299,6 +299,100 @@ export async function scaffoldAndStartVite(sid, opts) {
 }
 
 /**
+ * Higher-level variant of scaffoldAndStartVite: clones a real public
+ * repo via `git clone <url> <workdir>`, runs install + dev, waits for
+ * the dev-ready marker. Used by real-repo probes (markflow-real,
+ * astro-real, sveltekit-real, …).
+ *
+ * Contract: caller-supplied `repoUrl` MUST be a public HTTPS URL the
+ * Nimbus session's `git clone` can reach (Nimbus's git layer is
+ * isomorphic-git via cf-git). Caller-supplied `installCmd` and
+ * `devCmd` default to `npm install` and `npm run dev`; pass `bun
+ * install` / `bun run dev` for repos that pin bun in their lockfile.
+ *
+ * Returns { terminal, viteReady, installTail, cloneOk, cloneTail }.
+ */
+export async function cloneAndStartVite(sid, opts) {
+  // opts: {
+  //   repoUrl: string,                   // 'https://github.com/X/Y.git'
+  //   workdir: string,                   // 'mf' → /home/user/mf
+  //   installCmd?: string,               // default 'npm install'
+  //   installTimeoutMs?: number,         // default 900_000 (15 min for big repos)
+  //   devCmd?: string,                   // default 'npm run dev'
+  //   devReadyMarkers?: string[],        // default vite markers
+  //   devReadyTimeoutMs?: number,        // default 240_000
+  //   cloneTimeoutMs?: number,           // default 240_000
+  //   postCloneCmds?: string[],          // optional pre-install fixups
+  // }
+  const installCmd = opts.installCmd || 'npm install';
+  const installTimeoutMs = opts.installTimeoutMs || 900_000;
+  const devCmd = opts.devCmd || 'npm run dev';
+  const devReadyTimeoutMs = opts.devReadyTimeoutMs || 240_000;
+  const cloneTimeoutMs = opts.cloneTimeoutMs || 240_000;
+  const devReadyMarkers = opts.devReadyMarkers || [
+    'ready in', 'Local:', 'Nimbus Vite Dev', 'VITE v',
+  ];
+
+  const t = new Terminal(sid);
+  await t.connect();
+  await sleep(2_000);
+  await t.waitForPrompt(60_000);
+
+  await t.run('cd /home/user', 10_000);
+
+  // Clone. Nimbus's git layer is isomorphic-git (cf-git fork) — public
+  // HTTPS works.
+  const cloneR = await t.run(
+    `git clone ${opts.repoUrl} ${opts.workdir}`,
+    cloneTimeoutMs,
+  );
+  const cloneTail = stripAnsi(cloneR.output).split(/\r?\n/).slice(-12).join('\n');
+  const cloneOk =
+    /Cloning into|Receiving objects|done\.|HEAD is now/.test(cloneR.output) &&
+    !/clone failed|fatal:/i.test(cloneR.output);
+
+  if (!cloneOk) {
+    return {
+      terminal: t,
+      cloneOk: false,
+      cloneTail,
+      viteReady: false,
+      installTail: '',
+    };
+  }
+
+  await t.run(`cd /home/user/${opts.workdir}`, 10_000);
+
+  // Optional post-clone commands (e.g. fix lockfile mismatches).
+  for (const cmd of opts.postCloneCmds || []) {
+    await t.run(cmd, 30_000);
+  }
+
+  // Install.
+  const installR = await t.run(installCmd, installTimeoutMs);
+  const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-12).join('\n');
+
+  // Start dev (long-running — don't await prompt).
+  t.reset();
+  t.cmd(devCmd);
+  let viteReady = false;
+  try {
+    await t.waitFor(
+      (b) => devReadyMarkers.some((m) => b.includes(m)),
+      devReadyTimeoutMs,
+      'dev-ready',
+    );
+    viteReady = true;
+  } catch {
+    // Caller asserts on viteReady.
+  }
+  // Bounded settle so port-registry registration completes.
+  await sleep(3_000);
+
+  return { terminal: t, viteReady, installTail, cloneOk: true, cloneTail };
+}
+
+/**
  * Shorthand sentinel substrings the assert helpers default to looking
  * for. Probes can extend per-case.
  */
