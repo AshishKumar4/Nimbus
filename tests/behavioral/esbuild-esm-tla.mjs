@@ -33,12 +33,18 @@ await t.run('mkdir -p /home/user/esm-tla-probe', 10_000);
 await t.run('cd /home/user/esm-tla-probe', 10_000);
 
 // Write the trigger file via heredoc — same path other probes use.
-const triggerSource = `import inspector from "node:inspector";
-import { fileURLToPath } from "node:url";
+// Use builtins that ARE shimmed by Nimbus's node-shims so the only
+// possible failure is in the transform path (ESM+TLA → CJS+IIFE). We
+// use `node:url`, `node:path` — both are first-class shims. The
+// historic Nuxt failure was the transform step itself; runtime-level
+// shim gaps are a separate concern (e.g., the `node:inspector` gap
+// surfaced when we tested with that builtin originally).
+const triggerSource = `import { fileURLToPath } from "node:url";
+import * as path from "node:path";
 const start = await Promise.resolve(42);
 console.log("ESM_TLA_OK start=" + start);
-console.log("inspector typeof=" + typeof inspector);
 console.log("fileURLToPath typeof=" + typeof fileURLToPath);
+console.log("path.join typeof=" + typeof path.join);
 `;
 await t.run(heredocCommand('/home/user/esm-tla-probe/trigger.mjs', triggerSource), 15_000);
 
