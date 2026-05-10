@@ -795,6 +795,80 @@ const __osMod = {
   loadavg: () => [0, 0, 0], uptime: () => 3600,
   networkInterfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true }] }),
   EOL: "\\n", endianness: () => "LE",
+  // os.constants — signals + errno + priority. Used by human-signals,
+  // signal-exit, cross-spawn, exit-hook, and a long tail of "graceful
+  // shutdown" / "child-process plumbing" libraries that real Node ships.
+  //
+  // human-signals's main.js (v2+) does:
+  //   import { constants } from 'node:os'
+  //   ...
+  //   const findSignalByNumber = (number, signals) =>
+  //     signals.find(({ name }) => constants.signals[name] === number)
+  //
+  // Pre-fix, __osMod had no \`constants\` field → \`constants.signals\`
+  // was undefined → \`signals[name]\` throws TypeError → caller's
+  // \`getSignalsByName\` blows up at module init time. Surfaced by
+  // create-react-router (transitively depends on human-signals via
+  // execa / cross-spawn).
+  //
+  // Values mirror real Node v20+ on Linux (verified against \`node -e
+  // "console.log(require('os').constants)"\`). The shape is stable;
+  // pinning POSIX signal numbers per the LSB / glibc table.
+  constants: {
+    // ── Signals ──────────────────────────────────────────────────
+    // Standard POSIX + Linux-specific signals as Node exposes them.
+    // Numbers match the Linux ABI; portable signal-name lookups
+    // (which is what 100% of npm consumers do) work regardless of
+    // platform.
+    signals: {
+      SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
+      SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
+      SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
+      SIGTERM: 15, SIGCHLD: 17, SIGSTKFLT: 16, SIGCONT: 18, SIGSTOP: 19,
+      SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
+      SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
+      SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
+    },
+    // ── Errno ────────────────────────────────────────────────────
+    // Standard Linux errno codes. fs/network libraries (e.g.
+    // graceful-fs, retry layers in node-fetch wrappers) probe these
+    // to decide retry strategy. Subset matches Node's exposed surface.
+    errno: {
+      E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EADDRNOTAVAIL: 99,
+      EAFNOSUPPORT: 97, EAGAIN: 11, EALREADY: 114, EBADF: 9,
+      EBADMSG: 74, EBUSY: 16, ECANCELED: 125, ECHILD: 10,
+      ECONNABORTED: 103, ECONNREFUSED: 111, ECONNRESET: 104,
+      EDEADLK: 35, EDESTADDRREQ: 89, EDOM: 33, EDQUOT: 122,
+      EEXIST: 17, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 113,
+      EIDRM: 43, EILSEQ: 84, EINPROGRESS: 115, EINTR: 4, EINVAL: 22,
+      EIO: 5, EISCONN: 106, EISDIR: 21, ELOOP: 40, EMFILE: 24,
+      EMLINK: 31, EMSGSIZE: 90, EMULTIHOP: 72, ENAMETOOLONG: 36,
+      ENETDOWN: 100, ENETRESET: 102, ENETUNREACH: 101, ENFILE: 23,
+      ENOBUFS: 105, ENODATA: 61, ENODEV: 19, ENOENT: 2, ENOEXEC: 8,
+      ENOLCK: 37, ENOLINK: 67, ENOMEM: 12, ENOMSG: 42, ENOPROTOOPT: 92,
+      ENOSPC: 28, ENOSR: 63, ENOSTR: 60, ENOSYS: 38, ENOTCONN: 107,
+      ENOTDIR: 20, ENOTEMPTY: 39, ENOTSOCK: 88, ENOTSUP: 95,
+      ENOTTY: 25, ENXIO: 6, EOPNOTSUPP: 95, EOVERFLOW: 75, EPERM: 1,
+      EPIPE: 32, EPROTO: 71, EPROTONOSUPPORT: 93, EPROTOTYPE: 91,
+      ERANGE: 34, EROFS: 30, ESPIPE: 29, ESRCH: 3, ESTALE: 116,
+      ETIME: 62, ETIMEDOUT: 110, ETXTBSY: 26, EWOULDBLOCK: 11, EXDEV: 18,
+    },
+    // ── Priority ────────────────────────────────────────────────
+    // Process priority constants for os.setPriority / os.getPriority.
+    // Not used by anything we've observed, but Node exposes them and
+    // some libs check defined-ness before falling through.
+    priority: {
+      PRIORITY_LOW: 19,
+      PRIORITY_BELOW_NORMAL: 10,
+      PRIORITY_NORMAL: 0,
+      PRIORITY_ABOVE_NORMAL: -7,
+      PRIORITY_HIGH: -14,
+      PRIORITY_HIGHEST: -20,
+    },
+    // ── dlopen flags ────────────────────────────────────────────
+    // Documented for completeness; Nimbus has no real dlopen.
+    dlopen: { RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0 },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -904,6 +978,22 @@ const __utilMod = {
   isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
+  // util.stripVTControlCharacters(str) — Node 16.11+. Strips ANSI
+  // escape sequences from a string. Used by sv (svelte CLI), modern
+  // log libraries, and any CLI that wants to measure displayed-width
+  // independent of color codes. Pre-fix, sv's engine module imported
+  // this from 'node:util' and crashed at module-init with
+  // "stripVTControlCharacters is not a function".
+  //
+  // Real-Node impl strips C0/C1 ANSI escapes via a single regex.
+  // Standard CSI sequence pattern: ESC + '[' + parameter bytes + final byte.
+  stripVTControlCharacters: (str) => {
+    if (typeof str !== "string") return str;
+    // Covers most common ANSI sequences: CSI (\x1b[...m, \x1b[...K, etc.),
+    // OSC, simple ESC sequences. Mirrors the regex Node's lib/internal/
+    // util/inspect.js uses (slightly relaxed).
+    return str.replace(/\\x1b\\[[0-9;?]*[A-Za-z]|\\x1b[\\(\\)\\*\\+][AB012]|\\x1b\\][^\\x07\\x1b]*[\\x07\\x1b]|\\x1b[=>]/g, "");
+  },
   // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
   // wrapped in ANSI escape sequences for terminal styling. Used by
   // create-vite and many modern CLIs.
@@ -2162,6 +2252,97 @@ builtins.async_hooks = __asyncHooksMod;
 // site that bypasses the strip path.
 builtins["fs/promises"] = __fsMod.promises;
 builtins["node:fs/promises"] = __fsMod.promises;
+
+// stream/promises — promise-wrapped versions of pipeline + finished.
+// Surfaced by sv (svelte CLI, the new replacement for create-svelte
+// v6.x) at /tmp/.npx-cache/node_modules/sv/dist/bin.mjs — it imports
+// 'node:stream/promises' for promise-style pipeline composition.
+// signal-exit, gulp's vinyl streams, tar-fs, and many node-only build
+// scripts use this subpath too.
+//
+// Real Node's stream/promises wraps the callback-style pipeline/
+// finished from 'stream' into Promise-returning variants. The
+// __streamMod above already ships pipeline() and finished() in their
+// callback form (src/runtime/streams.ts:339/361); the promise wrapper
+// is a thin shim that returns a Promise resolving on success +
+// rejecting on the callback's err arg.
+builtins["stream/promises"] = (() => {
+  const promisifyOp = (op) => (...args) => new Promise((res, rej) => {
+    // op signature: op(...streamsOrTarget, callback)
+    op(...args, (err, value) => {
+      if (err) rej(err);
+      else res(value);
+    });
+  });
+  return {
+    pipeline: promisifyOp(__streamMod.pipeline),
+    finished: promisifyOp(__streamMod.finished),
+  };
+})();
+builtins["node:stream/promises"] = builtins["stream/promises"];
+
+// stream/consumers — Promise-returning helpers that drain a Readable.
+// Node 16.7+. Used by undici, tar-stream, multiple "consume the whole
+// body" patterns. Each helper takes a readable stream and returns a
+// Promise<Buffer | string | object | array>.
+builtins["stream/consumers"] = (() => {
+  function readAll(stream) {
+    return new Promise((res, rej) => {
+      const chunks = [];
+      stream.on('data', (chunk) => chunks.push(chunk));
+      stream.on('end', () => res(chunks));
+      stream.on('error', rej);
+    });
+  }
+  return {
+    buffer: async (stream) => {
+      const chunks = await readAll(stream);
+      // Concat Buffers / Uint8Arrays / strings.
+      if (chunks.length === 0) return __BufferMod.alloc(0);
+      if (typeof chunks[0] === 'string') {
+        return __BufferMod.from(chunks.join(''));
+      }
+      return __BufferMod.concat(chunks);
+    },
+    text: async (stream) => {
+      const chunks = await readAll(stream);
+      if (chunks.length === 0) return '';
+      if (typeof chunks[0] === 'string') return chunks.join('');
+      return __BufferMod.concat(chunks).toString('utf8');
+    },
+    json: async (stream) => {
+      const chunks = await readAll(stream);
+      const text = typeof chunks[0] === 'string'
+        ? chunks.join('')
+        : __BufferMod.concat(chunks).toString('utf8');
+      return JSON.parse(text);
+    },
+    arrayBuffer: async (stream) => {
+      const chunks = await readAll(stream);
+      const buf = __BufferMod.concat(chunks);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    },
+    blob: async () => {
+      throw new Error('stream/consumers.blob not implemented');
+    },
+  };
+})();
+builtins["node:stream/consumers"] = builtins["stream/consumers"];
+
+// stream/web — Web Streams API namespace. Node 17+. Userland CLIs
+// occasionally pull \`ReadableStream\` from here for portability. The
+// platform exposes these globals already; we just re-export them.
+builtins["stream/web"] = {
+  ReadableStream: globalThis.ReadableStream,
+  WritableStream: globalThis.WritableStream,
+  TransformStream: globalThis.TransformStream,
+  ByteLengthQueuingStrategy: globalThis.ByteLengthQueuingStrategy,
+  CountQueuingStrategy: globalThis.CountQueuingStrategy,
+  ReadableStreamDefaultReader: globalThis.ReadableStreamDefaultReader,
+  ReadableStreamDefaultController: globalThis.ReadableStreamDefaultController,
+  WritableStreamDefaultWriter: globalThis.WritableStreamDefaultWriter,
+};
+builtins["node:stream/web"] = builtins["stream/web"];
 builtins["timers/promises"] = (() => {
   return {
     setTimeout: (ms, value) => new Promise(res => setTimeout(() => res(value), ms || 0)),

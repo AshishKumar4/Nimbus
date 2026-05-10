@@ -130,6 +130,154 @@ export function getSharedRuntimeExternals(specifier: string): string[] {
   });
 }
 
+/**
+ * Cheap heuristic to detect top-level await in source. Used by
+ * `EsbuildService.transform` to decide whether to async-IIFE-wrap
+ * CJS-target sources (see transform()'s header comment).
+ *
+ * Why a regex (not a real parser):
+ *   - We only need to know "is there an `await` outside any
+ *     function body?". A regex over a comment-stripped source is
+ *     cheap and the false-positive class is harmless (an async-
+ *     IIFE wrap around code that didn't need it is a no-op).
+ *   - Real parsing would require shipping a JS parser to the
+ *     supervisor isolate — adds tens of KiB to the worker bundle
+ *     and a fraction-of-a-millisecond per call. Not worth it.
+ *
+ * Heuristic:
+ *   1. Strip line and block comments (avoid matching commented-out
+ *      `// await foo` strings).
+ *   2. Strip string and template literals (avoid matching `"await x"`
+ *      in error messages or user-data strings).
+ *   3. Scan token-by-token tracking brace/paren/function-keyword
+ *      depth. An `await` at depth-0 OUTSIDE any `function`/`=>` body
+ *      is top-level.
+ *
+ * Misses (accepted):
+ *   - Await inside a class static initializer block at depth 0 —
+ *     real Node treats that as a syntax error anyway.
+ *   - Heavily-minified sources where function boundaries are
+ *     packed onto a single line — we false-positive (wrap when
+ *     not needed). Harmless.
+ *
+ * NEVER false-negatives a real top-level await in normal source;
+ * the wrap is the safe direction.
+ */
+function hasTopLevelAwait(src: string): boolean {
+  if (!src || src.indexOf('await') === -1) return false;
+
+  // Strip comments + string/template literals so the depth-tracker
+  // only sees real syntax.
+  let stripped = '';
+  let i = 0;
+  const N = src.length;
+  while (i < N) {
+    const c = src[i];
+    // // line comment
+    if (c === '/' && src[i + 1] === '/') {
+      while (i < N && src[i] !== '\n') i++;
+      stripped += ' ';
+      continue;
+    }
+    // /* block comment */
+    if (c === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i < N && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      stripped += ' ';
+      continue;
+    }
+    // ' " ` string/template
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c;
+      stripped += ' ';
+      i++;
+      while (i < N) {
+        const cc = src[i];
+        if (cc === '\\') { i += 2; continue; }
+        if (cc === q) { i++; break; }
+        // template interpolation: ${...} — recurse over real code
+        if (q === '`' && cc === '$' && src[i + 1] === '{') {
+          // Treat the interpolation as code (preserve its content
+          // for the depth-tracker). Walk to the matching close-brace
+          // at depth 0 of `{}`.
+          stripped += '${';
+          i += 2;
+          let depth = 1;
+          while (i < N && depth > 0) {
+            const ic = src[i];
+            if (ic === '{') depth++;
+            else if (ic === '}') depth--;
+            if (depth > 0) stripped += ic;
+            i++;
+          }
+          stripped += '}';
+          continue;
+        }
+        i++;
+      }
+      continue;
+    }
+    stripped += c;
+    i++;
+  }
+
+  // Now walk tokens. Track function depth: `function` / `=>` opens a
+  // function scope; entering `{` increments; matching `}` decrements.
+  // For arrow funcs the body may be an expression (no braces) —
+  // in that case the function body ends at the next `;` or top-level
+  // comma. Approximation: count `function` keyword occurrences as
+  // "entered fn scope" and assume the first balanced `{ ... }` after
+  // it is the body.
+  //
+  // We use a simpler approach: scan for the keyword `await`, then
+  // count `function`-keywords + `=>` arrows up to that point, minus
+  // matching scope-closes via brace depth. If the await is at depth 0
+  // (no enclosing function), it's TLA.
+  //
+  // For robustness across formatting, we just track brace depth and
+  // a 'inFunctionAt' stack: when we see `function`, push the next `{`'s
+  // depth onto the stack. When we see `}` and it matches the stack's
+  // top, pop. Await at depth not matching any function-stack entry
+  // is TLA.
+  const re = /\b(await|function|class)\b|=>|\{|\}|\(|\)/g;
+  let m: RegExpExecArray | null;
+  const fnEntryDepths: number[] = [];
+  let depth = 0;
+  let pendingFnAtNextBrace = 0;
+  while ((m = re.exec(stripped)) !== null) {
+    const tok = m[0];
+    if (tok === '{') {
+      depth++;
+      if (pendingFnAtNextBrace > 0) {
+        fnEntryDepths.push(depth);
+        pendingFnAtNextBrace--;
+      }
+    } else if (tok === '}') {
+      if (
+        fnEntryDepths.length > 0 &&
+        fnEntryDepths[fnEntryDepths.length - 1] === depth
+      ) {
+        fnEntryDepths.pop();
+      }
+      depth--;
+    } else if (tok === 'function' || tok === '=>') {
+      // The next `{` opens the function body. Arrow functions may
+      // have an expression body (no brace) — accepted false-positive.
+      pendingFnAtNextBrace++;
+    } else if (tok === 'class') {
+      // Class bodies use `{}` too, but `await` inside a class field
+      // initializer would be inside a method or value — those open
+      // their own braces. Treat `class` like `function` for depth.
+      pendingFnAtNextBrace++;
+    } else if (tok === 'await') {
+      // TLA iff no enclosing function scope is open at current depth.
+      if (fnEntryDepths.length === 0) return true;
+    }
+  }
+  return false;
+}
+
 // ── esbuild-wasm imports ────────────────────────────────────────────────
 //
 // We must NOT eagerly import('esbuild-wasm') at module evaluation.
@@ -294,6 +442,40 @@ export class EsbuildService {
 
   /**
    * Transform a single code string (TS→JS, JSX→JS, minify, etc.)
+   *
+   * Top-level await note (gap #2 in framework-gaps-fix):
+   * ─────────────────────────────────────────────────────
+   * esbuild rejects top-level await when output format is 'cjs' or
+   * 'iife' — neither has a runtime primitive for it. Real Node
+   * supports TLA only in ESM. Nimbus's facet wrapper executes the
+   * transformed code via `new Function(...)` which is CJS-shaped.
+   *
+   * Several modern CLIs (nuxi, vite-cli, oclif's lazy-load bootstrap,
+   * many ESM-only-by-default tools) use TLA at the entry point. With
+   * format:'cjs' those would crash with "Top-level await is currently
+   * not supported with the 'cjs' output format" — an esbuild
+   * SyntaxError surfaced as a Nimbus diagnostic. The user can't
+   * fix this without rewriting upstream.
+   *
+   * Fix: when caller asks for format 'cjs' AND the source has a
+   * top-level await, wrap the source in an async IIFE:
+   *
+   *     ;(async () => {
+   *       <original-source>
+   *     })();
+   *
+   * Inside the IIFE, await is legal. The IIFE returns a Promise but
+   * we don't surface it — the caller (facet's compiled-fn wrapper)
+   * runs the body for side-effects; any synchronous `module.exports
+   * = X` at the top runs before the first await and is visible to
+   * the require caller. Code that awaits BEFORE setting exports is
+   * inherently async-only and would behave the same way with ESM
+   * + dynamic import().
+   *
+   * This is bytes-stable: a TLA-free source goes through the
+   * unchanged path; only TLA-bearing sources get wrapped. Same
+   * conditions-per-resolution shape as the framework-validation
+   * wave's primitive #3.
    */
   async transform(
     code: string,
@@ -312,9 +494,20 @@ export class EsbuildService {
   ): Promise<TransformResult> {
     await this.ensureInit();
 
-    const result = await this._esbuild!.transform(code, {
+    const format = options?.format || 'esm';
+    let sourceToTransform = code;
+
+    // Async-IIFE wrap when CJS-target meets top-level await.
+    if (format === 'cjs' && hasTopLevelAwait(code)) {
+      sourceToTransform =
+        ';(async () => {\n' +
+        code +
+        '\n})().catch((e) => { console.error(e && e.stack || e); });\n';
+    }
+
+    const result = await this._esbuild!.transform(sourceToTransform, {
       loader: options?.loader || 'ts',
-      format: options?.format || 'esm',
+      format,
       target: options?.target || 'esnext',
       sourcemap: options?.sourcemap ?? false,
       minify: options?.minify ?? false,
