@@ -39,6 +39,11 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runNodeScript } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, type RuntimeSpec } from '../runtime/runtime-registry.js';
+import {
+  makeWasmRunner,
+  WASM_RUNNER_VERSION,
+  WASM_RUNNER_HELP,
+} from '../runtime/wasm-runner.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import {
@@ -357,6 +362,46 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     registry.register(
       'bun',
       buildRuntimeHandler(bunSpec, {
+        vfs: sqliteFs,
+        facetMgr,
+        getEsbuild: () => {
+          if (!self.esbuildService) {
+            self.ensureSqliteFs();
+            self.esbuildService = new EsbuildService(self.sqliteFs!);
+          }
+          return self.esbuildService!;
+        },
+        registry,
+      }),
+    );
+
+    // ── wasm-runner: native WebAssembly runtime (multi-runtime wave) ──
+    //
+    // Loads .wasm from VFS, instantiates via WebAssembly.instantiate
+    // (workerd built-in — no vendored interpreter), calls a named
+    // export with parsed integer args, prints the return value.
+    //
+    // Proves the runtime-registry pattern with a non-Node runtime:
+    //   - Uses bypassesScriptRead so the registry skips the
+    //     read-source / shebang-strip / esbuild-transform flow.
+    //   - The runner runs in the supervisor isolate (no facet
+    //     dispatch) — the work is pure compute-on-bytes; userspace
+    //     isolation isn't needed for a 70-byte add(a,b) module.
+    //   - Process-tab integration falls out for free: the registry
+    //     contract is runtime-agnostic at the PID layer.
+    const wasmSpec: RuntimeSpec = {
+      name: 'wasm-runner',
+      version: WASM_RUNNER_VERSION,
+      helpText: WASM_RUNNER_HELP,
+      run: makeWasmRunner({
+        exists: (p: string) => sqliteFs.exists(p),
+        readFile: (p: string) => sqliteFs.readFile(p),
+      }),
+      bypassesScriptRead: true,
+    };
+    registry.register(
+      'wasm-runner',
+      buildRuntimeHandler(wasmSpec, {
         vfs: sqliteFs,
         facetMgr,
         getEsbuild: () => {
