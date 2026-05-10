@@ -92,15 +92,35 @@ interface VfsLike {
 }
 
 /**
+ * Minimal processTable shape — the parts wasm-runner needs to
+ * register a PID + mark exit so `ps` and `logs <pid>` see the
+ * invocation. Mirrors the surface the .bin handler uses; kept
+ * narrow to avoid the cycle through facets/manager.ts.
+ */
+interface ProcessTableLike {
+  spawn(command: string, argv: string[], cwd: string): { pid: number };
+  exit(pid: number, code: number): void;
+}
+
+interface ProcessLogStoreLike {
+  append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
+  getExit(pid: number): unknown;
+  markExit(pid: number, code: number): void;
+}
+
+/**
  * Build a `run` function suitable for RuntimeSpec.run(). Parameterised
- * over the VFS, env (for env.LOADER), and ctx (for the pool's
- * doId-scoped cache key). Returns a fn that matches the runtime-
+ * over the VFS, env (for env.LOADER), ctx (for the pool's doId-scoped
+ * cache key), and processTable + processLogs (for `ps` / `logs <pid>` /
+ * Process tab integration). Returns a fn that matches the runtime-
  * registry's contract.
  */
 export function makeWasmRunner(deps: {
   vfs: VfsLike;
   env: any;
   ctx: DurableObjectState;
+  processTable: ProcessTableLike;
+  processLogs: ProcessLogStoreLike;
 }) {
   return async function runWasm(
     _facetMgr: unknown,
@@ -257,7 +277,25 @@ export function makeWasmRunner(deps: {
       return { ok: true, result: out, exports: exportNames };
     };
 
-    let outcome: WasmCallResult;
+    // PID + log integration. The runtime-registry's contract is
+    // runtime-agnostic at the PID layer; node + bun get this for
+    // free via runFresh → facetMgr.exec which calls
+    // processTable.spawn. wasm-runner uses NimbusLoaderPool directly
+    // (compute-only, no SUPERVISOR binding needed) so we have to
+    // allocate the PID + log entries by hand.
+    const cmdLabel =
+      'wasm-runner ' +
+      (opts.filename || '').replace(/^\/+/, '/') +
+      ' ' +
+      argv.join(' ');
+    const procEntry = deps.processTable.spawn(
+      cmdLabel.trim(),
+      ['wasm-runner', ...argv],
+      opts.cwd || '/home/user',
+    );
+    const pid = procEntry.pid;
+
+    let outcome: WasmCallResult | { ok: false; error: string };
     try {
       outcome = await pool.submit(
         facetFn,
@@ -271,27 +309,45 @@ export function makeWasmRunner(deps: {
         },
       );
     } catch (e: any) {
-      return {
-        exitCode: 1,
-        stdout: '',
-        stderr: `wasm-runner: dispatch failed: ${e?.message || e}\n`,
-      };
+      outcome = { ok: false, error: `dispatch failed: ${e?.message || e}` };
     }
+
+    let exitCode: number;
+    let stdout: string;
+    let stderr: string;
 
     if (!outcome.ok) {
-      return {
-        exitCode: 1,
-        stdout: '',
-        stderr: `wasm-runner: ${outcome.error}\n`,
-      };
+      exitCode = 1;
+      stdout = '';
+      stderr = `wasm-runner: ${outcome.error}\n`;
+    } else {
+      // Surface the result on stdout. void-return is treated as success
+      // with no output; callers can chain `&& echo OK` to detect.
+      stdout =
+        outcome.result === undefined || outcome.result === null
+          ? ''
+          : String(outcome.result) + '\n';
+      stderr = '';
+      exitCode = 0;
     }
 
-    // Surface the result on stdout. void-return is treated as success
-    // with no output; callers can chain `&& echo OK` to detect.
-    const out =
-      outcome.result === undefined || outcome.result === null
-        ? ''
-        : String(outcome.result) + '\n';
-    return { exitCode: 0, stdout: out, stderr: '' };
+    // Mirror stdout/stderr into the per-PID ring so `logs <pid>`
+    // and the Process tab WS log stream see the output. The
+    // append-then-markExit ordering matches what shellExecuteTracked
+    // does in init.ts:1559+ (Fix 5 contract).
+    if (stdout) {
+      try { deps.processLogs.append(pid, 'stdout', stdout); } catch {}
+    }
+    if (stderr) {
+      try { deps.processLogs.append(pid, 'stderr', stderr); } catch {}
+    }
+    try { deps.processTable.exit(pid, exitCode); } catch {}
+    try {
+      if (!deps.processLogs.getExit(pid)) {
+        deps.processLogs.markExit(pid, exitCode);
+      }
+    } catch {}
+
+    return { exitCode, stdout, stderr };
   };
 }

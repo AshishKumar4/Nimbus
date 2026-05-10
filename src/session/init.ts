@@ -400,6 +400,8 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         },
         env: self.env,
         ctx: self.ctx,
+        processTable: self.processTable,
+        processLogs: self.processLogs,
       }),
       bypassesScriptRead: true,
     };
