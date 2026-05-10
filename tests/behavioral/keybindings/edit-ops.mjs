@@ -33,11 +33,12 @@ await runRecipes('keybindings/edit-ops', [
   },
   {
     name: 'Ctrl+U from mid-line cuts only the head — tail survives',
-    // type "PREFIXecho hello", arrow-left ×11 (cursor between "PREFIX" and "echo"),
-    // Ctrl+U → buffer becomes "echo hello"
+    // type "PREFIXecho hello" (16 chars), arrow-left ×10 → cursor at
+    // index 6 (right before 'e' of "echo"). Ctrl+U cuts indices 0..6
+    // → leaves "echo hello".
     steps: [
       'PREFIXecho hello',
-      ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT,
+      ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT,
       ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT, ARROW_LEFT,
       CTRL_U,
     ],
@@ -53,26 +54,30 @@ await runRecipes('keybindings/edit-ops', [
   },
 
   // ────────────── Ctrl+W — cut word back (whitespace-delim per bash) ──────────────
+  // Note: `echo` collapses adjacent / trailing whitespace when args are
+  // tokenized, so we can't distinguish "foo bar " (trailing space) from
+  // "foo bar" via the echo recipe. We instead cut deep enough that the
+  // resulting line is unambiguous.
   {
     name: 'Ctrl+W deletes preceding whitespace-delimited word',
-    // type "echo foo bar BAD", Ctrl+W → "echo foo bar "
+    // type "echo foo bar BAD", Ctrl+W → "echo foo bar " → echo prints "foo bar"
     steps: ['echo foo bar BAD', CTRL_W],
-    expect: 'foo bar ',
+    expect: 'foo bar',
   },
   {
     name: 'Ctrl+W deletes punctuation as part of the word (whitespace-only delim)',
-    // type "echo foo a.b.c", Ctrl+W → "echo foo " (whitespace boundary)
+    // type "echo foo a.b.c", Ctrl+W → "echo foo " → echo prints "foo"
     steps: ['echo foo a.b.c', CTRL_W],
-    expect: 'foo ',
+    expect: 'foo',
   },
 
   // ────────────── Alt+Backspace — readline word-back ──────────────
   // readline's M-DEL uses [A-Za-z0-9_] word boundaries.
   {
     name: 'Alt+Backspace deletes preceding word (readline word def)',
-    // type "echo foo bar BAD", Alt+Backspace → "echo foo bar "
+    // type "echo foo bar BAD", Alt+Backspace → "echo foo bar "  → "foo bar"
     steps: ['echo foo bar BAD', ALT_BACKSPACE],
-    expect: 'foo bar ',
+    expect: 'foo bar',
   },
   {
     name: 'Alt+Backspace stops at punctuation (unlike Ctrl+W)',

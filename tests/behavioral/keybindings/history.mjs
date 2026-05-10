@@ -94,28 +94,40 @@ await execAndAwait('echo HIST_THREE last_arg_for_alt_dot');
 }
 
 // ────────────── Ctrl+N (readline alias for ↓) — empty when past most-recent ──────────────
-// At a fresh prompt, ↓ does nothing (no future to go to). Verify it
-// doesn't insert garbage by typing afterwards and running.
+// At a fresh prompt with no "future" to navigate to, Ctrl+N must be a
+// no-op (must NOT insert a control char or garbage into the line). We
+// verify by sending Ctrl+N then typing a clean command — the executed
+// line must be exactly the typed command.
 {
   t.send(CTRL_U); await sleep(50);
   t.reset();
   const tail0 = t.buf.length;
-  t.send(CTRL_N); await sleep(60); // should be a no-op
-  t.send('echo NDOWN_OK\r');
+  t.send(CTRL_N); await sleep(60); // expected: no-op
+  t.send('echo CTRLN_NOOP_OK\r');
   await t.waitFor(
     (b) => b.length > 0 && t.buf.length > tail0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
     15_000, 'prompt after Ctrl+N noop',
   );
   const stripped = stripAnsi(t.buf.slice(tail0));
-  const ok = /NDOWN_OK/.test(stripped) && !/^\s*[A-Za-z]/.test(stripped.split('\n')[1] || '');
-  a.check('Ctrl+N at end of history is a no-op (no garbage)', ok, ok ? '' : JSON.stringify(stripped.slice(0, 200)));
+  // The output line should be "CTRLN_NOOP_OK" exactly — not preceded
+  // by junk from a Ctrl+N insertion.
+  const lines = stripped.split(/\r?\n/).map(l => l.replace(/\s+$/, ''));
+  const outputLine = lines.find(l => l && !/@[^:]*:.*[$#]\s/.test(l) && !/[$#>]\s*$/.test(l));
+  const ok = outputLine === 'CTRLN_NOOP_OK';
+  a.check('Ctrl+N at end of history is a no-op (line runs cleanly)', ok,
+    ok ? '' : `outputLine=${JSON.stringify(outputLine)} raw=${JSON.stringify(stripped.slice(0, 200))}`);
 }
 
 // ────────────── Alt+. — last arg of previous command ──────────────
-// readline yank-last-arg. After our pre-population, the LAST command
-// run is "echo HIST_THREE last_arg_for_alt_dot" (or one of its re-runs);
-// the last word is "last_arg_for_alt_dot". Alt+. inserts it.
+// readline yank-last-arg. Run a fresh command with a distinctive last
+// word, then on the very next prompt type `echo ` + Alt+. — that last
+// word should land at the cursor.
 {
+  // Set up a known-last command. CTRL_U-clears any noise.
+  t.send(CTRL_U); await sleep(50);
+  await execAndAwait('echo SETUP_LAST_ALTDOT_TOKEN');
+  // Now the most-recent history line is "echo SETUP_LAST_ALTDOT_TOKEN"
+  // and its last whitespace-delimited word is "SETUP_LAST_ALTDOT_TOKEN".
   t.send(CTRL_U); await sleep(50);
   t.reset();
   const tail0 = t.buf.length;
@@ -127,8 +139,9 @@ await execAndAwait('echo HIST_THREE last_arg_for_alt_dot');
     15_000, 'prompt after Alt+. execute',
   );
   const stripped = stripAnsi(t.buf.slice(tail0));
-  const ok = /last_arg_for_alt_dot/.test(stripped);
-  a.check('Alt+. inserts last arg of previous command', ok, ok ? '' : JSON.stringify(stripped.slice(0, 200)));
+  const ok = /SETUP_LAST_ALTDOT_TOKEN/.test(stripped);
+  a.check('Alt+. inserts last arg of previous command', ok,
+    ok ? '' : JSON.stringify(stripped.slice(0, 200)));
 }
 
 await t.close();

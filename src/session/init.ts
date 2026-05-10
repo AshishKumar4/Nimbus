@@ -58,7 +58,7 @@ import {
   filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard,
   detectUnsupportedWranglerConfig, NIMBUS_UNSUPPORTED_BINS,
 } from './helpers.js';
-import { HeredocHandler } from '../shell/features.js';
+import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
@@ -1582,6 +1582,13 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
     // ── Heredoc support (<<) — all logic lives in shell-features.ts ──
     HeredocHandler.install(self.shell, self.terminal, self.sqliteFs!);
+
+    // ── Readline-parity keybindings (Ctrl+K, Ctrl+W, Alt+B, Alt+F, Alt+D,
+    //    Ctrl+Y, Ctrl+T, Ctrl+L, Ctrl+R, Alt+. , Ctrl+←/→, Alt+←/→, Linux
+    //    Home/End variants, Ctrl+B/F/N/P, …). Installed AFTER Heredoc so
+    //    its handleInput wrapper takes precedence when heredoc mode is
+    //    active. ──
+    LineEditorExtender.install(self.shell, self.terminal);
 
     // ── Wire npm/npx with shellExecute ──
     const shell = self.shell;

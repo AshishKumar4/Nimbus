@@ -225,6 +225,14 @@
         brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
       },
       allowProposedApi: true,
+      // macOS Option key emits Meta-prefixed sequences (\x1b<letter>),
+      // matching Linux Alt behaviour. Without this, Option+B/F/D on
+      // Mac silently inserts unicode `∫ƒ∂` glyphs instead of triggering
+      // word-by-word readline edits. xterm.js default is false; bash /
+      // Terminal.app / iTerm2 default this to true via their own
+      // "Use Option as Meta" preference. We hard-set true so Mac users
+      // get Linux-parity readline keybindings out of the box.
+      macOptionIsMeta: true,
     });
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
