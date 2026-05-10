@@ -1,124 +1,180 @@
 #!/usr/bin/env bun
-// behavioral/large-install — Markflow-tier (~617 deps) install end-to-end.
+// behavioral/large-install — Markflow-tier (~620 deps) install end-to-end.
 //
-// User repro: Markflow has 617 transitive deps. With install-honesty fix
-// shipped (peer-DO writeBatchStream → coordinator), ALL 96 concurrent peer
-// streams (32 peers × pLimit 3) hit the same coordinator DO's input gate
-// → "Durable Object is overloaded. Requests queued for too long." for ~50%
-// of packages.
+// User repro shape (verbatim, 2026-05-10):
+//   git clone https://github.com/AshishKumar4/Markflow
+//   cd Markflow && npm i
+//   → Resolver: 620 resolved, layers=9, ✓
+//   → Dispatching 620 packages across N shards (peer-do POC B, internal pLimit=3)...
+//   → [batch-fanout] aborted: ExecutionError: Durable Object is overloaded.
 //
-// Asserts:
-//   1. resolver completes (Resolved 600+ packages line)
-//   2. zero "Durable Object is overloaded" warnings on stderr
-//   3. final result.failed.length === 0 (i.e. installed.length == resolved-count)
-//   4. spot-check: at least 5 known top-level deps are readable from VFS
-//      and parse JSON correctly.
+// The earlier version of this probe checked SINGLE-session behaviour
+// only, which always passed; the bug only appears under concurrent
+// session load (multiple users running `npm i` Markflow at once →
+// account-level peer-DO cold-start scheduler overflow).
 //
-// Black-box only. NO _diag.
+// The probe runs in two modes:
+//   default (NIMBUS_PROBE_CONCURRENT=1, the failure mode the user hit):
+//     NIMBUS_PROBE_CONCURRENT=12 — fire 12 concurrent sessions, each
+//     does the user's flow. Asserts ≥ 11/12 succeed (1 transient
+//     allowed). RED pre-wave-4d (3-4/12 fail with batch-fanout abort).
+//
+//   single (env NIMBUS_PROBE_SINGLE=1):
+//     One session, full assertions including spot-check of 5 deps.
+//     Useful for fast iteration + as a smoke check.
+//
+// NO fixtures, NO truncated deps. Always clones real Markflow from
+// github.com.
 
 import { mintSession, Terminal, makeAsserter, sleep, stripAnsi } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
-const a = makeAsserter('large-install');
-console.log(`behavioral/large-install — Markflow ~617 deps install\nBASE=${process.env.BASE}`);
 
-// Markflow's top-level deps as of 2026-05 (verified against
-// https://github.com/AshishKumar4/Markflow/blob/main/package.json).
-// Spot-checking 5 ensures bytes actually landed in user-visible VFS,
-// not just that the count line matches.
-const SPOT_CHECK = ['react', 'mermaid', 'lucide-react', 'hono', 'tailwindcss'];
 const REPO = 'https://github.com/AshishKumar4/Markflow';
+const SPOT_CHECK = ['react', 'mermaid', 'lucide-react', 'hono', 'tailwindcss'];
 
-const sid = await mintSession();
-console.log(`SID: ${sid}`);
+const SINGLE = process.env.NIMBUS_PROBE_SINGLE === '1';
+const CONCURRENT = SINGLE ? 1 : parseInt(process.env.NIMBUS_PROBE_CONCURRENT || '12', 10);
 
-const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
+console.log(`behavioral/large-install — Markflow ~620 deps install`);
+console.log(`BASE=${process.env.BASE}`);
+console.log(`mode=${SINGLE ? 'SINGLE' : `CONCURRENT(N=${CONCURRENT})`}`);
 
-// Step 1: clone Markflow (small repo — ~111 files / 821 KB per transcript).
-{
+const a = makeAsserter('large-install');
+
+/**
+ * Drive ONE session through the user's exact flow and return outcome.
+ * No retries, no setTimeout. Real github.com clone, real npm install.
+ */
+async function attempt(idx) {
+  const sid = await mintSession();
+  const t = new Terminal(sid);
+  await t.connect();
+  await sleep(1500);
+
+  // Step 1: clone Markflow.
   t.reset();
   t.cmd(`git clone ${REPO}`);
-  const elapsed = await t.waitFor(
-    (b) => /clone complete/i.test(b) || /\$\s*$/.test(b.trimEnd().slice(-3)),
-    60_000,
-    'git clone complete',
-  );
-  console.log(`  git clone done in ${elapsed}ms`);
-  a.check('git clone Markflow', /clone complete/i.test(stripAnsi(t.buf)),
-    stripAnsi(t.buf).slice(-200));
-}
+  try {
+    await t.waitFor(
+      (b) => /clone complete/i.test(b),
+      90_000,
+      'git clone complete',
+    );
+  } catch (e) {
+    await t.close();
+    return { idx, sid, outcome: 'CLONE_FAIL', detail: String(e?.message ?? e).slice(0, 200) };
+  }
 
-// Step 2: cd Markflow && npm i. This is where the overload fires.
-let installOutput = '';
-{
+  // Step 2: cd Markflow && npm i.  This is the line the user ran.
   await t.run('cd /home/user/Markflow', 5_000);
   t.reset();
   t.cmd('npm i');
-  const elapsed = await t.waitFor(
-    (b) => /added \d+ packages|npm install failed/i.test(b),
-    480_000,  // 8 min — RED today: most install completes < 60s but the
-              // overload errors take some time to back-pressure.
-              // GREEN target: we expect < 90s.
-    'npm install end',
-  );
-  installOutput = stripAnsi(t.buf);
-  console.log(`  npm i done in ${(elapsed / 1000).toFixed(1)}s`);
-}
-
-// Step 3: assert resolver succeeded.
-{
-  const m = installOutput.match(/Resolved (\d+) packages/);
-  const resolved = m ? parseInt(m[1], 10) : 0;
-  a.check('resolver finds 600+ packages',
-    resolved >= 600,
-    `resolved=${resolved}`);
-}
-
-// Step 4: assert zero "overloaded" warnings.
-{
-  const overloads = (installOutput.match(/Durable Object is overloaded/g) || []).length;
-  a.check('zero "Durable Object is overloaded" warnings',
-    overloads === 0,
-    `${overloads} overload errors observed`);
-}
-
-// Step 5: assert added-count matches resolved-count.
-{
-  const added = installOutput.match(/added (\d+) packages/);
-  const resolved = installOutput.match(/Resolved (\d+) packages/);
-  const addedN = added ? parseInt(added[1], 10) : 0;
-  const resolvedN = resolved ? parseInt(resolved[1], 10) : 0;
-  a.check('added count == resolved count (no failures)',
-    addedN === resolvedN && resolvedN > 0,
-    `added=${addedN} resolved=${resolvedN}`);
-}
-
-// Step 6: spot-check 5 top-level deps actually landed.
-//
-// Use simple `cat <file> | head -1 | grep '"name":'` instead of
-// `node -e <large-base64>` because typing a multi-KB base64 blob over
-// the WS+terminal pty can interleave with prompt redraws and confuse
-// the line-buffering on prod. `cat` is a coreutil, instant.
-for (const pkg of SPOT_CHECK) {
+  let outcome = 'TIMEOUT';
+  let installOutput = '';
   try {
-    const r = await t.run(
-      `cat /home/user/Markflow/node_modules/${pkg}/package.json | head -3`,
-      30_000,
+    await t.waitFor(
+      (b) => /added \d+ packages|npm install failed|\[batch-fanout\] aborted/i.test(b),
+      300_000,
+      'install end',
     );
-    const ok = new RegExp(`"name"\\s*:\\s*"${pkg}"`).test(r.output);
-    a.check(`spot-check: ${pkg} package.json readable + parses`,
-      ok,
-      ok ? '' : 'no "name":"' + pkg + '" in output: ' + r.output.slice(-120));
+    installOutput = stripAnsi(t.buf);
+    if (/\[batch-fanout\] aborted/i.test(installOutput)) {
+      outcome = 'BATCH_FANOUT_ABORT';
+    } else if (/added \d+ packages/i.test(installOutput)) {
+      outcome = 'SUCCESS';
+    } else if (/npm install failed/i.test(installOutput)) {
+      outcome = 'FAIL';
+    }
   } catch (e) {
-    a.check(`spot-check: ${pkg} package.json readable + parses`,
-      false,
-      `terminal/probe error: ${String(e?.message ?? e).slice(0, 150)}`);
+    installOutput = stripAnsi(t.buf);
+    outcome = 'TIMEOUT';
   }
+
+  // Spot-check (only on SUCCESS, only in SINGLE mode — N concurrent
+  // probes don't all need to do the spot-check, and overload state
+  // can poison the terminal).
+  let spotChecks = null;
+  if (outcome === 'SUCCESS' && SINGLE) {
+    spotChecks = {};
+    for (const pkg of SPOT_CHECK) {
+      try {
+        const r = await t.run(
+          `cat /home/user/Markflow/node_modules/${pkg}/package.json | head -3`,
+          30_000,
+        );
+        spotChecks[pkg] = new RegExp(`"name"\\s*:\\s*"${pkg}"`).test(r.output);
+      } catch (e) {
+        spotChecks[pkg] = false;
+      }
+    }
+  }
+
+  // Extract markers
+  const dispatchMatch = installOutput.match(/Dispatching (\d+) packages across (\d+) shards/);
+  const resolvedMatch = installOutput.match(/Resolved (\d+) packages/);
+  const addedMatch = installOutput.match(/added (\d+) packages \((\d+) files\)/);
+  const overloadCount = (installOutput.match(/Durable Object is overloaded/g) || []).length;
+
+  await t.close();
+
+  return {
+    idx, sid, outcome,
+    dispatched: dispatchMatch ? { specs: parseInt(dispatchMatch[1], 10), shards: parseInt(dispatchMatch[2], 10) } : null,
+    resolved: resolvedMatch ? parseInt(resolvedMatch[1], 10) : 0,
+    added: addedMatch ? { count: parseInt(addedMatch[1], 10), files: parseInt(addedMatch[2], 10) } : null,
+    overloads: overloadCount,
+    spotChecks,
+  };
 }
 
-await t.close();
+const t0 = Date.now();
+const promises = Array.from({ length: CONCURRENT }, (_, i) => attempt(i));
+const results = await Promise.all(promises);
+const elapsedTotal = Date.now() - t0;
+
+console.log(`\nResults (total elapsed ${(elapsedTotal / 1000).toFixed(1)}s):`);
+for (const r of results) {
+  const summary = r.outcome === 'SUCCESS'
+    ? `added=${r.added?.count}/${r.resolved} files=${r.added?.files} shards=${r.dispatched?.shards}`
+    : `overloads=${r.overloads}`;
+  console.log(`  [${r.idx}] ${r.outcome} ${summary}`);
+}
+
+const successes = results.filter((r) => r.outcome === 'SUCCESS');
+const failures = results.filter((r) => r.outcome !== 'SUCCESS');
+const successRate = successes.length / results.length;
+
+console.log(`\nsuccess=${successes.length}/${results.length} (${(successRate * 100).toFixed(0)}%)`);
+
+if (SINGLE) {
+  // SINGLE-mode assertions: one session, full assertions.
+  const r = results[0];
+  a.check('single session: outcome SUCCESS', r.outcome === 'SUCCESS', `outcome=${r.outcome}`);
+  a.check('single session: resolver finds 600+ packages', r.resolved >= 600, `resolved=${r.resolved}`);
+  a.check('single session: added count == resolved count', r.added?.count === r.resolved && r.resolved > 0, `added=${r.added?.count} resolved=${r.resolved}`);
+  a.check('single session: zero overload errors', r.overloads === 0, `overloads=${r.overloads}`);
+  for (const pkg of SPOT_CHECK) {
+    a.check(`single session: spot-check ${pkg}`, r.spotChecks?.[pkg] === true, '');
+  }
+} else {
+  // CONCURRENT-mode assertions: tolerate at most 1/N transients.
+  // The bug under reproduction: ≥ 25% sessions hit batch-fanout abort.
+  // Post-fix target: ≥ (N-1)/N sessions succeed.
+  const maxFailures = Math.max(1, Math.floor(CONCURRENT * 0.1));
+  a.check(
+    `concurrent N=${CONCURRENT}: success rate ≥ ${((CONCURRENT - maxFailures) / CONCURRENT * 100).toFixed(0)}%`,
+    successes.length >= CONCURRENT - maxFailures,
+    `${successes.length}/${CONCURRENT} succeeded; failures: ${failures.map((r) => `[${r.idx}] ${r.outcome}`).join(', ')}`,
+  );
+  // No batch-fanout aborts at all.
+  const batchAborts = results.filter((r) => r.outcome === 'BATCH_FANOUT_ABORT');
+  a.check(
+    `concurrent N=${CONCURRENT}: zero [batch-fanout] aborts`,
+    batchAborts.length === 0,
+    `${batchAborts.length} sessions hit batch-fanout abort`,
+  );
+}
 
 const s = a.summary();
 process.exit(s.fail === 0 ? 0 : 1);

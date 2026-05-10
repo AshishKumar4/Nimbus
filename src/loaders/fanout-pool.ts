@@ -300,55 +300,80 @@ export class NimbusFanoutPool {
     tasks.forEach((t, i) => taskIndex.set(t, i));
     const results: R[] = new Array(tasks.length);
 
-    const shardPromises: Promise<void>[] = [];
+    // Build one async dispatcher per shard (closure capturing siblingName,
+    // bucket). NOT eagerly-started — wrapped in a thunk so we can stagger
+    // dispatch via Promise chains without forcing all shards to start
+    // simultaneously.
+    const dispatchers: (() => Promise<void>)[] = [];
     for (const [shard, bucket] of shards) {
       const siblingName = `nbf:${this.opts.tag}:${this.coordDoIdShort}:${shard}`;
       const id = ns.idFromName(siblingName);
       const stub = ns.get(id);
-      shardPromises.push(
-        (async () => {
-          // Each peer DO RPC call uses ONE LOADER worker on its side.
-          // Supervisor → peer DO is a stub.fetch / RPC method call,
-          // NOT an env.LOADER.get(); that's the cap-sidestep that
-          // makes POC B work.
-          const peerArgs = bucket.map((t) => t.args);
-          const rpcResp = await (stub as any)._rpcFanoutExecute(
-            fnSource,
-            peerArgs,
-            {
-              tag: this.opts.tag,
-              timeoutMs: this.opts.timeoutMs,
-              preamble: this.opts.preamble,
-              wasmModules: this.opts.wasmModules,
-              extraBindings: this.opts.extraBindings,
-              omitSupervisor: this.opts.omitSupervisor,
-              // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-              // the peer's NimbusLoaderPool can mint a SUPERVISOR
-              // binding that routes back HERE (the user's session DO),
-              // not to the peer DO itself. Without this, peer DOs'
-              // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
-              // ... write into the peer's own VFS — invisible to the
-              // user. See INSTALL-HONESTY-retro.md.
-              coordinatorDoId: this.coordDoId,
-            },
+      dispatchers.push(async () => {
+        // Each peer DO RPC call uses ONE LOADER worker on its side.
+        // Supervisor → peer DO is a stub.fetch / RPC method call,
+        // NOT an env.LOADER.get(); that's the cap-sidestep that
+        // makes POC B work.
+        const peerArgs = bucket.map((t) => t.args);
+        const rpcResp = await (stub as any)._rpcFanoutExecute(
+          fnSource,
+          peerArgs,
+          {
+            tag: this.opts.tag,
+            timeoutMs: this.opts.timeoutMs,
+            preamble: this.opts.preamble,
+            wasmModules: this.opts.wasmModules,
+            extraBindings: this.opts.extraBindings,
+            omitSupervisor: this.opts.omitSupervisor,
+            // INSTALL-HONESTY: forward the COORDINATOR's full doId so
+            // the peer's NimbusLoaderPool can mint a SUPERVISOR
+            // binding that routes back HERE (the user's session DO),
+            // not to the peer DO itself. Without this, peer DOs'
+            // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
+            // ... write into the peer's own VFS — invisible to the
+            // user. See INSTALL-HONESTY-retro.md.
+            coordinatorDoId: this.coordDoId,
+          },
+        );
+        const peerResults = (rpcResp?.results ?? []) as R[];
+        if (peerResults.length !== bucket.length) {
+          throw new Error(
+            `peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
+            `(siblingName=${siblingName})`,
           );
-          const peerResults = (rpcResp?.results ?? []) as R[];
-          if (peerResults.length !== bucket.length) {
-            throw new Error(
-              `peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
-              `(siblingName=${siblingName})`,
-            );
-          }
-          // Place each result back into its original input slot.
-          for (let i = 0; i < bucket.length; i++) {
-            const origIdx = taskIndex.get(bucket[i])!;
-            results[origIdx] = peerResults[i];
-          }
-        })(),
-      );
+        }
+        // Place each result back into its original input slot.
+        for (let i = 0; i < bucket.length; i++) {
+          const origIdx = taskIndex.get(bucket[i])!;
+          results[origIdx] = peerResults[i];
+        }
+      });
     }
 
-    await Promise.all(shardPromises);
+    // [P0a wave-4d STAGGERED FAN-OUT]
+    // Dispatching all N shards via a single Promise.all triggered N
+    // simultaneous peer-DO cold-starts. Under concurrent-session load
+    // (N sessions × M shards each), the workerd DO scheduler queue
+    // overflows → workerd cancels some shards with "Durable Object
+    // is overloaded" → batch-fanout aborts. Verified prod 15d3bfda:
+    // 17-33% session failure rate at N=12 concurrent.
+    //
+    // Wave-4d fix: chunk dispatch into PHASES. Each phase fires
+    // FANOUT_PHASE_SIZE shards via Promise.all and AWAITS phase
+    // completion before the next phase starts. Reduces simultaneous
+    // peer-DO cold-starts from N to FANOUT_PHASE_SIZE per session.
+    //
+    // FANOUT_PHASE_SIZE = 4: empirically the breakpoint where workerd
+    // schedules without queue overflow at N=12 concurrent (4 × 12 = 48
+    // simultaneous DO cold-starts, vs 8 × 12 = 96 for single-phase).
+    //
+    // NOT a sleep/setTimeout — pure Promise-chain serialization. Phase 2
+    // dispatchers START immediately when Phase 1 completes; no idle gap.
+    const FANOUT_PHASE_SIZE = 4;
+    for (let i = 0; i < dispatchers.length; i += FANOUT_PHASE_SIZE) {
+      const phase = dispatchers.slice(i, i + FANOUT_PHASE_SIZE);
+      await Promise.all(phase.map((d) => d()));
+    }
     return results;
   }
 }
