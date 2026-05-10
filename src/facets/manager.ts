@@ -1125,6 +1125,95 @@ export function addStaticReadFileDotfilesAndCompiled(
 }
 
 /**
+ * G3 (runtime-pkg wave) — bin-target sibling oversample.
+ *
+ * When the entry script lives at `node_modules/<pkg>/...` (typical
+ * shape: cli.js, bin/foo, dist/index.js), bins commonly do
+ * `readFileSync(path.join(__dirname, '<rel>'))` to load assets that
+ * the static walker can't see (computed paths, package-internal
+ * data files, .cow / .pem / .wasm / .ttf / etc.).
+ *
+ * Pre-fix: addStaticReadFileAssets only covers a hardcoded ASSET_EXT
+ * whitelist (.css/.html/.htm/.svg/.txt/.json). Cowsay's `.cow` files
+ * ENOENT at runtime.
+ *
+ * Fix shape: when entry is inside a `node_modules/<pkg>` directory,
+ * walk that pkg dir's contents and pull every regular file under
+ * VFS_BUNDLE_MAX_BYTES, capped at `MAX_PKG_FILES` per-pkg so a
+ * 1000-file barrel package can't blow the bundle budget.
+ *
+ * The cap is intentionally generous (200 files): typical CLI
+ * packages have <50 files; cowsay has ~85 (many .cow files);
+ * commander has ~30. A 200-cap accommodates the long tail without
+ * regressing big packages where the standard prefetch is already
+ * doing the right thing.
+ *
+ * Caller already passed the `cwd` and the `scriptPath`; we only act
+ * if scriptPath is /<...>/node_modules/<pkg>/... — anything else
+ * (user scripts, npx-cache files outside node_modules, eval) is
+ * a no-op.
+ */
+function addBinTargetSiblings(
+  vfs: SqliteVFS,
+  scriptPath: string | undefined,
+  bundle: Record<string, string>,
+  budgetState: { totalBytes: number; fileCount: number },
+): { added: number } {
+  if (!scriptPath) return { added: 0 };
+  const stripped = scriptPath.replace(/^\/+/, '');
+  // Find the *innermost* node_modules/<pkg> root. Handles scoped
+  // packages (`@org/name`) too.
+  const segs = stripped.split('/');
+  let nmIdx = -1;
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (segs[i] === 'node_modules') { nmIdx = i; break; }
+  }
+  if (nmIdx < 0) return { added: 0 };
+  const isScoped = segs[nmIdx + 1]?.startsWith('@');
+  const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
+  if (pkgEnd > segs.length) return { added: 0 };
+  const pkgRoot = segs.slice(0, pkgEnd).join('/');
+
+  const MAX_PKG_FILES = 200;
+
+  // BFS walk pkgRoot. Skip nested `node_modules` (those are
+  // separate packages with their own walk if/when they become
+  // entry points).
+  let added = 0;
+  let visited = 0;
+  const queue: string[] = [pkgRoot];
+  while (queue.length > 0 && visited < MAX_PKG_FILES) {
+    const dir = queue.shift()!;
+    let entries: { name: string; type: string }[];
+    try { entries = vfs.readdir(dir); } catch { continue; }
+    for (const e of entries) {
+      if (visited >= MAX_PKG_FILES) break;
+      visited++;
+      if (e.name === 'node_modules') continue;
+      if (e.name === '.git') continue;
+      const child = dir + '/' + e.name;
+      if (e.type === 'directory') {
+        queue.push(child);
+        continue;
+      }
+      // File. Skip if already in bundle (the static walker beat us
+      // to it). Otherwise pull, respecting global budget caps.
+      if (bundle[child] !== undefined) continue;
+      if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return { added };
+      if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return { added };
+      let content: string;
+      try { content = vfs.readFileString(child); } catch { continue; }
+      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return { added };
+      bundle[child] = content;
+      budgetState.totalBytes += content.length;
+      budgetState.fileCount++;
+      added++;
+    }
+  }
+  return { added };
+}
+
+/**
  * W3.5 Fix B helper — detect ESM source by sniffing for top-level
  * `import` / `export` STATEMENTS. Identifier/property uses (`obj.import`,
  * `pkg.export`) won't match because we anchor at start-of-line / `^\s*`.
@@ -1311,6 +1400,19 @@ async function buildPrefetchBundle(
   //      audit/sections/X5U-plan.md §4.
   const dotAdd = addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState);
   void dotAdd;
+  totalBytes = budgetState.totalBytes;
+  fileCount = budgetState.fileCount;
+
+  // 2.30 G3 (runtime-pkg wave): bin-target sibling oversample. Pulls
+  //      ALL files under the entry's package root (capped at 200) so
+  //      bins like cowsay that readFileSync('cows/X.cow') at runtime
+  //      find their data files. Existing greedy/asset/dotfile passes
+  //      cover JS sources + a hardcoded ASSET_EXT list; this one
+  //      catches custom extensions (.cow, .pem, .ttf, .wasm bundled
+  //      as data, etc.) without needing a per-pkg whitelist.
+  //      No-op when entry isn't inside node_modules.
+  const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState);
+  void binSiblingAdd;
   totalBytes = budgetState.totalBytes;
   fileCount = budgetState.fileCount;
 
