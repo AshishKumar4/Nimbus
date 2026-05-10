@@ -31,9 +31,10 @@ process tree.
 
 Solid lines move data and control. Dashed amber lines carry RPC results back to
 the supervisor. Worker Loader isolates do CPU-bound work — resolver BFS, tarball
-gunzip, esbuild, child process dispatch — and stream their results home through
-WorkerEntrypoint RPC. R2 fronts cross-tenant assets; `caches.default` (not
-shown; per-colo L2) sits in front of R2 and `env.ASSETS` for hot reads.
+gunzip, esbuild, child process dispatch, WASM execution — and stream their
+results home through WorkerEntrypoint RPC. R2 fronts cross-tenant assets;
+`caches.default` (not shown; per-colo L2) sits in front of R2 and `env.ASSETS`
+for hot reads.
 
 ### Session lifecycle — R · B · W · O
 
@@ -41,34 +42,24 @@ shown; per-colo L2) sits in front of R2 and `env.ASSETS` for hot reads.
 
 Cold start runs all four phases. Warm rejoin after a `webSocketError` runs only
 two — the shell, kernel, and 60 commands are still resident, so Build and Online
-are skipped. Every transition writes a row into a 50-entry `recovery_event` ring,
-which itself survives DO eviction. The architectural promise is one line:
-`dataLoss === false` at every transition.
-
-### Memory budget — 64 MiB ceiling
-
-![64 MiB heap budget](docs/architecture/memory.svg)
-
-Seven counters sum to `estimatedBytes`. A test asserts the sum equals the total
-at every poll — no silent leaks, no accounting drift. The headroom number on the
-right is the architectural commitment of the Phase 5 rebuild and is reproduced
-once, in [Performance](#performance), from a 10-minute realistic-load run.
+are skipped. The user sees a clean reconnect: cwd, env, scrollback, running
+processes, and open files are all where they were left. Every transition writes
+a row into a 50-entry `recovery_event` ring that itself survives DO eviction,
+so a session can be replayed forensically after a crash.
 
 ### Layered architecture
 
 ![Layered architecture](docs/architecture/layers.svg)
 
-Layers 3 and 4 each get their own 128 MiB V8 isolate, separate from the
-supervisor's 128 MiB. The 64 MiB application ceiling at layer 2 is the only
-budget the supervisor itself has to keep. The 4-loaders-per-method-context cap
-is structurally avoided on every hot path, either by chain-serialising through
-one slot (cp-spawn) or by routing through the peer-DO sibling pool when fan-out
-width crosses five (npm-install, large resolver cohorts).
+Four layers, each owning a single concern. The supervisor (layer 2) runs inside
+one Durable Object; layers 3 and 4 each get their own V8 isolate. The split
+keeps the supervisor lean — it never executes user code directly, only routes
+RPC — and lets CPU-heavy work run in isolates that die when the request does.
 
 ## Primitive scorecard
 
 Every subsystem maps to one of four Cloudflare primitives. Current state matches
-target everywhere except cirrus-real Vite, which is platform-gated.
+target everywhere except `cirrus-real` Vite, which is platform-gated.
 
 | Subsystem | Target | Current | Why this primitive |
 |---|---|---|---|
@@ -77,48 +68,23 @@ target everywhere except cirrus-real Vite, which is platform-gated.
 | `pre-bundle` (esbuild) | Worker Loader | matches | One isolate per dep; result streamed via ReadableStream-over-RPC |
 | `tarball` decompression | Worker Loader | matches | Streaming tar parse; pure compute |
 | `git` clone/fetch | Worker Loader | matches | isomorphic-git pre-bundled; no per-clone state |
-| `cp-spawn` (child_process) | Worker Loader | matches | Fresh isolate per spawn; chain-serialised through one slot to dodge the 4-loader cap |
-| **`cirrus-real` Vite** | **DO Facet** | **fetcher-fallback¹** | Best fit for stateful in-memory thread pool sharing one host; target adds per-instance own-SQLite + hibernation. /preview/ behaviour is identical |
+| `cp-spawn` (child_process) | Worker Loader | matches | Fresh isolate per spawn |
+| `wasm-runner` (WASI) | Worker Loader | matches | WebAssembly modules execute under a snapshot_preview1 shim in an ephemeral isolate |
+| **`cirrus-real` Vite** | **DO Facet** | **fetcher-fallback¹** | Best fit for stateful in-memory thread pool sharing one host; target adds per-instance own-SQLite + hibernation. `/preview/` behaviour is identical |
 | Session state (cwd · env · mounts · scrollback) | DO SQLite | matches | Source of truth for everything that must outlive `webSocketError` |
-| Recovery event ring + OOM forensics | DO SQLite | matches | 50-entry bounded ring; survives DO eviction |
+| Recovery event ring | DO SQLite | matches | 50-entry bounded ring; survives DO eviction |
 | npm tarball + packument cache | R2 | matches | Cross-tenant L3 cache; capacity past one DO's 10 GB |
 | Per-colo L2 (packument · tarball · esbuild-wasm) | `caches.default` | matches | Hot-read cache fronting R2 + `env.ASSETS` |
 | Supervisor IPC | WorkerEntrypoint RPC | matches | Promise pipelining; ReadableStream-over-RPC bypasses the 32 MiB structured-clone limit |
-| Two-tier fan-out | Worker Loader + DO peer pool | matches | Routes by width: in-DO POC C (`< 5`) for small N, peer-DO POC B (`≥ 5`) for large N |
+| Two-tier fan-out | Worker Loader + DO peer pool | matches | Routes by width: in-DO for small N, peer-DO sibling pool for large N |
 
-¹ cirrus-real Vite runs as `kind = 'fetcher-fallback'` — a stateless `WorkerEntrypoint` default export that shares module-scope vite-bootstrap state — instead of the `ctx.facets.get(name, {class})` DO-Facet target. The DO-Facet path needs `worker.getDurableObjectClass()`, which only ships under the `$experimental` compatibility flag, and Cloudflare's deploy validator rejects `$experimental` for non-CF-team accounts (error 10021). Tracked as [RM-27238](https://jira.cfdata.org/browse/RM-27238). When the flag promotes to GA, the runtime feature-probe at `src/facets/cirrus-real.ts:start()` switches paths without a Nimbus code change.
-
-## Performance
-
-All numbers measured against the live deploy. Sources: `audit/sections/*-retro.md`.
-
-| Surface | Idle | Peak under load | Headroom |
-|---|---:|---:|---:|
-| Supervisor heap (64 MiB ceiling) | 9.00 MiB | **15.24 MiB · 23.8%** | **48.76 MiB · 76.2%** |
-| `recovery_event` ring | 0 | 6 ws-kill events / 10 min | bounded 50 |
-| `dataLoss` events | 0 | 0 / 10 min · 6 cycles | invariant |
-
-| Cache layer | Speedup vs cold (median) | Notes |
-|---|---:|---|
-| L2 packument (`caches.default`) | **11.0×** | 5-min TTL mirroring R2 customMetadata |
-| L2 tarball | **9.2×** | Eternal · content-addressed |
-| L2 esbuild-wasm | **16.0×** | Eternal · content-addressed; ~12 MiB transfer dropped per facet boot |
-
-| Fan-out site | Speedup vs serial baseline | Topology |
-|---|---:|---|
-| `npm install` batch (N = 8) | **5.54×** (best of 5.09–5.94) | POC B peer-DO with stable-id router |
-| Resolver fan-out (vite · webpack · drizzle-orm · express · zod) | **2.26× avg** (peak 3.16× drizzle-orm) | Frontier coordinator; in-DO POC C |
-
-| Operation | Wall time | Conditions |
-|---|---:|---|
-| `git clone` 1 600-file repo | 12–17 s | HTTPS via cf-git fork; W7 writeBatchStream pipeline |
-| `npm install zod` (cold session) | ~6 s | Resolver, fetch, tar decode, VFS write |
-| `node -e 'console.log(…)'` (warm) | 102–152 ms | Fresh Worker Loader isolate per call |
-| Vite hot reload | 302 ms median | Inside the bundled Vite dev server (W10) |
-
-The peak heap figure includes Vite running, 297 preview fetches, 19 shell
-commands, and 6 forced `webSocketError` cycles inside a single 10-minute window.
-Drift across the run is 275 bytes.
+¹ `cirrus-real` Vite currently runs as `kind = 'fetcher-fallback'` — a stateless
+`WorkerEntrypoint` default export that shares module-scope vite-bootstrap state —
+instead of the `ctx.facets.get(name, {class})` DO-Facet target. The DO-Facet path
+needs `worker.getDurableObjectClass()`, which only ships under the `$experimental`
+compatibility flag, and Cloudflare's deploy validator rejects `$experimental` for
+non-CF-team accounts (error 10021). When the flag promotes to GA, a runtime
+feature-probe in `src/facets/cirrus-real.ts` switches paths with no code change.
 
 ## Quickstart
 
@@ -136,22 +102,57 @@ in a week.
 
 ## What works inside a Nimbus session
 
-| Project type | Status |
-|---|:---:|
-| Vite SPA (no CF plugin) | ✅ |
-| Pure Workers (`wrangler dev`) | ✅ |
-| Workers + Static Assets | ✅ |
-| Astro / Next.js / Nuxt | ❌ — CLIs not registered as shell commands |
-| Vite + `@cloudflare/vite-plugin` · Cloudflare Pages · Remix · SvelteKit | ❓ untested |
+Verified against the live deploy by behavioral probes in `tests/behavioral/`.
+
+| Capability | Status | Probe |
+|---|:---:|---|
+| Vite SPA dev server (no CF plugin) — `cd ~/app && npm install && npm run dev` | ✅ | `end-to-end-workflow.mjs` |
+| Pure Workers (`wrangler dev`) — small single-file workers | ✅ | `wrangler-dev-clone.mjs` |
+| Workers + Static Assets (`assets:` field in `wrangler.jsonc`) | ✅ | `support-matrix.mjs` |
+| `npx <pkg>` — first-class shebang strip + auto-install fallback | ✅ | `primitives-extension/npx-vite.mjs` |
+| `.bin` shim handler — `node_modules/.bin/*` resolves and executes | ✅ | `primitives-extension/bin-tsc.mjs` |
+| `process.env` contract — `PORT`, `HOST`, `NIMBUS_SESSION_ID` auto-injected | ✅ | `primitives-extension/process-env-port.mjs` |
+| Binary file round-trip — `writeFileSync` / `readFileSync` preserve bytes | ✅ | `binary-fs/writeFileSync-binary.mjs` |
+| `wasm-runner` — execute `.wasm` modules via the shell command | ✅ | `wasm-runner/hand-crafted-add.mjs` |
+| WASI snapshot_preview1 — `fd_write`, `args`, `env`, `proc_exit`, `random_get`, `clock` | ✅ | `wasi/*.mjs` |
+| Markflow-class install — `~617` deps, then `npm run dev` reaches preview | ✅ | `large-install.mjs` |
+| `git clone` over HTTPS (small + Nimbus-sized repos) | ✅ | `git-clone.mjs` |
+| Session recovery — `webSocketError` → reconnect → state preserved | ✅ | `session-recovery.mjs` |
+| Astro / Next.js | ❌ | `support-matrix.mjs` — CLIs not registered as shell commands; `npm run dev` exits with command-not-found and a loud diagnostic |
+| Vite + `@cloudflare/vite-plugin` | ❓ | uses `getPlatformProxy()` + a workerd subprocess that the facet runtime doesn't expose |
+| Cloudflare Pages | ❓ | no `wrangler pages dev` handler; `functions/` layout not recognized |
+| Nuxt · Remix · SvelteKit | ❓ | SvelteKit's `vite dev` should fall through to row 1 with `node_modules` present, but is not probed |
 
 Full evidence + per-row probe paths in
 [`tests/SUPPORT-MATRIX.md`](./tests/SUPPORT-MATRIX.md). Run
 `bun test:behavioral` against the live deploy to re-verify any row.
 
+## Performance
+
+Measured against the live deploy.
+
+| Cache layer | Speedup vs cold (median) | Notes |
+|---|---:|---|
+| L2 packument (`caches.default`) | **11.0×** | 5-min TTL mirroring R2 customMetadata |
+| L2 tarball | **9.2×** | Eternal · content-addressed |
+| L2 esbuild-wasm | **16.0×** | Eternal · content-addressed; ~12 MiB transfer dropped per facet boot |
+
+| Fan-out site | Speedup vs serial baseline | Topology |
+|---|---:|---|
+| `npm install` batch (N = 8) | **5.54×** (best of 5.09–5.94) | Peer-DO sibling pool with stable-id router |
+| Resolver fan-out (vite · webpack · drizzle-orm · express · zod) | **2.26× avg** (peak 3.16× drizzle-orm) | Frontier coordinator; in-DO loader pool |
+
+| Operation | Wall time | Conditions |
+|---|---:|---|
+| `git clone` 1 600-file repo | 12–17 s | HTTPS via cf-git fork |
+| `npm install zod` (cold session) | ~6 s | Resolver, fetch, tar decode, VFS write |
+| `node -e 'console.log(…)'` (warm) | 102–152 ms | Fresh Worker Loader isolate per call |
+| Vite hot reload | 302 ms median | Inside the bundled Vite dev server |
+
 ## Tests
 
-`tests/behavioral/` contains 12 black-box probes that drive a real session
-via `POST /new` + WebSocket terminal. Run the whole cohort:
+`tests/behavioral/` contains black-box probes that drive a real session via
+`POST /new` + WebSocket terminal. Run the whole cohort against the live deploy:
 
 ```bash
 BASE=https://nimbus.ashishkmr472.workers.dev bun test:behavioral
