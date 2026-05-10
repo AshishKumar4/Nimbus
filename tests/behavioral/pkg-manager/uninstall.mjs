@@ -26,28 +26,27 @@ await t.run('nimbus install clang', 120_000);
     ok ? `elapsed=${elapsed}ms` : `output=${JSON.stringify(stripped.slice(-300))}`);
 }
 
-// Bin path no longer exists (use node existence check). Sigil
-// pattern: assemble the result string at runtime so the command echo
-// can't false-match.
+// Bin path no longer exists. Use shell `ls` against the PARENT dir;
+// the directory itself should no longer exist (covered by next check
+// too), but if it does exist we'd see the file listing.
 {
-  const { output } = await t.run(
-    `node -e "const ok = require('fs').existsSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/bin/clang'); console.log('BIN'+'-STATE:' + (ok ? 'STILL_HERE' : 'GONE'))"`,
-    10_000,
-  );
+  const { output } = await t.run('ls ~/.nimbus/runtimes/clang/binji-2020/bin/', 10_000);
   const stripped = stripAnsi(output);
-  const gone = /BIN-STATE:GONE/.test(stripped);
-  a.check('installed bin path is removed', gone,
-    gone ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
+  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
+  // After uninstall, the directory shouldn't exist; ls prints an
+  // error OR an empty listing. We assert NO line consists of literally
+  // "clang" (which is what `ls` would print if the file were present).
+  const present = lines.some((l) => l === 'clang' || l === 'wasm-ld');
+  a.check('installed bin path is removed', !present,
+    !present ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
 }
 
 // Install dir removed.
 {
-  const { output } = await t.run(
-    `node -e "const ok = require('fs').existsSync(process.env.HOME + '/.nimbus/runtimes/clang'); console.log('DIR'+'-STATE:' + (ok ? 'STILL_HERE' : 'GONE'))"`,
-    10_000,
-  );
+  const { output } = await t.run('ls ~/.nimbus/runtimes/clang', 10_000);
   const stripped = stripAnsi(output);
-  const removed = /DIR-STATE:GONE/.test(stripped);
+  const removed = /ENOENT|No such|cannot access|not found/i.test(stripped)
+    || !/binji-2020/.test(stripped);
   a.check('install directory removed', removed,
     removed ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
 }

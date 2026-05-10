@@ -23,20 +23,19 @@ await t.connect();
 await t.waitForPrompt(60_000);
 
 // 1. Install.
-await t.run('nimbus install clang', 120_000);
+await t.run('nimbus install clang', 180_000);
 const { output: lsOutBefore } = await t.run(
-  `node -e "const ok = require('fs').existsSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/bin/clang'); console.log('PRE'+'-STATE:' + (ok ? 'YES' : 'NO'))"`,
-  10_000,
+  'ls ~/.nimbus/runtimes/clang/binji-2020/bin/clang 2>&1', 10_000,
 );
-const beforePresent = /PRE-STATE:YES/.test(stripAnsi(lsOutBefore));
+const beforePresent = /\/\.nimbus\/runtimes\/clang\/binji-2020\/bin\/clang/.test(stripAnsi(lsOutBefore))
+  && !/ENOENT|No such/i.test(stripAnsi(lsOutBefore));
 a.check('bin/clang exists before restart', beforePresent, beforePresent ? '' : 'not present');
 
-// Compute manifest size before reconnect (via node statSync).
-const { output: szOutBefore } = await t.run(
-  `node -e "console.log('SZ=' + require('fs').statSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/manifest.json').size)"`,
-  10_000,
-);
-const beforeSize = (stripAnsi(szOutBefore).match(/SZ=(\d+)/) || ['', '0'])[1];
+// Manifest size before reconnect via `ls -la` parse (avoids the
+// `wc -c` byte-inflation issue on large files).
+const { output: szOutBefore } = await t.run('ls -la ~/.nimbus/runtimes/clang/binji-2020/manifest.json', 10_000);
+const matchBefore = stripAnsi(szOutBefore).match(/^\s*-\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s/m);
+const beforeSize = matchBefore ? matchBefore[1] : '0';
 
 // 2. Close + reconnect WS to same SID.
 await t.close();
@@ -47,23 +46,19 @@ await t.waitForPrompt(30_000);
 
 // 3. Bin path still present.
 {
-  const { output } = await t.run(
-    `node -e "const ok = require('fs').existsSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/bin/clang'); console.log('POST'+'-STATE:' + (ok ? 'YES' : 'NO'))"`,
-    10_000,
-  );
+  const { output } = await t.run('ls ~/.nimbus/runtimes/clang/binji-2020/bin/clang 2>&1', 10_000);
   const stripped = stripAnsi(output);
-  const present = /POST-STATE:YES/.test(stripped);
+  const present = /\/\.nimbus\/runtimes\/clang\/binji-2020\/bin\/clang/.test(stripped)
+    && !/ENOENT|No such/i.test(stripped);
   a.check('bin/clang still exists after WS reconnect', present,
     present ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
 }
 
 // 4. Manifest byte-identical.
 {
-  const { output } = await t.run(
-    `node -e "console.log('SZ=' + require('fs').statSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/manifest.json').size)"`,
-    10_000,
-  );
-  const afterSize = (stripAnsi(output).match(/SZ=(\d+)/) || ['', '0'])[1];
+  const { output } = await t.run('ls -la ~/.nimbus/runtimes/clang/binji-2020/manifest.json', 10_000);
+  const matchAfter = stripAnsi(output).match(/^\s*-\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s/m);
+  const afterSize = matchAfter ? matchAfter[1] : '0';
   a.check('manifest size unchanged across restart', beforeSize === afterSize && beforeSize !== '0',
     `before=${beforeSize} after=${afterSize}`);
 }

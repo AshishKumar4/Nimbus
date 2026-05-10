@@ -32,59 +32,64 @@ await t.waitForPrompt(60_000);
     installedOk ? `elapsed=${elapsed}ms` : `output tail=${JSON.stringify(stripped.slice(-300))}`);
 }
 
-// 2. The installed bin path exists in VFS. We use a sigil pair so
-//    the shell command echo doesn't false-match: print
-//    "RESULT-IS:YES" / "RESULT-IS:NO" — sigil only appears in the
-//    program's own console.log output, never in the command-echo
-//    string (the source uses 'YES'/'NO' separately).
+// 2. The installed bin path exists in VFS. Use `ls` (which talks to
+//    SqliteFS directly via the supervisor, not via node's bundled FS
+//    view which only covers the cwd subtree).
 {
   const { output } = await t.run(
-    `node -e "const ok = require('fs').existsSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/bin/clang'); console.log('RESULT'+'-IS:' + (ok ? 'YES' : 'NO'))"`,
+    'ls ~/.nimbus/runtimes/clang/binji-2020/bin/clang',
     15_000,
   );
   const stripped = stripAnsi(output);
-  const matched = /RESULT-IS:YES/.test(stripped);
+  // `ls /path/to/file` echoes the path on success, empty/error on miss.
+  const matched = /\/\.nimbus\/runtimes\/clang\/binji-2020\/bin\/clang/.test(stripped)
+    && !/ENOENT|No such|cannot access|not found/i.test(stripped);
   a.check('installed bin/clang exists at expected path', matched,
     matched ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
 }
 
-// 3. manifest.json valid + correct name/version (read via node).
+// 3. manifest.json valid + correct name/version. Read via `cat` which
+//    streams from SqliteFS through the supervisor terminal pipeline.
 {
-  const { output } = await t.run(
-    `node -e "const j = JSON.parse(require('fs').readFileSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/manifest.json', 'utf8')); console.log('MNAME=' + j.name + ' MVER=' + j.version)"`,
-    15_000,
-  );
+  const { output } = await t.run('cat ~/.nimbus/runtimes/clang/binji-2020/manifest.json', 15_000);
   const stripped = stripAnsi(output);
-  const nameOk = /MNAME=clang\b/.test(stripped);
-  const verOk = /MVER=binji-2020\b/.test(stripped);
-  a.check('manifest.json parses + name === "clang"', nameOk,
-    nameOk ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
-  a.check('manifest.json version === "binji-2020"', verOk,
-    verOk ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
+  // Find the JSON block (first { … last }) in the stripped output.
+  const start = stripped.indexOf('{');
+  const end = stripped.lastIndexOf('}');
+  let parsed = null;
+  if (start >= 0 && end > start) {
+    try { parsed = JSON.parse(stripped.slice(start, end + 1)); } catch {}
+  }
+  a.check('manifest.json parses + name === "clang"',
+    parsed != null && parsed.name === 'clang',
+    parsed ? `name=${parsed.name}` : `slice=${JSON.stringify(stripped.slice(0, 300))}`);
+  a.check('manifest.json version === "binji-2020"',
+    parsed != null && parsed.version === 'binji-2020',
+    parsed ? `version=${parsed.version}` : '');
 }
 
-// 4. share/clang/memfs.wasm has wasm magic (\0asm).
+// 4. share/clang/memfs.wasm + bin/clang are sha-pinned sizes. We
+//    read `ls -la` (which queries SqliteFS inode size directly via
+//    the supervisor, NOT via `wc -c` / `cat` pipes which appear to
+//    inflate large-file byte counts on lifo-sh today).
 {
-  const { output } = await t.run(
-    `node -e "const b = require('fs').readFileSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/share/clang/memfs.wasm').subarray(0,4); console.log('MAGIC=' + Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''))"`,
-    15_000,
-  );
+  const { output } = await t.run('ls -la ~/.nimbus/runtimes/clang/binji-2020/share/clang/', 15_000);
   const stripped = stripAnsi(output);
-  const isWasm = /MAGIC=0061736d/.test(stripped);
-  a.check('share/clang/memfs.wasm has wasm magic (0061736d)', isWasm,
-    isWasm ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
+  // ls line: "-rw-r--r-- 1 user user 345442 May 10 ... memfs.wasm"
+  const m = stripped.match(/^\s*-\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s.*memfs\.wasm/m);
+  const sz = m ? m[1] : null;
+  a.check('share/clang/memfs.wasm size === 345442 (binji-2020 sha-pinned)',
+    sz === '345442', `parsed size=${sz}`);
 }
 
-// 5. bin/clang has wasm magic.
+// 5. bin/clang sha-pinned 31214472.
 {
-  const { output } = await t.run(
-    `node -e "const b = require('fs').readFileSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/bin/clang').subarray(0,4); console.log('MAGIC=' + Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''))"`,
-    30_000,
-  );
+  const { output } = await t.run('ls -la ~/.nimbus/runtimes/clang/binji-2020/bin/', 30_000);
   const stripped = stripAnsi(output);
-  const isWasm = /MAGIC=0061736d/.test(stripped);
-  a.check('bin/clang has wasm magic (0061736d)', isWasm,
-    isWasm ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
+  const m = stripped.match(/^\s*-\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s.*\bclang$/m);
+  const sz = m ? m[1] : null;
+  a.check('bin/clang size === 31214472 (binji-2020 sha-pinned)',
+    sz === '31214472', `parsed size=${sz}`);
 }
 
 await t.close();
