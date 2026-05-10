@@ -4,8 +4,38 @@
 
 // ── Versions ────────────────────────────────────────────────────────────
 export const NIMBUS_VERSION = '2.0.0';
-export const NODE_VERSION = 'v20.0.0';
-export const NODE_VERSIONS = { node: '20.0.0', v8: '11.0.0', modules: '115' };
+//
+// Node version reported by Nimbus's node-shim layer (process.version,
+// process.versions.node). Bumped from v20.0.0 → v22.11.0 (Node 22 LTS
+// "Jod") because Node 20 fell out of support upstream and several
+// scaffolders (create-astro is the canonical example) refuse to run on
+// majors < 22 with the literal preflight:
+//
+//     const currentVersion = process.versions.node;
+//     const requiredMajorVersion = Number.parseInt(currentVersion.split('.')[0], 10);
+//     if (requiredMajorVersion < minimumMajorVersion /* 22 */) {
+//       console.error('Node.js v' + currentVersion + ' is out-of-date');
+//       process.exit(1);
+//     }
+//
+// The version is a fingerprint, not a feature claim. Node 22-only APIs
+// that user code may touch:
+//   - util.styleText      → shimmed (primitives wave, see node-shims.ts)
+//   - util.parseEnv       → unshimmed; throws clear ENOENT-style Error
+//                           (verified non-breaking for the framework
+//                           probes — none of remix/nuxt/astro/sveltekit/
+//                           markflow scaffold reach it during create or
+//                           dev-start phases)
+//   - import.meta.dirname → ESM-only, mirrored by Vite in dev mode
+//   - WebSocket global    → already provided by workerd
+//   - Promise.withResolvers / Object.groupBy / Map.groupBy → V8 builtins,
+//                           already available in workerd's V8 runtime
+//
+// ABI numbers (v8, modules) are mostly cosmetic but mirrored to v22.11.0
+// for fingerprint consistency. v8 12.4 ships with Node 22.x; modules
+// (NODE_MODULE_VERSION) is 127 for the v22 line.
+export const NODE_VERSION = 'v22.11.0';
+export const NODE_VERSIONS = { node: '22.11.0', v8: '12.4.254.21', modules: '127' };
 export const ESBUILD_VERSION = '0.24.2';
 
 // ── VFS Constants ───────────────────────────────────────────────────────

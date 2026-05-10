@@ -36,9 +36,15 @@
  */
 import { generateStreamsCode } from './streams.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
+import { NODE_VERSION, NODE_VERSIONS } from '../constants.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const EXPORTS_RESOLVER_JS = getExportsResolverJS();
+// Node version fingerprint. Single source of truth in constants.ts.
+// Interpolated as JS literals into the emitted process shim. See
+// constants.ts for the rationale (create-astro preflight, etc.).
+const NODE_VERSION_LITERAL = JSON.stringify(NODE_VERSION);
+const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
 
 export function generateShimsCode(): string {
   return `
@@ -2036,7 +2042,7 @@ const __processMod = {
   chdir: (d) => { cwd = __pathMod.resolve(cwd || "/home/user", d); },
   exit: (code) => { exitCode = code ?? 0; throw new __ProcessExit(exitCode); },
   platform: "linux", arch: "x64",
-  version: "v20.0.0", versions: { node: "20.0.0", v8: "11.0.0", modules: "115" },
+  version: ${NODE_VERSION_LITERAL}, versions: ${NODE_VERSIONS_LITERAL},
   pid: 1, ppid: 0, title: "node",
   stdout: { write: (d) => { stdout += String(d); return true; }, isTTY: false },
   stderr: { write: (d) => { stderr += String(d); return true; }, isTTY: false },
