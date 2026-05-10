@@ -394,9 +394,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       version: WASM_RUNNER_VERSION,
       helpText: WASM_RUNNER_HELP,
       run: makeWasmRunner({
+        // Wave-2: extended VFS surface for WASI file-IO. The wasm-runner
+        // snapshots a session subtree into the facet, flushes the diff
+        // back via this surface after _start returns.
         vfs: {
-          exists: (p: string) => sqliteFs.exists(p),
-          readFile: (p: string) => sqliteFs.readFile(p),
+          exists:      (p: string) => sqliteFs.exists(p),
+          isDirectory: (p: string) => sqliteFs.isDirectory(p),
+          readFile:    (p: string) => sqliteFs.readFile(p),
+          writeFile:   (p: string, c: Uint8Array | string) => sqliteFs.writeFile(p, c),
+          readdir:     (p: string) => sqliteFs.readdir(p),
+          mkdir:       (p: string, o?: { recursive?: boolean }) => sqliteFs.mkdir(p, o),
+          unlink:      (p: string) => sqliteFs.unlink(p),
+          rmdir:       (p: string) => sqliteFs.rmdir(p),
         },
         env: self.env,
         ctx: self.ctx,

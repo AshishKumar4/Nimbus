@@ -1181,6 +1181,38 @@ export class SqliteVFS {
     const inode = this.inodes.get(oldPath);
     if (!inode) throw new Error("ENOENT: " + oldPath);
 
+    // W-3 (WASI Wave-2): if newPath already exists, unlink it first so the
+    // SQL UPDATE doesn't conflict on inodes.path uniqueness. POSIX rename(2)
+    // overwrites the destination atomically; clang's atomic-write pattern
+    // (write tmp + rename → final) depends on this. Without this branch,
+    // a 2nd `make` after a prior successful build throws on UPDATE
+    // failure. Pre-unlink covers both file-over-file and file-over-dir
+    // (the latter is rare but POSIX permits it for empty dirs).
+    const destInode = this.inodes.get(newPath);
+    if (destInode) {
+      if (destInode.isDir) {
+        // POSIX semantics: rename onto a non-empty dir is an error
+        // (ENOTEMPTY); rename onto an empty dir is allowed. We surface
+        // both as a thrown error since the WASI shim treats every
+        // unexpected exception as ENOSYS → caller diagnostics.
+        // Conservative: refuse dir overwrite entirely; the WASI fixture
+        // we care about (file → file) is the high-value case.
+        if (inode.isDir) {
+          throw new Error("ENOTDIR-or-EISDIR: rename onto existing dir not supported");
+        }
+        throw new Error("EISDIR: cannot rename file onto existing directory");
+      }
+      // Existing file at newPath — unlink it (drops chunks + inode row).
+      this.cacheInvalidate(newPath, true /* discard */);
+      this.clearPendingWritesForPath(newPath);
+      this.sql.exec("DELETE FROM file_chunks WHERE path=?", newPath);
+      this.sql.exec("DELETE FROM inodes WHERE path=?", newPath);
+      this._removeFromChildrenIndex(newPp, newPath);
+      this.inodes.delete(newPath);
+      // Update running counters mirror unlink's accounting.
+      try { this._totalFiles--; } catch {}
+    }
+
     this.sql.exec("UPDATE inodes SET path=?, parent_path=? WHERE path=?", newPath, newPp, oldPath);
     this.sql.exec("UPDATE file_chunks SET path=? WHERE path=?", newPath, oldPath);
 

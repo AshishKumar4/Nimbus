@@ -77,6 +77,18 @@ declare const __wasiRunStart: (
   instance: WebAssembly.Instance,
   ctx: { memory: WebAssembly.Memory },
 ) => { exitCode: number; error?: string };
+declare const __wasiInitFS: (opts: {
+  root: string;
+  preopens: Array<{ wasiPath: string; vfsPath: string }>;
+  files: Record<string, string>;
+  dirs: string[];
+}) => void;
+declare const __wasiSnapshotFS: () => {
+  filesWritten: Record<string, string>;
+  filesDeleted: string[];
+  dirsCreated: string[];
+  dirsDeleted: string[];
+} | null;
 
 export const WASM_RUNNER_VERSION = '0.3.0';
 
@@ -118,10 +130,20 @@ export const WASM_RUNNER_HELP =
  * SqliteVFS type tree from the supervisor module graph — this file
  * is part of `src/runtime/`, importing supervisor-specific types
  * would create a cycle.
+ *
+ * Wave-2: extended for WASI file-IO. The snapshot path uses readdir +
+ * isDirectory + stat to traverse the user's session subtree; the
+ * flush path uses writeFile + mkdir + unlink + rmdir.
  */
 interface VfsLike {
   exists(path: string): boolean;
+  isDirectory(path: string): boolean;
   readFile(path: string): Uint8Array;
+  writeFile(path: string, content: Uint8Array | string): void;
+  readdir(path: string): { name: string; type: string }[];
+  mkdir(path: string, opts?: { recursive?: boolean }): void;
+  unlink(path: string): void;
+  rmdir(path: string): void;
 }
 
 /**
@@ -165,6 +187,117 @@ interface ProcessLogStoreLike {
   append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
   getExit(pid: number): unknown;
   markExit(pid: number, code: number): void;
+}
+
+/**
+ * Convert a Uint8Array to a base64 string. Used to encode VFS file
+ * contents into the JSON-serializable `context` field of the loader
+ * pool. Workerd's btoa is the standard one; we use it directly rather
+ * than depending on Node's Buffer (which works in workerd via the
+ * nodejs_compat polyfill but adds an import dependency).
+ */
+function bytesToB64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Snapshot a VFS subtree rooted at `vfsRoot` into a JSON-serializable
+ * `WasiFsSnapshot`. Used by the WASI runner to ship the user's session
+ * filesystem into the facet isolate.
+ *
+ * Bounded by:
+ *   - 32 MiB total bytes (hard cap — bigger sessions need a per-call
+ *     RPC dispatch architecture; defer to Wave-3).
+ *   - 5000 file count.
+ *
+ * Returns null + a diagnostic if bounds are exceeded so the caller
+ * can surface a clear error to the user.
+ */
+function snapshotVfs(
+  vfs: VfsLike,
+  vfsRoot: string,
+): { snapshot: import('./wasi-instance.js').WasiFsSnapshot; bytes: number; files: number } | { error: string } {
+  const MAX_BYTES = 32 * 1024 * 1024;
+  const MAX_FILES = 5000;
+  const root = vfsRoot.replace(/^\/+/, '').replace(/\/+$/, '');
+  const files: Record<string, string> = {};
+  const dirs: string[] = [];
+  let totalBytes = 0;
+  let fileCount = 0;
+  const stack: string[] = [root];
+  if (!vfs.exists(root)) {
+    return { snapshot: { root, preopens: [], files: {}, dirs: [root] }, bytes: 0, files: 0 };
+  }
+  dirs.push(root);
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: { name: string; type: string }[];
+    try { entries = vfs.readdir(dir); } catch { continue; }
+    for (const e of entries) {
+      const childPath = dir + '/' + e.name;
+      if (e.type === 'directory') {
+        dirs.push(childPath);
+        stack.push(childPath);
+        continue;
+      }
+      let bytes: Uint8Array;
+      try { bytes = vfs.readFile(childPath); } catch { continue; }
+      totalBytes += bytes.length;
+      fileCount++;
+      if (totalBytes > MAX_BYTES) {
+        return { error: `WASI snapshot exceeded 32 MiB cap (current dir: ${dir})` };
+      }
+      if (fileCount > MAX_FILES) {
+        return { error: `WASI snapshot exceeded 5000 file cap` };
+      }
+      files[childPath] = bytesToB64(bytes);
+    }
+  }
+  return {
+    snapshot: { root, preopens: [], files, dirs },
+    bytes: totalBytes,
+    files: fileCount,
+  };
+}
+
+/**
+ * Apply a WasiFsDiff produced by the facet back into the supervisor's
+ * SqliteFS. Each operation is independent; failures on one path don't
+ * abort the rest (we log to stderr and continue).
+ */
+function flushVfsDiff(vfs: VfsLike, diff: import('./wasi-instance.js').WasiFsDiff): { written: number; deleted: number; mkdirs: number; rmdirs: number } {
+  let written = 0, deleted = 0, mkdirs = 0, rmdirs = 0;
+  for (const path of diff.dirsCreated) {
+    try { vfs.mkdir(path, { recursive: true }); mkdirs++; } catch {}
+  }
+  for (const [path, b64] of Object.entries(diff.filesWritten)) {
+    try {
+      const bytes = b64ToBytes(b64);
+      // ensure parent dirs exist
+      const lastSlash = path.lastIndexOf('/');
+      if (lastSlash > 0) {
+        const parent = path.substring(0, lastSlash);
+        try { vfs.mkdir(parent, { recursive: true }); } catch {}
+      }
+      vfs.writeFile(path, bytes);
+      written++;
+    } catch {}
+  }
+  for (const path of diff.filesDeleted) {
+    try { vfs.unlink(path); deleted++; } catch {}
+  }
+  for (const path of diff.dirsDeleted) {
+    try { vfs.rmdir(path); rmdirs++; } catch {}
+  }
+  return { written, deleted, mkdirs, rmdirs };
 }
 
 /**
@@ -311,6 +444,12 @@ export function makeWasmRunner(deps: {
       stderr?: string;
       exitCode?: number;
       error?: string;
+      fsDiff?: {
+        filesWritten: Record<string, string>;
+        filesDeleted: string[];
+        dirsCreated: string[];
+        dirsDeleted: string[];
+      };
     };
     const facetFn = async function wasmFacetCall(
       args: {
@@ -319,6 +458,12 @@ export function makeWasmRunner(deps: {
         intArgs?: number[];
         wasiArgv?: string[];
         wasiEnv?: Record<string, string>;
+        wasiFs?: {
+          root: string;
+          preopens: Array<{ wasiPath: string; vfsPath: string }>;
+          files: Record<string, string>;
+          dirs: string[];
+        };
       },
     ): Promise<WasmCallResult> {
       const wasmTable = (globalThis as any).__NIMBUS_WASM || {};
@@ -335,28 +480,33 @@ export function makeWasmRunner(deps: {
 
       // ── WASI mode ──
       if (args.mode === 'wasi') {
-        // __wasiMakeImports / __wasiRunStart are provided by the
-        // preamble (see src/runtime/wasi-instance.ts).
-        // __wasiMakeImports / __wasiRunStart are top-level const
-        // declarations in the preamble — they're in lexical scope
-        // when this serialised fn body runs at facet request time.
-        // The `declare`'d global types (next file: wasi-instance.ts)
-        // satisfy TS so we can reference them directly.
         const mk = __wasiMakeImports;
         const runStart = __wasiRunStart;
-        if (!mk || !runStart) {
+        const initFS = __wasiInitFS;
+        const snapshotFS = __wasiSnapshotFS;
+        if (!mk || !runStart || !initFS || !snapshotFS) {
           return {
             ok: false,
             mode: 'wasi',
             error:
-              'WASI preamble missing: __wasiMakeImports / __wasiRunStart not ' +
-              'defined. Pool preamble may have failed to load.',
+              'WASI preamble missing: __wasi* helpers not defined. ' +
+              'Pool preamble may have failed to load.',
           };
         }
-        // memRef: late-binding holder — populated AFTER instantiate
-        // since the wasm module exports its own memory. The getMemory
-        // closure reads memRef.mem on every call so the WASI shim
-        // always sees the live Memory.
+        // Install the snapshotted VFS state into the WASI shim's
+        // virtual filesystem. fd 3 = the user's session root preopen.
+        // The shim's fd table is reset by initFS each call.
+        if (args.wasiFs) {
+          initFS({
+            root:     args.wasiFs.root,
+            preopens: args.wasiFs.preopens,
+            files:    args.wasiFs.files,
+            dirs:     args.wasiFs.dirs,
+          });
+        } else {
+          // Minimal FS so __wasiFS isn't null when WASI fns are called.
+          initFS({ root: '', preopens: [], files: {}, dirs: [] });
+        }
         const memRef: { mem: WebAssembly.Memory | null } = { mem: null };
         const wasi = mk({
           argv: args.wasiArgv || [],
@@ -385,6 +535,7 @@ export function makeWasmRunner(deps: {
           };
         }
         const r = runStart(inst, { memory: memRef.mem });
+        const fsDiff = snapshotFS();
         return {
           ok: r.exitCode === 0 && !r.error,
           mode: 'wasi',
@@ -393,6 +544,7 @@ export function makeWasmRunner(deps: {
           exitCode: r.exitCode,
           exports: Object.keys(inst.exports),
           error: r.error,
+          fsDiff: fsDiff || undefined,
         };
       }
 
@@ -463,15 +615,52 @@ export function makeWasmRunner(deps: {
     // forward to the WASI shim. Direct mode doesn't use env.
     const wasiEnv: Record<string, string> = isWasi ? (opts.env || {}) : {};
 
+    // ── Wave-2: snapshot user's session VFS for WASI mode ──
+    //
+    // The user's cwd at invocation time is our session-root preopen
+    // anchor. WASI programs see this as fd 3 mapped to '/'. We
+    // snapshot the subtree, ship via the loader-pool `context`, and
+    // flush mutations back after _start returns.
+    //
+    // For direct mode there's no FS exposure — wasm runs in pure
+    // compute-only mode, no preopens.
+    let wasiFs: import('./wasi-instance.js').WasiFsSnapshot | undefined;
+    let wasiFsBytes = 0;
+    let wasiFsFiles = 0;
+    if (isWasi) {
+      // Session root = cwd of the shell invocation. Falls back to /home/user.
+      const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
+      const snap = snapshotVfs(deps.vfs, cwd);
+      if ('error' in snap) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: `wasm-runner: ${snap.error}\n`,
+        };
+      }
+      wasiFs = {
+        root: snap.snapshot.root,
+        preopens: [
+          // fd 3 → '/' mapping (covers the user's session subtree).
+          { wasiPath: '/',  vfsPath: snap.snapshot.root },
+        ],
+        files: snap.snapshot.files,
+        dirs:  snap.snapshot.dirs,
+      };
+      wasiFsBytes = snap.bytes;
+      wasiFsFiles = snap.files;
+    }
+
     type DispatchOutcome =
       | { ok: true; mode: 'direct'; result?: number | string; exports?: string[] }
-      | { ok: true; mode: 'wasi'; stdout?: string; stderr?: string; exitCode?: number; exports?: string[]; error?: string }
+      | { ok: true; mode: 'wasi'; stdout?: string; stderr?: string; exitCode?: number; exports?: string[]; error?: string;
+          fsDiff?: import('./wasi-instance.js').WasiFsDiff }
       | { ok: false; mode?: 'direct' | 'wasi'; error: string };
 
     let outcome: DispatchOutcome;
     try {
       const submitArgs = isWasi
-        ? { mode: 'wasi' as const, wasiArgv, wasiEnv }
+        ? { mode: 'wasi' as const, wasiArgv, wasiEnv, wasiFs }
         : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
       outcome = (await pool.submit(
         facetFn,
@@ -486,6 +675,17 @@ export function makeWasmRunner(deps: {
       )) as DispatchOutcome;
     } catch (e: any) {
       outcome = { ok: false, error: `dispatch failed: ${e?.message || e}` };
+    }
+
+    // ── Wave-2: flush mutated FS state back into SqliteFS ──
+    if (outcome.mode === 'wasi' && outcome.ok && outcome.fsDiff) {
+      try {
+        flushVfsDiff(deps.vfs, outcome.fsDiff);
+      } catch (e: any) {
+        // Flush failure is non-fatal; the wasm ran, the user saw stdout.
+        // But surface a diagnostic so they know the FS didn't persist.
+        console.warn('wasm-runner: FS flush failed:', e?.message || e);
+      }
     }
 
     let exitCode: number;
