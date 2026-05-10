@@ -163,6 +163,83 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   let pipelinedTarballRaceWins = 0;
   let pipelinedTarballRaceLosses = 0;
 
+  // ── [COORDINATOR-OVERLOAD P0a wave 2] Shared flush buffer ────────────
+  //
+  // Wave-1 fix (semaphore + adaptive shard cap to 16) was insufficient:
+  // post-deploy Markflow 620 install still produced 270 overload errors
+  // because each installOne() had its OWN inodes/chunks/flush scope, so
+  // every package emitted at least one writeBatchStream RPC at end-of-
+  // tarball — 620 packages = 620+ RPCs. Workerd's input-gate queue-age
+  // guard fires when this many RPCs queue up at the coordinator.
+  //
+  // Wave-2 fix: share the inode/chunk accumulator across ALL packages
+  // in a peer's shard. Flushes are per-peer-shard, not per-package, so
+  // a 39-pkg-per-peer install emits ~3-5 RPCs (depending on tarball
+  // sizes) instead of 39+. Total RPCs across the install drop from
+  // ~620 to ~50, well under the queue-age threshold.
+  //
+  // Concurrency: the inner pLimit(3) calls installOne concurrently;
+  // installOne body always awaits flush() inline (never spawns into
+  // a separate microtask), and flush() is itself async-mutex-style
+  // ordered by JS event-loop turns. To prevent two concurrent installs
+  // from both calling flush() and racing on the shared arrays, we
+  // serialize flushes through a single in-flight promise (sharedFlushP).
+  type InodeT = {
+    path: string; parentPath: string; isDir: boolean;
+    size: number; mtime: number; mode: number; chunkCount: number;
+  };
+  type ChunkT = { path: string; chunkId: number; data: Uint8Array };
+  // Lower threshold than per-package: shared-buffer flushes happen
+  // across packages, so smaller chunks keep individual transactions
+  // short. Wave-2 shipped 16 MiB and produced batch-fanout abort
+  // (whole-batch RPC age-out). Tightened to 4 MiB.
+  const SHARED_RPC_FLUSH_THRESHOLD = 4 * 1024 * 1024;
+  const INODE_OVERHEAD = 160;
+  const CHUNK_OVERHEAD = 96;
+  let sharedInodes: InodeT[] = [];
+  let sharedChunks: ChunkT[] = [];
+  let sharedBufferedBytes = 0;
+  // Mutex: only one flush runs at a time. Concurrent installs awaiting
+  // flush() will line up behind this promise and resolve in arrival
+  // order — the W7 frame is opaque to ordering so this is safe.
+  let sharedFlushInFlight: Promise<void> | null = null;
+  const doSharedFlush = async (): Promise<void> => {
+    if (sharedInodes.length === 0 && sharedChunks.length === 0) return;
+    // Snapshot current contents and reset the buffer BEFORE awaiting
+    // the RPC so a concurrent install can start filling the next batch.
+    const inodesNow = sharedInodes;
+    const chunksNow = sharedChunks;
+    sharedInodes = [];
+    sharedChunks = [];
+    sharedBufferedBytes = 0;
+    if (supportsStreaming) {
+      // @ts-ignore — preamble symbol.
+      const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
+      await (env.SUPERVISOR as any).writeBatchStream(stream);
+    } else {
+      await env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow });
+    }
+  };
+  const sharedFlush = async (): Promise<void> => {
+    // Serialize: wait for any in-flight flush to complete first; then
+    // start ours. Subsequent waiters chain after this one. Promise
+    // chain is unbounded but each link is awaited once — no leaks.
+    const prior = sharedFlushInFlight;
+    const myFlush = (async () => {
+      if (prior) {
+        try { await prior; } catch { /* surface our own error, not the prior's */ }
+      }
+      await doSharedFlush();
+    })();
+    sharedFlushInFlight = myFlush;
+    try { await myFlush; }
+    finally {
+      // If we're still the head of the chain, clear the slot so memory
+      // doesn't grow unbounded over a long install.
+      if (sharedFlushInFlight === myFlush) sharedFlushInFlight = null;
+    }
+  };
+
   // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
   //
   // Mirrors src/npm-install-facet.ts:fetchAndStagePackage. Kept inline
@@ -399,45 +476,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       //      threshold; raise it if/when measured peak heap suggests the
       //      legacy 16 MiB is now the bottleneck on the streaming path.
       const pkgDir = spec.pkgDir;
-      type InodeT = {
-        path: string; parentPath: string; isDir: boolean;
-        size: number; mtime: number; mode: number; chunkCount: number;
-      };
-      type ChunkT = { path: string; chunkId: number; data: Uint8Array };
 
-      let inodes: InodeT[] = [];
-      let chunks: ChunkT[] = [];
-      const INODE_OVERHEAD = 160;
-      const CHUNK_OVERHEAD = 96;
-      const RPC_FLUSH_THRESHOLD = 16 * 1024 * 1024;
-      let bufferedBytes = 0;
+      // [P0a wave-2] Use SHARED inode/chunk buffer (declared at outer
+      // scope) so flushes are per-peer-shard, not per-package. Tracked
+      // per-package totals stay local for the result object.
       let totalFileInodes = 0;
       let totalBytesWritten = 0;
 
       const dirSet = new Set<string>();
       const parentOf = (p: string) => (p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '');
       dirSet.add(pkgDir);
-
-      const flush = async () => {
-        if (inodes.length === 0 && chunks.length === 0) return;
-        if (supportsStreaming) {
-          // W7: stream the batch as a type:'bytes' ReadableStream over RPC.
-          // No 32 MiB structured-clone cap on this path. encodeWriteBatchStream
-          // is injected via the facet preamble (W7_FRAME_PREAMBLE in
-          // src/parallel/generated-workers.ts).
-          // @ts-ignore — preamble symbol.
-          const stream = encodeWriteBatchStream({ inodes, chunks });
-          await (env.SUPERVISOR as any).writeBatchStream(stream);
-        } else {
-          // Pre-W7 supervisor — fall back to the legacy structured-clone
-          // path. The 16 MiB RPC_FLUSH_THRESHOLD above keeps payloads
-          // under workerd's 32 MiB cap on this branch.
-          await env.SUPERVISOR.writeBatch({ inodes, chunks });
-        }
-        inodes = [];
-        chunks = [];
-        bufferedBytes = 0;
-      };
 
       const onSkip = (name: string, size: number, reason: string) => {
         if (reason === 'too-large') {
@@ -454,46 +502,53 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         const data: Uint8Array = entry.data;
         const size = data.length;
         const chunkCount = size === 0 ? 0 : Math.ceil(size / spec.chunkSize);
-        inodes.push({
+        sharedInodes.push({
           path: filePath, parentPath: parentOf(filePath), isDir: false,
           size, mtime: spec.mtime, mode: 0o644, chunkCount,
         });
-        bufferedBytes += INODE_OVERHEAD + filePath.length * 2;
+        sharedBufferedBytes += INODE_OVERHEAD + filePath.length * 2;
         totalFileInodes += 1;
         totalBytesWritten += size;
 
         if (size > 0) {
           if (size <= spec.chunkSize) {
-            chunks.push({ path: filePath, chunkId: 0, data });
-            bufferedBytes += CHUNK_OVERHEAD + filePath.length + data.length;
+            sharedChunks.push({ path: filePath, chunkId: 0, data });
+            sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + data.length;
           } else {
             for (let c = 0; c < chunkCount; c++) {
               const slice = data.slice(c * spec.chunkSize, (c + 1) * spec.chunkSize);
-              chunks.push({ path: filePath, chunkId: c, data: slice });
-              bufferedBytes += CHUNK_OVERHEAD + filePath.length + slice.length;
+              sharedChunks.push({ path: filePath, chunkId: c, data: slice });
+              sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + slice.length;
             }
           }
         }
 
-        if (bufferedBytes >= RPC_FLUSH_THRESHOLD) {
-          await flush();
+        if (sharedBufferedBytes >= SHARED_RPC_FLUSH_THRESHOLD) {
+          await sharedFlush();
         }
       }
 
       // Wait for integrity verification before final flush.
       await integrityPromise;
 
-      // Append directory inodes.
+      // Append directory inodes to the SHARED buffer. Don't flush per-
+      // package end — let the threshold-based flush coalesce across
+      // packages. The end-of-batch flush below catches anything left.
       for (const d of dirSet) {
-        inodes.push({
+        sharedInodes.push({
           path: d, parentPath: parentOf(d), isDir: true,
           size: 0, mtime: spec.mtime, mode: 0o755, chunkCount: 0,
         });
-        bufferedBytes += INODE_OVERHEAD + d.length * 2;
+        sharedBufferedBytes += INODE_OVERHEAD + d.length * 2;
       }
 
-      // Final flush.
-      await flush();
+      // Threshold-based flush (NOT per-package) — only fires if the
+      // shared buffer has crossed SHARED_RPC_FLUSH_THRESHOLD as a
+      // result of this package's contributions. Otherwise the buffer
+      // continues accumulating across the next package(s) in pLimit.
+      if (sharedBufferedBytes >= SHARED_RPC_FLUSH_THRESHOLD) {
+        await sharedFlush();
+      }
 
       // [W4] Write tarball to R2 cache after a successful network install
       // so the next tenant on the platform skips the round-trip to npm.
@@ -534,6 +589,15 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   const perPackage = await Promise.all(
     batch.packages.map((spec) => limit(() => installOne(spec))),
   );
+
+  // [P0a wave-2] End-of-batch shared flush. Drains the last buffered
+  // contributions (the per-package flush is threshold-based — anything
+  // below the threshold sits here until end-of-batch).
+  await sharedFlush();
+  // Wait for any chained flush still in-flight from the threshold path.
+  if (sharedFlushInFlight) {
+    try { await sharedFlushInFlight; } catch { /* errored flushes already surfaced */ }
+  }
 
   return {
     perPackage,

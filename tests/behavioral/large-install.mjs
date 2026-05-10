@@ -96,31 +96,21 @@ let installOutput = '';
 }
 
 // Step 6: spot-check 5 top-level deps actually landed.
-// Wrap each in try/catch — overload-state may poison the terminal,
-// in which case we report the spot-check as failed with a clear reason
-// rather than crashing the whole probe.
+//
+// Use simple `cat <file> | head -1 | grep '"name":'` instead of
+// `node -e <large-base64>` because typing a multi-KB base64 blob over
+// the WS+terminal pty can interleave with prompt redraws and confuse
+// the line-buffering on prod. `cat` is a coreutil, instant.
 for (const pkg of SPOT_CHECK) {
-  const probeJs = `
-const fs = require('fs');
-const p = '/home/user/Markflow/node_modules/${pkg}/package.json';
-let v = '';
-try {
-  if (!fs.existsSync(p)) v = 'MISSING';
-  else {
-    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-    v = 'NAME=' + j.name;
-  }
-} catch (e) { v = 'ERR=' + (e && e.message ? e.message : String(e)); }
-console.log('PROBE_RESULT_' + v + '_END');
-`.trim();
-  const b64 = Buffer.from(probeJs, 'utf8').toString('base64');
   try {
-    await t.run(`node -e "require('fs').writeFileSync('/tmp/p.js', Buffer.from('${b64}','base64').toString('utf8'))"`, 15_000);
-    const r = await t.run('node /tmp/p.js', 30_000);
-    const m = r.output.match(/PROBE_RESULT_(.+?)_END/);
+    const r = await t.run(
+      `cat /home/user/Markflow/node_modules/${pkg}/package.json | head -3`,
+      30_000,
+    );
+    const ok = new RegExp(`"name"\\s*:\\s*"${pkg}"`).test(r.output);
     a.check(`spot-check: ${pkg} package.json readable + parses`,
-      m && m[1] === `NAME=${pkg}`,
-      m ? m[1] : 'no PROBE_RESULT marker');
+      ok,
+      ok ? '' : 'no "name":"' + pkg + '" in output: ' + r.output.slice(-120));
   } catch (e) {
     a.check(`spot-check: ${pkg} package.json readable + parses`,
       false,

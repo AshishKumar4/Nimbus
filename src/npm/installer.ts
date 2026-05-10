@@ -1000,13 +1000,20 @@ export class NpmInstaller {
     // simultaneous flushes proportionally. Pairs with the coordinator
     // semaphore in src/session/rpc.ts:_rpcWriteBatchStream.
     //
-    //   PER_SHARD_TARGET = 40 (deps / shard average); chosen so 617
-    //   deps maps to ~15 shards (= 45 in-flight flushes), well under
-    //   the empirical knee at 96 producers.
+    //   PER_SHARD_TARGET = 80 (deps / shard average); 620 deps → 8
+    //   shards. Each peer holds 78 packages; with the shared-flush
+    //   buffer in install-batch-facet.ts, total writeBatchStream RPCs
+    //   to coordinator ≈ 8 × 3-5 = 24 (vs 620+ pre-fix on wave-1).
+    //   Wave-2-deploy 7c3f1b25 with PER_SHARD_TARGET=40 + shared-flush
+    //   16 MiB threshold + 8-slot semaphore produced batch-fanout
+    //   aborts (peer→coordinator parent RPC age-out due to large
+    //   shared-flush bodies). Tightening to 8 peers + 4 MiB shared
+    //   threshold + no coordinator semaphore moves the equilibrium
+    //   to "small RPCs, fewer peers, no user-space queueing".
     //   COORD_FLUSH_PRESSURE_THRESHOLD = 200 (deps); below this the
     //   default 32-peer fan-out is fine and we keep current behavior.
     const COORD_FLUSH_PRESSURE_THRESHOLD = 200;
-    const PER_SHARD_TARGET = 40;
+    const PER_SHARD_TARGET = 80;
     let shardCount: number;
     if (specs.length > COORD_FLUSH_PRESSURE_THRESHOLD) {
       shardCount = Math.min(

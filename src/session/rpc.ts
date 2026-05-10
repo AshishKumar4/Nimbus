@@ -244,86 +244,37 @@ export async function _rpcWriteBatch(self: RpcHost, payload: any): Promise<{ ino
    * drained (v1 spool-then-commit), so a stream error mid-transit
    * aborts before any SQL state mutates.
    */
-/**
- * [COORDINATOR-OVERLOAD P0a, Option A]
- * Coordinator-side concurrency cap on writeBatchStream RPCs.
- *
- * Without this, peer-DO fan-out (32 peers × pLimit=3 = 96 concurrent
- * stream RPCs) saturates workerd's input-gate queue at the coordinator
- * DO, producing "Durable Object is overloaded. Requests queued for too
- * long." for ~50% of writes on Markflow-tier installs (617 deps).
- *
- * The semaphore parks excess RPCs in user-space (Promise queue) instead
- * of letting them pile onto workerd's RPC queue, where the queue-age
- * guard fires.
- *
- * Per-instance state (lazy-initialised on first call). Stored on the
- * NimbusSession DO instance so concurrent sessions in the same
- * workerd process do NOT share a semaphore — each session has its own
- * coordinator and its own RPC queue.
- *
- * COORD_WRITE_STREAM_CONCURRENCY = 8 — chosen so that 32 peers × pLimit 3
- * = 96 producers are bounded to 8 simultaneous transactionSync calls at
- * the coordinator. Empirically, transactionSync on a 16 MiB batch takes
- * ~50-200 ms on prod; 8 concurrent absorbs the producer rate (~1
- * RPC/peer/30s peak) without queue overflow.
- */
-const COORD_WRITE_STREAM_CONCURRENCY = 8;
-
-interface WriteStreamSemaphore {
-  active: number;
-  queue: (() => void)[];
-}
-
-function getWriteStreamSemaphore(self: any): WriteStreamSemaphore {
-  if (!self.__writeStreamSemaphore) {
-    self.__writeStreamSemaphore = { active: 0, queue: [] } as WriteStreamSemaphore;
-  }
-  return self.__writeStreamSemaphore;
-}
-
-async function acquireWriteStreamSlot(self: any): Promise<() => void> {
-  const sem = getWriteStreamSemaphore(self);
-  if (sem.active < COORD_WRITE_STREAM_CONCURRENCY) {
-    sem.active++;
-    return () => releaseWriteStreamSlot(self);
-  }
-  await new Promise<void>((resolve) => sem.queue.push(resolve));
-  sem.active++;
-  return () => releaseWriteStreamSlot(self);
-}
-
-function releaseWriteStreamSlot(self: any): void {
-  const sem = getWriteStreamSemaphore(self);
-  sem.active--;
-  const next = sem.queue.shift();
-  if (next) next();
-}
-
 export async function _rpcWriteBatchStream(self: RpcHost, 
     stream: ReadableStream<Uint8Array>,
   ): Promise<{ inodes: number; chunks: number }> {
     self.ensureSqliteFs();
-    // [P0a Option A] Bound concurrent stream RPC bodies at the
-    // coordinator. Workerd serializes RPC method execution per DO via
-    // its input gate, but the QUEUE depth is what triggers overload —
-    // parking excess callers in this user-space semaphore moves the
-    // wait off workerd's queue and onto a fair JS Promise queue.
-    const release = await acquireWriteStreamSlot(self);
-    try {
-      // Lazy import to keep the supervisor-side dependency graph stable
-      // for callers that never touch the streaming path. The W7 frame
-      // module itself is small (~10 KB compiled).
-      const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
-      const decoded = await decodeWriteBatchStream(stream);
-      return self.sqliteFs!.writeStream({
-        inodes: decoded.inodes,
-        chunkIter: decoded.chunkIter,
-        deletePaths: decoded.deletePaths,
-      });
-    } finally {
-      release();
-    }
+    // [P0a — COORDINATOR-OVERLOAD]
+    //
+    // Wave-1 (semaphore here): rejected. Parking peer-side awaits in a
+    // user-space queue extended each peer's _rpcFanoutExecute round-trip
+    // time, which made workerd cancel the peer→coordinator PARENT RPC
+    // with the same overload error (verified prod 7c3f1b25:
+    // "[batch-fanout] aborted: ExecutionError: Durable Object is
+    // overloaded"). The semaphore moved the queue-age problem one layer
+    // up — same symptom, worse blast radius (whole-batch abort instead
+    // of per-package fail).
+    //
+    // Wave-2 (shared flush + adaptive shard cap, no semaphore): the
+    // producer-side fix. The peer-side install-batch-facet now shares
+    // ONE inode/chunk accumulator across all packages in a peer's
+    // shard (src/npm/install-batch-facet.ts), so 39 packages → ~3-5
+    // RPCs to coordinator instead of 39+. Combined with shard cap of 8
+    // (src/npm/installer.ts), 620 deps → 8 peers × ~3 flushes = ~24
+    // total writeBatchStream RPCs at the coordinator (vs 620+ pre-fix).
+    // Workerd's input-gate queue depth on the coordinator stays well
+    // under the queue-age threshold without any user-space semaphore.
+    const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
+    const decoded = await decodeWriteBatchStream(stream);
+    return self.sqliteFs!.writeStream({
+      inodes: decoded.inodes,
+      chunkIter: decoded.chunkIter,
+      deletePaths: decoded.deletePaths,
+    });
 }
 
   /**

@@ -43,17 +43,25 @@ await sleep(2_000);
 }
 
 // Step 2: cd Markflow && npm install. Capture RAW (ANSI-preserved) output.
+//
+// Wait for the FINAL summary line to render — `Done!` may print first
+// (uncoloured) but the colour-tagged "added" line is what we assert
+// on. Wait for either green-shape OR yellow-shape OR an explicit
+// failure marker, then a small grace period so the prompt redraw
+// settles.
 let rawTail = '';
 {
   await t.run('cd /home/user/Markflow', 5_000);
   t.reset();
   t.cmd('npm install');
+  // Wait until the colour-coded summary AND a fresh prompt have arrived.
+  // \x1b[32m or \x1b[33m followed by `added` is the post-fix contract.
   await t.waitFor(
-    (b) => /(added \d+ packages|npm install failed)/i.test(b),
-    300_000,  // 5 min generous bound
-    'install end',
+    (b) => /(\x1b\[32madded \d+ packages.*\x1b\[0m|\x1b\[33madded \d+ packages.*failed, see above\).*\x1b\[0m|npm install failed)/.test(t.buf),
+    300_000,
+    'install summary line',
   );
-  await sleep(1_500);
+  await sleep(2_000);
   rawTail = t.buf;  // raw (ANSI-preserved)
   console.log(`  install completed; raw output ${rawTail.length} bytes`);
 }
