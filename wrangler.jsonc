@@ -51,6 +51,23 @@
   // flag — so the env overlay collapses too. Both top-level and
   // env.production now carry the same `compatibility_flags`.
   "compatibility_flags": ["nodejs_compat"],
+  // [astro-node-v22] Enable versioned-preview URLs. Each
+  // `wrangler versions upload` (and `wrangler deploy`) generates a
+  // per-version URL of the form
+  //   <VERSION_PREFIX>-nimbus.ashishkmr472.workers.dev
+  // (VERSION_PREFIX = first 8 hex chars of the version ID) which routes
+  // to that specific version without affecting prod traffic. Used by
+  // probes to verify a fix when sibling agents are racing deploys to
+  // production. Docs: developers.cloudflare.com/workers/configuration/previews
+  //
+  // Without this flag wrangler 4.44+ disables preview URLs by default
+  // (https://developers.cloudflare.com/changelog/2025-09-17-update-preview-url-setting/);
+  // versioned preview URL requests return 404 from CF preview infra.
+  //
+  // Safe to keep enabled in prod: preview URLs only resolve when
+  // someone has the version-id prefix (random per upload). No traffic
+  // shaping risk.
+  "preview_urls": true,
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
   // [docs](https://developers.cloudflare.com/workers/configuration/placement/),
   // Cloudflare measures the Worker's request duration in different colos
@@ -174,6 +191,7 @@
     "production": {
       "name": "nimbus",
       "compatibility_flags": ["nodejs_compat"],
+      "preview_urls": true,
       "vars": {
         "NIMBUS_DIAG_INSTALL_PIPELINE": ""
       },
