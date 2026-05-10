@@ -49,11 +49,32 @@ type _CacheStatEvent =
   | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
 
 /**
- * Pending cache-stat events captured by the R2CacheClient instrumentation
- * inside this RPC call. Flushed via _rpcRecordCacheStats at the end of
- * the handler. The list is bounded by the number of L2/L3 lookups a
- * single get/put performs (≤4 per call: L2 read, L3 read, optional L2
- * writeback, optional L3 writeback).
+ * Drain (and discard) cache-stat events captured by R2CacheClient.
+ *
+ * CACHE-OBSERVABILITY WAVE — HONEST LIMITATION:
+ *
+ * The instrumentation in src/npm/r2-cache.ts accumulates per-call L2/
+ * L3 events here (in the SupervisorRPC WorkerEntrypoint isolate).
+ * Forwarding those events to the DO singleton (where /api/_diag/cache
+ * reads) triggered workerd's recursion guard mid-install because the
+ * call stack is already DO -> SupervisorRPC -> here, and forwarding
+ * back to the same DO is recursion. ctx.waitUntil did NOT escape the
+ * guard (the synchronous .call() into the stub adds a subrequest
+ * regardless of await).
+ *
+ * Result: L2/L3/L4 events are CAPTURED but DISCARDED. /api/_diag/cache
+ * shows only L1 (per-DO NpmCache, instrumented in cache.ts where the
+ * caller already runs in the DO isolate).
+ *
+ * Proper fix (next wave): instrument facet-side (install-batch-facet,
+ * resolve-one-facet) where the call originates. The facet returns
+ * counters in its result; the supervisor's installer.ts folds them
+ * into the DO singleton via the same pattern as recordR2RaceCounters
+ * (installer.ts:1168). No recursion because the facet is not the DO.
+ *
+ * For this wave we DOCUMENT the limitation and keep the instrumentation
+ * in place so the next wave can replace the drain-and-discard with a
+ * facet-return-counters refactor without re-wiring R2CacheClient.
  */
 function _drainCacheEvents(client: any): _CacheStatEvent[] {
   const drained = (client && Array.isArray(client._cacheEvents)) ? client._cacheEvents : [];
@@ -281,27 +302,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async getCachedTarball(name: string, version: string): Promise<Uint8Array | null> {
     const r2 = this._r2();
     const bytes = await r2.getTarball(name, version);
-    // Cache-observability wave: forward L2/L3 events the R2 client
-    // accumulated during this call to the DO singleton.
-    //
-    // CRITICAL: do NOT `await` the forward. The supervisor DO is
-    // ALREADY on the call stack (DO → SupervisorRPC → here), and
-    // calling back into it synchronously triggers workerd's
-    // recursion guard (Subrequest depth limit exceeded). Use
-    // ctx.waitUntil so the RPC runs out-of-band — the DO singleton
-    // updates lag by one call but the install pipeline is unblocked.
-    //
-    // First-class architectural alternative would be to accumulate
-    // events facet-side (where the call ORIGINATES, not loopback)
-    // and forward in the install-batch-facet's return value, mirror-
-    // ing the recordR2RaceCounters pattern. That's a bigger refactor
-    // gated on the next wave's scope.
-    const events = _drainCacheEvents(r2);
-    if (events.length > 0) {
-      const stub = this._getStub();
-      const fwd = stub._rpcRecordCacheStats(events).catch(() => { /* best-effort */ });
-      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil in this runtime */ }
-    }
+    // R2CacheClient accumulated L2/L3 events in r2._cacheEvents but
+    // we drain them WITHOUT forwarding — see the section header below
+    // for the architectural reason (DO recursion guard).
+    _drainCacheEvents(r2);
     if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
       r2TarballHit();
       return bytes;
@@ -321,17 +325,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     version: string,
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<boolean> {
-    // L4-hit signal: forward to DO singleton via ctx.waitUntil to
-    // avoid the recursion-into-same-DO subrequest-depth issue (see
-    // getCachedTarball above).
-    const size = bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length;
-    {
-      const stub = this._getStub();
-      const fwd = stub._rpcRecordCacheStats([
-        { kind: 'hit', tier: 'L4', cacheKind: 'tarball', bytes: size },
-      ]).catch(() => { /* best-effort */ });
-      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil */ }
-    }
+    // L4-hit forwarding removed — see getCachedTarball comment.
     const r2 = this._r2();
     const ok = await r2.putTarball(name, version, bytes);
     if (ok) r2TarballPutOk();
@@ -352,14 +346,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
   ): Promise<{ json: string; ageMs: number; expired: boolean } | null> {
     const r2 = this._r2();
     const cached = await r2.getPackument(name);
-    // Forward L2/L3 events via ctx.waitUntil (out-of-band; avoids
-    // recursion-into-same-DO subrequest-depth limit).
-    const events = _drainCacheEvents(r2);
-    if (events.length > 0) {
-      const stub = this._getStub();
-      const fwd = stub._rpcRecordCacheStats(events).catch(() => { /* best-effort */ });
-      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil */ }
-    }
+    // Drain (and discard) L2/L3 cache events. Forwarding to the DO
+    // singleton triggered workerd's recursion guard mid-install.
+    _drainCacheEvents(r2);
     if (cached && !cached.expired) {
       r2PackumentHit();
       return cached;
@@ -379,14 +368,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * Best-effort. Returns true on success.
    */
   async putCachedPackument(name: string, json: string): Promise<boolean> {
-    // L4-hit signal: forward via ctx.waitUntil (out-of-band).
-    {
-      const stub = this._getStub();
-      const fwd = stub._rpcRecordCacheStats([
-        { kind: 'hit', tier: 'L4', cacheKind: 'packument', bytes: json.length },
-      ]).catch(() => { /* best-effort */ });
-      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil */ }
-    }
+    // L4-hit forwarding removed — see getCachedTarball comment.
     const r2 = this._r2();
     const ok = await r2.putPackument(name, json);
     if (ok) r2PackumentPutOk();
