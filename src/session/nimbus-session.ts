@@ -483,6 +483,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
   async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatchStream(this as any, stream); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
+  async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: string): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
   async _rpcStderr(pid: number, data: string): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
   async _rpcReportExit(pid: number, code: number, tail: string): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail); }

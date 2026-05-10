@@ -54,7 +54,19 @@
  *   - audit/sections/W4-plan.md
  */
 
-import { recordHit as _recordCacheHit, recordMiss as _recordCacheMiss } from '../_shared/cache-stats.js';
+import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
+
+/**
+ * Per-call cache-stat event (cache-observability wave). R2CacheClient
+ * accumulates these in instance state so the SupervisorRPC caller can
+ * drain + forward to the DO isolate (where /api/_diag/cache reads from).
+ * The local-singleton-write approach would be invisible to the DO's
+ * diag endpoint because WorkerEntrypoint instances live in a separate
+ * isolate. See src/session/supervisor-rpc.ts for the flush.
+ */
+export type R2CacheStatEvent =
+  | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
+  | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
 
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
@@ -283,11 +295,26 @@ export class R2CacheClient {
   private _l3GetsPackument = 0;
   private _l2HitsTarball = 0;
   private _l3GetsTarball = 0;
+  /**
+   * Cache-observability wave: per-call events accumulated for the
+   * caller (SupervisorRPC) to forward to the DO isolate's cache-stats
+   * singleton. Read via _cacheEvents and replaced with a fresh [] on
+   * drain. Public field so the caller in supervisor-rpc.ts can drain
+   * without an explicit method call (saves an indirection).
+   */
+  public _cacheEvents: R2CacheStatEvent[] = [];
 
   constructor(
     private readonly tarballBucket: R2BucketLike,
     private readonly packumentBucket: R2BucketLike,
   ) {}
+
+  private _recordHit(tier: CacheTier, cacheKind: CacheKind, bytes: number): void {
+    this._cacheEvents.push({ kind: 'hit', tier, cacheKind, bytes });
+  }
+  private _recordMiss(tier: CacheTier, cacheKind: CacheKind): void {
+    this._cacheEvents.push({ kind: 'miss', tier, cacheKind });
+  }
 
   /** Per-instance counter snapshot. Used by the L2 cache probes. */
   stats(): R2CacheClientStats {
@@ -324,27 +351,27 @@ export class R2CacheClient {
         // caller MUST fall through to L4). The L2 entry technically
         // existed but is unusable; the consumer's POV is "L2 didn't
         // give me usable bytes" → miss.
-        _recordCacheMiss('L2', 'tarball');
+        this._recordMiss('L2', 'tarball');
         return null;
       }
-      _recordCacheHit('L2', 'tarball', ab.byteLength);
+      this._recordHit('L2', 'tarball', ab.byteLength);
       return new Uint8Array(ab);
     }
-    _recordCacheMiss('L2', 'tarball');
+    this._recordMiss('L2', 'tarball');
     // ── L3 path (cross-tenant) ────────────────────────────────────
     if (!this.tarballBucket) {
       // No L3 binding configured — treat as miss so downstream can
       // fall through to L4. Distinguishes "binding absent" from
       // "binding present and empty" in the byte-counter (a miss
       // here means caller will fetch from L4).
-      _recordCacheMiss('L3', 'tarball');
+      this._recordMiss('L3', 'tarball');
       return null;
     }
     this._l3GetsTarball++;
     const key = tarballKey(name, version);
     const obj = await this.tarballBucket.get(key);
     if (!obj) {
-      _recordCacheMiss('L3', 'tarball');
+      this._recordMiss('L3', 'tarball');
       return null;
     }
     const ab = await obj.arrayBuffer();
@@ -355,10 +382,10 @@ export class R2CacheClient {
       // (Counter perspective: tier-3 said "yes, I have it" but the
       // payload is unusable here, so from the caller's POV it's a miss
       // — they go to L4.)
-      _recordCacheMiss('L3', 'tarball');
+      this._recordMiss('L3', 'tarball');
       return null;
     }
-    _recordCacheHit('L3', 'tarball', ab.byteLength);
+    this._recordHit('L3', 'tarball', ab.byteLength);
     // Write through to L2. Eternal TTL is correct: the npm registry
     // enforces immutability — `name@version` is content-fixed since
     // 2018 (the unpublish window only allows hard-delete, never
@@ -449,7 +476,7 @@ export class R2CacheClient {
       // we check expired — an expired L2 entry is still served (caller
       // honours expired flag); the hit-rate counts the cache lookup
       // success, the staleness is a separate axis.
-      _recordCacheHit('L2', 'packument', json.length);
+      this._recordHit('L2', 'packument', json.length);
       const now = Date.now();
       // Reconstruct ageMs from the L2 response's `Date` header (set
       // implicitly by the cache layer at put time). Cache API
@@ -469,20 +496,20 @@ export class R2CacheClient {
         : ageMs >= PACKUMENT_TTL_MS;
       return { json, ageMs, expired };
     }
-    _recordCacheMiss('L2', 'packument');
+    this._recordMiss('L2', 'packument');
     // ── L3 path (cross-tenant) ────────────────────────────────────
     if (!this.packumentBucket) {
-      _recordCacheMiss('L3', 'packument');
+      this._recordMiss('L3', 'packument');
       return null;
     }
     this._l3GetsPackument++;
     const obj = await this.packumentBucket.get(packumentKey(name));
     if (!obj) {
-      _recordCacheMiss('L3', 'packument');
+      this._recordMiss('L3', 'packument');
       return null;
     }
     const json = await obj.text();
-    _recordCacheHit('L3', 'packument', json.length);
+    this._recordHit('L3', 'packument', json.length);
     const now = Date.now();
     const uploaded = obj.uploaded?.getTime() ?? now;
     const ageMs = Math.max(0, now - uploaded);

@@ -34,12 +34,32 @@ import {
   r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss,
   r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail,
 } from '../observability/diag-counters.js';
-// cache-observability wave: per-tier hit/miss counters. L4 hits are
-// inferred from the facet's writeback call (putCachedTarball /
-// putCachedPackument) — the facet only calls those AFTER it fetched
-// from registry.npmjs.org. So a putCached* arrival is the L4-hit
-// signal (with bytes from the payload size).
-import { recordHit as _cacheRecordHit } from '../_shared/cache-stats.js';
+// cache-observability wave: per-tier hit/miss counters.
+//
+// CRITICAL — SupervisorRPC is a WorkerEntrypoint (loopback service
+// binding). It runs in a SEPARATE isolate from the DO it services, so
+// bumping a module-scoped singleton here does NOT update the DO's
+// /api/_diag/cache surface. We accumulate per-RPC and forward the
+// batch back to the DO via _rpcRecordCacheStats at the end of each
+// handler. Same pattern as recordR2RaceCounters / install-batch-facet.
+import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
+
+type _CacheStatEvent =
+  | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
+  | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
+
+/**
+ * Pending cache-stat events captured by the R2CacheClient instrumentation
+ * inside this RPC call. Flushed via _rpcRecordCacheStats at the end of
+ * the handler. The list is bounded by the number of L2/L3 lookups a
+ * single get/put performs (≤4 per call: L2 read, L3 read, optional L2
+ * writeback, optional L3 writeback).
+ */
+function _drainCacheEvents(client: any): _CacheStatEvent[] {
+  const drained = (client && Array.isArray(client._cacheEvents)) ? client._cacheEvents : [];
+  if (client && Array.isArray(client._cacheEvents)) client._cacheEvents = [];
+  return drained;
+}
 
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
@@ -261,6 +281,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async getCachedTarball(name: string, version: string): Promise<Uint8Array | null> {
     const r2 = this._r2();
     const bytes = await r2.getTarball(name, version);
+    // Cache-observability wave: forward L2/L3 events the R2 client
+    // accumulated during this call to the DO singleton (where
+    // /api/_diag/cache reads). Do this BEFORE returning so the
+    // counters update even if the bytes are nullish.
+    const events = _drainCacheEvents(r2);
+    if (events.length > 0) {
+      try { await this._getStub()._rpcRecordCacheStats(events); } catch { /* best-effort; counters lag */ }
+    }
     if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
       r2TarballHit();
       return bytes;
@@ -281,11 +309,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<boolean> {
     // L4-hit signal: facet just fetched from registry and is writing
-    // back. Record BEFORE the R2 put so we count it even if R2 write
-    // fails (the L4 fetch happened either way; R2 failure is a separate
-    // axis tracked by r2TarballPutFail).
+    // back. Forward to the DO singleton via RPC so /api/_diag/cache
+    // sees it. The size is the post-fetch payload byteLength.
     const size = bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length;
-    _cacheRecordHit('L4', 'tarball', size);
+    try {
+      await this._getStub()._rpcRecordCacheStats([
+        { kind: 'hit', tier: 'L4', cacheKind: 'tarball', bytes: size },
+      ]);
+    } catch { /* best-effort; counters lag */ }
     const r2 = this._r2();
     const ok = await r2.putTarball(name, version, bytes);
     if (ok) r2TarballPutOk();
@@ -306,6 +337,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
   ): Promise<{ json: string; ageMs: number; expired: boolean } | null> {
     const r2 = this._r2();
     const cached = await r2.getPackument(name);
+    // Forward L2/L3 events for /api/_diag/cache visibility.
+    const events = _drainCacheEvents(r2);
+    if (events.length > 0) {
+      try { await this._getStub()._rpcRecordCacheStats(events); } catch { /* best-effort */ }
+    }
     if (cached && !cached.expired) {
       r2PackumentHit();
       return cached;
@@ -326,10 +362,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async putCachedPackument(name: string, json: string): Promise<boolean> {
     // L4-hit signal: facet fetched packument from registry.npmjs.org
-    // and is writing back. Same posture as putCachedTarball: count
-    // BEFORE R2 put so the L4 axis stays accurate even if R2 write
-    // fails.
-    _cacheRecordHit('L4', 'packument', json.length);
+    // and is writing back. Forward to DO singleton for diag visibility.
+    try {
+      await this._getStub()._rpcRecordCacheStats([
+        { kind: 'hit', tier: 'L4', cacheKind: 'packument', bytes: json.length },
+      ]);
+    } catch { /* best-effort */ }
     const r2 = this._r2();
     const ok = await r2.putPackument(name, json);
     if (ok) r2PackumentPutOk();
