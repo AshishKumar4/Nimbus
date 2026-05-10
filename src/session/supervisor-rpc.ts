@@ -282,12 +282,25 @@ export class SupervisorRPC extends WorkerEntrypoint {
     const r2 = this._r2();
     const bytes = await r2.getTarball(name, version);
     // Cache-observability wave: forward L2/L3 events the R2 client
-    // accumulated during this call to the DO singleton (where
-    // /api/_diag/cache reads). Do this BEFORE returning so the
-    // counters update even if the bytes are nullish.
+    // accumulated during this call to the DO singleton.
+    //
+    // CRITICAL: do NOT `await` the forward. The supervisor DO is
+    // ALREADY on the call stack (DO → SupervisorRPC → here), and
+    // calling back into it synchronously triggers workerd's
+    // recursion guard (Subrequest depth limit exceeded). Use
+    // ctx.waitUntil so the RPC runs out-of-band — the DO singleton
+    // updates lag by one call but the install pipeline is unblocked.
+    //
+    // First-class architectural alternative would be to accumulate
+    // events facet-side (where the call ORIGINATES, not loopback)
+    // and forward in the install-batch-facet's return value, mirror-
+    // ing the recordR2RaceCounters pattern. That's a bigger refactor
+    // gated on the next wave's scope.
     const events = _drainCacheEvents(r2);
     if (events.length > 0) {
-      try { await this._getStub()._rpcRecordCacheStats(events); } catch { /* best-effort; counters lag */ }
+      const stub = this._getStub();
+      const fwd = stub._rpcRecordCacheStats(events).catch(() => { /* best-effort */ });
+      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil in this runtime */ }
     }
     if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
       r2TarballHit();
@@ -308,15 +321,17 @@ export class SupervisorRPC extends WorkerEntrypoint {
     version: string,
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<boolean> {
-    // L4-hit signal: facet just fetched from registry and is writing
-    // back. Forward to the DO singleton via RPC so /api/_diag/cache
-    // sees it. The size is the post-fetch payload byteLength.
+    // L4-hit signal: forward to DO singleton via ctx.waitUntil to
+    // avoid the recursion-into-same-DO subrequest-depth issue (see
+    // getCachedTarball above).
     const size = bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length;
-    try {
-      await this._getStub()._rpcRecordCacheStats([
+    {
+      const stub = this._getStub();
+      const fwd = stub._rpcRecordCacheStats([
         { kind: 'hit', tier: 'L4', cacheKind: 'tarball', bytes: size },
-      ]);
-    } catch { /* best-effort; counters lag */ }
+      ]).catch(() => { /* best-effort */ });
+      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil */ }
+    }
     const r2 = this._r2();
     const ok = await r2.putTarball(name, version, bytes);
     if (ok) r2TarballPutOk();
@@ -337,10 +352,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
   ): Promise<{ json: string; ageMs: number; expired: boolean } | null> {
     const r2 = this._r2();
     const cached = await r2.getPackument(name);
-    // Forward L2/L3 events for /api/_diag/cache visibility.
+    // Forward L2/L3 events via ctx.waitUntil (out-of-band; avoids
+    // recursion-into-same-DO subrequest-depth limit).
     const events = _drainCacheEvents(r2);
     if (events.length > 0) {
-      try { await this._getStub()._rpcRecordCacheStats(events); } catch { /* best-effort */ }
+      const stub = this._getStub();
+      const fwd = stub._rpcRecordCacheStats(events).catch(() => { /* best-effort */ });
+      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil */ }
     }
     if (cached && !cached.expired) {
       r2PackumentHit();
@@ -361,13 +379,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * Best-effort. Returns true on success.
    */
   async putCachedPackument(name: string, json: string): Promise<boolean> {
-    // L4-hit signal: facet fetched packument from registry.npmjs.org
-    // and is writing back. Forward to DO singleton for diag visibility.
-    try {
-      await this._getStub()._rpcRecordCacheStats([
+    // L4-hit signal: forward via ctx.waitUntil (out-of-band).
+    {
+      const stub = this._getStub();
+      const fwd = stub._rpcRecordCacheStats([
         { kind: 'hit', tier: 'L4', cacheKind: 'packument', bytes: json.length },
-      ]);
-    } catch { /* best-effort */ }
+      ]).catch(() => { /* best-effort */ });
+      try { (this.ctx as any).waitUntil?.(fwd); } catch { /* no ctx.waitUntil */ }
+    }
     const r2 = this._r2();
     const ok = await r2.putPackument(name, json);
     if (ok) r2PackumentPutOk();
