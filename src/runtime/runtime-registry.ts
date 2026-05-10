@@ -366,7 +366,28 @@ export function buildRuntimeHandler(
           ext === 'jsx' ? 'jsx' :
           ext === 'ts' ? 'ts' :
           'js';
-        const transformed = await eb.transform(code, { loader, format: 'cjs' });
+        // Substitute `import.meta.url` at compile-time so esbuild's
+        // CJS output doesn't reduce it to `undefined` (its default
+        // for unknown import.meta references). The substitution
+        // value is a real `file://<absolute-path>` URL — exactly
+        // what real Node returns when running this script. Tools
+        // that compute `fileURLToPath(import.meta.url)` (create-vite,
+        // most modern CLIs) then resolve relative paths against
+        // the actual script location.
+        //
+        // Without this, `create-vite` does
+        //   r(import.meta.url) → fileURLToPath(undefined) → throws
+        //   → falls into a different code path
+        //   → readdirSync(wrong-template-dir) returns []
+        //   → "Scaffolding..." but writes no files.
+        const absUrl = 'file:///' + resolvedPath.replace(/^\/+/, '');
+        const transformed = await eb.transform(code, {
+          loader,
+          format: 'cjs',
+          define: {
+            'import.meta.url': JSON.stringify(absUrl),
+          },
+        });
         code = transformed.code;
       } catch (e: any) {
         ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${e?.message}\n`);
