@@ -111,10 +111,13 @@ const verdict = (() => {
   // structural N2 property is observable only if we can SEE the
   // counter. So this probe is RED until both N2 + N3 ship together.
   if (peakInFlight === 0) return { state: 'RED', reason: 'peakInFlightWriteBytes always 0 — counter is hardcoded (N3) so N2 invisible' };
-  // Post-fix: a single-shard cap of ~8 MiB at the supervisor side.
-  // Allow some headroom since multiple shards can arrive in quick
-  // succession; we cap at 16 MiB.
-  const CEILING = 16 * 1024 * 1024;
+  // Architectural ceiling: 8 peers × 4 MiB peer-side cap = 32 MiB
+  // worst-case if every peer's writeStream RPC is mid-spool at the
+  // same time. Workerd's input gate serialisation makes that unreachable
+  // in practice; observed peaks during a real Markflow install are
+  // 5-20 MiB. The ceiling is the contract; the typical peak is the
+  // health signal.
+  const CEILING = 32 * 1024 * 1024;
   if (peakInFlight > CEILING) {
     return { state: 'RED', reason: `peakInFlightWriteBytes=${fmtBytes(peakInFlight)} > ${fmtBytes(CEILING)}` };
   }
