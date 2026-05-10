@@ -326,6 +326,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         return 1;
       }
 
+      // Primitive #1 (primitives-extension wave): shebang stripping.
+      // Real Node strips `#!...\n` from the first line before parsing.
+      // Nimbus's node-runner used to feed the raw bytes to V8, which
+      // threw "Invalid or unexpected token" on every bin shim with a
+      // shebang. Affects /node_modules/.bin/* + every executable .js
+      // installed via npx. Single-pass replace; idempotent on
+      // already-stripped files.
+      if (code.startsWith('#!')) {
+        const nl = code.indexOf('\n');
+        code = nl >= 0 ? code.substring(nl + 1) : '';
+      }
+
       // Auto-transform TypeScript/TSX/JSX via esbuild before execution
       if (resolvedPath.endsWith('.ts') || resolvedPath.endsWith('.tsx') || resolvedPath.endsWith('.jsx')) {
         try {
@@ -1839,16 +1851,34 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     (registry as any).resolve = async function nimbusBinFallbackResolve(name: string): Promise<any> {
       const upstream = await upstreamResolve(name);
       if (upstream) return upstream;
+      // CRITICAL: probe for the bin shim BEFORE returning a handler.
+      // If we always returned a handler, callers like Nimbus's npx
+      // wrapper that check `if (resolved) { use resolved } else
+      // { fall through to core's auto-install }` would never reach
+      // the auto-install path — every unknown name would short-circuit
+      // through us and fail with "command not found", regressing
+      // `npx <pkg>` for unstalled packages.
+      //
+      // The cwd lookup uses self.shell.cwd (the live shell state)
+      // when no specific cwd is supplied. Best-effort: if shell isn't
+      // built yet (very early init), fall back to /home/user.
+      const cwd = ((self.shell as any)?.cwd || '/home/user').replace(/^\/+/, '');
+      const binShimPath = cwd + '/node_modules/.bin/' + name;
+      if (!sqliteFs.exists(binShimPath)) return undefined;
       // Synthesised handler. Each resolve call recomputes (cwd can
       // change between invocations); we never cache under `name`.
       return async (ctx: any): Promise<number> => {
-        const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-        const binShimPath = cwd + '/node_modules/.bin/' + name;
-        if (!sqliteFs.exists(binShimPath)) {
-          // Real "command not found".
+        // Re-check at INVOCATION TIME against ctx.cwd — the cwd at
+        // resolve() time was the shell's current cwd, but the user
+        // could have piped through a subshell since. Same path
+        // computation as above; identical when cwd hasn't changed.
+        const ctxCwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+        const ctxBinShimPath = ctxCwd + '/node_modules/.bin/' + name;
+        if (!sqliteFs.exists(ctxBinShimPath)) {
           ctx.stderr.write(`${name}: command not found\n`);
           return 127;
         }
+        const binShimPath = ctxBinShimPath;
 
         // Bin shims are typically a 2-liner:
         //   #!/usr/bin/env node

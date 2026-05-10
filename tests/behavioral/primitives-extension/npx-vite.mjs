@@ -50,20 +50,26 @@ const versionOk = /\d+\.\d+/.test(versionResult.output);
 
 // ── B: npx <bin> for a SMALL package not pre-installed ─────────────────
 //
-// Use `semver` — tiny package, deterministic --version output, no
-// runtime quirks (vs cowsay which exercises cjs/require edge cases).
-// We assert that running `npx semver --version` prints a vN.N.N line
-// AS THE LAST OUTPUT BEFORE THE PROMPT, not just somewhere in the
-// install-banner echo.
+// `semver` is the canonical tiny CLI. The bin is the FULL CLI source
+// (no require-wrapper); pre-#1-fix, V8 chokes on the shebang line
+// with "Invalid or unexpected token". Post-fix, shebang is stripped
+// and the CLI runs.
+//
+// Assertion: passing `1.2.3 -r ">=1.0.0"` filters versions and
+// echoes `1.2.3` to stdout. The token "1.2.3" must appear AS THE
+// LAST OUTPUT before the next prompt (i.e. tail-end of the run
+// output) — so the user-typed echo doesn't false-positive.
 await t.run('cd /home/user', 5_000);
 await t.run('mkdir -p npx-probe', 5_000);
 await t.run('cd /home/user/npx-probe', 5_000);
 await t.run('node -e "require(\'fs\').writeFileSync(\'package.json\', JSON.stringify({name:\'p\',version:\'1.0.0\'}))"', 10_000);
-const cowResult = await runProbe('npx semver --version', 240_000);
-// Look for a numeric version in the LAST 200 chars before the prompt
-// (so "echo of `npx semver --version`" doesn't false-positive).
-const tail = cowResult.output.slice(-400);
-const cowOk = /\d+\.\d+\.\d+/.test(tail) && !cowResult.timedOut;
+const cowResult = await runProbe('npx semver 7.9.5', 240_000);
+// semver echoes back the version it was given as stdout (no filter).
+// We pick a NON-default version (7.9.5) so the user echo + the
+// stdout produce TWO occurrences. The probe asserts ≥2 — proving
+// the bin actually executed (user-echo alone is 1).
+const occurrences = (cowResult.output.match(/\b7\.9\.5\b/g) || []).length;
+const cowOk = occurrences >= 2 && !cowResult.timedOut;
 
 // ── C: ps shows the npx-launched process recorded in Nimbus's processTable.
 //
@@ -78,11 +84,14 @@ const cowOk = /\d+\.\d+\.\d+/.test(tail) && !cowResult.timedOut;
 // THERE — its 'state' can be running OR exited.
 const psResult = await t.run('ps', 15_000);
 const psOutput = stripAnsi(psResult.output);
-// Strict: the COMMAND column of a ps row must mention npx / a known
-// npx-cache path / the bin we invoked. Match only on lines that look
-// like ps rows (start with whitespace + digits: "  PID  STATUS  COMMAND").
+// Match only on lines that look like ps rows (start with whitespace +
+// digits: "  PID  STATUS  COMMAND"). The COMMAND column must mention
+// the npx-cache path or the bin we invoked — semver's bin shim lives
+// at /tmp/.npx-cache/node_modules/semver/bin/semver.js.
 const psRows = psOutput.split(/\r?\n/).filter(l => /^\s+\d+\s+/.test(l));
-const psHasNpxRow = psRows.some(l => /\.npx-cache|node_modules\/semver|npm.*exec/.test(l));
+const psHasNpxRow = psRows.some(l =>
+  /\.npx-cache|node_modules\/semver|semver\.js|cowsay/.test(l)
+);
 
 // ── D: per-pid log buffer captured something for the npx process.
 //
