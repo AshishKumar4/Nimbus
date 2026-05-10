@@ -51,6 +51,7 @@ import {
   setInstallFacetPath, recordInstallFacetCounters,
   recordPreBundleSummary,
   recordR2RaceCounters,
+  recordCacheStatEvents,
   readDiagCounters,
 } from '../observability/diag-counters.js';
 import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
@@ -611,6 +612,8 @@ export class NpmInstaller {
       pipelinedPackumentRaceWins: rfc.pipelinedPackumentRaceWins ?? 0,
       pipelinedPackumentRaceLosses: rfc.pipelinedPackumentRaceLosses ?? 0,
     });
+    // cache-obs-2: fold per-tier cache events into the DO singleton.
+    recordCacheStatEvents((result as any).cacheStatEvents);
     const r2WinSuffix = (rfc.pipelinedPackumentRaceWins ?? 0) > 0
       ? `, R2 packument cache wins=${rfc.pipelinedPackumentRaceWins}/${(rfc.pipelinedPackumentRaceWins ?? 0) + (rfc.pipelinedPackumentRaceLosses ?? 0)}`
       : '';
@@ -678,6 +681,10 @@ export class NpmInstaller {
     let totalLayers = 0;
     let r2Wins = 0;
     let r2Losses = 0;
+    // cache-obs-2: accumulator for per-tier cache events across all
+    // resolve-one tasks in this fanout walk. Drained at end-of-walk
+    // into the DO singleton via recordCacheStatEvents.
+    const fanoutCacheStatEvents: any[] = [];
 
     // Counter for diagnostics — peak in-flight inside a layer = layer
     // width (parallelism mirrors the in-DO/peer-DO pool's task count).
@@ -781,6 +788,10 @@ export class NpmInstaller {
 
         // Accumulate cache writes for end-of-walk flush.
         for (const cw of res.cacheWrites) cacheWritesPending.push(cw);
+        // cache-obs-2: harvest per-task cache events for end-of-walk fold.
+        if (Array.isArray((res as any).cacheStatEvents)) {
+          for (const e of (res as any).cacheStatEvents) fanoutCacheStatEvents.push(e);
+        }
         totalPackumentBytes += res.packumentBytesDecoded;
         if (res.packumentSource === 'r2-cache') r2Wins++;
         else if (res.packumentSource === 'network') r2Losses++;
@@ -906,6 +917,9 @@ export class NpmInstaller {
       pipelinedPackumentRaceWins: r2Wins,
       pipelinedPackumentRaceLosses: r2Losses,
     });
+    // cache-obs-2: fold all per-tier cache events from this walk into
+    // the DO singleton. Visible at /api/_diag/cache.
+    recordCacheStatEvents(fanoutCacheStatEvents);
     const r2WinSuffix = r2Wins > 0 ? `, R2 packument cache wins=${r2Wins}/${r2Wins + r2Losses}` : '';
     log(
       `  resolver-fanout: ${resolved.size} resolved, ` +
@@ -1172,6 +1186,8 @@ export class NpmInstaller {
         pipelinedPackumentRaceWins: 0,
         pipelinedPackumentRaceLosses: 0,
       });
+      // cache-obs-2: fold per-tier tarball cache events into DO singleton.
+      recordCacheStatEvents((result as any).cacheStatEvents);
       const r2WinSuffix = (fc.pipelinedTarballRaceWins ?? 0) > 0
         ? `, R2 cache wins=${fc.pipelinedTarballRaceWins}/${(fc.pipelinedTarballRaceWins ?? 0) + (fc.pipelinedTarballRaceLosses ?? 0)}`
         : '';

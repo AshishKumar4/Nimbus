@@ -393,6 +393,54 @@ export function recordR2RaceCounters(c: {
   _counters.r2.pipelinedPackumentRaceLosses += c.pipelinedPackumentRaceLosses;
 }
 
+/**
+ * cache-obs-2: fold facet-collected per-tier cache events into the
+ * DO-side cache-stats singleton. Called from installer.ts after a
+ * batch-facet / resolve-facet returns — mirrors recordR2RaceCounters
+ * (a wave-1 establish ed pattern where the facet collects metrics in
+ * its result and the supervisor folds them in the DO isolate).
+ *
+ * Each event has shape:
+ *   { kind: 'hit', tier: 'L2'|'L3'|'L4', cacheKind: 'tarball'|'packument'|'asset', bytes: number }
+ *   { kind: 'miss', tier: ..., cacheKind: ... }
+ *
+ * Defensively validates each event so a future facet shape mismatch
+ * doesn't poison the DO singleton.
+ *
+ * Imports cache-stats dynamically (the recordHit/recordMiss surface
+ * is defined in src/_shared/cache-stats.ts which is off-limits for
+ * direct extension in this wave — we only consume it). Static import
+ * is fine; the module is already a peer of this one.
+ */
+import {
+  recordHit as _cacheRecordHit,
+  recordMiss as _cacheRecordMiss,
+  type CacheTier,
+  type CacheKind,
+} from '../_shared/cache-stats.js';
+
+export type CacheStatEvent =
+  | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
+  | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
+
+export function recordCacheStatEvents(events: readonly unknown[] | undefined): void {
+  if (!events || events.length === 0) return;
+  const validTiers = new Set<CacheTier>(['L1', 'L2', 'L3', 'L4']);
+  const validKinds = new Set<CacheKind>(['tarball', 'packument', 'asset']);
+  for (const raw of events) {
+    if (!raw || typeof raw !== 'object') continue;
+    const e: any = raw;
+    if (!validTiers.has(e.tier)) continue;
+    if (!validKinds.has(e.cacheKind)) continue;
+    if (e.kind === 'hit') {
+      const bytes = typeof e.bytes === 'number' && e.bytes > 0 ? e.bytes : 0;
+      _cacheRecordHit(e.tier, e.cacheKind, bytes);
+    } else if (e.kind === 'miss') {
+      _cacheRecordMiss(e.tier, e.cacheKind);
+    }
+  }
+}
+
 /** Reset everything. Used by tests; not called from prod paths. */
 export function resetDiagCounters(): void {
   _counters.installPhase = 'idle';
