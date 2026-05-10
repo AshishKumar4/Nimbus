@@ -928,6 +928,13 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         if (!self.esbuildService) self.esbuildService = new EsbuildService(self.sqliteFs!);
         if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
         const previewBasePath = self.viteBasePath;
+        // Primitives wave (P5/P8): same long-running treatment as the
+        // dev path, just on the dist/ directory.
+        const previewPort = viteConfig.port || 4173; // vite preview default
+        const previewProcEntry = self.processTable.spawn(
+          'vite preview (' + distRoot + ')', [], distRoot,
+        );
+        self.processTable.setLongRunning(previewProcEntry.pid);
         self.viteDevServer = new ViteDevServer({
           vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: distRoot,
           onHmrMessage: () => {},
@@ -935,10 +942,19 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           basePath: previewBasePath,
           env: self.env,
           ctx: self.ctx,
+          port: previewPort,
+          pid: previewProcEntry.pid,
+          processLogs: self.processLogs,
         });
         self.viteDevServer.start();
-        try { await self.ctx.storage.put('vite-config', { root: distRoot, basePath: previewBasePath }); } catch {}
-        ctx.stdout.write('Serving at ' + previewBasePath + '/\n');
+        try {
+          const previewStub = makeLongRunningPortStub(self.viteDevServer);
+          self.portRegistry.register(previewPort, previewProcEntry.pid, previewStub);
+          self._viteShimPid = previewProcEntry.pid;
+          self._viteShimPort = previewPort;
+        } catch {}
+        try { await self.ctx.storage.put('vite-config', { root: distRoot, basePath: previewBasePath, port: previewPort }); } catch {}
+        ctx.stdout.write('Serving at ' + previewBasePath + '/ \x1b[2m(pid=' + previewProcEntry.pid + ', port=' + previewPort + ')\x1b[0m\n');
         return 0;
       }
 
@@ -1275,6 +1291,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         fallback: vitePortDefault,
       });
 
+      // Allocate PID FIRST so we can plumb it into ViteDevServer's
+      // process-log wiring at construction time. The PID stays valid
+      // for the life of this dev-server instance; subsequent log lines
+      // emitted by ViteDevServer flow into processLogs[pid].stderr,
+      // visible in the Process tab.
+      const viteProcEntry = self.processTable.spawn(
+        'vite (' + vfsRoot + ')',
+        expandedArgs,
+        vfsRoot,
+      );
+      self.processTable.setLongRunning(viteProcEntry.pid);
+
       self.viteDevServer = new ViteDevServer({
         vfs: self.sqliteFs!,
         esbuild: self.esbuildService!,
@@ -1290,6 +1318,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         basePath: previewBasePath,
         env: self.env,
         ctx: self.ctx,
+        // Primitives wave (P8): wire dev-server diagnostics into the
+        // supervisor's per-PID log store so the Process tab is no
+        // longer silent after the banner.
+        pid: viteProcEntry.pid,
+        processLogs: self.processLogs,
       });
       self.viteDevServer.start();
       try {
@@ -1300,16 +1333,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         });
       } catch {}
 
-      // Allocate PID + register port. The stub forwards into the in-
-      // process viteDevServer through the generic long-running adapter
-      // — same hook every future long-running facet uses (Express,
-      // Bun.serve, http.createServer().listen()).
-      const viteProcEntry = self.processTable.spawn(
-        'vite (' + vfsRoot + ')',
-        expandedArgs,
-        vfsRoot,
-      );
-      self.processTable.setLongRunning(viteProcEntry.pid);
+      // Register the port and build the long-running stub. The stub
+      // forwards into the in-process viteDevServer through the generic
+      // long-running adapter — same hook every future long-running
+      // facet uses (Express, Bun.serve, http.createServer().listen()).
       const viteStub = makeLongRunningPortStub(self.viteDevServer);
       self.portRegistry.register(resolvedPort, viteProcEntry.pid, viteStub);
       // Track the wiring so `vite stop` and crash-handlers can tear it

@@ -41,6 +41,7 @@ import { isWarmRejoin, joinExistingSession } from './init-phases.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
+import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
@@ -592,6 +593,15 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // Start in-process ViteDevServer
         if (!self.esbuildService) self.esbuildService = new EsbuildService(self.sqliteFs!);
         const basePath = self.viteBasePath;
+        // Primitives wave (P5/P8): allocate a PID + port even on the
+        // /api/start-vite path so probes that drive vite via the test
+        // surface still see a real process in `ps` and stream
+        // diagnostics into the Process tab.
+        const apiVitePort = (typeof body.port === 'number' && body.port > 0) ? body.port : 5173;
+        const apiViteEntry = self.processTable.spawn(
+          'vite (api/start-vite, ' + root + ')', [], root,
+        );
+        self.processTable.setLongRunning(apiViteEntry.pid);
         self.viteDevServer = new ViteDevServer({
           vfs: self.sqliteFs!, esbuild: self.esbuildService!, root,
           aliases: body.aliases, define: body.define,
@@ -606,8 +616,17 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           // ensureOnDemandPool / serveModule.
           env: self.env,
           ctx: self.ctx,
+          port: apiVitePort,
+          pid: apiViteEntry.pid,
+          processLogs: self.processLogs,
         });
         self.viteDevServer.start();
+        try {
+          const apiViteStub = makeLongRunningPortStub(self.viteDevServer);
+          self.portRegistry.register(apiVitePort, apiViteEntry.pid, apiViteStub);
+          self._viteShimPid = apiViteEntry.pid;
+          self._viteShimPort = apiVitePort;
+        } catch {}
 
         // Persist so vite survives DO hibernation. basePath included so the
         // rehydrated server after DO sleep emits URLs under the same prefix
@@ -737,6 +756,19 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
             // X-Nimbus-Base header) over the stored one — the latter is only
             // a fallback for cold rehydrates that precede any header hit.
             const basePath = self.viteBasePath || config.basePath;
+            // Primitives wave (P8): on hibernation rehydrate, re-allocate
+            // a PID so log streaming has somewhere to land. Without
+            // this, the rehydrated server would be silent again. The
+            // PID is registered against the previously-known port (or
+            // the default 5173 when the saved config predates P5).
+            const rehydratedPort = (config.port && Number.isFinite(config.port)) ? config.port : 5173;
+            const rehydratedEntry = self.processTable.spawn(
+              'vite (rehydrated, ' + config.root + ')',
+              [],
+              config.root,
+            );
+            self.processTable.setLongRunning(rehydratedEntry.pid);
+
             self.viteDevServer = new ViteDevServer({
               vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: config.root,
               aliases: config.aliases, define: config.define,
@@ -746,8 +778,19 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
               basePath,
               env: self.env,
               ctx: self.ctx,
+              port: rehydratedPort,
+              pid: rehydratedEntry.pid,
+              processLogs: self.processLogs,
             });
             self.viteDevServer.start();
+            // Re-register the port so /preview/?port=N keeps working
+            // across hibernation cycles.
+            try {
+              const rehydratedStub = makeLongRunningPortStub(self.viteDevServer);
+              self.portRegistry.register(rehydratedPort, rehydratedEntry.pid, rehydratedStub);
+              self._viteShimPid = rehydratedEntry.pid;
+              self._viteShimPort = rehydratedPort;
+            } catch { /* registry full / unavailable — fall through */ }
           }
         } catch { /* lazy-init failed, fall through to "no server" response */ }
       }

@@ -79,6 +79,16 @@ export interface ViteDevServerOptions {
   env?: any;
   /** Durable Object state — needed alongside `env` for the facet pool. */
   ctx?: DurableObjectState;
+  /**
+   * Primitives wave (P8): when set, every diagnostic the dev server
+   * would otherwise drop into Worker logs (console.warn / console.error)
+   * is ALSO appended to the supervisor's per-PID ProcessLogStore at
+   * this PID, on the 'stderr' stream. The Process tab in the frontend
+   * reads from this store, so the user finally sees a real log of
+   * what the dev server is doing — no more "silent after banner."
+   */
+  pid?: number;
+  processLogs?: { append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void };
 }
 
 // ── HMR client code ─────────────────────────────────────────────────────
@@ -1244,10 +1254,22 @@ export class ViteDevServer {
    */
   private onDemandQueue: Promise<void> = Promise.resolve();
 
+  /**
+   * Primitives wave (P8): the supervisor's per-PID log store. When set
+   * (alongside `pid`), every diagnostic emitted by the dev server is
+   * appended here on the 'stderr' stream so the Process tab UI shows
+   * a real, scrolling, trace of bundler activity. When unset, falls
+   * back to console.warn / console.error only (legacy behaviour).
+   */
+  private logPid: number | null = null;
+  private logStore: { append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void } | null = null;
+
   constructor(opts: ViteDevServerOptions) {
     this.vfs = opts.vfs;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
+    this.logPid = (opts.pid != null) ? opts.pid : null;
+    this.logStore = opts.processLogs || null;
     // Normalize root: resolve ./, collapse //, strip leading/trailing slashes
     this.root = opts.root
       .replace(/\/\.\//g, '/')     // /./ → /
@@ -1402,6 +1424,30 @@ export class ViteDevServer {
   }
 
   get isRunning() { return this.running; }
+
+  /**
+   * Primitives wave (P8): single chokepoint for dev-server diagnostics.
+   * Always writes to the workerd console (so wrangler tail / Worker
+   * logs see it for ops triage) AND appends to the supervisor's
+   * per-PID ProcessLogStore when one is wired (so the Process tab in
+   * the browser shows the same line, on the same stderr stream, with
+   * the same timestamp ordering). Callers no longer have to remember
+   * to do both.
+   *
+   * Levels: 'warn' / 'error' map to console.warn / console.error;
+   * everything goes to the 'stderr' stream of the log store because
+   * vite's own runtime never writes anything but diagnostics here.
+   * Trailing newline is added if missing so the log buffer is line-
+   * oriented (the Process-tab UI splits on `\n`).
+   */
+  private log(level: 'warn' | 'error', msg: string): void {
+    const fn = level === 'error' ? console.error : console.warn;
+    try { fn(msg); } catch {}
+    if (this.logPid != null && this.logStore) {
+      const text = msg.endsWith('\n') ? msg : msg + '\n';
+      try { this.logStore.append(this.logPid, 'stderr', text); } catch {}
+    }
+  }
 
   /** Handle VFS change events → trigger HMR. */
   private handleVfsEvents(events: VfsEvent[]): void {
@@ -1750,7 +1796,7 @@ export class ViteDevServer {
             `Add explicit imports like ` +
             `\`import { IconName } from '${pkgName}'\` so Nimbus can synthesize ` +
             `a tree-shakable entry.`;
-          console.error(diag);
+          this.log('error', diag);
           const escaped = JSON.stringify(diag);
           return new Response(
             `// nimbus: ${diag}\n` +
@@ -1773,7 +1819,7 @@ export class ViteDevServer {
           // unrelated "failed to fetch" error that obscures the real
           // diagnostic.
           const diag = `Nimbus: synthetic entry generation failed for ${specifier} (barrel: ${fileCount} files; ${names.size} static imports). The package's index does not match any pattern Nimbus's barrel synthesizer understands (export {…} from, export * from, top-level decls). File a bug.`;
-          console.error(diag);
+          this.log('error', diag);
           const escaped = JSON.stringify(diag);
           return new Response(
             `// nimbus: synthetic entry generation returned null for ${specifier}\n` +
@@ -1793,7 +1839,7 @@ export class ViteDevServer {
           // synthesizer gap, so we keep the diagnostic header value
           // separate for log triage.
           const msg = `[vite-dev] failed to write synthetic entry for ${specifier}: ${e?.message || e}`;
-          console.error(msg);
+          this.log('error', msg);
           const escaped = JSON.stringify(msg);
           return new Response(
             `// nimbus: ${msg}\nconsole.error(${escaped});\nconst __err = new Error(${escaped});\nexport default new Proxy({}, { get: () => { throw __err; } });\n`,
@@ -1805,7 +1851,7 @@ export class ViteDevServer {
         // Stash the referenced files so the slice-build below uses
         // a SCOPED slice instead of the standard whole-package walk.
         syntheticReferencedFiles = synth.referencedFiles;
-        console.warn(
+        this.log('warn',
           `[vite-dev] synthesized entry for ${specifier} ` +
           `(barrel: ${fileCount} files; ${names.size} static imports → tree-shaken bundle)`,
         );
@@ -1846,7 +1892,7 @@ export class ViteDevServer {
               });
               built.totalBytes += bytes.length + bundleEntryPath.length;
             } catch (e: any) {
-              console.error('[vite-dev] synthetic entry unreadable for', specifier, e?.message);
+              this.log('error', '[vite-dev] synthetic entry unreadable for ' + specifier + ': ' + (e?.message || e));
             }
             slice = built;
           } else {
@@ -1879,14 +1925,14 @@ export class ViteDevServer {
             if (result && result.ok && result.esmCode) {
               bundled = result.esmCode;
             } else if (result && result.errorText) {
-              console.error('[vite-dev] facet bundle failed for', specifier, result.errorText);
+              this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
             }
             result = null;
           } else {
-            console.error('[vite-dev] slice walker exceeded cap for', specifier);
+            this.log('error', '[vite-dev] slice walker exceeded cap for ' + specifier);
           }
         } catch (e: any) {
-          console.error('[vite-dev] on-demand facet dispatch failed for', specifier, e?.message);
+          this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
         }
       } else {
         // Legacy fallback — in-supervisor esbuild. Used only when
@@ -1904,7 +1950,7 @@ export class ViteDevServer {
             bundled = result.outputFiles[0].contents;
           }
         } catch (e: any) {
-          console.error('[vite-dev] esbuild bundle failed for', specifier, e?.message);
+          this.log('error', '[vite-dev] esbuild bundle failed for ' + specifier + ': ' + (e?.message || e));
         }
       }
 
@@ -1988,7 +2034,7 @@ export class ViteDevServer {
         `package not installed locally (likely an optional transitive peer-dep). ` +
         `If your code calls into ${specifier} directly, add it to package.json ` +
         `and run \`npm install\`.`;
-      console.warn(stubMsg);
+      this.log('warn', stubMsg);
       const stubCode =
         `// nimbus: ${stubMsg}\n` +
         `export default undefined;\n` +
@@ -2007,16 +2053,23 @@ export class ViteDevServer {
       `auto-tree-shakes from your static named imports — make sure ` +
       `you're using \`import { Foo } from '${pkgName}'\` syntax ` +
       `(not \`import * as X\` or dynamic \`import()\`).`;
-    console.error(diag);
+    this.log('error', diag);
+    // Primitives wave (P6): same 200-stub pattern. The supervisor's
+    // own bundle pipeline failed — surface the diagnostic in the
+    // browser console where the user is looking, not in a 503 the
+    // browser's module loader treats as "module-not-found".
+    const escaped = JSON.stringify(diag);
     const errCode =
-      `// nimbus: ${diag}\n` +
-      `throw new Error(${JSON.stringify('Nimbus: ' + diag)});\n`;
+      `// nimbus: ${diag}\nconsole.error(${escaped});\n` +
+      `const __err = new Error(${escaped});\n` +
+      `export default new Proxy({}, { get: () => { throw __err; } });\n`;
     return new Response(errCode, {
-      status: 503,
+      status: 200,
       headers: {
         ...headers,
         'Content-Type': JS_CT,
         'Cache-Control': 'no-store',
+        'X-Nimbus-Bundle-Status': 'bundle-failed',
       },
     });
   }
