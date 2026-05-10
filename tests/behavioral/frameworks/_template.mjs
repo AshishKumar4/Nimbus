@@ -69,12 +69,11 @@ export async function runFrameworkProbe(spec) {
     findings.cdInto = spec.cdInto;
   }
 
-  // Verify package.json exists (the create command was at least
-  // partially successful). Use `test -f` so we get a deterministic
-  // exit code AND a distinguishable string echoed via printf — the
-  // `ls -la` echo line was poisoning the regex.
+  // Verify package.json exists. node-eval interrogation: produces a
+  // single deterministic marker line that the regex consumes; avoids
+  // shell parser quirks (no `&&`, no `2>/dev/null`).
   const lsOut = await t.run(
-    'test -f package.json && printf "FWPROBE_PKG_EXISTS=1\\n" || printf "FWPROBE_PKG_EXISTS=0\\n"; cat package.json 2>/dev/null | head -20',
+    `node -e "var fs=require('fs');if(fs.existsSync('package.json'))console.log('FWPROBE_PKG_EXISTS=1');else console.log('FWPROBE_PKG_EXISTS=0');try{console.log('FWPROBE_PKG_HEAD='+fs.readFileSync('package.json','utf8').slice(0,800));}catch(e){}"`,
     15_000,
   );
   findings.packageJsonExists = /FWPROBE_PKG_EXISTS=1/.test(stripAnsi(lsOut.output));
