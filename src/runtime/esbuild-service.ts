@@ -536,13 +536,31 @@ export class EsbuildService {
       return null;
     }
 
+    // Conditions per-resolution. CJS `require('X')` callers need the
+    // `require` condition selected so packages that ship a dual-export
+    // CJS trick (e.g. @babel/runtime/helpers/X — `module.exports = fn;
+    // module.exports.default = module.exports;`) resolve to the CJS
+    // file. The ESM helper file declares only `export { fn as default }`,
+    // which esbuild's __toCommonJS wrap surfaces to CJS callers as
+    // `{ default: fn }` — and the downstream callsite calls the
+    // namespace as a function and crashes with
+    // `_objectWithoutPropertiesLoose2 is not a function`.
+    //
+    // This affects every CJS-shipping npm package that depends on
+    // `@babel/runtime/helpers/*` (thousands — anything compiled with
+    // `@babel/preset-env`'s `transform-runtime`).
+    // See pre-bundle-facet.ts for the matching fix in the install-time
+    // pre-bundle plugin. Both code paths must agree.
+    const ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
+    const CJS_CONDITIONS = ['require', 'node', 'browser', 'default'];
+
     /**
      * Resolve bare specifier (npm package) by walking up node_modules.
-     * Uses the full Node.js exports-field algorithm with ESM conditions so
-     * packages like zustand correctly resolve to their ESM entry (./esm/index.mjs)
-     * instead of the CJS main (./index.js).
+     * Uses the full Node.js exports-field algorithm. `conditions` is
+     * passed through so caller can request CJS-flavoured resolution
+     * (for `require()` calls in bundled CJS code).
      */
-    function resolveBarePkg(specifier: string, fromDir: string): string | null {
+    function resolveBarePkg(specifier: string, fromDir: string, conditions: string[]): string | null {
       // Split scoped packages: @scope/pkg → ["@scope/pkg"]
       // Split subpath imports: pkg/sub/path → pkg, sub/path
       let pkgName: string;
@@ -572,11 +590,11 @@ export class EsbuildService {
           }
 
           if (pkgJson) {
-            // Use the full exports-field resolution with ESM browser conditions.
-            // This picks "./esm/index.mjs" over "./index.js" for packages like
-            // zustand that expose both CJS and ESM builds.
+            // Use the full exports-field resolution. Conditions are
+            // caller-supplied so `require()` and `import` get distinct
+            // resolutions per Node spec.
             const subpathKey = subpath ? './' + subpath : '.';
-            const entry = resolvePackageEntry(pkgJson, subpathKey);
+            const entry = resolvePackageEntry(pkgJson, subpathKey, conditions);
             if (entry) {
               const resolved = tryResolve(nmDir + '/' + entry.replace(/^\.\//, ''));
               if (resolved) return resolved;
@@ -675,7 +693,19 @@ export class EsbuildService {
           // 5. Bare specifier (npm package)
           if (!args.path.startsWith('/') && !args.path.startsWith('.') && !args.path.startsWith('#')) {
             const fromDir = args.resolveDir || '/home/user';
-            const resolved = resolveBarePkg(args.path, fromDir);
+            // Per Node spec: `require()` triggers the 'require' condition,
+            // `import` triggers 'import'. esbuild surfaces this via
+            // args.kind. Without this, packages that ship a dual-export
+            // CJS file alongside a bare ESM file (e.g. @babel/runtime/
+            // helpers/*) get resolved to the ESM variant for CJS callers,
+            // and the `__toCommonJS` wrapper surfaces `{ default: fn }`
+            // to a callsite that expects the function directly — runtime
+            // crash with "<helper>2 is not a function" on the first
+            // route that uses the affected package.
+            const conditions = args.kind === 'require-call' || args.kind === 'require-resolve'
+              ? CJS_CONDITIONS
+              : ESM_CONDITIONS;
+            const resolved = resolveBarePkg(args.path, fromDir, conditions);
             if (resolved) return { path: resolved, namespace: 'nimbus-vfs' };
             // Mark as external if not found (common for Node built-ins)
             return { external: true };

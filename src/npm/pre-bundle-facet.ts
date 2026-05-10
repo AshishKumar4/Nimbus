@@ -514,9 +514,34 @@ export const prebundleOne = async function prebundleOne(
     return null;
   };
 
+  // Conditions per-resolution. CJS `require('X')` callers need the
+  // `require` condition selected so packages that ship a dual-export
+  // CJS trick (e.g. @babel/runtime/helpers/X — `module.exports = fn;
+  // module.exports.default = module.exports;`) resolve to the CJS
+  // file. The ESM helper file (`./helpers/esm/X.js`) declares only
+  // `export { fn as default }`, which esbuild's __toCommonJS wrap
+  // would surface to a CJS require as `{ default: fn }` — and the
+  // downstream callsite `_objectWithoutPropertiesLoose2(...)` calls
+  // the namespace as a function and crashes with
+  // `_objectWithoutPropertiesLoose2 is not a function` at runtime.
+  //
+  // This is the same logic Node uses: `require()` triggers the
+  // `require` condition, `import` triggers `import`. esbuild's own
+  // resolver does this when it owns resolution; we own it via the
+  // VFS plugin, so we must pass conditions through ourselves.
+  //
+  // Affects every CJS-shipping npm package that depends on
+  // `@babel/runtime/helpers/*` (thousands — anything compiled with
+  // @babel/preset-env's `transform-runtime`). Verified to fix:
+  //   - react-textarea-autosize → Markflow's /write route
+  //   - @emotion/* CJS bundles
+  //   - downstream of `babel-plugin-transform-runtime`
+  const ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
+  const CJS_CONDITIONS = ['require', 'node', 'browser', 'default'];
+
   // Bare specifier → entry path resolution. Mirrors EsbuildService's
   // makeVfsPlugin.resolveBarePkg but reads from fileMap.
-  const resolveBarePkg = (specifier: string, fromDir: string): string | null => {
+  const resolveBarePkg = (specifier: string, fromDir: string, conditions: string[]): string | null => {
     let pkgName: string, subpath: string;
     if (specifier.startsWith('@')) {
       const parts = specifier.split('/');
@@ -541,7 +566,7 @@ export const prebundleOne = async function prebundleOne(
             const subKey = subpath ? './' + subpath : '.';
             // @ts-ignore — `resolvePackageEntry` is provided by the
             // pre-bundle preamble at facet-load time; no static import.
-            const entry = resolvePackageEntry(pkgJson, subKey);
+            const entry = resolvePackageEntry(pkgJson, subKey, conditions);
             if (entry) {
               const r = tryResolve(nm + '/' + entry.replace(/^\.\//, ''));
               if (r) return r;
@@ -620,7 +645,14 @@ export const prebundleOne = async function prebundleOne(
         }
         if (!args.path.startsWith('/') && !args.path.startsWith('.') && !args.path.startsWith('#')) {
           const fromDir = args.resolveDir || '/home/user';
-          const r = resolveBarePkg(args.path, fromDir);
+          // Per Node spec: `require()` selects 'require' condition,
+          // `import` selects 'import'. esbuild surfaces this via
+          // args.kind. See ESM_CONDITIONS / CJS_CONDITIONS comments
+          // above for the bug class this fixes.
+          const conditions = args.kind === 'require-call' || args.kind === 'require-resolve'
+            ? CJS_CONDITIONS
+            : ESM_CONDITIONS;
+          const r = resolveBarePkg(args.path, fromDir, conditions);
           if (r) return { path: r, namespace: 'nimbus-slice' };
           // Mark unresolved as external — same fail-soft behaviour as
           // EsbuildService.makeVfsPlugin, with a warning so the slice

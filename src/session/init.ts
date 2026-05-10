@@ -2301,6 +2301,94 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         }
       }
 
+      // ── npm create <pkg> / npm init <pkg> → npx create-<pkg> ─────────
+      //
+      // Per the npm spec, `npm create X args...` and `npm init X args...`
+      // (when X is supplied) are sugar for invoking the `create-X`
+      // initializer package via npx. Specifically:
+      //
+      //   npm create foo args...           → npx create-foo args...
+      //   npm create foo@1.2 args...       → npx create-foo@1.2 args...
+      //   npm create @scope/foo args...    → npx @scope/create-foo args...
+      //   npm create @scope args...        → npx @scope/create args...
+      //
+      // `npm init` (no args) is a different beast — it scaffolds a
+      // package.json interactively. The `sub === 'init'` branch above
+      // handles the no-arg case; here we only intercept the
+      // initializer-package case (1+ args after `init`).
+      //
+      // Without this routing, `npm create vite@latest mvp -- --template
+      // react-ts` hits lifo-sh's core npm dispatch which only knows
+      // {init, install/i/add, uninstall/remove/rm/un, list/ls,
+      // run/run-script, start, test, info/view/show, search, version}
+      // — and emits "npm: unknown command 'create'". Every modern
+      // framework's `create-*` flow (create-vite, create-next-app
+      // routed via "npm create", create-cloudflare, create-astro, etc.)
+      // depends on this.
+      //
+      // This is a primitive: one fix, every framework wins.
+      if (sub === 'create' || (sub === 'init' && args.length >= 2 && !args[1].startsWith('-'))) {
+        const arg1 = args[1];
+        if (!arg1) {
+          ctx.stderr.write('npm create: missing package name\n');
+          ctx.stderr.write('Usage: npm create <pkg> [args...]\n');
+          return 1;
+        }
+        // Parse pkg + version. Scope-aware:
+        //   @scope        → @scope/create
+        //   @scope/foo    → @scope/create-foo
+        //   foo           → create-foo
+        //   foo@1.2.3     → create-foo@1.2.3
+        //   foo@latest    → create-foo@latest
+        function rewriteToCreatePkg(spec: string): string {
+          // Strip an optional version range and re-append after the rewrite.
+          const atIdx = spec.lastIndexOf('@');
+          const hasVersion = atIdx > 0; // a leading @ is the scope; not a version
+          const bare = hasVersion ? spec.slice(0, atIdx) : spec;
+          const version = hasVersion ? spec.slice(atIdx) : '';
+          let pkg: string;
+          if (bare.startsWith('@')) {
+            const slash = bare.indexOf('/');
+            if (slash < 0) {
+              // @scope → @scope/create
+              pkg = bare + '/create';
+            } else {
+              // @scope/foo → @scope/create-foo
+              const scope = bare.slice(0, slash);
+              const name = bare.slice(slash + 1);
+              pkg = scope + '/create-' + name;
+            }
+          } else {
+            pkg = 'create-' + bare;
+          }
+          return pkg + version;
+        }
+        const createPkg = rewriteToCreatePkg(arg1);
+        const passThrough = args.slice(2);
+        // `npm create` accepts an optional `--` separator to push the
+        // remaining args to the create script; npx doesn't need a
+        // separator (positional args after the package name go to the
+        // package). We strip a single literal `--` token if present so
+        // `npm create vite@latest mvp -- --template react-ts` becomes
+        // `npx --yes create-vite@latest mvp --template react-ts`.
+        const stripped = passThrough.filter((a, i, arr) => !(a === '--' && i < arr.length - 1) && !(a === '--' && arr.indexOf('--') === i));
+        // Inform the user what we're routing to — matches npm's own
+        // visible "npx" line so the create flow is honest.
+        ctx.stdout.write(`> npx --yes ${createPkg}${stripped.length ? ' ' + stripped.join(' ') : ''}\n`);
+        // Dispatch through the npx registry entry (which itself falls
+        // back to lifo-sh core npx for install + exec). `--yes` skips
+        // the "Ok to proceed? (y)" prompt.
+        const npxHandler = await registry.resolve('npx');
+        if (!npxHandler) {
+          ctx.stderr.write('npm create: npx command unavailable\n');
+          return 1;
+        }
+        return await npxHandler({
+          ...ctx,
+          args: ['--yes', createPkg, ...stripped],
+        });
+      }
+
       // Fall through to core npm for other subcommands
       return coreNpmCmd(ctx);
     });

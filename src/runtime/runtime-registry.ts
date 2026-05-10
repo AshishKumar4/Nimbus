@@ -295,16 +295,77 @@ export function buildRuntimeHandler(
       code = nl >= 0 ? code.substring(nl + 1) : '';
     }
 
-    // esbuild transform for TypeScript / TSX / JSX (both node and bun).
+    // ── ESM-source detection (primitive: type:module entry scripts) ──
+    //
+    // Nimbus's facet pre-compile loop wraps every entry script in
+    // `new Function(...)` which runs it as CJS. A real `node script.js`
+    // dispatch honours the nearest package.json's `"type"` field
+    // (and the file extension) to decide whether to parse as ESM:
+    //
+    //   - .mjs  → always ESM
+    //   - .cjs  → always CJS
+    //   - .js   → ESM iff nearest package.json has "type": "module"
+    //
+    // Without this, every modern ESM-only npm initialiser
+    // (create-vite, create-astro, create-svelte, modern create-*)
+    // crashes immediately with "Cannot use import statement outside
+    // a module" because their bin entry is `index.js` and the
+    // package.json declares `type: module`.
+    //
+    // We transform to CJS (format: 'cjs') so the facet's `new
+    // Function()` runs it as a CJS module body — same path that the
+    // bundle's `transformEsmInBundle` (W3.5 Fix B) takes for
+    // sub-module ESM files. esbuild's CJS output emits __require /
+    // module.exports / exports.X so the facet's pre-compile loop
+    // sees ordinary CJS source.
+    function isEsmScript(absPath: string, src: string): boolean {
+      if (absPath.endsWith('.mjs')) return true;
+      if (absPath.endsWith('.cjs')) return false;
+      if (!absPath.endsWith('.js')) return false;
+      // Walk up dirs looking for the nearest package.json. First one
+      // wins (Node spec); we do NOT consult ancestors past it.
+      let dir = absPath.replace(/^\/+/, '');
+      const slash = dir.lastIndexOf('/');
+      dir = slash > 0 ? dir.substring(0, slash) : '';
+      const visited = new Set<string>();
+      while (dir && !visited.has(dir)) {
+        visited.add(dir);
+        const pj = dir + '/package.json';
+        if (vfs.exists(pj)) {
+          try {
+            const pkg = JSON.parse(vfs.readFileString(pj));
+            return pkg && pkg.type === 'module';
+          } catch {
+            return false;
+          }
+        }
+        const last = dir.lastIndexOf('/');
+        if (last <= 0) break;
+        dir = dir.substring(0, last);
+      }
+      return false;
+    }
+
+    const needsEsmTransform =
+      resolvedPath.endsWith('.mjs') ||
+      (resolvedPath.endsWith('.js') && isEsmScript(resolvedPath, code));
+
+    // esbuild transform for TypeScript / TSX / JSX (both node and bun)
+    // AND for ESM `.js` / `.mjs` entry scripts (primitive ESM-detect).
     if (
       resolvedPath.endsWith('.ts') ||
       resolvedPath.endsWith('.tsx') ||
-      resolvedPath.endsWith('.jsx')
+      resolvedPath.endsWith('.jsx') ||
+      needsEsmTransform
     ) {
       try {
         const eb = getEsbuild();
         const ext = resolvedPath.split('.').pop()!;
-        const loader = ext === 'tsx' ? 'tsx' : ext === 'jsx' ? 'jsx' : 'ts';
+        const loader =
+          ext === 'tsx' ? 'tsx' :
+          ext === 'jsx' ? 'jsx' :
+          ext === 'ts' ? 'ts' :
+          'js';
         const transformed = await eb.transform(code, { loader, format: 'cjs' });
         code = transformed.code;
       } catch (e: any) {
