@@ -222,14 +222,35 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     registry.register('node', async (ctx: any) => {
       const args: string[] = ctx.args || [];
 
+      // Primitive #1 (primitives-extension wave): the version/help/eval
+      // checks below USED to scan the entire args array, which broke
+      // bin invocations like `node /path/to/tsc --version` — the user's
+      // `--version` arg was misinterpreted as a node flag and Node's
+      // version was printed instead of running the script.
+      //
+      // Real Node only treats leading args as node flags (until the
+      // first non-flag token, which is the script path). We compute
+      // a `nodeFlagSpan` index and only scan within it.
+      let nodeFlagSpan = 0;
+      while (nodeFlagSpan < args.length && args[nodeFlagSpan].startsWith('-')) {
+        nodeFlagSpan++;
+        // -e / --eval consumes one value; advance past it so the next
+        // iteration sees the post-value position.
+        const prev = args[nodeFlagSpan - 1];
+        if ((prev === '-e' || prev === '--eval') && nodeFlagSpan < args.length) {
+          nodeFlagSpan++;
+        }
+      }
+      const flagSlice = args.slice(0, nodeFlagSpan);
+
       // node -v / --version
-      if (args.includes('-v') || args.includes('--version')) {
+      if (flagSlice.includes('-v') || flagSlice.includes('--version')) {
         ctx.stdout.write('v20.0.0\n');
         return 0;
       }
 
       // node --help
-      if (args.includes('--help') || args.includes('-h')) {
+      if (flagSlice.includes('--help') || flagSlice.includes('-h')) {
         ctx.stdout.write('Usage: node [options] [script.js] [arguments]\n');
         ctx.stdout.write('       node -e "code"\n\n');
         ctx.stdout.write('Options:\n');
@@ -241,7 +262,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
 
       // node -e "code" / --eval "code"
-      const evalIdx = args.indexOf('-e') !== -1 ? args.indexOf('-e') : args.indexOf('--eval');
+      const evalIdx = flagSlice.indexOf('-e') !== -1 ? flagSlice.indexOf('-e') : flagSlice.indexOf('--eval');
       if (evalIdx !== -1) {
         const code = args[evalIdx + 1];
         if (!code) {
