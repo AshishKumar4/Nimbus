@@ -270,12 +270,33 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       if (!isWasm) return undefined;
       // Build a synthetic command that delegates to wasm-runner with
       // the user's args. wasm-runner's contract: args[0] is the .wasm
-      // path (resolves against vfs), args[1..] are forwarded as wasi argv.
+      // path (resolved against ctx.cwd by the runtime-handler),
+      // args[1..] are forwarded as WASI argv.
+      //
+      // We pass the BASENAME (not "./hello") because:
+      //   1. The runtime-handler joins ctx.cwd + args[0] without
+      //      normalising "./" segments, producing "/home/user/./hello"
+      //      which the supervisor's SqliteFS doesn't recognise.
+      //   2. The basename keeps the resolved path canonical
+      //      (cwd + "hello" → "home/user/hello").
       const wasmRunnerCmd: any = await __origResolve('wasm-runner');
       if (!wasmRunnerCmd) return undefined;
+      // Compute basename from the original name. For "./hello"
+      // → "hello"; for "/abs/path/X" → "X"; for "../foo/X" → "X".
+      const nameBasename = name.split('/').pop() || name;
       return async (ctx: any): Promise<number> => {
         const userArgs: string[] = ctx.args || [];
-        const newCtx = { ...ctx, args: [name, ...userArgs] };
+        // The wasm-runner resolves against ctx.cwd. To preserve the
+        // original invocation directory (which may differ from cwd
+        // at resolve-time if cd happened during dispatch), pass an
+        // absolute path computed at resolve-time.
+        const absPath = '/' + resolved;
+        const newCtx = { ...ctx, args: [absPath, ...userArgs] };
+        // Discard nameBasename — kept here only because tooling may
+        // log argv[0]; the wasm-runner shell-handler decides the
+        // WASI argv[0] based on the resolved filename. See
+        // src/runtime/wasm-runner.ts:363 (progName).
+        void nameBasename;
         return await wasmRunnerCmd(newCtx);
       };
     };
