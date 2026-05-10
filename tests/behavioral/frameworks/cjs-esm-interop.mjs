@@ -1,55 +1,84 @@
 #!/usr/bin/env bun
-// frameworks/cjs-esm-interop — CJS↔ESM interop probe for @babel/runtime/helpers/*.
+// frameworks/cjs-esm-interop — RUNTIME-BEHAVIORAL CJS↔ESM interop probe.
 //
-// User-reported bug on prod (Markflow /write route):
-//   Uncaught TypeError: _objectWithoutPropertiesLoose2 is not a function
-//   @ /s/<sid>/preview/@modules/react-textarea-autosize:407
+// Category: R (runtime-behavioral)
 //
-// Root cause: the pre-bundle resolver picks the ESM helper file
-// (./helpers/esm/objectWithoutPropertiesLoose.js) for CJS `require()`
-// calls. The ESM file only `export { fn as default }`s. esbuild's
-// __toCommonJS wrap surfaces `{ default: fn }` to the CJS caller,
-// whose downstream code calls `_objectWithoutPropertiesLoose2(...)`
-// — the namespace as a function — and runtime-crashes.
+// User scenario this probe covers
+// ────────────────────────────────
+// A user installs a CJS-shipping npm package whose CJS source calls
+// `require('@babel/runtime/helpers/X')`. On a buggy build, Nimbus's
+// resolver picks the ESM helper for the CJS require; the ESM helper
+// only `export { fn as default }`s; esbuild's __toCommonJS wraps it
+// as `{ default: fn }`; the downstream CJS callsite invokes the
+// namespace as a function and runtime-crashes with:
 //
-// Fix shape (this commit): pass `conditions` per-resolution. esbuild's
-// `args.kind` is 'require-call' for `require()`, 'import-statement' for
-// ESM imports. CJS callers get ['require','node','browser','default'],
-// ESM callers keep ['import','module','browser','default']. The CJS
-// helper file `@babel/runtime/helpers/X.js` uses the dual-export trick
-// `module.exports = fn; module.exports.default = fn` so `__toCommonJS`
-// preserves callability.
+//   Uncaught TypeError: <helper>2 is not a function
 //
-// Probe shape:
-//   1. Install react-textarea-autosize (uses @babel/runtime/helpers).
-//   2. Start vite dev.
-//   3. Fetch /preview/@modules/react-textarea-autosize.
-//   4. Assert the bundled output's call to `_objectWithoutPropertiesLoose`
-//      references the FUNCTION, not a `{ default: fn }` namespace.
-//   5. Also fetch /preview/@modules/@babel/runtime/helpers/objectWithoutPropertiesLoose
-//      and assert it exports the function in a CJS-shaped way (or that
-//      it's served via the dual-export CJS file).
+// Affected packages: thousands. Anything compiled with @babel/preset-
+// env's transform-runtime that ships a CJS bundle. The exemplar (and
+// the user's reported bug class) is `react-textarea-autosize`.
+//
+// What this probe drives (the LITERAL user flow)
+// ──────────────────────────────────────────────
+// 1. Mint a Nimbus session, scaffold a minimal React SPA that
+//    renders <TextareaAutosize/> at top-level (NO routing — the
+//    component mounts immediately on app boot, so the bug fires
+//    during initial render).
+// 2. `npm install` + `npm run dev`. Wait for vite-ready marker.
+// 3. Open real Chrome at `BASE/s/<sid>/preview/`.
+// 4. Wait for the textarea to be in the DOM with its defaultValue
+//    propagated. The component mounting under TextareaAutosize is
+//    the bug-trigger event.
+// 5. Assert ZERO `pageerror` / runtime-error console messages.
+//
+// REPLACES the prior structural-only probe that asserted on regex
+// against /preview/@modules/react-textarea-autosize. That probe was
+// confirmed FALSE GREEN on prod eca3dca6 (2026-05-10) — workspace
+// agent reproduced the bug via real Puppeteer while it ran 5/5 GREEN.
+// See /workspace/.seal-internal/2026-05-10-probe-hardening/audit.md.
 
-import { mintSession, Terminal, sleep, stripAnsi, fetchPreview, BASE } from '../_driver.mjs';
+import {
+  launchBrowser, scaffoldAndStartVite, openPage,
+  mintSession, sleep, BASE,
+  RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
+} from '../_runtime-behavioral-template.mjs';
 
 const sid = await mintSession();
 console.log(`[cjs-esm-interop] sid=${sid} BASE=${BASE}`);
 
-const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+const indexHtml =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8"/>' +
+  '<title>CJS-ESM Interop Probe</title></head>' +
+  '<body><div id="root"></div>' +
+  '<script type="module" src="/src/main.tsx"></script>' +
+  '</body></html>';
 
-const writeFile = (path, content) => {
-  const b64 = Buffer.from(content, 'utf8').toString('base64');
-  return `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`;
-};
+const mainTsx = `
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import TextareaAutosize from 'react-textarea-autosize';
 
-await t.run('mkdir -p /home/user/cjs-probe/src', 10_000);
-await t.run('cd /home/user/cjs-probe', 10_000);
+function App() {
+  return (
+    <div>
+      <h1>CJS-ESM Interop</h1>
+      <TextareaAutosize
+        id="editor"
+        minRows={2}
+        defaultValue="TEXTAREA-OK"
+        placeholder="type here"
+      />
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<App />);
+`;
 
 const pkg = JSON.stringify({
-  name: 'cjs-probe', version: '0.0.0', type: 'module',
+  name: 'cjs-esm-interop-probe',
+  version: '0.0.0',
+  type: 'module',
   scripts: { dev: 'vite --host 0.0.0.0 --port 5173' },
   dependencies: {
     react: '^18.3.1',
@@ -58,102 +87,116 @@ const pkg = JSON.stringify({
   },
 }, null, 2);
 
-const indexHtml = `<!doctype html><html><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`;
+console.log('[cjs-esm] scaffold + install + dev...');
+const { terminal, viteReady, installTail } = await scaffoldAndStartVite(sid, {
+  workdir: 'cjs-esm-probe',
+  files: {
+    'package.json': pkg,
+    'index.html': indexHtml,
+    'src/main.tsx': mainTsx,
+  },
+});
+console.log('[cjs-esm] viteReady=', viteReady);
+console.log('[cjs-esm] install tail:', installTail.slice(-300));
 
-const mainTsx = `
-import React from 'react';
-import { createRoot } from 'react-dom/client';
-import TextareaAutosize from 'react-textarea-autosize';
-function App() { return React.createElement(TextareaAutosize, { minRows: 2 }); }
-createRoot(document.getElementById('root')).render(React.createElement(App));
-`;
+console.log('[cjs-esm] launching headless Chrome...');
+const browser = await launchBrowser();
+let appRendered = false;
+let editorPresent = null;
+let bodyText = '';
+let runtimeErrors = [];
+let consoleSummary = [];
 
-await t.run(writeFile('/home/user/cjs-probe/package.json', pkg), 15_000);
-await t.run(writeFile('/home/user/cjs-probe/index.html', indexHtml), 15_000);
-await t.run(writeFile('/home/user/cjs-probe/src/main.tsx', mainTsx), 15_000);
-
-console.log('[cjs-esm-interop] npm install...');
-const installR = await t.run('npm install', 600_000);
-const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-6).join('\n');
-
-console.log('[cjs-esm-interop] npm run dev (long-running)...');
-t.reset();
-t.cmd('npm run dev');
-let viteReady = false;
 try {
-  await t.waitFor(
-    (b) => /ready in|Nimbus Vite Dev|Local:|VITE v/i.test(b),
-    180_000,
-    'vite-ready',
-  );
-  viteReady = true;
-} catch (e) {
-  console.log('[cjs-esm-interop] vite not ready:', e?.message);
+  const ctx = await openPage(browser, sid, { waitUntil: 'load' });
+
+  console.log('[cjs-esm] navigate to /preview/...');
+  await ctx.navigatePreview('');
+
+  // Wait for the App to render (h1 + TextareaAutosize).
+  try {
+    bodyText = await ctx.waitForBodyText(
+      (t) => /CJS-ESM Interop/.test(t),
+      45_000,
+    );
+    appRendered = true;
+  } catch (e) {
+    bodyText = (await ctx.getBodyText().catch(() => '')) || `(error: ${e.message})`;
+  }
+
+  // CRITICAL: confirm TextareaAutosize actually mounted. A pageerror
+  // during mount would prevent the textarea from ending up in the DOM.
+  if (appRendered) {
+    editorPresent = await ctx.page.evaluate(() => {
+      const el = document.getElementById('editor');
+      return {
+        exists: !!el,
+        tagName: el?.tagName || null,
+        value: el?.value || null,
+      };
+    });
+  }
+
+  runtimeErrors = ctx.collectErrors();
+  consoleSummary = ctx.consoleMessages.slice(0, 12).map((m) => ({
+    type: m.type,
+    text: (m.text || '').slice(0, 280),
+  }));
+
+  await ctx.close();
+} finally {
+  await browser.close();
+  await terminal.close();
 }
-await sleep(3_000);
-
-// Fetch the bundled react-textarea-autosize module from /preview/@modules/
-const r = await fetchPreview(sid, { path: '@modules/react-textarea-autosize' });
-const txt = r.html;
-
-// Find the _objectWithoutPropertiesLoose binding in the served bundle.
-// The bug shape (RED): `var _objectWithoutPropertiesLoose2 = (init_X(), __toCommonJS(X_exports));`
-// The fix shape (GREEN): no `__toCommonJS` wrap because the require resolved
-// to the CJS file that returns the function directly. Either:
-//   (a) the bundle inlines the CJS helper and uses the function directly, OR
-//   (b) the bundle still references the helper as a CJS module but the
-//       __toCommonJS receives `{ default: fn, __esModule: true }` where
-//       module.exports IS the function and the namespace properties carry
-//       __esModule + default that point back to fn — esbuild then exposes
-//       fn as the default at the call site.
-const hasToCommonJSPattern =
-  /var\s+_?objectWithoutPropertiesLoose\w*\s*=\s*\([^)]*init_[^)]*\([^)]*\)\s*,\s*__toCommonJS\([^)]*objectWithoutPropertiesLoose[^)]*\)/.test(txt);
-
-// The downstream callsite. If GREEN, this line still says
-// `_objectWithoutPropertiesLoose2(_ref, _excluded)` but the binding
-// it references is the function, not the namespace. We assert presence
-// of a call AND absence of the broken namespace pattern.
-const hasCallSite = /_?objectWithoutPropertiesLoose\w*\(_ref/.test(txt);
-
-// Stronger signal: when GREEN, the helper file resolved should be the
-// CJS one — the bundled comment trail typically shows the file path.
-const referencesCjsHelper =
-  /helpers\/objectWithoutPropertiesLoose\.js/.test(txt);
-const referencesEsmHelper =
-  /helpers\/esm\/objectWithoutPropertiesLoose\.js/.test(txt);
-
-await t.close();
 
 const findings = {
   probe: 'cjs-esm-interop',
+  category: 'R',
   sid, base: BASE,
-  installTail,
   viteReady,
-  preview: {
-    status: r.status,
-    htmlLen: txt.length,
-    hasToCommonJSPattern,
-    hasCallSite,
-    referencesCjsHelper,
-    referencesEsmHelper,
-    snippet: (txt.match(/var\s+_?objectWithoutPropertiesLoose\w*[^;]{0,400}/) || [''])[0],
-  },
+  appRendered,
+  bodyText: bodyText.slice(0, 600),
+  editorPresent,
+  runtimeErrorCount: runtimeErrors.length,
+  runtimeErrors: runtimeErrors.slice(0, 5).map((e) => ({
+    kind: e.kind,
+    message: (e.message || e.text || '').slice(0, 600),
+    location: e.location || null,
+  })),
+  consoleHead: consoleSummary,
 };
 console.log(JSON.stringify(findings, null, 2));
 
+const errorsText = runtimeErrors.map((e) => e.message || e.text || '').join('\n');
+const errorMarker = bodyTextHasErrorMarker(errorsText, RUNTIME_ERROR_MARKERS);
+const bodyHasErrorMarker = bodyTextHasErrorMarker(bodyText, RUNTIME_ERROR_MARKERS);
+
 const checks = [
-  ['vite ready', viteReady],
-  ['module served 200', r.status === 200],
-  ['has objectWithoutPropertiesLoose callsite', hasCallSite],
-  ['NO broken __toCommonJS(namespace) wrap around objectWithoutPropertiesLoose',
-   !hasToCommonJSPattern],
-  ['references CJS helper file (the fix)', referencesCjsHelper],
+  ['vite dev server ready', viteReady],
+  ['app rendered (CJS-ESM Interop heading visible)', appRendered],
+  ['#editor textarea is in the DOM',
+    !!editorPresent?.exists && editorPresent.tagName === 'TEXTAREA',
+    editorPresent ? `editorPresent=${JSON.stringify(editorPresent)}` : '(not checked — app not rendered)'],
+  ['#editor.value === "TEXTAREA-OK" (TextareaAutosize mount succeeded)',
+    editorPresent?.value === 'TEXTAREA-OK',
+    editorPresent ? `value=${JSON.stringify(editorPresent.value)}` : ''],
+  ['NO pageerror or console.error matched runtime-error markers',
+    errorMarker === null,
+    errorMarker
+      ? `marker="${errorMarker}" first error: ${(runtimeErrors[0]?.message || runtimeErrors[0]?.text || '').slice(0, 300)}`
+      : ''],
+  ['NO error keyword in body.innerText',
+    bodyHasErrorMarker === null,
+    bodyHasErrorMarker ? `marker="${bodyHasErrorMarker}" body: ${bodyText.slice(0, 300)}` : ''],
 ];
+
 let pass = 0;
-for (const [name, ok] of checks) {
-  console.log(`  ${ok ? '✓ PASS' : '✗ FAIL'}  ${name}`);
+for (const c of checks) {
+  const [name, ok, detail] = c;
+  console.log(`  ${ok ? '✓ PASS' : '✗ FAIL'}  ${name}${ok ? '' : (detail ? ' — ' + detail : '')}`);
   if (ok) pass++;
 }
+
 const verdict = pass === checks.length ? 'GREEN' : 'RED';
 console.log(`\n[cjs-esm-interop] ${verdict} — ${pass}/${checks.length} checks`);
 process.exit(verdict === 'GREEN' ? 0 : 1);

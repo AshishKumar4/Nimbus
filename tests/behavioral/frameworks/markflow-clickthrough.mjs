@@ -1,51 +1,112 @@
 #!/usr/bin/env bun
-// frameworks/markflow-clickthrough — Markflow click-then-render bug repro.
+// frameworks/markflow-clickthrough — RUNTIME-BEHAVIORAL Markflow click probe.
 //
-// User-reported on prod (commit 1b07884): Markflow homepage loads fine
-// (title "MarkFlow", #root mounted) but clicking "Start Writing" →
-// /write crashes the preview with:
+// Category: R (runtime-behavioral)
 //
+// User scenario this probe covers
+// ────────────────────────────────
+// Markflow user lands on the homepage (renders fine, "MarkFlow" h1
+// visible). User clicks "Start Writing" → SPA route changes to /write
+// → `<Write>` component mounts → `<TextareaAutosize>` renders.
+// On a buggy build the click triggers in the iframe:
 //   Uncaught TypeError: _objectWithoutPropertiesLoose2 is not a function
-//   @ /preview/@modules/react-textarea-autosize:407
+//   @ /s/<sid>/preview/@modules/react-textarea-autosize:407
+// Verbatim user-reported on prod commit 1b07884 / 8be64fd.
 //
-// We can't actually drive a click in this driver (no real browser).
-// The bug is in the BUNDLED module, not in render-time DOM interaction.
-// So: fetch the rendered HTML of /preview/@modules/react-textarea-autosize
-// and assert the bundle:
-//   1. Has the runtime function-call shape preserved (the actual import
-//      resolves to a callable, not a namespace object).
-//   2. Does NOT contain the broken `__toCommonJS(objectWithoutPropertiesLoose_exports)`
-//      wrap shape that the prior bug emitted.
-//   3. Also fetch the home page HTML AND simulate a router-state change
-//      by fetching /preview/write — the SPA's vite dev server should serve
-//      the same HTML shell (client-side routing).
+// What this probe drives (the LITERAL user flow)
+// ──────────────────────────────────────────────
+// 1. Mint a Nimbus session, scaffold a minimal Markflow-shaped SPA
+//    (BrowserRouter + react-router-dom + react-textarea-autosize).
+// 2. `npm install` + `npm run dev`. Wait for vite-ready marker.
+// 3. Open a real Chrome (puppeteer-core, system Chrome 148) and
+//    navigate to `BASE/s/<sid>/preview/`.
+// 4. Wait for the Home component to render (body.innerText contains
+//    "MarkFlow" and "Start Writing").
+// 5. Click `#start-writing`. The Link routes to `/write`.
+// 6. Wait for the Write component to render (body.innerText contains
+//    "Write Page" and the textarea is in the DOM).
+// 7. Assert that the page captured ZERO `pageerror` events AND no
+//    console.error matching the runtime-error keyword family
+//    (TypeError, "is not a function", _objectWithoutPropertiesLoose2,
+//    etc.).
 //
-// This is the "would clicking 'Start Writing' work" assertion at the
-// module-bundling layer — the only layer the bug actually lives in.
-// A separate v2 of this probe will add real browser-driven clickthrough
-// when the framework-validation wave is followed up with a Puppeteer-
-// equivalent driver.
+// Pass/fail signal: real Chrome's runtime behaviour. The probe goes
+// RED iff a real user would see a broken thing.
+//
+// REPLACES the prior structural-only probe that asserted on regex
+// against /preview/@modules/react-textarea-autosize. That probe was
+// confirmed FALSE GREEN on prod eca3dca6 (2026-05-10) — workspace
+// agent reproduced the bug via real Puppeteer while this probe ran
+// 7/7 GREEN. See /workspace/.seal-internal/2026-05-10-probe-hardening/
+// audit.md.
 
-import { mintSession, Terminal, sleep, stripAnsi, fetchPreview, BASE } from '../_driver.mjs';
+import {
+  launchBrowser, scaffoldAndStartVite, openPage,
+  mintSession, sleep, BASE,
+  RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
+} from '../_runtime-behavioral-template.mjs';
 
 const sid = await mintSession();
 console.log(`[markflow-clickthrough] sid=${sid} BASE=${BASE}`);
 
-const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+// ── Project files ────────────────────────────────────────────────────
+// JSX form for both `<BrowserRouter>` and routes — Nimbus's
+// router-basename auto-injector recognises JSX (and factory call)
+// patterns; the prior probe used `React.createElement(BrowserRouter,
+// null, ...)` which is neither, so basename was never injected and
+// `No routes matched location "/s/<sid>/preview/"` fired before the
+// click could even reach the textarea-autosize component. JSX is
+// what real apps use.
 
-const writeFile = (path, content) => {
-  const b64 = Buffer.from(content, 'utf8').toString('base64');
-  return `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`;
-};
+const indexHtml =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8"/>' +
+  '<title>Markflow Clickthrough Probe</title></head>' +
+  '<body><div id="root"></div>' +
+  '<script type="module" src="/src/main.tsx"></script>' +
+  '</body></html>';
 
-await t.run('mkdir -p /home/user/mf/src', 10_000);
-await t.run('cd /home/user/mf', 10_000);
+const mainTsx = `
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import TextareaAutosize from 'react-textarea-autosize';
+
+function Home() {
+  return (
+    <div>
+      <h1>MarkFlow</h1>
+      <Link id="start-writing" to="/write">Start Writing</Link>
+    </div>
+  );
+}
+
+function Write() {
+  return (
+    <div>
+      <h1>Write Page</h1>
+      <TextareaAutosize id="editor" minRows={2} defaultValue="TEXTAREA-OK" />
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/write" element={<Write />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<App />);
+`;
 
 const pkg = JSON.stringify({
-  name: 'mf', version: '0.0.0', type: 'module',
+  name: 'markflow-clickthrough-probe',
+  version: '0.0.0',
+  type: 'module',
   scripts: { dev: 'vite --host 0.0.0.0 --port 5173' },
   dependencies: {
     react: '^18.3.1',
@@ -55,116 +116,175 @@ const pkg = JSON.stringify({
   },
 }, null, 2);
 
-const indexHtml = `<!doctype html><html><head><title>MarkFlow Mini</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`;
+// ── Phase 1: scaffold + npm install + vite dev ───────────────────────
+console.log('[markflow] scaffold + install + dev...');
+const { terminal, viteReady, installTail } = await scaffoldAndStartVite(sid, {
+  workdir: 'mf-probe',
+  files: {
+    'package.json': pkg,
+    'index.html': indexHtml,
+    'src/main.tsx': mainTsx,
+  },
+});
+console.log('[markflow] viteReady=', viteReady);
+console.log('[markflow] install tail:', installTail.slice(-300));
 
-// SPA with two routes: '/' (Home) + '/write' (uses react-textarea-autosize).
-// On '/write' the textarea-autosize component mounts and triggers the
-// _objectWithoutPropertiesLoose call site that was crashing.
-const mainTsx = `
-import React from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
-import TextareaAutosize from 'react-textarea-autosize';
+// ── Phase 2: real Chrome + iframe drive ──────────────────────────────
+console.log('[markflow] launching headless Chrome...');
+const browser = await launchBrowser();
+let findings;
+let homeText = '';
+let writeText = '';
+let runtimeErrors = [];
+let consoleSummary = [];
+let homeRendered = false;
+let clickSucceeded = false;
+let writeRendered = false;
+let urlAfterClick = '';
 
-function Home() {
-  return React.createElement('div', null,
-    React.createElement('h1', null, 'MarkFlow'),
-    React.createElement(Link, { to: '/write', id: 'start-writing' }, 'Start Writing'),
-  );
-}
-function Write() {
-  return React.createElement('div', null,
-    React.createElement('h1', null, 'Write'),
-    React.createElement(TextareaAutosize, { minRows: 2, id: 'editor' }),
-  );
-}
-function App() {
-  return React.createElement(BrowserRouter, null,
-    React.createElement(Routes, null,
-      React.createElement(Route, { path: '/preview', element: React.createElement(Home) }),
-      React.createElement(Route, { path: '/preview/write', element: React.createElement(Write) }),
-      React.createElement(Route, { path: '/', element: React.createElement(Home) }),
-      React.createElement(Route, { path: '/write', element: React.createElement(Write) }),
-    ),
-  );
-}
-createRoot(document.getElementById('root')).render(React.createElement(App));
-`;
-
-await t.run(writeFile('/home/user/mf/package.json', pkg), 15_000);
-await t.run(writeFile('/home/user/mf/index.html', indexHtml), 15_000);
-await t.run(writeFile('/home/user/mf/src/main.tsx', mainTsx), 15_000);
-
-console.log('[markflow] npm install...');
-await t.run('npm install', 600_000);
-
-console.log('[markflow] npm run dev...');
-t.reset();
-t.cmd('npm run dev');
-let viteReady = false;
 try {
-  await t.waitFor(
-    (b) => /ready in|Nimbus Vite Dev|Local:|VITE v/i.test(b),
-    180_000,
-    'vite-ready',
-  );
-  viteReady = true;
-} catch (e) {
-  console.log('[markflow] vite not ready:', e?.message);
+  const ctx = await openPage(browser, sid, { waitUntil: 'load' });
+
+  console.log('[markflow] navigate to /preview/...');
+  const homeNav = await ctx.navigatePreview('');
+  console.log('[markflow] home nav status:', homeNav.status);
+
+  // Phase 2a: wait until the Home component has rendered. The
+  // injected basename means router routes against the /preview/...
+  // path; "MarkFlow" text appears once <Home /> mounts.
+  try {
+    homeText = await ctx.waitForBodyText(
+      (t) => /MarkFlow/.test(t) && /Start Writing/.test(t),
+      45_000,
+    );
+    homeRendered = true;
+  } catch (e) {
+    homeText = (await ctx.getBodyText().catch(() => '')) || `(error: ${e.message})`;
+  }
+
+  // Phase 2b: click "Start Writing" — this is the bug-trigger event.
+  // On a buggy build, the click immediately renders <Write /> which
+  // mounts <TextareaAutosize />, and TextareaAutosize's hydration
+  // path crashes.
+  if (homeRendered) {
+    try {
+      await ctx.clickSelector('#start-writing', { timeoutMs: 10_000 });
+      clickSucceeded = true;
+    } catch (e) {
+      consoleSummary.push(`click failed: ${e.message}`);
+    }
+  }
+
+  // Phase 2c: wait for Write to render (or for runtime errors to
+  // accumulate). Bounded; success = "Write Page" + textarea visible
+  // AND no runtime errors. We require BOTH the heading AND the
+  // textarea element with its defaultValue in the DOM — the bug
+  // fires DURING TextareaAutosize's mount, so the textarea would
+  // be missing from the DOM if the bug fires.
+  if (clickSucceeded) {
+    try {
+      writeText = await ctx.waitForBodyText(
+        (t) => /Write Page/.test(t),
+        30_000,
+      );
+      // Confirm the textarea is actually in the DOM and the user-supplied
+      // defaultValue made it through TextareaAutosize. This is the
+      // actual contract: the COMPONENT mounted, not just a heading.
+      const editorPresent = await ctx.page.evaluate(() => {
+        const el = document.getElementById('editor');
+        return {
+          exists: !!el,
+          tagName: el?.tagName || null,
+          value: el?.value || null,
+          defaultValue: el?.defaultValue || null,
+        };
+      });
+      writeRendered =
+        /Write Page/.test(writeText) &&
+        editorPresent.exists &&
+        editorPresent.tagName === 'TEXTAREA' &&
+        editorPresent.value === 'TEXTAREA-OK';
+      // Stash the editor inspection in writeText so the JSON dump
+      // documents what we observed.
+      writeText = writeText + '\n[editor: ' + JSON.stringify(editorPresent) + ']';
+    } catch (e) {
+      writeText = (await ctx.getBodyText().catch(() => '')) || `(error: ${e.message})`;
+    }
+  }
+
+  urlAfterClick = await ctx.currentUrl();
+  runtimeErrors = ctx.collectErrors();
+  consoleSummary = consoleSummary.concat(ctx.consoleMessages.slice(0, 30).map((m) => ({
+    type: m.type,
+    text: (m.text || '').slice(0, 280),
+  })));
+
+  await ctx.close();
+} finally {
+  await browser.close();
+  await terminal.close();
 }
-await sleep(3_000);
 
-// Fetch preview / (home page) — should return the index.html shell
-const home = await fetchPreview(sid);
-
-// Fetch the react-textarea-autosize bundle — this is the URL the
-// browser hits when /write mounts the component
-const rta = await fetchPreview(sid, { path: '@modules/react-textarea-autosize' });
-
-// Find the broken pattern in the bundle
-const brokenWrap =
-  /var\s+_?objectWithoutPropertiesLoose\w*\s*=\s*\([^)]*init_[^)]*\([^)]*\)\s*,\s*__toCommonJS\([^)]*objectWithoutPropertiesLoose[^)]*\)/.test(rta.html);
-const hasCallSite = /_?objectWithoutPropertiesLoose\w*\(_ref/.test(rta.html);
-
-// Also fetch the helper directly
-const helper = await fetchPreview(sid, { path: '@modules/@babel/runtime/helpers/objectWithoutPropertiesLoose' });
-// In the GREEN shape (CJS-resolved helper), the bundled output should
-// declare `_objectWithoutPropertiesLoose` as a function or a default
-// export carrying a function — NOT a namespace with __esModule:true and
-// default a function (which causes the __toCommonJS confusion).
-// Practical test: look for the function body itself in the served code.
-const helperHasFnBody =
-  /function _objectWithoutPropertiesLoose/.test(helper.html);
-
-await t.close();
-
-const findings = {
+// ── Verdict ──────────────────────────────────────────────────────────
+findings = {
   probe: 'markflow-clickthrough',
+  category: 'R',
   sid, base: BASE,
   viteReady,
-  home: { status: home.status, htmlLen: home.html.length, htmlHead: home.html.slice(0, 500) },
-  rta:  { status: rta.status,  htmlLen: rta.html.length },
-  helper: { status: helper.status, htmlLen: helper.html.length, head: helper.html.slice(0, 600) },
-  brokenWrap,
-  hasCallSite,
-  helperHasFnBody,
+  homeRendered,
+  homeText: homeText.slice(0, 600),
+  clickSucceeded,
+  writeRendered,
+  writeText: writeText.slice(0, 600),
+  urlAfterClick,
+  runtimeErrorCount: runtimeErrors.length,
+  runtimeErrors: runtimeErrors.slice(0, 5).map((e) => ({
+    kind: e.kind,
+    message: (e.message || e.text || '').slice(0, 600),
+    location: e.location || null,
+  })),
+  consoleHead: consoleSummary.slice(0, 12),
 };
 console.log(JSON.stringify(findings, null, 2));
 
+// ── Asserts ──────────────────────────────────────────────────────────
+//
+// The bug fires DURING the /write render. Test specifically rejects:
+//   1. pageerror events captured (Uncaught TypeError etc.)
+//   2. console.error containing a runtime-error keyword
+//   3. "Preview crashed" text in body innerText
+//   4. body innerText with TypeError fragments
+//
+// The pre-render assertions (vite ready, home rendered, click
+// succeeded) are gating preconditions — the runtime assertions
+// only matter if the user could have reached the click.
+
+const errorsText = runtimeErrors.map((e) => e.message || e.text || '').join('\n');
+const errorMarker = bodyTextHasErrorMarker(errorsText, RUNTIME_ERROR_MARKERS);
+const writeBodyHasErrorMarker = bodyTextHasErrorMarker(writeText, RUNTIME_ERROR_MARKERS);
+
 const checks = [
-  ['vite ready',                                    viteReady],
-  ['home GET 200',                                  home.status === 200],
-  ['home contains <div id="root">',                 /<div\s+id=["']root["']/.test(home.html)],
-  ['rta bundle GET 200',                            rta.status === 200],
-  ['rta has objectWithoutPropertiesLoose callsite', hasCallSite],
-  ['rta NO broken __toCommonJS wrap',               !brokenWrap],
-  ['helper served with function body',              helperHasFnBody],
+  ['vite dev server ready', viteReady],
+  ['home page rendered (MarkFlow + Start Writing)', homeRendered],
+  ['click on #start-writing succeeded', clickSucceeded],
+  ['/write page rendered (heading + #editor textarea + defaultValue propagated)',
+    writeRendered,
+    writeRendered ? '' : `writeText=${writeText.slice(0, 400)}`],
+  ['NO pageerror or console.error matched runtime-error markers',
+    errorMarker === null,
+    errorMarker ? `marker="${errorMarker}" first error: ${(runtimeErrors[0]?.message || runtimeErrors[0]?.text || '').slice(0, 300)}` : ''],
+  ['NO error keyword in body.innerText',
+    writeBodyHasErrorMarker === null,
+    writeBodyHasErrorMarker ? `marker="${writeBodyHasErrorMarker}" body: ${writeText.slice(0, 300)}` : ''],
 ];
+
 let pass = 0;
-for (const [name, ok] of checks) {
-  console.log(`  ${ok ? '✓ PASS' : '✗ FAIL'}  ${name}`);
+for (const c of checks) {
+  const [name, ok, detail] = c;
+  console.log(`  ${ok ? '✓ PASS' : '✗ FAIL'}  ${name}${ok ? '' : (detail ? ' — ' + detail : '')}`);
   if (ok) pass++;
 }
+
 const verdict = pass === checks.length ? 'GREEN' : 'RED';
 console.log(`\n[markflow-clickthrough] ${verdict} — ${pass}/${checks.length} checks`);
 process.exit(verdict === 'GREEN' ? 0 : 1);
