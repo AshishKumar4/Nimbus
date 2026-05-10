@@ -84,6 +84,21 @@ export interface InstallBatchResult {
     pipelinedTarballRaceWins: number;
     pipelinedTarballRaceLosses: number;
   };
+  /**
+   * cache-obs-2: per-tier cache events captured during this batch.
+   *
+   * Each entry records a single L2/L3/L4 hit-or-miss observed when
+   * fetching a tarball. L2/L3 events flow up from the supervisor RPC
+   * return values (getCachedTarball.events); L4 events are pushed
+   * directly by the facet after a successful registry fetch.
+   *
+   * Folded into the DO-side cache-stats singleton by installer.ts via
+   * recordCacheStatEvents — same pattern as recordR2RaceCounters.
+   */
+  cacheStatEvents: Array<
+    | { kind: 'hit'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'tarball'; bytes: number }
+    | { kind: 'miss'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'tarball' }
+  >;
 }
 
 // ── Facet function ──────────────────────────────────────────────────────
@@ -105,9 +120,26 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // Optional in the type so the facet keeps working against pre-W7
       // supervisors via the typeof-guarded fallback at the call site.
       writeBatchStream?: (stream: ReadableStream<Uint8Array>) => Promise<{ inodes: number; chunks: number }>;
-      // [W4] Optional R2-cache RPC. Soft-fail via typeof checks below
-      // so this facet keeps working against older deployed supervisors.
-      getCachedTarball?: (name: string, version: string) => Promise<Uint8Array | null>;
+      // [W4 + cache-obs-2] Optional R2-cache RPC. Return shape evolved:
+      //   v1 (deployed): Uint8Array | null
+      //   cache-obs-2:   { bytes: Uint8Array | null, events: ... }
+      // The facet adapts to BOTH shapes via runtime check (older
+      // supervisor deployments still return the v1 bare bytes shape).
+      // Once main has cache-obs-2 for >7d we can drop the v1 branch.
+      getCachedTarball?: (
+        name: string,
+        version: string,
+      ) => Promise<
+        | Uint8Array
+        | null
+        | {
+            bytes: Uint8Array | null;
+            events: Array<
+              | { kind: 'hit'; tier: string; cacheKind: string; bytes: number }
+              | { kind: 'miss'; tier: string; cacheKind: string }
+            >;
+          }
+      >;
       putCachedTarball?: (name: string, version: string, bytes: Uint8Array | ArrayBuffer) => Promise<boolean>;
     };
   },
@@ -162,6 +194,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
   let pipelinedTarballRaceWins = 0;
   let pipelinedTarballRaceLosses = 0;
+  // cache-obs-2: per-tier event accumulator. Filled in the L2/L3
+  // (supervisor RPC return.events) and L4 (post-network-fetch)
+  // branches. Returned in result.cacheStatEvents at the end of the
+  // batch. installer.ts folds these into the DO-side cache-stats
+  // singleton via recordCacheStatEvents — same pattern as
+  // recordR2RaceCounters at installer.ts:1168.
+  const cacheStatEvents: InstallBatchResult['cacheStatEvents'] = [];
 
   // ── [COORDINATOR-OVERLOAD P0a wave 2] Shared flush buffer ────────────
   //
@@ -266,7 +305,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // (older supervisor deployment), the R2 leg becomes a noop and
       // we go straight to the network path with no overhead.
       const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
-      const r2P: Promise<Uint8Array | null> = r2Available
+      // cache-obs-2: supervisor return shape evolved from `Uint8Array
+      // | null` to `{ bytes, events }`. The race wrapper handles both:
+      // a v1 supervisor returns bare bytes (or null); a v2 supervisor
+      // returns the envelope. The downstream code only needs `bytes`
+      // — the envelope's events are spliced into cacheStatEvents.
+      const r2P: Promise<
+        | Uint8Array
+        | null
+        | { bytes: Uint8Array | null; events: any[] }
+      > = r2Available
         ? Promise.race([
             env.SUPERVISOR.getCachedTarball!(spec.name, spec.version),
             new Promise<null>((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
@@ -284,7 +332,37 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // 1b. Try R2 first (bounded wait).
       if (r2Available) {
         try {
-          r2HitBytes = await r2P;
+          const r2Result = await r2P;
+          // Adapt to BOTH supervisor return shapes:
+          //   v1: Uint8Array | null
+          //   v2: { bytes: Uint8Array | null, events: [...] }
+          if (r2Result && typeof r2Result === 'object' && !(r2Result instanceof Uint8Array)) {
+            const env2 = r2Result as { bytes: Uint8Array | null; events: any[] };
+            r2HitBytes = env2.bytes;
+            // cache-obs-2: splice supervisor's per-tier events into
+            // the facet's accumulator. Filter to known tiers/kinds
+            // so a future supervisor schema change doesn't poison
+            // the result.
+            if (Array.isArray(env2.events)) {
+              for (const e of env2.events) {
+                if (!e || (e.kind !== 'hit' && e.kind !== 'miss')) continue;
+                if (e.tier !== 'L2' && e.tier !== 'L3') continue;
+                if (e.cacheKind !== 'tarball') continue;
+                if (e.kind === 'hit') {
+                  cacheStatEvents.push({
+                    kind: 'hit',
+                    tier: e.tier,
+                    cacheKind: 'tarball',
+                    bytes: typeof e.bytes === 'number' ? e.bytes : 0,
+                  });
+                } else {
+                  cacheStatEvents.push({ kind: 'miss', tier: e.tier, cacheKind: 'tarball' });
+                }
+              }
+            }
+          } else {
+            r2HitBytes = r2Result as Uint8Array | null;
+          }
         } catch {
           r2HitBytes = null;
         }
@@ -399,6 +477,25 @@ export const installPackagesInFacet = async function installPackagesInFacet(
             errorText: 'no response body',
           };
         }
+
+        // cache-obs-2: record the L4 (registry.npmjs.org) hit. We're
+        // about to stream the body — the byte count is known either
+        // via the response's Content-Length header OR we can sum it
+        // as we read. Prefer the header for accuracy (it's the
+        // authoritative size); fall back to 0 when missing (some
+        // registry mirrors omit it for chunked responses).
+        const l4ContentLength = (() => {
+          const cl = resp.headers.get('content-length');
+          if (!cl) return 0;
+          const n = parseInt(cl, 10);
+          return Number.isFinite(n) && n > 0 ? n : 0;
+        })();
+        cacheStatEvents.push({
+          kind: 'hit',
+          tier: 'L4',
+          cacheKind: 'tarball',
+          bytes: l4ContentLength,
+        });
 
         // 2. Integrity verify (if supplied) AND capture bytes for R2 write-back.
         if (spec.integrity && spec.integrity.indexOf('-') !== -1) {
@@ -609,5 +706,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       pipelinedTarballRaceWins,
       pipelinedTarballRaceLosses,
     },
+    cacheStatEvents,
   };
 };

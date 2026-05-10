@@ -127,6 +127,25 @@ export interface ResolveOneResult {
   packumentBytesDecoded: number;
   packumentSource: 'cache-hit' | 'r2-cache' | 'network' | 'skipped';
   /**
+   * cache-obs-2: per-tier cache events captured during this resolve.
+   *
+   * Each entry records a single L2/L3/L4 hit-or-miss observed when
+   * fetching the packument. L2/L3 events flow from the supervisor RPC
+   * return (getCachedPackument.events). L4 events are pushed when the
+   * resolver itself fetches from registry.npmjs.org.
+   *
+   * Folded into the DO-side cache-stats singleton by installer.ts via
+   * recordCacheStatEvents on the resolveTree-via-facet return path
+   * (same pattern as recordR2RaceCounters).
+   *
+   * Optional in the type to keep the wire compatible with older
+   * resolver-facet bundles; default to [] when consumed supervisor-side.
+   */
+  cacheStatEvents?: Array<
+    | { kind: 'hit'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument'; bytes: number }
+    | { kind: 'miss'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument' }
+  >;
+  /**
    * W6 reject. The supervisor inspects this and either propagates
    * (regular path) or silent-skips (X.5-drizzle best-effort path) —
    * the task doesn't see bestEffortNames.
@@ -150,8 +169,22 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   spec: ResolveOneSpec,
   env: {
     SUPERVISOR: {
-      // [W4] Optional R2 packument cache. Soft-fail via typeof checks.
-      getCachedPackument?: (name: string) => Promise<{ json: string; ageMs: number; expired: boolean } | null>;
+      // [W4 + cache-obs-2] Optional R2 packument cache. Return shape
+      // evolved (v1: bare cached-or-null; v2: { cached, events }).
+      // Soft-fail via typeof checks; accept either shape at runtime.
+      getCachedPackument?: (
+        name: string,
+      ) => Promise<
+        | { json: string; ageMs: number; expired: boolean }
+        | null
+        | {
+            cached: { json: string; ageMs: number; expired: boolean } | null;
+            events: Array<
+              | { kind: 'hit'; tier: string; cacheKind: string; bytes: number }
+              | { kind: 'miss'; tier: string; cacheKind: string }
+            >;
+          }
+      >;
       putCachedPackument?: (name: string, json: string) => Promise<boolean>;
     };
   },
@@ -159,6 +192,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const messages: string[] = [];
   const events: FacetRegistryEvent[] = [];
   const cacheWrites: any[] = [];
+  // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
+  // (spliced from supervisor RPC return.events) and the L4 path
+  // (post-network-fetch). Threaded through `out()` into the result.
+  const cacheStatEvents: ResolveOneResult['cacheStatEvents'] = [];
   const out = (
     pkg: ResolvedPackage | null,
     bytes: number,
@@ -175,6 +212,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     events,
     packumentBytesDecoded: bytes,
     packumentSource: source,
+    cacheStatEvents,
     error,
   });
 
@@ -268,7 +306,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const totalRetries = Math.max(0, spec.retries ?? 3);
   const fetchTimeoutMs = spec.fetchTimeoutMs ?? 15_000;
 
-  // [W4] R2 race.
+  // [W4 + cache-obs-2] R2 race. Adapts to either supervisor return
+  // shape: v1 bare `{json, ageMs, expired} | null` OR v2 envelope
+  // `{ cached, events }`.
   let packumentText: string | null = null;
   let packumentSource: ResolveOneResult['packumentSource'] = 'network';
   if (env?.SUPERVISOR && typeof env.SUPERVISOR.getCachedPackument === 'function') {
@@ -277,9 +317,39 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         env.SUPERVISOR.getCachedPackument!(effName),
         new Promise<null>((rs) => setTimeout(() => rs(null), R2_RACE_MS)),
       ]).catch(() => null);
-      const r2 = await r2P;
-      if (r2 && !r2.expired && r2.json) {
-        packumentText = r2.json as string;
+      const r2Raw = await r2P;
+      // Adapt to BOTH shapes.
+      let cachedEntry: { json: string; ageMs: number; expired: boolean } | null = null;
+      if (r2Raw && typeof r2Raw === 'object') {
+        if ('cached' in r2Raw && 'events' in r2Raw) {
+          // v2 envelope
+          cachedEntry = (r2Raw as any).cached;
+          // Splice supervisor's L2/L3 events into our accumulator.
+          const supEvents = (r2Raw as any).events;
+          if (Array.isArray(supEvents)) {
+            for (const e of supEvents) {
+              if (!e || (e.kind !== 'hit' && e.kind !== 'miss')) continue;
+              if (e.tier !== 'L2' && e.tier !== 'L3') continue;
+              if (e.cacheKind !== 'packument') continue;
+              if (e.kind === 'hit') {
+                cacheStatEvents!.push({
+                  kind: 'hit',
+                  tier: e.tier,
+                  cacheKind: 'packument',
+                  bytes: typeof e.bytes === 'number' ? e.bytes : 0,
+                });
+              } else {
+                cacheStatEvents!.push({ kind: 'miss', tier: e.tier, cacheKind: 'packument' });
+              }
+            }
+          }
+        } else if ('json' in r2Raw) {
+          // v1 bare shape
+          cachedEntry = r2Raw as any;
+        }
+      }
+      if (cachedEntry && !cachedEntry.expired && cachedEntry.json) {
+        packumentText = cachedEntry.json;
         packumentSource = 'r2-cache';
       }
     } catch { /* best-effort, fall through */ }
@@ -300,6 +370,14 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         }
         if (resp.ok) {
           packumentText = await resp.text();
+          // cache-obs-2: record the L4 hit. byte count is the
+          // packument JSON length (authoritative, post-read).
+          cacheStatEvents!.push({
+            kind: 'hit',
+            tier: 'L4',
+            cacheKind: 'packument',
+            bytes: packumentText.length,
+          });
           // [W4] Best-effort R2 write-back. Awaited per W4-plan §11.
           if (env?.SUPERVISOR && typeof env.SUPERVISOR.putCachedPackument === 'function') {
             try { await env.SUPERVISOR.putCachedPackument(effName, packumentText); } catch { /* swallow */ }

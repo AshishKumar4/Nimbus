@@ -143,6 +143,16 @@ export interface ResolveFacetResult {
     pipelinedPackumentRaceWins: number;
     pipelinedPackumentRaceLosses: number;
   };
+  /**
+   * cache-obs-2: per-tier cache events for the packument tier
+   * (L2/L3 spliced from supervisor RPC return; L4 from registry
+   * fetches). Folded supervisor-side in installer.ts via
+   * recordCacheStatEvents.
+   */
+  cacheStatEvents: Array<
+    | { kind: 'hit'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument'; bytes: number }
+    | { kind: 'miss'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument' }
+  >;
   /** Wall-clock elapsed inside the facet. */
   elapsed: number;
   /** Cache writes the facet flushed back via env.SUPERVISOR.putRegistryEntries. */
@@ -171,9 +181,21 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   env: {
     SUPERVISOR: {
       putRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }>;
-      // [W4] Optional R2 packument cache. Soft-fail via typeof checks
-      // below so this facet keeps working against older deployments.
-      getCachedPackument?: (name: string) => Promise<{ json: string; ageMs: number; expired: boolean } | null>;
+      // [W4 + cache-obs-2] Optional R2 packument cache. Return shape
+      // evolved (v1 bare; v2 envelope). Soft-fail via typeof checks.
+      getCachedPackument?: (
+        name: string,
+      ) => Promise<
+        | { json: string; ageMs: number; expired: boolean }
+        | null
+        | {
+            cached: { json: string; ageMs: number; expired: boolean } | null;
+            events: Array<
+              | { kind: 'hit'; tier: string; cacheKind: string; bytes: number }
+              | { kind: 'miss'; tier: string; cacheKind: string }
+            >;
+          }
+      >;
       putCachedPackument?: (name: string, json: string) => Promise<boolean>;
     };
   },
@@ -212,6 +234,9 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
   // recordR2RaceCounters() in npm-installer.
   let pipelinedPackumentRaceWins = 0;
   let pipelinedPackumentRaceLosses = 0;
+  // cache-obs-2: per-tier event accumulator (L2/L3 from supervisor
+  // RPC return.events; L4 from local registry fetches).
+  const cacheStatEvents: ResolveFacetResult['cacheStatEvents'] = [];
 
   // [W4] Cap on how long we wait for an R2 packument GET before
   // committing to the network response. 250 ms covers typical regional
@@ -380,19 +405,46 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
     const r2Available = typeof env.SUPERVISOR.getCachedPackument === 'function';
     if (r2Available) {
       try {
-        const r2P = Promise.race([
+        const r2P = Promise.race<any>([
           env.SUPERVISOR.getCachedPackument!(name),
           new Promise<null>((rs) => setTimeout(() => rs(null), R2_PACKUMENT_RACE_TIMEOUT_MS)),
         ]).catch(() => null);
-        const r2 = await r2P;
-        if (r2 && !r2.expired && r2.json) {
+        const r2Raw = await r2P;
+        // cache-obs-2: adapt to BOTH supervisor return shapes.
+        let cachedEntry: { json: string; ageMs: number; expired: boolean } | null = null;
+        if (r2Raw && typeof r2Raw === 'object') {
+          if ('cached' in r2Raw && 'events' in r2Raw) {
+            cachedEntry = (r2Raw as any).cached;
+            const supEvents = (r2Raw as any).events;
+            if (Array.isArray(supEvents)) {
+              for (const e of supEvents) {
+                if (!e || (e.kind !== 'hit' && e.kind !== 'miss')) continue;
+                if (e.tier !== 'L2' && e.tier !== 'L3') continue;
+                if (e.cacheKind !== 'packument') continue;
+                if (e.kind === 'hit') {
+                  cacheStatEvents.push({
+                    kind: 'hit',
+                    tier: e.tier,
+                    cacheKind: 'packument',
+                    bytes: typeof e.bytes === 'number' ? e.bytes : 0,
+                  });
+                } else {
+                  cacheStatEvents.push({ kind: 'miss', tier: e.tier, cacheKind: 'packument' });
+                }
+              }
+            }
+          } else if ('json' in r2Raw) {
+            cachedEntry = r2Raw as any;
+          }
+        }
+        if (cachedEntry && !cachedEntry.expired && cachedEntry.json) {
           pipelinedPackumentRaceWins++;
-          lastPackumentBytes = r2.json.length;
+          lastPackumentBytes = cachedEntry.json.length;
           lastPackumentName = name;
-          cumulativeBytesDecoded += r2.json.length;
+          cumulativeBytesDecoded += cachedEntry.json.length;
           packumentsDecoded++;
           try {
-            return JSON.parse(r2.json);
+            return JSON.parse(cachedEntry.json);
           } catch {
             // Malformed cache entry: fall through to network.
             messages.push(`[resolve-facet] ${name}: malformed R2 packument; falling through`);
@@ -417,6 +469,13 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
             lastPackumentName = name;
             cumulativeBytesDecoded += text.length;
             packumentsDecoded++;
+            // cache-obs-2: record L4 hit (registry.npmjs.org fetched).
+            cacheStatEvents.push({
+              kind: 'hit',
+              tier: 'L4',
+              cacheKind: 'packument',
+              bytes: text.length,
+            });
             // [W4] Write back to R2 cache (best-effort, non-blocking).
             // The packument JSON gets a 5-minute TTL via supervisor.
             // We DO await this RPC: per W4-plan §11 finding #2, the
@@ -854,6 +913,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       pipelinedPackumentRaceWins,
       pipelinedPackumentRaceLosses,
     },
+    cacheStatEvents,
     elapsed: Date.now() - t0,
     cacheWriteCount: totalCacheWrites,
   };

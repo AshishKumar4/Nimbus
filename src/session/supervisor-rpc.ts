@@ -44,39 +44,32 @@ import {
 // handler. Same pattern as recordR2RaceCounters / install-batch-facet.
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
 
-type _CacheStatEvent =
+/**
+ * Per-call cache-stat event surfaced from supervisor R2CacheClient to
+ * the calling facet. Discriminated union so the facet can fold each
+ * event into a structured-clone-safe wire format.
+ *
+ * cache-obs-2: lifted out of supervisor-rpc.ts and now part of the
+ * RPC return shape (was drained-and-discarded in v1).
+ */
+export type SupervisorCacheStatEvent =
   | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
   | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
 
 /**
- * Drain (and discard) cache-stat events captured by R2CacheClient.
+ * Drain the per-call event list captured by R2CacheClient during this
+ * SupervisorRPC call.
  *
- * CACHE-OBSERVABILITY WAVE — HONEST LIMITATION:
+ * cache-obs-2 (the v2 fold-side flip):
+ *   We RETURN the drained events to the facet so they propagate via
+ *   the install-batch-facet result -> installer.ts fold -> DO
+ *   singleton path. No recursion (return-value flow, not subrequest).
  *
- * The instrumentation in src/npm/r2-cache.ts accumulates per-call L2/
- * L3 events here (in the SupervisorRPC WorkerEntrypoint isolate).
- * Forwarding those events to the DO singleton (where /api/_diag/cache
- * reads) triggered workerd's recursion guard mid-install because the
- * call stack is already DO -> SupervisorRPC -> here, and forwarding
- * back to the same DO is recursion. ctx.waitUntil did NOT escape the
- * guard (the synchronous .call() into the stub adds a subrequest
- * regardless of await).
- *
- * Result: L2/L3/L4 events are CAPTURED but DISCARDED. /api/_diag/cache
- * shows only L1 (per-DO NpmCache, instrumented in cache.ts where the
- * caller already runs in the DO isolate).
- *
- * Proper fix (next wave): instrument facet-side (install-batch-facet,
- * resolve-one-facet) where the call originates. The facet returns
- * counters in its result; the supervisor's installer.ts folds them
- * into the DO singleton via the same pattern as recordR2RaceCounters
- * (installer.ts:1168). No recursion because the facet is not the DO.
- *
- * For this wave we DOCUMENT the limitation and keep the instrumentation
- * in place so the next wave can replace the drain-and-discard with a
- * facet-return-counters refactor without re-wiring R2CacheClient.
+ * The R2CacheClient instance lives only for the duration of one RPC
+ * call (constructed fresh in _r2()). Draining its event list at the
+ * end of the call is the natural lifecycle boundary.
  */
-function _drainCacheEvents(client: any): _CacheStatEvent[] {
+function _drainCacheEvents(client: any): SupervisorCacheStatEvent[] {
   const drained = (client && Array.isArray(client._cacheEvents)) ? client._cacheEvents : [];
   if (client && Array.isArray(client._cacheEvents)) client._cacheEvents = [];
   return drained;
@@ -290,28 +283,34 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /**
-   * Look up a tarball in the R2 cross-tenant cache. Returns the gzipped
-   * tar bytes as Uint8Array, or null on miss / oversize / missing
-   * binding. The caller (npm-install-batch-facet) is expected to
-   * integrity-verify the bytes before unpacking — same posture as
-   * the network-fetch path.
+   * Look up a tarball in the R2 cross-tenant cache. Returns
+   * { bytes, events } where:
+   *   - bytes: Uint8Array on hit, null on miss/oversize/no-binding
+   *   - events: L2/L3 hit/miss tuples captured during this lookup
    *
-   * Hit / miss counters are bumped on the supervisor side so
-   * /api/_diag/memory surfaces accurate cross-install hit-rates.
+   * cache-obs-2: return-shape change from `Uint8Array | null` to
+   * `{ bytes, events }`. Facets propagate events into their result
+   * for installer.ts to fold into the DO singleton (mirroring the
+   * recordR2RaceCounters pattern). Without this enrichment the
+   * L2/L3 distinction is supervisor-side knowledge only.
+   *
+   * The caller is responsible for integrity-verifying bytes before
+   * unpacking — same posture as the network-fetch path. The events
+   * list is structured-clone-safe (plain objects + strings + numbers).
    */
-  async getCachedTarball(name: string, version: string): Promise<Uint8Array | null> {
+  async getCachedTarball(
+    name: string,
+    version: string,
+  ): Promise<{ bytes: Uint8Array | null; events: SupervisorCacheStatEvent[] }> {
     const r2 = this._r2();
     const bytes = await r2.getTarball(name, version);
-    // R2CacheClient accumulated L2/L3 events in r2._cacheEvents but
-    // we drain them WITHOUT forwarding — see the section header below
-    // for the architectural reason (DO recursion guard).
-    _drainCacheEvents(r2);
+    const events = _drainCacheEvents(r2);
     if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
       r2TarballHit();
-      return bytes;
+      return { bytes, events };
     }
     r2TarballMiss();
-    return null;
+    return { bytes: null, events };
   }
 
   /**
@@ -325,7 +324,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     version: string,
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<boolean> {
-    // L4-hit forwarding removed — see getCachedTarball comment.
+    // L4 hits are captured FACET-SIDE in cache-obs-2 — the facet did
+    // the registry fetch, so it can push the L4 event directly into
+    // its own cacheStatEvents list before calling putCachedTarball.
+    // This RPC remains a one-way write (returns bool); the L4 event
+    // does NOT flow through this return path.
     const r2 = this._r2();
     const ok = await r2.putTarball(name, version, bytes);
     if (ok) r2TarballPutOk();
@@ -341,26 +344,42 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * hit when expired === false. Stale data is returned only for
    * stale-while-error fallback semantics.
    */
+  /**
+   * Look up a packument in the R2 cross-tenant cache. Returns
+   * { cached, events } where:
+   *   - cached: { json, ageMs, expired } on hit, null on miss/no-binding
+   *   - events: L2/L3 hit/miss tuples captured during this lookup
+   *
+   * cache-obs-2: return-shape change from
+   *   `{json, ageMs, expired} | null` to
+   *   `{ cached: {json,ageMs,expired} | null, events: ... }`.
+   *
+   * Caller MUST honour the `cached.expired` flag the same as v1
+   * (only treat as hot-path hit when expired === false). Events are
+   * recorded regardless of expiration — an expired L2 hit is still
+   * recorded as 'hit' at the L2 tier; the staleness is a separate axis.
+   */
   async getCachedPackument(
     name: string,
-  ): Promise<{ json: string; ageMs: number; expired: boolean } | null> {
+  ): Promise<{
+    cached: { json: string; ageMs: number; expired: boolean } | null;
+    events: SupervisorCacheStatEvent[];
+  }> {
     const r2 = this._r2();
     const cached = await r2.getPackument(name);
-    // Drain (and discard) L2/L3 cache events. Forwarding to the DO
-    // singleton triggered workerd's recursion guard mid-install.
-    _drainCacheEvents(r2);
+    const events = _drainCacheEvents(r2);
     if (cached && !cached.expired) {
       r2PackumentHit();
-      return cached;
+      return { cached, events };
     }
     if (cached && cached.expired) {
       // Treat expired as a miss for hit-rate accounting; still return
       // the data so callers can use it for stale-while-error.
       r2PackumentMiss();
-      return cached;
+      return { cached, events };
     }
     r2PackumentMiss();
-    return null;
+    return { cached: null, events };
   }
 
   /**
@@ -368,7 +387,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * Best-effort. Returns true on success.
    */
   async putCachedPackument(name: string, json: string): Promise<boolean> {
-    // L4-hit forwarding removed — see getCachedTarball comment.
+    // L4 hit captured facet-side (the facet did the registry fetch).
+    // This RPC is one-way write.
     const r2 = this._r2();
     const ok = await r2.putPackument(name, json);
     if (ok) r2PackumentPutOk();
