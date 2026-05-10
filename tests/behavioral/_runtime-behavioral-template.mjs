@@ -395,6 +395,18 @@ export async function cloneAndStartVite(sid, opts) {
 /**
  * Shorthand sentinel substrings the assert helpers default to looking
  * for. Probes can extend per-case.
+ *
+ * Categories covered (probe should fail loudly if any appear):
+ *   - V8 runtime exceptions: TypeError, ReferenceError, SyntaxError
+ *   - method-call shapes:    "is not a function", "is not defined"
+ *   - property access:       "Cannot read prop", "Cannot read properties"
+ *   - module resolution:     "Cannot resolve module", "Failed to resolve",
+ *                            "does not provide an export"
+ *   - Nimbus dev-server:     "Preview crashed", "[vite-dev] cannot serve",
+ *                            "on-demand bundle failed"
+ *   - generic uncaught:      "Uncaught"
+ *   - babel-runtime ESM/CJS interop (the original false-GREEN incident):
+ *                            "_objectWithoutPropertiesLoose"
  */
 export const RUNTIME_ERROR_MARKERS = [
   'TypeError',
@@ -406,7 +418,10 @@ export const RUNTIME_ERROR_MARKERS = [
   'Cannot read properties',
   'Cannot resolve module',
   'Failed to resolve',
+  'does not provide an export',
   'Preview crashed',
+  '[vite-dev] cannot serve',
+  'on-demand bundle failed',
   'Uncaught',
   '__objectWithoutPropertiesLoose',
   '_objectWithoutPropertiesLoose2',
