@@ -161,13 +161,28 @@ interface VfsLike {
  * have one in the supervisor (CSP blocks request-time compile).
  */
 function hasWasiImports(bytes: Uint8Array): boolean {
-  const needle = new TextEncoder().encode('wasi_snapshot_preview1');
-  if (bytes.length < needle.length) return false;
-  outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (bytes[i + j] !== needle[j]) continue outer;
+  // Recognise BOTH 'wasi_snapshot_preview1' (modern) AND
+  // 'wasi_unstable' (older WASI ABI, binji-linked binaries use this).
+  // Either substring in the wasm bytes is sufficient — WASI module-
+  // name strings are length-prefixed UTF-8 in the import section; a
+  // substring match against the raw bytes can't false-positive at the
+  // import position. False-positives elsewhere (e.g. in a data
+  // section that happens to contain "wasi_unstable" as a string
+  // literal) are harmless — the WASI shim won't be invoked unless
+  // the wasm actually has `_start` and the imports the shim provides.
+  const enc = new TextEncoder();
+  const needles = [
+    enc.encode('wasi_snapshot_preview1'),
+    enc.encode('wasi_unstable'),
+  ];
+  for (const needle of needles) {
+    if (bytes.length < needle.length) continue;
+    outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (bytes[i + j] !== needle[j]) continue outer;
+      }
+      return true;
     }
-    return true;
   }
   return false;
 }
@@ -515,8 +530,17 @@ export function makeWasmRunner(deps: {
         });
         let inst: WebAssembly.Instance;
         try {
+          // Both modern `wasi_snapshot_preview1` and older
+          // `wasi_unstable` namespaces point at the SAME shim
+          // import object. The WASI ABIs are near-identical in
+          // function signatures (preview1 fixed fd_seek's offset
+          // width to i64 and the `filestat` struct layout); our
+          // shim implements preview1 and the older binji-linked
+          // binaries are tolerant of the wider types via JS
+          // BigInt coercion at the wasm boundary.
           const result: any = await WebAssembly.instantiate(mod as any, {
             wasi_snapshot_preview1: wasi.wasiImport,
+            wasi_unstable: wasi.wasiImport,
           });
           inst = (result instanceof WebAssembly.Instance ? result : result.instance);
         } catch (e: any) {
