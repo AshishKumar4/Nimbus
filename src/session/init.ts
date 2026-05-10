@@ -39,6 +39,11 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runNodeScript } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, type RuntimeSpec } from '../runtime/runtime-registry.js';
+import {
+  makeWasmRunner,
+  WASM_RUNNER_VERSION,
+  WASM_RUNNER_HELP,
+} from '../runtime/wasm-runner.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import {
@@ -357,6 +362,50 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     registry.register(
       'bun',
       buildRuntimeHandler(bunSpec, {
+        vfs: sqliteFs,
+        facetMgr,
+        getEsbuild: () => {
+          if (!self.esbuildService) {
+            self.ensureSqliteFs();
+            self.esbuildService = new EsbuildService(self.sqliteFs!);
+          }
+          return self.esbuildService!;
+        },
+        registry,
+      }),
+    );
+
+    // ── wasm-runner: native WebAssembly runtime via LOADER-modules transport ──
+    //
+    // Re-introduced after the multi-runtime wave's revert. Bytes
+    // ride INSIDE the worker code blob (LOADER's modules map, the
+    // one phase where wasm code generation IS allowed); request-time
+    // WebAssembly.instantiate(bytes) is CSP-blocked and avoided.
+    //
+    // Validated transport: /workspace/.seal-internal/2026-05-10-
+    // wasm-csp/findings.md — add(3,4)===7 in 11ms warm against the
+    // deployed Cloudflare fleet.
+    //
+    // bypassesScriptRead: the registry skips the read-source/
+    // shebang-strip/esbuild-transform flow. wasm-runner reads bytes
+    // itself in spec.run() and ships via NimbusLoaderPool.
+    const wasmSpec: RuntimeSpec = {
+      name: 'wasm-runner',
+      version: WASM_RUNNER_VERSION,
+      helpText: WASM_RUNNER_HELP,
+      run: makeWasmRunner({
+        vfs: {
+          exists: (p: string) => sqliteFs.exists(p),
+          readFile: (p: string) => sqliteFs.readFile(p),
+        },
+        env: self.env,
+        ctx: self.ctx,
+      }),
+      bypassesScriptRead: true,
+    };
+    registry.register(
+      'wasm-runner',
+      buildRuntimeHandler(wasmSpec, {
         vfs: sqliteFs,
         facetMgr,
         getEsbuild: () => {
