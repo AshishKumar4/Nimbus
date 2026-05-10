@@ -252,6 +252,13 @@ function snapshotVfs(
     return { snapshot: { root, preopens: [], files: {}, dirs: [root] }, bytes: 0, files: 0 };
   }
   dirs.push(root);
+  // Directory prefixes to skip during snapshot. The user's `~/.nimbus`
+  // install root holds nimbus-managed runtime bundles (clang.wasm,
+  // lld.wasm, sysroot.tar, Pyodide, …) that easily exceed the
+  // 32 MiB per-snapshot cap and don't belong in the WASI sandbox
+  // anyway. node_modules is similar — large, irrelevant to user
+  // wasm execution.
+  const skipSubdirs = new Set(['.nimbus', 'node_modules', '.cache', '.npm']);
   while (stack.length > 0) {
     const dir = stack.pop()!;
     let entries: { name: string; type: string }[];
@@ -259,6 +266,8 @@ function snapshotVfs(
     for (const e of entries) {
       const childPath = dir + '/' + e.name;
       if (e.type === 'directory') {
+        // Skip well-known large/irrelevant subdirs.
+        if (skipSubdirs.has(e.name)) continue;
         dirs.push(childPath);
         stack.push(childPath);
         continue;
