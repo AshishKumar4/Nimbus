@@ -9,7 +9,13 @@
  *
  * All tables live in the same DO SQLite as the VFS. Schema is created lazily
  * on first use (not at VFS init, to avoid penalizing sessions that don't npm install).
+ *
+ * L1 cache observability (cache-observability wave):
+ *   getRegistryEntry / getTarballFiles bump per-tier counters via
+ *   src/_shared/cache-stats.ts. Hit = row(s) returned with size > 0;
+ *   miss = empty result set. Callers fall through to L2/L3/L4 on miss.
  */
+import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '../_shared/cache-stats.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -149,7 +155,15 @@ export class NpmCache {
 
   // ── Registry cache ────────────────────────────────────────────────────
 
-  /** Get cached registry metadata for a specific name@version. */
+  /** Get cached registry metadata for a specific name@version.
+   *
+   *  L1 observability: bumps cache-stats L1.packument hit/miss. Bytes
+   *  on hit = approximate size of the deserialized RegistryCacheEntry,
+   *  computed as sum of major-string lengths (depsJson + peerDepsJson +
+   *  exportsJson + binJson + a few tens of bytes overhead). This is a
+   *  good proxy for "how much L1 data did we save fetching" — not the
+   *  exact SQLite blob byte count (which would require a separate
+   *  SELECT). */
   getRegistryEntry(name: string, version: string): RegistryCacheEntry | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
@@ -157,9 +171,12 @@ export class NpmCache {
        FROM pkg_registry_cache WHERE name = ? AND version = ?`,
       name, version,
     )];
-    if (rows.length === 0) return null;
+    if (rows.length === 0) {
+      _l1RecordMiss('L1', 'packument');
+      return null;
+    }
     const r = rows[0];
-    return {
+    const entry: RegistryCacheEntry = {
       name: String(r.name),
       version: String(r.version),
       tarballUrl: String(r.tarball_url),
@@ -172,6 +189,18 @@ export class NpmCache {
       binJson: String(r.bin_json),
       fetchedAt: Number(r.fetched_at),
     };
+    // Approximate hit-bytes: sum of variable-length string fields.
+    // The fixed-cost fields (name, version, integrity, etc.) add ~150
+    // bytes on average; the variable fields can be tens of KB for
+    // packages with large exports maps. Skip the constant overhead so
+    // bytes correlates with the dominant cost.
+    const bytes =
+      entry.depsJson.length +
+      entry.peerDepsJson!.length +
+      entry.exportsJson.length +
+      entry.binJson.length;
+    _l1RecordHit('L1', 'packument', bytes);
+    return entry;
   }
 
   /**
@@ -293,18 +322,31 @@ export class NpmCache {
     return rows.length > 0;
   }
 
-  /** Get all cached files for a package version. */
+  /** Get all cached files for a package version.
+   *
+   *  L1 observability: hit when rows > 0; miss when empty. Bytes on
+   *  hit = sum of file sizes from the SIZE column (cheaper than
+   *  measuring blob lengths after decode; SIZE is the source-of-truth
+   *  stored at write time). */
   getTarballFiles(name: string, version: string): TarballCacheFile[] {
     this.ensureSchema();
     const rows = [...this.sql.exec(
       `SELECT rel_path, data, size FROM pkg_tarball_cache WHERE name = ? AND version = ?`,
       name, version,
     )];
-    return rows.map(r => ({
+    if (rows.length === 0) {
+      _l1RecordMiss('L1', 'tarball');
+      return [];
+    }
+    const out = rows.map(r => ({
       relPath: String(r.rel_path),
       data: blobToUint8Array(r.data),
       size: Number(r.size),
     }));
+    let totalBytes = 0;
+    for (const f of out) totalBytes += f.size;
+    _l1RecordHit('L1', 'tarball', totalBytes);
+    return out;
   }
 
   /** Max individual file size for tarball cache (DO SQLite blob limit). */

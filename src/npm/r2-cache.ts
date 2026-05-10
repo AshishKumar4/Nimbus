@@ -54,6 +54,8 @@
  *   - audit/sections/W4-plan.md
  */
 
+import { recordHit as _recordCacheHit, recordMiss as _recordCacheMiss } from '../_shared/cache-stats.js';
+
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
  *  poisoned a class of keys). */
@@ -288,22 +290,46 @@ export class R2CacheClient {
     if (l2Hit) {
       this._l2HitsTarball++;
       const ab = await l2Hit.arrayBuffer();
-      if (ab.byteLength > MAX_R2_TARBALL_BYTES) return null;
+      if (ab.byteLength > MAX_R2_TARBALL_BYTES) {
+        // Defensive bypass — record as miss (callable returns null,
+        // caller MUST fall through to L4). The L2 entry technically
+        // existed but is unusable; the consumer's POV is "L2 didn't
+        // give me usable bytes" → miss.
+        _recordCacheMiss('L2', 'tarball');
+        return null;
+      }
+      _recordCacheHit('L2', 'tarball', ab.byteLength);
       return new Uint8Array(ab);
     }
+    _recordCacheMiss('L2', 'tarball');
     // ── L3 path (cross-tenant) ────────────────────────────────────
-    if (!this.tarballBucket) return null;
+    if (!this.tarballBucket) {
+      // No L3 binding configured — treat as miss so downstream can
+      // fall through to L4. Distinguishes "binding absent" from
+      // "binding present and empty" in the byte-counter (a miss
+      // here means caller will fetch from L4).
+      _recordCacheMiss('L3', 'tarball');
+      return null;
+    }
     this._l3GetsTarball++;
     const key = tarballKey(name, version);
     const obj = await this.tarballBucket.get(key);
-    if (!obj) return null;
+    if (!obj) {
+      _recordCacheMiss('L3', 'tarball');
+      return null;
+    }
     const ab = await obj.arrayBuffer();
     if (ab.byteLength > MAX_R2_TARBALL_BYTES) {
       // Defense-in-depth: a bug or admin-uploaded oversized tarball
       // shouldn't blow the structured-clone cap on the way back to
       // the facet. Treat as miss; original install path will handle it.
+      // (Counter perspective: tier-3 said "yes, I have it" but the
+      // payload is unusable here, so from the caller's POV it's a miss
+      // — they go to L4.)
+      _recordCacheMiss('L3', 'tarball');
       return null;
     }
+    _recordCacheHit('L3', 'tarball', ab.byteLength);
     // Write through to L2. Eternal TTL is correct: the npm registry
     // enforces immutability — `name@version` is content-fixed since
     // 2018 (the unpublish window only allows hard-delete, never
@@ -390,6 +416,11 @@ export class R2CacheClient {
     if (l2Hit) {
       this._l2HitsPackument++;
       const json = await l2Hit.text();
+      // Record L2 hit by JSON text length. Note this happens BEFORE
+      // we check expired — an expired L2 entry is still served (caller
+      // honours expired flag); the hit-rate counts the cache lookup
+      // success, the staleness is a separate axis.
+      _recordCacheHit('L2', 'packument', json.length);
       const now = Date.now();
       // Reconstruct ageMs from the L2 response's `Date` header (set
       // implicitly by the cache layer at put time). Cache API
@@ -409,12 +440,20 @@ export class R2CacheClient {
         : ageMs >= PACKUMENT_TTL_MS;
       return { json, ageMs, expired };
     }
+    _recordCacheMiss('L2', 'packument');
     // ── L3 path (cross-tenant) ────────────────────────────────────
-    if (!this.packumentBucket) return null;
+    if (!this.packumentBucket) {
+      _recordCacheMiss('L3', 'packument');
+      return null;
+    }
     this._l3GetsPackument++;
     const obj = await this.packumentBucket.get(packumentKey(name));
-    if (!obj) return null;
+    if (!obj) {
+      _recordCacheMiss('L3', 'packument');
+      return null;
+    }
     const json = await obj.text();
+    _recordCacheHit('L3', 'packument', json.length);
     const now = Date.now();
     const uploaded = obj.uploaded?.getTime() ?? now;
     const ageMs = Math.max(0, now - uploaded);

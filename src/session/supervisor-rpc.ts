@@ -34,6 +34,12 @@ import {
   r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss,
   r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail,
 } from '../observability/diag-counters.js';
+// cache-observability wave: per-tier hit/miss counters. L4 hits are
+// inferred from the facet's writeback call (putCachedTarball /
+// putCachedPackument) — the facet only calls those AFTER it fetched
+// from registry.npmjs.org. So a putCached* arrival is the L4-hit
+// signal (with bytes from the payload size).
+import { recordHit as _cacheRecordHit } from '../_shared/cache-stats.js';
 
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
@@ -274,6 +280,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
     version: string,
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<boolean> {
+    // L4-hit signal: facet just fetched from registry and is writing
+    // back. Record BEFORE the R2 put so we count it even if R2 write
+    // fails (the L4 fetch happened either way; R2 failure is a separate
+    // axis tracked by r2TarballPutFail).
+    const size = bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length;
+    _cacheRecordHit('L4', 'tarball', size);
     const r2 = this._r2();
     const ok = await r2.putTarball(name, version, bytes);
     if (ok) r2TarballPutOk();
@@ -313,6 +325,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * Best-effort. Returns true on success.
    */
   async putCachedPackument(name: string, json: string): Promise<boolean> {
+    // L4-hit signal: facet fetched packument from registry.npmjs.org
+    // and is writing back. Same posture as putCachedTarball: count
+    // BEFORE R2 put so the L4 axis stays accurate even if R2 write
+    // fails.
+    _cacheRecordHit('L4', 'packument', json.length);
     const r2 = this._r2();
     const ok = await r2.putPackument(name, json);
     if (ok) r2PackumentPutOk();

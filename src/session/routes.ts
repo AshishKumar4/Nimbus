@@ -1034,6 +1034,31 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       });
     }
 
+    // ── /api/_diag/cache — per-tier cache observability ───────────────
+    //
+    // Cache-observability wave: surfaces the L1/L2/L3/L4 × tarball/
+    // packument/asset hit/miss/bytes grid maintained by
+    // src/_shared/cache-stats.ts. Pre-wave the only observability was
+    // /api/_diag/memory.r2.* (RPC-call level), which conflated L2 and
+    // L3 and missed L1 entirely.
+    //
+    // Added at the END of handleFetch so future wave additions to the
+    // diag cluster (typically inserted near other /api/_diag/* routes)
+    // don't cause merge conflicts in the cache-observability commit.
+    // POST /reset zeros the counters in-place for fresh measurement
+    // windows; the dual-endpoint pattern mirrors /api/_test/* reset
+    // helpers used by the recovery-event probe.
+    if (url.pathname === '/api/_diag/cache' && request.method === 'GET') {
+      const { snapshot } = await import('../_shared/cache-stats.js');
+      const snap = snapshot();
+      return Response.json(snap);
+    }
+    if (url.pathname === '/api/_diag/cache/reset' && request.method === 'POST') {
+      const { reset } = await import('../_shared/cache-stats.js');
+      reset();
+      return new Response(null, { status: 204 });
+    }
+
     return new Response('Not found', { status: 404 });
 }
 
