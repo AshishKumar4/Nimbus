@@ -43,6 +43,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
+import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
@@ -393,6 +394,14 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           pendingWrites: sqlStats.pendingWrites ?? 0,
           pendingWriteBytes: sqlStats.pendingWriteBytes ?? 0,
         },
+
+        // H7 (heap-correctness wave): _NIMBUS_LOADED_CODES Map state.
+        // Pre-fix this Map grew unbounded — wrangler dev's rebuild
+        // loop accumulated one entry per save until the supervisor
+        // hit the workerd 128 MiB hard cap. Post-fix: hard-cap LRU
+        // (32 entries) with FIFO eviction. The counters here let
+        // ops dashboards visualise the bound + the eviction rate.
+        loadedCodes: getLoadedCodesStats(),
         rpc: {
           lastFrame: getLastRpcFrame(),
         },

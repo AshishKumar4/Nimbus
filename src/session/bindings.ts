@@ -188,10 +188,73 @@ function mimeTypeForPath(path: string): string {
  * request re-load the worker in its own context via env.LOADER.get(id)
  * — workerd caches by id so repeated loads are essentially free.
  *
- * Map entries live as long as the outer DO isolate; inner stubs that
- * reference them die with the DO, so GC isn't needed.
+ * H7 (heap-correctness wave). The pre-fix comment said "GC isn't
+ * needed" because "inner stubs that reference them die with the DO."
+ * That was true for STUBS but FALSE for these CODE entries: nothing
+ * deletes them. `wrangler dev`'s rebuild-on-save loop calls load()
+ * on every save, so the Map grows without bound until the supervisor
+ * isolate is evicted (or hits the 128 MiB hard cap and crashes).
+ *
+ * Fix: hard-cap LRU. The Map's iteration order is insertion order;
+ * we re-insert on every read AND eviction-on-overflow drops the
+ * oldest entry. _LOADED_CODES_MAX is a documented architectural cap
+ * (32 entries). Eviction count is observable via getLoadedCodesStats()
+ * which the diag endpoint surfaces.
+ *
+ * Why 32? wrangler dev's typical rebuild burst is < 5 entries before
+ * the user notices and stops typing. 32 covers a power user's
+ * iteration cycle and a reasonable amount of `LOADER.get(id, cb)`
+ * memoization without exposing more than a few MiB of code text in
+ * the worst case (typical user-worker bundle: 50-300 KiB; 32 × 300 KiB
+ * = ~10 MiB ceiling — well under the 64 MiB supervisor budget).
  */
 const _NIMBUS_LOADED_CODES: Map<string, any> = new Map();
+const _LOADED_CODES_MAX = 32;
+let _loadedCodesEvictions = 0;
+
+/**
+ * Insert OR refresh a key in the LRU. New keys may evict the oldest
+ * entry if at the cap; existing keys are re-inserted to update their
+ * recency.
+ */
+function _loadedCodesPut(key: string, code: any): void {
+  // If the key already exists, delete first so re-insertion lands at
+  // the MRU end of the iteration order (LRU-style refresh).
+  if (_NIMBUS_LOADED_CODES.has(key)) {
+    _NIMBUS_LOADED_CODES.delete(key);
+  } else if (_NIMBUS_LOADED_CODES.size >= _LOADED_CODES_MAX) {
+    // Evict the LRU entry — the first key in insertion order.
+    const oldest = _NIMBUS_LOADED_CODES.keys().next();
+    if (!oldest.done) {
+      _NIMBUS_LOADED_CODES.delete(oldest.value);
+      _loadedCodesEvictions++;
+    }
+  }
+  _NIMBUS_LOADED_CODES.set(key, code);
+}
+
+function _loadedCodesGet(key: string): any | undefined {
+  const v = _NIMBUS_LOADED_CODES.get(key);
+  if (v === undefined) return undefined;
+  // LRU-refresh on read so memoization-style usage (LOADER.get(id, cb)
+  // re-hitting the same id repeatedly) keeps the entry warm.
+  _NIMBUS_LOADED_CODES.delete(key);
+  _NIMBUS_LOADED_CODES.set(key, v);
+  return v;
+}
+
+/**
+ * Diagnostic surface for /api/_diag/memory. Returns a snapshot of
+ * the Map state — entry count, configured cap, eviction counter
+ * since isolate boot. Pure read; no I/O.
+ */
+export function getLoadedCodesStats(): { entries: number; maxEntries: number; evictions: number } {
+  return {
+    entries: _NIMBUS_LOADED_CODES.size,
+    maxEntries: _LOADED_CODES_MAX,
+    evictions: _loadedCodesEvictions,
+  };
+}
 
 function _genStubId(): string {
   return 'ldr-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -203,7 +266,7 @@ function _genStubId(): string {
  * calls reuse the same dynamic worker rather than spawning new ones.
  */
 function _resolveStubInCurrentContext(outerLoader: any, key: string): any | null {
-  const code = _NIMBUS_LOADED_CODES.get(key);
+  const code = _loadedCodesGet(key);
   if (!code) return null;
   return outerLoader.get(key, async () => code);
 }
@@ -247,7 +310,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
     // own context.
     outerLoader.load(code);
     const key = _genStubId();
-    _NIMBUS_LOADED_CODES.set(key, code);
+    _loadedCodesPut(key, code);
     const ctxExports = (this.ctx as any)?.exports;
     if (!ctxExports?.NimbusLoadedWorker) {
       throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
@@ -267,9 +330,9 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
     const outerLoader = (this.env as any)?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
     const key = 'get:' + id;
-    if (!_NIMBUS_LOADED_CODES.has(key)) {
+    if (_loadedCodesGet(key) === undefined) {
       const code = await callback();
-      _NIMBUS_LOADED_CODES.set(key, code);
+      _loadedCodesPut(key, code);
     }
     const ctxExports = (this.ctx as any)?.exports;
     if (!ctxExports?.NimbusLoadedWorker) {
