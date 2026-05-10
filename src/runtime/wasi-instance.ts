@@ -440,22 +440,21 @@ function __wasiMakeImports(opts) {
       return __WASI_ESUCCESS;
     },
 
-    fd_seek(fd, offsetLo, offsetHi, whence, newOffsetPtr) {
+    fd_seek(fd, offsetArg, whence, newOffsetPtr) {
+      // WASI/V8 passes i64 args as BigInt. Wave-1 mistakenly assumed
+      // (lo, hi) i32 pairs; that worked only because hello-world never
+      // exercised seek. Wave-2: accept BigInt directly.
       if (fd === 0 || fd === 1 || fd === 2) {
         writeU64LE(newOffsetPtr, 0n);
         return __WASI_ESUCCESS;
       }
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      // 64-bit offset reconstruction. WASI passes i64 as (lo, hi) on i32 platforms.
-      let delta;
-      if (typeof offsetLo === 'bigint') delta = offsetLo;
-      else delta = BigInt(offsetLo | 0) | (BigInt(offsetHi | 0) << 32n);
+      const delta = typeof offsetArg === 'bigint' ? offsetArg : BigInt(offsetArg | 0);
       const cur = BigInt(entry.offset);
       const file = getFile(entry.vfsPath);
       const fileLen = file ? BigInt(file.length) : 0n;
       let next;
-      // whence: 0=SET, 1=CUR, 2=END
       if (whence === 0) next = delta;
       else if (whence === 1) next = cur + delta;
       else if (whence === 2) next = fileLen + delta;
@@ -526,7 +525,7 @@ function __wasiMakeImports(opts) {
     },
 
     // ── path_open ──
-    path_open(baseFd, dirflags, pathPtr, pathLen, oflags, rbLo, rbHi, riLo, riHi, fdflags, fdOutPtr) {
+    path_open(baseFd, dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, fdflags, fdOutPtr) {
       const path = readPath(pathPtr, pathLen);
       const resolved = __wasiResolvePath(baseFd, path);
       if (resolved === null) return __WASI_EBADF;
@@ -718,14 +717,14 @@ function __wasiMakeImports(opts) {
     fd_filestat_set_times() { return __WASI_ESUCCESS; },
 
     // ── fd_pread / fd_pwrite (offset-explicit) ──
-    fd_pread(fd, iovsPtr, iovsLen, offsetLo, offsetHi, nreadPtr) {
+    fd_pread(fd, iovsPtr, iovsLen, offsetArg, nreadPtr) {
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       const file = getFile(entry.vfsPath);
       if (!file) return __WASI_ENOENT;
-      let offset = typeof offsetLo === 'bigint'
-        ? Number(offsetLo)
-        : (offsetLo >>> 0) + (offsetHi >>> 0) * 4294967296;
+      let offset = typeof offsetArg === 'bigint'
+        ? Number(offsetArg)
+        : (offsetArg >>> 0);
       const dv = view();
       const memU8 = u8();
       let total = 0;
@@ -745,12 +744,12 @@ function __wasiMakeImports(opts) {
       return __WASI_ESUCCESS;
     },
 
-    fd_pwrite(fd, iovsPtr, iovsLen, offsetLo, offsetHi, nwrittenPtr) {
+    fd_pwrite(fd, iovsPtr, iovsLen, offsetArg, nwrittenPtr) {
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      let offset = typeof offsetLo === 'bigint'
-        ? Number(offsetLo)
-        : (offsetLo >>> 0) + (offsetHi >>> 0) * 4294967296;
+      let offset = typeof offsetArg === 'bigint'
+        ? Number(offsetArg)
+        : (offsetArg >>> 0);
       const dv = view();
       const memU8 = u8();
       let total = 0;
@@ -789,23 +788,20 @@ function __wasiMakeImports(opts) {
     //   d_type   u8  @ 20
     //   pad             21..23
     // followed by name bytes (variable).
-    fd_readdir(fd, bufPtr, bufLen, cookieLo, cookieHi, bufusedPtr) {
+    fd_readdir(fd, bufPtr, bufLen, cookieArg, bufusedPtr) {
       const entry = fdTable.get(fd);
       if (!entry || (entry.kind !== 'dir' && entry.kind !== 'preopen')) return __WASI_EBADF;
-      // Materialise the entry list once, lazily.
       if (!entry.readdirEntries) {
         const kids = readdirChildren(entry.vfsPath);
-        // Per WASI / POSIX, prepend "." and ".." synthetic entries so an
-        // empty directory still has a non-zero bufused.
         entry.readdirEntries = [
           { name: '.',  type: __WASI_FT_DIRECTORY },
           { name: '..', type: __WASI_FT_DIRECTORY },
           ...kids,
         ];
       }
-      let startCookie = typeof cookieLo === 'bigint'
-        ? Number(cookieLo)
-        : (cookieLo >>> 0) + (cookieHi >>> 0) * 4294967296;
+      let startCookie = typeof cookieArg === 'bigint'
+        ? Number(cookieArg)
+        : (cookieArg >>> 0);
       let written = 0;
       const dv = view();
       const memU8 = u8();
@@ -848,7 +844,9 @@ function __wasiMakeImports(opts) {
     proc_raise()    { throw new __WasiExit(128); },
 
     // ── clock ──
-    clock_time_get(clockId, _precLo, _precHi, timePtr) {
+    clock_time_get(clockId, _precision, timePtr) {
+      // precision is i64 — passed as BigInt by V8. We don't use it but
+      // the arity must match for V8 to route correctly.
       let nowNs;
       if (clockId === __WASI_CLOCK_REALTIME) {
         nowNs = BigInt(Date.now()) * 1000000n;
