@@ -24,16 +24,15 @@ await t.run(writeFixtureCmd('env', 'env.wasm'), 30_000);
 const result = await t.run('wasm-runner env.wasm _start', 30_000);
 const out = stripAnsi(result.output);
 const tail = out.split(/\r?\n/).slice(-6).join('\n');
-// envc > 0 → fixture writes '0' + envc as one byte. We accept any
-// printable ASCII byte that isn't '0' or '\n' itself; the '0' fail
-// state corresponds to envc=0 which would mean environ_sizes_get is
-// broken. Anything else (digit, letter, or punctuation) is fine.
-//
-// Nimbus's actual env (post primitives + heap waves) is ~20 keys → 'D'.
-const envcOk = /^[!-~]$/m.test(
-  tail.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 0).at(-1) || '',
-);
-const notZeroEnvc = !/^\s*0\s*$/m.test(tail);
+// envc > 0 → fixture writes '0' + envc as one byte. We look for a
+// line that is exactly ONE printable ASCII byte (not the shell prompt,
+// not the command echo). Nimbus's session env post primitives+heap
+// waves is ~20 keys → 'D'. We accept any single-char line that isn't
+// '0' (which would mean envc=0 → environ_sizes_get is broken).
+const lines = tail.split(/\r?\n/).map(s => s.trim());
+const oneByteLine = lines.find(s => s.length === 1 && /^[!-~]$/.test(s));
+const envcOk = !!oneByteLine;
+const notZeroEnvc = oneByteLine !== '0';
 
 await t.close();
 
