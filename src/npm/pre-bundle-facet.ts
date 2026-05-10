@@ -466,6 +466,54 @@ export const prebundleOne = async function prebundleOne(
     return null;
   };
 
+  // Subpath imports (`#X`) → resolve via the importing module's owning
+  // package.json `imports` field. Walks up from `fromDir` looking for
+  // package.json; first one with `#X` in its `imports` map wins.
+  // Reuses `resolveExports` (provided by the pre-bundle preamble) since
+  // imports/exports share the same shape (subpath → conditions →
+  // target).
+  //
+  // This is the slice-path counterpart to esbuild-service.ts's
+  // `resolvePackageImport` (which serves the supervisor's in-process
+  // bundler). Both must walk up only as far as the first package.json —
+  // Node's spec is "imports field of the importing module's package",
+  // never the parent's.
+  //
+  // Without this, packages like vfile / unified / remark / mdx (heavy
+  // users of `#minpath` / `#minurl` / `#minproc`) leak literal `#X`
+  // specifiers into the bundle output, and the browser then chokes
+  // with `Failed to resolve module specifier "#minpath"`. Fix: resolve
+  // here so the bundle output references the actual file path.
+  const resolvePackageImport = (specifier: string, fromDir: string): string | null => {
+    let dir = stripLeadingSlash(fromDir);
+    const visited = new Set<string>();
+    while (dir && !visited.has(dir)) {
+      visited.add(dir);
+      const pkgJsonPath = '/' + dir + '/package.json';
+      if (fileExists(pkgJsonPath)) {
+        try {
+          const pkgJsonText = new TextDecoder().decode(fileMap.get(norm(pkgJsonPath))!);
+          const pkgJson = JSON.parse(pkgJsonText);
+          if (pkgJson && pkgJson.imports) {
+            // @ts-ignore — preamble symbol.
+            const target = resolveExports(pkgJson.imports, specifier);
+            if (target) {
+              const r = tryResolve('/' + dir + '/' + target.replace(/^\.\//, ''));
+              if (r) return r;
+            }
+          }
+        } catch { /* malformed package.json — keep walking */ }
+        // First package.json wins regardless of whether it had `imports`
+        // (Node spec). Stop here even on a miss.
+        return null;
+      }
+      const lastSlash = dir.lastIndexOf('/');
+      if (lastSlash <= 0) break;
+      dir = dir.substring(0, lastSlash);
+    }
+    return null;
+  };
+
   // Bare specifier → entry path resolution. Mirrors EsbuildService's
   // makeVfsPlugin.resolveBarePkg but reads from fileMap.
   const resolveBarePkg = (specifier: string, fromDir: string): string | null => {
@@ -540,6 +588,24 @@ export const prebundleOne = async function prebundleOne(
     name: 'nimbus-pre-bundle-slice',
     setup(build: any) {
       build.onResolve({ filter: /.*/ }, (args: any) => {
+        // Subpath imports (#X) — resolve against the importing module's
+        // owning package.json `imports` field (Node spec). Done BEFORE
+        // the bare/external/absolute branches so a #X never falls
+        // through to `external` (which would leak it to the browser
+        // and crash the preview with "Failed to resolve module
+        // specifier #X").
+        if (args.path.startsWith('#') && args.resolveDir) {
+          const r = resolvePackageImport(args.path, args.resolveDir);
+          if (r) return { path: r, namespace: 'nimbus-slice' };
+          // Fall through to `external` only as a last resort. We log a
+          // warning so the supervisor can surface "looks like #X is
+          // unresolved" rather than the user seeing an opaque crash.
+          warnings.push(
+            `unresolved subpath import "${args.path}" from ${args.importer || '?'} ` +
+            `(no owning package.json#imports entry); marked external`,
+          );
+          return { external: true };
+        }
         // Bare external — leave for the browser to resolve.
         if (!args.path.startsWith('/') && !args.path.startsWith('.') && !args.path.startsWith('#')) {
           if (isExternal(args.path)) return { external: true };

@@ -35,7 +35,7 @@ import {
   syntheticEntryPath,
 } from '../runtime/barrel-synthesizer.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
-import { resolvePackageEntry } from '../_shared/exports-resolver.js';
+import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { injectRouterBasename, shouldProcessForRouter } from '../runtime/router-basename.js';
 import {
   TAILWIND_PLAY_BUNDLE,
@@ -529,14 +529,48 @@ const NODE_BUILTINS = new Set([
 
 /**
  * Resolve a bare specifier: alias → resolved path, or bare → /<base>/@modules/pkg.
+ *
+ * `importerCtx` carries the importing-file context so we can resolve
+ * Node subpath imports (`#X`) per Node spec — `package.json#imports`
+ * is package-LOCAL, looked up via the closest enclosing package.json
+ * walking up from the importer's directory. Without it, `#X` survives
+ * the rewriter and crashes the browser preview (Markflow on prod
+ * 0a488bab: `Uncaught TypeError: Failed to resolve module specifier
+ * "#minpath"`).
+ *
  * Returns null if specifier should not be rewritten.
  */
-function resolveBareSpecifier(specifier: string, aliases?: Record<string, string>, basePath?: string): string | null {
+function resolveBareSpecifier(
+  specifier: string,
+  aliases?: Record<string, string>,
+  basePath?: string,
+  importerCtx?: HashImportCtx,
+): string | null {
   // Skip already-rewritten or absolute URLs
   if (specifier.startsWith('@modules/')) return null;
   if (specifier.startsWith('http://') || specifier.startsWith('https://')) return null;
   // Skip protocol-like specifiers: data:, blob:, virtual:, node:, etc.
   if (/^[a-z][a-z0-9+.-]*:/i.test(specifier)) return null;
+
+  // Subpath imports (#X) — Node.js `package.json#imports` field. MUST
+  // be resolved against the importing file's owning package.json. If
+  // we have an importer context, walk up to resolve; otherwise leave
+  // the specifier alone (so the dev-server bundle path or the browser
+  // surfaces a meaningful error rather than a misleading /@modules/
+  // 404). See exports-resolver.ts for the spec impl.
+  if (specifier.startsWith('#')) {
+    if (!importerCtx) return null;
+    const target = resolveHashImportFromImporter(specifier, importerCtx);
+    if (!target) return null;
+    // Convert VFS path to a /preview-relative URL so the browser can
+    // load it without going through /@modules/. Strip the project root
+    // prefix so the URL is `${basePath}/<rel-from-root>`.
+    const rel = target.startsWith(importerCtx.root + '/')
+      ? target.substring(importerCtx.root.length + 1)
+      : target;
+    const base = (basePath || '').replace(/\/+$/, '');
+    return base + '/' + rel.replace(/^\/+/, '');
+  }
   // Bare-builtin handling: a bare `crypto` (no protocol prefix) that names
   // a Node core builtin must NOT be served from /@modules/ (which 404s in
   // the browser — verified Mossaic regression). Returning null here leaves
@@ -556,6 +590,69 @@ function resolveBareSpecifier(specifier: string, aliases?: Record<string, string
   // Don't rewrite CSS bare imports to /@modules/ (they should be file paths)
   if (specifier.endsWith('.css') || specifier.includes('.css?')) return null;
   return makeModuleUrl(basePath, specifier);
+}
+
+/**
+ * Importer context for `#X` subpath-import resolution. The dev-server
+ * passes this through `rewriteAllImports` whenever it knows the source
+ * file the imports came from (transformed user TS files; cached
+ * pre-bundles via the package they belong to).
+ */
+interface HashImportCtx {
+  /** VFS path of the importing file (e.g. `home/user/app/src/foo.ts`). */
+  importerVfsPath: string;
+  /** Project root (e.g. `home/user/app`). Used to clip the resolved
+   *  target to a /preview-relative URL. */
+  root: string;
+  /** VFS readers — kept narrow so callers don't have to expose the
+   *  full SqliteVFS surface. */
+  vfs: { exists(p: string): boolean; readFileString(p: string): string };
+}
+
+/**
+ * Walk up from `importerCtx.importerVfsPath` looking for a
+ * `package.json` with an `imports` field that exposes `specifier`.
+ * Returns a VFS path to the resolved target, or null if no
+ * `package.json#imports` covers it. First package.json wins per Node
+ * spec — even if it has no `imports` field, we stop walking (the
+ * specifier is unresolved against the importing module's package).
+ *
+ * Conditions: ESM browser default order
+ * (`import` > `module` > `browser` > `default`) — matches what
+ * `serveTransformed` is doing (we're serving for the browser).
+ */
+function resolveHashImportFromImporter(
+  specifier: string,
+  ctx: HashImportCtx,
+): string | null {
+  let dir = ctx.importerVfsPath;
+  const lastSlash = dir.lastIndexOf('/');
+  if (lastSlash <= 0) return null;
+  dir = dir.substring(0, lastSlash);
+  const visited = new Set<string>();
+  while (dir && !visited.has(dir)) {
+    visited.add(dir);
+    const pkgJsonPath = dir + '/package.json';
+    if (ctx.vfs.exists(pkgJsonPath)) {
+      try {
+        const pkg = JSON.parse(ctx.vfs.readFileString(pkgJsonPath));
+        if (pkg && pkg.imports) {
+          const target = resolveExports(pkg.imports, specifier);
+          if (target) {
+            const rel = target.replace(/^\.\//, '');
+            const candidate = dir + '/' + rel;
+            if (ctx.vfs.exists(candidate)) return candidate;
+          }
+        }
+      } catch { /* malformed package.json — keep walking is wrong per
+                  spec; first package.json wins. Fall through to break. */ }
+      return null;
+    }
+    const lastSlashDir = dir.lastIndexOf('/');
+    if (lastSlashDir <= 0) break;
+    dir = dir.substring(0, lastSlashDir);
+  }
+  return null;
 }
 
 /**
@@ -587,9 +684,22 @@ function resolveBareSpecifier(specifier: string, aliases?: Record<string, string
 //
 // treating "` + fn.name + `" as a specifier and corrupting the source code.
 // After: only character sequences that look like valid specifiers match.
-const SPECIFIER_WITH_QUERY = '[A-Za-z0-9_@][A-Za-z0-9_@./?=&-]*';
+//
+// Leading `#` is permitted so Node.js subpath-imports specifiers
+// (`package.json#imports`, e.g. `import x from "#minpath"` from
+// inside vfile/unified) are parsed by the rewriter and routed to the
+// hash-resolver in `resolveBareSpecifier`. Without `#` in the leading
+// class, `import x from "#minpath"` survived the rewriter literally
+// and the browser crashed with `Failed to resolve module specifier
+// "#minpath"` — Markflow regression on prod 0a488bab.
+const SPECIFIER_WITH_QUERY = '[A-Za-z0-9_@#][A-Za-z0-9_@./?=&-]*';
 
-function rewriteAllImports(code: string, aliases?: Record<string, string>, basePath?: string): string {
+function rewriteAllImports(
+  code: string,
+  aliases?: Record<string, string>,
+  basePath?: string,
+  importerCtx?: HashImportCtx,
+): string {
   // Pass 1: CSS side-effect imports: import "./foo.css" → import "./foo.css?import"
   //         import "@/index.css" → import "/preview/src/index.css?import"
   code = code.replace(
@@ -607,7 +717,7 @@ function rewriteAllImports(code: string, aliases?: Record<string, string>, baseP
   code = code.replace(
     new RegExp(`import\\s+(["'])(${SPECIFIER_WITH_QUERY})\\1\\s*;`, 'g'),
     (match: string, quote: string, specifier: string) => {
-      const resolved = resolveBareSpecifier(specifier, aliases, basePath);
+      const resolved = resolveBareSpecifier(specifier, aliases, basePath, importerCtx);
       return resolved ? `import ${quote}${resolved}${quote};` : match;
     }
   );
@@ -618,7 +728,7 @@ function rewriteAllImports(code: string, aliases?: Record<string, string>, baseP
   code = code.replace(
     new RegExp(`(\\bfrom\\s+)(["'])(${SPECIFIER_WITH_QUERY})\\2`, 'g'),
     (match: string, fromPart: string, quote: string, specifier: string) => {
-      const resolved = resolveBareSpecifier(specifier, aliases, basePath);
+      const resolved = resolveBareSpecifier(specifier, aliases, basePath, importerCtx);
       return resolved ? `${fromPart}${quote}${resolved}${quote}` : match;
     }
   );
@@ -627,7 +737,7 @@ function rewriteAllImports(code: string, aliases?: Record<string, string>, baseP
   code = code.replace(
     new RegExp(`import\\(\\s*(["'])(${SPECIFIER_WITH_QUERY})\\1\\s*\\)`, 'g'),
     (match: string, quote: string, specifier: string) => {
-      const resolved = resolveBareSpecifier(specifier, aliases, basePath);
+      const resolved = resolveBareSpecifier(specifier, aliases, basePath, importerCtx);
       return resolved ? `import(${quote}${resolved}${quote})` : match;
     }
   );
@@ -1434,18 +1544,33 @@ export class ViteDevServer {
    * the same timestamp ordering). Callers no longer have to remember
    * to do both.
    *
-   * Levels: 'warn' / 'error' map to console.warn / console.error;
-   * everything goes to the 'stderr' stream of the log store because
-   * vite's own runtime never writes anything but diagnostics here.
+   * Levels:
+   *   - 'info': stdout stream of the Process tab; NOT echoed to the
+   *     workerd console (would spam wrangler tail). Used for normal
+   *     activity — request served, module bundled, HMR fired.
+   *     Without this level the Process tab was silent past the
+   *     synchronous `vite` builtin banner: the only call sites for
+   *     log() were error / warn from cold-bundle failures, so on a
+   *     clean Markflow run NOTHING reached subscribers and the tab
+   *     froze on the banner content. Markflow regression on prod
+   *     0a488bab.
+   *   - 'warn' / 'error': stderr stream + console.warn/error. Used
+   *     for cold-path bundle failures, synthetic-entry errors, and
+   *     other diagnostics worth surfacing on the workerd console
+   *     for ops triage.
+   *
    * Trailing newline is added if missing so the log buffer is line-
    * oriented (the Process-tab UI splits on `\n`).
    */
-  private log(level: 'warn' | 'error', msg: string): void {
-    const fn = level === 'error' ? console.error : console.warn;
-    try { fn(msg); } catch {}
+  private log(level: 'info' | 'warn' | 'error', msg: string): void {
+    if (level !== 'info') {
+      const fn = level === 'error' ? console.error : console.warn;
+      try { fn(msg); } catch {}
+    }
     if (this.logPid != null && this.logStore) {
       const text = msg.endsWith('\n') ? msg : msg + '\n';
-      try { this.logStore.append(this.logPid, 'stderr', text); } catch {}
+      const stream = level === 'info' ? 'stdout' : 'stderr';
+      try { this.logStore.append(this.logPid, stream, text); } catch {}
     }
   }
 
@@ -1488,8 +1613,10 @@ export class ViteDevServer {
     if (needsReload) {
       if (cssOnly) {
         this.onHmrMessage({ type: 'nimbus-hmr', event: 'css-update' });
+        this.log('info', `[hmr] css-update (${events.length} event${events.length === 1 ? '' : 's'})`);
       } else {
         this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
+        this.log('info', `[hmr] full-reload (${events.length} event${events.length === 1 ? '' : 's'})`);
       }
     }
   }
@@ -1507,8 +1634,28 @@ export class ViteDevServer {
   /**
    * Handle an HTTP request to the dev server.
    * Called from the DO's fetch() handler for /preview/* paths.
+   *
+   * Wraps `_handleRequestInner` so EVERY served request appears in
+   * the Process tab's stdout stream (status + path + elapsed). Without
+   * this, the tab was silent past the synchronous banner — the dev
+   * server happily processed requests, but no per-request signal
+   * reached subscribers and the user saw a frozen tab. Markflow
+   * regression on prod 0a488bab.
    */
   async handleRequest(request: Request, pathname: string): Promise<Response> {
+    const t0 = Date.now();
+    const resp = await this._handleRequestInner(request, pathname);
+    const elapsed = Date.now() - t0;
+    // Strip query for the log line — keeps it scannable. The original
+    // pathname (with query) is what was served; we trim purely for
+    // display.
+    const qIdx = pathname.indexOf('?');
+    const displayPath = qIdx >= 0 ? pathname.substring(0, qIdx) : pathname;
+    this.log('info', `${resp.status} ${displayPath} (${elapsed}ms)`);
+    return resp;
+  }
+
+  private async _handleRequestInner(request: Request, pathname: string): Promise<Response> {
     const safePath = this.sanitizePath(pathname);
     if (!safePath) {
       return new Response('400 Bad Request', { status: 400 });
@@ -2489,7 +2636,14 @@ export class ViteDevServer {
       }
       let code = this.vfs.readFileString(vfsPath);
       if (!this.hasImportmap) {
-        code = rewriteAllImports(code, this.aliases, this.basePath);
+        // Pass importer context so `#X` subpath imports in this user JS
+        // file resolve against its owning package.json.
+        const importerCtx: HashImportCtx = {
+          importerVfsPath: vfsPath,
+          root: this.root,
+          vfs: this.vfs,
+        };
+        code = rewriteAllImports(code, this.aliases, this.basePath, importerCtx);
       }
       this.moduleCache.set(vfsPath, { code, timestamp: Date.now() });
       return new Response(code, {
@@ -2574,9 +2728,18 @@ if (!document.getElementById('nimbus-error-overlay')) {
       });
     }
 
-    // Rewrite all imports: CSS ?import, aliases, bare → /@modules/, dynamic
+    // Rewrite all imports: CSS ?import, aliases, bare → /@modules/,
+    // dynamic, AND `package.json#imports` (subpath imports `#X`).
+    // Pass the importer context so `#X` resolves against the user's
+    // owning package.json — the rare-but-real case where a user .ts/
+    // .tsx file directly uses a Node subpath import.
     if (!this.hasImportmap) {
-      code = rewriteAllImports(code, this.aliases, this.basePath);
+      const importerCtx: HashImportCtx = {
+        importerVfsPath: vfsPath,
+        root: this.root,
+        vfs: this.vfs,
+      };
+      code = rewriteAllImports(code, this.aliases, this.basePath, importerCtx);
     }
 
     this.moduleCache.set(vfsPath, { code, timestamp: Date.now() });
