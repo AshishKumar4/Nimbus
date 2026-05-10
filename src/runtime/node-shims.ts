@@ -2328,7 +2328,20 @@ function __loadModule(resolvedPath) {
     return r;
   };
   scopedRequire.cache = __moduleCache;
-  scopedRequire.main = null;
+  // G2 (runtime-pkg wave): scopedRequire.main mirrors the top-level
+  // __require.main (set to the entry module by the runner). Pre-fix
+  // it was hardcoded null, so:
+  //   - 'require.main' inside a sub-module returned null
+  //   - 'require.main === module' was false for the entry too
+  //     (because in the entry, require.main was null too)
+  //
+  // Post-fix: in the ENTRY, __require.main === entry's module ⇒
+  // require.main === module is true. In a SUB-MODULE (loaded via
+  // __loadModule), scopedRequire.main === entry's module, but
+  // module === sub-module's mod, so require.main === module is
+  // FALSE — exactly the canonical 'is this file being executed
+  // directly?' semantics.
+  scopedRequire.main = __require.main;
 
   // X.5-M3: thread currently-loading module path through globalThis so the
   // URL shim null-base fallback (in node-shims url module) can compose
@@ -2343,8 +2356,22 @@ function __loadModule(resolvedPath) {
     // Normalize path to match VFS bundle key format (no leading /)
     const normalizedPath = resolvedPath.replace(/^\\/+/, "");
     const precompiled = __compiledModules.get(normalizedPath) || __compiledModules.get(resolvedPath);
+    // G2/G3 (runtime-pkg wave): pass console/process/Buffer + timer
+    // shims into every sub-module so process.exit() inside a required
+    // file routes through __processMod (NOT workerd's real process,
+    // which crashes with 'Canceling the request'). Pre-fix call site
+    // passed only 5 params; sub-modules' references to these globals
+    // resolved up the V8 scope chain to workerd's real bindings.
+    //
+    // The compile-time params list at manager.ts already added the
+    // extras; here we provide them at call time. Order MUST match
+    // the params list at manager.ts:225+.
     if (precompiled) {
-      precompiled(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+      precompiled(
+        mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir,
+        __consoleMod, __processMod, __BufferMod,
+        globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
+      );
     } else {
       // Fallback: try new Function at request time (works if eval is permitted)
       // X.5-S: conditional-param-rename via __mkCompiledFn — see helper
@@ -2352,8 +2379,16 @@ function __loadModule(resolvedPath) {
       // \`const __dirname = …\` at top level (e.g. vite's chunks/node.js)
       // collides with the previously hardcoded \`__dirname\` parameter.
       try {
-        const fn = __mkCompiledFn(code);
-        fn(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+        // G2/G3: same extra-params extension on the fallback path.
+        const fn = __mkCompiledFn(code, [
+          "console", "process", "Buffer",
+          "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+        ]);
+        fn(
+          mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir,
+          __consoleMod, __processMod, __BufferMod,
+          globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
+        );
       } catch (evalErr) {
         // W3.5 Fix C: if the file was in the bundle but its pre-compile
         // failed at facet startup, surface the original SyntaxError

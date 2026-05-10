@@ -248,11 +248,24 @@ const __compiledModules = new Map();
 // SyntaxError on ESM source) instead of the misleading "file was not
 // pre-bundled" message at request time.
 const __compileFailures = new Map();
+// G2/G3 (runtime-pkg wave): sub-modules receive the SAME shim params
+// as the entry. Pre-fix, sub-module precompiled fns took only
+// (exports, require, module, __filename, __dirname); their references
+// to process, console, Buffer resolved up the V8 scope chain to
+// workerd's GLOBAL bindings — so process.exit() inside any require'd
+// file hit workerd's real process API and produced 'Canceling the
+// request', and console.log bypassed our supervisor streaming.
+// Adding the extras to the param list shadows globals inside every
+// sub-module body. require.main is also threaded so bins doing
+// 'if (require.main === module)' route correctly through the
+// scopedRequire chain (G2 cowsay).
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
-      // X.5-S: conditional-param-rename via __mkCompiledFn — see helper above.
-      __compiledModules.set(__p, __mkCompiledFn(__c));
+      __compiledModules.set(__p, __mkCompiledFn(__c, [
+        "console", "process", "Buffer",
+        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+      ]));
     } catch (__e) {
       __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
     }
@@ -305,6 +318,15 @@ ${SHIMS}
     }
 
     const mod = { exports: {} };
+    // G2 (runtime-pkg wave): bins commonly check
+    //   if (require.main === module) { main(); }
+    // — the canonical 'is this file being executed directly?' guard.
+    // Pre-fix, __require.main was null; the check was always false;
+    // bins like cowsay silently treated themselves as imported and
+    // never ran main(). Setting require.main = entry's module here
+    // (and to the loaded module on each __loadModule call below)
+    // makes the check true exactly when the file is the entry.
+    __require.main = mod;
     try {
       __compiledFn(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
@@ -445,12 +467,16 @@ const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __compiledModules = new Map();
 // W3.5 Fix C: keep this template byte-equivalent to generateFacetCode's
 // pre-compile loop so __loadModule sees the same diagnostic surface.
+// G2/G3 (runtime-pkg wave): same extra-params shim as the facet API
+// path above — see comment block there for the rationale.
 const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
-      // X.5-S: conditional-param-rename via __mkCompiledFn — see helper above.
-      __compiledModules.set(__p, __mkCompiledFn(__c));
+      __compiledModules.set(__p, __mkCompiledFn(__c, [
+        "console", "process", "Buffer",
+        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+      ]));
     } catch (__e) {
       __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
     }
@@ -499,6 +525,8 @@ ${SHIMS}
     }
 
     const mod = { exports: {} };
+    // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
+    __require.main = mod;
     try {
       __compiledFn(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
