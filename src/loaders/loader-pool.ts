@@ -138,6 +138,37 @@ export interface NimbusLoaderCallOptions {
    * BEFORE the user function is declared. JSON-serializable only.
    */
   context?: Record<string, unknown>;
+  /**
+   * Per-call WebAssembly modules. Merged with the pool's
+   * constructor-time `wasmModules` at dispatch time and shipped via
+   * the LOADER's modules map (same `{ wasm: ArrayBuffer }` shape).
+   *
+   * Shipping path validated empirically against prod (see
+   * /workspace/.seal-internal/2026-05-10-wasm-csp/findings.md):
+   * `WebAssembly.instantiate(bytes)` is blocked at request-time but
+   * the LOADER-modules path compiles bytes during the inner
+   * worker's module-load phase, where wasm code generation IS
+   * permitted. The bytes ride INSIDE the worker code blob; workerd
+   * never crosses structured-clone, never executes user-eval.
+   *
+   * Cache key impact: per-call bytes are fingerprinted (length +
+   * first/last byte per module) and folded into the loader cache
+   * key. Identical bytes on the same slot → warm reuse; different
+   * bytes → fresh isolate. The pool's existing `wasmHash` field
+   * captures CONSTRUCTOR-time bytes only; per-call bytes get an
+   * independent fingerprint mixed into the slot id at dispatch.
+   *
+   * Naming collision rule: a per-call key MUST NOT collide with a
+   * constructor-time key (after identifier sanitisation). The
+   * dispatch path throws BindingError if it does — silently
+   * shadowing the constructor's wasm would break the cache-key
+   * invariant downstream callers rely on.
+   *
+   * Used by the `wasm-runner` shell command in src/runtime/
+   * wasm-runner.ts to ship user-supplied .wasm bytes from VFS into
+   * a fresh facet isolate per invocation.
+   */
+  wasmModules?: Record<string, ArrayBuffer>;
 }
 
 /** Per-map override. Adds onError strategy for partial failures. */
@@ -340,6 +371,75 @@ export class NimbusLoaderPool {
   }
 
   /**
+   * Materialise per-call wasm bytes into the {name,id,bytes} shape
+   * the import-build path expects. Mirrors the constructor's logic
+   * (identifier sanitisation + collision check) but ALSO rejects
+   * collisions with constructor-time entries.
+   *
+   * Returns [] when there are no per-call entries — that's the hot
+   * path (every existing pool dispatch).
+   */
+  #materialisePerCallWasm(
+    perCall: Record<string, ArrayBuffer> | undefined,
+  ): Array<{ name: string; id: string; bytes: ArrayBuffer }> {
+    if (!perCall) return [];
+    const out: Array<{ name: string; id: string; bytes: ArrayBuffer }> = [];
+    const ctorIds = new Set(this.wasmModules.map((w) => w.id));
+    const seen = new Set<string>();
+    for (const [name, bytes] of Object.entries(perCall)) {
+      if (!(bytes instanceof ArrayBuffer)) {
+        throw new BindingError(
+          `NimbusLoaderPool: per-call wasmModules['${name}'] must be ` +
+            `ArrayBuffer (got ${(bytes as any)?.constructor?.name || typeof bytes}).`,
+        );
+      }
+      const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
+      if (ctorIds.has(id)) {
+        throw new BindingError(
+          `NimbusLoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+            `id='${id}') collides with a constructor-time wasm module. ` +
+            `Per-call modules cannot shadow pool-defaults. Pick a distinct name.`,
+        );
+      }
+      if (seen.has(id)) {
+        throw new BindingError(
+          `NimbusLoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+            `id='${id}') collides with another per-call key. Pick distinct names.`,
+        );
+      }
+      seen.add(id);
+      out.push({ name, id, bytes });
+    }
+    return out;
+  }
+
+  /**
+   * Compute a stable fingerprint of a list of {name,bytes} entries.
+   * Returns '0' for the empty list (cache-key bytes-stable for the
+   * common no-per-call-wasm case). Same fingerprinting strategy as
+   * the constructor's `wasmHash`: name + length + first/last byte
+   * per module. Hashing all bytes would be O(20+ MiB) per dispatch
+   * for nothing — the length+endpoints fingerprint is a strong-
+   * enough discriminator and identical bytes produce identical
+   * fingerprints (warm reuse).
+   */
+  #fingerprintWasm(
+    entries: Array<{ name: string; bytes: ArrayBuffer }>,
+  ): string {
+    if (entries.length === 0) return '0';
+    const fp = entries
+      .map((w) => {
+        const u = new Uint8Array(w.bytes);
+        const len = u.byteLength;
+        const first = len > 0 ? u[0] : 0;
+        const last = len > 0 ? u[len - 1] : 0;
+        return `${w.name}:${len}:${first}:${last}`;
+      })
+      .join('|');
+    return hashSource(fp);
+  }
+
+  /**
    * Build the WorkerCode blob that the loader callback will return.
    * Same bytes every time for a given (fnHash, slot, context) → lets
    * workerd treat it as a cache hit and reuse the isolate.
@@ -349,7 +449,11 @@ export class NimbusLoaderPool {
    * crash the facet with "__name is not defined". User preambles are
    * appended below the shim.
    */
-  #buildCode(fnSource: string, context?: Record<string, unknown>) {
+  #buildCode(
+    fnSource: string,
+    context?: Record<string, unknown>,
+    perCallWasmEntries?: Array<{ name: string; id: string; bytes: ArrayBuffer }>,
+  ) {
     const workerOpts = {
       compatibilityDate: CF_COMPAT_DATE,
       compatibilityFlags: ['nodejs_compat'],
@@ -367,22 +471,33 @@ export class NimbusLoaderPool {
     ];
 
     // ── WASM module imports ───────────────────────────────────────────
-    // Each entry in `wasmModules` is registered in the LOADER's modules
-    // map (below) as `{ wasm: ArrayBuffer }`. workerd compiles each
-    // during the worker's module-load phase (eval permitted there) and
-    // the standard ESM import binding receives the resulting
+    // Each entry in `wasmModules` (constructor-time + per-call) is
+    // registered in the LOADER's modules map (below) as
+    // `{ wasm: ArrayBuffer }`. workerd compiles each during the
+    // worker's module-load phase (eval permitted there) and the
+    // standard ESM import binding receives the resulting
     // WebAssembly.Module. We expose them on `globalThis.__NIMBUS_WASM`
     // so the user fn can read them at request time without having to
-    // re-import (the user fn is serialized via fn.toString and
-    // doesn't carry import statements).
-    if (this.wasmModules.length > 0) {
+    // re-import (the user fn is serialized via fn.toString and doesn't
+    // carry import statements).
+    //
+    // Per-call entries (passed via NimbusLoaderCallOptions.wasmModules
+    // — used by the wasm-runner shell command) are appended to the same
+    // table. Naming collision with constructor entries is rejected
+    // upstream in #materialisePerCallWasm so the import block here
+    // doesn't have to deduplicate.
+    const allWasmEntries = [
+      ...this.wasmModules,
+      ...(perCallWasmEntries ?? []),
+    ];
+    if (allWasmEntries.length > 0) {
       lines.push('');
       lines.push('// ── Pool-injected WebAssembly modules ─────────────────────');
-      for (const w of this.wasmModules) {
+      for (const w of allWasmEntries) {
         lines.push(`import __NIMBUS_WASM_${w.id} from './${w.name}';`);
       }
       lines.push('globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};');
-      for (const w of this.wasmModules) {
+      for (const w of allWasmEntries) {
         // Bind by ORIGINAL name (the spec the caller used) so the user
         // fn looks up via the same key it passed to wasmModules.
         lines.push(
@@ -442,8 +557,12 @@ export class NimbusLoaderPool {
     // (`{ wasm: ArrayBuffer }`) tells workerd to compile during the
     // module-load phase — the only phase where wasm code generation
     // is permitted in this deploy.
+    //
+    // Per-call entries are appended after constructor entries so the
+    // map order matches the import order in the generated worker.js
+    // (matters only for human-readable diffs; workerd doesn't care).
     const modules: Record<string, any> = { 'worker.js': moduleSource };
-    for (const w of this.wasmModules) {
+    for (const w of allWasmEntries) {
       modules[w.name] = { wasm: w.bytes };
     }
 
@@ -471,14 +590,22 @@ export class NimbusLoaderPool {
     args: unknown[],
     context: Record<string, unknown> | undefined,
     resilience: ResolvedResilience,
+    perCallWasm?: Record<string, ArrayBuffer>,
   ): Promise<unknown> {
+    // Per-call wasm fingerprint. Mixed into the cache key so two calls
+    // with different bytes hit different slots (no cache poisoning).
+    // For the common case (no per-call wasm) the fingerprint is '0',
+    // which is bytes-stable so warm reuse is unaffected.
+    const perCallWasmEntries = this.#materialisePerCallWasm(perCallWasm);
+    const perCallWasmHash = this.#fingerprintWasm(perCallWasmEntries);
+
     // Cache key includes the short DO id so warm isolates are scoped to
     // ONE session. See the doIdShort field comment for why — without it,
     // a later session's pool reuses the warm worker from a previous
     // session (which still carries the old session's env.SUPERVISOR
     // binding), and writeBatch RPCs land in the wrong DO's VFS.
-    const id = `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:slot-${slotIndex}`;
-    const code = this.#buildCode(fnSource, context);
+    const id = `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}`;
+    const code = this.#buildCode(fnSource, context, perCallWasmEntries);
 
     // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
     // last-facet-id even on a hang or silent kill. Bounded — single
@@ -614,6 +741,7 @@ export class NimbusLoaderPool {
       [arg],
       opts?.context,
       resilience,
+      opts?.wasmModules,
     )) as Awaited<R>;
   }
 
@@ -692,6 +820,7 @@ export class NimbusLoaderPool {
             [items[idx]],
             opts?.context,
             resilience,
+            opts?.wasmModules,
           )) as Awaited<R>;
           settled[idx] = { ok: true, value };
         } catch (err) {
