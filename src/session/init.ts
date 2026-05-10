@@ -1787,6 +1787,192 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
       return exitCode;
     };
+    // ── Primitive #2 (primitives-extension wave): generic .bin handler ──
+    //
+    // Direct terminal invocation of `<bincmd> [args]` (e.g. `tsc --version`,
+    // `prettier --check .`, `eslint .`) used to fall through to "command
+    // not found" because `registry.resolve(name)` only knows about
+    // pre-registered commands. The user had to type `npm run <script>`
+    // — but that requires a script entry in package.json.
+    //
+    // Fix: wrap registry.resolve. When the upstream resolver returns
+    // undefined AND the cwd has `node_modules/.bin/<name>`, synthesise
+    // a handler that:
+    //   - reads the shim's "node <relative-script>" pointer (the
+    //     node_modules/.bin/<name> file is a tiny POSIX wrapper or a
+    //     direct JS file in well-formed packages);
+    //   - feeds the resulting `node <script> <args...>` line through
+    //     shellExecuteTracked so the bin gets a PID, log buffer,
+    //     processTable entry, and Process tab presence — same long-
+    //     running treatment as a `npm run dev` script.
+    //
+    // Long-running detection: if the bin name is dev/start/serve/watch,
+    // OR the argv contains explicit watch/dev/serve flags, the
+    // shellExecuteTracked call gets longRunning=true so the Process
+    // tab opens automatically and ^C/restart wires through.
+    //
+    // This is generic — it does NOT enumerate per-bin behaviours.
+    // Every project's bin shims are picked up the same way.
+    const LONG_RUNNING_BIN_NAMES = new Set([
+      'vite', 'next', 'astro', 'nuxt', 'remix', 'serve', 'http-server',
+      'wrangler', 'nodemon', 'tsx', 'ts-node-dev', 'webpack-dev-server',
+      'parcel', 'rollup', 'esbuild', 'turbo',
+    ]);
+    function looksLongRunning(binName: string, argv: string[]): boolean {
+      // Bin name says "long-running"
+      if (LONG_RUNNING_BIN_NAMES.has(binName)) {
+        // ...unless the user passed a one-shot subcommand or version flag.
+        for (const a of argv) {
+          if (a === '--version' || a === '-v' || a === '--help' || a === '-h') return false;
+          if (a === 'build' || a === 'preview') return false;
+        }
+        return true;
+      }
+      // Argv flag says "long-running"
+      for (const a of argv) {
+        if (a === '--watch' || a === '-w' || a === '--serve' || a === '--dev') return true;
+      }
+      return false;
+    }
+
+    const upstreamResolve = registry.resolve.bind(registry);
+    (registry as any).resolve = async function nimbusBinFallbackResolve(name: string): Promise<any> {
+      const upstream = await upstreamResolve(name);
+      if (upstream) return upstream;
+      // Synthesised handler. Each resolve call recomputes (cwd can
+      // change between invocations); we never cache under `name`.
+      return async (ctx: any): Promise<number> => {
+        const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+        const binShimPath = cwd + '/node_modules/.bin/' + name;
+        if (!sqliteFs.exists(binShimPath)) {
+          // Real "command not found".
+          ctx.stderr.write(`${name}: command not found\n`);
+          return 127;
+        }
+
+        // Bin shims are typically a 2-liner:
+        //   #!/usr/bin/env node
+        //   require('../lib/<entry>.js')
+        //
+        // We can't just feed the shim to Nimbus's node command:
+        //   1. The shebang line isn't stripped (real node strips it
+        //      pre-parse; Nimbus's node-runner does not).
+        //   2. The require's relative path is anchored to the SHIM's
+        //      directory (.../node_modules/.bin/), so running the
+        //      shim from a different cwd resolves wrong.
+        //
+        // Approach: parse the shim to find the actual entry script,
+        // resolve it against the shim's directory, and pass THAT
+        // directly to node. The entry script handles its own require
+        // graph from its real location.
+        let entryAbsPath: string;
+        try {
+          const shimCode = sqliteFs.readFileString(binShimPath);
+          const stripped = shimCode.replace(/^#![^\n]*\n/, '');
+          const reqMatch = stripped.match(/require\s*\(\s*["']([^"']+)["']\s*\)/);
+          if (!reqMatch) {
+            // Some shims are direct JS (no wrapper require). Fall back
+            // to running the stripped-shebang version verbatim.
+            const tmpPath = 'tmp/.bin-' + name + '.js';
+            try { sqliteFs.mkdir('tmp', { recursive: true }); } catch {}
+            sqliteFs.writeFile(tmpPath, stripped);
+            entryAbsPath = tmpPath;
+          } else {
+            const relPath = reqMatch[1];
+            // Resolve `..` / `.` against binShimPath's directory.
+            const shimDir = binShimPath.substring(0, binShimPath.lastIndexOf('/'));
+            const parts = (shimDir + '/' + relPath).split('/');
+            const stack: string[] = [];
+            for (const p of parts) {
+              if (p === '' || p === '.') continue;
+              if (p === '..') { stack.pop(); continue; }
+              stack.push(p);
+            }
+            entryAbsPath = stack.join('/');
+            // If the resolved file doesn't exist, try common JS
+            // extensions (some shims drop them).
+            if (!sqliteFs.exists(entryAbsPath)) {
+              for (const ext of ['.js', '.cjs', '.mjs']) {
+                if (sqliteFs.exists(entryAbsPath + ext)) {
+                  entryAbsPath = entryAbsPath + ext;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (e: any) {
+          ctx.stderr.write(`${name}: failed to parse bin shim: ${e?.message || e}\n`);
+          return 1;
+        }
+        const argv: string[] = ctx.args || [];
+        const longRunning = looksLongRunning(name, argv);
+        // CRITICAL: do NOT route through shell.execute → registry.resolve
+        // → this same wrapper (would recurse). Instead, invoke the
+        // 'node' command directly with the bin shim as argv[0]. The
+        // node command is registered upstream-side, so upstreamResolve
+        // returns the real handler; no recursion.
+        const nodeCmd = await upstreamResolve('node');
+        if (!nodeCmd) {
+          ctx.stderr.write(`${name}: node command unavailable\n`);
+          return 1;
+        }
+        // Build shell-line for the spawn-tracked banner: the user-facing
+        // command label that `ps` and the Process tab show.
+        const shellLine = `${name} ${argv.join(' ')}`.trim();
+        // PID + log + (if long-running) port-registry: shellExecuteTracked
+        // does this. But we've established it can recurse via
+        // shell.execute. To get the bookkeeping WITHOUT the recursion,
+        // we replicate the spawn-banner + processTable.spawn dance
+        // here, then dispatch via nodeCmd directly.
+        const entry = self.processTable.spawn(shellLine, [name, ...argv], cwd);
+        const pid = entry.pid;
+        const startedAt = Date.now();
+        if (longRunning) {
+          self.processTable.setLongRunning(pid);
+        }
+        if (self.terminal) {
+          const label = longRunning ? 'started (long-running)' : 'started';
+          self.terminal.write(
+            `\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`,
+          );
+        }
+        notifyTerminalEvent(self.terminal, {
+          type: 'spawn', pid, command: shellLine, longRunning,
+        });
+
+        // Tee output through processLogs the same way shellExecuteTracked
+        // does, so logs <pid> + the Process tab WS log stream see chunks.
+        const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => (d: string) => {
+          try { self.processLogs.append(pid, stream, String(d)); } catch {}
+          try { target.write(d); } catch {}
+        };
+
+        let exitCode = 1;
+        try {
+          exitCode = await nodeCmd({
+            ...ctx,
+            args: [entryAbsPath, ...argv],
+            stdout: { write: tee('stdout', ctx.stdout) },
+            stderr: { write: tee('stderr', ctx.stderr) },
+          });
+        } catch (e: any) {
+          const msg = (e && (e.stack || e.message)) || String(e);
+          tee('stderr', ctx.stderr)(`bin error: ${msg}\n`);
+          exitCode = 1;
+        } finally {
+          try { self.processTable.exit(pid, exitCode); } catch {}
+          try {
+            if (!self.processLogs.getExit(pid)) {
+              self.processLogs.markExit(pid, exitCode);
+            }
+          } catch {}
+          notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: exitCode, command: shellLine });
+          try { self._emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt); } catch {}
+        }
+        return exitCode;
+      };
+    };
+
     // Register core npm with enhanced `npm run <script>` support
     const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel);
     registry.register('npm', async (ctx: any) => {
