@@ -119,10 +119,23 @@ function makeEmptyGrid(): Record<CacheTier, Record<CacheKind, CacheCell>> {
  * shutdown, code update); when that happens, counters reset to zero
  * on the next request — itself diagnostic signal: counters all-zero
  * immediately after a request means we just woke up from cold.
+ *
+ * startedAt lazy-init: workerd returns 0 for `Date.now()` at
+ * module-evaluation time because IO is gated until the first request.
+ * Initialize lazily on the first hit/miss/snapshot so the timestamp
+ * reflects actual module-first-touched-by-request time, not the
+ * sentinel 0 value.
  */
 const _grid = makeEmptyGrid();
-const _startedAt = Date.now();
-let _lastResetAt = _startedAt;
+let _startedAt = 0;
+let _lastResetAt = 0;
+function _ensureStartedAt(): void {
+  if (_startedAt === 0) {
+    const now = Date.now();
+    _startedAt = now;
+    _lastResetAt = now;
+  }
+}
 
 /**
  * Record a cache HIT at the given tier for the given kind.
@@ -136,6 +149,7 @@ let _lastResetAt = _startedAt;
  * practice but the API tolerates it).
  */
 export function recordHit(tier: CacheTier, kind: CacheKind, bytes: number): void {
+  _ensureStartedAt();
   const cell = _grid[tier][kind];
   cell.hits++;
   // Negative bytes is meaningless; coerce to 0. We trust the caller for
@@ -165,6 +179,7 @@ export function recordHit(tier: CacheTier, kind: CacheKind, bytes: number): void
  *   recordHit('L2', 'tarball', 12345);
  */
 export function recordMiss(tier: CacheTier, kind: CacheKind): void {
+  _ensureStartedAt();
   _grid[tier][kind].misses++;
 }
 
@@ -175,6 +190,7 @@ export function recordMiss(tier: CacheTier, kind: CacheKind): void {
  * affect the singleton. Mirrors readDiagCounters() in diag-counters.ts.
  */
 export function snapshot(): CacheStatsSnapshot {
+  _ensureStartedAt();
   // Deep copy so caller mutations don't leak back into the singleton.
   const byTier = {} as Record<CacheTier, Record<CacheKind, CacheCell>>;
   const hitRate = {} as Record<CacheTier, Record<CacheKind, number>>;
