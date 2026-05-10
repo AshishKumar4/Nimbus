@@ -1150,6 +1150,9 @@ export class NpmInstaller {
         perPackage: shardResults.flatMap((r) => r.perPackage),
         elapsed: Math.max(...shardResults.map((r) => r.elapsed)),
         facetCounters: mergeFacetCounters(shardResults.map((r) => r.facetCounters)),
+        // cache-obs-2: merge per-shard cacheStatEvents (flat
+        // concatenation). Each shard's events are independent.
+        cacheStatEvents: shardResults.flatMap((r) => (r as any).cacheStatEvents ?? []),
       } as InstallBatchResult;
 
       let okCount = 0;
