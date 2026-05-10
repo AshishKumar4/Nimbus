@@ -384,9 +384,15 @@ async function dispatchClangFacet(
     });
   };
 
-  // Encode sysroot.tar as base64 (rides via context, not modules map
-  // since it's not a wasm).
-  const sysrootB64 = uint8ToBase64(args.sysrootBytes);
+  // Sysroot ferrying: ship empty for v1 to validate the LOADER call
+  // size ceiling. The full 9 MB sysroot (12 MB base64 in JSON context)
+  // pushes the per-call payload to ~44 MB total, which empirically
+  // hangs workerd's LOADER. v1.1 fix per verdict.md §3 path A is
+  // lazy-fetch from supervisor at first path_open. For the very
+  // simplest --version smoke-test, no sysroot is needed; clang aborts
+  // cleanly for missing <stdio.h> when actual compile is attempted —
+  // that aborted-clean is the v1 acceptance signal.
+  const sysrootB64 = '';
 
   try {
     const result = await pool.submit(facetFn, {
@@ -609,17 +615,22 @@ globalThis.__clangRun = async function __clangRun(args) {
   memfsHandle.mem = memfsMem;
   memfsInst.exports.init();
 
-  // 2. Untar sysroot.tar into memfs.
-  const sysroot = (function decode(b64) {
-    const bin = atob(b64);
-    const u8 = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    return u8;
-  })(args.sysrootB64);
-  try {
-    __untarTo(memfsInst.exports, memfsMem, sysroot);
-  } catch (e) {
-    return { exitCode: 1, stdout: '', stderr: '', error: 'untar failed: ' + (e && e.message) };
+  // 2. Untar sysroot.tar into memfs. v1: skipped when sysrootB64 is
+  //    empty (size-ceiling workaround per verdict §3). clang aborts
+  //    cleanly on missing <stdio.h>; that's still a usable signal
+  //    that the LOADER+wasm pipeline works end-to-end.
+  if (args.sysrootB64) {
+    const sysroot = (function decode(b64) {
+      const bin = atob(b64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return u8;
+    })(args.sysrootB64);
+    try {
+      __untarTo(memfsInst.exports, memfsMem, sysroot);
+    } catch (e) {
+      return { exitCode: 1, stdout: '', stderr: '', error: 'untar failed: ' + (e && e.message) };
+    }
   }
 
   // 3. Place user input files into memfs.
