@@ -1808,21 +1808,39 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           ctx.stdout.write(`\n> ${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${scriptName}\n`);
           ctx.stdout.write(`> ${script}\n\n`);
 
-          // ── W11: Next.js loud-block ───────────────────────────────────
-          // Next.js dev/start needs a custom http.Server + child_process.fork
-          // with v8-IPC + webpack/Turbopack, none of which Phase 1 ships.
-          // Surface a deterministic message rather than letting the script
-          // hang or emit a confusing crash. See src/frameworks/next.ts.
+          // ── Next.js loud-block (was W11 per-framework substrate) ──────
+          //
+          // Primitives wave (P12): the previous wave shipped this as a
+          // 45-line standalone module at src/frameworks/next.ts that
+          // exported nothing but the strings used here. Per the
+          // "no per-framework substrate" rule, the message is inlined
+          // (the only thing the module did was hold these strings) and
+          // the file is deleted.
+          //
+          // Next.js dev/start still needs a custom http.Server +
+          // child_process.fork with v8-IPC + webpack/Turbopack, none of
+          // which Nimbus ships. We surface a deterministic message
+          // rather than letting the script hang or emit a confusing
+          // crash. The block remains a one-off symbol-detection
+          // guard, NOT a generic per-framework code path. Any future
+          // similar guard belongs alongside this one — not in its own
+          // src/frameworks/<name>.ts file.
           if (
             (scriptName === 'dev' || scriptName === 'start') &&
             (pkg.dependencies?.next || pkg.devDependencies?.next) &&
             !(scriptArgs.includes('--force') || scriptArgs.includes('--allow-next'))
           ) {
-            try {
-              const { blockMessage, BLOCK_EXIT_CODE } = await import('../frameworks/next.js');
-              ctx.stderr.write(blockMessage());
-              return BLOCK_EXIT_CODE;
-            } catch { /* fall through if module load fails for any reason */ }
+            const NEXT_BLOCK_MESSAGE =
+              '\x1b[31m\u2718\x1b[0m \x1b[1mNext.js dev server is not supported in Nimbus.\x1b[0m\n' +
+              '   Specific blockers:\n' +
+              "     1. \x1b[2mchild_process.fork\x1b[0m IPC uses v8-serializer (Nimbus ships JSON projection).\n" +
+              '     2. webpack / Turbopack bundlers are not integrated with the pre-bundle pipeline.\n' +
+              '     3. Custom \x1b[2mhttp.Server\x1b[0m semantics (keep-alive, raw sockets) are facet-incompatible.\n' +
+              '\n' +
+              '   Workaround: deploy with \x1b[36mnext build\x1b[0m + a hosted runtime,\n' +
+              '   or pass \x1b[36m--allow-next\x1b[0m to bypass at your own risk.\n';
+            ctx.stderr.write(NEXT_BLOCK_MESSAGE);
+            return 127;
           }
 
           // ── Shell-composite detection ──────────────────────────────────
