@@ -473,7 +473,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcReadFile(path: string): Promise<string | null> { return _rpc._rpcReadFile(this as any, path); }
   async _rpcReadFileBytes(path: string): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
-  async _rpcWriteFile(path: string, content: string): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content); }
+  async _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content); }
   async _rpcStat(path: string): Promise<any> { return _rpc._rpcStat(this as any, path); }
   async _rpcReaddir(path: string): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path); }
   async _rpcExists(path: string): Promise<boolean> { return _rpc._rpcExists(this as any, path); }

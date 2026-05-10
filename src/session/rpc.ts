@@ -132,7 +132,7 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
     }
 }
 
-export async function _rpcWriteFile(self: RpcHost, path: string, content: string): Promise<void> {
+export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void> {
     self.ensureSqliteFs();
     const p = path.replace(/^\/+/, '');
     const parts = p.split('/');
@@ -140,6 +140,12 @@ export async function _rpcWriteFile(self: RpcHost, path: string, content: string
       const dir = parts.slice(0, i).join('/');
       if (dir && !self.sqliteFs!.exists(dir)) self.sqliteFs!.mkdir(dir, { recursive: true });
     }
+    // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
+    // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
+    // structured-clone preserves Uint8Array across the boundary; structured-
+    // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
+    // a Buffer flows through node-shims.ts:writeFileSync which stores it as
+    // a plain Uint8Array on the cell — the shape that arrives here.
     self.sqliteFs!.writeFile(p, content);
 }
 

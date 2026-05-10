@@ -162,6 +162,38 @@ const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
 
+  // ── byte-shape helpers (binary-fs wave) ──
+  // __vfsWrites + __vfsBundle now carry \`Uint8Array | string\`. Strings
+  // are the hot path (module source, package.json, user JS); bytes are
+  // the binary-fs path (wasm modules, images, binary protocol payloads).
+  // Pre-fix the Uint8Array branch UTF-8-decoded the bytes to a string,
+  // which mangled every byte ≥ 0x80 to U+FFFD (3-byte EF BF BD on the
+  // re-encode), corrupting all binary fs writes. See
+  // /workspace/.seal-internal/2026-05-10-binary-fs/.
+  function _isBytes(v) { return v instanceof Uint8Array; }
+  // Length in bytes regardless of shape — used by statSync's size field
+  // and the bundle-cap accounting on the host side.
+  function _byteLen(v) {
+    if (_isBytes(v)) return v.byteLength;
+    if (typeof v === "string") return _enc.encode(v).length;
+    return 0;
+  }
+  // Coerce to bytes for binary-write paths. Strings are UTF-8-encoded
+  // (lossless for valid Unicode); bytes pass through.
+  function _asBytes(v) {
+    if (_isBytes(v)) return v;
+    if (typeof v === "string") return _enc.encode(v);
+    return new Uint8Array(0);
+  }
+  // Coerce to string for text-read paths. Bytes are UTF-8-decoded
+  // (lossy for invalid sequences — same caveat as Node's
+  // \`Buffer.toString('utf8')\`); strings pass through.
+  function _asString(v) {
+    if (typeof v === "string") return v;
+    if (_isBytes(v)) return _dec.decode(v);
+    return "";
+  }
+
   // ── helpers ──
   function _strip(p) { return String(p).replace(/^\\/+/, ""); }
   function _resolve(p) {
@@ -199,6 +231,12 @@ const __fsMod = (() => {
   }
 
   // ── readFileSync ──
+  // Returns a Buffer when no encoding requested, a string otherwise.
+  // The cell shape (string vs Uint8Array) drives conversion:
+  //   - text encoding requested + string cell → return string as-is
+  //   - text encoding requested + bytes cell → UTF-8 decode bytes
+  //   - no encoding + string cell → wrap _enc.encode(...) as Buffer
+  //   - no encoding + bytes cell → wrap bytes as Buffer (no copy)
   function readFileSync(p, opts) {
     const absPath = _resolve(p);
     const content = _bundleLookup(absPath);
@@ -209,29 +247,64 @@ const __fsMod = (() => {
       throw err;
     }
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
-    if (encoding === "utf8" || encoding === "utf-8" || encoding === "utf8") return content;
-    if (encoding) return content; // treat all text encodings the same
+    if (encoding) {
+      // text encoding requested — produce a string regardless of cell shape.
+      return _asString(content);
+    }
+    // No encoding requested — produce a Buffer-shaped Uint8Array.
+    if (_isBytes(content)) return __BufferMod.from(content);
     return __BufferMod.from(content);
   }
 
   // ── writeFileSync ──
+  // Uint8Array is preserved as bytes (no UTF-8 round-trip → no
+  // EF-BF-BD mangling on bytes ≥ 0x80). String is preserved as string
+  // (the hot path for source code / package.json / user JS).
+  // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
-    const str = typeof data === "string" ? data : (data instanceof Uint8Array ? _dec.decode(data) : String(data));
-    __vfsWrites[k] = str;
+    let cell;
+    if (data instanceof Uint8Array) cell = data;
+    else if (typeof data === "string") cell = data;
+    else cell = String(data);
+    __vfsWrites[k] = cell;
     // Also update bundle so subsequent reads see the write
-    if (__vfsBundle) __vfsBundle[k] = str;
+    if (__vfsBundle) __vfsBundle[k] = cell;
   }
 
   // ── appendFileSync ──
+  // Concat semantics: if EITHER existing or new data is bytes, the
+  // combined cell is bytes (lossless for both). When both are strings,
+  // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
-    const existing = _bundleLookup(absPath) || "";
-    const str = typeof data === "string" ? data : (data instanceof Uint8Array ? _dec.decode(data) : String(data));
-    __vfsWrites[k] = existing + str;
-    if (__vfsBundle) __vfsBundle[k] = existing + str;
+    const existing = _bundleLookup(absPath);
+    const existingDefined = existing !== undefined;
+    const dataIsBytes = data instanceof Uint8Array;
+    const existingIsBytes = existingDefined && _isBytes(existing);
+
+    let cell;
+    if (!existingDefined) {
+      // No prior content — same shape as a writeFileSync.
+      if (dataIsBytes) cell = data;
+      else if (typeof data === "string") cell = data;
+      else cell = String(data);
+    } else if (dataIsBytes || existingIsBytes) {
+      // Promote both to bytes and concat.
+      const a = _asBytes(existing);
+      const b = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data)));
+      const out = new Uint8Array(a.byteLength + b.byteLength);
+      out.set(a, 0);
+      out.set(b, a.byteLength);
+      cell = out;
+    } else {
+      // Both strings — string concat.
+      cell = existing + (typeof data === "string" ? data : String(data));
+    }
+    __vfsWrites[k] = cell;
+    if (__vfsBundle) __vfsBundle[k] = cell;
   }
 
   // ── existsSync ──
@@ -278,7 +351,10 @@ const __fsMod = (() => {
     // File with content embedded?
     const content = _bundleLookup(absPath);
     if (content !== undefined) {
-      const size = _enc.encode(content).length;
+      // _byteLen handles both string (UTF-8 encode) and Uint8Array
+      // (byteLength) — fixes binary writes from reporting the
+      // post-corruption byte count.
+      const size = _byteLen(content);
       return { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size, mtime: new Date(), mode: 0o644 };
     }
     // File listed in parent's manifest but content was capped out — return
@@ -462,25 +538,33 @@ const __fsMod = (() => {
         const e = new Error("ENOENT: no such file, read '" + this._path + "'");
         e.code = "ENOENT"; throw e;
       }
-      const buf = typeof data === "string" ? _enc.encode(data) : data;
+      // _bundleLookup may return string OR Uint8Array (binary-fs wave).
+      const buf = _isBytes(data) ? data : _enc.encode(data);
       const start = position || 0;
       const slice = buf.subarray(start, start + (length || (buf.length - start)));
       buffer.set(slice, offset || 0);
       return { bytesRead: slice.length, buffer };
     }
     async write(buffer, offset, length, position) {
-      let chunk;
-      if (typeof buffer === "string") chunk = buffer;
-      else {
+      // binary-fs: keep bytes as bytes through the write. Pre-fix this
+      // path UTF-8-decoded the chunk to a string, mangling non-ASCII
+      // bytes. Use appendFileSync's polymorphic concat so the existing
+      // cell's shape (string vs bytes) drives the merged shape.
+      let chunkBytesWritten;
+      if (typeof buffer === "string") {
         const o = offset || 0;
         const l = length === undefined ? buffer.length - o : length;
-        chunk = _dec.decode(buffer.subarray(o, o + l));
+        const sub = buffer.substr(o, l);
+        appendFileSync(this._path, sub);
+        chunkBytesWritten = _enc.encode(sub).length;
+      } else {
+        const o = offset || 0;
+        const l = length === undefined ? buffer.length - o : length;
+        const sub = buffer.subarray(o, o + l);
+        appendFileSync(this._path, sub);
+        chunkBytesWritten = sub.byteLength;
       }
-      const existing = (() => { try { return readFileSync(this._path, "utf8"); } catch { return ""; } })();
-      // Naive concat. Adequate for the small-file patterns in
-      // puppeteer-core / graceful-fs; not a real positional write.
-      writeFileSync(this._path, existing + chunk);
-      return { bytesWritten: chunk.length, buffer };
+      return { bytesWritten: chunkBytesWritten, buffer };
     }
     async readFile(opts) { return readFileSync(this._path, opts); }
     async writeFile(data, opts) { writeFileSync(this._path, data, opts); }
@@ -632,10 +716,36 @@ const __fsMod = (() => {
       return rs;
     },
     createWriteStream: (p, opts) => {
+      // binary-fs: chunks may arrive as Uint8Array OR string. Keep
+      // each chunk in its native shape; on final, if any chunk is
+      // bytes the merged write is bytes; otherwise string-concat
+      // (the hot path for ASCII text streams).
       const chunks = [];
+      let anyBytes = false;
       const ws = new __streamMod.Writable({
-        write(chunk, enc, cb) { chunks.push(typeof chunk === "string" ? chunk : _dec.decode(chunk)); cb(); },
-        final(cb) { writeFileSync(p, chunks.join("")); cb(); },
+        write(chunk, enc, cb) {
+          if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
+          else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
+          cb();
+        },
+        final(cb) {
+          if (anyBytes) {
+            // Sum byteLength across mixed chunks; concat to one Uint8Array.
+            let total = 0;
+            for (const c of chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
+            const out = new Uint8Array(total);
+            let off = 0;
+            for (const c of chunks) {
+              const b = (c instanceof Uint8Array) ? c : _enc.encode(c);
+              out.set(b, off);
+              off += b.byteLength;
+            }
+            writeFileSync(p, out);
+          } else {
+            writeFileSync(p, chunks.join(""));
+          }
+          cb();
+        },
       });
       return ws;
     },
@@ -2045,8 +2155,18 @@ const __moduleCache = new Map();
  */
 function __readFileOr(path, fallback) {
   const k = path.replace(/^\\/+/, "");
-  if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
-  if (__vfsWrites && k in __vfsWrites) return __vfsWrites[k];
+  // binary-fs: bundle/writes cells may be Uint8Array; module-resolution
+  // callers (package.json parse, source compile) want strings. Decode
+  // bytes lossily — same as Node's Buffer.toString('utf8').
+  function _coerceStr(v) {
+    if (typeof v === "string") return v;
+    if (v instanceof Uint8Array) {
+      try { return new TextDecoder().decode(v); } catch { return fallback; }
+    }
+    return fallback;
+  }
+  if (__vfsBundle && k in __vfsBundle) return _coerceStr(__vfsBundle[k]);
+  if (__vfsWrites && k in __vfsWrites) return _coerceStr(__vfsWrites[k]);
   // Fallback: try through fs shim (handles _resolve for user-facing paths)
   try { return __fsMod.readFileSync("/" + k, "utf8"); } catch { return fallback; }
 }

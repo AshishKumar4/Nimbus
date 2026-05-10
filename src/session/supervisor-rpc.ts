@@ -93,7 +93,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._getStub()._rpcReadFileBytes(path);
   }
 
-  async writeFile(path: string, content: string): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array): Promise<void> {
+    // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
+    // string-only, which forced node-shims.ts:writeFileSync to UTF-8-
+    // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
+    // and corrupting binary content. RPC structured-clone handles
+    // Uint8Array transparently; downstream _rpcWriteFile also accepts
+    // either shape. See /workspace/.seal-internal/2026-05-10-binary-fs/.
     return this._getStub()._rpcWriteFile(path, content);
   }
 

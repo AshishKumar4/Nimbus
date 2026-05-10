@@ -53,8 +53,54 @@ export interface FacetExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
-  /** Files written by the script (path → content), to be flushed back to VFS */
-  vfsWrites?: Record<string, string>;
+  /**
+   * Files written by the script (path → content), to be flushed back to VFS.
+   *
+   * binary-fs wave: cells may be string | Uint8Array. After JSON.parse on
+   * the result envelope (NodeProcess.run returns JSON.stringify; the
+   * LOADER.load fallback uses Response.json) Uint8Array becomes a
+   * {"0":n,"1":n,...} object — _reviveVfsWriteCell reconstitutes the
+   * bytes.
+   */
+  vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
+}
+
+/**
+ * Detect & restore a Uint8Array that's been JSON-mangled to a
+ * {"0":n,"1":n,...} object during the result-envelope round-trip.
+ * String inputs and already-Uint8Array inputs pass through unchanged.
+ *
+ * Heuristic: a plain object whose keys are dense non-negative integers
+ * starting at 0 and whose values are byte-sized integers is treated as
+ * a serialized Uint8Array. False-positive risk is negligible because
+ * (a) only `__vfsWrites` cells reach this path and (b) the only types
+ * that ever land in `__vfsWrites` are string and Uint8Array.
+ */
+function _reviveVfsWriteCell(v: unknown): string | Uint8Array {
+  if (typeof v === 'string') return v;
+  if (v instanceof Uint8Array) return v;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    const keys = Object.keys(o);
+    if (keys.length === 0) return new Uint8Array(0);
+    // Quick bail-out: not all keys are non-negative integers.
+    let maxIdx = -1;
+    for (const k of keys) {
+      const n = Number(k);
+      if (!Number.isInteger(n) || n < 0) return String(v);
+      if (n > maxIdx) maxIdx = n;
+    }
+    // Dense check: keys.length === maxIdx + 1
+    if (keys.length !== maxIdx + 1) return String(v);
+    const out = new Uint8Array(keys.length);
+    for (let i = 0; i < keys.length; i++) {
+      const b = o[String(i)];
+      if (typeof b !== 'number' || b < 0 || b > 255) return String(v);
+      out[i] = b;
+    }
+    return out;
+  }
+  return String(v);
 }
 
 // ── Code generators ─────────────────────────────────────────────────────
@@ -1874,7 +1920,15 @@ export class FacetManager {
           const dir = parts.slice(0, i).join('/');
           if (dir && !this.vfs.exists(dir)) this.vfs.mkdir(dir, { recursive: true });
         }
-        this.vfs.writeFile(path, content);
+        // binary-fs wave: __vfsWrites cells carry string | Uint8Array.
+        // The hot path here is the LIVE SUPERVISOR.writeFile RPC inside
+        // the facet — which preserves Uint8Array via structured-clone.
+        // This `result.vfsWrites` carries only the FAILED-writes residue
+        // (after JSON.parse), where Uint8Array gets serialized as a
+        // {"0":...,"1":...} object. Detect that shape and reconstitute
+        // bytes; otherwise pass through (string for source code, etc.).
+        const restored = _reviveVfsWriteCell(content);
+        this.vfs.writeFile(path, restored);
       } catch (e: any) {
         console.error('[nimbus] VFS write-back failed:', path, e?.message);
       }
