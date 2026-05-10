@@ -220,26 +220,56 @@ function isExecutableWasmInvocation(_argv: string[]): boolean {
 }
 
 /**
- * Build the actual argv for clang.wasm given the user's argv.
+ * Build the clang.wasm argv from the user's argv. Mirrors binji's
+ * compile invocation in shared.js:
+ *   ['clang', '-cc1', '-emit-obj', ...clangCommonArgs, '-O2',
+ *    '-o', obj, '-x', 'c', input]
  *
- * binji's pattern: `-cc1 -emit-obj <opts> -o <out>.o -x c <input>.c`
+ * The first arg is the program name. v1 supports a single .c source
+ * + a -o flag; multi-TU is left for v1.1.
  *
- * v1 only supports:
- *   clang foo.c -o foo
- *   clang foo.c bar.c -o multi
- *
- * Multi-source: each .c gets compiled separately to .o, then the
- * driver invokes wasm-ld. This is handled at a higher layer in the
- * driver; this function returns clang.wasm's argv for a SINGLE .c
- * compile (the first .c found). The full multi-TU flow is wired by
- * the dispatch caller (collectInputFiles + facet orchestration).
+ * The user invokes `clang foo.c -o foo` (driver mode); we translate
+ * to the cc1 invocation that binji's runtime expects.
  */
-function buildClangCc1Argv(_userArgv: string[], _cwd: string): string[] {
-  // Stubbed for v1: actual argv construction happens in the facet
-  // (it sees the memfs after sysroot is untar'd; only there can it
-  // validate include paths). We pass user argv through and the facet
-  // does the cc1 driver dispatch.
-  return _userArgv;
+function buildClangCc1Argv(userArgv: string[], _cwd: string): string[] {
+  // Find the input .c file and -o output.
+  let inputC = '';
+  let outputPath = 'a.out';
+  for (let i = 0; i < userArgv.length; i++) {
+    const a = userArgv[i];
+    if (a === '-o' && i + 1 < userArgv.length) { outputPath = userArgv[i + 1]; i++; continue; }
+    if (a.startsWith('-')) continue;
+    if (!inputC) inputC = a;
+  }
+  if (!inputC) {
+    // No input — let clang complain about it (matches user expectation).
+    return ['clang', ...userArgv];
+  }
+  // binji's clangCommonArgs (from shared.js).
+  const clangCommonArgs = [
+    '-disable-free',
+    '-isysroot', '/',
+    '-internal-isystem', '/include/c++/v1',
+    '-internal-isystem', '/include',
+    '-internal-isystem', '/lib/clang/8.0.1/include',
+    '-ferror-limit', '19',
+    '-fmessage-length', '80',
+    '-fcolor-diagnostics',
+  ];
+  // For v1 hello-world: compile to .o (intermediate). The link to
+  // final .wasm happens via wasm-ld in a follow-up dispatch (path B in
+  // verdict §3). For the very first GREEN, we accept the user-facing
+  // semantic that `clang foo.c -o foo` produces a .o (not a .wasm)
+  // until the multi-call link step lands.
+  const objPath = outputPath.endsWith('.o') ? outputPath : outputPath + '.o';
+  return [
+    'clang', '-cc1', '-emit-obj',
+    ...clangCommonArgs,
+    '-O2',
+    '-o', objPath,
+    '-x', 'c',
+    inputC,
+  ];
 }
 
 /** Collect the .c source files referenced in argv into base64-encoded
