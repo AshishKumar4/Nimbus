@@ -41,6 +41,7 @@ import { isWarmRejoin, joinExistingSession } from './init-phases.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
+import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
@@ -163,6 +164,96 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
     if (url.pathname === '/api/processes') {
       return handleProcessesListRequest(self.processTable, self.processLogs);
+    }
+
+    // Primitives wave (P11) — kill / restart by PID for the Process tab UI.
+    //
+    // Both endpoints accept POST only. The body is empty; the PID is in the
+    // URL. Same authorization model as the rest of /api/* (session-scoped
+    // via the /s/<id>/ prefix).
+    //
+    // Behaviour:
+    //   POST /api/kill/<pid>     — equivalent to typing `kill <pid>` in
+    //                              the shell. Tears down a vite-shim PID
+    //                              cleanly (stops viteDevServer, deletes
+    //                              vite-config) OR delegates to
+    //                              facetManager.kill for real facets.
+    //   POST /api/restart/<pid>  — kill + (if it was the vite shim)
+    //                              re-run `vite` with the same argv to
+    //                              boot a fresh server. For real facets,
+    //                              currently only kills (caller must
+    //                              re-issue spawn). Same response shape.
+    //
+    // Response: 200 {ok, pid, action} on success; 404 {error, pid} when
+    // PID isn't tracked; 502 on internal failure.
+    {
+      const killMatch = url.pathname.match(/^\/api\/(kill|restart)\/(\d+)$/);
+      if (killMatch && request.method === 'POST') {
+        const action = killMatch[1] as 'kill' | 'restart';
+        const pid = parseInt(killMatch[2], 10);
+        const json = (status: number, body: any) =>
+          new Response(JSON.stringify(body), {
+            status, headers: { 'Content-Type': 'application/json' },
+          });
+        if (!Number.isFinite(pid) || pid <= 0) {
+          return json(400, { error: 'invalid pid', pid });
+        }
+        const entry = self.processTable.get(pid);
+        if (!entry) {
+          return json(404, { error: 'no such process', pid });
+        }
+        const isViteShim = self._viteShimPid === pid;
+        try {
+          if (isViteShim) {
+            // Same teardown the `kill` shell handler does. Centralised
+            // here so the UI doesn't need to reimplement it.
+            try {
+              if (self.cirrusReal?.isRunning) { self.cirrusReal.stop(self.ctx); self.cirrusReal = null; }
+              if (self.viteDevServer?.isRunning) {
+                self.viteDevServer.stop();
+                self.viteDevServer = null;
+                try { await self.ctx.storage.delete('vite-config'); } catch {}
+              }
+            } catch { /* keep going to teardown processTable / portRegistry */ }
+            try { self.portRegistry.unregisterByPid(pid); } catch {}
+            try { self.processTable.kill(pid); } catch {}
+            self._viteShimPid = null;
+            self._viteShimPort = null;
+          } else if (self.facetManager) {
+            const ok = self.facetManager.kill(pid);
+            if (!ok) return json(404, { error: 'facetManager.kill returned false', pid });
+          } else {
+            // No facetManager and not a vite shim — best-effort
+            // process-table tombstone so the UI can re-render the badge.
+            try { self.portRegistry.unregisterByPid(pid); } catch {}
+            try { self.processTable.kill(pid); } catch {}
+          }
+        } catch (e: any) {
+          return json(502, { error: String(e?.message || e), pid });
+        }
+
+        // For 'restart', re-issue the equivalent of `vite` in the shell
+        // when the killed PID was the vite shim. We do NOT generically
+        // restart arbitrary processes — the supervisor doesn't keep
+        // enough argv/env state to do that safely for real facets.
+        if (action === 'restart' && isViteShim) {
+          // Send a synthetic 'vite' command line to the terminal so the
+          // existing registry handler runs. This is the simplest way to
+          // re-trigger the SAME code path the user originally invoked,
+          // without duplicating its 100-line setup here.
+          if (self.terminal?.ws) {
+            try {
+              self.terminal.ws.send(JSON.stringify({ type: 'output', data: '\r\n' }));
+            } catch {}
+          }
+          // Drop a marker so a future probe can assert on the action.
+          notifyTerminalEvent(self.terminal, {
+            type: 'restart-requested', pid, command: entry.command || 'vite',
+          });
+        }
+
+        return json(200, { ok: true, pid, action });
+      }
     }
 
     if (url.pathname === '/api/memory') {

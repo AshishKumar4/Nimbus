@@ -2320,6 +2320,37 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       if (!pidArg) { ctx.stderr.write('Usage: kill <pid>\n'); return 1; }
       const pid = parseInt(pidArg);
       if (isNaN(pid)) { ctx.stderr.write('kill: invalid pid\n'); return 1; }
+
+      // Primitives wave (P11): if the target is the vite shim PID
+      // (registered by P5's long-running spawn), tear down the
+      // in-process viteDevServer / cirrusReal too — facetManager.kill
+      // only handles real Worker-Loader facets, and would leave the
+      // shim running with its port registered against a dead PID.
+      if (self._viteShimPid === pid) {
+        try {
+          if (self.cirrusReal?.isRunning) {
+            self.cirrusReal.stop(self.ctx);
+            self.cirrusReal = null;
+          }
+          if (self.viteDevServer?.isRunning) {
+            self.viteDevServer.stop();
+            self.viteDevServer = null;
+            try { await self.ctx.storage.delete('vite-config'); } catch {}
+          }
+        } catch (e: any) {
+          ctx.stderr.write('kill: while stopping vite shim: ' + (e?.message || e) + '\n');
+        }
+        try { self.portRegistry.unregisterByPid(pid); } catch {}
+        try { self.processTable.kill(pid); } catch {}
+        notifyTerminalEvent(self.terminal, {
+          type: 'exit', pid, code: 137, command: 'vite',
+        });
+        self._viteShimPid = null;
+        self._viteShimPort = null;
+        ctx.stdout.write(`Process ${pid} killed.\n`);
+        return 0;
+      }
+
       if (self.facetManager?.kill(pid)) {
         ctx.stdout.write(`Process ${pid} killed.\n`);
         return 0;

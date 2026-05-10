@@ -63,8 +63,15 @@
     .logs-tab .logs-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; flex-shrink: 0; box-shadow: 0 0 4px #3fb950; }
     .logs-tab.exited .logs-tab-dot { background: #6e7681; box-shadow: none; }
     .logs-tab.exited.failed .logs-tab-dot { background: #ff7b72; box-shadow: none; }
-    .logs-tab .logs-tab-close { color: #6e7681; font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 2px; margin-left: 2px; }
-    .logs-tab .logs-tab-close:hover { color: #f85149; background: #30363d; }
+     .logs-tab .logs-tab-close { color: #6e7681; font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 2px; margin-left: 2px; }
+     .logs-tab .logs-tab-close:hover { color: #f85149; background: #30363d; }
+     /* Primitives wave (P11): per-tab Kill / Restart controls. Kept
+        small + monochrome so they don't compete with the close X for
+        attention. Hover state mirrors the close-X red. */
+     .logs-tab .logs-tab-action { color: #6e7681; font-size: 11px; line-height: 1; padding: 0 4px; border-radius: 2px; margin-left: 2px; cursor: pointer; user-select: none; }
+     .logs-tab .logs-tab-action:hover { color: #c9d1d9; background: #30363d; }
+     .logs-tab .logs-tab-kill:hover { color: #f85149; }
+     .logs-tab.exited .logs-tab-action { display: none; }
     .logs-panel-body { flex: 1; overflow: auto; background: #0d1117; position: relative; min-height: 0; }
     .logs-view { display: none; white-space: pre; font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace; font-size: 12px; line-height: 1.5; color: #c9d1d9; padding: 8px 10px; word-break: break-all; min-height: 100%; }
     .logs-view.active { display: block; }
@@ -661,10 +668,20 @@
           '<span class="logs-tab-dot"></span>' +
           '<span class="logs-tab-label"></span>' +
           '<span class="logs-tab-pid" style="color:#484f58">#' + pid + '</span>' +
+          // Primitives wave (P11): Kill (^C/SIGTERM-equivalent) and
+          // Restart per-tab. Hidden via CSS when the process has
+          // exited. The close X is unchanged — it just removes the
+          // local tab; Kill is what tears down the process.
+          '<span class="logs-tab-action logs-tab-restart" title="Restart process (kill + spawn fresh; vite only)">↻</span>' +
+          '<span class="logs-tab-action logs-tab-kill" title="Kill process">⏹</span>' +
           '<span class="logs-tab-close" title="Close tab (process keeps running)">✕</span>';
         tabEl.querySelector('.logs-tab-label').textContent = label;
         tabEl.addEventListener('click', (e) => {
-          if ((e.target).classList.contains('logs-tab-close')) return;
+          const target = e.target;
+          if (target.classList && (
+            target.classList.contains('logs-tab-close') ||
+            target.classList.contains('logs-tab-action')
+          )) return;
           // User click: this is the signal that they want to read the
           // log stream. Open the WS if it isn't already, then activate.
           const t = tabs.get(pid);
@@ -674,6 +691,40 @@
         tabEl.querySelector('.logs-tab-close').addEventListener('click', (e) => {
           e.stopPropagation();
           closeTab(pid);
+        });
+        const sendAction = async (action) => {
+          // POST /api/<action>/<pid>; surface failures as a banner inside
+          // the tab so the user sees WHY without hunting in network tools.
+          let resp;
+          try {
+            resp = await fetch(SESSION_PREFIX + '/api/' + action + '/' + pid, {
+              method: 'POST', cache: 'no-store',
+            });
+          } catch (err) {
+            const t = tabs.get(pid);
+            if (t) renderBanner(t, '[' + action + ' failed: network] ' + (err && err.message || err), 'failed');
+            return;
+          }
+          const t = tabs.get(pid);
+          if (!t) return;
+          if (!resp.ok) {
+            let msg = '[' + action + ' failed: HTTP ' + resp.status + ']';
+            try {
+              const j = await resp.json();
+              if (j && j.error) msg += ' ' + j.error;
+            } catch {}
+            renderBanner(t, msg, 'failed');
+            return;
+          }
+          renderBanner(t, '[' + action + ' requested]', 'ok');
+        };
+        tabEl.querySelector('.logs-tab-kill').addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendAction('kill');
+        });
+        tabEl.querySelector('.logs-tab-restart').addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendAction('restart');
         });
 
         const viewEl = document.createElement('div');
