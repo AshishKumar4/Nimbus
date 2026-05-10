@@ -37,15 +37,18 @@ await t.connect();
 await sleep(2_000);
 await t.waitForPrompt(15_000).catch(() => {});
 
-// ── Setup: a tiny project with typescript devDep ──
+// ── Setup: a tiny project with typescript ──
 await t.run('cd /home/user', 5_000);
 await t.run('mkdir -p tsc-probe', 5_000);
 await t.run('cd /home/user/tsc-probe', 5_000);
-await t.run('node -e "require(\'fs\').writeFileSync(\'package.json\', JSON.stringify({name:\'p\',version:\'1.0.0\',devDependencies:{typescript:\'5.4.5\'}}))"', 10_000);
+await t.run('node -e "require(\'fs\').writeFileSync(\'package.json\', JSON.stringify({name:\'p\',version:\'1.0.0\'}))"', 10_000);
 
-// Install (typescript is small, ~1 file in .bin, ~50 MB extracted).
+// Install via direct install spec (typescript is small, ~116 files).
+// Direct `npm i <pkg>@version` — using `npm i` against a package.json
+// with devDependencies hits a cached path that may produce
+// 'No dependencies to install. added 0 packages' on warm sessions.
 t.reset();
-t.cmd('npm i');
+t.cmd('npm i typescript@5.4.5');
 let installOk = false;
 try {
   await t.waitFor(

@@ -2019,9 +2019,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
         let exitCode = 1;
         try {
+          // Prepend '/' so nodeCmd's path-resolver treats this as an
+          // absolute VFS path (line ~295) rather than cwd-relative.
+          // entryAbsPath is already VFS-absolute (no leading slash, no
+          // ./../); we just adapt to nodeCmd's input contract.
+          const entryForNode = '/' + entryAbsPath;
           exitCode = await nodeCmd({
             ...ctx,
-            args: [entryAbsPath, ...argv],
+            args: [entryForNode, ...argv],
             stdout: { write: tee('stdout', ctx.stdout) },
             stderr: { write: tee('stderr', ctx.stderr) },
           });
