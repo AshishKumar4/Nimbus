@@ -260,20 +260,42 @@ const USER_CODE = ${safeCode};
 // transform output (W3.5 Fix B) preserves any source-level
 // \`const __dirname = path.dirname(fileURLToPath(import.meta.url))\` line
 // (vite's open@10 idiom), which collides at parse time with a hardcoded
-// \`__dirname\` parameter. Rename the \`__filename\` / \`__dirname\` slot to
-// a placeholder when the body declares it — slot alignment is preserved
-// (callers pass 5 positional args; dropping would mis-align downstream
-// slots like \`console\` / \`process\` in the USER_CODE wrap), and the
-// body's own binding becomes the single declarer.
-// See VERIFY-23417C5 §4 #1, audit/sections/X5S-plan.md §3.
+// \`__dirname\` parameter. Rename the param slot to a placeholder when
+// the body declares the same name — slot alignment is preserved
+// (callers pass positional args; dropping would mis-align downstream
+// slots), and the body's own binding becomes the single declarer.
+//
+// Generalised by nuxt-process-redeclare wave (2026-05-11) to also cover
+// the 7 extra-param shim names (\`process\`, \`console\`, \`Buffer\`,
+// \`setTimeout\`, \`setInterval\`, \`clearTimeout\`, \`clearInterval\`).
+// Pre-fix, the two-pass esbuild ESM→CJS path emitted \`const process =
+// (() => { const _m = require("node:process"); ... })();\` in the
+// requires block for \`import process from 'node:process'\` (nuxi.mjs
+// shape). That const declaration sits at the top-level of the wrapped
+// function body and collides with the \`process\` param at parse time:
+// SyntaxError: Identifier 'process' has already been declared.
+// Same class for the other 6 shim names. esbuild's single-pass CJS
+// path is unaffected (it renames the user's binding to \`process$1\`).
+//
+// Regex extended from (const|let|var) to (const|let|var|function|class)
+// as defensive coverage for future shapes — current convertEsmImportsToRequire
+// only emits \`const\` in the requires block, but the broader regex
+// guards against drift.
+//
+// See VERIFY-23417C5 §4 #1, audit/sections/X5S-plan.md §3,
+// .seal-internal/2026-05-11-nuxt-process-redeclare/plan.md §6.
 function __mkCompiledFn(code, extraParams) {
-  const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
-  const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
-  const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
-  const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
-  const params = ["exports", "require", "module", fnName, dnName];
-  if (extraParams) for (const p of extraParams) params.push(p);
-  return new Function(...params, code);
+  function renameIfDeclared(name) {
+    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
+    return re.test(code) ? name + "__nimbus_unused" : name;
+  }
+  const baseParams = [
+    "exports", "require", "module",
+    renameIfDeclared("__filename"),
+    renameIfDeclared("__dirname"),
+  ];
+  const renamedExtras = (extraParams || []).map(renameIfDeclared);
+  return new Function(...baseParams, ...renamedExtras, code);
 }
 
 const __compiledFn = __mkCompiledFn(USER_CODE, [
@@ -540,15 +562,20 @@ const USER_CODE = ${safeCode};
 
 // X.5-S: conditional-param-rename wrap. Kept byte-equivalent to
 // generateFacetCode's helper so both pre-compile loops see the same
-// diagnostic surface. See generateFacetCode for the rationale.
+// diagnostic surface. See generateFacetCode for the rationale and the
+// nuxt-process-redeclare-wave generalisation rationale.
 function __mkCompiledFn(code, extraParams) {
-  const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
-  const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
-  const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
-  const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
-  const params = ["exports", "require", "module", fnName, dnName];
-  if (extraParams) for (const p of extraParams) params.push(p);
-  return new Function(...params, code);
+  function renameIfDeclared(name) {
+    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
+    return re.test(code) ? name + "__nimbus_unused" : name;
+  }
+  const baseParams = [
+    "exports", "require", "module",
+    renameIfDeclared("__filename"),
+    renameIfDeclared("__dirname"),
+  ];
+  const renamedExtras = (extraParams || []).map(renameIfDeclared);
+  return new Function(...baseParams, ...renamedExtras, code);
 }
 
 const __compiledFn = __mkCompiledFn(USER_CODE, [
