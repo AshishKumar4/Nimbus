@@ -418,7 +418,13 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     '// AT THE END OF THE PREAMBLE (after the asm.js inline returns).',
     'const __nimbusOrigProcess = globalThis.process;',
     'const __nimbusOrigWGS = globalThis.WorkerGlobalScope;',
-    'globalThis.process = undefined;',
+    'try { globalThis.process = undefined; } catch (e) { /* non-writable; fall through */ }',
+    '// Defense in depth: if globalThis.process survived the = undefined',
+    '// (workerd treats it as non-configurable in some setups), mark it',
+    '// browser-like so Pyodide\'s `!process.browser` check fails → IN_NODE = false.',
+    'try {',
+    '  if (globalThis.process && typeof globalThis.process === "object") globalThis.process.browser = true;',
+    '} catch (e) { /* fail-soft */ }',
     'globalThis.WorkerGlobalScope = Object;',
     'if (typeof globalThis.location !== "object" || globalThis.location === null) {',
     '  globalThis.location = { href: "pyodide://nimbus/", origin: "pyodide://nimbus", toString() { return this.href; } };',
@@ -437,7 +443,8 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     '// Restore originals after the asm.js IIFE outer captures env flags.',
     '// The async-factory body re-reads process at runtime for IN_NODE, so',
     '// __pyodideRun also hides+restores process around the factory call.',
-    'globalThis.process = __nimbusOrigProcess;',
+    'try { globalThis.process = __nimbusOrigProcess; } catch (e) { /* fall through */ }',
+    'try { if (globalThis.process && globalThis.process.browser === true) delete globalThis.process.browser; } catch (e) {}',
     'globalThis.WorkerGlobalScope = __nimbusOrigWGS;',
     '// ── END: pyodide.asm.js inline ──────────────────────────────────',
     '',
@@ -593,7 +600,29 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // scope so we can restore process.
   const __origProcess = globalThis.process;
   const __origWGS = globalThis.WorkerGlobalScope;
-  globalThis.process = undefined;
+  // Some JS hosts (workerd among them) treat \`process\` as a non-
+  // configurable global that .delete() / = undefined silently fail
+  // for. Two safety nets:
+  //   1. Try the simple = undefined.
+  //   2. Also patch process.versions.node to "" — Pyodide's IN_NODE
+  //      check requires \`typeof process.versions.node === "string" &&\`
+  //      AND \`!process.browser\`. We can't reach negative-from-truthy
+  //      via versions but we can make .node be empty string ("" is a
+  //      string so condition holds), then also set .browser = true so
+  //      the negation \`!process.browser\` = false → IN_NODE = false.
+  //      That sidesteps any global-protection.
+  try {
+    globalThis.process = undefined;
+  } catch { /* non-writable; fall through to patch route */ }
+  try {
+    if (globalThis.process && typeof globalThis.process === 'object') {
+      // Mark this process object as a browser-like environment so
+      // Pyodide treats us as non-Node. Pyodide checks: typeof process
+      // === 'object' && typeof process.versions === 'object' && typeof
+      // process.versions.node === 'string' && !process.browser.
+      globalThis.process.browser = true;
+    }
+  } catch { /* fall through */ }
   globalThis.WorkerGlobalScope = Object;
   let pyodideMod;
   try {
