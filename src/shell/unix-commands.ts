@@ -584,39 +584,142 @@ function mkAwk(vfs: SqliteVFS): CmdFn {
       NF: number;
       printed: boolean;
     }
+    /**
+     * Expression evaluator without `new Function`. workerd CSP blocks
+     * dynamic code generation at request time. This is a small
+     * recursive-descent evaluator for the subset:
+     *   - literals: number, string ("...")
+     *   - field refs: $0, $N, $NF
+     *   - builtins: NR, NF
+     *   - user vars: identifier (looked up in st.vars; default 0)
+     *   - binary ops: + - * / % (numeric)
+     *   - parens: (expr)
+     *   - string concat happens via space-join in `print` call sites
+     *
+     * The grammar:
+     *   expr     := term (('+'|'-') term)*
+     *   term     := factor (('*'|'/'|'%') factor)*
+     *   factor   := number | string | '$' (number | 'NF') | ident | '(' expr ')'
+     */
     function evalExpr(expr: string, st: State): any {
-      // Lex/parse-free approach: use new Function with a tiny shim
-      // that exposes $N, NR, NF, vars, plus operators. We replace
-      // awk-isms with JS-compatible accesses first.
-      //
-      // Replacements:
-      //   $0      → __f[0]
-      //   $N      → __f[N]
-      //   $NF     → __f[__nf]
-      //   NR      → __nr
-      //   NF      → __nf
-      //   ident   → (__v.ident !== undefined ? __v.ident : 0)
-      //     — applied only to ident NOT already a JS keyword
-      //
-      // Numeric-string coercion: awk uses dual-typed values; we
-      // approximate with JS's loose coercion and a parseFloat
-      // fallback when an operator demands numeric.
-      let s = expr.trim();
-      // Strip trailing comment.
-      const hashIdx = stripStringsForScan(s).indexOf('#');
-      if (hashIdx >= 0) s = s.slice(0, hashIdx).trimEnd();
-      // Replace $NF first (longer match).
-      s = s.replace(/\$NF\b/g, '__f[__nf]');
-      // Replace $N (digits).
-      s = s.replace(/\$(\d+)/g, (_m, n) => `__f[${parseInt(n, 10)}]`);
-      // NR / NF — case-sensitive whole-word.
-      s = s.replace(/\bNR\b/g, '__nr').replace(/\bNF\b/g, '__nf');
-      // User vars: identifiers not in keyword/builtin allowlist + not
-      // inside strings.
-      s = remapUserVars(s);
+      const text = expr.trim();
+      let pos = 0;
+      function skipWs() { while (pos < text.length && /\s/.test(text[pos])) pos++; }
+      function peek(): string { return text[pos]; }
+      function consume(ch: string): boolean { skipWs(); if (text[pos] === ch) { pos++; return true; } return false; }
+      function expect(ch: string): void { if (!consume(ch)) throw new Error(`expected '${ch}' at "${text.slice(pos, pos + 20)}"`); }
+      function parseExpr(): any {
+        let left = parseTerm();
+        for (;;) {
+          skipWs();
+          const op = text[pos];
+          if (op === '+' || op === '-') {
+            pos++;
+            const right = parseTerm();
+            const ln = toNum(left), rn = toNum(right);
+            left = op === '+' ? ln + rn : ln - rn;
+          } else break;
+        }
+        return left;
+      }
+      function parseTerm(): any {
+        let left = parseFactor();
+        for (;;) {
+          skipWs();
+          const op = text[pos];
+          if (op === '*' || op === '/' || op === '%') {
+            pos++;
+            const right = parseFactor();
+            const ln = toNum(left), rn = toNum(right);
+            left = op === '*' ? ln * rn : op === '/' ? ln / rn : ln % rn;
+          } else break;
+        }
+        return left;
+      }
+      function parseFactor(): any {
+        skipWs();
+        if (pos >= text.length) throw new Error(`unexpected end of expression`);
+        const ch = text[pos];
+        // Number
+        if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(text[pos + 1]))) {
+          let start = pos;
+          while (pos < text.length && /[0-9.]/.test(text[pos])) pos++;
+          return parseFloat(text.slice(start, pos));
+        }
+        // String literal (double or single quotes)
+        if (ch === '"' || ch === "'") {
+          const quote = ch;
+          pos++;
+          let s = '';
+          while (pos < text.length && text[pos] !== quote) {
+            if (text[pos] === '\\' && pos + 1 < text.length) {
+              const esc = text[pos + 1];
+              s += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc === 'r' ? '\r' : esc === '\\' ? '\\' : esc === '"' ? '"' : esc === "'" ? "'" : esc;
+              pos += 2;
+            } else {
+              s += text[pos];
+              pos++;
+            }
+          }
+          if (pos < text.length) pos++; // skip closing quote
+          return s;
+        }
+        // Parenthesised
+        if (ch === '(') {
+          pos++;
+          const v = parseExpr();
+          expect(')');
+          return v;
+        }
+        // Unary minus
+        if (ch === '-') {
+          pos++;
+          return -toNum(parseFactor());
+        }
+        // Unary plus
+        if (ch === '+') {
+          pos++;
+          return toNum(parseFactor());
+        }
+        // Field ref: $N or $NF
+        if (ch === '$') {
+          pos++;
+          skipWs();
+          if (text.startsWith('NF', pos)) {
+            pos += 2;
+            return st.fields[st.NF] ?? '';
+          }
+          // Parens around index? $($1+1) etc — not supported, just digits.
+          let nStart = pos;
+          while (pos < text.length && /[0-9]/.test(text[pos])) pos++;
+          if (nStart === pos) throw new Error(`expected field index after $ at "${text.slice(pos, pos + 10)}"`);
+          const idx = parseInt(text.slice(nStart, pos), 10);
+          return st.fields[idx] ?? '';
+        }
+        // Identifier: NR, NF, user var
+        if (/[A-Za-z_]/.test(ch)) {
+          let start = pos;
+          while (pos < text.length && /[A-Za-z0-9_]/.test(text[pos])) pos++;
+          const name = text.slice(start, pos);
+          if (name === 'NR') return st.NR;
+          if (name === 'NF') return st.NF;
+          return st.vars[name] !== undefined ? st.vars[name] : 0;
+        }
+        throw new Error(`unexpected '${ch}' at "${text.slice(pos, pos + 20)}"`);
+      }
+      function toNum(v: any): number {
+        if (typeof v === 'number') return v;
+        const n = parseFloat(v);
+        return Number.isFinite(n) ? n : 0;
+      }
       try {
-        const fn = new Function('__f', '__nr', '__nf', '__v', 'return (' + s + ');');
-        return fn(st.fields, st.NR, st.NF, st.vars);
+        const v = parseExpr();
+        skipWs();
+        if (pos < text.length) {
+          // Trailing junk — could be intentional (e.g. tail of stmt is
+          // separator). Be permissive — return what we have.
+        }
+        return v;
       } catch (e: any) {
         throw new Error(`expr error: ${e?.message || e} in "${expr}"`);
       }
