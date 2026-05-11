@@ -53,6 +53,14 @@ await t.run('mkdir -p /home/user/bun-probe && cd /home/user/bun-probe', 10_000);
 }
 
 // 4. bun server.js (Bun.serve) — long-running marker.
+//
+// The server script self-exits at +5s (via `process.exit(0)`); we
+// observe (a) the BUN_LISTENING marker mid-run, then (b) the shell
+// prompt returning AFTER exit. Observing the prompt — rather than
+// `sleep(N)` — is the correct synchronisation primitive: it avoids
+// the WS-may-drop-during-blind-sleep race that caused the original
+// `_driver.mjs:88 WS not open` failure surfaced by TST-2.
+const SERVER_TTL_MS = 5_000;
 const serverJs = `
 const server = Bun.serve({
   port: 8722,
@@ -60,7 +68,7 @@ const server = Bun.serve({
   fetch(req) { return new Response("bun-served-content"); },
 });
 console.log("BUN_LISTENING " + server.port);
-setTimeout(() => { server.stop(); process.exit(0); }, 12_000);
+setTimeout(() => { server.stop(); process.exit(0); }, ${SERVER_TTL_MS});
 `.trim();
 await t.run(heredocCommand('/home/user/bun-probe/server.js', serverJs), 15_000);
 {
@@ -74,8 +82,15 @@ await t.run(heredocCommand('/home/user/bun-probe/server.js', serverJs), 15_000);
   a.check('bun server.js (Bun.serve) emitted started marker', started, t.buf.slice(-200));
 }
 
-// Wait for server to exit (so the prompt returns) before next test.
-await sleep(13_000);
+// Wait for the shell prompt to return after the server self-exits.
+// `waitForPrompt` polls the WS (which keeps it alive) and asserts the
+// prompt is at the buffer tail — i.e. the bun process really exited
+// and the shell is back. The probe-exit at +5s may complete BEFORE
+// this call, so we use `waitForPrompt` (matches current tail) rather
+// than `waitForNewPrompt` (which requires buf to grow further and
+// would deadlock if the prompt is already present).
+// SERVER_TTL_MS (5s) + 10s buffer = 15s timeout.
+await t.waitForPrompt(SERVER_TTL_MS + 10_000);
 
 // 5. bun install — small package.
 {
