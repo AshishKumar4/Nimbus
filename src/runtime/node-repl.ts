@@ -167,68 +167,45 @@ function nodeReplStepFacetFn(
 
   return (async function () {
     if (args.mode === 'init') {
-      // @ts-ignore — node:vm via workerd nodejs_compat at runtime.
-      const vmMod = await import('node:vm');
-      // @ts-ignore — node:util via nodejs_compat at runtime.
+      // workerd's node:vm is a stub (non-functional in nodejs_compat).
+      // Use direct eval against the facet's globalThis with console
+      // overrides for output capture + process.exit sentinel.
+      // @ts-ignore — node:util via workerd nodejs_compat at runtime.
       const utilMod = await import('node:util');
       g.__nimbus_node_util = utilMod;
-      const sandbox: any = {
-        globalThis: null as any,
-        console: {
-          log: (...xs: any[]) => g.__nimbus_node_stdout.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          error: (...xs: any[]) => g.__nimbus_node_stderr.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          warn: (...xs: any[]) => g.__nimbus_node_stderr.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          info: (...xs: any[]) => g.__nimbus_node_stdout.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          debug: (...xs: any[]) => g.__nimbus_node_stdout.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-        },
-        process: new Proxy((globalThis as any).process || {}, {
-          get(target: any, prop: string | symbol) {
-            if (prop === 'exit') {
-              return function (code?: number) {
-                const err: any = new Error('__nimbus_node_exit__');
-                err.__nimbus_exit_code = typeof code === 'number' ? code : 0;
-                throw err;
-              };
-            }
-            return target[prop as any];
-          },
-        }),
-        Buffer: g.Buffer,
-        URL: g.URL,
-        URLSearchParams: g.URLSearchParams,
-        TextEncoder: g.TextEncoder,
-        TextDecoder: g.TextDecoder,
-        fetch: g.fetch,
-        crypto: g.crypto,
-        atob: g.atob,
-        btoa: g.btoa,
-        setTimeout: g.setTimeout,
-        setInterval: g.setInterval,
-        clearTimeout: g.clearTimeout,
-        clearInterval: g.clearInterval,
-        require: (globalThis as any).require,
-      };
-      sandbox.globalThis = sandbox;
       g.__nimbus_node_stdout = [];
       g.__nimbus_node_stderr = [];
-      g.__nimbus_node_ctx = vmMod.createContext(sandbox);
-      g.__nimbus_node_vm = vmMod;
+      const stdoutPush = (xs: any[]) =>
+        g.__nimbus_node_stdout.push(xs.map((x: any) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n');
+      const stderrPush = (xs: any[]) =>
+        g.__nimbus_node_stderr.push(xs.map((x: any) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n');
+      g.__nimbus_node_orig_console = g.console;
+      g.console = {
+        log: (...xs: any[]) => stdoutPush(xs),
+        error: (...xs: any[]) => stderrPush(xs),
+        warn: (...xs: any[]) => stderrPush(xs),
+        info: (...xs: any[]) => stdoutPush(xs),
+        debug: (...xs: any[]) => stdoutPush(xs),
+      };
+      if (g.process && typeof g.process === 'object') {
+        g.__nimbus_node_orig_exit = g.process.exit;
+        g.process.exit = function (code?: number) {
+          const err: any = new Error('__nimbus_node_exit__');
+          err.__nimbus_exit_code = typeof code === 'number' ? code : 0;
+          throw err;
+        };
+      }
       return { stdout: '', stderr: '' };
     }
 
     const source = args.source || '';
-    const vmMod = g.__nimbus_node_vm;
-    const ctx = g.__nimbus_node_ctx;
     const utilMod = g.__nimbus_node_util;
-    if (!vmMod || !ctx) {
-      return { stdout: '', stderr: '', error: 'node repl context not initialised' };
+    if (!utilMod) {
+      return { stdout: '', stderr: '', error: 'node repl not initialised' };
     }
     const stdoutStart = g.__nimbus_node_stdout.length;
     const stderrStart = g.__nimbus_node_stderr.length;
 
-    // Recoverable-syntax detection: Node's repl wraps user input in
-    // `(function () { return (<src>); })` and treats certain
-    // SyntaxError messages as "input incomplete, ask for more".
     try {
       new Function('(function(){\n' + source + '\n})');
     } catch (parseErr: any) {
@@ -252,11 +229,7 @@ function nodeReplStepFacetFn(
     let result: any;
     let evaluatedAs: 'expr' | 'stmt' = 'stmt';
     try {
-      result = vmMod.runInContext('(' + source + '\n)', ctx, {
-        breakOnSigint: false,
-        timeout: 30_000,
-        displayErrors: false,
-      });
+      result = (0, eval)('(' + source + '\n)');
       evaluatedAs = 'expr';
     } catch (exprErr: any) {
       if (exprErr && exprErr.__nimbus_exit_code !== undefined) {
@@ -268,11 +241,7 @@ function nodeReplStepFacetFn(
         };
       }
       try {
-        result = vmMod.runInContext(source, ctx, {
-          breakOnSigint: false,
-          timeout: 30_000,
-          displayErrors: false,
-        });
+        result = (0, eval)(source);
         evaluatedAs = 'stmt';
       } catch (stmtErr: any) {
         if (stmtErr && stmtErr.__nimbus_exit_code !== undefined) {
@@ -284,6 +253,18 @@ function nodeReplStepFacetFn(
           };
         }
         const errStr = (stmtErr && stmtErr.stack) || String(stmtErr);
+        return {
+          stdout: g.__nimbus_node_stdout.slice(stdoutStart).join(''),
+          stderr: g.__nimbus_node_stderr.slice(stderrStart).join('') + errStr + '\n',
+        };
+      }
+    }
+
+    if (result && typeof result.then === 'function') {
+      try {
+        result = await result;
+      } catch (awaitErr: any) {
+        const errStr = (awaitErr && awaitErr.stack) || String(awaitErr);
         return {
           stdout: g.__nimbus_node_stdout.slice(stdoutStart).join(''),
           stderr: g.__nimbus_node_stderr.slice(stderrStart).join('') + errStr + '\n',

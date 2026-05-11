@@ -178,90 +178,65 @@ function bunReplStepFacetFn(
 
   return (async function () {
     if (args.mode === 'init') {
-      // @ts-ignore — node:vm provided by workerd's nodejs_compat at runtime;
-      // not in TS typings unless @types/node is wired in.
-      const vmMod = await import('node:vm');
-      // @ts-ignore — node:util via nodejs_compat at runtime.
+      // workerd's node:vm is a stub (per CF docs: "partially supported,
+      // non-functional"). runInContext throws "not implemented". Use a
+      // direct Function-based eval against the facet's globalThis,
+      // with console overridden to capture stdout/stderr and a
+      // process.exit override for SystemExit semantics.
+      // @ts-ignore — node:util via workerd nodejs_compat at runtime.
       const utilMod = await import('node:util');
       g.__nimbus_bun_util = utilMod;
-      // Build a context sandbox that exposes a curated set of globals.
-      // Console output is captured via overrides on the sandbox console;
-      // process.exit is overridden to throw a sentinel.
-      const sandbox: any = {
-        globalThis: null as any,
-        console: {
-          log: (...xs: any[]) => g.__nimbus_bun_stdout.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          error: (...xs: any[]) => g.__nimbus_bun_stderr.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          warn: (...xs: any[]) => g.__nimbus_bun_stderr.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          info: (...xs: any[]) => g.__nimbus_bun_stdout.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-          debug: (...xs: any[]) => g.__nimbus_bun_stdout.push(xs.map((x) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n'),
-        },
-        process: new Proxy((globalThis as any).process || {}, {
-          get(target: any, prop: string | symbol) {
-            if (prop === 'exit') {
-              return function (code?: number) {
-                const err: any = new Error('__nimbus_bun_exit__');
-                err.__nimbus_exit_code = typeof code === 'number' ? code : 0;
-                throw err;
-              };
-            }
-            return target[prop as any];
-          },
-        }),
-        // Surface common globals user code expects.
-        Bun: g.Bun,
-        Buffer: g.Buffer,
-        URL: g.URL,
-        URLSearchParams: g.URLSearchParams,
-        TextEncoder: g.TextEncoder,
-        TextDecoder: g.TextDecoder,
-        fetch: g.fetch,
-        crypto: g.crypto,
-        atob: g.atob,
-        btoa: g.btoa,
-        setTimeout: g.setTimeout,
-        setInterval: g.setInterval,
-        clearTimeout: g.clearTimeout,
-        clearInterval: g.clearInterval,
-        require: (globalThis as any).require,
-      };
-      sandbox.globalThis = sandbox;
       g.__nimbus_bun_stdout = [];
       g.__nimbus_bun_stderr = [];
-      g.__nimbus_bun_ctx = vmMod.createContext(sandbox);
-      g.__nimbus_bun_vm = vmMod;
+      // Override console on globalThis so user-written console.log
+      // routes through capture buffers. process.exit override via
+      // a property mutation.
+      const stdoutPush = (xs: any[]) =>
+        g.__nimbus_bun_stdout.push(xs.map((x: any) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n');
+      const stderrPush = (xs: any[]) =>
+        g.__nimbus_bun_stderr.push(xs.map((x: any) => typeof x === 'string' ? x : utilMod.inspect(x, { colors: false })).join(' ') + '\n');
+      // Preserve any pre-existing console for the supervisor's own logging.
+      g.__nimbus_bun_orig_console = g.console;
+      g.console = {
+        log: (...xs: any[]) => stdoutPush(xs),
+        error: (...xs: any[]) => stderrPush(xs),
+        warn: (...xs: any[]) => stderrPush(xs),
+        info: (...xs: any[]) => stdoutPush(xs),
+        debug: (...xs: any[]) => stdoutPush(xs),
+      };
+      // process.exit override: throw a sentinel that the eval catches.
+      if (g.process && typeof g.process === 'object') {
+        g.__nimbus_bun_orig_exit = g.process.exit;
+        g.process.exit = function (code?: number) {
+          const err: any = new Error('__nimbus_bun_exit__');
+          err.__nimbus_exit_code = typeof code === 'number' ? code : 0;
+          throw err;
+        };
+      }
       return { stdout: '', stderr: '' };
     }
 
     const source = args.source || '';
-    const vmMod = g.__nimbus_bun_vm;
-    const ctx = g.__nimbus_bun_ctx;
     const utilMod = g.__nimbus_bun_util;
-    if (!vmMod || !ctx) {
-      return { stdout: '', stderr: '', error: 'bun repl context not initialised' };
+    if (!utilMod) {
+      return { stdout: '', stderr: '', error: 'bun repl not initialised' };
     }
     const stdoutStart = g.__nimbus_bun_stdout.length;
     const stderrStart = g.__nimbus_bun_stderr.length;
 
-    // Pre-parse via Function constructor to detect recoverable SyntaxError.
-    // Node's repl uses an equivalent isRecoverable() helper; we mirror
-    // the heuristics. Strategy:
-    //   - Try `new Function("(function () { return (\n" + src + "\n); })")`
-    //     — when Function ctor throws "Unexpected end of input"-class
-    //     message, the input is incomplete.
-    //   - Otherwise, run vm.runInContext directly; SyntaxError there is a
-    //     real syntax error (surfaced as stderr).
+    // Recoverable-syntax detection: wrap user source in a Function ctor
+    // call; if it throws specific 'Unexpected end of input'-class
+    // messages, signal incomplete to the host.
     try {
       new Function('(function(){\n' + source + '\n})');
     } catch (parseErr: any) {
       const msg = parseErr?.message || '';
-      // Patterns Node's repl recognises as incomplete:
       const incompletePatterns = [
         /Unexpected end of input/i,
         /Unterminated template literal/i,
         /Unterminated string constant/i,
         /missing \) after argument list/i,
-        /Unexpected token \}/i,  // unbalanced brace inside multiline
+        /Unexpected token \}/i,
       ];
       if (incompletePatterns.some((re) => re.test(msg))) {
         return {
@@ -270,23 +245,18 @@ function bunReplStepFacetFn(
           incomplete: true,
         };
       }
-      // Real syntax error — fall through to vm.runInContext which will
-      // emit a parseable error message.
     }
 
-    // Wrap expression statements so they yield a value for displayhook.
-    // Heuristic: if source starts with '{' it might be a block; otherwise
-    // try wrapping as expression first; on SyntaxError fall back to
-    // statement-mode.
+    // Eval the source. Try expression-mode first (wrap in parens) so
+    // `1+2` yields a value for displayhook; on SyntaxError fall back to
+    // statement-mode. `(0, eval)` invokes indirect eval so var/let/const
+    // bindings go to globalThis, giving state persistence across pushes.
     let result: any;
     let evaluatedAs: 'expr' | 'stmt' = 'stmt';
     try {
-      // Expression mode: wrap in parens.
-      result = vmMod.runInContext('(' + source + '\n)', ctx, {
-        breakOnSigint: false,
-        timeout: 30_000,
-        displayErrors: false,
-      });
+      // Indirect eval at global scope. Expression wrapping with newline
+      // before/after avoids ASI hazards on lines ending with operators.
+      result = (0, eval)('(' + source + '\n)');
       evaluatedAs = 'expr';
     } catch (exprErr: any) {
       if (exprErr && exprErr.__nimbus_exit_code !== undefined) {
@@ -297,13 +267,8 @@ function bunReplStepFacetFn(
           exitCode: exprErr.__nimbus_exit_code,
         };
       }
-      // Statement mode — assignment, function decl, etc.
       try {
-        result = vmMod.runInContext(source, ctx, {
-          breakOnSigint: false,
-          timeout: 30_000,
-          displayErrors: false,
-        });
+        result = (0, eval)(source);
         evaluatedAs = 'stmt';
       } catch (stmtErr: any) {
         if (stmtErr && stmtErr.__nimbus_exit_code !== undefined) {
@@ -314,7 +279,6 @@ function bunReplStepFacetFn(
             exitCode: stmtErr.__nimbus_exit_code,
           };
         }
-        // Genuine runtime/syntax error in user code.
         const errStr = (stmtErr && stmtErr.stack) || String(stmtErr);
         return {
           stdout: g.__nimbus_bun_stdout.slice(stdoutStart).join(''),
@@ -323,7 +287,21 @@ function bunReplStepFacetFn(
       }
     }
 
-    // Displayhook: if expression mode produced a non-undefined value, render it.
+    // Resolve thenables — user code may return a Promise from an
+    // expression (e.g. `fetch('/api')`). Await it so the displayhook
+    // shows the resolved value, not "[object Promise]".
+    if (result && typeof result.then === 'function') {
+      try {
+        result = await result;
+      } catch (awaitErr: any) {
+        const errStr = (awaitErr && awaitErr.stack) || String(awaitErr);
+        return {
+          stdout: g.__nimbus_bun_stdout.slice(stdoutStart).join(''),
+          stderr: g.__nimbus_bun_stderr.slice(stderrStart).join('') + errStr + '\n',
+        };
+      }
+    }
+
     if (evaluatedAs === 'expr' && result !== undefined) {
       let rendered: string;
       try {
