@@ -1,6 +1,6 @@
 # Nimbus
 
-A full Linux-like development environment that runs entirely in your browser, on Cloudflare's edge. Open a URL, get a real shell with `node`, `npm`, `git`, `python`, `ruby`, and 60+ Unix commands. No Docker. No containers. No cold-start wait. Sessions hibernate at $0 idle cost and resume in milliseconds.
+A Linux-like development environment that runs entirely in your browser, on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), and 60+ Unix commands. No Docker. No containers. No cold-start wait. Sessions hibernate at $0 idle cost and resume in milliseconds.
 
 🌐 **Try it now:** https://nimbus.ashishkmr472.workers.dev
 
@@ -10,7 +10,7 @@ A full Linux-like development environment that runs entirely in your browser, on
 
 Cloud dev environments today are either heavy VMs (slow to start, expensive to idle) or browser sandboxes that can't run real toolchains. Nimbus is different:
 
-- **Real Linux-like userland.** Real `node`, real `bun`, real `git clone` over HTTPS, real `npm install` against the live npm registry. Real `python` and `ruby` runtimes. Not a stub.
+- **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on — not a JS interpreter stub, but also not the upstream Node/Bun binaries: it's the workerd-compatibility surface). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly) and real `ruby` (ruby.wasm 3.3, WebAssembly).
 - **Sub-500ms cold start.** Each session is a Cloudflare Durable Object backed by SQLite. No VM boot. No image pull.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
 - **The URL is the session.** Bookmark it, share it, hand it to a teammate — they join the same filesystem.
@@ -29,7 +29,7 @@ Cloud dev environments today are either heavy VMs (slow to start, expensive to i
 You're in a real shell. Try:
 
 ```bash
-node --version              # native node via Workers nodejs_compat
+node --version              # workerd nodejs_compat (V8 + Node-API shim)
 git clone https://github.com/AshishKumar4/Markflow   # real git over HTTPS
 cd Markflow && npm install  # real npm against registry.npmjs.org
 npm run dev                  # vite dev server — preview in the iframe
@@ -55,7 +55,7 @@ Verified against the live deploy by behavioral probes in `tests/behavioral/`.
 | Capability | Status |
 |---|:---:|
 | Real shell, 60+ Unix commands, persistent 10 GB filesystem | ✅ |
-| `node`, `bun` natively (Workers `nodejs_compat`) | ✅ |
+| `node`, `bun` via Cloudflare workerd `nodejs_compat` (V8 + Node-API shim, not the upstream binaries) | ✅ |
 | `python` / `python3` — Pyodide-based CPython 3.13 | ✅ |
 | `ruby` / `ruby3` — ruby.wasm-based Ruby 3.3 | ✅ |
 | `clang` — LLVM 8 compiling to wasm | ✅ (libc fuller via sysroot-swap in progress) |
