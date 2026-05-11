@@ -333,10 +333,36 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // `python3` both bind to this factory; the runner ferries
     // pyodide.asm.wasm via LOADER modules-map and pyodide.asm.js +
     // python_stdlib.zip via the loader-pool context channel.
-    registerRunnerFactory('python-runner', makePythonRunnerFactory({
-      facetMgr,
-      vfs: sqliteFs,
-    }));
+    //
+    // REPL-W1: wrap the one-shot factory so `python` with NO args (and
+    // no flags that would consume args) drops into an interactive
+    // REPL. The wrap is purely additive — args-bearing invocations
+    // pass through to the existing handler unchanged.
+    {
+      const onePython = makePythonRunnerFactory({ facetMgr, vfs: sqliteFs });
+      const wrappedPython: typeof onePython = (manifest, installRoot, binName, binKind) => {
+        const oneShotHandler = onePython(manifest, installRoot, binName, binKind);
+        return async function pythonReplOrOneShot(ctx: any): Promise<number> {
+          const argv: string[] = ctx.args || [];
+          // No args at all → REPL session. Hand off to runPythonRepl
+          // which builds its own NimbusLoaderPool (separate from the
+          // one-shot dispatch's pool) and drives a ReplSession.
+          if (argv.length === 0 && self.terminal) {
+            const { runPythonRepl } = await import('../runtime/python-repl.js');
+            return await runPythonRepl({
+              facetMgr,
+              vfs: sqliteFs,
+              terminal: self.terminal,
+              installRoot,
+            });
+          }
+          // Args present (one-shot mode: -c, script, -m, -). Fall
+          // through to the canonical handler.
+          return await oneShotHandler(ctx);
+        };
+      };
+      registerRunnerFactory('python-runner', wrappedPython);
+    }
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
     // bootstrap runs at child-facet module-init time, per-call
