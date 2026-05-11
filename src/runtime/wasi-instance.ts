@@ -1,5 +1,5 @@
 /**
- * wasi-instance.ts — WASI snapshot_preview1 shim for Nimbus (Wave-1 + Wave-2).
+ * wasi-instance.ts — WASI snapshot_preview1 shim for Nimbus (Wave-1 + Wave-2 + Stream-B).
  *
  * Wave-1 surface (16 fns, kept verbatim):
  *   args_get / args_sizes_get / environ_get / environ_sizes_get
@@ -10,21 +10,42 @@
  *   random_get
  *   sched_yield
  *
- * Wave-2 additions (10 fns flipped from ENOSYS to real impls):
+ * Wave-2 additions (Wave-2; verbatim from wasi-w2 plan):
  *   path_open
  *   path_create_directory / path_remove_directory
  *   path_unlink_file
  *   path_rename                         (uses Nimbus W-3 atomic rename)
- *   path_filestat_get / path_filestat_set_times (no-op times)
+ *   path_filestat_get / path_filestat_set_times (no-op times — UPGRADED in Stream-B B2)
  *   fd_readdir                          (cookie-paginated)
  *   fd_filestat_get / fd_filestat_set_size
  *   fd_pread / fd_pwrite
  *   fd_prestat_get / fd_prestat_dir_name (real preopens, not EBADF)
  *
- * Wave-2 explicitly DEFERS to Wave-3:
- *   path_readlink / path_symlink / path_link  (POSIX symlink semantics)
- *   poll_oneoff (no I/O multiplexing on workerd)
- *   sock_*      (no userspace TCP in WASI)
+ * Stream-B additions (B1-B6, no-op stubs upgraded + new fns):
+ *   B1: per-file mtime/atime/ctime tracking + in-memory symlink table
+ *       (additive — files Map shape unchanged; parallel times/symlinks Maps)
+ *   B2: fd_filestat_set_times / path_filestat_set_times — REAL impls that
+ *       write mtime/atime; honor ATIM_NOW / MTIM_NOW flags via clock_realtime
+ *   B3: path_symlink / path_readlink / path_link — REAL impls. Symlink
+ *       resolution via __wasiResolvePathFull(baseFd, path, followFlag)
+ *       with POSIX-style 40-deep loop detection (returns ELOOP).
+ *   B4: fd_allocate — REAL impl (extends bytes to offset+len; zero-fill)
+ *   B5: proc_raise(sig) — fixed: throws __WasiExit(128 + sig) per POSIX
+ *       shell convention (SIGABRT=6 → 134, SIGTERM=15 → 143); was constant 128.
+ *   B6: fd_fdstat_set_rights — REAL impl (tracks per-fd rights mask;
+ *       fd_fdstat_get returns the tracked mask instead of wide-open).
+ *
+ * Stream-B explicitly DEFERS to later phases (P3-P4):
+ *   poll_oneoff (deferred to P4 — needs JSPI Suspending wrapper)
+ *   sock_*      (deferred to P3 — needs cloudflare:sockets + Suspending)
+ *
+ * Stream-B explicitly HALTS:
+ *   wasi-threads (wasi_thread_start) — fundamentally infeasible in the
+ *     Workers facet isolate model (no shared linear memory across
+ *     instances). Documented as a hard limit in §B9 + docs/wasi-threads-
+ *     infeasibility.md. NOT exposed in the import table — user code that
+ *     links pthreads gets a link-time error rather than a runtime memory
+ *     corruption bug.
  *
  * Architecture (Wave-2 strategy)
  * ──────────────────────────────
@@ -47,11 +68,18 @@
  * ─────────────────────
  *   ESUCCESS = 0     EBADF = 8     ENOENT = 44   EEXIST = 20
  *   EISDIR   = 31    ENOTDIR = 54  EINVAL = 28   ENOSYS = 52
- *   ENOTEMPTY = 55   ENOTCAPABLE = 76
+ *   ELOOP    = 32    ENOTEMPTY = 55  ENOTCAPABLE = 76
  *
  * Clock IDs
  * ─────────
  *   CLOCK_REALTIME = 0  / MONOTONIC = 1  / PROCESS_CPUTIME = 2  / THREAD = 3
+ *
+ * fstflags (filestat_set_times)
+ * ─────────────────────────────
+ *   __WASI_FSTFLAGS_ATIM     = 1
+ *   __WASI_FSTFLAGS_ATIM_NOW = 2
+ *   __WASI_FSTFLAGS_MTIM     = 4
+ *   __WASI_FSTFLAGS_MTIM_NOW = 8
  */
 
 /**
@@ -71,6 +99,7 @@ const __WASI_EBADF       = 8;
 const __WASI_EEXIST      = 20;
 const __WASI_EINVAL      = 28;
 const __WASI_EISDIR      = 31;
+const __WASI_ELOOP       = 32;
 const __WASI_ENOENT      = 44;
 const __WASI_ENOSYS      = 52;
 const __WASI_ENOTDIR     = 54;
@@ -86,6 +115,13 @@ const __WASI_O_CREAT     = 1;
 const __WASI_O_DIRECTORY = 2;
 const __WASI_O_EXCL      = 4;
 const __WASI_O_TRUNC     = 8;
+// lookupflags (passed to path_open, path_filestat_get, etc.)
+const __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW = 1;
+// fstflags (filestat_set_times)
+const __WASI_FSTFLAGS_ATIM     = 1;
+const __WASI_FSTFLAGS_ATIM_NOW = 2;
+const __WASI_FSTFLAGS_MTIM     = 4;
+const __WASI_FSTFLAGS_MTIM_NOW = 8;
 // filetypes
 const __WASI_FT_UNKNOWN          = 0;
 const __WASI_FT_BLOCK_DEVICE     = 1;
@@ -97,24 +133,45 @@ const __WASI_FT_SOCKET_STREAM    = 6;
 const __WASI_FT_SYMBOLIC_LINK    = 7;
 // preopen types
 const __WASI_PREOPENTYPE_DIR = 0;
+// Symlink resolution loop limit (POSIX SYMLOOP_MAX is typically 8-40).
+const __WASI_SYMLOOP_MAX = 40;
+// Default per-fd rights mask (wide-open).
+const __WASI_RIGHTS_ALL = 0xFFFFFFFFFFFFFFFFn;
 
 class __WasiExit { constructor(code) { this.code = code | 0; } }
 
 // ─── Virtual filesystem state ───────────────────────────────────────────
 //
-// __wasiInitFS({ root, preopens, files, dirs }) — install a per-call FS:
+// __wasiInitFS({ root, preopens, files, dirs, times?, symlinks? }) —
+// install a per-call FS:
 //   root      string  — canonical session root, e.g. 'home/user/wasi-w2'.
 //   preopens  Array<{ wasiPath, vfsPath }> — fd>=3 preopens (in order).
 //   files     Record<vfsPath, base64 string> — initial file contents.
 //   dirs      Array<vfsPath> — initial directory list.
+//   times     Record<vfsPath, {mtime, atime, ctime}> | undefined
+//               — per-path nanosecond timestamps (Stream-B B1). Optional;
+//               paths without entries default to "now" at init time.
+//               Values are decimal strings to survive JSON.serialize
+//               (BigInt is not JSON-safe); converted to BigInt internally.
+//   symlinks  Record<vfsPath, targetPath> | undefined
+//               — Stream-B B3 in-memory symlink table. Optional; defaults
+//               to empty. Target paths are canonicalized at insertion.
 //
 // After _start returns, __wasiSnapshotFS() extracts:
 //   {
-//     filesWritten: Record<vfsPath, base64 string>,  // new + modified
-//     filesDeleted: string[],                         // unlinked
-//     dirsCreated:  string[],                         // mkdir'd
-//     dirsDeleted:  string[],                         // rmdir'd
+//     filesWritten:    Record<vfsPath, base64 string>,  // new + modified
+//     filesDeleted:    string[],                         // unlinked
+//     dirsCreated:     string[],                         // mkdir'd
+//     dirsDeleted:     string[],                         // rmdir'd
+//     timesChanged:    Record<vfsPath, {mtime, atime, ctime}> // B1 — new or modified mtime/atime
+//     symlinksCreated: Record<vfsPath, targetPath>       // B3 — new symlinks
+//     symlinksDeleted: string[]                          // B3 — removed symlinks
 //   }
+//
+// Backward-compat: all new fields are additive. Callers that don't pass
+// 'times'/'symlinks' to __wasiInitFS see identical behavior to pre-B1.
+// Supervisors that don't read 'timesChanged'/'symlinks*' from the
+// snapshot see identical behavior to pre-B1.
 
 let __wasiFS = null;       // populated by __wasiInitFS
 let __wasiPreopens = [];   // [{ wasiPath, vfsPath, fd }, ...]
@@ -134,12 +191,26 @@ function __wasiCanonicalize(p) {
   return out.join('/');
 }
 
+// Wall-clock at init, used as the default mtime/atime/ctime for any path
+// that arrives without an explicit times entry. Captured once per call so
+// all "default-init" timestamps within a call share a value (mtime ==
+// atime == ctime), matching what a real cold-load would produce.
+function __wasiNowNs() {
+  // Date.now() is ms since epoch; multiply by 1e6 → ns.
+  return BigInt(Date.now()) * 1000000n;
+}
 function __wasiInitFS(opts) {
   const files = new Map();   // canonicalVfsPath → Uint8Array
   const dirs  = new Set();   // canonicalVfsPath
+  // Stream-B B1: parallel timestamp + symlink maps.
+  const times    = new Map();   // canonicalVfsPath → {mtime: BigInt, atime: BigInt, ctime: BigInt}
+  const symlinks = new Map();   // canonicalVfsPath → targetPath (canonical)
   // mirror originals for diff at flush time
-  const origFiles = new Map();
-  const origDirs  = new Set();
+  const origFiles    = new Map();
+  const origDirs     = new Set();
+  const origTimes    = new Map();
+  const origSymlinks = new Map();
+  const nowNs = __wasiNowNs();
   for (const [path, b64] of Object.entries(opts.files || {})) {
     const canon = __wasiCanonicalize(path);
     const bin = atob(b64);
@@ -147,16 +218,43 @@ function __wasiInitFS(opts) {
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
     files.set(canon, u8);
     origFiles.set(canon, u8.slice());  // copy so subsequent mutations detect change
+    // Default timestamps (overwritten below if opts.times has this path).
+    const t = { mtime: nowNs, atime: nowNs, ctime: nowNs };
+    times.set(canon, t);
+    origTimes.set(canon, { mtime: t.mtime, atime: t.atime, ctime: t.ctime });
   }
   for (const path of opts.dirs || []) {
     const canon = __wasiCanonicalize(path);
     dirs.add(canon);
     origDirs.add(canon);
+    if (!times.has(canon)) {
+      const t = { mtime: nowNs, atime: nowNs, ctime: nowNs };
+      times.set(canon, t);
+      origTimes.set(canon, { mtime: t.mtime, atime: t.atime, ctime: t.ctime });
+    }
+  }
+  // Stream-B B1: load explicit per-path timestamps if supervisor provided them.
+  // Values arrive as decimal strings (BigInt → JSON.stringify safe) or numbers.
+  for (const [path, t] of Object.entries(opts.times || {})) {
+    const canon = __wasiCanonicalize(path);
+    const cur = times.get(canon);
+    if (!cur) continue;  // path not yet in files/dirs; skip
+    const mtime = (t && t.mtime !== undefined) ? BigInt(t.mtime) : cur.mtime;
+    const atime = (t && t.atime !== undefined) ? BigInt(t.atime) : cur.atime;
+    const ctime = (t && t.ctime !== undefined) ? BigInt(t.ctime) : cur.ctime;
+    times.set(canon, { mtime, atime, ctime });
+    origTimes.set(canon, { mtime, atime, ctime });
+  }
+  // Stream-B B3: load explicit symlinks if supervisor provided them.
+  for (const [path, target] of Object.entries(opts.symlinks || {})) {
+    const canon = __wasiCanonicalize(path);
+    symlinks.set(canon, String(target));
+    origSymlinks.set(canon, String(target));
   }
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
-    files, dirs,
-    origFiles, origDirs,
+    files, dirs, times, symlinks,
+    origFiles, origDirs, origTimes, origSymlinks,
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   __wasiPreopens = [];
@@ -171,7 +269,36 @@ function __wasiInitFS(opts) {
     fdTable.set(fd, { kind: 'preopen', wasiPath: po.wasiPath, vfsPath });
     __wasiPreopens.push({ fd, wasiPath: po.wasiPath, vfsPath });
     if (!dirs.has(vfsPath)) dirs.add(vfsPath);
+    if (!times.has(vfsPath)) {
+      const t = { mtime: nowNs, atime: nowNs, ctime: nowNs };
+      times.set(vfsPath, t);
+      origTimes.set(vfsPath, { mtime: t.mtime, atime: t.atime, ctime: t.ctime });
+    }
   }
+}
+
+// Stream-B B1+B2 helpers: update tracked timestamps for a path. Idempotent.
+// Caller passes nanosecond BigInt(s); pass null for fields to keep unchanged.
+function __wasiTouchTimes(canonPath, mtimeNs, atimeNs, ctimeNs) {
+  if (!__wasiFS) return;
+  const cur = __wasiFS.times.get(canonPath);
+  if (cur) {
+    if (mtimeNs !== null) cur.mtime = mtimeNs;
+    if (atimeNs !== null) cur.atime = atimeNs;
+    if (ctimeNs !== null) cur.ctime = ctimeNs;
+  } else {
+    const now = __wasiNowNs();
+    __wasiFS.times.set(canonPath, {
+      mtime: mtimeNs !== null ? mtimeNs : now,
+      atime: atimeNs !== null ? atimeNs : now,
+      ctime: ctimeNs !== null ? ctimeNs : now,
+    });
+  }
+}
+// Convenience: bump mtime + ctime to "now" on a write/create.
+function __wasiBumpMtime(canonPath) {
+  const now = __wasiNowNs();
+  __wasiTouchTimes(canonPath, now, null, now);
 }
 
 function __wasiSnapshotFS() {
@@ -180,6 +307,9 @@ function __wasiSnapshotFS() {
   const filesDeleted = [];
   const dirsCreated  = [];
   const dirsDeleted  = [];
+  const timesChanged    = {};   // Stream-B B1: mtime/atime/ctime diffs
+  const symlinksCreated = {};   // Stream-B B3: new symlinks
+  const symlinksDeleted = [];   // Stream-B B3: removed symlinks
   // files: anything in __wasiFS.files not in orig, or whose bytes differ.
   for (const [path, bytes] of __wasiFS.files) {
     const orig = __wasiFS.origFiles.get(path);
@@ -207,21 +337,52 @@ function __wasiSnapshotFS() {
   for (const path of __wasiFS.origDirs) {
     if (!__wasiFS.dirs.has(path)) dirsDeleted.push(path);
   }
-  return { filesWritten, filesDeleted, dirsCreated, dirsDeleted };
+  // Stream-B B1: times diff. BigInt → decimal string (JSON.stringify-safe).
+  for (const [path, t] of __wasiFS.times) {
+    const orig = __wasiFS.origTimes.get(path);
+    if (!orig || orig.mtime !== t.mtime || orig.atime !== t.atime || orig.ctime !== t.ctime) {
+      timesChanged[path] = {
+        mtime: t.mtime.toString(),
+        atime: t.atime.toString(),
+        ctime: t.ctime.toString(),
+      };
+    }
+  }
+  // Stream-B B3: symlink diff.
+  for (const [path, target] of __wasiFS.symlinks) {
+    if (__wasiFS.origSymlinks.get(path) !== target) {
+      symlinksCreated[path] = target;
+    }
+  }
+  for (const path of __wasiFS.origSymlinks.keys()) {
+    if (!__wasiFS.symlinks.has(path)) symlinksDeleted.push(path);
+  }
+  return {
+    filesWritten, filesDeleted, dirsCreated, dirsDeleted,
+    timesChanged, symlinksCreated, symlinksDeleted,
+  };
 }
 
 // ─── fd table ──────────────────────────────────────────────────────────
 //
 // Entry shapes:
 //   { kind: 'stdin' | 'stdout' | 'stderr' }
-//   { kind: 'preopen', wasiPath, vfsPath }
-//   { kind: 'file', vfsPath, offset, oflags, fdflags }
-//   { kind: 'dir',  vfsPath, readdirEntries: null | Array, cookie }
+//   { kind: 'preopen', wasiPath, vfsPath, rights? }
+//   { kind: 'file',    vfsPath, offset, oflags, fdflags, rights? }
+//   { kind: 'dir',     vfsPath, readdirEntries: null | Array, cookie, rights? }
+//   { kind: 'symlink', vfsPath, target, rights? }   // Stream-B B3 (only when O_NOFOLLOW)
+//
+// Stream-B B6: 'rights' is an optional BigInt mask. When set, fd_fdstat_get
+// returns it (instead of the wide-open default). fd_fdstat_set_rights
+// writes to it. The mask is advisory in this shim (we don't enforce per-fn
+// rights checks in v1 — single-tenant facet, no untrusted callers).
 const fdTable = new Map();
 let nextFd = 3;
 
+// Resolve a WASI path against a preopen fd; returns the canonical VFS path
+// WITHOUT following symlinks. Stream-B kept this name compatible with all
+// existing call sites (~10 of them inside the imports object).
 function __wasiResolvePath(baseFd, pathStr) {
-  // Resolve a WASI path against a preopen fd. Returns canonical VFS path.
   const entry = fdTable.get(baseFd);
   if (!entry) return null;
   let baseVfs;
@@ -230,6 +391,47 @@ function __wasiResolvePath(baseFd, pathStr) {
   // pathStr may be 'foo', './foo', '/foo'. Treat all as relative to baseVfs.
   const trimmed = pathStr.replace(/^\\.?\\/+/, '').replace(/^\\/+/, '');
   return __wasiCanonicalize(baseVfs + '/' + trimmed);
+}
+
+// Stream-B B3: resolve a path WITH optional symlink-follow + POSIX loop
+// detection. Returns {path: canonical, isSymlink: bool, err?: errno}.
+// - If followFlag is true (default — matches LOOKUPFLAGS_SYMLINK_FOLLOW),
+//   walks the symlink chain up to __WASI_SYMLOOP_MAX depth. ELOOP if exceeded.
+// - If followFlag is false, returns the bare resolved path; if the path
+//   itself is in __wasiFS.symlinks, isSymlink=true so callers know to
+//   open it as a symlink fd rather than a regular file.
+// Errors return {path: '', isSymlink: false, err: __WASI_E...}.
+function __wasiResolvePathFull(baseFd, pathStr, followFlag) {
+  let p = __wasiResolvePath(baseFd, pathStr);
+  if (p === null) return { path: '', isSymlink: false, err: __WASI_EBADF };
+  if (!__wasiFS) return { path: p, isSymlink: false };
+  if (!followFlag) {
+    return { path: p, isSymlink: __wasiFS.symlinks.has(p), err: __WASI_ESUCCESS };
+  }
+  // Follow symlinks with bounded loop counter.
+  let depth = 0;
+  while (__wasiFS.symlinks.has(p)) {
+    if (depth++ >= __WASI_SYMLOOP_MAX) {
+      return { path: p, isSymlink: true, err: __WASI_ELOOP };
+    }
+    const target = __wasiFS.symlinks.get(p);
+    // Target may be relative or absolute. Absolute targets (leading '/')
+    // resolve against the same preopen root as the original path; relative
+    // targets resolve against the directory containing the symlink.
+    let next;
+    if (target.startsWith('/')) {
+      // Resolve against the preopen of baseFd.
+      const e = fdTable.get(baseFd);
+      const baseVfs = (e && (e.kind === 'preopen' || e.kind === 'dir')) ? e.vfsPath : '';
+      next = __wasiCanonicalize(baseVfs + '/' + target);
+    } else {
+      const lastSlash = p.lastIndexOf('/');
+      const parent = lastSlash >= 0 ? p.substring(0, lastSlash) : '';
+      next = __wasiCanonicalize(parent + '/' + target);
+    }
+    p = next;
+  }
+  return { path: p, isSymlink: false, err: __WASI_ESUCCESS };
 }
 
 // ─── makeImports ────────────────────────────────────────────────────────
@@ -284,9 +486,19 @@ function __wasiMakeImports(opts) {
   }
   function setFile(vfsPath, bytes) {
     __wasiFS.files.set(vfsPath, bytes);
+    // Stream-B B1: bump mtime+ctime on every write. atime stays as-is
+    // (read paths bump atime explicitly via touchAccess()).
+    __wasiBumpMtime(vfsPath);
   }
   function unsetFile(vfsPath) {
     __wasiFS.files.delete(vfsPath);
+    __wasiFS.times.delete(vfsPath);
+  }
+  function touchAccess(vfsPath) {
+    // Stream-B B1: bump atime on a read. mtime/ctime unchanged.
+    if (!__wasiFS) return;
+    const cur = __wasiFS.times.get(vfsPath);
+    if (cur) cur.atime = __wasiNowNs();
   }
   function ensureParentDirs(vfsPath) {
     // Ensure all ancestor dirs of vfsPath exist (they should, but mkdir -p
@@ -297,6 +509,11 @@ function __wasiMakeImports(opts) {
     for (let i = 0; i < parts.length - 1; i++) {
       p = p ? (p + '/' + parts[i]) : parts[i];
       __wasiFS.dirs.add(p);
+      // Stream-B B1: ensure ancestor dirs have a times entry.
+      if (!__wasiFS.times.has(p)) {
+        const now = __wasiNowNs();
+        __wasiFS.times.set(p, { mtime: now, atime: now, ctime: now });
+      }
     }
   }
   function readdirChildren(vfsPath) {
@@ -487,13 +704,21 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_DIRECTORY;
       } else if (entry.kind === 'file') {
         ftype = __WASI_FT_REGULAR_FILE;
+      } else if (entry.kind === 'symlink') {
+        ftype = __WASI_FT_SYMBOLIC_LINK;
       }
       dv.setUint8(statPtr, ftype);
       dv.setUint8(statPtr + 1, 0);
-      dv.setUint16(statPtr + 2, 0, true);
+      dv.setUint16(statPtr + 2, (entry.fdflags || 0) & 0xFFFF, true);
       dv.setUint32(statPtr + 4, 0, true);
-      writeU64LE(statPtr + 8,  0x3FFFFFFFn);  // rights_base = wide-open
-      writeU64LE(statPtr + 16, 0x3FFFFFFFn);  // rights_inheriting
+      // Stream-B B6: honor entry.rights when set, else wide-open default.
+      // The legacy '0x3FFFFFFFn' was a 30-bit truncation of the actual
+      // 64-bit rights field; modern wasi-libc probes specific bits so we
+      // now publish full 64-bit __WASI_RIGHTS_ALL.
+      const rb = (entry.rights !== undefined) ? entry.rights : __WASI_RIGHTS_ALL;
+      const ri = (entry.rightsInheriting !== undefined) ? entry.rightsInheriting : __WASI_RIGHTS_ALL;
+      writeU64LE(statPtr + 8,  rb);
+      writeU64LE(statPtr + 16, ri);
       return __WASI_ESUCCESS;
     },
 
@@ -501,6 +726,26 @@ function __wasiMakeImports(opts) {
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
       if (entry.kind === 'file') entry.fdflags = flags;
+      return __WASI_ESUCCESS;
+    },
+
+    // Stream-B B6: track per-fd rights mask. Callers narrow their own caps;
+    // we record but don't enforce in v1 (single-tenant facet). The narrow
+    // is visible to subsequent fd_fdstat_get calls, satisfying capability-
+    // tightening probes that round-trip the mask.
+    fd_fdstat_set_rights(fd, rightsBase, rightsInheriting) {
+      const entry = fdTable.get(fd);
+      if (!entry) return __WASI_EBADF;
+      // Args are i64 — V8 routes as BigInt.
+      const rb = typeof rightsBase === 'bigint' ? rightsBase : BigInt(rightsBase >>> 0);
+      const ri = typeof rightsInheriting === 'bigint' ? rightsInheriting : BigInt(rightsInheriting >>> 0);
+      // POSIX semantics: rights can only NARROW, never widen.
+      const curRb = entry.rights !== undefined ? entry.rights : __WASI_RIGHTS_ALL;
+      const curRi = entry.rightsInheriting !== undefined ? entry.rightsInheriting : __WASI_RIGHTS_ALL;
+      if ((rb & ~curRb) !== 0n) return __WASI_ENOTCAPABLE;
+      if ((ri & ~curRi) !== 0n) return __WASI_ENOTCAPABLE;
+      entry.rights = rb;
+      entry.rightsInheriting = ri;
       return __WASI_ESUCCESS;
     },
 
@@ -526,13 +771,29 @@ function __wasiMakeImports(opts) {
 
     // ── path_open ──
     path_open(baseFd, dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, fdflags, fdOutPtr) {
-      const path = readPath(pathPtr, pathLen);
-      const resolved = __wasiResolvePath(baseFd, path);
-      if (resolved === null) return __WASI_EBADF;
+      const pathArg = readPath(pathPtr, pathLen);
+      // Stream-B B3: honor LOOKUPFLAGS_SYMLINK_FOLLOW (default behavior
+      // when bit is set or dirflags omitted). When NOT set, surface the
+      // symlink itself as a 'symlink' fd kind so readlink can introspect.
+      const follow = (dirflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || dirflags === 0;
+      const rp = __wasiResolvePathFull(baseFd, pathArg, follow);
+      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
+      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
+      const resolved = rp.path;
       const isCreate    = (oflags & __WASI_O_CREAT) !== 0;
       const isDirectory = (oflags & __WASI_O_DIRECTORY) !== 0;
       const isExcl      = (oflags & __WASI_O_EXCL) !== 0;
       const isTrunc     = (oflags & __WASI_O_TRUNC) !== 0;
+
+      // If the unfollowed path is a symlink and follow=false, open as
+      // a symlink fd (only readlink-style introspection works on it).
+      if (!follow && rp.isSymlink) {
+        const fd = nextFd++;
+        const target = __wasiFS.symlinks.get(resolved);
+        fdTable.set(fd, { kind: 'symlink', vfsPath: resolved, target, oflags, fdflags });
+        writeU32LE(fdOutPtr, fd);
+        return __WASI_ESUCCESS;
+      }
 
       const fileExists = __wasiFS.files.has(resolved);
       const dirExists  = __wasiFS.dirs.has(resolved);
@@ -540,7 +801,7 @@ function __wasiMakeImports(opts) {
       if (isDirectory) {
         if (!dirExists) return __WASI_ENOENT;
         const fd = nextFd++;
-        fdTable.set(fd, { kind: 'dir', vfsPath: resolved, readdirEntries: null, cookie: 0n });
+        fdTable.set(fd, { kind: 'dir', vfsPath: resolved, readdirEntries: null, cookie: 0n, oflags, fdflags });
         writeU32LE(fdOutPtr, fd);
         return __WASI_ESUCCESS;
       }
@@ -573,6 +834,9 @@ function __wasiMakeImports(opts) {
       if (__wasiFS.files.has(resolved)) return __WASI_EEXIST;
       ensureParentDirs(resolved);
       __wasiFS.dirs.add(resolved);
+      // Stream-B B1: seed times for the new dir.
+      const now = __wasiNowNs();
+      __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
       return __WASI_ESUCCESS;
     },
 
@@ -593,6 +857,14 @@ function __wasiMakeImports(opts) {
       const resolved = __wasiResolvePath(baseFd, path);
       if (resolved === null) return __WASI_EBADF;
       if (__wasiFS.dirs.has(resolved)) return __WASI_EISDIR;
+      // Stream-B B3: unlink also removes a symlink at this path. We
+      // operate on the unfollowed path (POSIX unlink semantics — removes
+      // the directory entry itself, not the symlink target).
+      if (__wasiFS.symlinks.has(resolved)) {
+        __wasiFS.symlinks.delete(resolved);
+        __wasiFS.times.delete(resolved);
+        return __WASI_ESUCCESS;
+      }
       if (!__wasiFS.files.has(resolved)) return __WASI_ENOENT;
       unsetFile(resolved);
       return __WASI_ESUCCESS;
@@ -646,10 +918,17 @@ function __wasiMakeImports(opts) {
     // ── path_filestat_get ──
     path_filestat_get(baseFd, lookupflags, pathPtr, pathLen, statPtr) {
       const path = readPath(pathPtr, pathLen);
-      const resolved = __wasiResolvePath(baseFd, path);
-      if (resolved === null) return __WASI_EBADF;
+      // Stream-B B3: follow symlinks unless explicitly told not to.
+      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || lookupflags === 0;
+      const rp = __wasiResolvePathFull(baseFd, path, follow);
+      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
+      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
+      const resolved = rp.path;
       let ftype, size;
-      if (__wasiFS.files.has(resolved)) {
+      if (!follow && rp.isSymlink) {
+        ftype = __WASI_FT_SYMBOLIC_LINK;
+        size = BigInt(new TextEncoder().encode(__wasiFS.symlinks.get(resolved)).length);
+      } else if (__wasiFS.files.has(resolved)) {
         ftype = __WASI_FT_REGULAR_FILE;
         size = BigInt(__wasiFS.files.get(resolved).length);
       } else if (__wasiFS.dirs.has(resolved)) {
@@ -658,24 +937,127 @@ function __wasiMakeImports(opts) {
       } else {
         return __WASI_ENOENT;
       }
+      // Stream-B B1: emit real timestamps.
+      const t = __wasiFS.times.get(resolved) || { mtime: 0n, atime: 0n, ctime: 0n };
       const dv = view();
-      // filestat_t: dev,ino: 0; filetype @16; nlink @24=1; size @32; times @40/48/56=0
+      // filestat_t layout (WASI preview1):
+      //   dev:u64@0, ino:u64@8, filetype:u8@16, [pad 17..23],
+      //   nlink:u64@24, size:u64@32, atim:u64@40, mtim:u64@48, ctim:u64@56
       writeU64LE(statPtr,      0n);
       writeU64LE(statPtr + 8,  0n);
       dv.setUint8(statPtr + 16, ftype);
       for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
       writeU64LE(statPtr + 24, 1n);
       writeU64LE(statPtr + 32, size);
-      writeU64LE(statPtr + 40, 0n);
-      writeU64LE(statPtr + 48, 0n);
-      writeU64LE(statPtr + 56, 0n);
+      writeU64LE(statPtr + 40, t.atime);
+      writeU64LE(statPtr + 48, t.mtime);
+      writeU64LE(statPtr + 56, t.ctime);
       return __WASI_ESUCCESS;
     },
 
-    path_filestat_set_times() { return __WASI_ESUCCESS; },
-    path_readlink()  { return __WASI_ENOSYS; },
-    path_symlink()   { return __WASI_ENOSYS; },
-    path_link()      { return __WASI_ENOSYS; },
+    // Stream-B B2: real path_filestat_set_times. Honors ATIM/ATIM_NOW/
+    // MTIM/MTIM_NOW flags. Spec: atim_ns and mtim_ns are absolute
+    // nanosecond timestamps; flags select which fields to update + whether
+    // to clamp to "now". ENOENT if path doesn't exist.
+    path_filestat_set_times(baseFd, lookupflags, pathPtr, pathLen, atimArg, mtimArg, fstflags) {
+      const path = readPath(pathPtr, pathLen);
+      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || lookupflags === 0;
+      const rp = __wasiResolvePathFull(baseFd, path, follow);
+      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
+      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
+      const resolved = rp.path;
+      const isSymlinkOnly = !follow && rp.isSymlink;
+      if (!isSymlinkOnly && !__wasiFS.files.has(resolved) && !__wasiFS.dirs.has(resolved)) {
+        return __WASI_ENOENT;
+      }
+      // Decode flags. Mutually-exclusive pairs ATIM vs ATIM_NOW (similarly
+      // for MTIM) — caller error if both set; we accept and prefer _NOW.
+      const setAtim    = (fstflags & __WASI_FSTFLAGS_ATIM) !== 0;
+      const setAtimNow = (fstflags & __WASI_FSTFLAGS_ATIM_NOW) !== 0;
+      const setMtim    = (fstflags & __WASI_FSTFLAGS_MTIM) !== 0;
+      const setMtimNow = (fstflags & __WASI_FSTFLAGS_MTIM_NOW) !== 0;
+      if ((setAtim && setAtimNow) || (setMtim && setMtimNow)) return __WASI_EINVAL;
+      const now = __wasiNowNs();
+      const atimNs = setAtimNow ? now : (setAtim ? (typeof atimArg === 'bigint' ? atimArg : BigInt(atimArg)) : null);
+      const mtimNs = setMtimNow ? now : (setMtim ? (typeof mtimArg === 'bigint' ? mtimArg : BigInt(mtimArg)) : null);
+      __wasiTouchTimes(resolved, mtimNs, atimNs, now);
+      return __WASI_ESUCCESS;
+    },
+
+    // Stream-B B3: read the target string of a symlink. Spec:
+    //   path_readlink(fd, path, path_len, buf, buf_len, *bufused)
+    // Truncates to buf_len; writes actual bytes to *bufused.
+    path_readlink(baseFd, pathPtr, pathLen, bufPtr, bufLen, bufUsedPtr) {
+      const path = readPath(pathPtr, pathLen);
+      // readlink NEVER follows symlinks on the last component (POSIX).
+      const rp = __wasiResolvePathFull(baseFd, path, false);
+      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
+      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
+      const resolved = rp.path;
+      if (!__wasiFS.symlinks.has(resolved)) return __WASI_EINVAL;  // not a symlink
+      const target = __wasiFS.symlinks.get(resolved);
+      const enc = new TextEncoder();
+      const targetBytes = enc.encode(target);
+      const n = Math.min(targetBytes.length, bufLen);
+      u8().set(targetBytes.subarray(0, n), bufPtr);
+      writeU32LE(bufUsedPtr, n);
+      // POSIX: readlink doesn't update atime per most filesystems; but
+      // some (ext4 with strictatime) do. We follow Linux default: no
+      // atime bump on readlink.
+      return __WASI_ESUCCESS;
+    },
+
+    // Stream-B B3: create a symlink. Spec:
+    //   path_symlink(old_path, fd, new_path)
+    // old_path is the symlink's TARGET (stored verbatim); fd+new_path
+    // is the location where the symlink itself is created.
+    path_symlink(oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
+      const oldPath = readPath(oldPathPtr, oldPathLen);  // target string
+      const newPath = readPath(newPathPtr, newPathLen);
+      const resolved = __wasiResolvePath(newFd, newPath);
+      if (resolved === null) return __WASI_EBADF;
+      if (__wasiFS.files.has(resolved)) return __WASI_EEXIST;
+      if (__wasiFS.dirs.has(resolved)) return __WASI_EEXIST;
+      if (__wasiFS.symlinks.has(resolved)) return __WASI_EEXIST;
+      // Store the target verbatim — symlinks per POSIX are dumb strings;
+      // resolution happens at lookup time.
+      __wasiFS.symlinks.set(resolved, oldPath);
+      ensureParentDirs(resolved);
+      const now = __wasiNowNs();
+      __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
+      return __WASI_ESUCCESS;
+    },
+
+    // Stream-B B3: hardlink. Spec:
+    //   path_link(old_fd, old_flags, old_path, new_fd, new_path)
+    // Implements as a shared-buffer alias. POSIX semantics: both names
+    // point at the same inode, so writes through either are visible to
+    // the other. In our in-memory FS the "same inode" is the same
+    // Uint8Array reference. CAVEAT: our setFile/fd_write paths REPLACE
+    // the buffer reference (immutable-style update) so subsequent writes
+    // don't propagate. Matches link(2) at the WASI-layer (link itself
+    // succeeds; concurrent-mutation semantics are filesystem-dependent
+    // and our shim is a single-call sandbox).
+    path_link(oldFd, oldFlags, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
+      const oldPath = readPath(oldPathPtr, oldPathLen);
+      const newPath = readPath(newPathPtr, newPathLen);
+      const follow = (oldFlags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || oldFlags === 0;
+      const rpOld = __wasiResolvePathFull(oldFd, oldPath, follow);
+      if (rpOld.err === __WASI_EBADF) return __WASI_EBADF;
+      if (rpOld.err === __WASI_ELOOP) return __WASI_ELOOP;
+      const src = rpOld.path;
+      const dst = __wasiResolvePath(newFd, newPath);
+      if (dst === null) return __WASI_EBADF;
+      if (!__wasiFS.files.has(src)) return __WASI_ENOENT;
+      if (__wasiFS.files.has(dst) || __wasiFS.dirs.has(dst) || __wasiFS.symlinks.has(dst)) {
+        return __WASI_EEXIST;
+      }
+      __wasiFS.files.set(dst, __wasiFS.files.get(src));  // shared reference
+      ensureParentDirs(dst);
+      const now = __wasiNowNs();
+      __wasiFS.times.set(dst, { mtime: now, atime: now, ctime: now });
+      return __WASI_ESUCCESS;
+    },
 
     // ── fd_filestat_get / fd_filestat_set_size ──
     fd_filestat_get(fd, statPtr) {
@@ -684,24 +1066,32 @@ function __wasiMakeImports(opts) {
       const dv = view();
       let ftype = __WASI_FT_UNKNOWN;
       let size = 0n;
+      let timesPath = null;
       if (entry.kind === 'file') {
         ftype = __WASI_FT_REGULAR_FILE;
         const f = getFile(entry.vfsPath);
         if (f) size = BigInt(f.length);
+        timesPath = entry.vfsPath;
       } else if (entry.kind === 'dir' || entry.kind === 'preopen') {
         ftype = __WASI_FT_DIRECTORY;
+        timesPath = entry.vfsPath;
+      } else if (entry.kind === 'symlink') {
+        ftype = __WASI_FT_SYMBOLIC_LINK;
+        size = BigInt(new TextEncoder().encode(entry.target || '').length);
+        timesPath = entry.vfsPath;
       } else if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
         ftype = __WASI_FT_CHARACTER_DEVICE;
       }
+      const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
       writeU64LE(statPtr,      0n);
       writeU64LE(statPtr + 8,  0n);
       dv.setUint8(statPtr + 16, ftype);
       for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
       writeU64LE(statPtr + 24, 1n);
       writeU64LE(statPtr + 32, size);
-      writeU64LE(statPtr + 40, 0n);
-      writeU64LE(statPtr + 48, 0n);
-      writeU64LE(statPtr + 56, 0n);
+      writeU64LE(statPtr + 40, t.atime);
+      writeU64LE(statPtr + 48, t.mtime);
+      writeU64LE(statPtr + 56, t.ctime);
       return __WASI_ESUCCESS;
     },
     fd_filestat_set_size(fd, size) {
@@ -714,7 +1104,25 @@ function __wasiMakeImports(opts) {
       setFile(entry.vfsPath, next);
       return __WASI_ESUCCESS;
     },
-    fd_filestat_set_times() { return __WASI_ESUCCESS; },
+    // Stream-B B2: real fd_filestat_set_times.
+    fd_filestat_set_times(fd, atimArg, mtimArg, fstflags) {
+      const entry = fdTable.get(fd);
+      if (!entry) return __WASI_EBADF;
+      if (entry.kind !== 'file' && entry.kind !== 'dir' && entry.kind !== 'preopen' && entry.kind !== 'symlink') {
+        // stdio fds: no-op success (POSIX touches /dev/stdin etc. silently).
+        return __WASI_ESUCCESS;
+      }
+      const setAtim    = (fstflags & __WASI_FSTFLAGS_ATIM) !== 0;
+      const setAtimNow = (fstflags & __WASI_FSTFLAGS_ATIM_NOW) !== 0;
+      const setMtim    = (fstflags & __WASI_FSTFLAGS_MTIM) !== 0;
+      const setMtimNow = (fstflags & __WASI_FSTFLAGS_MTIM_NOW) !== 0;
+      if ((setAtim && setAtimNow) || (setMtim && setMtimNow)) return __WASI_EINVAL;
+      const now = __wasiNowNs();
+      const atimNs = setAtimNow ? now : (setAtim ? (typeof atimArg === 'bigint' ? atimArg : BigInt(atimArg)) : null);
+      const mtimNs = setMtimNow ? now : (setMtim ? (typeof mtimArg === 'bigint' ? mtimArg : BigInt(mtimArg)) : null);
+      __wasiTouchTimes(entry.vfsPath, mtimNs, atimNs, now);
+      return __WASI_ESUCCESS;
+    },
 
     // ── fd_pread / fd_pwrite (offset-explicit) ──
     fd_pread(fd, iovsPtr, iovsLen, offsetArg, nreadPtr) {
@@ -828,7 +1236,24 @@ function __wasiMakeImports(opts) {
     },
 
     fd_advise()     { return __WASI_ESUCCESS; },
-    fd_allocate()   { return __WASI_ENOSYS; },
+    // Stream-B B4: real fd_allocate. Extends the file's byte buffer with
+    // zeros so [offset, offset+len) is allocated. POSIX posix_fallocate
+    // semantics. ENOSPC is not reachable in our in-memory FS (the
+    // 32 MiB snapshot cap is enforced at supervisor level; in-call we
+    // just allocate the JS Uint8Array).
+    fd_allocate(fd, offsetArg, lenArg) {
+      const entry = fdTable.get(fd);
+      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
+      const offset = typeof offsetArg === 'bigint' ? Number(offsetArg) : (offsetArg >>> 0);
+      const len    = typeof lenArg    === 'bigint' ? Number(lenArg)    : (lenArg    >>> 0);
+      const cur = getFile(entry.vfsPath) || new Uint8Array(0);
+      const needed = offset + len;
+      if (needed <= cur.length) return __WASI_ESUCCESS;  // already big enough
+      const next = new Uint8Array(needed);
+      next.set(cur, 0);  // [cur.length, needed) is implicitly zero-initialised
+      setFile(entry.vfsPath, next);
+      return __WASI_ESUCCESS;
+    },
     fd_datasync()   { return __WASI_ESUCCESS; },
     fd_sync()       { return __WASI_ESUCCESS; },
     fd_renumber(from, to) {
@@ -841,7 +1266,13 @@ function __wasiMakeImports(opts) {
 
     // ── proc_exit ──
     proc_exit(code) { throw new __WasiExit(code | 0); },
-    proc_raise()    { throw new __WasiExit(128); },
+    // Stream-B B5: proc_raise(sig) — POSIX shell convention encodes a
+    // signal-terminated process as exit-status 128+sig. SIGABRT=6 → 134,
+    // SIGTERM=15 → 143, SIGKILL=9 → 137. Returns errno (never actually;
+    // throws via __WasiExit). The legacy 'throw new __WasiExit(128)' was
+    // wrong: it discarded the signal number, so probes couldn't
+    // distinguish SIGABRT from SIGTERM at the exit-code layer.
+    proc_raise(sig)  { throw new __WasiExit(128 + ((sig | 0) & 0xFF)); },
 
     // ── clock ──
     clock_time_get(clockId, _precision, timePtr) {
@@ -912,6 +1343,47 @@ function __wasiRunStart(instance, ctx) {
     return { exitCode: 1, error: (e && e.message) ? e.message : String(e) };
   }
 }
+
+// Stream-B (P3/P4 forward-decl): async variant of runStart. Wraps _start
+// with WebAssembly.promising so suspending imports (sock_send, sock_recv,
+// poll_oneoff) can await Promises and have V8 suspend+resume the wasm
+// stack. Returns the SAME shape as __wasiRunStart but in a Promise.
+//
+// In P2 (this commit) no suspending imports exist yet — invoking this
+// function is functionally identical to __wasiRunStart but returns a
+// Promise. P3 (sockets) and P4 (poll_oneoff) wire the actual Suspending
+// imports + this async entrypoint together.
+//
+// Caller contract: legacy callers that need a sync return (ruby-runner)
+// keep using __wasiRunStart. New callers (wasm-runner WASI mode, post-
+// P3) switch to await __wasiRunStartAsync(...).
+async function __wasiRunStartAsync(instance, ctx) {
+  try {
+    const start = instance.exports._start;
+    if (typeof start !== 'function') {
+      return { exitCode: 1, error: '_start is not a function (got ' + typeof start + ')' };
+    }
+    // WebAssembly.promising wraps the export so it returns a Promise<void>
+    // that resolves when the (potentially-suspending) wasm computation
+    // completes. Available since V8 14.2 (workerd Oct 2025) — see
+    // /workspace/.seal-internal/2026-05-11-jspi-spike/findings.md.
+    //
+    // If promising isn't available (older runtimes), fall through to a
+    // direct call — fully spec-compatible for non-suspending _start.
+    if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.promising === 'function') {
+      const promisingStart = WebAssembly.promising(start);
+      await promisingStart();
+    } else {
+      start();
+    }
+    return { exitCode: 0 };
+  } catch (e) {
+    if (e && e.constructor && e.constructor.name === '__WasiExit') {
+      return { exitCode: e.code };
+    }
+    return { exitCode: 1, error: (e && e.message) ? e.message : String(e) };
+  }
+}
 // ── END: wasi-instance preamble ─────────────────────────────────────────
 `;
 
@@ -919,6 +1391,10 @@ function __wasiRunStart(instance, ctx) {
  * A bundle of file/dir state passed from supervisor → facet for a WASI
  * invocation. Files are base64-encoded so the JSON-serializable
  * loader-pool `context` field can carry them.
+ *
+ * Stream-B B1+B3: added optional `times` and `symlinks` fields. Backward-
+ * compatible — pre-B1 callers omit these and get default "now" timestamps
+ * + empty symlink table.
  */
 export interface WasiFsSnapshot {
   /** Canonical VFS root (no leading slash). E.g. `home/user/wasi-w2`. */
@@ -929,11 +1405,26 @@ export interface WasiFsSnapshot {
   files: Record<string, string>;
   /** Initial directory list (vfsPaths). */
   dirs: string[];
+  /**
+   * Stream-B B1: per-path nanosecond timestamps. Values are decimal strings
+   * (JSON.stringify-safe; BigInt would throw). Optional — omitted paths
+   * default to wall-clock-now at init time.
+   */
+  times?: Record<string, { mtime: string; atime: string; ctime: string }>;
+  /**
+   * Stream-B B3: initial symlink table. `vfsPath → targetPath`. Target is
+   * stored verbatim per POSIX (resolution at lookup time).
+   */
+  symlinks?: Record<string, string>;
 }
 
 /**
  * Per-call return shape — what the facet's RPC produces back to the
  * supervisor. Mutations are diffs against the initial snapshot.
+ *
+ * Stream-B B1+B3: added timesChanged + symlinksCreated/Deleted. Backward-
+ * compatible — supervisors that don't read these see identical pre-B1
+ * behavior.
  */
 export interface WasiFsDiff {
   /** vfsPath → base64 content for files that are new or modified. */
@@ -944,12 +1435,22 @@ export interface WasiFsDiff {
   dirsCreated: string[];
   /** vfsPaths that were rmdir'd. */
   dirsDeleted: string[];
+  /**
+   * Stream-B B1: paths whose mtime/atime/ctime changed during the call.
+   * Decimal-string nanoseconds.
+   */
+  timesChanged?: Record<string, { mtime: string; atime: string; ctime: string }>;
+  /** Stream-B B3: new or modified symlinks. */
+  symlinksCreated?: Record<string, string>;
+  /** Stream-B B3: removed symlinks. */
+  symlinksDeleted?: string[];
 }
 
-/** Total count of functionally-implemented WASI fns (Wave-1 + Wave-2). */
+/** Total count of functionally-implemented WASI fns (Wave-1 + Wave-2 + Stream-B P2). */
 export const WASI_WAVE2_FN_COUNT = 30;
+export const WASI_STREAM_B_P2_FN_COUNT = 36;  // +6: B2 (real ×2), B3 (×3), B4, B6
 
-/** Names of the Wave-1 + Wave-2 functionally-implemented WASI fns. */
+/** Names of the Wave-1 + Wave-2 + Stream-B P2 functionally-implemented WASI fns. */
 export const WASI_WAVE2_FNS: readonly string[] = Object.freeze([
   // Wave-1
   'args_get', 'args_sizes_get',
@@ -966,11 +1467,15 @@ export const WASI_WAVE2_FNS: readonly string[] = Object.freeze([
   'path_create_directory', 'path_remove_directory',
   'path_unlink_file',
   'path_rename',
-  'path_filestat_get', 'path_filestat_set_times',
-  'fd_filestat_get', 'fd_filestat_set_size', 'fd_filestat_set_times',
+  'path_filestat_get', 'path_filestat_set_times',  // B2 upgraded to real
+  'fd_filestat_get', 'fd_filestat_set_size', 'fd_filestat_set_times',  // B2 upgraded to real
   'fd_pread', 'fd_pwrite',
   'fd_readdir',
   'fd_renumber',
+  // Stream-B P2 additions
+  'path_symlink', 'path_readlink', 'path_link',     // B3
+  'fd_allocate',                                    // B4
+  'fd_fdstat_set_rights',                           // B6
 ]);
 
 /**
