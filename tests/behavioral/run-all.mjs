@@ -10,12 +10,23 @@
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
 //                         "large-install,honest-install-message") to
 //                         restrict the run; useful for quick re-checks.
+//                         Match is against the relative path (without
+//                         the .mjs extension), so "frameworks/astro-real"
+//                         and "astro-real" both work.
 //   NIMBUS_PROBE_SKIP   — comma-separated probe names to skip.
+//
+// Discovery: walks `tests/behavioral/` recursively. Skips:
+//   - any file whose leaf basename starts with `_` (helpers like
+//     `_driver.mjs`, `_runtime-behavioral-template.mjs`, `_fixtures.mjs`,
+//     `_keys.mjs`, `_recipe.mjs`, `_diag.mjs`)
+//   - any file named `run-all.mjs` (the root runner and the
+//     `keybindings/run-all.mjs` sub-runner)
+//   - non-`.mjs` files
 
 import { spawn } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, basename } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,22 +35,64 @@ if (!process.env.BASE) {
   process.exit(2);
 }
 
-const PROBES = readdirSync(__dirname)
-  .filter((f) => f.endsWith('.mjs'))
-  .filter((f) => f !== 'run-all.mjs' && f !== '_driver.mjs')
-  .sort();
+/**
+ * Recursively walk `root`, yielding absolute paths of files whose
+ * leaf basename satisfies `predicate`. Directories are walked in
+ * sorted order so probe ordering is deterministic across platforms.
+ */
+function walk(root, predicate, out = []) {
+  const entries = readdirSync(root, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const ent of entries) {
+    const abs = join(root, ent.name);
+    if (ent.isDirectory()) {
+      walk(abs, predicate, out);
+    } else if (ent.isFile() && predicate(ent.name)) {
+      out.push(abs);
+    }
+  }
+  return out;
+}
+
+function isProbeFile(leaf) {
+  if (!leaf.endsWith('.mjs')) return false;
+  if (leaf.startsWith('_')) return false;        // helpers
+  if (leaf === 'run-all.mjs') return false;      // root + sub-runners
+  return true;
+}
+
+const PROBES = walk(__dirname, isProbeFile)
+  .map((abs) => relative(__dirname, abs));
 
 const only = (process.env.NIMBUS_PROBE_ONLY || '').split(',').filter(Boolean);
 const skip = new Set((process.env.NIMBUS_PROBE_SKIP || '').split(',').filter(Boolean));
 
+function probeName(relPath) {
+  // Strip .mjs; keep subdirectory prefix so operator can correlate
+  // failures with files. Both forms accepted by NIMBUS_PROBE_ONLY /
+  // NIMBUS_PROBE_SKIP: full ("frameworks/astro-real") and leaf ("astro-real").
+  return relPath.replace(/\.mjs$/, '');
+}
+
+function matchAny(collection, relPath) {
+  // collection: Array<string> or Set<string>. Match against either
+  // the full relative path ("frameworks/astro-real") or the leaf
+  // ("astro-real") so legacy NIMBUS_PROBE_ONLY values keep working.
+  const full = probeName(relPath);
+  const leaf = basename(relPath).replace(/\.mjs$/, '');
+  if (Array.isArray(collection)) {
+    return collection.includes(full) || collection.includes(leaf);
+  }
+  return collection.has(full) || collection.has(leaf);
+}
+
 const targets = PROBES.filter((p) => {
-  const name = p.replace(/\.mjs$/, '');
-  if (only.length > 0 && !only.includes(name)) return false;
-  if (skip.has(name)) return false;
+  if (only.length > 0 && !matchAny(only, p)) return false;
+  if (skip.size > 0 && matchAny(skip, p)) return false;
   return true;
 });
 
-console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'}`);
+console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive)`);
 console.log(`BASE=${process.env.BASE}`);
 console.log('');
 
@@ -87,4 +140,10 @@ const fail = results.filter((r) => !r.ok).length;
 
 console.log('');
 console.log(`──── ${pass} pass / ${fail} fail (total ${totalElapsed}s)`);
+if (fail > 0) {
+  console.log('FAIL probes:');
+  for (const r of results.filter((r) => !r.ok)) {
+    console.log(`  - ${r.probe}`);
+  }
+}
 process.exit(fail === 0 ? 0 : 1);
