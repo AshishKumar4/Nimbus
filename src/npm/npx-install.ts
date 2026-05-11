@@ -40,6 +40,20 @@ export const NPX_CACHE_DIR = '/tmp/.npx-cache';
 const NPX_CACHE_NM = `${NPX_CACHE_DIR}/node_modules`;
 
 /**
+ * SqliteVFS uses absolute paths WITHOUT a leading slash (e.g. it stores
+ * `tmp/.npx-cache/node_modules/foo/package.json`, not `/tmp/...`). The
+ * NpmInstaller's `install()` entry strips the leading slash from its
+ * `projectDir` arg, then propagates the slashless form into all
+ * downstream pkgDirs and inode keys. To check existence post-install,
+ * we MUST strip the same way; `vfs.exists('/...')` always returns false.
+ *
+ * Mirror of `_strip` in src/runtime/node-shims.ts:204.
+ */
+function _vfsKey(p: string): string {
+  return p.replace(/^\/+/, '');
+}
+
+/**
  * Parsed `npx` invocation.
  *   pkgSpec  — the package to install (`<name>[@<version>]`)
  *   pkgName  — the bare name (no version)
@@ -134,10 +148,12 @@ function findBinInPackage(
   binName: string,
 ): string | null {
   const pkgJsonPath = `${packageDir}/package.json`;
-  if (!vfs.exists(pkgJsonPath)) return null;
+  // SqliteVFS stores keys without leading slash. Check via the stripped
+  // key form to match the installer's write convention.
+  if (!vfs.exists(_vfsKey(pkgJsonPath))) return null;
   let pkgJson: any;
   try {
-    pkgJson = JSON.parse(vfs.readFileString(pkgJsonPath));
+    pkgJson = JSON.parse(vfs.readFileString(_vfsKey(pkgJsonPath)));
   } catch {
     return null;
   }
@@ -160,7 +176,10 @@ function findBinInPackage(
     }
   }
   if (!resolved) return null;
-  // Strip leading "./" if present and join with packageDir.
+  // Strip leading "./" if present and join with packageDir. Return
+  // the absolute path (with leading slash) — the `node` registry
+  // command expects an absolute filesystem path as the first arg.
+  // The vfs.exists checks against _vfsKey internally.
   const rel = resolved.startsWith('./') ? resolved.slice(2) : resolved;
   return `${packageDir}/${rel}`;
 }
@@ -181,12 +200,12 @@ function locateBinary(
   // 1. Project-local node_modules. The packageDir is cwd/node_modules/<pkgName>.
   const projPkgDir = `${cwd}/node_modules/${pkgName}`;
   const projHit = findBinInPackage(vfs, projPkgDir, binName);
-  if (projHit && vfs.exists(projHit)) return projHit;
+  if (projHit && vfs.exists(_vfsKey(projHit))) return projHit;
 
   // 2. NPX cache.
   const npxPkgDir = `${NPX_CACHE_NM}/${pkgName}`;
   const npxHit = findBinInPackage(vfs, npxPkgDir, binName);
-  if (npxHit && vfs.exists(npxHit)) return npxHit;
+  if (npxHit && vfs.exists(_vfsKey(npxHit))) return npxHit;
 
   return null;
 }
@@ -206,10 +225,11 @@ function ensureNpxCachePackageJson(
   pkgRange: string,
 ): void {
   const pkgJsonPath = `${NPX_CACHE_DIR}/package.json`;
+  const pkgJsonKey = _vfsKey(pkgJsonPath);
   let existing: any = { name: 'npx-cache', version: '0.0.0', dependencies: {} };
-  if (vfs.exists(pkgJsonPath)) {
+  if (vfs.exists(pkgJsonKey)) {
     try {
-      existing = JSON.parse(vfs.readFileString(pkgJsonPath));
+      existing = JSON.parse(vfs.readFileString(pkgJsonKey));
       if (!existing.dependencies) existing.dependencies = {};
     } catch {
       // Corrupted — overwrite with fresh content below.
@@ -219,10 +239,10 @@ function ensureNpxCachePackageJson(
     // Ensure the parent dir exists. SqliteVFS auto-creates parent
     // dirs in writeFile, but mkdir defensively for symmetry with
     // @lifo-sh/core's flow.
-    try { vfs.mkdir(NPX_CACHE_DIR, { recursive: true }); } catch { /* dir exists */ }
+    try { vfs.mkdir(_vfsKey(NPX_CACHE_DIR), { recursive: true }); } catch { /* dir exists */ }
   }
   existing.dependencies[pkgName] = pkgRange;
-  vfs.writeFile(pkgJsonPath, JSON.stringify(existing, null, 2) + '\n');
+  vfs.writeFile(pkgJsonKey, JSON.stringify(existing, null, 2) + '\n');
 }
 
 /**
