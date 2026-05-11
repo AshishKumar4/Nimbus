@@ -331,7 +331,13 @@ async function dispatchPythonFacet(
   }
   const stdlibB64 = uint8ToBase64(args.stdlibBytes);
 
-  const preamble = buildPyodidePreamble(asmJsSrc);
+  // Build the preamble with stdlib bytes spliced in. The preamble runs
+  // the entire Pyodide bootstrap at child-facet module-init time —
+  // where workerd's CSP permits `new WebAssembly.Module(rawBytes)` (the
+  // convertJsFunctionToWasm code path which is the v1 hang root).
+  // Per-call __pyodideRun just executes runPython on the cached
+  // Pyodide instance.
+  const preamble = buildPyodidePreamble(asmJsSrc, stdlibB64);
 
   const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
   const env = (facetMgr as any).env;
@@ -343,9 +349,11 @@ async function dispatchPythonFacet(
     preamble,
   });
 
+  // v2 simplification: stdlibB64 and asmWasmMod are now embedded in the
+  // preamble (stdlib via base64 splice; wasm via __NIMBUS_WASM table set
+  // by the loader-pool). The facet fn only needs the per-call inputs.
   const facetFn = async function pythonFacetCall(
     inArgs: {
-      stdlibB64: string;
       userCode: string;
       pyArgv: string[];
       userEnv: Record<string, string>;
@@ -357,30 +365,21 @@ async function dispatchPythonFacet(
     stderr: string;
     error?: string;
   }> {
-    const wasmTable = (globalThis as any).__NIMBUS_WASM || {};
-    const asmWasmMod = wasmTable['pyodide.asm.wasm'];
-    if (!asmWasmMod) {
-      return { exitCode: 127, stdout: '', stderr: '',
-        error: 'python-runner: __NIMBUS_WASM missing pyodide.asm.wasm' };
-    }
     const fn = (globalThis as any).__pyodideRun;
     if (typeof fn !== 'function') {
       return { exitCode: 127, stdout: '', stderr: '',
         error: 'python-runner preamble missing: __pyodideRun not in scope' };
     }
     return await fn({
-      stdlibB64: inArgs.stdlibB64,
       userCode: inArgs.userCode,
       pyArgv: inArgs.pyArgv,
       userEnv: inArgs.userEnv,
       progName: inArgs.progName,
-      asmWasmMod,
     });
   };
 
   try {
     const result: any = await pool.submit(facetFn, {
-      stdlibB64,
       userCode: args.userCode,
       pyArgv: args.pyArgv,
       userEnv: args.userEnv,
@@ -414,7 +413,7 @@ async function dispatchPythonFacet(
  * assignment are allowed), then the asm.js's `var _createPyodideModule`
  * is hoisted onto globalThis.
  */
-function buildPyodidePreamble(asmJsSrc: string): string {
+function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): string {
   return [
     '// ── Pre-asm.js environment shims ───────────────────────────────',
     '// Pyodide.asm.js detects its environment via heuristics. In',
@@ -466,6 +465,24 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     'if (typeof globalThis.document === "undefined") globalThis.document = undefined;',
     'if (typeof globalThis.self === "undefined") globalThis.self = globalThis;',
     '',
+    '// pyodide_js_init() inside the asm.js IIFE constructs a FinalizationRegistry',
+    '// to bridge JS-side GC to Python ref-cleanup. workerd does not expose',
+    '// FinalizationRegistry by default (it is gated behind the `enable_weak_ref`',
+    '// compat flag, on by default after 2025-05-05). For older compat dates',
+    '// the constructor is undefined and pyodide_js_init throws ReferenceError.',
+    '// Provide a no-op class shim — registered callbacks are simply never',
+    '// invoked. This is memory-leaky for long-lived workers (Python objects',
+    '// holding JS proxies will be retained beyond their natural lifetime),',
+    '// but acceptable for v1 (per-request bootstrap; workerd reaps on isolate',
+    '// reuse anyway). Future v3: switch to compat_date >= 2025-05-05 and drop.',
+    'if (typeof globalThis.FinalizationRegistry === "undefined") {',
+    '  globalThis.FinalizationRegistry = class FinalizationRegistry {',
+    '    constructor(_cleanup) {}',
+    '    register(_target, _heldValue, _token) {}',
+    '    unregister(_token) {}',
+    '  };',
+    '}',
+    '',
     '// ── BEGIN: pyodide.asm.js (inlined; ~1 MiB) ─────────────────────',
     '// Module-load time evaluation. Declares `var _createPyodideModule`',
     '// at module scope; the next line hoists it onto globalThis so the',
@@ -474,15 +491,16 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     'if (typeof _createPyodideModule === \'function\') {',
     '  globalThis._createPyodideModule = _createPyodideModule;',
     '}',
-    '// Restore originals after the asm.js IIFE outer captures env flags.',
-    '// The async-factory body re-reads process at runtime for IN_NODE, so',
-    '// __pyodideRun also hides+restores process around the factory call.',
+     '// Restore originals after the asm.js IIFE outer captures env flags.',
+    '// (The bootstrap promise below re-hides them inside its own async',
+    '// scope so the env-detection inside the async factory body sees the',
+    '// stubbed values.)',
     'try { globalThis.process = __nimbusOrigProcess; } catch (e) { /* fall through */ }',
     'try { if (globalThis.process && globalThis.process.browser === true) delete globalThis.process.browser; } catch (e) {}',
     'globalThis.WorkerGlobalScope = __nimbusOrigWGS;',
     '// ── END: pyodide.asm.js inline ──────────────────────────────────',
     '',
-    PYTHON_RUNNER_PREAMBLE_TAIL,
+    buildPreambleTail(stdlibB64),
   ].join('\n');
 }
 
@@ -520,240 +538,350 @@ function buildPyodidePreamble(asmJsSrc: string): string {
 // is already populated; we never invoke `new Function` (CSP-blocked
 // at request time).
 
-export const PYTHON_RUNNER_PREAMBLE_TAIL = `
-// ── BEGIN: python-runner preamble (Pyodide 0.29.4, Nimbus v1) ──────
+// ── Preamble tail builder ─────────────────────────────────────────────
+//
+// Generates the preamble tail with stdlibB64 spliced as a constant so
+// the bootstrap can run at child-facet module-init time (not request
+// time). Module-init time is where workerd permits
+// `new WebAssembly.Module(rawBytes)`, which Pyodide's
+// convertJsFunctionToWasm uses to build JS-callback-to-wasm shims.
+// Without module-init context, that throws CompileError and the
+// bootstrap promise never resolves → workerd cancels the request as
+// hung. (This v2 redesign was directly motivated by the
+// /tmp/pyodide-smoketest finding — see
+// /workspace/.seal-internal/2026-05-11-pyodide-v2/smoketest-result.md.)
+//
+// Architecture:
+//
+//   PREAMBLE (runs at child-facet module-init):
+//   ┌─────────────────────────────────────────────────────────────┐
+//   │ - env shims (FinalizationRegistry, process, WGS, location)  │
+//   │ - asm.js eval (defines _createPyodideModule)                │
+//   │ - stdlibB64 constant + decoded stdlibBytes                  │
+//   │ - sentinel wasm module compiled                             │
+//   │ - globalThis.__pyodideBootstrap = (async () => { ... })()   │
+//   │     ├─ preRun: installStdlib, setHome, setEnv,              │
+//   │     │           initializeNativeFS, gateRuntimeInit         │
+//   │     ├─ _createPyodideModule(settings) called                │
+//   │     ├─ Awaits at gate (until request time)                  │
+//   │     └─ Resolves with pyodideMod after gate release          │
+//   └─────────────────────────────────────────────────────────────┘
+//
+//   __pyodideRun(args) (runs at child-facet request handler):
+//   ┌─────────────────────────────────────────────────────────────┐
+//   │ - Release the bootstrap gate (crypto.getRandomValues OK now)│
+//   │ - Await __pyodideBootstrap → pyodideMod                     │
+//   │ - finalizeBootstrap → pyodide                               │
+//   │ - runPython(userCode) → stdout/stderr/exitCode              │
+//   └─────────────────────────────────────────────────────────────┘
+//
+function buildPreambleTail(stdlibB64: string): string {
+  return `
+// ── BEGIN: python-runner preamble tail (Pyodide 0.29.4, Nimbus v2) ──
 
-globalThis.__pyodideRun = async function __pyodideRun(args) {
-  const stdoutChunks = [];
-  const stderrChunks = [];
-  let exitCode = 0;
+// Stdlib bytes spliced into preamble at facet-build time. ~3.2 MiB
+// base64 text — decoded once at module-init. Same content as
+// share/pyodide/python_stdlib.zip in the runtime cache.
+const __NIMBUS_STDLIB_B64 = ${JSON.stringify(stdlibB64)};
 
+// Decode base64 → Uint8Array. Run at module-init time (synchronous).
+const __nimbusStdlibBytes = (function decode(b64) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+})(__NIMBUS_STDLIB_B64);
+
+// Sentinel-module setup. Pyodide's pyodide.mjs compiles a tiny standalone
+// wasm blob that exports {create_sentinel, is_sentinel} and attaches its
+// exports as imports.sentinel BEFORE instantiating pyodide.asm.wasm. We
+// bypass loadPyodide → must replicate here. The base64 blob below is
+// verbatim from pyodide.mjs (variable \`G\` in v0.29.4).
+const __NIMBUS_SENTINEL_WASM_B64 = 'AGFzbQEAAAABDANfAGAAAW9gAW8BfwMDAgECByECD2NyZWF0ZV9zZW50aW5lbAAAC2lzX3NlbnRpbmVsAAEKEwIHAPsBAPsbCwkAIAD7GvsUAAs=';
+let __nimbusSentinelExports;
+try {
+  const bin = atob(__NIMBUS_SENTINEL_WASM_B64);
+  const sentinelBytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) sentinelBytes[i] = bin.charCodeAt(i);
+  // Synchronous wasm compile at module-init (CSP permits here).
+  const sentinelMod = new WebAssembly.Module(sentinelBytes);
+  const sentinelInst = new WebAssembly.Instance(sentinelMod);
+  __nimbusSentinelExports = sentinelInst.exports;
+} catch (_e) {
+  // CSP fallback — pyodide.mjs's K() also has this Symbol-based path.
+  const marker = Symbol('sentinel');
+  __nimbusSentinelExports = {
+    create_sentinel: function() { return marker; },
+    is_sentinel: function(v) { return v === marker; },
+  };
+}
+
+// Module-init stdout/stderr capture buffers. Used by Pyodide's print/
+// printErr (set in settings below). The per-call __pyodideRun grabs a
+// slice from these buffers to isolate output per invocation.
+globalThis.__nimbusPyStdout = globalThis.__nimbusPyStdout || [];
+globalThis.__nimbusPyStderr = globalThis.__nimbusPyStderr || [];
+
+// Bootstrap gate release fn — populated by gateRuntimeInit preRun hook
+// during _createPyodideModule's synchronous preRun pass.
+globalThis.__nimbusReleaseGate = null;
+
+// ── Bootstrap promise (kicked off at child-facet module-init) ────────
+//
+// CRITICAL: this promise is created at module-init time so the
+// _createPyodideModule call (and its synchronous wasm-module-compile
+// side effects, including convertJsFunctionToWasm) happens in
+// startup-CSP context. The promise body's awaits run as microtasks
+// after module-init returns, but the SYNCHRONOUS portion of
+// _createPyodideModule (wasm instantiate + preRun + reportUndefinedSymbols
+// + convertJsFunctionToWasm) all completes before the first await.
+//
+// We hide process + WGS inside this async function so the env-detection
+// inside Pyodide's async factory body sees the stubbed values, then
+// restore them in the finally block.
+globalThis.__pyodideBootstrap = (async function nimbusBootstrap() {
   if (typeof globalThis._createPyodideModule !== 'function') {
-    return { exitCode: 1, stdout: '', stderr: '',
-      error: 'globalThis._createPyodideModule not installed by inline asm.js' };
+    return { ok: false, error: '_createPyodideModule not installed by inline asm.js' };
   }
-
-  // ── Step 1: build the Emscripten settings object. ──────────────
-  // We bypass loadPyodide() and call _createPyodideModule directly
-  // with the settings we need. This avoids the public loader's
-  // file-system probing (which expects Node fs or browser URL
-  // resolution — workerd has neither).
-  const stdlibBytes = (function decode(b64) {
-    const bin = atob(b64);
-    const u8 = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    return u8;
-  })(args.stdlibB64);
-
-  // The Pyodide config object. Mirror the shape that loadPyodide()
-  // builds internally (pyodide.mjs:initializeConfiguration +
-  // createSettings):
-  const config = {
-    indexURL: '/pyodide/',
-    fullStdLib: false,
-    args: args.pyArgv.slice(1),  // sys.argv excluding argv[0]; thisProgram fills argv[0]
-    env: args.userEnv,
-    packages: [],
-    lockFileContents: '{"packages":{}}',
-    _sysExecutable: args.progName,
-    BUILD_ID: 'nimbus-pyodide-0.29.4',
-  };
-  if (!config.env.HOME) config.env.HOME = '/home/pyodide';
-
-  // ── Pyodide's createSettings shape. We replicate the relevant
-  //    bits inline because importing pyodide.mjs would re-trigger the
-  //    node:fs probe path. ──
-  const settings = {
-    // Disable Emscripten's automatic _main invocation — Pyodide's wasm
-    // doesn't have a meaningful main(); we drive it via runPython after
-    // bootstrap. Without this, Emscripten's runtime will attempt to call
-    // _main, which traps and may hang the request.
-    noInitialRun: true,
-    noExitRuntime: true,
-    noImageDecoding: true,
-    noAudioDecoding: true,
-    noWasmDecoding: false,
-    print: (s) => { stdoutChunks.push(s + '\\n'); },
-    printErr: (s) => { stderrChunks.push(s + '\\n'); },
-    onExit: (code) => { exitCode = code | 0; },
-    thisProgram: config._sysExecutable,
-    arguments: config.args,
-    API: { config, runtimeEnv: { IN_NODE: false, IN_BROWSER: false, IN_SHELL: false } },
-    locateFile: (path) => '/pyodide/' + path,
-    // Override instantiateWasm to pull the precompiled module from
-    // __NIMBUS_WASM (set by the loader-pool's modules-map entry).
-    // The single-arg WebAssembly.instantiate(Module, imports) form
-    // is the only one workerd CSP allows at request time.
-    instantiateWasm: function(imports, successCallback) {
-      const mod = args.asmWasmMod;
-      WebAssembly.instantiate(mod, imports).then((result) => {
-        const inst = (result instanceof WebAssembly.Instance ? result : result.instance);
-        successCallback(inst, mod);
-      }).catch((e) => {
-        stderrChunks.push('[python-runner] wasm instantiate failed: ' + (e && e.message) + '\\n');
-        exitCode = 1;
-      });
-      // Per Emscripten contract: return {} from instantiateWasm to
-      // indicate async completion (the actual instance is delivered
-      // via successCallback above).
-      return {};
-    },
-  };
-
-  // ── preRun: install the stdlib zip into MEMFS at /lib/python313.zip ──
-  //
-  // Pyodide's pyodide.mjs:getFileSystemInitializationFuncs spins up
-  // installStdlib(stdLibURL) which does loadBinaryFile(URL). That
-  // tries to fetch over the network — blocked in workerd at request
-  // time. Instead we write the bytes directly via FS in preRun.
-  settings.preRun = [
-    function installStdlib(M) {
-      M.addRunDependency('nimbus-install-stdlib');
-      try {
-        // CPython version: from Pyodide's _Py_Version macro = 0x030D0200
-        // → Python 3.13.2.
-        const major = 3, minor = 13;
-        M.FS.mkdirTree('/lib');
-        M.API.sitePackages = '/lib/python' + major + '.' + minor + '/site-packages';
-        M.FS.mkdirTree(M.API.sitePackages);
-        M.FS.writeFile('/lib/python' + major + minor + '.zip', stdlibBytes, { canOwn: true });
-      } catch (e) {
-        stderrChunks.push('[python-runner] installStdlib failed: ' + (e && e.message) + '\\n');
-      } finally {
-        M.removeRunDependency('nimbus-install-stdlib');
-      }
-    },
-    function setHome(M) {
-      try { M.FS.mkdirTree(config.env.HOME); M.FS.chdir(config.env.HOME); } catch (e) { /* fail-soft */ }
-    },
-    function setEnv(M) {
-      try { Object.assign(M.ENV, config.env); } catch (e) { /* fail-soft */ }
-    },
-  ];
-
-  // ── Step 2: instantiate Pyodide. ───────────────────────────────
-  // Hide globalThis.process for the duration of _createPyodideModule
-  // — Pyodide's ENVIRONMENT_IS_NODE detection evaluates here (in the
-  // async-factory body, NOT in the IIFE outer scope), and a truthy
-  // process triggers require('fs'). After the factory returns,
-  // ENVIRONMENT_IS_NODE has been captured into module-init lexical
-  // scope so we can restore process.
   const __origProcess = globalThis.process;
   const __origWGS = globalThis.WorkerGlobalScope;
-  // Some JS hosts (workerd among them) treat \`process\` as a non-
-  // configurable global that .delete() / = undefined silently fail
-  // for. Two safety nets:
-  //   1. Try the simple = undefined.
-  //   2. Also patch process.versions.node to "" — Pyodide's IN_NODE
-  //      check requires \`typeof process.versions.node === "string" &&\`
-  //      AND \`!process.browser\`. We can't reach negative-from-truthy
-  //      via versions but we can make .node be empty string ("" is a
-  //      string so condition holds), then also set .browser = true so
-  //      the negation \`!process.browser\` = false → IN_NODE = false.
-  //      That sidesteps any global-protection.
-  try {
-    globalThis.process = undefined;
-  } catch { /* non-writable; fall through to patch route */ }
+  try { globalThis.process = undefined; } catch {}
   try {
     if (globalThis.process && typeof globalThis.process === 'object') {
-      // Mark this process object as a browser-like environment so
-      // Pyodide treats us as non-Node. Pyodide checks: typeof process
-      // === 'object' && typeof process.versions === 'object' && typeof
-      // process.versions.node === 'string' && !process.browser.
       globalThis.process.browser = true;
     }
-  } catch { /* fall through */ }
-  // Force-overwrite WorkerGlobalScope; if it's non-configurable via
-  // direct assignment, fall through and Pyodide will need IN_NODE=false
-  // path. After the attempt, log the realized state.
-  try { globalThis.WorkerGlobalScope = Object; } catch { /* fall through */ }
+  } catch {}
+  try { globalThis.WorkerGlobalScope = Object; } catch {}
 
-  let pyodideMod;
   try {
-    pyodideMod = await globalThis._createPyodideModule(settings);
-    if (settings.exitCode !== undefined && settings.exitCode !== 0) {
-      throw new pyodideMod.ExitStatus(settings.exitCode);
+    // Get the wasm module that the loader-pool injected via __NIMBUS_WASM.
+    const wasmTable = globalThis.__NIMBUS_WASM || {};
+    const asmWasmMod = wasmTable['pyodide.asm.wasm'];
+    if (!asmWasmMod) {
+      return { ok: false, error: '__NIMBUS_WASM missing pyodide.asm.wasm' };
     }
+
+    // Initial Pyodide config — note: args, env, progName come from the
+    // per-call args at request time. We use sensible defaults here so
+    // the bootstrap can complete; per-call __pyodideRun overrides via
+    // M.ENV / pyodide.runPython arguments.
+    const config = {
+      indexURL: '/pyodide/',
+      fullStdLib: false,
+      jsglobals: globalThis,
+      args: [],
+      env: { HOME: '/home/pyodide', PYTHONINSPECT: '1' },
+      packages: [],
+      lockFileContents: '{"packages":{}}',
+      packageCacheDir: undefined,
+      enableRunUntilComplete: true,
+      checkAPIVersion: false,
+      _sysExecutable: 'python',
+      BUILD_ID: 'nimbus-pyodide-0.29.4',
+    };
+
+    const settings = {
+      noInitialRun: false,
+      noExitRuntime: true,
+      noImageDecoding: true,
+      noAudioDecoding: true,
+      noWasmDecoding: false,
+      print: function(s) { globalThis.__nimbusPyStdout.push(s + '\\n'); },
+      printErr: function(s) { globalThis.__nimbusPyStderr.push(s + '\\n'); },
+      thisProgram: config._sysExecutable,
+      arguments: config.args,
+      API: { config: config, runtimeEnv: { IN_NODE: false, IN_BROWSER: false, IN_SHELL: false } },
+      locateFile: function(path) { return '/pyodide/' + path; },
+      instantiateWasm: function(imports, successCallback) {
+        // Attach sentinel namespace synchronously — Pyodide expects
+        // imports.sentinel = {create_sentinel, is_sentinel}.
+        imports.sentinel = __nimbusSentinelExports;
+        WebAssembly.instantiate(asmWasmMod, imports).then(function(result) {
+          const inst = (result instanceof WebAssembly.Instance ? result : result.instance);
+          try {
+            successCallback(inst, asmWasmMod);
+          } catch (cbErr) {
+            globalThis.__nimbusPyStderr.push('[python-runner] receiveInstance threw: ' + (cbErr && cbErr.message) + '\\n');
+            throw cbErr;
+          }
+        }).catch(function(e) {
+          globalThis.__nimbusPyStderr.push('[python-runner] wasm instantiate failed: ' + (e && e.message) + '\\n');
+        });
+        return {};
+      },
+    };
+
+    // Faithful replication of pyodide.mjs's
+    // getFileSystemInitializationFuncs ordering, plus our request-gate.
+    settings.preRun = [
+      function installStdlib(M) {
+        M.addRunDependency('nimbus-install-stdlib');
+        try {
+          const verWord = M.HEAPU32[M._Py_Version >>> 2];
+          const major = (verWord >>> 24) & 0xff;
+          const minor = (verWord >>> 16) & 0xff;
+          M.API.pyVersionTuple = [major, minor, (verWord >>> 8) & 0xff];
+          M.FS.mkdirTree('/lib');
+          M.API.sitePackages = '/lib/python' + major + '.' + minor + '/site-packages';
+          M.FS.mkdirTree(M.API.sitePackages);
+          M.FS.writeFile('/lib/python' + major + minor + '.zip', __nimbusStdlibBytes);
+        } catch (e) {
+          globalThis.__nimbusPyStderr.push('[python-runner] installStdlib failed: ' + (e && e.message) + '\\n');
+        } finally {
+          M.removeRunDependency('nimbus-install-stdlib');
+        }
+      },
+      function setHome(M) {
+        let home = config.env.HOME;
+        try { M.FS.mkdirTree(home); } catch { home = '/'; }
+        try { M.FS.chdir(home); } catch {}
+      },
+      function setEnv(M) {
+        try { Object.assign(M.ENV, config.env); } catch {}
+      },
+      function initializeNativeFS(M) {
+        try {
+          M.FS.filesystems.NATIVEFS_ASYNC = {
+            mount: function() { throw new Error('NATIVEFS_ASYNC not implemented'); },
+            syncfs: function(_m, _p, cb) { cb(); },
+          };
+        } catch {}
+      },
+      function gateRuntimeInit(M) {
+        // Adds a runDependency that defers Pyodide's doRun (callMain →
+        // CPython __wasm_call_ctors → crypto.getRandomValues — blocked
+        // at module-init) until our request handler releases it.
+        M.addRunDependency('nimbus-request-gate');
+        globalThis.__nimbusReleaseGate = function() {
+          try { M.removeRunDependency('nimbus-request-gate'); } catch {}
+        };
+      },
+    ];
+
+    // Stash settings on globalThis so __pyodideRun can mutate config
+    // (args/env/progName) at request time before runPython.
+    globalThis.__nimbusPyConfig = config;
+
+    // Kick off _createPyodideModule. Its synchronous portion runs all
+    // preRun hooks (registering the gate) and instantiates the wasm
+    // module (including convertJsFunctionToWasm in
+    // reportUndefinedSymbols — the v1 hang root). The returned promise
+    // resolves when the gate is released at request time.
+    const modPromise = globalThis._createPyodideModule(settings);
+    const pyodideMod = await modPromise;
+    return { ok: true, mod: pyodideMod };
   } catch (e) {
-    globalThis.process = __origProcess;
+    return { ok: false, error: '_createPyodideModule failed: ' + (e && e.message), stack: e && e.stack };
+  } finally {
+    try { globalThis.process = __origProcess; } catch {}
+    try {
+      if (globalThis.process && globalThis.process.browser === true) {
+        delete globalThis.process.browser;
+      }
+    } catch {}
     globalThis.WorkerGlobalScope = __origWGS;
-    // Emscripten throws ExitStatus on sys.exit / proc_exit.
-    if (e && e.name === 'ExitStatus') {
-      exitCode = e.status | 0;
-      return {
-        exitCode,
-        stdout: stdoutChunks.join(''),
-        stderr: stderrChunks.join(''),
-      };
-    }
+  }
+})();
+
+// ── Per-call entry point ─────────────────────────────────────────────
+//
+// Invoked from the LOADER child facet's execute() (which calls the
+// serialized facetFn that does globalThis.__pyodideRun(args)).
+//
+// At this point the bootstrap promise is mid-flight at the gate.
+// We release the gate, await the bootstrap completion (which now
+// runs CPython init in request-handler CSP context where
+// crypto.getRandomValues is permitted), then finalizeBootstrap +
+// runPython.
+globalThis.__pyodideRun = async function __pyodideRun(args) {
+  // Tracks where in the user's request output begins (the bootstrap
+  // may have produced some print() output too, but in practice it
+  // doesn't — CPython's Py_Initialize is silent).
+  const stdoutStart = globalThis.__nimbusPyStdout.length;
+  const stderrStart = globalThis.__nimbusPyStderr.length;
+
+  // Override config args/env/progName for THIS call. The bootstrap
+  // used defaults; the user's actual sys.argv and env are applied here.
+  // setEnv preRun ran with the old config — we re-apply onto M.ENV
+  // via runPython below.
+  if (globalThis.__nimbusPyConfig) {
+    globalThis.__nimbusPyConfig.args = args.pyArgv.slice(1);
+    globalThis.__nimbusPyConfig.env = Object.assign({}, globalThis.__nimbusPyConfig.env, args.userEnv || {});
+    globalThis.__nimbusPyConfig._sysExecutable = args.progName;
+  }
+
+  // Release the bootstrap gate (registered by gateRuntimeInit preRun).
+  // Required: workerd blocks crypto.getRandomValues at module-init.
+  // Releasing at request time lets Pyodide's doRun → callMain →
+  // __wasm_call_ctors → randomFill run in request-handler context.
+  if (typeof globalThis.__nimbusReleaseGate === 'function') {
+    globalThis.__nimbusReleaseGate();
+    // Make idempotent so a re-entrant call doesn't double-release.
+    globalThis.__nimbusReleaseGate = function() {};
+  }
+
+  // Await bootstrap completion.
+  const boot = await globalThis.__pyodideBootstrap;
+  if (!boot.ok || !boot.mod) {
     return {
       exitCode: 1,
-      stdout: stdoutChunks.join(''),
-      stderr: stderrChunks.join(''),
-      error: '_createPyodideModule failed: ' + (e && e.message),
+      stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+      stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+      error: 'pyodide bootstrap failed: ' + (boot.error || 'unknown'),
     };
   }
-  // Restore process + WorkerGlobalScope on the success path.
-  globalThis.process = __origProcess;
-  globalThis.WorkerGlobalScope = __origWGS;
+  const pyodideMod = boot.mod;
 
-  // ── Step 3: bootstrap CPython interpreter. ─────────────────────
-  //
-  // pyodide.mjs:bootstrapPyodide calls finalizeBootstrap which sets
-  // up sys.path, the exception handlers, and the runPython helper.
-  // We can't call loadPyodide; we replicate just the runPython
-  // entry by going through Pyodide's exported _Py_RunMain or
-  // PyRun_SimpleString. Easier: use Pyodide's high-level API via
-  // pyodideMod.API.finalizeBootstrap, then pyodideMod.runPython.
+  // Apply user env to MEMFS now that CPython is up. (The preRun setEnv
+  // ran with bootstrap defaults; we layer the user env on top.)
+  if (args.userEnv) {
+    try { Object.assign(pyodideMod.ENV, args.userEnv); } catch {}
+  }
+
+  // finalizeBootstrap returns the public Pyodide JS API (the one with
+  // .runPython, .globals, .registerJsModule).
   let pyodide;
   try {
-    // finalizeBootstrap returns the public Pyodide JS API object
-    // (the one with .runPython, .globals, .registerJsModule).
     pyodide = pyodideMod.API.finalizeBootstrap(undefined, undefined);
   } catch (e) {
     return {
       exitCode: 1,
-      stdout: stdoutChunks.join(''),
-      stderr: stderrChunks.join(''),
+      stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+      stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
       error: 'finalizeBootstrap failed: ' + (e && e.message),
     };
   }
 
-  // ── Step 4: run the user code. ─────────────────────────────────
+  // Run the user code.
+  let exitCode = 0;
   if (args.userCode) {
     try {
-      // pyodide.runPython runs the source as if it were a module-
-      // top-level program. Exceptions are caught and re-raised as
-      // PythonError on the JS side.
       pyodide.runPython(args.userCode);
     } catch (e) {
-      // Python exceptions are PythonError; sys.exit raises SystemExit
-      // which pyodide surfaces as an exit code on the message.
       if (e && typeof e.message === 'string') {
-        // Try to detect SystemExit and parse its exit code.
         const m = e.message.match(/^SystemExit:\\s*(-?\\d+)/m);
         if (m) {
           exitCode = parseInt(m[1], 10);
         } else if (/SystemExit/.test(e.message) && !/^SystemExit:\\s*\\S/m.test(e.message)) {
-          // SystemExit with no arg → exit 0
           exitCode = 0;
         } else {
-          stderrChunks.push(e.message + (e.message.endsWith('\\n') ? '' : '\\n'));
+          globalThis.__nimbusPyStderr.push(e.message + (e.message.endsWith('\\n') ? '' : '\\n'));
           exitCode = 1;
         }
       } else {
-        stderrChunks.push('[python-runner] unknown error: ' + e + '\\n');
+        globalThis.__nimbusPyStderr.push('[python-runner] unknown error: ' + e + '\\n');
         exitCode = 1;
       }
     }
   }
 
   return {
-    exitCode,
-    stdout: stdoutChunks.join(''),
-    stderr: stderrChunks.join(''),
+    exitCode: exitCode,
+    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
   };
 };
 
 // ── END: python-runner preamble ───────────────────────────────────────
 `;
+}

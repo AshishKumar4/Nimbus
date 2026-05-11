@@ -50,6 +50,15 @@
   // it, the env.production overlay's only remaining purpose was that
   // flag — so the env overlay collapses too. Both top-level and
   // env.production now carry the same `compatibility_flags`.
+  // Note (pyodide-v2): the `allow_eval_during_startup` flag — which
+  // relaxes the CSP blocking `new WebAssembly.Module(rawBytes)` at
+  // module-init time and is required by Pyodide's convertJsFunctionToWasm
+  // (called from addFunction → reportUndefinedSymbols → loadDylibs →
+  // receiveInstance) — became the default as of 2025-06-01. Our
+  // compatibility_date above (2026-04-01) is past that, so the flag is
+  // implicitly enabled and MUST NOT be listed here (wrangler validator
+  // rejects redundant flags). See smoketest-result.md for the
+  // empirical chain that established this.
   "compatibility_flags": ["nodejs_compat"],
   // [astro-node-v22] Enable versioned-preview URLs. Each
   // `wrangler versions upload` (and `wrangler deploy`) generates a
