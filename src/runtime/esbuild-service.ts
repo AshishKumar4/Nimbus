@@ -1013,6 +1013,17 @@ export class EsbuildService {
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
+        // Dynamic-import lowering: rewrites `import(x)` to
+        // `Promise.resolve().then(() => __toESM(require(x)))` so the
+        // call routes through Nimbus's scopedRequire → VFS lookup
+        // instead of workerd's worker-module-map resolver (which only
+        // knows {'runner.js': workerCode}). Without this, every user
+        // dynamic import() rejects with "No such module ..." — and if
+        // user code has no .catch() (e.g. create-astro.mjs's
+        // `import('./dist/index.js').then(({main}) => main())`), the
+        // rejection is unhandled and the facet exits silently
+        // exitCode=0. See .seal-internal/2026-05-11-astro-silent-exit/audit.md.
+        supported: { 'dynamic-import': false },
       });
       const { requires, body } = convertEsmImportsToRequire(pass1.code);
       const assembled =
@@ -1050,6 +1061,8 @@ export class EsbuildService {
       jsxFragment: options?.jsxFragment,
       tsconfigRaw: options?.tsconfigRaw,
       define: options?.define,
+      // Dynamic-import lowering — see two-pass branch above for rationale.
+      supported: { 'dynamic-import': false },
     });
 
     return {
