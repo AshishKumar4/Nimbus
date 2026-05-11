@@ -294,7 +294,41 @@ async function dispatchPythonFacet(
   //
   // stdlib.zip stays in the context (base64) — it's data not code,
   // and the context blob is evaluated at module-load too.
-  const asmJsSrc = new TextDecoder('utf-8').decode(args.asmJsBytes);
+  let asmJsSrc = new TextDecoder('utf-8').decode(args.asmJsBytes);
+  // ── Source-patch the asm.js's "Cannot determine runtime environment" branch ──
+  //
+  // Even with our globalThis.process / WorkerGlobalScope / self / location
+  // shims in place, the asm.js's pyodide_js_init() IIFE's env-detect (via
+  // bn → vn) somehow lands d.IN_BROWSER_WEB_WORKER = false at request time
+  // on workerd. Our supervisor-side mirror of the same logic returns
+  // IN_BROWSER_WEB_WORKER = true with the same shims; the discrepancy
+  // remains unidentified after P8-P17 of diagnostic instrumentation.
+  //
+  // Pragmatic v1 fix: source-patch the if-chain to ALWAYS take the
+  // IN_BROWSER_WEB_WORKER branch (regardless of `d`). The branch's body
+  // assigns `Fe` to a globalThis.importScripts-based loadScript helper.
+  // We don't actually call Fe (Pyodide only invokes loadScript when
+  // dynamic-loading a wasm sibling; our instantiateWasm override pre-
+  // empts that). So the patch is functionally a no-op other than making
+  // the throw unreachable.
+  //
+  // The patch target string is a literal in the minified asm.js — stable
+  // across rebuilds because it's a unique identifier path.
+  const PATCH_NEEDLE = 'else throw new Error("Cannot determine runtime environment")';
+  const PATCH_REPLACE = '/* nimbus-patch: was: ' + PATCH_NEEDLE + ' */';
+  if (asmJsSrc.includes(PATCH_NEEDLE)) {
+    asmJsSrc = asmJsSrc.replace(PATCH_NEEDLE, PATCH_REPLACE);
+  }
+  // Also patch the if-chain head so we ALWAYS set Fe (force-take the
+  // first branch — IN_BROWSER_MAIN_THREAD's loadScript path uses
+  // `await import(t)` which works in workerd at module-load time).
+  // The previous patch alone is insufficient because if NO branch matches,
+  // Fe stays undefined → calling it would TypeError later.
+  const HEAD_NEEDLE = 'if(d.IN_BROWSER_MAIN_THREAD)';
+  const HEAD_REPLACE = 'if(true||d.IN_BROWSER_MAIN_THREAD)';
+  if (asmJsSrc.includes(HEAD_NEEDLE)) {
+    asmJsSrc = asmJsSrc.replace(HEAD_NEEDLE, HEAD_REPLACE);
+  }
   const stdlibB64 = uint8ToBase64(args.stdlibBytes);
 
   const preamble = buildPyodidePreamble(asmJsSrc);
