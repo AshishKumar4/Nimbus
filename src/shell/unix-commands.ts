@@ -744,10 +744,40 @@ function mkXxd(vfs: SqliteVFS): CmdFn {
 function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
   return async (ctx: Ctx) => {
     try {
-      // Resolve stdin: shell passes a stream object with .readAll() when piping
+      // Resolve stdin: shell passes a stream object with .readAll() when piping.
+      //
+      // BUG-SWEEP fix (2026-05-11): lifo-sh ≥0.5.5 passes the shell's
+      // `terminalStdin` (an Ls instance) as ctx.stdin for EVERY command,
+      // not just piped ones. Ls.readAll() loops until close(), which the
+      // shell only triggers in its executeLine() finally — AFTER the
+      // command returns. Pre-fix, our wrap awaited readAll() and
+      // deadlocked: command waits for stdin EOF, shell waits for command.
+      //
+      // The fix is to distinguish the two stream shapes:
+      //   - Pipe reader (Oi.reader): {read, readAll} only. Used when
+      //     upstream `echo X |` feeds bytes; upstream calls close()
+      //     after writing, so readAll() resolves quickly.
+      //   - Terminal stdin (Ls): {feed, close, rawMode, read, readAll,
+      //     isWaiting, ...}. close() runs ONLY after the command returns.
+      //
+      // We treat anything with a `feed` method (Ls signature) as the
+      // terminal stdin and drain its already-buffered bytes synchronously
+      // without awaiting EOF. Pipe readers (no `feed`) await readAll().
       if (ctx.stdin && typeof ctx.stdin !== 'string') {
         const stdinObj = ctx.stdin as any;
-        if (typeof stdinObj.readAll === 'function') {
+        const isTerminalStdin = typeof stdinObj.feed === 'function';
+        if (isTerminalStdin) {
+          // Drain any already-queued bytes (typically empty for the
+          // first command on a line; non-empty if the user typed
+          // text + Enter before the command was dispatched). DO NOT
+          // await — that would wait for the user's next Ctrl-D.
+          const buf: string[] = Array.isArray(stdinObj.buffer)
+            ? stdinObj.buffer.splice(0)
+            : [];
+          (ctx as any).stdin = buf.join('');
+        } else if (typeof stdinObj.readAll === 'function') {
+          // Pipe reader — upstream will close() after writing, so
+          // readAll() resolves bounded.
           (ctx as any).stdin = await stdinObj.readAll();
         } else if (typeof stdinObj.toString === 'function') {
           (ctx as any).stdin = stdinObj.toString();
