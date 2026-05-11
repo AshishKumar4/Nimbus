@@ -598,6 +598,20 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // process triggers require('fs'). After the factory returns,
   // ENVIRONMENT_IS_NODE has been captured into module-init lexical
   // scope so we can restore process.
+  // ── DIAG: log env state at request time. Temporary; remove after green.
+  try {
+    stderrChunks.push('[diag] process=' + typeof globalThis.process
+      + ' .browser=' + (globalThis.process && globalThis.process.browser)
+      + ' .versions.node=' + (globalThis.process && globalThis.process.versions && globalThis.process.versions.node)
+      + ' WGS=' + typeof globalThis.WorkerGlobalScope
+      + ' self=' + typeof globalThis.self
+      + ' selfInstanceObj=' + (globalThis.self instanceof Object)
+      + ' location=' + typeof globalThis.location
+      + ' window=' + typeof globalThis.window
+      + ' Bun=' + typeof globalThis.Bun
+      + ' Deno=' + typeof globalThis.Deno
+      + '\\n');
+  } catch (e) { stderrChunks.push('[diag] err: ' + (e && e.message) + '\\n'); }
   const __origProcess = globalThis.process;
   const __origWGS = globalThis.WorkerGlobalScope;
   // Some JS hosts (workerd among them) treat \`process\` as a non-
