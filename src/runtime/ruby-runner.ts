@@ -649,32 +649,46 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   const envRb = JSON.stringify(args.userEnv || {});
   const progNameRb = JSON.stringify(args.progName);
 
-  const wrapper = [
-    // Disable stdout/stderr buffering. By default Ruby line-buffers
-    // stdout (sync=false) and only flushes at exit. Since we drive Ruby
-    // via rb-eval-string-protect (no actual exit), buffered output is
-    // lost. sync=true makes every write hit fd_write immediately,
-    // which our WASI shim then forwards to __nimbusRubyStdout.
+  // STAGED execution: we split the prelude (stdout sync + ARGV/ENV/$0
+  // setup) from the user-code eval. The prelude has no failure modes
+  // we care about; user-code is wrapped in begin/rescue for SystemExit
+  // and Exception. If the wrapper itself trips a syntax/runtime error,
+  // we surface it via the __NIMBUS_RUBY_DIAG side channel.
+  // Build env list as string-keyed Ruby hash via the rocket-syntax.
+  // Ruby treats colon-style hash literals as Symbol-keyed; we need
+  // String keys so ENV[k] = v works without TypeError.
+  const envEntries = Object.entries(args.userEnv || {})
+    .map(([k, v]) => JSON.stringify(k) + ' => ' + JSON.stringify(v))
+    .join(', ');
+  const envHashRb = '{' + envEntries + '}';
+
+  const preludeRb = [
+    // Reset exit state FIRST so partial prelude failures still
+    // surface a clean exit code (previously: exit 7 left $__nimbus_exit
+    // = 7 → next call's prelude could fail before resetting → second
+    // exit 0 returned 7).
+    '$__nimbus_exit = 0',
     '$stdout.sync = true',
     '$stderr.sync = true',
-    '$__nimbus_exit = 0',
     '$0 = ' + progNameRb,
     '$PROGRAM_NAME = ' + progNameRb,
     'ARGV.replace(' + argvRb + ')',
-    '__nimbus_env = ' + envRb,
-    '__nimbus_env.each { |k, v| ENV[k] = v }',
+    envHashRb + '.each_pair { |k, v| ENV[k] = v }',
+  ].join('; ');
+
+  const userWrapper = [
     'begin',
-    '  eval(' + userCodeRb + ', binding, ' + progNameRb + ', 1)',
+    '  ' + 'eval(' + userCodeRb + ', TOPLEVEL_BINDING, ' + progNameRb + ', 1)',
     'rescue SystemExit => e',
     '  $__nimbus_exit = e.status',
     'rescue Exception => e',
-    '  $stderr.puts(e.full_message(highlight: false, order: :top))',
+    '  $stderr.write(e.full_message(highlight: false, order: :top))',
     '  $__nimbus_exit = 1',
+    'ensure',
+    '  $stdout.flush rescue nil',
+    '  $stderr.flush rescue nil',
     'end',
-    // Final flush — defense in depth.
-    '$stdout.flush rescue nil',
-    '$stderr.flush rescue nil',
-  ].join('\\n');
+  ].join("\\n");
 
   const memory = boot.instance.exports.memory;
 
@@ -692,8 +706,26 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     return { handle, status };
   }
 
+  // Stage 1: run the prelude (sync flags, ARGV, ENV, $0/$PROGRAM_NAME).
+  let preludeStatus;
   try {
-    callEvalStringProtect(wrapper);
+    preludeStatus = callEvalStringProtect(preludeRb);
+  } catch (e) {
+    return {
+      exitCode: 1,
+      stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
+      stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+      error: 'ruby prelude threw: ' + (e && e.message),
+    };
+  }
+  if (preludeStatus && preludeStatus.status !== 0) {
+    globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] prelude returned non-zero status: ' + preludeStatus.status + '\\n');
+  }
+
+  // Stage 2: run user code wrapped for SystemExit/Exception capture.
+  let evalStatus;
+  try {
+    evalStatus = callEvalStringProtect(userWrapper);
   } catch (e) {
     return {
       exitCode: 1,
@@ -701,6 +733,9 @@ globalThis.__rubyRun = async function __rubyRun(args) {
       stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
       error: 'rb-eval-string-protect threw: ' + (e && e.message),
     };
+  }
+  if (evalStatus && evalStatus.status !== 0) {
+    globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] user wrapper returned non-zero status: ' + evalStatus.status + '\\n');
   }
 
   // Read $__nimbus_exit by evaluating it and inspecting the result
@@ -725,10 +760,19 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     callEvalStringProtect(
       '$stderr.write(' + JSON.stringify(NIMBUS_EXIT_MARKER) + ' + $__nimbus_exit.to_s + "\\\\n")'
     );
-    // Scrape the marker from stderr buffer.
-    const stderrSnap = globalThis.__nimbusRubyStderr.join('');
-    const m = stderrSnap.match(new RegExp(NIMBUS_EXIT_MARKER + '(-?\\\\d+)'));
-    if (m) exitCode = parseInt(m[1], 10);
+    // Scrape the marker from stderr buffer — using ONLY this call's
+    // slice (from stderrStart). The same facet can be reused across
+    // multiple __rubyRun invocations (loader-pool dedup by tag), so
+    // a previous call's marker would otherwise be matched first.
+    const callStderr = globalThis.__nimbusRubyStderr.slice(stderrStart).join('');
+    // Match the LAST marker in this slice (the one our just-completed
+    // call emitted; if the user wrapper also emitted writes, the
+    // marker is appended after them).
+    const markerRe = new RegExp(NIMBUS_EXIT_MARKER + '(-?\\\\d+)', 'g');
+    let lastMatch = null;
+    let mit;
+    while ((mit = markerRe.exec(callStderr)) !== null) lastMatch = mit;
+    if (lastMatch) exitCode = parseInt(lastMatch[1], 10);
   } catch (e) {
     // Failure to read exit code → assume 0 if no errors observed.
     exitCode = 0;

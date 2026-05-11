@@ -342,10 +342,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // __rubyRun drives rb-eval-string-protect with a wrapper that
     // catches SystemExit. See src/runtime/ruby-runner.ts +
     // /workspace/.seal-internal/2026-05-11-ruby-v1/audit.md.
-    registerRunnerFactory('ruby-runner', makeRubyRunnerFactory({
-      facetMgr,
-      vfs: sqliteFs,
-    }));
+    try {
+      registerRunnerFactory('ruby-runner', makeRubyRunnerFactory({
+        facetMgr,
+        vfs: sqliteFs,
+      }));
+    } catch (e: any) {
+      console.error('[init] ruby-runner registration FAILED:', e?.message || e, e?.stack || '');
+    }
     {
       // Cast registry to the minimal package-manager shape. lifo-sh's
       // CommandRegistry has register(name, handler) which matches.
