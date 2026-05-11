@@ -564,6 +564,12 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   //    bits inline because importing pyodide.mjs would re-trigger the
   //    node:fs probe path. ──
   const settings = {
+    // Disable Emscripten's automatic _main invocation — Pyodide's wasm
+    // doesn't have a meaningful main(); we drive it via runPython after
+    // bootstrap. Without this, Emscripten's runtime will attempt to call
+    // _main, which traps and may hang the request.
+    noInitialRun: true,
+    noExitRuntime: true,
     noImageDecoding: true,
     noAudioDecoding: true,
     noWasmDecoding: false,
