@@ -6,6 +6,11 @@
 //   BASE=http://127.0.0.1:8792 bun tests/behavioral/run-all.mjs
 //   BASE=https://nimbus.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs
 //
+// Flags:
+//   --no-retry     Disable retry-on-banner (CI-strict mode). Default
+//                  is retry-once when the spawn crashes with a known
+//                  runtime-crash banner.
+//
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
 //                         "large-install,honest-install-message") to
@@ -14,6 +19,7 @@
 //                         the .mjs extension), so "frameworks/astro-real"
 //                         and "astro-real" both work.
 //   NIMBUS_PROBE_SKIP   — comma-separated probe names to skip.
+//   NIMBUS_RUNNER_NO_RETRY=1  — equivalent of `--no-retry` (CI use).
 //
 // Discovery: walks `tests/behavioral/` recursively. Skips:
 //   - any file whose leaf basename starts with `_` (helpers like
@@ -22,6 +28,25 @@
 //   - any file named `run-all.mjs` (the root runner and the
 //     `keybindings/run-all.mjs` sub-runner)
 //   - non-`.mjs` files
+//
+// Retry-on-banner:
+//   When a probe spawn exits non-zero AND stderr contains a known
+//   runtime-crash banner (currently only `Bun v\d+\.\d+\.\d+ \(...\)`),
+//   the runner retries the probe ONCE. The retry verdict is the final
+//   verdict; the first crash is logged but not counted as FAIL.
+//
+//   Rationale: the bun runtime occasionally crashes when running our
+//   probes (e.g. heap-correctness/diag-reports-pending-writes is ~40%
+//   flaky with this banner). The crash is OUTSIDE the probe's control
+//   — it's a hazard at the runtime layer, exactly the class of failure
+//   where runner-level retry is correct. The retry happens in the
+//   RUNNER (system infrastructure), not in probe assertion logic, per
+//   the cleanup-audit CLN-4 charter clarification (network-resilience
+//   / concurrency-hazard retries in system infrastructure ARE
+//   permitted; agent-controlled assertion paths must not retry).
+//
+//   `--no-retry` disables this for CI diagnostic runs where the
+//   operator wants to see flakes directly.
 
 import { spawn } from 'node:child_process';
 import { readdirSync } from 'node:fs';
@@ -34,6 +59,9 @@ if (!process.env.BASE) {
   console.error('FATAL: BASE env required (e.g. BASE=http://127.0.0.1:8792)');
   process.exit(2);
 }
+
+const NO_RETRY = process.argv.includes('--no-retry')
+  || process.env.NIMBUS_RUNNER_NO_RETRY === '1';
 
 /**
  * Recursively walk `root`, yielding absolute paths of files whose
@@ -93,17 +121,35 @@ const targets = PROBES.filter((p) => {
 });
 
 console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive)`);
-console.log(`BASE=${process.env.BASE}`);
+console.log(`BASE=${process.env.BASE}${NO_RETRY ? '  [--no-retry]' : ''}`);
 console.log('');
 
-const results = [];
-const t0 = Date.now();
+/**
+ * Known runtime-crash banners (stderr) that indicate the probe spawn
+ * itself died, not the probe's assertions. Match → retry once.
+ *
+ * Currently only the bun runtime crash banner. Add new entries here
+ * if other runtime crashes surface.
+ */
+const RETRYABLE_STDERR_PATTERNS = [
+  /Bun v\d+\.\d+\.\d+ \([^)]+\)/,
+];
 
-for (const probe of targets) {
-  const probePath = join(__dirname, probe);
-  process.stdout.write(`[${probe}] ... `);
-  const subT0 = Date.now();
-  const code = await new Promise((resolve) => {
+function isRetryableCrash(stderr, exitCode) {
+  if (exitCode === 0) return false;
+  for (const pat of RETRYABLE_STDERR_PATTERNS) {
+    if (pat.test(stderr)) return true;
+  }
+  return false;
+}
+
+/**
+ * Spawn one probe; collect stdout/stderr/exit. Returns {ok, code,
+ * stdout, stderr, elapsedMs}. Pure I/O — no decision making.
+ */
+function runProbeOnce(probePath) {
+  return new Promise((resolve) => {
+    const subT0 = Date.now();
     const child = spawn(process.execPath, [probePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
@@ -112,34 +158,53 @@ for (const probe of targets) {
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
-    child.on('close', (c) => {
-      const elapsed = ((Date.now() - subT0) / 1000).toFixed(1);
-      const ok = c === 0;
-      console.log(`${ok ? 'PASS' : 'FAIL'} (${elapsed}s)`);
-      if (!ok) {
-        // Show failure detail
-        const lines = stdout.split('\n').filter((l) => l.startsWith('  ✗') || l.includes('fail'));
-        for (const l of lines.slice(-5)) console.log('    ' + l);
-        if (stderr.trim()) console.log('    stderr: ' + stderr.split('\n').slice(-3).join(' | '));
-      }
-      results.push({ probe, ok, elapsed: Number(elapsed) });
-      resolve(c);
+    child.on('close', (code) => {
+      const elapsedMs = Date.now() - subT0;
+      resolve({ ok: code === 0, code, stdout, stderr, elapsedMs });
     });
     child.on('error', (e) => {
-      console.log(`ERROR ${e.message}`);
-      results.push({ probe, ok: false, elapsed: 0 });
-      resolve(1);
+      const elapsedMs = Date.now() - subT0;
+      resolve({ ok: false, code: 1, stdout: '', stderr: String(e?.message || e), elapsedMs });
     });
   });
-  void code;
+}
+
+const results = [];
+const t0 = Date.now();
+
+for (const probe of targets) {
+  const probePath = join(__dirname, probe);
+  process.stdout.write(`[${probe}] ... `);
+
+  let r = await runProbeOnce(probePath);
+  let retried = false;
+
+  if (!r.ok && !NO_RETRY && isRetryableCrash(r.stderr, r.code)) {
+    // First attempt crashed on a known runtime banner. Retry once.
+    process.stdout.write(`FLAKE (${(r.elapsedMs/1000).toFixed(1)}s) → retry... `);
+    retried = true;
+    r = await runProbeOnce(probePath);
+  }
+
+  const elapsedS = (r.elapsedMs / 1000).toFixed(1);
+  console.log(`${r.ok ? 'PASS' : 'FAIL'} (${elapsedS}s)${retried ? ' [retried]' : ''}`);
+
+  if (!r.ok) {
+    const lines = r.stdout.split('\n').filter((l) => l.startsWith('  ✗') || l.includes('fail'));
+    for (const l of lines.slice(-5)) console.log('    ' + l);
+    if (r.stderr.trim()) console.log('    stderr: ' + r.stderr.split('\n').slice(-3).join(' | '));
+  }
+
+  results.push({ probe, ok: r.ok, elapsed: Number(elapsedS), retried });
 }
 
 const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
 const pass = results.filter((r) => r.ok).length;
 const fail = results.filter((r) => !r.ok).length;
+const retries = results.filter((r) => r.retried).length;
 
 console.log('');
-console.log(`──── ${pass} pass / ${fail} fail (total ${totalElapsed}s)`);
+console.log(`──── ${pass} pass / ${fail} fail${retries > 0 ? ` (${retries} retried)` : ''} (total ${totalElapsed}s)`);
 if (fail > 0) {
   console.log('FAIL probes:');
   for (const r of results.filter((r) => !r.ok)) {
