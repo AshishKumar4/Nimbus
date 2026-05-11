@@ -1171,6 +1171,99 @@ export function expandHeredocVars(content: string, env: Record<string, string>):
   return out;
 }
 
+// ── Backtick command substitution ─────────────────────────────────────
+
+/**
+ * BUG-SWEEP-R4-4 (2026-05-11): backtick `` `cmd` `` command
+ * substitution. Pre-fix `echo \`date +%Y\`` printed literal
+ * '`date +%Y`'. `$(cmd)` form worked; backtick form didn't.
+ *
+ * bash supports both. Many real-world scripts use backticks.
+ *
+ * Approach: rewrite top-level backtick spans into `$(...)` form
+ * before lifo-sh's parser sees the line. Quote-aware:
+ *   - inside single quotes, backticks are literal (preserve)
+ *   - inside double quotes, backticks DO expand (rewrite)
+ *   - inside backticks, escapes \\\` and \\\$ should be honored (we
+ *     handle the simple case; nested backticks aren't supported)
+ */
+export class BacktickNormalizer {
+  private shell: any;
+
+  constructor(shell: any) {
+    this.shell = shell;
+  }
+
+  static install(shell: any): BacktickNormalizer {
+    const norm = new BacktickNormalizer(shell);
+    norm._patch();
+    return norm;
+  }
+
+  private _patch(): void {
+    const orig = this.shell.executeLine.bind(this.shell);
+    this.shell.executeLine = async (line: string): Promise<void> => {
+      if (line.indexOf('`') < 0) return orig(line);
+      const rewritten = BacktickNormalizer.rewrite(line);
+      return orig(rewritten);
+    };
+  }
+
+  /**
+   * Rewrite `cmd` → $(cmd). Quote-aware: single-quotes preserve
+   * literal backticks; double-quotes pass through and rewrite inside.
+   */
+  static rewrite(line: string): string {
+    let out = '';
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i];
+      if (ch === "'") {
+        // Single-quoted: preserve verbatim (no backtick expansion).
+        const j = line.indexOf("'", i + 1);
+        if (j < 0) { out += line.slice(i); break; }
+        out += line.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+      if (ch === '\\' && i + 1 < line.length) {
+        out += line.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === '`') {
+        // Find matching close backtick. Honor backslash escapes.
+        let j = i + 1;
+        let inner = '';
+        while (j < line.length && line[j] !== '`') {
+          if (line[j] === '\\' && j + 1 < line.length) {
+            // Inside backticks: \\\` and \\\$ unescape; other escapes pass through.
+            const next = line[j + 1];
+            if (next === '`' || next === '$' || next === '\\') {
+              inner += next;
+              j += 2;
+              continue;
+            }
+          }
+          inner += line[j];
+          j++;
+        }
+        if (j >= line.length) {
+          // Unmatched backtick — leave as literal.
+          out += line.slice(i);
+          break;
+        }
+        out += '$(' + inner + ')';
+        i = j + 1;
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
+}
+
 // ── Line-editor extension (readline parity) ─────────────────────────────
 
 /**
