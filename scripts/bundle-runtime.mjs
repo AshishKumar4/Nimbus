@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const BUCKET = 'nimbus-runtime-cache';
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID || 'f44999d1ddda7012e9a87729eba250f1';
@@ -120,6 +120,63 @@ const SPECS = {
       ),
     },
   },
+
+  // 2026-05-11 sysroot-prep Phase 0 — R2 ingestion ONLY for the
+  // clang-sysroot-swap wave. This entry stages the upstream wasi-sdk-19
+  // sysroot in R2 (binji-shape: rootless `include/lib/share` layout) so
+  // when the swap wave dispatches, the blob is already present.
+  //
+  // `ingest_only: true` SUPPRESSES the manifest write AND the catalog
+  // auto-flip at the bottom of the script. The swap wave owns those
+  // operations (it composes a new manifest that inherits bin/clang,
+  // bin/wasm-ld, memfs.wasm from binji-2020 and references this
+  // prep'd sysroot.tar blob, then flips `clang.default`).
+  //
+  // `repackage` describes a download+extract+retar pre-step that
+  // produces a single local `sysroot.tar` file BEFORE the upload loop.
+  // The file's `src` value is used as both the cached download filename
+  // and (after repackage) the upload basename.
+  'clang/wasi-sdk-19': {
+    license: 'Apache-2.0-with-LLVM-exception',
+    ingest_only: true,
+    files: [
+      // The upload loop sees one logical "file" with src='sysroot.tar'.
+      // The repackage step below produces it from the upstream tarball
+      // and writes it to <workDir>/sysroot.tar before the upload loop
+      // runs. `vfs` mirrors the binji-2020 path for the swap wave's
+      // manifest composer (kept for documentation only; ignored in
+      // ingest_only mode since no manifest is written).
+      { src: 'sysroot.tar', vfs: 'share/clang/sysroot.tar' },
+    ],
+    // Build-time step: fetch the upstream wasi-sdk-19 sysroot tarball,
+    // extract, and re-tar in binji-2020 layout (rootless: include/, lib/,
+    // share/ as top-level entries, no `wasi-sysroot/` prefix). Runs
+    // BEFORE the existing fetch loop sees `sysroot.tar`.
+    repackage: {
+      upstream_url:
+        'https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-19/wasi-sysroot-19.0.tar.gz',
+      // sha256 of the upstream .tar.gz, captured 2026-05-11.
+      // Falsification: bundle-runtime.mjs verifies this on every run.
+      upstream_sha256:
+        'd601c901a26d6cdb158e60c8a981caa189e87875abc23bb071c2c533a39fd143',
+      // Subdir inside the extracted tarball whose children become the
+      // top-level entries of the produced sysroot.tar.
+      strip_prefix: 'wasi-sysroot',
+      // Directories at strip_prefix to include in the produced sysroot.tar.
+      // Anything else under wasi-sysroot/ is dropped.
+      include_dirs: ['include', 'lib', 'share'],
+      // Expected sha256 of the *produced* sysroot.tar. Captured from a
+      // dry-run inspection at /tmp/sysroot-prep-work/ (see prep audit).
+      // Verified before upload; abort on mismatch.
+      output_sha256:
+        '82f30ed81d39072d54e3ba207305c26bfc29a7726e500230db3cad8abe828be3',
+      // Expected raw byte size of the produced sysroot.tar.
+      output_size: 11898880,
+    },
+    // license_text intentionally omitted — ingest_only mode skips the
+    // bundled LICENSE write. The swap wave composes a concat-license
+    // (binji + wasi-libc) at manifest time.
+  },
 };
 
 const key = `${RUNTIME}/${VERSION}`;
@@ -137,6 +194,15 @@ console.log(`[bundle-runtime] ${RUNTIME} ${VERSION}`);
 console.log(`[bundle-runtime] work dir: ${workDir}`);
 console.log(`[bundle-runtime] bucket:   ${BUCKET}`);
 console.log(`[bundle-runtime] account:  ${ACCOUNT}`);
+
+// ── 0. Optional repackage step (sysroot-prep wave) ──────────────────
+// Runs BEFORE the fetch loop. Produces one or more local files inside
+// workDir that the fetch loop then sees as "already downloaded" (its
+// `!existsSync` check passes through). Spec entries that don't need
+// repackaging (e.g. clang/binji-2020) omit this field entirely.
+if (spec.repackage) {
+  runRepackage(spec.repackage, workDir);
+}
 
 // ── 1. Fetch upstream artifacts (or generate synthetic ones) ───────
 const downloaded = [];
@@ -165,16 +231,19 @@ for (const f of spec.files) {
   console.log(`[bundle-runtime]   ${f.vfs} (← ${f.src}) → ${(bytes.length / 1024 / 1024).toFixed(2)} MiB sha256=${sha256.slice(0, 16)}…`);
 }
 
-// Bundled LICENSE file.
-const licenseLocal = join(workDir, 'LICENSE');
-writeFileSync(licenseLocal, spec.license_text);
-const licenseBytes = readFileSync(licenseLocal);
-const licenseSha256 = createHash('sha256').update(licenseBytes).digest('hex');
-downloaded.push({
-  src: 'LICENSE', vfs: 'LICENSE', local: licenseLocal, bytes: licenseBytes,
-  sha256: licenseSha256, size: licenseBytes.length,
-});
-console.log(`[bundle-runtime]   LICENSE → ${licenseBytes.length} bytes sha256=${licenseSha256.slice(0, 16)}…`);
+// Bundled LICENSE file. Skipped in ingest_only mode — the swap wave
+// composes the final LICENSE at manifest-compose time.
+if (!spec.ingest_only) {
+  const licenseLocal = join(workDir, 'LICENSE');
+  writeFileSync(licenseLocal, spec.license_text);
+  const licenseBytes = readFileSync(licenseLocal);
+  const licenseSha256 = createHash('sha256').update(licenseBytes).digest('hex');
+  downloaded.push({
+    src: 'LICENSE', vfs: 'LICENSE', local: licenseLocal, bytes: licenseBytes,
+    sha256: licenseSha256, size: licenseBytes.length,
+  });
+  console.log(`[bundle-runtime]   LICENSE → ${licenseBytes.length} bytes sha256=${licenseSha256.slice(0, 16)}…`);
+}
 
 // ── 2. Upload each file as a content-addressed blob (deduped) ──────
 // Content path: blobs/<name>-<version>/<src-name>. Multiple manifest
@@ -191,88 +260,180 @@ for (const f of downloaded) {
   );
 }
 
-// ── 3. Write the per-version manifest ──────────────────────────────
-const manifest = {
-  name: RUNTIME,
-  version: VERSION,
-  license: spec.license,
-  wasi_namespace: spec.wasi_namespace || null,
-  memfs_companion: spec.memfs_companion || null,
-  files: downloaded.map((f) => ({
-    path: f.vfs,
-    content: `blobs/${RUNTIME}-${VERSION}/${f.src}`,
-    sha256: f.sha256,
-    size: f.size,
-    ...(f.mode ? { mode: f.mode } : {}),
-  })),
-  entrypoints: spec.files
-    .filter((f) => f.runner)
-    .map((f) => ({
-      binName: f.binName,
-      runner: f.runner,
-      args: [],
-      ...(f.kind ? { kind: f.kind } : {}),
+// ── 3 + 4. Manifest + catalog. Skipped in ingest_only mode (the swap
+// wave composes those at manifest-compose time; this prep pass only
+// stages the upstream blobs).
+const totalMb = (downloaded.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(2);
+
+if (spec.ingest_only) {
+  console.log(`\n[bundle-runtime] DONE (ingest_only)`);
+  console.log(`[bundle-runtime] uploaded ${downloaded.length} file(s) (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
+  console.log(`[bundle-runtime] blobs:    r2://${BUCKET}/blobs/${RUNTIME}-${VERSION}/`);
+  console.log(`[bundle-runtime] manifest: SKIPPED (swap wave will compose)`);
+  console.log(`[bundle-runtime] catalog:  UNCHANGED (swap wave will flip default)`);
+} else {
+  // ── 3. Write the per-version manifest ────────────────────────────
+  const manifest = {
+    name: RUNTIME,
+    version: VERSION,
+    license: spec.license,
+    wasi_namespace: spec.wasi_namespace || null,
+    memfs_companion: spec.memfs_companion || null,
+    files: downloaded.map((f) => ({
+      path: f.vfs,
+      content: `blobs/${RUNTIME}-${VERSION}/${f.src}`,
+      sha256: f.sha256,
+      size: f.size,
+      ...(f.mode ? { mode: f.mode } : {}),
     })),
-};
+    entrypoints: spec.files
+      .filter((f) => f.runner)
+      .map((f) => ({
+        binName: f.binName,
+        runner: f.runner,
+        args: [],
+        ...(f.kind ? { kind: f.kind } : {}),
+      })),
+  };
 
-const manifestLocal = join(workDir, 'manifest.json');
-const manifestText = JSON.stringify(manifest, null, 2);
-writeFileSync(manifestLocal, manifestText);
-const manifestR2Key = `manifests/${RUNTIME}-${VERSION}.json`;
-console.log(`[bundle-runtime] put r2://${BUCKET}/${manifestR2Key}`);
-execSync(
-  `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${manifestR2Key} --file "${manifestLocal}" --content-type application/json --remote`,
-  { stdio: 'inherit' },
-);
-
-// ── 4. Update the top-level catalog ────────────────────────────────
-const catalogR2Key = 'catalog/v1.json';
-let catalog = { version: 1, runtimes: {} };
-try {
-  const out = execSync(
-    `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object get ${BUCKET}/${catalogR2Key} --pipe --remote 2>/dev/null`,
-    { encoding: 'utf8' },
+  const manifestLocal = join(workDir, 'manifest.json');
+  const manifestText = JSON.stringify(manifest, null, 2);
+  writeFileSync(manifestLocal, manifestText);
+  const manifestR2Key = `manifests/${RUNTIME}-${VERSION}.json`;
+  console.log(`[bundle-runtime] put r2://${BUCKET}/${manifestR2Key}`);
+  execSync(
+    `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${manifestR2Key} --file "${manifestLocal}" --content-type application/json --remote`,
+    { stdio: 'inherit' },
   );
-  catalog = JSON.parse(out);
-} catch {
-  console.log(`[bundle-runtime] no existing catalog; creating fresh`);
+
+  // ── 4. Update the top-level catalog ──────────────────────────────
+  const catalogR2Key = 'catalog/v1.json';
+  let catalog = { version: 1, runtimes: {} };
+  try {
+    const out = execSync(
+      `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object get ${BUCKET}/${catalogR2Key} --pipe --remote 2>/dev/null`,
+      { encoding: 'utf8' },
+    );
+    catalog = JSON.parse(out);
+  } catch {
+    console.log(`[bundle-runtime] no existing catalog; creating fresh`);
+  }
+
+  if (!catalog.runtimes[RUNTIME]) catalog.runtimes[RUNTIME] = { default: VERSION, versions: {} };
+  // Catalog size_bytes counts unique blob content (not duplicated
+  // manifest entries pointing at the same src). Preserved from
+  // Pyodide P1 (05c4ce6), where `python` and `python3` share one
+  // BIN_MARKER blob.
+  const catalogSize = (() => {
+    const seen = new Set();
+    let total = 0;
+    for (const f of downloaded) {
+      if (seen.has(f.src)) continue;
+      seen.add(f.src);
+      total += f.size;
+    }
+    return total;
+  })();
+  catalog.runtimes[RUNTIME].versions[VERSION] = {
+    manifest: manifestR2Key,
+    size_bytes: catalogSize,
+    license: spec.license,
+  };
+  // Update default to the just-uploaded version (idempotent — if it was
+  // already the default, no-op).
+  catalog.runtimes[RUNTIME].default = VERSION;
+
+  const catalogLocal = join(workDir, 'catalog.json');
+  writeFileSync(catalogLocal, JSON.stringify(catalog, null, 2));
+  console.log(`[bundle-runtime] put r2://${BUCKET}/${catalogR2Key}`);
+  execSync(
+    `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${catalogR2Key} --file "${catalogLocal}" --content-type application/json --remote`,
+    { stdio: 'inherit' },
+  );
+
+  console.log(`\n[bundle-runtime] DONE`);
+  console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
+  console.log(`[bundle-runtime] manifest:  r2://${BUCKET}/${manifestR2Key}`);
+  console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key}`);
 }
 
-if (!catalog.runtimes[RUNTIME]) catalog.runtimes[RUNTIME] = { default: VERSION, versions: {} };
-// Catalog size_bytes counts unique blob content (not duplicated
-// manifest entries pointing at the same src).
-const catalogSize = (() => {
-  const seen = new Set();
-  let total = 0;
-  for (const f of downloaded) {
-    if (seen.has(f.src)) continue;
-    seen.add(f.src);
-    total += f.size;
+// ── Repackage step (sysroot-prep wave) ──────────────────────────────
+//
+// Downloads an upstream `.tar.gz`, extracts it, and re-tars a subset of
+// the contents in a flat (rootless) layout. The produced tarball is
+// dropped into <workDir>/sysroot.tar (matching the SPECS file entry's
+// `src` value), where the existing fetch loop picks it up via its
+// `!existsSync` short-circuit.
+//
+// Verifies sha256 of BOTH the upstream download AND the produced
+// tarball against expectations in the spec. Aborts on mismatch — no
+// retries, no defensive recovery (anti-req: no retry/defensive logic).
+//
+// The extracted directory is `<workDir>/<strip_prefix>/` per the
+// upstream tarball's natural top-level entry. `include_dirs` selects
+// which children become top-level entries in the produced tarball.
+function runRepackage(rep, workDir) {
+  const upstreamLocal = join(workDir, basename(rep.upstream_url));
+  if (!existsSync(upstreamLocal)) {
+    console.log(`[bundle-runtime] fetch (repackage) ${rep.upstream_url}`);
+    // `-fsSL` would suppress the SSL-expired-CA error on some sandboxes;
+    // bundle-runtime.mjs is host-side so we use plain `-sSL`. If the host
+    // has a broken CA bundle the user must fix their CA store; no `-k`
+    // fallback (anti-req: no defensive workaround).
+    execSync(`curl -sSL -o "${upstreamLocal}" "${rep.upstream_url}"`, { stdio: 'inherit' });
   }
-  return total;
-})();
-catalog.runtimes[RUNTIME].versions[VERSION] = {
-  manifest: manifestR2Key,
-  size_bytes: catalogSize,
-  license: spec.license,
-};
-// Update default to the just-uploaded version (idempotent — if it was
-// already the default, no-op).
-catalog.runtimes[RUNTIME].default = VERSION;
+  const upstreamBytes = readFileSync(upstreamLocal);
+  const upstreamSha = createHash('sha256').update(upstreamBytes).digest('hex');
+  console.log(`[bundle-runtime] upstream sha256 = ${upstreamSha}`);
+  if (rep.upstream_sha256 && upstreamSha !== rep.upstream_sha256) {
+    console.error(`[bundle-runtime] FATAL upstream sha256 mismatch`);
+    console.error(`  expected ${rep.upstream_sha256}`);
+    console.error(`  actual   ${upstreamSha}`);
+    process.exit(3);
+  }
 
-const catalogLocal = join(workDir, 'catalog.json');
-writeFileSync(catalogLocal, JSON.stringify(catalog, null, 2));
-console.log(`[bundle-runtime] put r2://${BUCKET}/${catalogR2Key}`);
-execSync(
-  `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${catalogR2Key} --file "${catalogLocal}" --content-type application/json --remote`,
-  { stdio: 'inherit' },
-);
+  // Extract into a dedicated subdir so re-runs don't accumulate stale
+  // files. `tar` happens to be idempotent here but rm -rf first is
+  // cheaper than reasoning about tar's overwrite semantics.
+  const extractRoot = join(workDir, 'extract');
+  execSync(`rm -rf "${extractRoot}" && mkdir -p "${extractRoot}"`, { stdio: 'inherit' });
+  execSync(`tar xzf "${upstreamLocal}" -C "${extractRoot}"`, { stdio: 'inherit' });
 
-const totalMb = (downloaded.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(2);
-console.log(`\n[bundle-runtime] DONE`);
-console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
-console.log(`[bundle-runtime] manifest:  r2://${BUCKET}/${manifestR2Key}`);
-console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key}`);
+  const extractedDir = join(extractRoot, rep.strip_prefix);
+  if (!existsSync(extractedDir)) {
+    console.error(`[bundle-runtime] FATAL: expected ${rep.strip_prefix}/ at tarball root, not found`);
+    process.exit(3);
+  }
+
+  // Re-tar in rootless layout: tar cf out.tar -C extractedDir <include_dirs...>
+  // produces a tarball whose entries are `include/...`, `lib/...`, `share/...`
+  // — no `wasi-sysroot/` prefix. Matches binji-2020 sysroot.tar shape.
+  const outLocal = join(workDir, 'sysroot.tar');
+  const dirArgs = rep.include_dirs.map((d) => `"${d}"`).join(' ');
+  execSync(`tar cf "${outLocal}" -C "${extractedDir}" ${dirArgs}`, { stdio: 'inherit' });
+
+  const outBytes = readFileSync(outLocal);
+  const outSha = createHash('sha256').update(outBytes).digest('hex');
+  console.log(`[bundle-runtime] repackage → ${outLocal}`);
+  console.log(`[bundle-runtime]   size=${outBytes.length} bytes (${(outBytes.length / 1024 / 1024).toFixed(2)} MiB)`);
+  console.log(`[bundle-runtime]   sha256=${outSha}`);
+
+  if (rep.output_sha256 && outSha !== rep.output_sha256) {
+    console.error(`[bundle-runtime] FATAL produced sysroot.tar sha256 mismatch`);
+    console.error(`  expected ${rep.output_sha256}`);
+    console.error(`  actual   ${outSha}`);
+    console.error(`(deterministic tar order is sensitive to GNU tar version + locale;`);
+    console.error(` if the file is byte-identical except for ordering, update the`);
+    console.error(` spec entry's output_sha256 to the new value.)`);
+    process.exit(3);
+  }
+  if (rep.output_size && outBytes.length !== rep.output_size) {
+    console.error(`[bundle-runtime] FATAL produced sysroot.tar size mismatch`);
+    console.error(`  expected ${rep.output_size}`);
+    console.error(`  actual   ${outBytes.length}`);
+    process.exit(3);
+  }
+}
 
 // ── Bundled LICENSE text generator ────────────────────────────────
 function MPL_2_LICENSE_TEXT() {
