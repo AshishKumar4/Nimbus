@@ -634,6 +634,103 @@ export class HeredocHandler {
   }
 }
 
+// ── Line preprocessor (fd-redirect normalisation) ──────────────────────
+
+/**
+ * BUG-SWEEP-2 (2026-05-11): @lifo-sh/core ≥0.5.5's shell parser does
+ * not support fd-to-fd redirects (`2>&1`, `>&2`, `<&0`). Encountering
+ * one raises `Expected Word but got Amp ('&')` from the parser and
+ * the whole pipeline fails.
+ *
+ * Real-world impact:
+ *   - `pip install foo 2>&1 | tail -5`  → parse error
+ *   - `cmd 2>&1` (standard "merge stderr into stdout") → parse error
+ *   - `echo error >&2` ("write to stderr")             → parse error
+ *
+ * In Nimbus's execution model, stdout AND stderr both stream to the
+ * same terminal frame buffer (see WebSocketTerminal). `2>&1` is
+ * therefore a no-op (stderr is already on the same sink as stdout)
+ * and `>&2` is functionally the same as no-redirect. We rewrite both
+ * to empty so the parser sees a clean command line.
+ *
+ * What this DOES NOT solve:
+ *   - `cmd 2>/path/to/file`  — file-redirect of stderr. NOT supported
+ *     downstream either (lifo-sh's parser accepts `2>file` but the
+ *     interpreter at executeSimpleCommand only honours stdout
+ *     redirection via vfs.writeFile). Out of scope; flag as docs gap.
+ *   - `cmd > /dev/null`      — /dev/null missing on prod. Separate fix.
+ *
+ * Install AFTER HeredocHandler so heredoc accumulation isn't disturbed
+ * (we only run when executeLine fires on a complete line).
+ */
+export class FdRedirectNormalizer {
+  private shell: any;
+
+  constructor(shell: any) {
+    this.shell = shell;
+  }
+
+  /** Install on a Shell instance. Idempotent. */
+  static install(shell: any): FdRedirectNormalizer {
+    const norm = new FdRedirectNormalizer(shell);
+    norm._patch();
+    return norm;
+  }
+
+  private _patch(): void {
+    const orig = this.shell.executeLine.bind(this.shell);
+    this.shell.executeLine = async (line: string): Promise<void> => {
+      // Skip rewriting inside single-quoted strings (the user explicitly
+      // wants the literal `2>&1` text — rare but possible). Outside
+      // quotes, replace `2>&1`, `1>&2`, `>&2`, `&>file` (the merge-all
+      // operator is already supported by lifo-sh; only fd-to-fd needs
+      // stripping).
+      const rewritten = FdRedirectNormalizer.normalize(line);
+      return orig(rewritten);
+    };
+  }
+
+  /**
+   * Strip fd-to-fd redirects from a shell line. Preserves single-
+   * quoted substrings verbatim (user-intended literals are safe).
+   *
+   * Returns the rewritten line.
+   */
+  static normalize(line: string): string {
+    // Single-quote-aware scan. Build output by copying runs of
+    // non-single-quoted text after running the rewrite regex; quoted
+    // runs are copied verbatim.
+    let out = '';
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i];
+      if (ch === "'") {
+        // Find matching close quote (bash: no escapes inside single quotes).
+        const j = line.indexOf("'", i + 1);
+        if (j < 0) {
+          out += line.slice(i);
+          break;
+        }
+        out += line.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+      // Find next single-quote (run end).
+      const next = line.indexOf("'", i);
+      const chunkEnd = next < 0 ? line.length : next;
+      const chunk = line.slice(i, chunkEnd);
+      // Rewrite operators in the chunk:
+      //   2>&1, 1>&2, >&2, <&0, &>&1 etc — drop entirely.
+      //   `2>&-` (close fd) — drop.
+      // The pattern matches optional leading-digit + `>&` + digit-or-dash.
+      const stripped = chunk.replace(/\s*\d?[<>]&[\d-]\s*/g, ' ');
+      out += stripped;
+      i = chunkEnd;
+    }
+    return out;
+  }
+}
+
 // ── Line-editor extension (readline parity) ─────────────────────────────
 
 /**

@@ -58,7 +58,7 @@ import {
   filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard,
   detectUnsupportedWranglerConfig, NIMBUS_UNSUPPORTED_BINS,
 } from './helpers.js';
-import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
+import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
 import {
@@ -1808,6 +1808,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
     // ── Heredoc support (<<) — all logic lives in shell-features.ts ──
     HeredocHandler.install(self.shell, self.terminal, self.sqliteFs!);
+
+    // ── fd-redirect normalizer (BUG-SWEEP-2) — strip `2>&1` / `>&2` /
+    //    `<&0` etc before lifo-sh's parser chokes on them. Stdout and
+    //    stderr share the terminal sink so these are no-ops anyway. ──
+    FdRedirectNormalizer.install(self.shell);
 
     // ── Readline-parity keybindings (Ctrl+K, Ctrl+W, Alt+B, Alt+F, Alt+D,
     //    Ctrl+Y, Ctrl+T, Ctrl+L, Ctrl+R, Alt+. , Ctrl+←/→, Alt+←/→, Linux
