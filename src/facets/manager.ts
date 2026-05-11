@@ -1383,7 +1383,22 @@ async function transformEsmInBundle(
   }
   for (const path of candidates) {
     const src = bundle[path];
-    const key = __cacheKey(src);
+    // `import.meta.url` substitution mirrors the sibling fix at
+    // src/runtime/runtime-registry.ts:383-389 (framework-gaps-fix P5).
+    // Without `define`, esbuild's CJS transform reduces `import.meta.url`
+    // to undefined (single-pass) or preserves it literally — only to
+    // SyntaxError at `new Function(...)` parse time (two-pass via
+    // EsbuildService.transform's async-IIFE wrap → "Cannot use
+    // 'import.meta' outside a module"). The substitution value is the
+    // real `file:///<absolute-path>` URL — exactly what real Node returns
+    // for an ESM module at that path.
+    //
+    // Note: cache key now incorporates the path because the transformed
+    // output is path-specific (the URL literal is baked in). Two files
+    // with identical source but different paths would otherwise share a
+    // cache entry and the second file would get the first file's URL.
+    const absUrl = 'file:///' + path.replace(/^\/+/, '');
+    const key = __cacheKey(src + '\0' + absUrl);
     const cached = __esmTransformCache.get(key);
     if (cached) {
       bundle[path] = cached;
@@ -1395,6 +1410,9 @@ async function transformEsmInBundle(
         loader: 'js',
         format: 'cjs',
         target: 'esnext',
+        define: {
+          'import.meta.url': JSON.stringify(absUrl),
+        },
       });
       bundle[path] = t.code;
       __esmTransformCache.set(key, t.code);
