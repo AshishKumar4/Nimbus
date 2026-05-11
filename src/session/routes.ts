@@ -48,11 +48,30 @@ import { renderNoDevServerHtml } from './helpers.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT, hashKeyToShard } from '../loaders/fanout-pool.js';
+// AGT-1.1: minimal handler hookup so the auth DO at the well-known
+// `__nimbus_auth__` reserved-ID can answer /__auth__/* without spinning
+// up the normal session machinery (no shell, no vite, no facets).
+import { handleAuthRequest } from '../auth/routes.js';
 
 type RoutesHost = any;
 
 export async function handleFetch(self: RoutesHost, request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    // AGT-1.1: intercept /__auth__/* BEFORE any session-init work. These
+    // are internal-only paths called by the Worker entry — the entry
+    // never forwards external /__auth__/* (it 404s those), so this
+    // handler only fires on real auth DO RPC calls. Auth DO storage is
+    // the same DurableObjectStorage instance the rest of NimbusSession
+    // uses, but the rows live under a disjoint `auth_key:` prefix so
+    // they don't collide with session state.
+    if (url.pathname.startsWith('/__auth__/')) {
+      const authResp = await handleAuthRequest(request, self.ctx.storage);
+      if (authResp) return authResp;
+      // Fall-through is unreachable (handleAuthRequest returns null only
+      // for non-/__auth__/* paths) but keeps the dispatcher uniform.
+    }
+
     // Capture session basePath from the routing header (if forwarded by the
     // Worker's session-router). Threaded through to ViteDevServer so the
     // served app's module URLs, HMR paths, <base href>, and router basename
@@ -116,6 +135,23 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       self.ctx.acceptWebSocket(server);
       try { (server as any).serializeAttachment?.({ kind: 'shell' }); } catch {}
 
+      // AGT-1.1: echo the `nimbus.auth.bearer.<token>` sub-protocol
+      // back to the client. The Worker auth middleware already
+      // validated the token; we just need to acknowledge the
+      // chosen sub-protocol per RFC 6455 §1.9 so the `ws` client
+      // doesn't reject the handshake with "Server sent no
+      // subprotocol". The token itself isn't echoed back —
+      // we send the literal `nimbus.auth.bearer` prefix only.
+      const wsRespHeaders: Record<string, string> = {};
+      const reqProtos = (request.headers.get('Sec-WebSocket-Protocol') || '')
+        .split(',').map((s) => s.trim());
+      for (const p of reqProtos) {
+        if (p.startsWith('nimbus.auth.bearer.')) {
+          wsRespHeaders['Sec-WebSocket-Protocol'] = p;
+          break;
+        }
+      }
+
       if (isWarmRejoin(self as any)) {
         // Warm rejoin path. The existing Shell is alive; we just
         // swap the WebSocketTerminal's ws ref + replay scrollback.
@@ -125,7 +161,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           console.error('warm-rejoin error:', err?.message, err?.stack);
           return new Response('Rejoin failed: ' + err?.message, { status: 500 });
         }
-        return new Response(null, { status: 101, webSocket: client });
+        return new Response(null, { status: 101, webSocket: client, headers: wsRespHeaders });
       }
 
       if (self.shell != null) {
@@ -150,7 +186,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         console.error('initSession error:', err?.message, err?.stack);
         return new Response('Init failed: ' + err?.message, { status: 500 });
       }
-      return new Response(null, { status: 101, webSocket: client });
+      return new Response(null, { status: 101, webSocket: client, headers: wsRespHeaders });
     }
 
     // ── Process log streaming / listing — see src/process-logs-api.ts ──

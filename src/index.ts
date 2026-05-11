@@ -45,6 +45,8 @@ import {
 } from './_shared/session-router.js';
 import { setCtxExports, getCtxExports as _getCtxExports } from './session/ctx-exports.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
+import { applyAuthMiddleware } from './auth/middleware.js';
+import { AUTH_DO_NAME } from './auth/shared-constants.js';
 
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)
@@ -124,6 +126,46 @@ export default {
     if (ctx?.exports) setCtxExports(ctx.exports);
 
     const url = new URL(request.url);
+
+    // AGT-1.1: authentication middleware. Runs BEFORE any routing so
+    // it sees the original URL path; reads/forwards to the auth DO
+    // when the path is gated. Returns:
+    //   - null    → passthrough; continue to existing routing below
+    //   - Response → return immediately (401/403/429 etc.)
+    //
+    // Gated paths: /api/*, /s/<id>/api/*, /s/<id>/ws, /auth/keys/*
+    // Passthrough (unauth): /, /new, /s/<id>/ (HTML), /preview/*,
+    //                       /worker/*, /port/*, asset paths
+    {
+      const authDeny = await applyAuthMiddleware(request, env);
+      if (authDeny) return authDeny;
+    }
+
+    // AGT-1.1: external /__auth__/* requests are rejected. The path
+    // is INTERNAL-ONLY for Worker↔auth-DO RPC. Anyone hitting it
+    // externally gets 404 (not 403, to avoid leaking the path's
+    // existence to scanners).
+    if (url.pathname.startsWith('/__auth__/')) {
+      return new Response('Not found', { status: 404 });
+    }
+
+    // AGT-1.1: /auth/keys/{create,list,revoke} admin routes. The middleware
+    // has already verified the admin key; we now forward to the auth DO.
+    // The DO's handler lives at /__auth__/keys/* (auth/routes.ts), so we
+    // rewrite the path before forwarding.
+    if (url.pathname.startsWith('/auth/keys/')) {
+      const inner = url.pathname.replace(/^\/auth/, '/__auth__');
+      const innerUrl = new URL(inner + url.search, url.origin);
+      const forwarded = new Request(innerUrl.toString(), {
+        method: request.method,
+        headers: request.headers,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+        redirect: 'manual',
+      });
+      const id = env.NIMBUS_SESSION.idFromName(AUTH_DO_NAME);
+      const stub = env.NIMBUS_SESSION.get(id);
+      return stub.fetch(forwarded);
+    }
 
     // ── /new — spawn a fresh session and redirect ──────────────────────
     // POST is the canonical path (HTML form submission). GET is accepted

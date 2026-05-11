@@ -16,6 +16,21 @@ import WebSocket from 'ws';
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
 export const WS_BASE = BASE.replace(/^http/, 'ws');
 
+// AGT-1.1: When the deployment has API-key auth enabled, probes attach
+// `Authorization: Bearer <NIMBUS_AUTH_KEY>` to all fetch + WebSocket
+// requests. Set this env var to the ADMIN_KEY (or any valid key minted
+// via /auth/keys/create) when probing an auth-gated environment.
+//
+// Backward compatibility: when NIMBUS_AUTH_KEY is unset, no header is
+// attached and probes behave exactly as they did pre-auth.
+export const AUTH_KEY = process.env.NIMBUS_AUTH_KEY || '';
+
+/** Build a Headers init that includes Authorization if AUTH_KEY is set. */
+function authHeaders(base = {}) {
+  if (!AUTH_KEY) return base;
+  return { ...base, 'Authorization': `Bearer ${AUTH_KEY}` };
+}
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function stripAnsi(s) {
@@ -24,7 +39,12 @@ export function stripAnsi(s) {
 
 /** POST /new → 302 → sid. The only session-creation surface. */
 export async function mintSession() {
-  const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual' });
+  // /new is NOT auth-gated by the AGT-1.1 middleware, but we attach the
+  // key anyway (it's harmless — passthrough paths ignore the header).
+  // SDK clients minting sessions explicitly always send it.
+  const r = await fetch(`${BASE}/new`, {
+    method: 'POST', redirect: 'manual', headers: authHeaders(),
+  });
   const loc = r.headers.get('location');
   if (!loc) throw new Error(`POST /new returned no Location (status ${r.status})`);
   const m = loc.match(/\/s\/([^/]+)/);
@@ -36,7 +56,9 @@ export async function mintSession() {
 export async function fetchPreview(sid, opts = {}) {
   const url = `${BASE}/s/${sid}/preview/${opts.path || ''}`;
   const t0 = Date.now();
-  const r = await fetch(url, { redirect: 'manual' });
+  // /preview/* is NOT auth-gated (it serves user-loaded pages); the
+  // header is harmless if attached anyway.
+  const r = await fetch(url, { redirect: 'manual', headers: authHeaders() });
   const text = await r.text().catch(() => '');
   return { status: r.status, html: text, elapsed: Date.now() - t0, url };
 }
@@ -45,7 +67,7 @@ export async function fetchPreview(sid, opts = {}) {
 export async function fetchPort(sid, port, path = '') {
   const url = `${BASE}/s/${sid}/port/${port}/${path}`;
   const t0 = Date.now();
-  const r = await fetch(url, { redirect: 'manual' });
+  const r = await fetch(url, { redirect: 'manual', headers: authHeaders() });
   const text = await r.text().catch(() => '');
   return { status: r.status, body: text, elapsed: Date.now() - t0, url };
 }
@@ -65,7 +87,18 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`);
+    // AGT-1.1: WebSocket handshakes can't carry an Authorization header
+    // from browser JS (forbidden header per Fetch spec) and most ws
+    // libraries follow the same restriction. Use the WS sub-protocol
+    // channel instead: `nimbus.auth.bearer.<token>` is the documented
+    // SDK transport for WebSocket auth. The Nimbus auth middleware
+    // extracts the token from this header on /ws upgrades.
+    if (AUTH_KEY) {
+      this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`,
+        [`nimbus.auth.bearer.${AUTH_KEY}`]);
+    } else {
+      this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`);
+    }
     this.connected = false;
     this.closed = false;
     this.ws.on('open', () => { this.connected = true; });
