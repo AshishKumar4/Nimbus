@@ -648,6 +648,30 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       + ' WGS=' + (globalThis.WorkerGlobalScope === Object ? 'Object' : typeof globalThis.WorkerGlobalScope)
       + ' selfInstanceWGS=' + (globalThis.self instanceof globalThis.WorkerGlobalScope)
       + '\\n');
+    // What does vn (calculateDerivedFlags) return when called with the
+    // current globals? We can't reach the asm.js's local bn/vn directly,
+    // but we can replicate the same logic and see what WE compute.
+    const fakeBN = () => {
+      const t = typeof globalThis.Bun !== 'undefined';
+      const e = typeof globalThis.Deno !== 'undefined';
+      const r = typeof globalThis.process === 'object'
+        && typeof globalThis.process?.versions === 'object'
+        && typeof globalThis.process?.versions?.node === 'string'
+        && !globalThis.process?.browser;
+      const n = typeof globalThis.navigator === 'object'
+        && typeof globalThis.navigator?.userAgent === 'string'
+        && globalThis.navigator.userAgent.indexOf('Chrome') === -1
+        && globalThis.navigator.userAgent.indexOf('Safari') > -1;
+      return { IN_BUN: t, IN_DENO: e, IN_NODE: r, IN_SAFARI: n };
+    };
+    const bn_res = fakeBN();
+    const n = !bn_res.IN_NODE && !bn_res.IN_DENO && !bn_res.IN_BUN;
+    const i = n
+      && typeof globalThis.WorkerGlobalScope !== 'undefined'
+      && typeof globalThis.self !== 'undefined'
+      && (globalThis.self instanceof globalThis.WorkerGlobalScope);
+    stderrChunks.push('[diag3] mirror bn=' + JSON.stringify(bn_res)
+      + ' derived IN_BROWSER=' + n + ' IN_BROWSER_WEB_WORKER=' + i + '\\n');
   } catch (e) {}
   let pyodideMod;
   try {
