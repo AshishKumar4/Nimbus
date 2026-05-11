@@ -281,7 +281,7 @@ function replStepFacetFn(
           // REPL-A2 (2026-05-11): PyodideConsole.runcode does
           // `from pyodide_js import loadPackagesFromImports` and awaits
           // it. In our env without the package registry initialised,
-          // this raises "TypeError: Cannot read properties of undefined
+          // the call raises "TypeError: Cannot read properties of undefined
           // (reading has)" on the first 'import X' line.
           //
           // Override pyodide_js.loadPackagesFromImports with a no-op
