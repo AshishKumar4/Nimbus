@@ -413,7 +413,11 @@ async function dispatchPythonFacet(
  * assignment are allowed), then the asm.js's `var _createPyodideModule`
  * is hoisted onto globalThis.
  */
-function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): string {
+// REPL-W1: exported so the adjacent src/runtime/python-repl.ts can
+// reuse the canonical preamble verbatim. Additive change only —
+// internal callers are unchanged. The `export` keyword is the sole
+// modification to python-runner.ts in the REPL-W1 wave.
+export function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): string {
   return [
     '// ── Pre-asm.js environment shims ───────────────────────────────',
     '// Pyodide.asm.js detects its environment via heuristics. In',

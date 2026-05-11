@@ -11,6 +11,19 @@
 export class WebSocketTerminal {
   public ws: WebSocket;
   private dataCallback: ((data: string) => void) | null = null;
+  /**
+   * REPL-W1: secondary input callback installed by interactive runtimes
+   * (e.g. `python` no-args). When non-null, sendData() routes input to
+   * this callback INSTEAD of the shell. Set via attachRepl(); cleared
+   * by the disposer the attach call returns. Supports nesting (the
+   * disposer restores the prior callback).
+   *
+   * Reasoning per /workspace/.seal-internal/2026-05-11-repl-plan/plan.md
+   * §3 (Layer 2): the explicit handoff mirrors how `vim`/`less` swap
+   * the parent shell's terminal handler. Auto-detect was rejected as
+   * fragile. Additive only — when null, behavior is identical to pre-W1.
+   */
+  private replCallback: ((data: string) => void) | null = null;
   private _cols: number = 80;
   private _rows: number = 24;
   private buffer: string[] = [];
@@ -81,7 +94,27 @@ export class WebSocketTerminal {
   }
 
   sendData(data: string): void {
+    // REPL-W1: replCallback takes priority when set. Restored by the
+    // disposer attachRepl() returns.
+    if (this.replCallback) { this.replCallback(data); return; }
     if (this.dataCallback) this.dataCallback(data);
+  }
+
+  /**
+   * REPL-W1: install a runtime-side input handler. Returns a disposer
+   * that restores the prior handler (supports nesting). Calling this
+   * does NOT change the shell's dataCallback — it just shadows it
+   * until the disposer runs.
+   */
+  attachRepl(cb: (data: string) => void): () => void {
+    const prior = this.replCallback;
+    this.replCallback = cb;
+    return () => {
+      // Idempotent: only restore if we're still the current shadow.
+      // If a nested attachRepl ran in between, the disposer chain
+      // resolves bottom-up correctly.
+      this.replCallback = prior;
+    };
   }
 
   focus(): void {}
