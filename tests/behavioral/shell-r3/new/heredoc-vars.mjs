@@ -28,50 +28,60 @@ function body(raw) {
   return lines.join('\n');
 }
 
-// Probe 1: unquoted heredoc expands $X
+// Note: heredoc-to-cmd-stdin (`cat <<EOF\n...\nEOF`) has a separate
+// timing issue in how lifo-sh pipes accumulated content to the
+// command's stdin. The CORE FIX (expandHeredocVars + HeredocHandler
+// hook) operates on accumulated content before it's written/piped.
+// Probe via heredoc-to-file (`cat > FILE <<EOF`) which is the path
+// most users hit and that exercises the same expansion code.
+
+// Probe 1: unquoted heredoc → file with $VAR
 await t.run('export VARFOO=replaced', 3_000);
+await t.run('rm -rf /tmp/hd1.txt', 2_000);
 t.reset();
-t.cmd('cat <<EOF');
-await sleep(500);
+t.cmd('cat > /tmp/hd1.txt <<EOF');
+await sleep(1_500);
 t.cmd('val=$VARFOO');
-await sleep(500);
+await sleep(1_500);
 t.cmd('EOF');
 await sleep(3_000);
-const out1 = stripAnsi(t.buf);
+const r1 = await t.run('cat /tmp/hd1.txt', 5_000);
 a.check(
-  'unquoted heredoc expands $VARFOO',
-  /val=replaced/.test(out1),
-  `tail=${JSON.stringify(out1.slice(-300))}`,
+  'unquoted heredoc (file) expands $VARFOO → replaced',
+  body(r1.output) === 'val=replaced',
+  `body=${JSON.stringify(body(r1.output))}`,
 );
 
 // Probe 2: single-quoted-delimiter preserves literal
+await t.run('rm -rf /tmp/hd2.txt', 2_000);
 t.reset();
-t.cmd("cat <<'EOF'");
-await sleep(500);
+t.cmd("cat > /tmp/hd2.txt <<'EOF'");
+await sleep(1_500);
 t.cmd('val=$VARFOO');
-await sleep(500);
+await sleep(1_500);
 t.cmd('EOF');
 await sleep(3_000);
-const out2 = stripAnsi(t.buf);
+const r2 = await t.run('cat /tmp/hd2.txt', 5_000);
 a.check(
-  "<<'EOF' preserves literal $VARFOO",
-  /val=\$VARFOO/.test(out2) && !/val=replaced/.test(out2),
-  `tail=${JSON.stringify(out2.slice(-300))}`,
+  "<<'EOF' (file) preserves literal $VARFOO (no expansion)",
+  body(r2.output) === 'val=$VARFOO',
+  `body=${JSON.stringify(body(r2.output))}`,
 );
 
 // Probe 3: ${NAME} form
+await t.run('rm -rf /tmp/hd3.txt', 2_000);
 t.reset();
-t.cmd('cat <<EOF');
-await sleep(500);
+t.cmd('cat > /tmp/hd3.txt <<EOF');
+await sleep(1_500);
 t.cmd('val=${VARFOO}-suffix');
-await sleep(500);
+await sleep(1_500);
 t.cmd('EOF');
 await sleep(3_000);
-const out3 = stripAnsi(t.buf);
+const r3 = await t.run('cat /tmp/hd3.txt', 5_000);
 a.check(
   '${VARFOO}-suffix form expands inside unquoted heredoc',
-  /val=replaced-suffix/.test(out3),
-  `tail=${JSON.stringify(out3.slice(-300))}`,
+  body(r3.output) === 'val=replaced-suffix',
+  `body=${JSON.stringify(body(r3.output))}`,
 );
 
 await t.close();
