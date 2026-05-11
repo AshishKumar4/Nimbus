@@ -278,18 +278,19 @@ function replStepFacetFn(
           'import ast',
           'import js',
           'from pyodide.console import PyodideConsole',
-          // REPL-A2 (2026-05-11): PyodideConsole.runcode awaits
-          // loadPackagesFromImports(source) which calls back into
-          // pyodide_js. In our env without micropip's package index
-          // initialised, that helper raises
-          // "TypeError: Cannot read properties of undefined (reading
-          // 'has')" on the first 'import X' line. Override it with a
-          // no-op so `import json` (etc.) bypasses the package-loader
-          // and goes straight to importlib (which works fine because
-          // stdlib is already mounted).
-          'import pyodide.console as __nimbus_pyc',
+          // REPL-A2 (2026-05-11): PyodideConsole.runcode does
+          // `from pyodide_js import loadPackagesFromImports` and awaits
+          // it. In our env without the package registry initialised,
+          // this raises "TypeError: Cannot read properties of undefined
+          // (reading has)" on the first 'import X' line.
+          //
+          // Override pyodide_js.loadPackagesFromImports with a no-op
+          // async function. pyodide_js is a JsProxy for the JS-side
+          // pyodide module; setattr on it writes the JS object property,
+          // and PyodideConsole's import at call-time picks up the stub.
+          'import pyodide_js as __nimbus_pyjs',
           'async def __nimbus_noop_loadpkgs(source): return None',
-          '__nimbus_pyc.loadPackagesFromImports = __nimbus_noop_loadpkgs',
+          '__nimbus_pyjs.loadPackagesFromImports = __nimbus_noop_loadpkgs',
           // Top-level globals dict — shared across all push() calls so
           // user-defined vars persist.
           '__nimbus_repl_globals = {"__name__": "__main__", "__doc__": None}',
