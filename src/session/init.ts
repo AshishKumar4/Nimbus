@@ -59,7 +59,7 @@ import {
   filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard,
   detectUnsupportedWranglerConfig, NIMBUS_UNSUPPORTED_BINS,
 } from './helpers.js';
-import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer, SubshellNormalizer, BraceExpander, DollarVarShim } from '../shell/features.js';
+import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer, SubshellNormalizer, BraceExpander, DollarVarShim, BacktickNormalizer } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
 import {
@@ -1847,6 +1847,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     //    to orig (still errors but with clearer surface).
     SubshellNormalizer.install(self.shell);
 
+    // ── Backtick `\`cmd\`` (BUG-SWEEP-R4-4) — rewrite to $(cmd) so
+    //    lifo-sh's existing $(...) machinery handles it. Quote-aware.
+    BacktickNormalizer.install(self.shell);
+
     // ── BUG-SWEEP-4: echo -n / -e flag override ─────────────────────
     //
     // @lifo-sh/core builtinEcho ignores flags: `echo -n hi` outputs
@@ -1902,6 +1906,32 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           t.write(suppressNewline ? out : out + '\n');
           return 0;
         });
+
+        // BUG-SWEEP-R4-1 (2026-05-11): `unset VAR` doesn't actually
+        // unset on prod. lifo-sh's executeSimpleCommand passes a
+        // COPY of shell.env (env: {...this.config.env}); our
+        // registered mkUnset only mutates the copy. Override the
+        // builtin so mutation hits shell.env directly.
+        //
+        // bash semantics: `unset VAR [VAR2 ...]` deletes each from
+        // the shell's environment. Returns 0 even if var didn't
+        // exist (unset is idempotent).
+        shellAny.builtins.set('unset', async function nimbusUnset(args: string[]) {
+          for (const name of args) {
+            if (name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+              delete shellAny.env[name];
+            }
+          }
+          return 0;
+        });
+
+        // BUG-SWEEP-R4-1b: `export VAR=val` similarly needs to mutate
+        // shell.env (not just ctx.env). lifo-sh has its own builtinExport
+        // (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:builtinExport)
+        // that DOES mutate this.env correctly. Verify by re-checking
+        // ts output after deploy. Keep our override OFF here unless
+        // empirical evidence shows the lifo-sh impl is wrong.
+        // (Skipping override; relying on lifo-sh's builtinExport.)
       }
     }
 
