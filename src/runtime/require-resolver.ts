@@ -492,26 +492,35 @@ export function prefetchForRequire(
         }
       }
     }
-    // Bug class C (audit 2026-05-11): also ship the IMMEDIATE-directory
-    // package.json even when the file is outside node_modules. This is
-    // what makes the runtime __resolveFile's pkg.main directory-load
-    // branch fire for user-written packages — e.g. require('./mod')
-    // where mod/package.json#main='entry.js'. Without this piggy-back
-    // the runtime resolver sees mod/ as an empty directory and falls
-    // off the end of the resolve chain.
-    const lastSlash = vfsPath.lastIndexOf('/');
-    if (lastSlash > 0 && !vfsPath.includes('node_modules/')) {
-      const dirPkgJson = vfsPath.substring(0, lastSlash) + '/package.json';
-      if (!visited.has(dirPkgJson) && vfs.exists(dirPkgJson) && !vfs.isDirectory(dirPkgJson)) {
-        visited.add(dirPkgJson);
-        try {
-          const pkgContent = vfs.readFileString(dirPkgJson);
-          if (totalBytes + pkgContent.length <= MAX_BYTES) {
-            bundle[dirPkgJson] = pkgContent;
-            totalBytes += pkgContent.length;
-            fileCount++;
-          }
-        } catch { /* ignore */ }
+    // Bug class C (audit 2026-05-11): ship every ancestor package.json
+    // up to a node_modules boundary so the runtime __resolveFile pkg.main
+    // branch can read them. For a path like mod/lib/api.js (resolved
+    // via mod/package.json#main='lib/api.js'), the runtime resolver
+    // needs mod/package.json in the bundle even though api.js lives
+    // one level deeper. Walking up covers nested-main cases.
+    //
+    // Bound: stops at node_modules boundary (existing block above
+    // handles that case) or when we run out of parent dirs. Each step
+    // costs one vfs.exists() — typical project depth is 3-5 dirs.
+    if (!vfsPath.includes('node_modules/')) {
+      let dir = vfsPath;
+      while (true) {
+        const sl = dir.lastIndexOf('/');
+        if (sl <= 0) break;
+        dir = dir.substring(0, sl);
+        const dirPkgJson = dir + '/package.json';
+        if (visited.has(dirPkgJson)) break; // already shipped, stop walking
+        if (vfs.exists(dirPkgJson) && !vfs.isDirectory(dirPkgJson)) {
+          visited.add(dirPkgJson);
+          try {
+            const pkgContent = vfs.readFileString(dirPkgJson);
+            if (totalBytes + pkgContent.length <= MAX_BYTES) {
+              bundle[dirPkgJson] = pkgContent;
+              totalBytes += pkgContent.length;
+              fileCount++;
+            }
+          } catch { /* ignore */ }
+        }
       }
     }
 
