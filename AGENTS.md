@@ -1,7 +1,9 @@
 # AGENTS.md — Nimbus (lifo-edge-os) project context
 
-**Last refreshed**: 2026-05-11 (CLN-1b wave)
+**Last refreshed**: 2026-05-11 (readme-rewrite wave)
 **Scope**: project-specific guide for sessions working in this repo. The workspace-level `/workspace/AGENTS.md` covers cross-project orientation; this file is the canonical reference for "what's actually shipped in Nimbus right now."
+
+**Project name**: Nimbus. (Naming is sole-user authority; do not propose alternatives.)
 
 ---
 
@@ -16,8 +18,6 @@ Cloud-native dev environment on Cloudflare Workers + Durable Objects. Each sessi
 - Three additional language runtimes via the package-manager substrate (below)
 
 Entry point: `src/index.ts` exports `NimbusSession` DO. Routes in `src/session/routes.ts`. Production at `https://nimbus.ashishkmr472.workers.dev` (compat-date `2026-04-01`, flags `["nodejs_compat"]`).
-
-Domain pick: **Stint** (stint.run primary). Earlier "Nimbus" / "TODO rebrand" mentions in older docs are stale.
 
 ---
 
