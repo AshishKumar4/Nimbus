@@ -2438,18 +2438,53 @@ function __pathIsFile(path) {
   return false;
 }
 function __resolveFile(base) {
-  // Extensions probed when a path doesn't include one. Must mirror the
-  // install-time pre-bundler: see audit/sections/03-resolver-gaps.md §3.5.
-  // The first ext is "" (exact-match). It must be probed via __pathIsFile,
-  // not __fileExists, so directories don't short-circuit before /index.* —
-  // see W3.5-plan.md §1 Failure 1.
-  const exts = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.cjs", "/index.mjs", "/index.json"];
-  for (const ext of exts) {
+  // Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):
+  //
+  //   1. LOAD_AS_FILE -- try base, base.js, base.mjs, base.cjs, base.json
+  //      as a regular file. The empty-ext probe uses __pathIsFile (not
+  //      __fileExists) so a directory at "base" does NOT short-circuit
+  //      here; it falls through to the LOAD_AS_DIRECTORY block below.
+  //      See W3.5-plan.md §1 Failure 1.
+  //
+  //   2. LOAD_AS_DIRECTORY -- if "base" resolves to a directory:
+  //      a. If <base>/package.json has a "main" field -- recurse on it.
+  //         (Bug class C, audit 2026-05-11: this branch was missing,
+  //          so require("./mod") where mod/package.json#main="entry.js"
+  //          and no mod/index.js -- "Cannot find module ./mod".)
+  //      b. Else fall through to <base>/index.{js,cjs,mjs,json}.
+  //
+  // Must mirror the install-time pre-bundler at require-resolver.ts:
+  // resolveFile so prefetch + runtime agree on which file a given
+  // require() will load.
+  const fileExts = ["", ".js", ".mjs", ".cjs", ".json"];
+  for (const ext of fileExts) {
     const cand = base + ext;
     if (ext === "") {
       if (__pathIsFile(cand)) return cand;
       continue;
     }
+    if (__fileExists(cand)) return cand;
+  }
+  // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
+  const pkgJsonPath = base.replace(/\\/+$/, "") + "/package.json";
+  if (__pathIsFile(pkgJsonPath)) {
+    let pkg = null;
+    try { pkg = JSON.parse(__readFileOr(pkgJsonPath, "null")); } catch { /* fall through */ }
+    if (pkg && typeof pkg.main === "string" && pkg.main.length > 0) {
+      const mainStripped = pkg.main.replace(/^\\.\\/+/, "").replace(/^\\/+/, "");
+      const mainBase = base.replace(/\\/+$/, "") + "/" + mainStripped;
+      // Recurse: main itself may be a directory (e.g. main: "lib") or
+      // a file without extension. Guard against pkg.main === "." which
+      // would re-enter this same base and stack-overflow.
+      if (mainBase !== base && mainBase !== base.replace(/\\/+$/, "")) {
+        const resolved = __resolveFile(mainBase);
+        if (resolved) return resolved;
+      }
+    }
+  }
+  const indexExts = ["/index.js", "/index.cjs", "/index.mjs", "/index.json"];
+  for (const ext of indexExts) {
+    const cand = base + ext;
     if (__fileExists(cand)) return cand;
   }
   return null;
