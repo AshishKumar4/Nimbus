@@ -89,17 +89,30 @@ class RubyReplAdapter implements ReplAdapter {
     //
     // The src is encoded as base64 to avoid string-escape hazards on
     // multi-line input (heredocs, embedded quotes, unicode).
+    // Pass source via a base64-encoded literal to avoid string-escape
+    // hazards on multi-line input. The driver:
+    //   - Tries Ripper.sexp for incomplete-detection if available
+    //     (ruby.wasm stdlib may not include ripper). Fall back to a
+    //     SyntaxError-message heuristic.
+    //   - eval(source, TOPLEVEL_BINDING) preserves user-defined vars
+    //     across submits.
+    //   - irb-style `=> result.inspect` for non-nil result.
+    //   - SystemExit → exit with status.
+    //   - Other exceptions → write to $stderr and continue.
     const srcB64 = btoa(unescape(encodeURIComponent(source)));
     const driver = [
       'require "base64"',
-      'require "ripper" rescue nil',
       '__nimbus_src = Base64.decode64("' + srcB64 + '")',
-      '__nimbus_status = "complete"',
-      'if defined?(Ripper) && Ripper.respond_to?(:sexp)',
-      '  __nimbus_sexp = Ripper.sexp(__nimbus_src)',
-      '  __nimbus_status = "incomplete" if __nimbus_sexp.nil?',
+      '__nimbus_incomplete = false',
+      'begin',
+      '  require "ripper"',
+      '  __nimbus_incomplete = true if Ripper.sexp(__nimbus_src).nil?',
+      'rescue LoadError',
+      '  # ripper unavailable; rely on SyntaxError-message fallback',
       'end',
-      'if __nimbus_status == "complete"',
+      'if __nimbus_incomplete',
+      '  $stdout.print "__NIMBUS_INCOMPLETE__"',
+      'else',
       '  begin',
       '    __nimbus_result = eval(__nimbus_src, TOPLEVEL_BINDING)',
       '    unless __nimbus_result.nil?',
@@ -108,12 +121,16 @@ class RubyReplAdapter implements ReplAdapter {
       '    end',
       '  rescue SystemExit => __nimbus_se',
       '    Kernel.exit(__nimbus_se.status)',
-      '  rescue Exception => __nimbus_e',
-      '    $stderr.puts "#{__nimbus_e.class}: #{__nimbus_e.message}"',
-      '    __nimbus_e.backtrace[0,4].each { |__nimbus_l| $stderr.puts "  #{__nimbus_l}" } if __nimbus_e.backtrace',
+      '  rescue SyntaxError => __nimbus_syn',
+      '    msg = __nimbus_syn.message.to_s',
+      '    if msg =~ /unexpected end-of-input|unterminated/',
+      '      $stdout.print "__NIMBUS_INCOMPLETE__"',
+      '    else',
+      '      $stderr.puts "SyntaxError: " + msg',
+      '    end',
+      '  rescue Exception => __nimbus_exc',
+      '    $stderr.puts __nimbus_exc.class.to_s + ": " + __nimbus_exc.message.to_s',
       '  end',
-      'else',
-      '  $stdout.print "__NIMBUS_INCOMPLETE__"',
       'end',
     ].join('\n');
 
