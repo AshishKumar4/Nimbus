@@ -79,6 +79,24 @@ export class ReplSession {
   private closedPromise: Promise<void>;
   /** Exit code captured from adapter's last 'exit' return. */
   private exitCode: number = 0;
+  /**
+   * REPL-A1b (master plan §1 + user-evidence 2026-05-11): handleInput
+   * is invoked fire-and-forget per WS frame. Multiple WS frames arrive
+   * in quick succession during real REPL use (and during probes that
+   * send multiple lines without waiting for prompt). Without
+   * serialization, two concurrent handleInput coroutines both hit `\r`
+   * and call submitLine(); blockBuf accumulates wrong source; PyodideConsole
+   * gets `print("hi")\\nexit()` as a single 'single'-mode compile →
+   * "multiple statements found while compiling a single statement"
+   * SyntaxError.
+   *
+   * Fix: chain handleInput invocations through inputQueue. Each WS
+   * frame appends to queue; a single drain task processes the queue
+   * sequentially. submitLine's await is properly ordered relative to
+   * the next frame's chars.
+   */
+  private inputQueue: string = '';
+  private draining: boolean = false;
 
   constructor(adapter: ReplAdapter, terminal: WebSocketTerminal) {
     this.adapter = adapter;
@@ -100,14 +118,35 @@ export class ReplSession {
     this.terminal.write(this.adapter.ps1);
 
     // 3. Install the input handler.
+    // REPL-A1b: per-frame data appended to inputQueue; single drain
+    // task ensures serial processing across multiple WS frames.
     this.detachReplCb = this.terminal.attachRepl((data: string) => {
-      // Fire-and-forget; the input handler IS async-ish via this.busy gate.
-      void this.handleInput(data);
+      this.inputQueue += data;
+      if (!this.draining) {
+        this.draining = true;
+        void this.drainInput();
+      }
     });
 
     // 4. Wait until close() is called.
     await this.closedPromise;
     return this.exitCode;
+  }
+
+  /**
+   * REPL-A1b: drain the input queue serially. Pulls data off
+   * inputQueue, runs handleInput, and reads any data that arrived
+   * during the await. Exits when queue is empty. Only ONE drainInput
+   * runs at a time (guarded by draining flag set in attachRepl
+   * callback).
+   */
+  private async drainInput(): Promise<void> {
+    while (this.inputQueue.length > 0) {
+      const chunk = this.inputQueue;
+      this.inputQueue = '';
+      await this.handleInput(chunk);
+    }
+    this.draining = false;
   }
 
   /** Process an input chunk. May contain multiple characters (paste
@@ -219,26 +258,51 @@ export class ReplSession {
     }
     this.busy = false;
 
+    // REPL-A1 (master plan §1): emit stdout, stderr, and the next-prompt
+    // as three discrete WS frames in deterministic order. Without
+    // flushNow() between them, the 5 ms coalescer in WebSocketTerminal
+    // joins them into one `{type:'output'}` payload — probes asserting
+    // frame ordering see false-RED, and xterm renders correctly only
+    // because string-order is preserved. flushNow() guarantees both
+    // are true: bytes-in-order AND frame-boundary-after-each-stream.
     if (result.kind === 'output') {
-      if (result.stdout) this.terminal.write(this.normalizeNewlines(result.stdout));
-      if (result.stderr) this.terminal.write(this.normalizeNewlines(result.stderr));
+      if (result.stdout) {
+        this.terminal.write(this.normalizeNewlines(result.stdout));
+        this.terminal.flushNow();
+      }
+      if (result.stderr) {
+        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.flushNow();
+      }
       this.blockBuf = [];
       this.terminal.write(this.adapter.ps1);
+      this.terminal.flushNow();
       return;
     }
     if (result.kind === 'incomplete') {
       this.terminal.write(this.adapter.ps2);
+      this.terminal.flushNow();
       return;
     }
     if (result.kind === 'error') {
-      if (result.stderr) this.terminal.write(this.normalizeNewlines(result.stderr));
+      if (result.stderr) {
+        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.flushNow();
+      }
       this.blockBuf = [];
       this.terminal.write(this.adapter.ps1);
+      this.terminal.flushNow();
       return;
     }
     if (result.kind === 'exit') {
-      if (result.stdout) this.terminal.write(this.normalizeNewlines(result.stdout));
-      if (result.stderr) this.terminal.write(this.normalizeNewlines(result.stderr));
+      if (result.stdout) {
+        this.terminal.write(this.normalizeNewlines(result.stdout));
+        this.terminal.flushNow();
+      }
+      if (result.stderr) {
+        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.flushNow();
+      }
       await this.endSession(result.exitCode);
       return;
     }

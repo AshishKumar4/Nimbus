@@ -64,6 +64,25 @@ export class WebSocketTerminal {
 
   writeln(data: string): void { this.write(data + '\r\n'); }
 
+  /**
+   * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
+   * the 5 ms coalescer. Used by ReplSession.submitLine to emit stdout,
+   * stderr, and the next-prompt as three discrete frames in deterministic
+   * order. Without this, all three coalesce into one `{type:'output'}`
+   * frame and probes asserting frame-order (stderr-before-stdout or
+   * prompt-after-output) see false-RED.
+   *
+   * Idempotent: cancels the pending timer + sends current buffer (if any).
+   * Safe to call on an empty buffer (no-op).
+   */
+  flushNow(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.flush();
+  }
+
   private flush(): void {
     this.flushTimer = null;
     if (this.buffer.length === 0) return;
