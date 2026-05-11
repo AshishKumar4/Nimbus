@@ -1814,6 +1814,64 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     //    stderr share the terminal sink so these are no-ops anyway. ──
     FdRedirectNormalizer.install(self.shell);
 
+    // ── BUG-SWEEP-4: echo -n / -e flag override ─────────────────────
+    //
+    // @lifo-sh/core builtinEcho ignores flags: `echo -n hi` outputs
+    // `-n hi` literally; `echo -e "a\tb"` outputs `-e "a\\tb"`.
+    // Real users hit this immediately. The Shell exposes `builtins`
+    // as a Map; replacing the entry post-construction is supported.
+    //
+    // POSIX echo handles -n (suppress trailing newline), -e (interpret
+    // backslash escapes: \\t \\n \\r \\\\ \\0 \\\\xNN). -E disables -e
+    // (default). Multiple flags can stack as -ne. We replicate that
+    // behaviour against the same `t.write(...)` sink lifo-sh passes.
+    {
+      const shellAny = self.shell as any;
+      if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {
+        shellAny.builtins.set('echo', async function nimbusEcho(args: string[], t: any) {
+          let interpretEscapes = false;
+          let suppressNewline = false;
+          let i = 0;
+          // Parse leading flags. Stop at first non-flag arg (POSIX).
+          while (i < args.length) {
+            const a = args[i];
+            if (a === '--') { i++; break; }
+            if (a === '-n') { suppressNewline = true; i++; continue; }
+            if (a === '-e') { interpretEscapes = true; i++; continue; }
+            if (a === '-E') { interpretEscapes = false; i++; continue; }
+            // Combined flags like -ne, -en, -nE
+            if (/^-[neE]+$/.test(a)) {
+              for (const ch of a.slice(1)) {
+                if (ch === 'n') suppressNewline = true;
+                else if (ch === 'e') interpretEscapes = true;
+                else if (ch === 'E') interpretEscapes = false;
+              }
+              i++;
+              continue;
+            }
+            break;
+          }
+          let out = args.slice(i).join(' ');
+          if (interpretEscapes) {
+            out = out
+              .replace(/\\\\/g, '\u0000')  // protect literal \\\\ → NUL placeholder
+              .replace(/\\n/g, '\n')
+              .replace(/\\t/g, '\t')
+              .replace(/\\r/g, '\r')
+              .replace(/\\b/g, '\b')
+              .replace(/\\f/g, '\f')
+              .replace(/\\v/g, '\v')
+              .replace(/\\a/g, '\x07')
+              .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
+              .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
+              .replace(/\u0000/g, '\\');
+          }
+          t.write(suppressNewline ? out : out + '\n');
+          return 0;
+        });
+      }
+    }
+
     // ── Readline-parity keybindings (Ctrl+K, Ctrl+W, Alt+B, Alt+F, Alt+D,
     //    Ctrl+Y, Ctrl+T, Ctrl+L, Ctrl+R, Alt+. , Ctrl+←/→, Alt+←/→, Linux
     //    Home/End variants, Ctrl+B/F/N/P, …). Installed AFTER Heredoc so
