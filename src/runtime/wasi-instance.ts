@@ -1886,6 +1886,121 @@ function __wasiMakeImports(opts) {
     },
   };
 
+  // ── DIAG WAVE: per-import call-trace logging ─────────────────────────
+  //
+  // Toggle via globalThis.__wasiDiagTrace = true (default: OFF; zero cost).
+  // When ON, every WASI import call logs ENTRY (with arg list) and EXIT
+  // (with errno return value or 'throw'). console.log lands in wrangler
+  // tail's logs[] array.
+  //
+  // Format:
+  //   [wasi-trace] <seq>> args_sizes_get(ptr=A, ptr=B)
+  //   [wasi-trace] <seq>< args_sizes_get -> 0
+  //   [wasi-trace] <seq>> fd_write(fd=1, iovs=A, n=1, ret=B)
+  //   [wasi-trace] <seq>< fd_write -> 0 nwritten=42
+  //
+  // Async fns (sock_*, poll_oneoff) emit AWAIT-ENTRY and POST-AWAIT-EXIT
+  // separately so we can see hang location even if the import never
+  // resolves.
+  //
+  // fd_write/fd_read have their iovs payload bodies suppressed — only
+  // byte counts logged — to keep traces readable.
+  //
+  // Wrapping happens BEFORE the WebAssembly.Suspending block below so
+  // the Suspending wrappers see the logged async fns (and the resulting
+  // Suspending wrappers still suspend correctly).
+  // Enable via either globalThis flag or NIMBUS_WASI_DIAG_TRACE=1 env var
+  // (the latter is settable from the user's shell session before running
+  // a wasm binary: export NIMBUS_WASI_DIAG_TRACE=1 then ./prog).
+  const __diagOn = (typeof globalThis !== 'undefined' && globalThis.__wasiDiagTrace) ||
+                   (opts && opts.env && opts.env.NIMBUS_WASI_DIAG_TRACE === '1');
+  if (__diagOn) {
+    let __seq = 0;
+    // Accumulate trace in-memory + console.log. console.log goes to
+    // wrangler tail (but facet-isolate logs may not reach tail per
+    // empirical observation — see Stream-C continuation verdict).
+    // Backup path: stash in globalThis.__wasiTraceBuf so the supervisor's
+    // error-path can serialize it via the WasiExit error or final stderr.
+    if (typeof globalThis !== 'undefined') {
+      globalThis.__wasiTraceBuf = [];
+    }
+    // Hard cap so a runaway loop dumps trace + throws rather than
+    // silently spinning forever. Throw-on-cap is the ONLY reliable way
+    // to surface trace from a hung facet: console.log doesn't reach
+    // wrangler tail (facet isolate isolation), and stderrBuf is only
+    // returned post-runStart (lost on facet-pool timeout). Throwing
+    // surfaces e.message via __wasiRunStartAsync's catch -> supervisor
+    // stderr -> shell terminal.
+    //
+    // Cap configurable via NIMBUS_WASI_DIAG_CAP env var; default 50.
+    const __TRACE_CAP = parseInt(
+      (opts && opts.env && opts.env.NIMBUS_WASI_DIAG_CAP) || '50',
+      10
+    ) || 50;
+    const __traceLog = (s) => {
+      try {
+        console.log('[wasi-trace] ' + s);
+      } catch {}
+      try {
+        if (globalThis.__wasiTraceBuf) globalThis.__wasiTraceBuf.push(s);
+      } catch {}
+      // Also funnel into the WASI stderr buffer (the supervisor reads
+      // it post-runStart). For LIVE flushing during hang, we throw
+      // after __TRACE_CAP iterations — the catch in __wasiRunStartAsync
+      // surfaces e.message containing the full trace.
+      stderrBuf += '[wasi-trace] ' + s + '\\n';
+      if (opts.stderrWrite) opts.stderrWrite('[wasi-trace] ' + s + '\\n');
+      if (globalThis.__wasiTraceBuf && globalThis.__wasiTraceBuf.length >= __TRACE_CAP) {
+        // Build a trace-dump error that surfaces the trace via the
+        // supervisor's runStart error catch. Reset buf so re-entry
+        // doesn't re-throw.
+        const dump = globalThis.__wasiTraceBuf.join('\\n');
+        globalThis.__wasiTraceBuf = [];
+        throw new Error('WASI_TRACE_CAP_REACHED:\\n' + dump);
+      }
+    };
+    const __fmtArg = (a) => {
+      if (typeof a === 'bigint') return a.toString() + 'n';
+      if (typeof a === 'number') return String(a);
+      return typeof a;
+    };
+    const __wrap = (name, fn) => {
+      // Detect async by checking constructor name. Async functions have
+      // AsyncFunction constructor name; sync functions have Function.
+      const isAsync = fn.constructor && fn.constructor.name === 'AsyncFunction';
+      if (isAsync) {
+        return async function(...args) {
+          const seq = __seq++;
+          __traceLog(seq + '> ' + name + '(' + args.map(__fmtArg).join(', ') + ') [async]');
+          try {
+            const r = await fn.apply(this, args);
+            __traceLog(seq + '< ' + name + ' -> ' + __fmtArg(r));
+            return r;
+          } catch (e) {
+            __traceLog(seq + '< ' + name + ' threw ' + (e && e.message ? e.message : String(e)));
+            throw e;
+          }
+        };
+      }
+      return function(...args) {
+        const seq = __seq++;
+        __traceLog(seq + '> ' + name + '(' + args.map(__fmtArg).join(', ') + ')');
+        try {
+          const r = fn.apply(this, args);
+          __traceLog(seq + '< ' + name + ' -> ' + __fmtArg(r));
+          return r;
+        } catch (e) {
+          __traceLog(seq + '< ' + name + ' threw ' + (e && e.message ? e.message : (e && e.constructor && e.constructor.name) || String(e)));
+          throw e;
+        }
+      };
+    };
+    for (const k of Object.keys(imports)) {
+      imports[k] = __wrap(k, imports[k]);
+    }
+  }
+  // ── END DIAG WAVE ────────────────────────────────────────────────────
+
   // Stream-B B7: wrap the async socket imports in WebAssembly.Suspending
   // so the wasm caller can use sync-shape calls that yield to the JS
   // event loop. Requires V8 14.2+ (workerd Oct 2025+) — see
