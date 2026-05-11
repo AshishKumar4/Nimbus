@@ -637,7 +637,18 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       globalThis.process.browser = true;
     }
   } catch { /* fall through */ }
-  globalThis.WorkerGlobalScope = Object;
+  // Force-overwrite WorkerGlobalScope; if it's non-configurable via
+  // direct assignment, fall through and Pyodide will need IN_NODE=false
+  // path. After the attempt, log the realized state.
+  try { globalThis.WorkerGlobalScope = Object; } catch { /* fall through */ }
+  // POST-OVERRIDE DIAG
+  try {
+    stderrChunks.push('[diag2] post-shim process=' + typeof globalThis.process
+      + ' .browser=' + (globalThis.process && globalThis.process.browser)
+      + ' WGS=' + (globalThis.WorkerGlobalScope === Object ? 'Object' : typeof globalThis.WorkerGlobalScope)
+      + ' selfInstanceWGS=' + (globalThis.self instanceof globalThis.WorkerGlobalScope)
+      + '\\n');
+  } catch (e) {}
   let pyodideMod;
   try {
     pyodideMod = await globalThis._createPyodideModule(settings);
