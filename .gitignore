@@ -16,6 +16,7 @@ audit/
 docs/research/
 .opencode/
 memory/
+.seal-internal/
 
 # Plan / retro / stuck / progress documents — internal-only naming convention.
 *-plan.md
