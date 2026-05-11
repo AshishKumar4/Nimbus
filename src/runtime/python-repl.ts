@@ -261,8 +261,21 @@ function replStepFacetFn(
         // side reach them via the `js` module.
         g.__nimbus_repl_stdout_cb = function (s: string) { g.__nimbusPyStdout.push(s); };
         g.__nimbus_repl_stderr_cb = function (s: string) { g.__nimbusPyStderr.push(s); };
+        // REPL-A2 (master plan §1 + 2026-05-11 user-evidence): the
+        // PyodideConsole runsource() path swallows three things by
+        // default that real CPython's REPL surfaces:
+        //   1. Expression result (sys.displayhook → repr → stdout).
+        //   2. Runtime exceptions (traceback.format_exception → stderr).
+        //   3. SystemExit exit code (SystemExit.code → int, propagated).
+        // We re-implement them Python-side inside __nimbus_repl_push,
+        // which the JS host calls per submitted line. The function
+        // returns a 4-tuple-like dict {status, exit_code} via globals
+        // and pushes formatted text through stdout/stderr callbacks.
         pyodide.runPython([
           'import sys',
+          'import io',
+          'import traceback',
+          'import ast',
           'import js',
           'from pyodide.console import PyodideConsole',
           // Top-level globals dict — shared across all push() calls so
@@ -279,6 +292,75 @@ function replStepFacetFn(
           // prompts. Set so user code reading sys.ps1 sees sane values.
           'sys.ps1 = ">>> "',
           'sys.ps2 = "... "',
+          // Source-level displayhook helper — CPython's REPL calls
+          // sys.displayhook(value) on the last expression's value; if
+          // value is not None, displayhook prints repr(value) + '\\n'
+          // to stdout and binds builtins._ to the value. We use the
+          // stdlib default sys.displayhook via direct call.
+          // The 'expression result' is the value of the trailing
+          // expression statement IF the source ended in one.
+          //
+          // PyodideConsole.push() returns a ConsoleFuture with these
+          // attrs: .syntax_check ∈ {incomplete, syntax-error, complete},
+          // .formatted_error (set when syntax-error). On `complete`,
+          // awaiting yields the value of the last expression OR None
+          // for statements. On runtime exception it raises.
+          //
+          // Per-push driver returns a dict for the JS host to inspect:
+          //   {kind: incomplete|complete|syntax-error|exit, exit_code}
+          'def __nimbus_repl_step(source):',
+          '    fut = __nimbus_repl_console.push(source)',
+          '    sc = fut.syntax_check',
+          '    if sc == "incomplete":',
+          '        return {"kind": "incomplete"}',
+          '    if sc == "syntax-error":',
+          // PyodideConsole already wrote formatted_error to stderr_cb;
+          // verify by emitting it if formatted_error is set. Some
+          // Pyodide versions only set the attribute and let the host
+          // render — emit defensively (idempotent if already streamed).
+          '        fe = getattr(fut, "formatted_error", None)',
+          '        if fe and isinstance(fe, str):',
+          '            js.__nimbus_repl_stderr_cb(fe)',
+          '        return {"kind": "syntax-error"}',
+          '    return {"kind": "pending", "fut": fut}',
+          // Per-push complete-stage: await the future, handle SystemExit
+          // + runtime exceptions + display the result.
+          'async def __nimbus_repl_finish(fut):',
+          '    try:',
+          '        result = await fut',
+          '    except SystemExit as se:',
+          '        code = se.code',
+          '        if code is None:',
+          '            n = 0',
+          '        elif isinstance(code, int):',
+          '            n = code',
+          '        else:',
+          // Real CPython exits with 1 on string arg + prints msg to stderr.
+          '            js.__nimbus_repl_stderr_cb(str(code) + "\\n")',
+          '            n = 1',
+          '        return {"kind": "exit", "exit_code": n}',
+          '    except BaseException as e:',
+          // Runtime exception (NameError, TypeError, etc.). Format the
+          // traceback the way CPython's REPL does: traceback.format_exception
+          // returns a list of strings; join them and emit to stderr_cb.
+          // We omit the top frame (the REPL driver itself) by limiting
+          // to the user's frame chain — CPython's interactive interpreter
+          // strips its own frame via tb.tb_next.
+          '        tb = e.__traceback__',
+          '        if tb is not None:',
+          '            tb = tb.tb_next  # skip __nimbus_repl_finish frame',
+          '        lines = traceback.format_exception(type(e), e, tb)',
+          '        js.__nimbus_repl_stderr_cb("".join(lines))',
+          '        return {"kind": "error"}',
+          // No exception → result is the expression value (or None for
+          // statements). PyodideConsole's runsource compiles in
+          // "single" mode which already invokes sys.displayhook for
+          // expression statements. So `a` at the REPL → displayhook',
+          // already wrote repr(a)+"\\n" to stdout BEFORE we got here.',
+          // We deliberately do NOT double-print result. CPython 3.13 +,
+          // PyodideConsole behaviour validated: stdout_callback received
+          // the displayhook output mid-await.
+          '    return {"kind": "complete"}',
         ].join('\n'));
       } catch (e) {
         return {
@@ -299,34 +381,46 @@ function replStepFacetFn(
     // Reset capture buffer offsets.
     const stdoutStart = g.__nimbusPyStdout.length;
     const stderrStart = g.__nimbusPyStderr.length;
-    // Push the source. PyodideConsole.push returns a ConsoleFuture
-    // whose `syntax_check` attribute is 'incomplete' | 'syntax-error'
-    // | 'complete'. For 'complete' we await the future to get the
-    // result; for 'incomplete' we signal the host to render ... and
-    // accumulate; for 'syntax-error' the error is already written to
-    // stderr by the Console and we render the next prompt.
-    //
-    // Set the source via a Python-side global to avoid JS-side escape
-    // hazards on multi-line user input.
+    // REPL-A2: source-routing via Python-side global to avoid JS-string
+    // escape hazards on multi-line input (tab chars, embedded quotes,
+    // unicode). __nimbus_repl_step inspects syntax_check and either
+    // returns {kind: incomplete|syntax-error} OR returns a pending dict
+    // containing the future to await.
     g.__nimbus_repl_src = source;
-    let pushFuture: any;
-    let syntaxCheck: string = 'unknown';
+    let stepRes: any;
     try {
-      pushFuture = pyodide.runPython([
-        '__nimbus_repl_future = __nimbus_repl_console.push(' +
-          '__import__("js").__nimbus_repl_src)',
-        '__nimbus_repl_future',
-      ].join('\n'));
-      syntaxCheck = pushFuture.syntax_check;
+      stepRes = pyodide.runPython(
+        '__nimbus_repl_step(__import__("js").__nimbus_repl_src)',
+      );
     } catch (e: any) {
+      // PyodideConsole.push() itself threw — extremely rare (means the
+      // tokenizer crashed). Surface as error.
       return {
         stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
         stderr: 'push threw: ' + (e?.message || e) + '\n',
       };
     }
+    // PyProxy → JS object. Convert via toJs (depth=1 to keep `fut`
+    // as PyProxy). Pyodide's PyProxy.toJs({depth:1}) returns a Map by
+    // default; pass dict_converter to get a plain object.
+    let kind: string;
+    let futProxy: any = null;
+    try {
+      const asJs = stepRes.toJs({
+        depth: 1,
+        dict_converter: Object.fromEntries,
+      });
+      kind = asJs.kind;
+      futProxy = asJs.fut;
+    } catch (_e) {
+      // Fallback: access via getattr.
+      kind = stepRes.get('kind');
+      futProxy = stepRes.get('fut');
+    } finally {
+      try { stepRes.destroy(); } catch {}
+    }
 
-    if (syntaxCheck === 'incomplete') {
-      try { pushFuture.destroy(); } catch {}
+    if (kind === 'incomplete') {
       return {
         stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
         stderr: g.__nimbusPyStderr.slice(stderrStart).join(''),
@@ -334,41 +428,66 @@ function replStepFacetFn(
       };
     }
 
-    if (syntaxCheck === 'syntax-error') {
-      try { pushFuture.destroy(); } catch {}
+    if (kind === 'syntax-error') {
       return {
         stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
         stderr: g.__nimbusPyStderr.slice(stderrStart).join(''),
       };
     }
 
-    // 'complete' — await the future for the result.
+    // kind === 'pending' — await Python-side __nimbus_repl_finish(fut).
+    // This Python coroutine handles SystemExit, runtime exceptions, and
+    // the displayhook side-effect (stdout already streamed mid-await).
+    //
+    // We pass the future across the JS↔Py boundary via a JS-side global:
+    // Pyodide's runPythonAsync doesn't take positional args, so stash
+    // `futProxy` on globalThis under a stable name and have Python read
+    // it via `__import__("js").__nimbus_repl_fut`.
+    g.__nimbus_repl_fut = futProxy;
+    let finishRes: any;
     try {
-      // ConsoleFuture is an asyncio.Future-like Python object; JS-side
-      // it's a JsProxy. Await converts to JS Promise.
-      await pushFuture;
-      try { pushFuture.destroy(); } catch {}
+      // pyodide.runPythonAsync returns a Promise resolving to the
+      // coroutine's return value (a PyProxy dict).
+      finishRes = await pyodide.runPythonAsync(
+        'await __nimbus_repl_finish(__import__("js").__nimbus_repl_fut)',
+      );
     } catch (e: any) {
-      try { pushFuture.destroy(); } catch {}
-      // Check for SystemExit (typed via the PyodideConsole's exc.cause).
-      const msg = e?.message || String(e);
-      if (/SystemExit/.test(msg)) {
-        const m = msg.match(/SystemExit:?\s*(-?\d+)?/);
-        const code = m && m[1] ? parseInt(m[1], 10) : 0;
-        return {
-          stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
-          stderr: g.__nimbusPyStderr.slice(stderrStart).join(''),
-          exit: true,
-          exitCode: code,
-        };
-      }
-      // Non-SystemExit: Python error rendered via traceback to stderr.
+      // __nimbus_repl_finish has its own try/except for SystemExit and
+      // BaseException — reaching here means the dispatch itself broke.
+      try { futProxy?.destroy?.(); } catch {}
+      return {
+        stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
+        stderr: 'repl-finish threw: ' + (e?.message || e) + '\n',
+      };
+    }
+    let finishKind: string = 'complete';
+    let exitCode: number = 0;
+    try {
+      const asJs = finishRes.toJs({
+        depth: 1,
+        dict_converter: Object.fromEntries,
+      });
+      finishKind = asJs.kind || 'complete';
+      exitCode = typeof asJs.exit_code === 'number' ? asJs.exit_code : 0;
+    } catch (_e) {
+      try {
+        finishKind = finishRes.get('kind') || 'complete';
+        exitCode = finishRes.get('exit_code') || 0;
+      } catch {}
+    } finally {
+      try { finishRes.destroy(); } catch {}
+      try { futProxy?.destroy?.(); } catch {}
+    }
+
+    if (finishKind === 'exit') {
       return {
         stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
         stderr: g.__nimbusPyStderr.slice(stderrStart).join(''),
+        exit: true,
+        exitCode: exitCode,
       };
     }
-
+    // 'complete' or 'error' — both render via stdout/stderr buffers.
     return {
       stdout: g.__nimbusPyStdout.slice(stdoutStart).join(''),
       stderr: g.__nimbusPyStderr.slice(stderrStart).join(''),

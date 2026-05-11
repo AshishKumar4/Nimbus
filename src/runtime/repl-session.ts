@@ -219,26 +219,51 @@ export class ReplSession {
     }
     this.busy = false;
 
+    // REPL-A1 (master plan §1): emit stdout, stderr, and the next-prompt
+    // as three discrete WS frames in deterministic order. Without
+    // flushNow() between them, the 5 ms coalescer in WebSocketTerminal
+    // joins them into one `{type:'output'}` payload — probes asserting
+    // frame ordering see false-RED, and xterm renders correctly only
+    // because string-order is preserved. flushNow() guarantees both
+    // are true: bytes-in-order AND frame-boundary-after-each-stream.
     if (result.kind === 'output') {
-      if (result.stdout) this.terminal.write(this.normalizeNewlines(result.stdout));
-      if (result.stderr) this.terminal.write(this.normalizeNewlines(result.stderr));
+      if (result.stdout) {
+        this.terminal.write(this.normalizeNewlines(result.stdout));
+        this.terminal.flushNow();
+      }
+      if (result.stderr) {
+        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.flushNow();
+      }
       this.blockBuf = [];
       this.terminal.write(this.adapter.ps1);
+      this.terminal.flushNow();
       return;
     }
     if (result.kind === 'incomplete') {
       this.terminal.write(this.adapter.ps2);
+      this.terminal.flushNow();
       return;
     }
     if (result.kind === 'error') {
-      if (result.stderr) this.terminal.write(this.normalizeNewlines(result.stderr));
+      if (result.stderr) {
+        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.flushNow();
+      }
       this.blockBuf = [];
       this.terminal.write(this.adapter.ps1);
+      this.terminal.flushNow();
       return;
     }
     if (result.kind === 'exit') {
-      if (result.stdout) this.terminal.write(this.normalizeNewlines(result.stdout));
-      if (result.stderr) this.terminal.write(this.normalizeNewlines(result.stderr));
+      if (result.stdout) {
+        this.terminal.write(this.normalizeNewlines(result.stdout));
+        this.terminal.flushNow();
+      }
+      if (result.stderr) {
+        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.flushNow();
+      }
       await this.endSession(result.exitCode);
       return;
     }
