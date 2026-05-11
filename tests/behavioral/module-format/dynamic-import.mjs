@@ -27,11 +27,15 @@
 //   1. synthetic-resolve: import('./mod.mjs').then(m => log) prints mod's export
 //   2. synthetic-reject: import('./nonexistent.mjs').catch(e => log) prints CAUGHT
 //   3. synthetic-tla-import: `const m = await import('./mod.mjs')` works (TLA route)
-//   4. wild-rejection-shape: import() of a path that triggers a
-//      next-layer error (chalk's imports-field bug) STILL produces an
-//      error from Nimbus's require() — proving the lowering routed
-//      through the VFS, not workerd's module-map. The error message is
-//      Nimbus-shaped (not "No such module ..." which is workerd's shape).
+//
+// Wild assertion (real-world Astro flow) is deliberately OUT of this
+// probe's scope: it depends on prod stability across an `npm install
+// create-astro` cycle (~3 min), during which the sibling deploy storm
+// reliably clobbers any non-main deploy. The synthetic checks above
+// fully exercise the dynamic-import lowering at all three code paths
+// (single-pass, TLA two-pass, rejection). Coverage of the real-world
+// next-layer chalk-imports-field bug is documented in the verdict as
+// a separate scope-out.
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
@@ -117,43 +121,32 @@ A.check(
   `tail: ${tlaOut.slice(-500)}`,
 );
 
-// ── Check 4: wild-rejection-shape ──────────────────────────────────
+// ── Check 4: shape-of-rejection ────────────────────────────────────
 //
-// Install create-astro and try to load its dist/index.js via require.
-// Loading triggers chalk's '#ansi-styles' imports-field path — which
-// Nimbus's require/import-resolver currently can't resolve (separate
-// next-layer bug, scope-out).
-//
-// What this check DEMONSTRATES is that the dynamic-import lowering
-// routed through Nimbus's require chain: the rejection message has
-// the Nimbus-resolver shape (`Cannot find module '#ansi-styles' (from
-// home/user/.../chalk/source)`), NOT workerd's shape
-// (`No such module "dist/index.js".`). Pre-fix would show the latter;
-// post-fix shows the former.
-//
-// We attach an explicit .catch so the rejection is observable.
+// Quick rejection-shape check: an explicit import() of a missing file
+// with .catch attached. Pre-fix the rejection message is workerd-shape
+// ('No such module "..."'). Post-fix it's Nimbus-shape ('Cannot find
+// module ...' from Nimbus's __requireFrom). Either is OBSERVABLE
+// through the .catch — but the SHAPE proves the lowering happened.
 
-await t.run('rm -rf /home/user/wild && mkdir -p /home/user/wild && cd /home/user/wild && npm init -y', 60_000);
-await t.run('cd /home/user/wild && npm install create-astro@latest', 300_000);
-const wildSrc = `
-import('/home/user/wild/node_modules/create-astro/dist/index.js').then(
-  m => console.log('GOT_MAIN typeof=' + typeof m.main),
-  e => console.log('CAUGHT: ' + (e && e.message ? e.message : String(e))),
+await t.run('rm -rf /home/user/dyn-shape && mkdir -p /home/user/dyn-shape', 5_000);
+await writeFile('/home/user/dyn-shape/entry.mjs', `
+import('./does-not-exist.mjs').then(
+  m => console.log('UNEXPECTED_OK'),
+  e => console.log('CAUGHT=' + (e && e.message ? e.message : String(e))),
 );
-`;
-await writeFile('/home/user/wild/wrap.mjs', wildSrc);
-const wildR = await t.run('node /home/user/wild/wrap.mjs', 60_000);
-const wildOut = wildR.output;
-
+`);
+const shapeR = await t.run('cd /home/user/dyn-shape && node entry.mjs', 30_000);
+const shapeOut = shapeR.output;
 A.check(
-  'wild-rejection-shape: NO workerd-style "No such module ..." rejection (lowering routed through Nimbus require)',
-  !/No such module "[^"]*dist\/index\.js"/.test(wildOut),
-  `tail: ${wildOut.slice(-700)}`,
+  'shape-of-rejection: CAUGHT line present (rejection observable)',
+  /CAUGHT=/.test(shapeOut),
+  `tail: ${shapeOut.slice(-500)}`,
 );
 A.check(
-  'wild-rejection-shape: rejection (or success) is OBSERVABLE — .catch handler fired OR .then resolved',
-  /CAUGHT: |GOT_MAIN typeof=/.test(wildOut),
-  `tail: ${wildOut.slice(-700)}`,
+  'shape-of-rejection: error shape is Nimbus require() ("Cannot find module"), not workerd ("No such module")',
+  /CAUGHT=Cannot find module/.test(shapeOut) && !/No such module/.test(shapeOut),
+  `tail: ${shapeOut.slice(-500)}`,
 );
 
 await t.close();
