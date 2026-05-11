@@ -392,10 +392,34 @@ function stripCommentsAndStrings(src: string): string {
  */
 function convertEsmImportsToRequire(src: string): { requires: string; body: string } {
   const lines = src.split('\n');
+  // Strip comments + string/template literals so the line scanner only
+  // sees real syntax. Without this, import-shaped lines INSIDE template
+  // literals (real-world: sv@0.15.3's engine.mjs scaffolds SvelteKit
+  // project files via templates containing `import { redirect } from
+  // '@sveltejs/kit';`) get parsed as actual imports — emitted twice into
+  // the requires block → duplicate const declaration → SyntaxError at
+  // facet pre-compile ("Identifier 'redirect' has already been declared").
+  //
+  // stripCommentsAndStrings preserves newlines, so line indices align
+  // between `src` and `strippedLines`. We use the stripped line to
+  // CLASSIFY (is this an import line?) and the original line to
+  // EXTRACT the actual import shape (specifier, bindings).
+  //
+  // See .seal-internal/2026-05-11-sk-mjs-fix/audit.md.
+  const strippedLines = stripCommentsAndStrings(src).split('\n');
   const requires: string[] = [];
   const bodyLines: string[] = [];
   let counter = 0;
-  for (const line of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    const cls = strippedLines[li] ?? '';
+    // Classification check: is this line a real top-level import?
+    // The stripped version masks string content, so import-shaped
+    // template-literal lines are now whitespace.
+    if (!/^[ \t]*import\b/.test(cls)) {
+      bodyLines.push(line);
+      continue;
+    }
     // Side-effect import: `import "m";` / `import 'm';`
     let m = line.match(/^[ \t]*import\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) { requires.push(`require(${JSON.stringify(m[1])});`); continue; }
@@ -441,7 +465,12 @@ function convertEsmImportsToRequire(src: string): { requires: string; body: stri
       requires.push(`const ${def} = (() => { const _m = require(${JSON.stringify(mod)}); return _m && _m.__esModule ? _m.default : _m; })();`);
       continue;
     }
-    // Not an import line — keep in body.
+    // Stripped-line claimed this was an import, but none of the shape
+    // regexes matched. Unknown import form (e.g. multi-line import that
+    // esbuild's pass-1 normalization didn't collapse, or a future-syntax
+    // variant). Keep in body — esbuild's pass-2 will reject it with a
+    // clear error if it's actually invalid, or accept it if it's a form
+    // we don't yet recognise.
     bodyLines.push(line);
   }
   return { requires: requires.join('\n'), body: bodyLines.join('\n') };
