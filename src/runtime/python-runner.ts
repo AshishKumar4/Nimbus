@@ -382,6 +382,22 @@ async function dispatchPythonFacet(
  */
 function buildPyodidePreamble(asmJsSrc: string): string {
   return [
+    '// ── Pre-asm.js environment shims ───────────────────────────────',
+    '// Pyodide.asm.js detects its environment via heuristics like',
+    '// `typeof WorkerGlobalScope !== "undefined"` and reads',
+    '// `self.location.href` when ENVIRONMENT_IS_WORKER. In workerd',
+    '// `self` is the global object (== globalThis) and `WorkerGlobalScope`',
+    '// is sometimes defined, but `self.location` is missing — reading',
+    '// `.href` crashes with "Cannot read properties of undefined".',
+    '// We stub a minimal `location` object before the asm.js runs.',
+    'if (typeof globalThis.location !== "object" || globalThis.location === null) {',
+    '  globalThis.location = { href: "pyodide://nimbus/", origin: "pyodide://nimbus", toString() { return this.href; } };',
+    '}',
+    '// Also stub document so the document.currentScript?.src probe',
+    '// returns undefined cleanly (rather than throwing on optional',
+    '// chaining of a null document).',
+    'if (typeof globalThis.document === "undefined") globalThis.document = undefined;',
+    '',
     '// ── BEGIN: pyodide.asm.js (inlined; ~1 MiB) ─────────────────────',
     '// Module-load time evaluation. Declares `var _createPyodideModule`',
     '// at module scope; the next line hoists it onto globalThis so the',
