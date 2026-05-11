@@ -310,20 +310,37 @@ function mkWc(vfs: SqliteVFS): CmdFn {
     const countWords = !hasFlags || ctx.args.includes('-w');
     const countBytes = !hasFlags || ctx.args.includes('-c');
     const files = ctx.args.filter(a => !a.startsWith('-'));
-    function wcStr(content: string, label: string) {
-      const lines = content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
-      const words = content.split(/\s+/).filter(Boolean).length;
-      const bytes = enc.encode(content).length;
+    // BUG-SWEEP-3 (2026-05-11): byte count uses raw Uint8Array length,
+    // not enc.encode(decoded) length. Pre-fix, binary files were
+    // decoded as UTF-8 (substituting U+FFFD for invalid sequences) and
+    // re-encoded — turning each invalid byte into 3 bytes. A 5-byte
+    // file `[ff fe 00 01 42]` reported 9 bytes; `stat` reported the
+    // correct 5. Fixed by reading raw bytes when -c is requested.
+    function wcEmit(rawBytes: Uint8Array, label: string) {
+      const text = (countLines || countWords)
+        ? new TextDecoder('utf-8').decode(rawBytes)
+        : '';
+      const lines = (countLines || countWords)
+        ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
+        : 0;
+      const words = (countLines || countWords)
+        ? text.split(/\s+/).filter(Boolean).length
+        : 0;
       const parts: string[] = [];
       if (countLines) parts.push(String(lines).padStart(8));
       if (countWords) parts.push(String(words).padStart(8));
-      if (countBytes) parts.push(String(bytes).padStart(8));
+      if (countBytes) parts.push(String(rawBytes.length).padStart(8));
       ctx.stdout.write(parts.join('') + (label ? ' ' + label : '') + '\n');
     }
-    if (files.length === 0 && ctx.stdin) { wcStr(ctx.stdin, ''); return 0; }
+    if (files.length === 0 && ctx.stdin) {
+      // stdin path: string in, encode to UTF-8 for byte count.
+      const bytes = enc.encode(ctx.stdin);
+      wcEmit(bytes, '');
+      return 0;
+    }
     for (const f of files) {
       try {
-        wcStr(vfs.readFileString(resolvePath(ctx.cwd, f)), f);
+        wcEmit(vfs.readFile(resolvePath(ctx.cwd, f)), f);
       } catch { ctx.stderr.write(`wc: ${f}: No such file\n`); return 1; }
     }
     return 0;
@@ -698,14 +715,45 @@ function mkFile(vfs: SqliteVFS): CmdFn {
       const fp = resolvePath(ctx.cwd, f);
       try {
         if (vfs.isDirectory(fp)) { ctx.stdout.write(`${f}: directory\n`); continue; }
-        const content = vfs.readFileString(fp);
+        // BUG-SWEEP-3 (2026-05-11): scan raw bytes for NUL or non-text
+        // bytes BEFORE attempting a UTF-8 decode. Pre-fix every binary
+        // file was reported as "UTF-8 text" because readFileString
+        // silently U+FFFD-substituted invalid sequences.
+        const bytes = vfs.readFile(fp);
+        let isBinary = false;
+        const scanLimit = Math.min(bytes.length, 8192);
+        for (let i = 0; i < scanLimit; i++) {
+          const b = bytes[i];
+          if (b === 0) { isBinary = true; break; }
+          // Bytes 0x01-0x08 + 0x0E-0x1F (excluding TAB/LF/CR/FF) are
+          // strong signals of non-text content.
+          if (b < 0x09 || (b > 0x0d && b < 0x20)) { isBinary = true; break; }
+        }
+        if (isBinary) {
+          // Magic-byte sniff for common formats.
+          if (bytes.length >= 4 && bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) {
+            ctx.stdout.write(`${f}: ELF executable\n`);
+          } else if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d) {
+            ctx.stdout.write(`${f}: WebAssembly (wasm) binary module\n`);
+          } else if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+            ctx.stdout.write(`${f}: PNG image data\n`);
+          } else if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+            ctx.stdout.write(`${f}: gzip compressed data\n`);
+          } else if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05)) {
+            ctx.stdout.write(`${f}: Zip archive data\n`);
+          } else {
+            ctx.stdout.write(`${f}: data\n`);
+          }
+          continue;
+        }
+        const content = new TextDecoder('utf-8').decode(bytes);
         if (content.startsWith('<!DOCTYPE') || content.startsWith('<html')) ctx.stdout.write(`${f}: HTML document\n`);
         else if (content.startsWith('{') || content.startsWith('[')) ctx.stdout.write(`${f}: JSON data\n`);
         else if (content.startsWith('#!')) ctx.stdout.write(`${f}: script, ${content.split('\n')[0]}\n`);
         else if (f.endsWith('.ts') || f.endsWith('.tsx')) ctx.stdout.write(`${f}: TypeScript source\n`);
         else if (f.endsWith('.js') || f.endsWith('.mjs')) ctx.stdout.write(`${f}: JavaScript source\n`);
         else if (f.endsWith('.css')) ctx.stdout.write(`${f}: CSS stylesheet\n`);
-        else ctx.stdout.write(`${f}: UTF-8 text, ${content.split('\n').length} lines\n`);
+        else ctx.stdout.write(`${f}: ASCII text, ${content.split('\n').length} lines\n`);
       } catch { ctx.stderr.write(`file: ${f}: No such file\n`); return 1; }
     }
     return 0;
