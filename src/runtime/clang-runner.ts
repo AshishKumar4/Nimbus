@@ -167,9 +167,17 @@ export function makeClangRunnerFactory(deps: {
         '--export-dynamic',
         '-z', `stack-size=${stackSize}`,
         '-L/lib/wasm32-wasi',
+        // Stream-C: modern wasi-libc references __muloti4 / __divti3
+        // (128-bit math from utimensat's timespec arithmetic) — these
+        // live in compiler-rt's libclang_rt.builtins-wasm32.a at the
+        // clang resource dir. binji-2020's libc.a self-bundled them;
+        // modern doesn't, so we link compiler-rt explicitly. wasm-ld
+        // dead-strips unused builtins, so binji binaries are unaffected.
+        '-L/lib/clang/8.0.1/lib/wasi',
         '/lib/wasm32-wasi/crt1.o',
         objPath,
         '-lc',
+        '-lclang_rt.builtins-wasm32',
         '-o', parsed.outputPath,
       ];
       // The .o file lives at objPath inside memfs for the link call.
@@ -309,6 +317,11 @@ function filterSysrootForCompile(all: Map<string, Uint8Array>): Record<string, U
  *     symbols (the symbols are SUPPOSED to be unresolved imports,
  *     not errors); the .imports file tells lld "these names are
  *     external WASI imports, not link errors."
+ *   - lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a — compiler-rt
+ *     builtins (e.g. __muloti4 for 128-bit math). Modern wasi-libc's
+ *     utimensat.o references __muloti4; binji-2020 self-bundled it
+ *     into libc.a, the modern build expects compiler-rt to provide.
+ *     wasm-ld dead-strips, so trivial mains pay zero cost.
  *
  * Excludes libc++/libc++abi (C++-only) and the WASI emulated-mman /
  * pthread / canvas variants we don't drive in v1.1.
@@ -319,6 +332,7 @@ function filterSysrootForLink(all: Map<string, Uint8Array>): Record<string, Uint
     if (path === 'lib/wasm32-wasi/crt1.o') { out[path] = bytes; continue; }
     if (path === 'lib/wasm32-wasi/libc.a') { out[path] = bytes; continue; }
     if (path === 'lib/wasm32-wasi/libc.imports') { out[path] = bytes; continue; }
+    if (path === 'lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a') { out[path] = bytes; continue; }
   }
   return out;
 }
