@@ -632,20 +632,6 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // process triggers require('fs'). After the factory returns,
   // ENVIRONMENT_IS_NODE has been captured into module-init lexical
   // scope so we can restore process.
-  // ── DIAG: log env state at request time. Temporary; remove after green.
-  try {
-    stderrChunks.push('[diag] process=' + typeof globalThis.process
-      + ' .browser=' + (globalThis.process && globalThis.process.browser)
-      + ' .versions.node=' + (globalThis.process && globalThis.process.versions && globalThis.process.versions.node)
-      + ' WGS=' + typeof globalThis.WorkerGlobalScope
-      + ' self=' + typeof globalThis.self
-      + ' selfInstanceObj=' + (globalThis.self instanceof Object)
-      + ' location=' + typeof globalThis.location
-      + ' window=' + typeof globalThis.window
-      + ' Bun=' + typeof globalThis.Bun
-      + ' Deno=' + typeof globalThis.Deno
-      + '\\n');
-  } catch (e) { stderrChunks.push('[diag] err: ' + (e && e.message) + '\\n'); }
   const __origProcess = globalThis.process;
   const __origWGS = globalThis.WorkerGlobalScope;
   // Some JS hosts (workerd among them) treat \`process\` as a non-
@@ -675,38 +661,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // direct assignment, fall through and Pyodide will need IN_NODE=false
   // path. After the attempt, log the realized state.
   try { globalThis.WorkerGlobalScope = Object; } catch { /* fall through */ }
-  // POST-OVERRIDE DIAG
-  try {
-    stderrChunks.push('[diag2] post-shim process=' + typeof globalThis.process
-      + ' .browser=' + (globalThis.process && globalThis.process.browser)
-      + ' WGS=' + (globalThis.WorkerGlobalScope === Object ? 'Object' : typeof globalThis.WorkerGlobalScope)
-      + ' selfInstanceWGS=' + (globalThis.self instanceof globalThis.WorkerGlobalScope)
-      + '\\n');
-    // What does vn (calculateDerivedFlags) return when called with the
-    // current globals? We can't reach the asm.js's local bn/vn directly,
-    // but we can replicate the same logic and see what WE compute.
-    const fakeBN = () => {
-      const t = typeof globalThis.Bun !== 'undefined';
-      const e = typeof globalThis.Deno !== 'undefined';
-      const r = typeof globalThis.process === 'object'
-        && typeof globalThis.process?.versions === 'object'
-        && typeof globalThis.process?.versions?.node === 'string'
-        && !globalThis.process?.browser;
-      const n = typeof globalThis.navigator === 'object'
-        && typeof globalThis.navigator?.userAgent === 'string'
-        && globalThis.navigator.userAgent.indexOf('Chrome') === -1
-        && globalThis.navigator.userAgent.indexOf('Safari') > -1;
-      return { IN_BUN: t, IN_DENO: e, IN_NODE: r, IN_SAFARI: n };
-    };
-    const bn_res = fakeBN();
-    const n = !bn_res.IN_NODE && !bn_res.IN_DENO && !bn_res.IN_BUN;
-    const i = n
-      && typeof globalThis.WorkerGlobalScope !== 'undefined'
-      && typeof globalThis.self !== 'undefined'
-      && (globalThis.self instanceof globalThis.WorkerGlobalScope);
-    stderrChunks.push('[diag3] mirror bn=' + JSON.stringify(bn_res)
-      + ' derived IN_BROWSER=' + n + ' IN_BROWSER_WEB_WORKER=' + i + '\\n');
-  } catch (e) {}
+
   let pyodideMod;
   try {
     pyodideMod = await globalThis._createPyodideModule(settings);
@@ -729,7 +684,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       exitCode: 1,
       stdout: stdoutChunks.join(''),
       stderr: stderrChunks.join(''),
-      error: '_createPyodideModule failed: ' + (e && e.message) + ' STACK=' + (e && e.stack && e.stack.slice(0, 1500)),
+      error: '_createPyodideModule failed: ' + (e && e.message),
     };
   }
   // Restore process + WorkerGlobalScope on the success path.
