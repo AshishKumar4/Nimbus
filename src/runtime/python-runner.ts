@@ -284,13 +284,20 @@ async function dispatchPythonFacet(
   const toAB = (u8: Uint8Array): ArrayBuffer =>
     u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
 
-  // pyodide.asm.js + python_stdlib.zip are ferried via context as
-  // base64. asm.js ~1 MB; stdlib zip ~2.3 MB. Combined ~3.3 MB raw
-  // → ~4.4 MB base64. Plus 8.25 MB asm.wasm via modules map. Total
-  // per-call payload ~12-13 MB, well under the empirical ~32 MiB
-  // LOADER ceiling.
-  const asmJsB64 = uint8ToBase64(args.asmJsBytes);
+  // pyodide.asm.js is INLINED into the preamble (1 MiB text source).
+  // Workerd's CSP allows wasm code-gen AND JS top-level evaluation at
+  // module-load time, but BLOCKS `new Function(src)` at request time.
+  // The asm.js source declares `var _createPyodideModule = ...` at
+  // module-top; spliced into the preamble it becomes a module-scope
+  // binding we expose via `globalThis._createPyodideModule = ...`
+  // right after.
+  //
+  // stdlib.zip stays in the context (base64) — it's data not code,
+  // and the context blob is evaluated at module-load too.
+  const asmJsSrc = new TextDecoder('utf-8').decode(args.asmJsBytes);
   const stdlibB64 = uint8ToBase64(args.stdlibBytes);
+
+  const preamble = buildPyodidePreamble(asmJsSrc);
 
   const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
   const env = (facetMgr as any).env;
@@ -299,12 +306,11 @@ async function dispatchPythonFacet(
     tag: 'python-runner',
     concurrency: 1,
     omitSupervisor: true,
-    preamble: PYTHON_RUNNER_PREAMBLE,
+    preamble,
   });
 
   const facetFn = async function pythonFacetCall(
     inArgs: {
-      asmJsB64: string;
       stdlibB64: string;
       userCode: string;
       pyArgv: string[];
@@ -329,7 +335,6 @@ async function dispatchPythonFacet(
         error: 'python-runner preamble missing: __pyodideRun not in scope' };
     }
     return await fn({
-      asmJsB64: inArgs.asmJsB64,
       stdlibB64: inArgs.stdlibB64,
       userCode: inArgs.userCode,
       pyArgv: inArgs.pyArgv,
@@ -341,7 +346,6 @@ async function dispatchPythonFacet(
 
   try {
     const result: any = await pool.submit(facetFn, {
-      asmJsB64,
       stdlibB64,
       userCode: args.userCode,
       pyArgv: args.pyArgv,
@@ -367,6 +371,29 @@ async function dispatchPythonFacet(
       error: `python-runner dispatch failed: ${e?.message || e}`,
     };
   }
+}
+
+/**
+ * Compose the per-call preamble by splicing the pyodide.asm.js source
+ * verbatim ahead of the __pyodideRun helper. Workerd compiles this
+ * blob as JS at module-load time (where `var` declarations + globals
+ * assignment are allowed), then the asm.js's `var _createPyodideModule`
+ * is hoisted onto globalThis.
+ */
+function buildPyodidePreamble(asmJsSrc: string): string {
+  return [
+    '// ── BEGIN: pyodide.asm.js (inlined; ~1 MiB) ─────────────────────',
+    '// Module-load time evaluation. Declares `var _createPyodideModule`',
+    '// at module scope; the next line hoists it onto globalThis so the',
+    '// __pyodideRun helper below can reach it across slot reuses.',
+    asmJsSrc,
+    'if (typeof _createPyodideModule === \'function\') {',
+    '  globalThis._createPyodideModule = _createPyodideModule;',
+    '}',
+    '// ── END: pyodide.asm.js inline ──────────────────────────────────',
+    '',
+    PYTHON_RUNNER_PREAMBLE_TAIL,
+  ].join('\n');
 }
 
 // ── Facet preamble ───────────────────────────────────────────────────
@@ -395,7 +422,15 @@ async function dispatchPythonFacet(
 //   5. Run user code via Pyodide.runPython
 //   6. Return captured stdout/stderr/exitCode
 
-export const PYTHON_RUNNER_PREAMBLE = `
+// pyodide.asm.js is inlined ABOVE this preamble by
+// buildPyodidePreamble(asmJsSrc). It declares 'var
+// _createPyodideModule = (() => { ... })()' at module-top and we
+// hoist it onto globalThis right after the inline. By the time
+// __pyodideRun is invoked at request time, globalThis._createPyodideModule
+// is already populated; we never invoke `new Function` (CSP-blocked
+// at request time).
+
+export const PYTHON_RUNNER_PREAMBLE_TAIL = `
 // ── BEGIN: python-runner preamble (Pyodide 0.29.4, Nimbus v1) ──────
 
 globalThis.__pyodideRun = async function __pyodideRun(args) {
@@ -403,35 +438,12 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   const stderrChunks = [];
   let exitCode = 0;
 
-  // ── Step 1: decode + install pyodide.asm.js into globalThis. ───
-  // The asm.js source declares 'var _createPyodideModule = (() => { ... })()'
-  // at module top-level. We execute it via new Function() at facet
-  // module-init time (workerd allows new Function during init; the
-  // resulting closure produces _createPyodideModule which we hoist
-  // onto globalThis so the rest of this preamble can reach it).
   if (typeof globalThis._createPyodideModule !== 'function') {
-    try {
-      const asmJsSrc = (function decode(b64) {
-        const bin = atob(b64);
-        // Pyodide.asm.js may contain characters outside ASCII; we
-        // need an exact JS-source string. atob() returns a binary
-        // string where each char is a byte value; decode as UTF-8.
-        const u8 = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-        return new TextDecoder('utf-8').decode(u8);
-      })(args.asmJsB64);
-      // Eval-by-Function. The trailing 'return _createPyodideModule'
-      // works because asm.js declares it at module-top with 'var',
-      // hoisting it to the Function's own scope.
-      const installer = new Function(asmJsSrc + '\\n;return _createPyodideModule;');
-      globalThis._createPyodideModule = installer();
-    } catch (e) {
-      return { exitCode: 1, stdout: '', stderr: '',
-        error: 'failed to install _createPyodideModule: ' + (e && e.message) };
-    }
+    return { exitCode: 1, stdout: '', stderr: '',
+      error: 'globalThis._createPyodideModule not installed by inline asm.js' };
   }
 
-  // ── Step 2: build the Emscripten settings object. ──────────────
+  // ── Step 1: build the Emscripten settings object. ──────────────
   // We bypass loadPyodide() and call _createPyodideModule directly
   // with the settings we need. This avoids the public loader's
   // file-system probing (which expects Node fs or browser URL
@@ -523,7 +535,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
     },
   ];
 
-  // ── Step 3: instantiate Pyodide. ───────────────────────────────
+  // ── Step 2: instantiate Pyodide. ───────────────────────────────
   let pyodideMod;
   try {
     pyodideMod = await globalThis._createPyodideModule(settings);
@@ -548,7 +560,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
     };
   }
 
-  // ── Step 4: bootstrap CPython interpreter. ─────────────────────
+  // ── Step 3: bootstrap CPython interpreter. ─────────────────────
   //
   // pyodide.mjs:bootstrapPyodide calls finalizeBootstrap which sets
   // up sys.path, the exception handlers, and the runPython helper.
@@ -570,7 +582,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
     };
   }
 
-  // ── Step 5: run the user code. ─────────────────────────────────
+  // ── Step 4: run the user code. ─────────────────────────────────
   if (args.userCode) {
     try {
       // pyodide.runPython runs the source as if it were a module-
