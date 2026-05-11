@@ -671,7 +671,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       exitCode: 1,
       stdout: stdoutChunks.join(''),
       stderr: stderrChunks.join(''),
-      error: '_createPyodideModule failed: ' + (e && e.message),
+      error: '_createPyodideModule failed: ' + (e && e.message) + ' STACK=' + (e && e.stack && e.stack.slice(0, 1500)),
     };
   }
   // Restore process + WorkerGlobalScope on the success path.
