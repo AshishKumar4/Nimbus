@@ -292,6 +292,25 @@ function stripCommentsAndStrings(src: string): string {
   let stripped = '';
   let i = 0;
   const N = src.length;
+  // Track the last non-whitespace non-comment output character so we
+  // can disambiguate `/` as division (after identifier/literal/`)`/`]`)
+  // vs regex-literal opener (after operator / punctuator / keyword /
+  // start-of-file). Pre-fix the stripper had no regex awareness, so
+  // patterns like `var X = /^(?:'…)/` contained an unmatched `'` that
+  // bit it as a string opener that didn't close until many lines
+  // later — corrupting every downstream classifier (export-scanner,
+  // hasEsmImports, hasTopLevelAwait). Real-world bite: sv-utils@0.0.3
+  // index.mjs has dozens of these regex literals.
+  let lastNonWsChar = '';
+  const recordOut = (ch: string) => {
+    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') {
+      lastNonWsChar = ch;
+    }
+  };
+  // Identifier-suffix detection on lastNonWsChar: any of these means
+  // `/` is division. Anything else means `/` opens a regex.
+  // Includes ascii word chars + `)` `]` to cover `foo()/x` `a[i]/y`.
+  const DIVISION_AFTER = /[A-Za-z0-9_$\)\]]/;
   while (i < N) {
     const c = src[i];
     if (c === '/' && src[i + 1] === '/') {
@@ -310,6 +329,43 @@ function stripCommentsAndStrings(src: string): string {
       stripped += ' ';
       continue;
     }
+    // Regex literal: `/` not followed by `/` or `*` (already handled
+    // above), AND preceded by something that makes regex valid here.
+    // The classifier looks at lastNonWsChar — for `(`, `,`, `=`, `;`,
+    // `{`, `[`, `:`, `!`, `&`, `|`, `?`, operators, or start-of-file,
+    // a slash is a regex opener.
+    if (c === '/' && !DIVISION_AFTER.test(lastNonWsChar)) {
+      stripped += ' ';
+      i++;
+      while (i < N) {
+        const rc = src[i];
+        if (rc === '\\') { i += 2; continue; }
+        // Regex character class [...]: `/` inside it is content.
+        if (rc === '[') {
+          i++;
+          while (i < N && src[i] !== ']') {
+            if (src[i] === '\\') { i += 2; continue; }
+            if (src[i] === '\n') { stripped += '\n'; }
+            i++;
+          }
+          if (i < N) i++; // consume ']'
+          continue;
+        }
+        if (rc === '/') { i++; break; }
+        if (rc === '\n') {
+          // Regex literals can't span newlines. If we hit one without
+          // finding the closing `/`, this was probably NOT a regex —
+          // bail out gracefully (rare in practice; better than getting
+          // stuck in a wrong state).
+          break;
+        }
+        i++;
+      }
+      // Skip regex flags (g, i, m, s, u, y, d).
+      while (i < N && /[gimsuyd]/.test(src[i])) i++;
+      recordOut('/');
+      continue;
+    }
     if (c === '"' || c === "'" || c === '`') {
       const q = c;
       stripped += ' ';
@@ -322,12 +378,53 @@ function stripCommentsAndStrings(src: string): string {
         // expression as raw code so the caller's depth-tracker can
         // see `await` etc. inside it. Strip the wrapping `${`/`}`
         // (those don't affect brace-depth from the caller's POV).
+        //
+        // CRITICAL: inside the interpolation expression, we must
+        // recognise NESTED strings (`'}'`, `"}"`, `` `${...}` ``) so
+        // their internal `}` characters don't decrement the depth
+        // counter — otherwise we exit the interpolation early and
+        // start consuming code as string content, eventually parsing
+        // the rest of the file as one massive unclosed string. This
+        // bit sv-utils/dist/index.mjs: multi-line backticks with
+        // `${url.replace('}', '_')}`-style interpolations corrupted
+        // line classification downstream. Recursive-by-loop here.
         if (q === '`' && cc === '$' && src[i + 1] === '{') {
           stripped += '${';
           i += 2;
           let depth = 1;
           while (i < N && depth > 0) {
             const ic = src[i];
+            // Nested string inside interpolation: skip its content.
+            if (ic === '"' || ic === "'" || ic === '`') {
+              const iq = ic;
+              stripped += ' ';
+              i++;
+              while (i < N) {
+                const icc = src[i];
+                if (icc === '\\') { i += 2; continue; }
+                if (icc === iq) { i++; break; }
+                // Nested template inside interpolation can also have its
+                // own ${...} — recurse once more (the practical depth
+                // observed in real code never exceeds 2; deeper nesting
+                // falls back to brace counting which is a best-effort).
+                if (iq === '`' && icc === '$' && src[i + 1] === '{') {
+                  stripped += '${'; i += 2;
+                  let d2 = 1;
+                  while (i < N && d2 > 0) {
+                    const i2 = src[i];
+                    if (i2 === '{') d2++;
+                    else if (i2 === '}') d2--;
+                    if (d2 > 0) stripped += i2;
+                    i++;
+                  }
+                  stripped += '}';
+                  continue;
+                }
+                if (icc === '\n') stripped += '\n';
+                i++;
+              }
+              continue;
+            }
             if (ic === '{') depth++;
             else if (ic === '}') depth--;
             if (depth > 0) stripped += ic;
@@ -342,6 +439,7 @@ function stripCommentsAndStrings(src: string): string {
       continue;
     }
     stripped += c;
+    recordOut(c);
     i++;
   }
   return stripped;
