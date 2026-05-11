@@ -31,11 +31,16 @@ function body(raw) {
   return lines.join('\n');
 }
 
-// Setup: mixed-size files
+// Setup: mixed-size files. Use node -e to write the big file since
+// lifo-sh's `$(cmd)` doesn't IFS-word-split, so the printf-many-args
+// trick produces a single string arg.
 await t.run('rm -rf /tmp/r4f && mkdir -p /tmp/r4f', 3_000);
 await t.run('touch /tmp/r4f/empty.txt', 2_000);  // 0 bytes
 await t.run('printf "X" > /tmp/r4f/tiny.txt', 2_000);  // 1 byte
-await t.run('printf "%.0s." $(seq 1 2000) > /tmp/r4f/big.txt', 5_000);  // ~2KB
+await t.run(
+  'node -e "require(\\"fs\\").writeFileSync(\\"/tmp/r4f/big.txt\\", \\"x\\".repeat(2048))"',
+  10_000,
+);  // 2 KiB
 
 // Probe 1: -size 0 (exact 0-block files — 512-byte blocks → 0 blocks for 0-byte file)
 const r1 = await t.run('find /tmp/r4f -size 0 -type f', 5_000);
