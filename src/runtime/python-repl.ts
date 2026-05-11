@@ -226,8 +226,8 @@ function replStepFacetFn(
       // Bootstrap via the existing __pyodideRun helper. Passing an
       // empty userCode runs the full bootstrap (gate release, await
       // bootstrap promise, finalizeBootstrap, sys.argv setup) without
-      // running any user code. After this, __nimbusPyodideInstance is
-      // cached and we can call its runPython directly.
+      // running any user code. After bootstrap, __nimbusPyodideInstance
+      // is cached and we can call its runPython directly.
       if (typeof g.__pyodideRun !== 'function') {
         return {
           stdout: '',
@@ -336,7 +336,7 @@ function replStepFacetFn(
           // Bare expressions (`a`, `1+1`, `obj.method()`) are compiled
           // in 'single' mode by PyodideConsole but the auto-displayhook
           // hook isn't wired — we wire it here. Statements (`a = 1`,
-          // `def f(): ...`) return None so this is a no-op for them.
+          // `def f(): ...`) return None so the displayhook is a no-op.
           'import builtins as __nimbus_builtins',
           'async def __nimbus_repl_finish(fut):',
           '    try:',
