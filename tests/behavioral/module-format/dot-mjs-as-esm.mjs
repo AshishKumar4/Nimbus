@@ -126,7 +126,7 @@ await t.run(`cat > /home/user/dollar-id/probe.mjs << 'NIMBUS_HEREDOC_EOF'\n${dol
 const dollarResult = await t.run('cd /home/user/dollar-id && node probe.mjs', 30_000);
 A.check(
   'synthetic-dollar-ident: .mjs with $-suffixed identifier imports loads + executes',
-  /SENTINEL=dollar_ok proc=function cwd=function join=function/.test(dollarResult.output),
+  /SENTINEL=dollar_ok proc=object cwd=function join=function/.test(dollarResult.output),
   dollarResult.output.slice(-600),
 );
 A.check(
