@@ -496,14 +496,47 @@ let nextFd = 3;
 // Resolve a WASI path against a preopen fd; returns the canonical VFS path
 // WITHOUT following symlinks. Stream-B kept this name compatible with all
 // existing call sites (~10 of them inside the imports object).
+//
+// wasi-path-fix: a single preopen { wasiPath: '/', vfsPath: 'home/user' }
+// exposes the user's home as the wasm-side root. wasi-libc strips '/'
+// from absolute paths and hands the rest to path_open. For "/tmp/x" the
+// stripped path "tmp/x" + vfsPath "home/user" yields "home/user/tmp/x"
+// (correct). For "/home/user/x" the stripped path "home/user/x" +
+// vfsPath "home/user" yields "home/user/home/user/x" — the file lands
+// at the wrong location. The user mental model is that "/home/user/x"
+// IS the user's file at home/user/x in the VFS.
+//
+// Fix: in __wasiResolvePath, when baseFd is a preopen AND the supplied
+// pathStr already starts with the preopen's vfsPath (followed by '/' or
+// end-of-string), strip the vfsPath prefix BEFORE prepending it. This
+// makes "/home/user/x" → wasi-libc strip → "home/user/x" → resolver
+// strip vfsPath → "x" → final canonical "home/user/x" ✓. Paths that
+// don't share the vfsPath prefix (like "tmp/x") follow the legacy path.
+//
+// Skip the strip when vfsPath is empty (no chroot mismatch possible).
+// Be careful with segment boundaries: vfsPath "home/user" must NOT
+// strip from path "home/userfoo/bar" (it's a different directory).
 function __wasiResolvePath(baseFd, pathStr) {
   const entry = fdTable.get(baseFd);
   if (!entry) return null;
   let baseVfs;
   if (entry.kind === 'preopen' || entry.kind === 'dir') baseVfs = entry.vfsPath;
   else return null;
-  // pathStr may be 'foo', './foo', '/foo'. Treat all as relative to baseVfs.
-  const trimmed = pathStr.replace(/^\\.?\\/+/, '').replace(/^\\/+/, '');
+  // Strip leading './' or '/' segments (POSIX legacy from wasi-libc).
+  let trimmed = pathStr.replace(/^\\.?\\/+/, '').replace(/^\\/+/, '');
+  // wasi-path-fix: chroot-collision strip. Only applies to preopens (not
+  // 'dir' fds — those are opened via path_open with already-resolved
+  // paths). Only when baseVfs is non-empty AND trimmed starts with
+  // baseVfs at a segment boundary.
+  if (entry.kind === 'preopen' && baseVfs.length > 0) {
+    if (trimmed === baseVfs) {
+      trimmed = '';
+    } else if (trimmed.length > baseVfs.length &&
+               trimmed.charCodeAt(baseVfs.length) === 47 /* '/' */ &&
+               trimmed.substring(0, baseVfs.length) === baseVfs) {
+      trimmed = trimmed.substring(baseVfs.length + 1);
+    }
+  }
   return __wasiCanonicalize(baseVfs + '/' + trimmed);
 }
 
@@ -897,6 +930,7 @@ function __wasiMakeImports(opts) {
     // ── path_open ──
     path_open(baseFd, dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, fdflags, fdOutPtr) {
       const pathArg = readPath(pathPtr, pathLen);
+
       // Stream-B B7: synthetic /dev/tcp/<host>/<port> path — open a TCP
       // socket via cloudflare:sockets. Bash-like convention; matches
       // /workspace/.seal-internal/2026-05-11-stream-b/p3-spike.md §2.
