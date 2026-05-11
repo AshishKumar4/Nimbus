@@ -167,9 +167,17 @@ export function makeClangRunnerFactory(deps: {
         '--export-dynamic',
         '-z', `stack-size=${stackSize}`,
         '-L/lib/wasm32-wasi',
+        // Stream-C: compiler-rt builtins live in the per-clang resource
+        // dir. Modern wasi-libc pulls __muloti4 / __divti3 (128-bit math
+        // emitted by utimensat's timespec arithmetic) from this archive.
+        // binji-2020's libc.a self-bundled these — modern doesn't, so
+        // we link the archive explicitly. The path matches the sysroot
+        // layout shipped in the clang@wasi-libc-modern manifest.
+        '-L/lib/clang/8.0.1/lib/wasi',
         '/lib/wasm32-wasi/crt1.o',
         objPath,
         '-lc',
+        '-lclang_rt.builtins-wasm32',
         '-o', parsed.outputPath,
       ];
       // The .o file lives at objPath inside memfs for the link call.
@@ -319,6 +327,15 @@ function filterSysrootForLink(all: Map<string, Uint8Array>): Record<string, Uint
     if (path === 'lib/wasm32-wasi/crt1.o') { out[path] = bytes; continue; }
     if (path === 'lib/wasm32-wasi/libc.a') { out[path] = bytes; continue; }
     if (path === 'lib/wasm32-wasi/libc.imports') { out[path] = bytes; continue; }
+    // Stream-C: compiler-rt builtins archive. Modern wasi-libc's utimensat,
+    // mtime-set, and 128-bit arithmetic paths reference __muloti4, __divti3,
+    // etc. — provided by compiler-rt, NOT by libc. wasm-ld emits
+    // "undefined symbol: __muloti4" without this archive. binji-2020's
+    // libc.a was self-contained (compiler-rt builtins inlined), so this
+    // path is new for the wasi-libc-modern sysroot.
+    if (path === 'lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a') {
+      out[path] = bytes; continue;
+    }
   }
   return out;
 }
