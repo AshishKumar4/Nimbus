@@ -460,16 +460,122 @@ function mkAwk(vfs: SqliteVFS): CmdFn {
   };
 }
 
-function mkXargs(vfs: SqliteVFS): CmdFn {
-  return (ctx) => {
-    const input = ctx.stdin || '';
-    if (!input.trim()) return 0;
-    const cmd = ctx.args.join(' ') || 'echo';
-    const items = input.split(/\s+/).filter(Boolean);
-    // xargs passes all items as arguments to the command
-    // Since we can't execute shell commands from here, we print what would be executed
-    ctx.stdout.write(`${cmd} ${items.join(' ')}\n`);
-    return 0;
+/**
+ * BUG-SWEEP-R2-3 (2026-05-11): real xargs implementation.
+ *
+ * Pre-fix the impl printed the command-line it WOULD execute and
+ * returned 0. Real xargs runs the command, possibly batched (-n),
+ * with arguments substituted (-I).
+ *
+ * We do cross-command dispatch through the same `registry` lifo-sh
+ * uses, so xargs can drive `echo`, `cat`, `rm`, `seq`, lifo-sh
+ * lazy-loaded builtins — anything in the registry. The execution
+ * runs IN-SUPERVISOR (not through facet spawn) which means it
+ * works for pure-builtins but NOT for facet-direct commands like
+ * `node`, `git`, `npm` (the registry resolver returns those by
+ * name but invoking them requires the cp/facet pipeline).
+ *
+ * Supported flags:
+ *   -n NUM        run command with at most NUM args per invocation
+ *   -I REPL       replace REPL in command with the input item
+ *   -0            null-byte separator (rare; bash xargs -0 idiom)
+ *   default args  use args.split(/\s+/) from stdin
+ *
+ * Unsupported (document as gap): -P (parallel), -L (per-line), -p (prompt).
+ */
+function mkXargs(vfs: SqliteVFS, registry: any): CmdFn {
+  return async (ctx) => {
+    const input = (ctx.stdin || '').trim();
+    if (!input) return 0;
+
+    // Parse flags first
+    const args = [...ctx.args];
+    let batchSize = Infinity;
+    let replaceTok: string | null = null;
+    let nullSep = false;
+    while (args.length > 0 && args[0].startsWith('-')) {
+      const a = args.shift()!;
+      if (a === '-n') {
+        const n = parseInt(args.shift() || '', 10);
+        if (Number.isFinite(n) && n > 0) batchSize = n;
+      } else if (a.startsWith('-n')) {
+        const n = parseInt(a.slice(2), 10);
+        if (Number.isFinite(n) && n > 0) batchSize = n;
+      } else if (a === '-I') {
+        replaceTok = args.shift() || '{}';
+        batchSize = 1; // -I implies one-arg-per-invocation
+      } else if (a === '-0' || a === '--null') {
+        nullSep = true;
+      } else if (a === '--') {
+        break;
+      } else {
+        // Unknown flag — push back as cmd token (best-effort behavior)
+        args.unshift(a);
+        break;
+      }
+    }
+
+    // Remaining args: cmd + initial-args. Default: echo.
+    const cmdName = args.shift() || 'echo';
+    const cmdArgsInitial = args;
+
+    // Split stdin into items
+    const items = nullSep
+      ? input.split('\u0000').filter(Boolean)
+      : input.split(/\s+/).filter(Boolean);
+
+    // Resolve target command from registry (handles both eager + lazy maps).
+    let target;
+    try {
+      target = await registry.resolve(cmdName);
+    } catch (_e) { target = null; }
+    if (!target) {
+      // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.
+      ctx.stderr.write(`xargs: ${cmdName}: command not found\n`);
+      return 127;
+    }
+
+    // Run in batches.
+    const newCtx = (newArgs: string[]) => ({
+      args: newArgs,
+      env: ctx.env,
+      cwd: ctx.cwd,
+      vfs: (ctx as any).vfs,
+      stdout: ctx.stdout,
+      stderr: ctx.stderr,
+      stdin: '',  // xargs doesn't pipe its own stdin to children
+      signal: (ctx as any).signal,
+    });
+
+    let exit = 0;
+    if (replaceTok) {
+      // -I: one invocation per item, replacing token in initial args.
+      for (const item of items) {
+        const subbed = cmdArgsInitial.map(a => a.split(replaceTok!).join(item));
+        try {
+          const code = await target(newCtx(subbed));
+          if (typeof code === 'number' && code !== 0) exit = code;
+        } catch (e: any) {
+          ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+          exit = 1;
+        }
+      }
+    } else {
+      // -n N (or unlimited): batch items, append to initial args.
+      const step = Number.isFinite(batchSize) ? batchSize : items.length;
+      for (let i = 0; i < items.length; i += step) {
+        const batch = items.slice(i, i + step);
+        try {
+          const code = await target(newCtx([...cmdArgsInitial, ...batch]));
+          if (typeof code === 'number' && code !== 0) exit = code;
+        } catch (e: any) {
+          ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+          exit = 1;
+        }
+        if (!Number.isFinite(batchSize)) break;  // single batch when no -n
+      }
+    }
+    return exit;
   };
 }
 
@@ -942,7 +1048,7 @@ export function registerUnixCommands(
   registry.register('uniq', wrap(mkUniq()));
   registry.register('sed', wrap(mkSed(vfs)));
   registry.register('awk', wrap(mkAwk(vfs)));
-  registry.register('xargs', wrap(mkXargs(vfs)));
+  registry.register('xargs', wrap(mkXargs(vfs, registry)));
   registry.register('tee', wrap(mkTee(vfs)));
   registry.register('du', wrap(mkDu(vfs)));
   registry.register('diff', wrap(mkDiff(vfs)));
