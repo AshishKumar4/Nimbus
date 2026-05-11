@@ -1,0 +1,95 @@
+name: behavioral
+
+# Drives the full behavioral suite (tests/behavioral/run-all.mjs) against
+# the live prod deployment. Two modes:
+#
+#   - pr-strict: runs on every PR to main. `--no-retry`. Any RED probe
+#     blocks merge (when configured as a required check in repo settings;
+#     see .github/workflows/README.md for the one-time setup).
+#
+#   - main-with-retry: runs on every push to main. Retry-on-banner
+#     enabled (matches local-dev semantics). Tracks post-merge state and
+#     surfaces flakes without blocking.
+#
+# The prod deployment is the artifact under test — BASE points at the
+# public Workers URL. No secrets, no auth, no local wrangler dev. If a
+# sibling deploy clobbers prod mid-run, the runner's built-in retry
+# absorbs short windows; sustained outages surface as a mass-fail
+# (intentional — that's what CI should catch).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel in-flight runs for the same ref when a new commit arrives.
+# Saves runner minutes when contributors push amend-fix-amend on a PR.
+concurrency:
+  group: behavioral-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASE: https://nimbus.ashishkmr472.workers.dev
+
+jobs:
+  pr-strict:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    name: PR-strict (no-retry)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run behavioral suite (strict, no retry)
+        id: run
+        run: bun tests/behavioral/run-all.mjs --no-retry | tee behavioral.log
+        # `| tee` preserves CI live-log AND saves a file we upload on
+        # both PASS and FAIL paths via `if: always()` below.
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavioral-log-pr-${{ github.event.pull_request.number || github.run_id }}
+          path: behavioral.log
+          retention-days: 30
+
+  main-with-retry:
+    if: github.event_name == 'push'
+    name: main (with retry-on-banner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run behavioral suite (retry-on-banner enabled)
+        id: run
+        run: bun tests/behavioral/run-all.mjs | tee behavioral.log
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavioral-log-main-${{ github.run_id }}
+          path: behavioral.log
+          retention-days: 90
