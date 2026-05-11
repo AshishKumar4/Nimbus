@@ -30,6 +30,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import {
   resolvePackageEntry as sharedResolvePackageEntry,
+  resolveExports as sharedResolveExports,
   DEFAULT_CJS_CONDITIONS,
 } from '../_shared/exports-resolver.js';
 
@@ -403,7 +404,64 @@ function resolveRequireEx(vfs: SqliteVFS, id: string, fromDir: string): ResolveS
     const r = resolveFile(vfs, base);
     return r ? { resolved: r } : null;
   }
+  // package.json#imports field — `#name` specifiers resolved against
+  // the nearest enclosing package.json's `imports` map. Mirrors the
+  // runtime __resolveImportsField at node-shims.ts:2635. Without this
+  // branch, prefetch would fall through to resolveNodeModuleEx (which
+  // treats `#name` as a node_module name → never finds the file),
+  // and the imports-field target would never be shipped into the
+  // bundle. At runtime, __resolveImportsField would correctly compute
+  // the target path, but __resolveFile would then return null because
+  // the file wasn't bundled — surfacing as a misleading
+  // "Cannot find module '#name' (from ...)" error.
+  //
+  // See .seal-internal/2026-05-11-chalk-imports-field/audit.md.
+  if (id.startsWith('#')) {
+    const r = resolveImportsField(vfs, id, fromDir);
+    return r ? { resolved: r } : null;
+  }
   return resolveNodeModuleEx(vfs, id, fromDir);
+}
+
+/**
+ * Resolve an imports-field specifier `#name` against the nearest
+ * enclosing package.json. Returns the resolved file path (or null
+ * if not found). Mirrors node-shims.ts:__resolveImportsField.
+ */
+function resolveImportsField(
+  vfs: SqliteVFS,
+  name: string,
+  fromDir: string,
+): string | null {
+  let dir = strip(fromDir);
+  while (true) {
+    const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
+    if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
+      let pkg: any = null;
+      try { pkg = JSON.parse(vfs.readFileString(pkgJsonPath)); } catch { /* malformed */ }
+      // First package.json wins (Node spec), even if no imports field.
+      if (pkg && pkg.imports) {
+        const target = sharedResolveExports(pkg.imports, name, DEFAULT_CJS_CONDITIONS);
+        if (target && typeof target === 'string') {
+          // imports targets are relative to the package root (`dir`).
+          if (target.startsWith('./')) {
+            const base = (dir ? dir + '/' : '') + target.slice(2);
+            return resolveFile(vfs, normalizePath(base));
+          }
+          if (target.startsWith('/')) {
+            return resolveFile(vfs, strip(target));
+          }
+          // Bare specifier — re-resolve as a node_module from `dir`.
+          const r = resolveNodeModuleEx(vfs, target, dir);
+          return r ? r.resolved : null;
+        }
+      }
+      return null;
+    }
+    if (!dir) return null;
+    const lastSlash = dir.lastIndexOf('/');
+    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
+  }
 }
 
 /**
