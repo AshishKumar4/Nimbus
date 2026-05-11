@@ -493,7 +493,7 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   };
 
   const imports = {
-    wasi_snapshot_preview1: wasi.imports,
+    wasi_snapshot_preview1: wasi.wasiImport,
     canonical_abi,
     'rb-js-abi-host': rb_js_abi_host,
   };
@@ -506,7 +506,6 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     return { ok: false, error: 'WebAssembly.instantiate failed: ' + (e && e.message), stack: e && e.stack };
   }
   memRef = instance.exports.memory;
-  wasi.setInstance(instance);
 
   // ── Ruby bootstrap sequence ────────────────────────────────────
   // Order matters (per ruby.wasm DefaultRubyVM):
@@ -567,28 +566,27 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     return { ptr, len: bytes.length };
   }
 
-  try {
-    // ruby-init is called with the ARGV that Ruby's interpreter sees
-    // BEFORE it parses -e/-r flags. We pass [progName, "-e_=0"] as a
-    // safe default — Ruby needs at least one program-token to satisfy
-    // its required-script check; "-e_=0" is a no-op expression that
-    // means "evaluate _=0 then exit script-parse phase". Per-call
-    // __rubyRun will re-set the user-visible ARGV by mutating Ruby's
-    // ARGV constant via rb-eval-string-protect.
-    const initArgs = writeListString(['ruby', '-e_=0']);
-    rubyInit(initArgs.ptr, initArgs.len);
-    rubyInitLoadpath();
-  } catch (e) {
-    return { ok: false, error: 'ruby-init / ruby-init-loadpath failed: ' + (e && e.message), stack: e && e.stack };
-  }
+  // NOTE: We DO NOT call ruby-init or ruby-init-loadpath here. Both
+  // invoke CPython-like random-seed initialization (random_get via
+  // wasi_snapshot_preview1.random_get), which workerd blocks in the
+  // global-scope (module-init) context. Same constraint that bit us
+  // for Pyodide v2 P21. The per-call __rubyRun runs them at request-
+  // handler time where crypto.getRandomValues is permitted.
+  //
+  // _initialize and __wasi_vfs_rt_init are safe at module-init because
+  // they only do static initialization (no entropy reads).
 
   return {
     ok: true,
     instance,
     wasi,
+    rubyInit,
+    rubyInitLoadpath,
     rbEvalStringProtect,
     rubyShowVersion,
+    writeListString,
     writeString,
+    rubyInitialized: false,  // mutated to true by __rubyRun on first call
   };
 })();
 
@@ -618,6 +616,25 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     };
   }
 
+  // First call into __rubyRun: complete Ruby VM init (ruby-init +
+  // ruby-init-loadpath) now that we're in request-handler context
+  // where crypto.getRandomValues is permitted. Subsequent calls skip.
+  if (!boot.rubyInitialized) {
+    try {
+      const initArgs = boot.writeListString(['ruby', '-e_=0']);
+      boot.rubyInit(initArgs.ptr, initArgs.len);
+      boot.rubyInitLoadpath();
+      boot.rubyInitialized = true;
+    } catch (e) {
+      return {
+        exitCode: 1,
+        stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
+        stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+        error: 'ruby-init / ruby-init-loadpath failed at request time: ' + (e && e.message),
+      };
+    }
+  }
+
   // Wrapper code: set $0/$PROGRAM_NAME/ARGV/ENV, run user code,
   // capture SystemExit. We embed the user code as a Ruby string
   // literal via JSON.stringify (Ruby's double-quote strings accept
@@ -633,6 +650,13 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   const progNameRb = JSON.stringify(args.progName);
 
   const wrapper = [
+    // Disable stdout/stderr buffering. By default Ruby line-buffers
+    // stdout (sync=false) and only flushes at exit. Since we drive Ruby
+    // via rb-eval-string-protect (no actual exit), buffered output is
+    // lost. sync=true makes every write hit fd_write immediately,
+    // which our WASI shim then forwards to __nimbusRubyStdout.
+    '$stdout.sync = true',
+    '$stderr.sync = true',
     '$__nimbus_exit = 0',
     '$0 = ' + progNameRb,
     '$PROGRAM_NAME = ' + progNameRb,
@@ -647,6 +671,9 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     '  $stderr.puts(e.full_message(highlight: false, order: :top))',
     '  $__nimbus_exit = 1',
     'end',
+    // Final flush — defense in depth.
+    '$stdout.flush rescue nil',
+    '$stderr.flush rescue nil',
   ].join('\\n');
 
   const memory = boot.instance.exports.memory;
