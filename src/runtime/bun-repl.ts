@@ -247,17 +247,33 @@ function bunReplStepFacetFn(
       }
     }
 
-    // Eval the source. Try expression-mode first (wrap in parens) so
-    // `1+2` yields a value for displayhook; on SyntaxError fall back to
-    // statement-mode. `(0, eval)` invokes indirect eval so var/let/const
-    // bindings go to globalThis, giving state persistence across pushes.
+    // Evaluate the source. workerd's CSP blocks eval() at request time
+    // ("Code generation from strings disallowed"), but `new Function`
+    // is permitted because it goes through V8's compile-pipeline as a
+    // separate code unit (not synchronously string→eval). The trade-off:
+    // var/let/const bindings declared inside the Function body are
+    // LOCAL to that function — they DON'T persist on globalThis the
+    // way (0, eval) would. To get persistence, we cache the
+    // accumulated source on globalThis.__nimbus_bun_history and
+    // re-execute the full history on each push, prepending to the
+    // current line. The Function's return value is captured for
+    // displayhook.
+    if (!g.__nimbus_bun_history) g.__nimbus_bun_history = [];
     let result: any;
     let evaluatedAs: 'expr' | 'stmt' = 'stmt';
     try {
-      // Indirect eval at global scope. Expression wrapping with newline
-      // before/after avoids ASI hazards on lines ending with operators.
-      result = (0, eval)('(' + source + '\n)');
+      // Build a single Function body: replay history + current line as
+      // expression-mode (last line yields a value via return).
+      const histBody = g.__nimbus_bun_history.join('\n');
+      const exprFn = new Function(histBody + '\nreturn (' + source + '\n);');
+      result = exprFn.call(globalThis);
       evaluatedAs = 'expr';
+      // Record the current line as a statement (no return wrap) for
+      // future pushes — but only if the line wasn't a pure expression
+      // (assignments inside Function body wouldn't persist; record
+      // anyway to preserve declaration intent. We re-run the FULL
+      // history each push so declarations re-take effect.)
+      g.__nimbus_bun_history.push(source);
     } catch (exprErr: any) {
       if (exprErr && exprErr.__nimbus_exit_code !== undefined) {
         return {
@@ -268,8 +284,11 @@ function bunReplStepFacetFn(
         };
       }
       try {
-        result = (0, eval)(source);
+        const histBody = g.__nimbus_bun_history.join('\n');
+        const stmtFn = new Function(histBody + '\n' + source);
+        result = stmtFn.call(globalThis);
         evaluatedAs = 'stmt';
+        g.__nimbus_bun_history.push(source);
       } catch (stmtErr: any) {
         if (stmtErr && stmtErr.__nimbus_exit_code !== undefined) {
           return {

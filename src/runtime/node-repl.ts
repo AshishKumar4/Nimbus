@@ -226,11 +226,21 @@ function nodeReplStepFacetFn(
       }
     }
 
+    // workerd's CSP blocks eval() at request-time. `new Function` is
+    // permitted. var/let/const bindings inside the Function body don't
+    // persist on globalThis, so we use accumulate-and-replay: each push
+    // re-runs the full session history with the new line appended,
+    // returning the value of the current line's expression for
+    // displayhook.
+    if (!g.__nimbus_node_history) g.__nimbus_node_history = [];
     let result: any;
     let evaluatedAs: 'expr' | 'stmt' = 'stmt';
     try {
-      result = (0, eval)('(' + source + '\n)');
+      const histBody = g.__nimbus_node_history.join('\n');
+      const exprFn = new Function(histBody + '\nreturn (' + source + '\n);');
+      result = exprFn.call(globalThis);
       evaluatedAs = 'expr';
+      g.__nimbus_node_history.push(source);
     } catch (exprErr: any) {
       if (exprErr && exprErr.__nimbus_exit_code !== undefined) {
         return {
@@ -241,8 +251,11 @@ function nodeReplStepFacetFn(
         };
       }
       try {
-        result = (0, eval)(source);
+        const histBody = g.__nimbus_node_history.join('\n');
+        const stmtFn = new Function(histBody + '\n' + source);
+        result = stmtFn.call(globalThis);
         evaluatedAs = 'stmt';
+        g.__nimbus_node_history.push(source);
       } catch (stmtErr: any) {
         if (stmtErr && stmtErr.__nimbus_exit_code !== undefined) {
           return {
