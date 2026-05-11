@@ -70,6 +70,46 @@ function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {
   };
 }
 
+/**
+ * BUG-SWEEP-R3-6 (2026-05-11): `type` builtin. lifo-sh doesn't ship
+ * one; pre-fix `type echo` → 'type: command not found'. bash's
+ * `type X` reports how X would be interpreted (builtin, alias,
+ * function, file, or unknown).
+ *
+ * Our subset (matches bash `type` output for common shapes):
+ *   type echo  → 'echo is a shell builtin'        (Shell.builtins entry)
+ *   type ls    → 'ls is a shell builtin'          (lifo-sh lazy registry)
+ *   type rm    → 'rm is a shell builtin'          (our wrap'd registry)
+ *   type node  → 'node is /usr/bin/node'          (registry but facet-direct)
+ *   type X     → 'type: X: not found' + exit 1
+ *
+ * We can't introspect Shell.builtins from here directly (the ctx
+ * doesn't carry shell). Workaround: pass registry which the unix-
+ * commands module already has access to; treat any registry resolve
+ * as "shell builtin" classification.
+ */
+function mkType(_vfs: SqliteVFS, registry: any): CmdFn {
+  return async (ctx) => {
+    if (ctx.args.length === 0) return 0;
+    let exit = 0;
+    for (const name of ctx.args) {
+      try {
+        const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
+        if (resolved) {
+          ctx.stdout.write(`${name} is a shell builtin\n`);
+        } else {
+          ctx.stderr.write(`type: ${name}: not found\n`);
+          exit = 1;
+        }
+      } catch (_e) {
+        ctx.stderr.write(`type: ${name}: not found\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
 function mkEnv(): CmdFn {
   return (ctx) => {
     for (const [k, v] of Object.entries(ctx.env)) {
@@ -1491,11 +1531,37 @@ function mkCat(vfs: SqliteVFS): CmdFn {
       if (ctx.stdin) ctx.stdout.write(ctx.stdin);
       return 0;
     }
+    // BUG-SWEEP-R3 follow-up: prefer ctx.vfs (Kernel.VFS, sees /dev
+    // mount) over the closure-captured SqliteVFS. Without this fallback,
+    // `cat /dev/null` errors with ENOENT because SqliteVFS doesn't know
+    // about the /dev provider mounted on Kernel.VFS. lifo-sh's
+    // executeCommand passes Kernel.VFS as ctx.vfs.
+    const kvfs: any = (ctx as any).vfs;
     let exit = 0;
     for (const f of files) {
       try {
-        const fp = resolvePath(ctx.cwd, f);
-        const content = vfs.readFileString(fp);
+        let content: string;
+        // Try Kernel.VFS first (handles mounted providers like /dev).
+        // Kernel.VFS.readFile returns Uint8Array; readFileString returns
+        // string. lifo-sh's Kernel exposes both via the same interface
+        // SqliteVFS uses (duck-typed: readFileString -> string).
+        if (kvfs && typeof kvfs.readFile === 'function') {
+          try {
+            const raw = kvfs.readFile(f.startsWith('/') ? f : ctx.cwd + '/' + f);
+            content = typeof raw === 'string'
+              ? raw
+              : new TextDecoder('utf-8').decode(raw);
+          } catch (kErr: any) {
+            // Fall back to SqliteVFS for paths that don't go through
+            // Kernel mounts (e.g. relative paths to internal storage).
+            const fp = resolvePath(ctx.cwd, f);
+            content = vfs.readFileString(fp);
+            void kErr;
+          }
+        } else {
+          const fp = resolvePath(ctx.cwd, f);
+          content = vfs.readFileString(fp);
+        }
         ctx.stdout.write(content);
       } catch (e: any) {
         ctx.stderr.write(`cat: ${f}: ${e?.message || e}\n`);
@@ -1593,15 +1659,34 @@ function mkTouch(vfs: SqliteVFS): CmdFn {
 
 function mkStat(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
+    // BUG-SWEEP-R3 follow-up: try Kernel.VFS (ctx.vfs) first so /dev
+    // mount paths resolve. Same pattern as mkCat.
+    const kvfs: any = (ctx as any).vfs;
     for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-      const fp = resolvePath(ctx.cwd, f);
-      try {
-        const st = vfs.stat(fp);
-        ctx.stdout.write(`  File: /${fp}\n`);
-        ctx.stdout.write(`  Size: ${st.size}\tType: ${st.type}\n`);
-        ctx.stdout.write(`  Mode: ${st.mode.toString(8)}\n`);
-        ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`);
-      } catch { ctx.stderr.write(`stat: '${f}': No such file\n`); return 1; }
+      let st: any = null;
+      let displayPath = f;
+      // Try Kernel.VFS first (sees mounts).
+      if (kvfs && typeof kvfs.stat === 'function') {
+        try {
+          st = kvfs.stat(f.startsWith('/') ? f : ctx.cwd + '/' + f);
+          displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
+        } catch (_e) { /* fall through to SqliteVFS */ }
+      }
+      // Fall back to SqliteVFS direct (legacy / non-mounted paths).
+      if (!st) {
+        try {
+          const fp = resolvePath(ctx.cwd, f);
+          st = vfs.stat(fp);
+          displayPath = '/' + fp;
+        } catch (_e) {
+          ctx.stderr.write(`stat: '${f}': No such file\n`);
+          return 1;
+        }
+      }
+      ctx.stdout.write(`  File: ${displayPath}\n`);
+      ctx.stdout.write(`  Size: ${st.size}\tType: ${st.type}\n`);
+      ctx.stdout.write(`  Mode: ${st.mode.toString(8)}\n`);
+      ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`);
     }
     return 0;
   };
@@ -1863,6 +1948,7 @@ export function registerUnixCommands(
   vfs: SqliteVFS,
 ): void {
   registry.register('which', wrap(mkWhich(vfs, registry)));
+  registry.register('type', wrap(mkType(vfs, registry)));
   registry.register('env', wrap(mkEnv()));
   registry.register('export', wrap(mkExport()));
   registry.register('unset', wrap(mkUnset()));
