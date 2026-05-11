@@ -68,6 +68,7 @@ import {
 } from '../runtime/package-manager.js';
 import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
 import { makePythonRunnerFactory } from '../runtime/python-runner.js';
+import { makeRubyRunnerFactory } from '../runtime/ruby-runner.js';
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '../runtime/process-logs.js';
@@ -332,6 +333,16 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // pyodide.asm.wasm via LOADER modules-map and pyodide.asm.js +
     // python_stdlib.zip via the loader-pool context channel.
     registerRunnerFactory('python-runner', makePythonRunnerFactory({
+      facetMgr,
+      vfs: sqliteFs,
+    }));
+    // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
+    // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
+    // bootstrap runs at child-facet module-init time, per-call
+    // __rubyRun drives rb-eval-string-protect with a wrapper that
+    // catches SystemExit. See src/runtime/ruby-runner.ts +
+    // /workspace/.seal-internal/2026-05-11-ruby-v1/audit.md.
+    registerRunnerFactory('ruby-runner', makeRubyRunnerFactory({
       facetMgr,
       vfs: sqliteFs,
     }));
