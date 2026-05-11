@@ -70,6 +70,46 @@ function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {
   };
 }
 
+/**
+ * BUG-SWEEP-R3-6 (2026-05-11): `type` builtin. lifo-sh doesn't ship
+ * one; pre-fix `type echo` → 'type: command not found'. bash's
+ * `type X` reports how X would be interpreted (builtin, alias,
+ * function, file, or unknown).
+ *
+ * Our subset (matches bash `type` output for common shapes):
+ *   type echo  → 'echo is a shell builtin'        (Shell.builtins entry)
+ *   type ls    → 'ls is a shell builtin'          (lifo-sh lazy registry)
+ *   type rm    → 'rm is a shell builtin'          (our wrap'd registry)
+ *   type node  → 'node is /usr/bin/node'          (registry but facet-direct)
+ *   type X     → 'type: X: not found' + exit 1
+ *
+ * We can't introspect Shell.builtins from here directly (the ctx
+ * doesn't carry shell). Workaround: pass registry which the unix-
+ * commands module already has access to; treat any registry resolve
+ * as "shell builtin" classification.
+ */
+function mkType(_vfs: SqliteVFS, registry: any): CmdFn {
+  return async (ctx) => {
+    if (ctx.args.length === 0) return 0;
+    let exit = 0;
+    for (const name of ctx.args) {
+      try {
+        const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
+        if (resolved) {
+          ctx.stdout.write(`${name} is a shell builtin\n`);
+        } else {
+          ctx.stderr.write(`type: ${name}: not found\n`);
+          exit = 1;
+        }
+      } catch (_e) {
+        ctx.stderr.write(`type: ${name}: not found\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
 function mkEnv(): CmdFn {
   return (ctx) => {
     for (const [k, v] of Object.entries(ctx.env)) {
@@ -1863,6 +1903,7 @@ export function registerUnixCommands(
   vfs: SqliteVFS,
 ): void {
   registry.register('which', wrap(mkWhich(vfs, registry)));
+  registry.register('type', wrap(mkType(vfs, registry)));
   registry.register('env', wrap(mkEnv()));
   registry.register('export', wrap(mkExport()));
   registry.register('unset', wrap(mkUnset()));

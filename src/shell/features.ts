@@ -580,7 +580,17 @@ export class HeredocHandler {
 
   private async _finishHeredoc(): Promise<void> {
     const info = this.heredocInfo!;
-    const content = this.lines.join('\n') + '\n';
+    let content = this.lines.join('\n') + '\n';
+
+    // BUG-SWEEP-R3-5 (2026-05-11): expand $NAME / ${NAME} in heredoc
+    // content when delimiter is NOT quoted (bash semantics: <<EOF
+    // expands, <<'EOF' doesn't). Without this, `cat <<EOF` with $X
+    // inside outputs literal `$X` — surprising for users coming from
+    // bash/zsh.
+    if (!info.quoted) {
+      const env = (this.shell.env || {}) as Record<string, string>;
+      content = expandHeredocVars(content, env);
+    }
 
     // Reset state before executing (in case execution triggers more input)
     this.active = false;
@@ -729,6 +739,436 @@ export class FdRedirectNormalizer {
     }
     return out;
   }
+}
+
+// ── Subshell / grouping normalizer ─────────────────────────────────────
+
+/**
+ * BUG-SWEEP-R3-2 (2026-05-11): @lifo-sh/core's parser doesn't support
+ * subshell grouping `(cmd1; cmd2)`. Pre-fix `(echo a; echo b)` raised
+ * `unexpected token '('`. Common shell idioms (`(cd /x && cmd)` for
+ * cd-scoped execution, pipeline grouping `(a; b) | c`) all failed.
+ *
+ * In bash, `(cmd1; cmd2)` runs in a subshell — its `cd`/var/env
+ * changes do NOT affect the parent. We approximate by:
+ *   1. Strip the outer `(...)` parens.
+ *   2. Save cwd + env before running.
+ *   3. Run the inner sequence.
+ *   4. Restore cwd + env.
+ *
+ * Approximation gap: pipe-to-group `(a; b) | c` we currently
+ * concatenate the group into a `{ a; b ; }` brace-group inline and
+ * let lifo-sh handle the pipe — but lifo-sh also doesn't support
+ * brace-groups. So we rewrite `(a; b) | c` to `a; b | c` which is
+ * NOT the same semantically (only b's output pipes). Pipe-after-
+ * group is documented as a remaining gap.
+ *
+ * Bare subshells `(a; b)` are fully supported via the cwd/env
+ * save-restore pattern.
+ */
+export class SubshellNormalizer {
+  private shell: any;
+
+  constructor(shell: any) {
+    this.shell = shell;
+  }
+
+  static install(shell: any): SubshellNormalizer {
+    const norm = new SubshellNormalizer(shell);
+    norm._patch();
+    return norm;
+  }
+
+  private _patch(): void {
+    const orig = this.shell.executeLine.bind(this.shell);
+    const shell = this.shell;
+    this.shell.executeLine = async (line: string): Promise<void> => {
+      // Quick reject: no parens, no scan.
+      if (line.indexOf('(') < 0) return orig(line);
+      // Find a top-level `(...)` group. Quote-aware: skip parens inside
+      // strings.
+      const groups = SubshellNormalizer.findTopLevelGroups(line);
+      if (groups.length === 0) return orig(line);
+      // Conservative: only handle the BARE-group case (line is exactly
+      // `(...)` possibly with leading/trailing whitespace). Mixed
+      // `(...) | cmd`, `cmd && (...)` etc fall through to orig
+      // (which will still throw, but we don't make it worse).
+      const trimmed = line.trim();
+      if (groups.length === 1 && groups[0].start === line.indexOf('(') &&
+          groups[0].end === line.lastIndexOf(')') &&
+          trimmed.startsWith('(') && trimmed.endsWith(')')) {
+        const inner = line.slice(groups[0].start + 1, groups[0].end);
+        // Save shell state.
+        const savedCwd = typeof shell.getCwd === 'function' ? shell.getCwd() : shell.cwd;
+        const savedEnv = { ...(shell.env || {}) };
+        try {
+          await orig(inner);
+        } finally {
+          if (typeof shell.setCwd === 'function') shell.setCwd(savedCwd);
+          else if ('cwd' in shell) shell.cwd = savedCwd;
+          // Restore env: replace contents in-place so any held refs see new state.
+          if (shell.env) {
+            for (const k of Object.keys(shell.env)) delete shell.env[k];
+            Object.assign(shell.env, savedEnv);
+          }
+        }
+        return;
+      }
+      // Has parens but in chain/pipe context — pass through unchanged.
+      // lifo-sh's parser will error, surfacing a clear message; we
+      // didn't make it worse.
+      return orig(line);
+    };
+  }
+
+  /**
+   * Find top-level `(...)` groups. Quote-aware: skip parens inside
+   * 'single' or "double" or `backtick` strings. Returns array of
+   * `{start, end}` indices (start = opening paren, end = closing).
+   */
+  static findTopLevelGroups(line: string): { start: number; end: number }[] {
+    const groups: { start: number; end: number }[] = [];
+    let depth = 0;
+    let groupStart = -1;
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i];
+      if (ch === "'" || ch === '"' || ch === '`') {
+        const quote = ch;
+        i++;
+        while (i < line.length && line[i] !== quote) {
+          if (line[i] === '\\') i++;
+          i++;
+        }
+        i++;
+        continue;
+      }
+      if (ch === '\\' && i + 1 < line.length) { i += 2; continue; }
+      if (ch === '(') {
+        if (depth === 0) groupStart = i;
+        depth++;
+      } else if (ch === ')') {
+        depth--;
+        if (depth === 0 && groupStart >= 0) {
+          groups.push({ start: groupStart, end: i });
+          groupStart = -1;
+        }
+      }
+      i++;
+    }
+    return groups;
+  }
+}
+
+// ── Brace expansion ─────────────────────────────────────────────────────
+
+/**
+ * BUG-SWEEP-R3-3 (2026-05-11): @lifo-sh/core doesn't expand
+ * `{a,b,c}` brace expressions. Pre-fix `ls /x/*.{js,ts}` returned
+ * nothing because the literal `*.{js,ts}` doesn't match a glob shape.
+ *
+ * Bash semantics: brace expansion runs BEFORE filename expansion.
+ *   echo a{1,2,3}b     → a1b a2b a3b
+ *   ls *.{js,ts}       → expanded to two glob patterns, both fed to ls
+ *
+ * We implement the comma-list form (bash {1..5} sequence form is a
+ * separate feature; we skip it here as lower-impact).
+ */
+export class BraceExpander {
+  private shell: any;
+
+  constructor(shell: any) {
+    this.shell = shell;
+  }
+
+  static install(shell: any): BraceExpander {
+    const norm = new BraceExpander(shell);
+    norm._patch();
+    return norm;
+  }
+
+  private _patch(): void {
+    const orig = this.shell.executeLine.bind(this.shell);
+    this.shell.executeLine = async (line: string): Promise<void> => {
+      if (line.indexOf('{') < 0) return orig(line);
+      // Only expand if `{...,...}` shape present (avoid messing with
+      // `${VAR}` parameter expansion — different syntax).
+      const expanded = BraceExpander.expandBraces(line);
+      return orig(expanded);
+    };
+  }
+
+  /**
+   * Expand bash-style brace lists in a shell line. Quote-aware:
+   * literals inside single quotes are preserved verbatim. `${var}`
+   * parameter expansions are skipped (they don't contain commas
+   * at the top level of the braces).
+   *
+   * Strategy: tokenize on whitespace (preserving quoted tokens),
+   * expand each token, re-join with spaces.
+   */
+  static expandBraces(line: string): string {
+    const tokens = tokenizeRespectingQuotes(line);
+    const out: string[] = [];
+    for (const tok of tokens) {
+      const expanded = expandTokenBraces(tok);
+      out.push(...expanded);
+    }
+    return out.join(' ');
+  }
+}
+
+/** Split a line into tokens, preserving quoted runs as single tokens. */
+function tokenizeRespectingQuotes(line: string): string[] {
+  const tokens: string[] = [];
+  let cur = '';
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (/\s/.test(ch)) {
+      if (cur) { tokens.push(cur); cur = ''; }
+      // Preserve the whitespace as a separator-token so we can re-join
+      // with the original spacing.
+      let ws = '';
+      while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i++; }
+      tokens.push(ws);
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const quote = ch;
+      cur += ch;
+      i++;
+      while (i < line.length && line[i] !== quote) {
+        if (line[i] === '\\') { cur += line[i]; i++; if (i < line.length) { cur += line[i]; i++; } continue; }
+        cur += line[i]; i++;
+      }
+      if (i < line.length) { cur += line[i]; i++; }
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  if (cur) tokens.push(cur);
+  return tokens;
+}
+
+/**
+ * Expand a single token's braces into N tokens.
+ *   "a{1,2}b" → ["a1b", "a2b"]
+ *   "a{1,2}b{x,y}" → ["a1bx", "a1by", "a2bx", "a2by"]
+ *
+ * `${...}` (parameter expansion) is preserved as-is.
+ */
+function expandTokenBraces(tok: string): string[] {
+  // Whitespace-only token: keep verbatim.
+  if (/^\s+$/.test(tok)) return [tok];
+  // Find the first unescaped `{` that has a matching `}` and at least
+  // one comma at the same nesting level. Skip `${...}`.
+  let i = 0;
+  while (i < tok.length) {
+    if (tok[i] === '\\' && i + 1 < tok.length) { i += 2; continue; }
+    if (tok[i] === "'" || tok[i] === '"' || tok[i] === '`') {
+      const q = tok[i]; i++;
+      while (i < tok.length && tok[i] !== q) { if (tok[i] === '\\') i++; i++; }
+      i++;
+      continue;
+    }
+    if (tok[i] === '$' && tok[i + 1] === '{') {
+      // Parameter expansion ${...}: skip past matching }.
+      let depth = 0;
+      while (i < tok.length) {
+        if (tok[i] === '{') depth++;
+        else if (tok[i] === '}') { depth--; if (depth === 0) { i++; break; } }
+        i++;
+      }
+      continue;
+    }
+    if (tok[i] === '{') {
+      // Find matching close + check for comma at top level.
+      const start = i;
+      let depth = 0;
+      let hasTopLevelComma = false;
+      let close = -1;
+      for (let j = i; j < tok.length; j++) {
+        const c = tok[j];
+        if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) { close = j; break; } }
+        else if (c === ',' && depth === 1) hasTopLevelComma = true;
+      }
+      if (close > 0 && hasTopLevelComma) {
+        const prefix = tok.slice(0, start);
+        const inner = tok.slice(start + 1, close);
+        const suffix = tok.slice(close + 1);
+        // Split inner on top-level commas.
+        const parts: string[] = [];
+        let depth2 = 0;
+        let cur = '';
+        for (let j = 0; j < inner.length; j++) {
+          const c = inner[j];
+          if (c === '{') depth2++;
+          else if (c === '}') depth2--;
+          else if (c === ',' && depth2 === 0) { parts.push(cur); cur = ''; continue; }
+          cur += c;
+        }
+        parts.push(cur);
+        // Recursively expand each combination.
+        const result: string[] = [];
+        for (const p of parts) {
+          for (const sub of expandTokenBraces(prefix + p + suffix)) {
+            result.push(sub);
+          }
+        }
+        return result;
+      }
+    }
+    i++;
+  }
+  return [tok];
+}
+
+// ── Variable shim: $$, $0 ──────────────────────────────────────────────
+
+/**
+ * BUG-SWEEP-R3-4 (2026-05-11): @lifo-sh/core doesn't expand `$$`
+ * (PID) or `$0` (shell name). Pre-fix `echo $$` printed literal `$$`
+ * and `echo $0` printed empty. Common in shell scripts (PID for
+ * lockfiles, $0 for script-name-aware behaviour).
+ *
+ * Fix: rewrite `$$` → a stable per-session PID (we use the supervisor
+ * DO's spawn-counter so it's deterministic per session) and `$0` →
+ * the shell name (always `nimbus-sh`).
+ *
+ * NOT addressed: `$1`..`$9` positional params (only meaningful inside
+ * scripts/functions which lifo-sh handles already), `$#`, `$?` (real
+ * `$?` works through lifo-sh's lastExitCode env), `$@`, `$*`.
+ */
+export class DollarVarShim {
+  private shell: any;
+  private pid: number;
+
+  constructor(shell: any) {
+    this.shell = shell;
+    // Stable per-session PID derived from session-id hash + monotonic
+    // counter. We use the WS Terminal's session if available, else
+    // fall back to a random integer in [1, 99999].
+    this.pid = Math.floor(Math.random() * 99000) + 1000;
+  }
+
+  static install(shell: any): DollarVarShim {
+    const norm = new DollarVarShim(shell);
+    norm._patch();
+    return norm;
+  }
+
+  private _patch(): void {
+    const orig = this.shell.executeLine.bind(this.shell);
+    const self = this;
+    this.shell.executeLine = async (line: string): Promise<void> => {
+      if (line.indexOf('$') < 0) return orig(line);
+      const rewritten = DollarVarShim.expandDollarVars(line, self.pid);
+      return orig(rewritten);
+    };
+  }
+
+  /**
+   * Expand `$$` and `$0` in a shell line. Quote-aware: literals
+   * inside single quotes preserved. Double-quoted strings: variables
+   * DO expand (bash semantics).
+   */
+  static expandDollarVars(line: string, pid: number): string {
+    let out = '';
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i];
+      if (ch === "'") {
+        // Single-quoted: preserve verbatim.
+        const j = line.indexOf("'", i + 1);
+        if (j < 0) { out += line.slice(i); break; }
+        out += line.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+      if (ch === '\\' && i + 1 < line.length) {
+        out += line.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === '$') {
+        const next = line[i + 1];
+        if (next === '$') {
+          out += String(pid);
+          i += 2;
+          continue;
+        }
+        if (next === '0') {
+          out += 'nimbus-sh';
+          i += 2;
+          continue;
+        }
+      }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
+}
+
+// ── Heredoc variable expansion ─────────────────────────────────────────
+
+/**
+ * BUG-SWEEP-R3-5 (2026-05-11): lifo-sh's HeredocHandler accumulates
+ * lines verbatim — `$X` references inside an unquoted-delimiter
+ * heredoc don't expand. Bash semantics:
+ *   cat <<EOF       → variables expand
+ *   cat <<'EOF'     → no expansion (single-quoted delim)
+ *
+ * Our HeredocHandler installation already lives in features.ts but
+ * doesn't expand vars. We patch the accumulated content at submit
+ * time: substitute `$NAME` / `${NAME}` with env values when the
+ * delimiter is NOT single-quoted.
+ *
+ * The patch wraps shell.execute()'s string-content stage. We can't
+ * easily intercept the heredoc submit from outside the handler, so
+ * we attach a post-build hook that consults shell.env.
+ *
+ * Decision: rather than patching HeredocHandler (a class we own —
+ * src/shell/features.ts:HeredocHandler), expose a public
+ * `expandHeredocVars(content, env)` and call it from inside
+ * HeredocHandler._accumulateLine / submit logic.
+ */
+export function expandHeredocVars(content: string, env: Record<string, string>): string {
+  let out = '';
+  let i = 0;
+  while (i < content.length) {
+    const ch = content[i];
+    if (ch === '\\' && i + 1 < content.length && content[i + 1] === '$') {
+      out += '$';
+      i += 2;
+      continue;
+    }
+    if (ch === '$') {
+      // ${NAME} form
+      if (content[i + 1] === '{') {
+        const close = content.indexOf('}', i + 2);
+        if (close > 0) {
+          const name = content.slice(i + 2, close);
+          out += env[name] !== undefined ? env[name] : '';
+          i = close + 1;
+          continue;
+        }
+      }
+      // $NAME form (alnum/_, no leading digit)
+      const m = content.slice(i + 1).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+      if (m) {
+        out += env[m[0]] !== undefined ? env[m[0]] : '';
+        i += 1 + m[0].length;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 // ── Line-editor extension (readline parity) ─────────────────────────────

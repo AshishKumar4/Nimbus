@@ -34,6 +34,7 @@ import {
   rehydrateGlobalPackages,
 } from '@lifo-sh/core';
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runNodeScript } from '../runtime/node-runner.js';
@@ -58,7 +59,7 @@ import {
   filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard,
   detectUnsupportedWranglerConfig, NIMBUS_UNSUPPORTED_BINS,
 } from './helpers.js';
-import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer } from '../shell/features.js';
+import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer, SubshellNormalizer, BraceExpander, DollarVarShim } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
 import {
@@ -190,6 +191,19 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // table just keeps the same 7 rows). Future custom mounts will
     // flow through the same code path.
     try { persistKernelMounts(self.ctx, mountPoints); } catch { /* fail-soft */ }
+
+    // BUG-SWEEP-R3-1 (2026-05-11): mount a virtual /dev provider.
+    // Pre-fix `cmd > /dev/null` and `cmd 2>/dev/null` errored with
+    // `ENOENT: '/dev': no such file or directory`. This provider
+    // synthesizes /dev/null, /dev/zero, /dev/random, /dev/urandom,
+    // /dev/full, /dev/{stdin,stdout,stderr,tty}. Read/write surface
+    // matches MountProvider so lifo-sh's redirect machinery sees
+    // valid targets. Not persisted — recreated fresh each init.
+    try {
+      self.kernel.vfs.mount('/dev', new DevProvider() as any);
+    } catch (e: any) {
+      console.error('[init] /dev mount failed:', e?.message || e);
+    }
 
     // ── Monkey-patch appendFile to go through mount provider ──
     const vfs = self.kernel.vfs;
@@ -1813,6 +1827,25 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     //    `<&0` etc before lifo-sh's parser chokes on them. Stdout and
     //    stderr share the terminal sink so these are no-ops anyway. ──
     FdRedirectNormalizer.install(self.shell);
+
+    // ── Brace expansion (BUG-SWEEP-R3-3) — `ls *.{js,ts}` etc.
+    //    Runs BEFORE subshell / dollar / fd-redirect so token expansion
+    //    happens before downstream parsing. lifo-sh's executeLine chain
+    //    invokes wrappers most-recently-installed-first; since we install
+    //    BraceExpander AFTER FdRedirectNormalizer, it wraps FdRedirect
+    //    and runs first. Same pattern for the others below.
+    BraceExpander.install(self.shell);
+
+    // ── $$ / $0 expansion (BUG-SWEEP-R3-4) — lifo-sh doesn't expand
+    //    these special vars. We rewrite before lifo-sh's parser sees
+    //    the line.
+    DollarVarShim.install(self.shell);
+
+    // ── Subshell `(...)` (BUG-SWEEP-R3-2) — lifo-sh's parser rejects.
+    //    Strip outer parens for bare subshells and run inner commands
+    //    with cwd/env save-restore. Chained / piped cases fall through
+    //    to orig (still errors but with clearer surface).
+    SubshellNormalizer.install(self.shell);
 
     // ── BUG-SWEEP-4: echo -n / -e flag override ─────────────────────
     //
