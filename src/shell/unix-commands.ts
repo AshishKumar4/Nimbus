@@ -421,41 +421,560 @@ function mkSed(vfs: SqliteVFS): CmdFn {
   };
 }
 
+/**
+ * BUG-SWEEP-R2-4 (2026-05-11): expanded awk subset.
+ *
+ * Pre-fix mkAwk supported only:
+ *   {print $N}
+ *   /pattern/ [{print}]
+ * Anything else → 'awk: unsupported program'.
+ *
+ * This extension adds (all in pure JS — no embedded awk-interpreter):
+ *   BEGIN { stmts }     — run before any input line
+ *   END   { stmts }     — run after last line
+ *   /pat/ { stmts }     — per-line conditional action
+ *   { stmts }           — per-line unconditional action
+ *   $0, $1..$N, $NF     — field refs in any expression
+ *   NR, NF              — record number, field count
+ *   print EXPR          — write EXPR to stdout + newline (comma-sep)
+ *   printf "fmt", a, b  — printf-style (%s %d %f %x %o + width.prec)
+ *   sum += $N           — assignment + compound
+ *   simple arithmetic   — + - * / % () in expression position
+ *   numeric literals    — integers and decimals
+ *   string literals     — "..."
+ *   user vars           — assigned via name = expr or compound
+ *
+ * NOT supported:
+ *   - for/while/if (control flow)
+ *   - functions
+ *   - arrays (assoc / indexed)
+ *   - getline
+ *   - regex match operator ~/!~ outside pattern position
+ *
+ * The eval engine is a tiny stmt-list runner that compiles each
+ * statement to a JS closure operating on a shared state {vars,
+ * fields[], NR, NF, separator, stdout, stderr}. Statements are
+ * separated by `;` or `\\n`.
+ *
+ * Failure mode: if we can't parse a statement, write a clear error
+ * to stderr and exit 1 (no silent fail).
+ */
 function mkAwk(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
-    const program = ctx.args[0] || '';
-    const fileArgs = ctx.args.slice(1).filter(a => !a.startsWith('-') && a !== program);
+    const allArgs = ctx.args;
+    // Parse -F separator if present.
+    let separator: string | RegExp = /\s+/;
+    const programArgs: string[] = [];
+    const fileArgs: string[] = [];
+    for (let i = 0; i < allArgs.length; i++) {
+      const a = allArgs[i];
+      if (a === '-F') {
+        const s = allArgs[++i];
+        if (s) separator = s.length === 1 ? s : new RegExp(s);
+      } else if (a.startsWith('-F')) {
+        const s = a.slice(2);
+        if (s) separator = s.length === 1 ? s : new RegExp(s);
+      } else if (a.startsWith('-')) {
+        // Ignore other flags (silent compat).
+      } else if (programArgs.length === 0) {
+        programArgs.push(a);
+      } else {
+        fileArgs.push(a);
+      }
+    }
+    const program = programArgs[0] || '';
     let input = ctx.stdin || '';
     if (fileArgs.length > 0 && !input) {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0])); }
       catch { ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`); return 1; }
     }
-    const sep = ctx.args.includes('-F') ? ctx.args[ctx.args.indexOf('-F') + 1] : /\s+/;
-    // Support: {print $N} and BEGIN/END blocks
-    const printMatch = program.match(/^\{print\s+(.*)\}$/);
-    if (printMatch) {
-      const fields = printMatch[1];
-      for (const line of input.split('\n').filter(Boolean)) {
-        const parts = line.split(sep);
-        const output = fields.replace(/\$(\d+)/g, (_, n) => {
-          const idx = parseInt(n);
-          return idx === 0 ? line : (parts[idx - 1] || '');
-        }).replace(/\$NF/g, parts[parts.length - 1] || '');
-        ctx.stdout.write(output + '\n');
-      }
-    } else if (program.match(/\/.*\//)) {
-      // Pattern matching: /pattern/ {print}
-      const pm = program.match(/\/(.*?)\/\s*(\{.*\})?/);
-      if (pm) {
-        const re = new RegExp(pm[1]);
-        for (const line of input.split('\n').filter(Boolean)) {
-          if (re.test(line)) ctx.stdout.write(line + '\n');
+
+    // ── Parse program into blocks. ──
+    // Block forms:
+    //   BEGIN { stmts }
+    //   END   { stmts }
+    //   /pat/ { stmts }
+    //   /pat/                    (implicit { print })
+    //   { stmts }
+    // Multiple blocks may appear (separated by whitespace/newlines).
+    interface Block { kind: 'BEGIN' | 'END' | 'PATTERN' | 'MAIN'; pattern?: RegExp; body: string }
+    const blocks: Block[] = [];
+    let cursor = 0;
+    const src = program.trim();
+    function skipWS() {
+      while (cursor < src.length && /\s/.test(src[cursor])) cursor++;
+    }
+    function parseBraced(): string {
+      // Assumes src[cursor] === '{'
+      let depth = 0;
+      let start = cursor;
+      while (cursor < src.length) {
+        const ch = src[cursor];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { cursor++; return src.slice(start + 1, cursor - 1); } }
+        else if (ch === '"' || ch === "'") {
+          const quote = ch;
+          cursor++;
+          while (cursor < src.length && src[cursor] !== quote) {
+            if (src[cursor] === '\\') cursor++;
+            cursor++;
+          }
         }
+        cursor++;
       }
-    } else {
-      ctx.stderr.write('awk: unsupported program. Use {print $N} or /pattern/\n');
+      return src.slice(start + 1, cursor);
+    }
+    while (cursor < src.length) {
+      skipWS();
+      if (cursor >= src.length) break;
+      if (src.startsWith('BEGIN', cursor)) {
+        cursor += 5;
+        skipWS();
+        if (src[cursor] !== '{') { ctx.stderr.write('awk: BEGIN without {\n'); return 1; }
+        blocks.push({ kind: 'BEGIN', body: parseBraced() });
+        continue;
+      }
+      if (src.startsWith('END', cursor)) {
+        cursor += 3;
+        skipWS();
+        if (src[cursor] !== '{') { ctx.stderr.write('awk: END without {\n'); return 1; }
+        blocks.push({ kind: 'END', body: parseBraced() });
+        continue;
+      }
+      if (src[cursor] === '/') {
+        // Pattern /pat/ optionally followed by {body}
+        const pstart = cursor + 1;
+        cursor++;
+        while (cursor < src.length && src[cursor] !== '/') {
+          if (src[cursor] === '\\') cursor++;
+          cursor++;
+        }
+        const patSrc = src.slice(pstart, cursor);
+        cursor++; // past closing /
+        skipWS();
+        let body = 'print';
+        if (cursor < src.length && src[cursor] === '{') body = parseBraced();
+        let re: RegExp;
+        try { re = new RegExp(patSrc); }
+        catch (e: any) { ctx.stderr.write(`awk: bad regex /${patSrc}/: ${e?.message || e}\n`); return 1; }
+        blocks.push({ kind: 'PATTERN', pattern: re, body });
+        continue;
+      }
+      if (src[cursor] === '{') {
+        blocks.push({ kind: 'MAIN', body: parseBraced() });
+        continue;
+      }
+      ctx.stderr.write(`awk: parse error at "${src.slice(cursor, cursor + 20)}"\n`);
       return 1;
     }
+
+    // ── Statement evaluator. ──
+    // The evaluator processes a body string by splitting on `;` or
+    // newline, then executes each statement against a state record.
+    // Each statement is matched against shapes:
+    //   print EXPR[, EXPR]*    OR  print
+    //   printf "fmt", EXPR, …
+    //   IDENT = EXPR
+    //   IDENT (+|-|*|/|%)= EXPR
+    //   next  (skip rest of body for this line — rare)
+    interface State {
+      vars: Record<string, any>;
+      fields: string[];  // [$0, $1, $2, ...]
+      NR: number;
+      NF: number;
+      printed: boolean;
+    }
+    function evalExpr(expr: string, st: State): any {
+      // Lex/parse-free approach: use new Function with a tiny shim
+      // that exposes $N, NR, NF, vars, plus operators. We replace
+      // awk-isms with JS-compatible accesses first.
+      //
+      // Replacements:
+      //   $0      → __f[0]
+      //   $N      → __f[N]
+      //   $NF     → __f[__nf]
+      //   NR      → __nr
+      //   NF      → __nf
+      //   ident   → (__v.ident !== undefined ? __v.ident : 0)
+      //     — applied only to ident NOT already a JS keyword
+      //
+      // Numeric-string coercion: awk uses dual-typed values; we
+      // approximate with JS's loose coercion and a parseFloat
+      // fallback when an operator demands numeric.
+      let s = expr.trim();
+      // Strip trailing comment.
+      const hashIdx = stripStringsForScan(s).indexOf('#');
+      if (hashIdx >= 0) s = s.slice(0, hashIdx).trimEnd();
+      // Replace $NF first (longer match).
+      s = s.replace(/\$NF\b/g, '__f[__nf]');
+      // Replace $N (digits).
+      s = s.replace(/\$(\d+)/g, (_m, n) => `__f[${parseInt(n, 10)}]`);
+      // NR / NF — case-sensitive whole-word.
+      s = s.replace(/\bNR\b/g, '__nr').replace(/\bNF\b/g, '__nf');
+      // User vars: identifiers not in keyword/builtin allowlist + not
+      // inside strings.
+      s = remapUserVars(s);
+      try {
+        const fn = new Function('__f', '__nr', '__nf', '__v', 'return (' + s + ');');
+        return fn(st.fields, st.NR, st.NF, st.vars);
+      } catch (e: any) {
+        throw new Error(`expr error: ${e?.message || e} in "${expr}"`);
+      }
+    }
+    function stripStringsForScan(s: string): string {
+      // Replace string contents with same-length spaces so positions stay aligned.
+      let out = '';
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          out += ch;
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') { out += ' '; i++; }
+            out += ' ';
+            i++;
+          }
+          if (i < s.length) { out += ch; i++; }
+        } else {
+          out += ch;
+          i++;
+        }
+      }
+      return out;
+    }
+    function remapUserVars(s: string): string {
+      // Find identifiers (a-z_), skip ones that are reserved or already
+      // remapped. The simple approach: scan tokens outside string
+      // literals.
+      const RESERVED = new Set([
+        '__f', '__nr', '__nf', '__v',
+        'true', 'false', 'null', 'undefined', 'NaN', 'Infinity',
+        'Math', 'String', 'Number', 'Array', 'Object',
+        'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+        'length',  // for str/array .length access — not a free identifier here
+      ]);
+      let out = '';
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          out += ch;
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') { out += s[i]; i++; }
+            out += s[i]; i++;
+          }
+          if (i < s.length) { out += s[i]; i++; }
+          continue;
+        }
+        if (/[A-Za-z_]/.test(ch)) {
+          let start = i;
+          while (i < s.length && /[A-Za-z0-9_]/.test(s[i])) i++;
+          const ident = s.slice(start, i);
+          // Skip if previous non-ws char is `.` (member access).
+          let prev = start - 1;
+          while (prev >= 0 && /\s/.test(out[prev])) prev--;
+          if (out[prev] === '.') { out += ident; continue; }
+          if (RESERVED.has(ident)) { out += ident; continue; }
+          // Replace with (__v.ident !== undefined ? __v.ident : 0)
+          out += `(__v.${ident}!==undefined?__v.${ident}:0)`;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    }
+    function splitStmts(body: string): string[] {
+      const stmts: string[] = [];
+      let depth = 0;
+      let cur = '';
+      let i = 0;
+      while (i < body.length) {
+        const ch = body[i];
+        if (ch === '"' || ch === "'") {
+          cur += ch;
+          i++;
+          while (i < body.length && body[i] !== ch) {
+            if (body[i] === '\\') { cur += body[i]; i++; }
+            cur += body[i]; i++;
+          }
+          if (i < body.length) { cur += body[i]; i++; }
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (depth === 0 && (ch === ';' || ch === '\n')) {
+          const t = cur.trim();
+          if (t) stmts.push(t);
+          cur = '';
+          i++;
+          continue;
+        }
+        cur += ch;
+        i++;
+      }
+      const t = cur.trim();
+      if (t) stmts.push(t);
+      return stmts;
+    }
+    function execStmt(stmt: string, st: State): void {
+      // print [expr[, expr]*]
+      if (stmt === 'print' || stmt.startsWith('print ') || stmt.startsWith('print\t')) {
+        const rest = stmt.slice(5).trim();
+        if (!rest) { ctx.stdout.write(st.fields[0] + '\n'); st.printed = true; return; }
+        // Comma-separated exprs (space joiner). We must split at top-level commas only.
+        const parts = splitTopLevel(rest, ',');
+        const out = parts.map(p => stringify(evalExpr(p, st))).join(' ');
+        ctx.stdout.write(out + '\n');
+        st.printed = true;
+        return;
+      }
+      // printf "fmt", arg, arg, ...
+      if (stmt.startsWith('printf ') || stmt.startsWith('printf(')) {
+        let rest = stmt.startsWith('printf(') ? stmt.slice(7).replace(/\)\s*$/, '') : stmt.slice(7);
+        rest = rest.trim();
+        const parts = splitTopLevel(rest, ',');
+        if (parts.length === 0) return;
+        const fmt = evalExpr(parts[0], st);
+        const fargs = parts.slice(1).map(p => evalExpr(p, st));
+        ctx.stdout.write(printfFormat(String(fmt), fargs));
+        st.printed = true;
+        return;
+      }
+      // next: skip rest of body (no-op here since we re-enter each block fresh)
+      if (stmt === 'next') return;
+      // assignment: IDENT [op]= EXPR
+      // We require a top-level `=` not part of `==` `<=` `>=` `!=`.
+      const eqIdx = findAssignmentEq(stmt);
+      if (eqIdx > 0) {
+        const lhs = stmt.slice(0, eqIdx).trim();
+        const rhs = stmt.slice(eqIdx + 1).trim();
+        // Compound: lhs ends with op (e.g. `sum +`).
+        let op: string | null = null;
+        let name = lhs;
+        if (/[+\-*/%]$/.test(lhs)) {
+          op = lhs[lhs.length - 1];
+          name = lhs.slice(0, -1).trim();
+        }
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new Error(`bad assignment target "${name}"`);
+        }
+        const rv = evalExpr(rhs, st);
+        if (op) {
+          const cur = st.vars[name] !== undefined ? st.vars[name] : 0;
+          const lhsNum = typeof cur === 'number' ? cur : parseFloat(cur);
+          const rvNum = typeof rv === 'number' ? rv : parseFloat(rv);
+          const lN = Number.isFinite(lhsNum) ? lhsNum : 0;
+          const rN = Number.isFinite(rvNum) ? rvNum : 0;
+          st.vars[name] =
+            op === '+' ? lN + rN :
+            op === '-' ? lN - rN :
+            op === '*' ? lN * rN :
+            op === '/' ? lN / rN :
+            op === '%' ? lN % rN : rv;
+        } else {
+          st.vars[name] = rv;
+        }
+        return;
+      }
+      // Bare expression — evaluate for side effects (rare in awk).
+      evalExpr(stmt, st);
+    }
+    function findAssignmentEq(s: string): number {
+      let depth = 0;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') i++;
+            i++;
+          }
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (depth === 0 && ch === '=') {
+          const next = s[i + 1];
+          const prev = s[i - 1];
+          if (next === '=' || prev === '=' || prev === '!' || prev === '<' || prev === '>') continue;
+          return i;
+        }
+      }
+      return -1;
+    }
+    function splitTopLevel(s: string, sep: string): string[] {
+      const out: string[] = [];
+      let depth = 0;
+      let cur = '';
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          cur += ch;
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') { cur += s[i]; i++; }
+            cur += s[i]; i++;
+          }
+          if (i < s.length) { cur += s[i]; i++; }
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (depth === 0 && ch === sep) { out.push(cur.trim()); cur = ''; i++; continue; }
+        cur += ch; i++;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    }
+    function stringify(v: any): string {
+      if (v === undefined || v === null) return '';
+      if (typeof v === 'number') {
+        if (Number.isInteger(v)) return String(v);
+        // awk's OFMT default is "%.6g"
+        return printfFormat('%.6g', [v]);
+      }
+      return String(v);
+    }
+    function printfFormat(fmt: string, fargs: any[]): string {
+      let out = '';
+      let i = 0;
+      let argIdx = 0;
+      while (i < fmt.length) {
+        const ch = fmt[i];
+        if (ch === '\\' && i + 1 < fmt.length) {
+          const esc = fmt[i + 1];
+          out += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc === 'r' ? '\r' : esc === '\\' ? '\\' : esc;
+          i += 2;
+          continue;
+        }
+        if (ch === '%' && i + 1 < fmt.length) {
+          // Parse: %[flags][width][.prec]specifier
+          let spec = '%';
+          i++;
+          while (i < fmt.length && /[-+ 0#]/.test(fmt[i])) { spec += fmt[i]; i++; }
+          while (i < fmt.length && /[0-9]/.test(fmt[i])) { spec += fmt[i]; i++; }
+          if (fmt[i] === '.') { spec += fmt[i]; i++; while (i < fmt.length && /[0-9]/.test(fmt[i])) { spec += fmt[i]; i++; } }
+          const conv = fmt[i];
+          i++;
+          if (conv === '%') { out += '%'; continue; }
+          const arg = fargs[argIdx++];
+          out += formatOne(spec + conv, arg);
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    }
+    function formatOne(spec: string, arg: any): string {
+      const conv = spec[spec.length - 1];
+      const flagsAndWidth = spec.slice(1, -1);
+      const dotIdx = flagsAndWidth.indexOf('.');
+      const widthPart = dotIdx >= 0 ? flagsAndWidth.slice(0, dotIdx) : flagsAndWidth;
+      const precPart = dotIdx >= 0 ? flagsAndWidth.slice(dotIdx + 1) : '';
+      let flags = '';
+      let widthStr = '';
+      for (const c of widthPart) {
+        if (/[-+ 0#]/.test(c)) flags += c;
+        else widthStr += c;
+      }
+      const width = widthStr ? parseInt(widthStr, 10) : 0;
+      const prec = precPart ? parseInt(precPart, 10) : -1;
+      let body: string;
+      switch (conv) {
+        case 's': body = String(arg ?? ''); if (prec >= 0) body = body.slice(0, prec); break;
+        case 'd': case 'i': {
+          const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(arg));
+          body = String(Number.isFinite(n) ? n : 0);
+          break;
+        }
+        case 'f': {
+          const n = typeof arg === 'number' ? arg : parseFloat(arg);
+          const p = prec < 0 ? 6 : prec;
+          body = (Number.isFinite(n) ? n : 0).toFixed(p);
+          break;
+        }
+        case 'g': {
+          const n = typeof arg === 'number' ? arg : parseFloat(arg);
+          const p = prec < 0 ? 6 : prec;
+          body = (Number.isFinite(n) ? n : 0).toPrecision(p).replace(/\.?0+$/, '');
+          break;
+        }
+        case 'x': {
+          const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(arg));
+          body = (Number.isFinite(n) ? n : 0).toString(16);
+          break;
+        }
+        case 'o': {
+          const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(arg));
+          body = (Number.isFinite(n) ? n : 0).toString(8);
+          break;
+        }
+        case 'c': {
+          if (typeof arg === 'number') body = String.fromCharCode(arg);
+          else body = String(arg).charAt(0);
+          break;
+        }
+        default: body = String(arg);
+      }
+      if (width > body.length) {
+        const pad = flags.includes('0') && (conv === 'd' || conv === 'i' || conv === 'f' || conv === 'x' || conv === 'o') ? '0' : ' ';
+        body = flags.includes('-') ? body.padEnd(width, ' ') : body.padStart(width, pad);
+      }
+      return body;
+    }
+
+    const state: State = {
+      vars: {},
+      fields: [],
+      NR: 0,
+      NF: 0,
+      printed: false,
+    };
+
+    function runBlock(block: Block): void {
+      const stmts = splitStmts(block.body);
+      for (const s of stmts) {
+        execStmt(s, state);
+      }
+    }
+
+    try {
+      // BEGIN blocks first.
+      for (const b of blocks) if (b.kind === 'BEGIN') runBlock(b);
+      // Main loop over input lines.
+      const lines = input.split('\n');
+      // awk default: drop the final empty line if input ended with \n.
+      if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
+        const parts = typeof separator === 'string' && separator.length === 1
+          ? line.split(separator)
+          : line.split(separator);
+        state.NR = li + 1;
+        state.NF = parts.filter(p => p !== '').length;
+        state.fields = [line, ...parts];
+        for (const b of blocks) {
+          if (b.kind === 'BEGIN' || b.kind === 'END') continue;
+          if (b.kind === 'PATTERN') {
+            if (b.pattern!.test(line)) runBlock(b);
+          } else {
+            // MAIN block (no pattern) — always runs.
+            runBlock(b);
+          }
+        }
+      }
+      // END blocks last.
+      for (const b of blocks) if (b.kind === 'END') runBlock(b);
+    } catch (e: any) {
+      ctx.stderr.write(`awk: ${e?.message || e}\n`);
+      return 1;
+    }
+
     return 0;
   };
 }
