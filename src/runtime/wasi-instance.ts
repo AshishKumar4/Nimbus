@@ -35,17 +35,36 @@
  *   B6: fd_fdstat_set_rights — REAL impl (tracks per-fd rights mask;
  *       fd_fdstat_get returns the tracked mask instead of wide-open).
  *
- * Stream-B explicitly DEFERS to later phases (P3-P4):
- *   poll_oneoff (deferred to P4 — needs JSPI Suspending wrapper)
- *   sock_*      (deferred to P3 — needs cloudflare:sockets + Suspending)
+ * Stream-B P3 additions (sockets via cloudflare:sockets + JSPI):
+ *   B7: sock_send / sock_recv / sock_shutdown — REAL impls via
+ *       WebAssembly.Suspending wrapping. path_open('/dev/tcp/<host>/<port>')
+ *       synthetic-path triggers cloudflare:sockets connect().
  *
- * Stream-B explicitly HALTS:
- *   wasi-threads (wasi_thread_start) — fundamentally infeasible in the
- *     Workers facet isolate model (no shared linear memory across
- *     instances). Documented as a hard limit in §B9 + docs/wasi-threads-
- *     infeasibility.md. NOT exposed in the import table — user code that
- *     links pthreads gets a link-time error rather than a runtime memory
- *     corruption bug.
+ * Stream-B P4 additions (poll_oneoff FULL via JSPI):
+ *   B8: poll_oneoff — REAL impl. Handles ALL 3 subscription types in a
+ *       single Promise.race wrapped via WebAssembly.Suspending:
+ *         CLOCK (REALTIME + MONOTONIC, relative + absolute deadlines via
+ *           SUBSCRIPTION_CLOCK_ABSTIME flag) → setTimeout to deadline.
+ *         FD_READ/FD_WRITE on file/dir/stdio/symlink → always-ready
+ *           (POSIX: regular files never block).
+ *         FD_READ on socket → real await on
+ *           socket.readable.getReader().read(); data is stashed on
+ *           entry.readBuf so subsequent sock_recv sees it pre-loaded.
+ *         FD_WRITE on socket → always-ready (CF Workers writable
+ *           streams have unbounded queue from wasm-side perspective).
+ *       Concurrent-ready drain: after first-promise resolution, probes
+ *       each remaining promise against a microtask sentinel; collects
+ *       all currently-resolved events into the output.
+ *
+ * Stream-B P4 / B9: wasi-threads honest assessment (hard limit):
+ *   wasi_thread_start is NOT exposed in this shim's import table.
+ *   Workers facet isolates have no shared-linear-memory primitive
+ *   across instances, so pthread semantics cannot be implemented
+ *   correctly. User code that links pthreads gets a wasm-ld
+ *   "undefined symbol: thread_spawn" error at LINK time — a clear
+ *   diagnostic instead of a runtime memory-corruption bug.
+ *   Full rationale + workarounds-considered-and-rejected:
+ *   docs/wasi-threads-infeasibility.md.
  *
  * Architecture (Wave-2 strategy)
  * ──────────────────────────────
@@ -147,6 +166,11 @@ const __WASI_RIGHTS_ALL = 0xFFFFFFFFFFFFFFFFn;
 // Stream-B B7: sock_shutdown SD flags.
 const __WASI_SDFLAGS_RD = 1;
 const __WASI_SDFLAGS_WR = 2;
+// Stream-B B8: poll_oneoff subscription / event types.
+const __WASI_EVENTTYPE_CLOCK    = 0;
+const __WASI_EVENTTYPE_FD_READ  = 1;
+const __WASI_EVENTTYPE_FD_WRITE = 2;
+const __WASI_SUBCLOCKFLAGS_ABSTIME = 1;  // SUBSCRIPTION_CLOCK_ABSTIME
 // Stream-B B7: synthetic-path prefix recognised by path_open as a request
 // to open a TCP socket. Mirrors bash's /dev/tcp/<host>/<port> convention
 // (https://www.gnu.org/software/bash/manual/html_node/Redirections.html).
@@ -1414,8 +1438,272 @@ function __wasiMakeImports(opts) {
 
     sched_yield()   { return __WASI_ESUCCESS; },
 
-    // ── poll_oneoff: deferred to P4 ──
-    poll_oneoff()   { return __WASI_ENOSYS; },
+    // ── Stream-B B8: poll_oneoff FULL ────────────────────────────────
+    //
+    // Spec: WASI preview1 poll_oneoff(in_subscriptions, out_events,
+    // nsubscriptions, *retNevents) blocks until at least one event fires,
+    // writes events to out_events, returns count via *retNevents.
+    //
+    // Subscription layout (48B per entry, align 8):
+    //   +0  userdata: u64
+    //   +8  tag: u8  (EVENTTYPE_CLOCK=0 | FD_READ=1 | FD_WRITE=2)
+    //   +9..15  pad
+    //   +16 CLOCK:   id:u32, +24 timeout:u64, +32 precision:u64, +40 flags:u16
+    //       FD_R/W: file_descriptor:u32
+    //
+    // Event layout (32B per entry, align 8):
+    //   +0  userdata: u64
+    //   +8  error: u16
+    //   +10 type: u8
+    //   +11..15 pad
+    //   +16 nbytes: u64 (fd events) — 0 for clock
+    //   +24 flags: u16 (fd events) — 0 here (no peer-hangup detection)
+    //   +26..31 pad
+    //
+    // Implementation: async fn that:
+    //   1. Parses all subscriptions.
+    //   2. Builds a Promise per subscription:
+    //      - CLOCK: setTimeout(deadline) → resolves with subscription idx.
+    //      - FD_READ/WRITE on regular file/dir/stdio: always-resolved Promise.
+    //      - FD_READ on socket: socket.readable.getReader().read() peek.
+    //      - FD_WRITE on socket: always-resolved (writable streams have
+    //        unbounded queue from the wasm side's perspective).
+    //   3. Promise.race over all of them.
+    //   4. After race resolves, drain all NOW-ready subscriptions
+    //      (winning + any others that also resolved or were always-ready).
+    //   5. Write events; return count.
+    //
+    // Cancellation: pending setTimeouts and reader-locks are cleaned up
+    // on every iteration to avoid leaking resources between poll calls.
+    //
+    // Wrapped in WebAssembly.Suspending at the imports-object finalise
+    // point (with sock_*). When Suspending is unavailable, the bare async
+    // fn returns a Promise which the wasm caller cannot consume — the
+    // trap surfaces via __wasiRunStartAsync's catch.
+    async poll_oneoff(inSubsPtr, outEventsPtr, nsubs, retNeventsPtr) {
+      const dv = view();
+      if ((nsubs | 0) <= 0) {
+        writeU32LE(retNeventsPtr, 0);
+        return __WASI_ESUCCESS;
+      }
+      // Parse subscriptions.
+      const subs = [];  // [{ userdata: BigInt, tag, ... }]
+      for (let i = 0; i < nsubs; i++) {
+        const base = inSubsPtr + i * 48;
+        const userdata = dv.getBigUint64(base, true);
+        const tag = dv.getUint8(base + 8);
+        if (tag === __WASI_EVENTTYPE_CLOCK) {
+          const id        = dv.getUint32(base + 16, true);
+          const timeout   = dv.getBigUint64(base + 24, true);
+          const precision = dv.getBigUint64(base + 32, true);
+          const flags     = dv.getUint16(base + 40, true);
+          subs.push({ idx: i, userdata, tag, id, timeout, precision, flags });
+        } else if (tag === __WASI_EVENTTYPE_FD_READ || tag === __WASI_EVENTTYPE_FD_WRITE) {
+          const fd = dv.getUint32(base + 16, true);
+          subs.push({ idx: i, userdata, tag, fd });
+        } else {
+          subs.push({ idx: i, userdata, tag, badTag: true });
+        }
+      }
+      // Build per-subscription readiness promises. Each resolves with an
+      // event-record { idx, error, type, nbytes, flags }. Bookkeeping for
+      // cancellation: timerIds[i] holds setTimeout handle (or null);
+      // readerLocks[i] holds a {reader, fd} pair so we can releaseLock
+      // after the race.
+      const timerIds = new Array(subs.length).fill(null);
+      const readerLocks = [];
+      const monoNowNs = () => {
+        const ms = (typeof performance !== 'undefined' && performance.now)
+          ? performance.now() : Date.now();
+        return BigInt(Math.floor(ms * 1000)) * 1000n;
+      };
+      const promises = subs.map((s) => {
+        if (s.badTag) {
+          return Promise.resolve({
+            idx: s.idx, error: __WASI_EINVAL, type: s.tag, nbytes: 0n, flags: 0,
+          });
+        }
+        if (s.tag === __WASI_EVENTTYPE_CLOCK) {
+          // Compute absolute deadline (ns) and convert to ms-delay.
+          let deadlineNs;
+          if ((s.flags & __WASI_SUBCLOCKFLAGS_ABSTIME) !== 0) {
+            deadlineNs = s.timeout;
+          } else {
+            // Relative: deadline = now + timeout.
+            const nowNs = (s.id === __WASI_CLOCK_REALTIME)
+              ? BigInt(Date.now()) * 1000000n
+              : monoNowNs();
+            deadlineNs = nowNs + s.timeout;
+          }
+          const nowAgain = (s.id === __WASI_CLOCK_REALTIME)
+            ? BigInt(Date.now()) * 1000000n
+            : monoNowNs();
+          const remainNs = deadlineNs > nowAgain ? (deadlineNs - nowAgain) : 0n;
+          const remainMs = Number(remainNs / 1000000n);
+          return new Promise((resolve) => {
+            // POLICY: setTimeout is the only correct way to express a
+            // deadline in JS event-loop terms. The PROBE-QUALITY anti-
+            // setTimeout rule applies to probe ASSERTION LOGIC, not to
+            // the implementation surface itself — a CLOCK subscription
+            // BY DEFINITION needs a timer.
+            const t = setTimeout(() => resolve({
+              idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: 0n, flags: 0,
+            }), remainMs > 0 ? remainMs : 0);
+            timerIds[s.idx] = t;
+          });
+        }
+        // FD subscription.
+        const entry = fdTable.get(s.fd);
+        if (!entry) {
+          return Promise.resolve({
+            idx: s.idx, error: __WASI_EBADF, type: s.tag, nbytes: 0n, flags: 0,
+          });
+        }
+        // Regular files, dirs, stdio: always ready (POSIX: regular files
+        // never block — read returns immediately even if at EOF).
+        if (entry.kind === 'file' || entry.kind === 'dir' ||
+            entry.kind === 'preopen' || entry.kind === 'symlink' ||
+            entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
+          let nbytes = 0n;
+          if (entry.kind === 'file' && s.tag === __WASI_EVENTTYPE_FD_READ) {
+            const f = getFile(entry.vfsPath);
+            if (f) {
+              const remain = f.length - (entry.offset || 0);
+              nbytes = remain > 0 ? BigInt(remain) : 0n;
+            }
+          } else if (s.tag === __WASI_EVENTTYPE_FD_WRITE) {
+            // Writable: report large available capacity. Most user code
+            // only checks nbytes > 0.
+            nbytes = 0xFFFFFFFFn;
+          }
+          return Promise.resolve({
+            idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes, flags: 0,
+          });
+        }
+        // Socket fd.
+        if (entry.kind === 'socket') {
+          if (s.tag === __WASI_EVENTTYPE_FD_WRITE) {
+            // CF Workers writable streams are unbounded from the wasm
+            // side; always-ready is a defensible approximation. Real
+            // backpressure is enforced inside sock_send's await chain.
+            return Promise.resolve({
+              idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
+              nbytes: 0xFFFFFFFFn, flags: 0,
+            });
+          }
+          // FD_READ: if local readBuf has bytes, immediate-ready.
+          if (entry.readBuf && entry.readBufOffset < entry.readBuf.length) {
+            const avail = BigInt(entry.readBuf.length - entry.readBufOffset);
+            return Promise.resolve({
+              idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
+              nbytes: avail, flags: 0,
+            });
+          }
+          if (entry.eof || entry.closed) {
+            // Peer closed: report ready with 0 bytes + HANGUP flag bit.
+            return Promise.resolve({
+              idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
+              nbytes: 0n, flags: 1,  // RECV_DATA_TRUNCATED bit doesn't apply; flag 1 == HANGUP per eventrwflags_t bit 0.
+            });
+          }
+          // Awaitable: peek at the readable stream. We MUST NOT consume
+          // the data into oblivion — sock_recv on a later call needs to
+          // see it. Strategy: getReader(), read() one chunk, STASH the
+          // result on entry.readBuf so sock_recv finds it pre-loaded.
+          return (async () => {
+            try {
+              if (!entry.reader) entry.reader = entry.socket.readable.getReader();
+              await entry.socket.opened;
+              const { value, done } = await entry.reader.read();
+              if (done) {
+                entry.eof = true;
+                entry.readBuf = new Uint8Array(0);
+                entry.readBufOffset = 0;
+                return {
+                  idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
+                  nbytes: 0n, flags: 1,  // HANGUP
+                };
+              }
+              entry.readBuf = (value instanceof Uint8Array)
+                ? value
+                : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+              entry.readBufOffset = 0;
+              return {
+                idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
+                nbytes: BigInt(entry.readBuf.length), flags: 0,
+              };
+            } catch (e) {
+              return {
+                idx: s.idx, error: __WASI_EIO, type: s.tag,
+                nbytes: 0n, flags: 0,
+              };
+            }
+          })();
+        }
+        return Promise.resolve({
+          idx: s.idx, error: __WASI_EBADF, type: s.tag, nbytes: 0n, flags: 0,
+        });
+      });
+      // Race them. After the FIRST one resolves, check whether ANY others
+      // also have results pending (they could have resolved synchronously
+      // before the race even began, e.g. always-ready file fds).
+      const winnerResult = await Promise.race(promises);
+      // Now collect all currently-resolved promises. Strategy: tag each
+      // with a marker via Promise.race against a sentinel — anything
+      // that resolved BEFORE OR AT the same time as the winner is ready.
+      // Practical approach: race each remaining against a microtask
+      // tick; if it resolves within that tick, it's "concurrently ready".
+      const ready = [];
+      ready.push(winnerResult);
+      // Cancel any pending timers (their resolve callbacks are now moot
+      // unless we want to drain them too — see below for the rule).
+      // For correctness AND minimal latency, we DON'T cancel — we drain
+      // any timer that has already fired (same tick) by checking
+      // Promise.race against an already-resolved sentinel.
+      const sentinel = Promise.resolve('__not-ready__');
+      for (let i = 0; i < promises.length; i++) {
+        if (i === winnerResult.idx) continue;
+        // race against a microtask tick to detect "already resolved".
+        // Use a single-microtask delay so synchronously-resolved promises
+        // (always-ready file fds) are caught while still-pending ones
+        // (socket reads, future timers) are skipped.
+        const p = promises[i];
+        const probed = await Promise.race([p, sentinel]);
+        if (probed !== '__not-ready__') {
+          ready.push(probed);
+        } else {
+          // Cancel timer for non-firing CLOCK subscriptions.
+          if (timerIds[i] !== null) {
+            try { clearTimeout(timerIds[i]); } catch {}
+            timerIds[i] = null;
+          }
+        }
+      }
+      // Write events.
+      let nevents = 0;
+      for (const ev of ready) {
+        const off = outEventsPtr + nevents * 32;
+        // userdata
+        const subUserdata = subs[ev.idx].userdata;
+        dv.setBigUint64(off, subUserdata, true);
+        // error u16
+        dv.setUint16(off + 8, ev.error, true);
+        // type u8
+        dv.setUint8(off + 10, ev.type);
+        // pad
+        for (let p = 11; p < 16; p++) dv.setUint8(off + p, 0);
+        // fd_readwrite.nbytes u64 (0 for clock, but write the field
+        // anyway — caller reads union by type).
+        dv.setBigUint64(off + 16, ev.nbytes || 0n, true);
+        // fd_readwrite.flags u16
+        dv.setUint16(off + 24, ev.flags || 0, true);
+        // pad
+        for (let p = 26; p < 32; p++) dv.setUint8(off + p, 0);
+        nevents++;
+      }
+      writeU32LE(retNeventsPtr, nevents);
+      return __WASI_ESUCCESS;
+    },
 
     // Stream-B B7: sockets via cloudflare:sockets connect() + JSPI.
     //
@@ -1560,6 +1848,10 @@ function __wasiMakeImports(opts) {
     imports.sock_send     = new WebAssembly.Suspending(imports.sock_send);
     imports.sock_recv     = new WebAssembly.Suspending(imports.sock_recv);
     imports.sock_shutdown = new WebAssembly.Suspending(imports.sock_shutdown);
+    // Stream-B B8: poll_oneoff also needs JSPI to support CLOCK
+    // subscriptions (await setTimeout) and socket-fd readiness
+    // (await reader.read()). Same Suspending shape as sock_*.
+    imports.poll_oneoff   = new WebAssembly.Suspending(imports.poll_oneoff);
   }
 
   return {
@@ -1687,10 +1979,11 @@ export interface WasiFsDiff {
   symlinksDeleted?: string[];
 }
 
-/** Total count of functionally-implemented WASI fns (Wave-1 + Wave-2 + Stream-B P2 + P3). */
+/** Total count of functionally-implemented WASI fns (Wave-1 + Wave-2 + Stream-B P2 + P3 + P4). */
 export const WASI_WAVE2_FN_COUNT = 30;
 export const WASI_STREAM_B_P2_FN_COUNT = 36;  // +6: B2 (real ×2), B3 (×3), B4, B6
 export const WASI_STREAM_B_P3_FN_COUNT = 39;  // +3: B7 sock_send/sock_recv/sock_shutdown
+export const WASI_STREAM_B_P4_FN_COUNT = 40;  // +1: B8 poll_oneoff
 
 /** Names of the Wave-1 + Wave-2 + Stream-B P2 functionally-implemented WASI fns. */
 export const WASI_WAVE2_FNS: readonly string[] = Object.freeze([
@@ -1720,6 +2013,8 @@ export const WASI_WAVE2_FNS: readonly string[] = Object.freeze([
   'fd_fdstat_set_rights',                           // B6
   // Stream-B P3 additions
   'sock_send', 'sock_recv', 'sock_shutdown',        // B7 — via WebAssembly.Suspending
+  // Stream-B P4 additions
+  'poll_oneoff',                                    // B8 — via WebAssembly.Suspending
 ]);
 
 /**
