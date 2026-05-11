@@ -389,20 +389,20 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     '//     under nodejs_compat → Pyodide tries require("fs"), require("path"),',
     '//     require("crypto"), require("ws"), require("child_process"). We',
     '//     don\'t want any of those code paths because instantiateWasm is',
-    '//     overridden anyway. Hide `process` BEFORE asm.js runs so',
-    '//     ENVIRONMENT_IS_NODE = false.',
+    '//     overridden anyway.',
     '//   - ENVIRONMENT_IS_WORKER (typeof WorkerGlobalScope !== "undefined"):',
-    '//     true in workerd. Pyodide then reads `self.location.href`. workerd',
-    '//     has `self` (== globalThis) but `self.location` is undefined. Stub it.',
-    '//   - document.currentScript?.src: workerd has no document; the optional-',
-    '//     chain on undefined is fine, but explicit assignment removes any',
-    '//     drift across pyodide versions.',
+    '//     true in workerd. Pyodide reads `self.location.href`. workerd has',
+    '//     `self` (== globalThis) but `self.location` is undefined. Stub it.',
+    '//   - document.currentScript?.src: workerd has no document; the',
+    '//     optional-chain on undefined is fine, but we shim it explicitly',
+    '//     to remove any drift across pyodide versions.',
     '//',
-    '// We save+restore the originals around _createPyodideModule()',
-    '// instantiation so the rest of the worker isolate keeps the',
-    '// real `process` (used by node-shims, etc.).',
-    'const __nimbusOrigProcess = globalThis.process;',
-    'globalThis.process = undefined;',
+    '// CRITICAL: ENVIRONMENT_IS_NODE is computed inside the async-factory',
+    '// returned by the asm.js IIFE — i.e., it\'s evaluated WHEN',
+    '// _createPyodideModule(settings) is CALLED, not when the asm.js',
+    '// module-init runs. We therefore need to keep globalThis.process =',
+    '// undefined across that call, not just the asm.js inline above. The',
+    '// __pyodideRun helper below does the save+restore around the call.',
     'if (typeof globalThis.location !== "object" || globalThis.location === null) {',
     '  globalThis.location = { href: "pyodide://nimbus/", origin: "pyodide://nimbus", toString() { return this.href; } };',
     '}',
@@ -416,11 +416,6 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     'if (typeof _createPyodideModule === \'function\') {',
     '  globalThis._createPyodideModule = _createPyodideModule;',
     '}',
-    '// Restore process so the rest of the worker isolate (node-shims,',
-    '// etc.) sees the original. ENVIRONMENT_IS_NODE was already',
-    '// captured = false in the asm.js IIFE outer scope; toggling',
-    '// globalThis.process now has no effect on Pyodide.',
-    'globalThis.process = __nimbusOrigProcess;',
     '// ── END: pyodide.asm.js inline ──────────────────────────────────',
     '',
     PYTHON_RUNNER_PREAMBLE_TAIL,
@@ -567,6 +562,14 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   ];
 
   // ── Step 2: instantiate Pyodide. ───────────────────────────────
+  // Hide globalThis.process for the duration of _createPyodideModule
+  // — Pyodide's ENVIRONMENT_IS_NODE detection evaluates here (in the
+  // async-factory body, NOT in the IIFE outer scope), and a truthy
+  // process triggers require('fs'). After the factory returns,
+  // ENVIRONMENT_IS_NODE has been captured into module-init lexical
+  // scope so we can restore process.
+  const __origProcess = globalThis.process;
+  globalThis.process = undefined;
   let pyodideMod;
   try {
     pyodideMod = await globalThis._createPyodideModule(settings);
@@ -574,6 +577,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       throw new pyodideMod.ExitStatus(settings.exitCode);
     }
   } catch (e) {
+    globalThis.process = __origProcess;
     // Emscripten throws ExitStatus on sys.exit / proc_exit.
     if (e && e.name === 'ExitStatus') {
       exitCode = e.status | 0;
@@ -590,6 +594,8 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       error: '_createPyodideModule failed: ' + (e && e.message),
     };
   }
+  // Restore process on the success path.
+  globalThis.process = __origProcess;
 
   // ── Step 3: bootstrap CPython interpreter. ─────────────────────
   //
