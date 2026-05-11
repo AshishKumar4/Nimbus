@@ -152,6 +152,12 @@ import { DurableObject } from "cloudflare:workers";
 
 globalThis.__cirrusFsDebug = false;
 globalThis.__cirrusResolveDebug = false;
+// CLN-3 (2026-05-11): umbrella debug flag for hot-path HMR / dispatch /
+// memory-snapshot / WS-accept logs in cirrus-real.ts + real-vite-hmr.ts.
+// Default off in prod. Diagnostic users mutate at runtime
+// (globalThis.__cirrusDebug = true) or ship a temp-deploy with the
+// literal "= true" here. Mirrors the __cirrusFsDebug / __cirrusResolveDebug pattern.
+globalThis.__cirrusDebug = false;
 
 // ── Phase-A memory telemetry ──────────────────────────────────────
 // Records process.memoryUsage() at key phases so we can measure
@@ -174,9 +180,9 @@ function __cirrusMem(phase) {
     };
     if (__cirrusPhaseBaseline == null) __cirrusPhaseBaseline = mu.heapUsed;
     row.delta = '+' + ((mu.heapUsed - __cirrusPhaseBaseline) / 1024 / 1024).toFixed(1) + 'MB';
-    console.log('[cirrus-mem]', JSON.stringify(row));
+    if (globalThis.__cirrusDebug) console.log('[cirrus-mem]', JSON.stringify(row));
   } catch (e) {
-    console.log('[cirrus-mem]', phase, 'err:', e?.message || e);
+    if (globalThis.__cirrusDebug) console.log('[cirrus-mem]', phase, 'err:', e?.message || e);
   }
 }
 __cirrusMem('module-top (pre-imports)');
@@ -243,12 +249,12 @@ function installBindings(env) {
 // ws-shim connections.
 function dispatchEvents(events) {
   if (!events || events.length === 0) return;
-  console.log('[cirrus-real dispatch]', events.length, 'events. types:', events.map(e => e.type).join(','));
+  if (globalThis.__cirrusDebug) console.log('[cirrus-real dispatch]', events.length, 'events. types:', events.map(e => e.type).join(','));
   for (const ev of events) {
     try {
       if (ev.type === 'connection') {
         const wss = globalThis.__cirrusRealWsServer;
-        console.log('[cirrus-real] connection event, wss?', !!wss);
+        if (globalThis.__cirrusDebug) console.log('[cirrus-real] connection event, wss?', !!wss);
         if (wss) wss._acceptConnection(ev.clientId);
       } else if (ev.type === 'message') {
         const wss = globalThis.__cirrusRealWsServer;

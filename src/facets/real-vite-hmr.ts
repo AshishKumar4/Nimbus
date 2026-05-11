@@ -44,6 +44,17 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 
+// CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
+// `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
+// `false` (default), the hot-path console.log calls in `HmrBridge`
+// (every HMR message relay, every WS accept) are suppressed. Diagnostic
+// users mutate at runtime (e.g. via wrangler tail's REPL) to re-enable.
+//
+// The two isolates (supervisor vs facet) each have their own globalThis;
+// the flag must be set independently in each. Reading `undefined` here
+// is fine — it's falsy, so the gate fires (no log) by default.
+(globalThis as any).__cirrusDebug ??= false;
+
 /**
  * Supervisor-side registry of active HMR connections for a single
  * real-vite session. One instance lives on each NimbusSession that has
@@ -96,7 +107,7 @@ export class HmrBridge {
 
   /** Called by the facet via SUPERVISOR.hmrSend to push a msg to a browser. */
   relayToBrowser(id: string | null, msg: string): void {
-    console.log('[HmrBridge relay] id=', id, 'msg len=', msg?.length, 'clients=', this.clients.size);
+    if ((globalThis as any).__cirrusDebug) console.log('[HmrBridge relay] id=', id, 'msg len=', msg?.length, 'clients=', this.clients.size);
     if (id == null) {
       for (const ws of this.clients.values()) {
         try { ws.send(msg); } catch { /* client gone */ }
@@ -104,8 +115,8 @@ export class HmrBridge {
       return;
     }
     const ws = this.clients.get(id);
-    if (!ws) { console.log('[HmrBridge relay] no WS for id', id); return; }
-    try { ws.send(msg); console.log('[HmrBridge relay] sent ok'); } catch (e: any) { console.log('[HmrBridge relay] send threw:', e?.message); }
+    if (!ws) { if ((globalThis as any).__cirrusDebug) console.log('[HmrBridge relay] no WS for id', id); return; }
+    try { ws.send(msg); if ((globalThis as any).__cirrusDebug) console.log('[HmrBridge relay] sent ok'); } catch (e: any) { if ((globalThis as any).__cirrusDebug) console.log('[HmrBridge relay] send threw:', e?.message); }
   }
 
   /**
@@ -331,7 +342,7 @@ class CirrusWsServer {
     this.clients.add(client);
     _g.__cirrusRealWsClients ??= new Map();
     _g.__cirrusRealWsClients.set(id, client);
-    console.log('[cirrus-ws] _acceptConnection id=' + id + ' listeners=' + (this._listeners.connection?.length || 0));
+    if (globalThis.__cirrusDebug) console.log('[cirrus-ws] _acceptConnection id=' + id + ' listeners=' + (this._listeners.connection?.length || 0));
     this.emit('connection', client, { url: '/', headers: {} });
     return client;
   }
@@ -443,7 +454,7 @@ class CirrusWatcher {
 }
 
 export function watch(paths, opts) {
-  console.log('[cirrus-chokidar] watch() called with paths=', JSON.stringify(paths).slice(0, 200));
+  if (globalThis.__cirrusDebug) console.log('[cirrus-chokidar] watch() called with paths=', JSON.stringify(paths).slice(0, 200));
   return new CirrusWatcher(paths, opts);
 }
 export const FSWatcher = CirrusWatcher;
