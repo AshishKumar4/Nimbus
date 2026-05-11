@@ -2537,7 +2537,12 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // Fall through to core npm for other subcommands
       return coreNpmCmd(ctx);
     });
-    // npx: check node_modules/.bin first, then built-in commands, then fallback to core
+    // npx: check node_modules/.bin first, then built-in commands, then
+    // Nimbus-native install + run via NpmInstaller (handles major-only
+    // semver ranges correctly — see remix-wrappy-fix wave). The lifo-sh
+    // core createNpxCommand is retained as a last-resort fallback for
+    // any edge case the Nimbus path doesn't handle (e.g. `--help`
+    // banners).
     const coreNpxCmd = createNpxCommand(registry, shellExecute);
     registry.register('npx', async (ctx: any) => {
       const npxArgs: string[] = ctx.args || [];
@@ -2550,7 +2555,39 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         return await resolved({ ...ctx, args: npxArgs.slice(1) });
       }
 
-      // Fall through to core npx
+      // Nimbus-native npx install + run path. Routes the package
+      // install through NpmInstaller (full-packument-resolve) instead
+      // of @lifo-sh/core's per-version-endpoint shortcut which drops
+      // major-only-range transitive deps (wrappy:'1', inherits:'2',
+      // etc.). See src/npm/npx-install.ts for the audit.
+      const { resolveNpxBinary } = await import('../npm/npx-install.js');
+      self.ensureNpmInstaller((msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'));
+      self.ensureSqliteFs();
+      const installer = self.npmInstaller!;
+      const resolveResult = await resolveNpxBinary(
+        installer,
+        self.sqliteFs! as any,
+        ctx.cwd || '/home/user',
+        npxArgs,
+        (msg: string) => ctx.stdout.write(msg + '\n'),
+      );
+      if (resolveResult.ok && resolveResult.binPath) {
+        const nodeCmd = await registry.resolve('node');
+        if (nodeCmd) {
+          return await nodeCmd({
+            ...ctx,
+            args: [resolveResult.binPath, ...(resolveResult.binArgs || [])],
+          });
+        }
+        // Node not registered — should never happen but fall through
+        // to core for safety.
+      } else if (resolveResult.error && !/^(--version|-v|--help|-h|missing-cmd)$/.test(resolveResult.error)) {
+        // Real install/resolve failure — surface and bail.
+        ctx.stderr.write(resolveResult.error + '\n');
+        return 1;
+      }
+      // --version / --help / missing-cmd / node-unregistered → fall
+      // through to core npx for its banner / help output.
       return coreNpxCmd(ctx);
     });
 
