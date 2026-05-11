@@ -688,6 +688,10 @@ globalThis.__pyodideBootstrap = (async function nimbusBootstrap() {
       noWasmDecoding: false,
       print: function(s) { globalThis.__nimbusPyStdout.push(s + '\\n'); },
       printErr: function(s) { globalThis.__nimbusPyStderr.push(s + '\\n'); },
+      // onExit captures the SystemExit code from Pyodide via Emscripten's
+      // ExitStatus path. The per-call __pyodideRun resets __nimbusExitCode
+      // to undefined before runPython and reads it after.
+      onExit: function(code) { globalThis.__nimbusExitCode = code | 0; },
       thisProgram: config._sysExecutable,
       arguments: config.args,
       API: { config: config, runtimeEnv: { IN_NODE: false, IN_BROWSER: false, IN_SHELL: false } },
@@ -839,30 +843,71 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   }
 
   // finalizeBootstrap returns the public Pyodide JS API (the one with
-  // .runPython, .globals, .registerJsModule).
-  let pyodide;
-  try {
-    pyodide = pyodideMod.API.finalizeBootstrap(undefined, undefined);
-  } catch (e) {
-    return {
-      exitCode: 1,
-      stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
-      stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
-      error: 'finalizeBootstrap failed: ' + (e && e.message),
-    };
+  // .runPython, .globals, .registerJsModule). It registers Python-side
+  // js-module hooks via register_js_finder; calling it twice on the
+  // same pyodideMod throws "JsFinder already registered". So we cache
+  // the result globally and reuse it across multiple __pyodideRun
+  // invocations (which happen when the child-facet pool reuses the
+  // same Pyodide instance for multiple python -c calls in one session).
+  let pyodide = globalThis.__nimbusPyodideInstance;
+  if (!pyodide) {
+    try {
+      pyodide = pyodideMod.API.finalizeBootstrap(undefined, undefined);
+      globalThis.__nimbusPyodideInstance = pyodide;
+    } catch (e) {
+      return {
+        exitCode: 1,
+        stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+        stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+        error: 'finalizeBootstrap failed: ' + (e && e.message),
+      };
+    }
   }
+
+  // Update sys.argv to reflect this call's progName + pyArgv. Pyodide's
+  // thisProgram is fixed at bootstrap time (when callMain ran); we
+  // overwrite sys.argv at request time via a tiny runPython prelude.
+  // pyArgv is the user-visible argv (script name first, then args);
+  // progName is the executable that prefixes errors.
+  try {
+    const argv = [args.progName].concat((args.pyArgv || []).slice(0));
+    // If pyArgv already includes the script as [0], use it directly.
+    // Convention from the python-runner caller: pyArgv = [progName,
+    // ...args]. We set sys.argv = pyArgv with [0] = progName.
+    const effectiveArgv = (args.pyArgv && args.pyArgv.length > 0) ? args.pyArgv : argv;
+    pyodide.runPython(
+      'import sys\\nsys.argv = ' +
+      JSON.stringify(effectiveArgv)
+    );
+  } catch { /* best-effort */ }
+
+  // Reset onExit capture for this call.
+  globalThis.__nimbusExitCode = undefined;
 
   // Run the user code.
   let exitCode = 0;
   if (args.userCode) {
     try {
       pyodide.runPython(args.userCode);
+      // If runPython returned normally, exit code is 0 unless onExit
+      // was invoked (which can happen if user called sys.exit but
+      // Pyodide handled it via ExitStatus before throwing).
+      if (typeof globalThis.__nimbusExitCode === 'number') {
+        exitCode = globalThis.__nimbusExitCode;
+      }
     } catch (e) {
-      if (e && typeof e.message === 'string') {
-        const m = e.message.match(/^SystemExit:\\s*(-?\\d+)/m);
+      // Check onExit-captured code first (set by Emscripten's ExitStatus
+      // path before the throw).
+      if (typeof globalThis.__nimbusExitCode === 'number') {
+        exitCode = globalThis.__nimbusExitCode;
+      } else if (e && typeof e.message === 'string') {
+        // Fall back to message parsing. Pyodide surfaces SystemExit as
+        // a PythonError with message containing "SystemExit: <code>".
+        const m = e.message.match(/SystemExit:\\s*(-?\\d+)/);
         if (m) {
           exitCode = parseInt(m[1], 10);
-        } else if (/SystemExit/.test(e.message) && !/^SystemExit:\\s*\\S/m.test(e.message)) {
+        } else if (/SystemExit/.test(e.message)) {
+          // SystemExit with no numeric arg (e.g., sys.exit() or sys.exit(None))
           exitCode = 0;
         } else {
           globalThis.__nimbusPyStderr.push(e.message + (e.message.endsWith('\\n') ? '' : '\\n'));
