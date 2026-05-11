@@ -67,6 +67,7 @@ import {
   registerRunnerFactory,
 } from '../runtime/package-manager.js';
 import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
+import { makePythonRunnerFactory } from '../runtime/python-runner.js';
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '../runtime/process-logs.js';
@@ -322,6 +323,15 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
     registerRunnerFactory('clang-runner', makeClangRunnerFactory({
+      facetMgr,
+      vfs: sqliteFs,
+    }));
+    // Pyodide v1 — Python 3.13 via the same R2-package-manager
+    // substrate that ships clang. Manifest entrypoints `python` and
+    // `python3` both bind to this factory; the runner ferries
+    // pyodide.asm.wasm via LOADER modules-map and pyodide.asm.js +
+    // python_stdlib.zip via the loader-pool context channel.
+    registerRunnerFactory('python-runner', makePythonRunnerFactory({
       facetMgr,
       vfs: sqliteFs,
     }));
