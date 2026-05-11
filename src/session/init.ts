@@ -369,11 +369,29 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // __rubyRun drives rb-eval-string-protect with a wrapper that
     // catches SystemExit. See src/runtime/ruby-runner.ts +
     // /workspace/.seal-internal/2026-05-11-ruby-v1/audit.md.
+    //
+    // REPL Stream A: wrap the one-shot factory so `ruby` with NO args
+    // drops into an interactive REPL. The wrap is purely additive —
+    // args-bearing invocations pass through to the existing handler.
     try {
-      registerRunnerFactory('ruby-runner', makeRubyRunnerFactory({
-        facetMgr,
-        vfs: sqliteFs,
-      }));
+      const oneRuby = makeRubyRunnerFactory({ facetMgr, vfs: sqliteFs });
+      const wrappedRuby: typeof oneRuby = (manifest, installRoot, binName, binKind) => {
+        const oneShotHandler = oneRuby(manifest, installRoot, binName, binKind);
+        return async function rubyReplOrOneShot(ctx: any): Promise<number> {
+          const argv: string[] = ctx.args || [];
+          if (argv.length === 0 && self.terminal) {
+            const { runRubyRepl } = await import('../runtime/ruby-repl.js');
+            return await runRubyRepl({
+              facetMgr,
+              vfs: sqliteFs,
+              terminal: self.terminal,
+              installRoot,
+            });
+          }
+          return await oneShotHandler(ctx);
+        };
+      };
+      registerRunnerFactory('ruby-runner', wrappedRuby);
     } catch (e: any) {
       console.error('[init] ruby-runner registration FAILED:', e?.message || e, e?.stack || '');
     }
@@ -446,9 +464,8 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       run: async (fm, code, opts) => runNodeScript(fm, code, opts as any),
       supportsBinSpawn: true,
     };
-    registry.register(
-      'node',
-      buildRuntimeHandler(nodeSpec, {
+    {
+      const oneShotNode = buildRuntimeHandler(nodeSpec, {
         vfs: sqliteFs,
         facetMgr,
         getEsbuild: () => {
@@ -459,8 +476,17 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           return self.esbuildService!;
         },
         registry,
-      }),
-    );
+      });
+      // REPL Stream A: no-args invocation → drop into REPL session.
+      registry.register('node', async function nodeReplOrOneShot(ctx: any): Promise<number> {
+        const argv: string[] = ctx.args || [];
+        if (argv.length === 0 && self.terminal) {
+          const { runNodeRepl } = await import('../runtime/node-repl.js');
+          return await runNodeRepl({ facetMgr, terminal: self.terminal });
+        }
+        return await oneShotNode(ctx);
+      });
+    }
 
     // ── bun command (multi-runtime wave: refactored to use runtime-registry) ──
     //
@@ -551,9 +577,8 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         },
       },
     };
-    registry.register(
-      'bun',
-      buildRuntimeHandler(bunSpec, {
+    {
+      const oneShotBun = buildRuntimeHandler(bunSpec, {
         vfs: sqliteFs,
         facetMgr,
         getEsbuild: () => {
@@ -564,8 +589,17 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           return self.esbuildService!;
         },
         registry,
-      }),
-    );
+      });
+      // REPL Stream A: no-args invocation → drop into REPL session.
+      registry.register('bun', async function bunReplOrOneShot(ctx: any): Promise<number> {
+        const argv: string[] = ctx.args || [];
+        if (argv.length === 0 && self.terminal) {
+          const { runBunRepl } = await import('../runtime/bun-repl.js');
+          return await runBunRepl({ facetMgr, terminal: self.terminal });
+        }
+        return await oneShotBun(ctx);
+      });
+    }
 
     // ── wasm-runner: native WebAssembly runtime via LOADER-modules transport ──
     //
