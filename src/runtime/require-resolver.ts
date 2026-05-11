@@ -103,10 +103,42 @@ function normalizePath(p: string): string {
 /**
  * Extension-list probe; mirrors node-shims.ts:__resolveFile so prefetch
  * picks the same on-disk file the runtime require will pick.
+ *
+ * Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):
+ *   1. LOAD_AS_FILE: base, base.js, base.mjs, base.cjs, base.json.
+ *   2. LOAD_AS_DIRECTORY (if base resolves to a directory):
+ *      a. <base>/package.json#main → recurse.
+ *      b. <base>/index.{js,cjs,mjs,json}.
+ *
+ * Bug class C (audit 2026-05-11): step 2a was missing, so prefetch
+ * silently dropped any file reachable only via package.json#main from
+ * a directory-style require (e.g. `require('./mod')` where mod has
+ * main='entry.js' and no index.js).
  */
 function resolveFile(vfs: SqliteVFS, base: string): string | null {
-  const exts = ['', '.js', '.mjs', '.cjs', '.json', '/index.js', '/index.cjs', '/index.mjs', '/index.json'];
-  for (const ext of exts) {
+  const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
+  for (const ext of fileExts) {
+    const p = normalizePath(base + ext);
+    if (vfs.exists(p) && !vfs.isDirectory(p)) return p;
+  }
+  // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
+  const baseTrim = base.replace(/\/+$/, '');
+  const pkgJsonPath = normalizePath(baseTrim + '/package.json');
+  if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
+    let pkg: any = null;
+    try { pkg = JSON.parse(vfs.readFileString(pkgJsonPath)); } catch { /* fall through */ }
+    if (pkg && typeof pkg.main === 'string' && pkg.main.length > 0) {
+      const mainStripped = pkg.main.replace(/^\.\/+/, '').replace(/^\/+/, '');
+      const mainBase = baseTrim + '/' + mainStripped;
+      // Guard against pkg.main === '.' or empty → would re-enter same base.
+      if (mainBase !== base && mainBase !== baseTrim) {
+        const resolved = resolveFile(vfs, mainBase);
+        if (resolved) return resolved;
+      }
+    }
+  }
+  const indexExts = ['/index.js', '/index.cjs', '/index.mjs', '/index.json'];
+  for (const ext of indexExts) {
     const p = normalizePath(base + ext);
     if (vfs.exists(p) && !vfs.isDirectory(p)) return p;
   }
