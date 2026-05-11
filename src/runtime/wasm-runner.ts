@@ -77,17 +77,35 @@ declare const __wasiRunStart: (
   instance: WebAssembly.Instance,
   ctx: { memory: WebAssembly.Memory },
 ) => { exitCode: number; error?: string };
+// Stream-B P3: async variant that wraps _start with WebAssembly.promising
+// for JSPI-suspending imports (sock_send/recv/shutdown). Falls back to
+// sync invocation when WebAssembly.promising is unavailable, so behaviour
+// is identical for non-suspending wasm programs.
+declare const __wasiRunStartAsync: (
+  instance: WebAssembly.Instance,
+  ctx: { memory: WebAssembly.Memory },
+) => Promise<{ exitCode: number; error?: string }>;
 declare const __wasiInitFS: (opts: {
   root: string;
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
   files: Record<string, string>;
   dirs: string[];
+  // Stream-B B1+B3: additive optional fields.
+  times?: Record<string, { mtime: string; atime: string; ctime: string }>;
+  symlinks?: Record<string, string>;
 }) => void;
 declare const __wasiSnapshotFS: () => {
   filesWritten: Record<string, string>;
   filesDeleted: string[];
   dirsCreated: string[];
   dirsDeleted: string[];
+  // Stream-B B1+B3: additive optional diff fields. Always present in
+  // post-B1 builds, but `?` keeps tsc happy if the preamble pre-dates
+  // the change (defensive — should never trigger in practice since this
+  // file ships with the same wasi-instance.ts).
+  timesChanged?: Record<string, { mtime: string; atime: string; ctime: string }>;
+  symlinksCreated?: Record<string, string>;
+  symlinksDeleted?: string[];
 } | null;
 
 export const WASM_RUNNER_VERSION = '0.3.0';
@@ -297,8 +315,9 @@ function snapshotVfs(
  * SqliteFS. Each operation is independent; failures on one path don't
  * abort the rest (we log to stderr and continue).
  */
-function flushVfsDiff(vfs: VfsLike, diff: import('./wasi-instance.js').WasiFsDiff): { written: number; deleted: number; mkdirs: number; rmdirs: number } {
+function flushVfsDiff(vfs: VfsLike, diff: import('./wasi-instance.js').WasiFsDiff): { written: number; deleted: number; mkdirs: number; rmdirs: number; timesTouched: number; symlinks: number } {
   let written = 0, deleted = 0, mkdirs = 0, rmdirs = 0;
+  let timesTouched = 0, symlinks = 0;
   for (const path of diff.dirsCreated) {
     try { vfs.mkdir(path, { recursive: true }); mkdirs++; } catch {}
   }
@@ -321,7 +340,23 @@ function flushVfsDiff(vfs: VfsLike, diff: import('./wasi-instance.js').WasiFsDif
   for (const path of diff.dirsDeleted) {
     try { vfs.rmdir(path); rmdirs++; } catch {}
   }
-  return { written, deleted, mkdirs, rmdirs };
+  // Stream-B B1+B3: count timesChanged / symlinks for diagnostics. The
+  // current SqliteVFS doesn't expose utime() or symlink() on its public
+  // surface, so we don't persist these across calls — they live only
+  // within the call (mtimes are read back correctly via stat→filestat_get
+  // before the snapshot returns). This is a documented v1 limitation.
+  if (diff.timesChanged) {
+    timesTouched = Object.keys(diff.timesChanged).length;
+    // Future hook: when SqliteVFS gains a utime() method, call it here:
+    //   for (const [path, t] of Object.entries(diff.timesChanged)) {
+    //     try { vfs.utime(path, Number(t.atime) / 1e9, Number(t.mtime) / 1e9); } catch {}
+    //   }
+  }
+  if (diff.symlinksCreated) {
+    symlinks = Object.keys(diff.symlinksCreated).length;
+    // Future hook: when SqliteVFS gains a symlink() method, call it here.
+  }
+  return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks };
 }
 
 /**
@@ -506,6 +541,23 @@ export function makeWasmRunner(deps: {
       if (args.mode === 'wasi') {
         const mk = __wasiMakeImports;
         const runStart = __wasiRunStart;
+        // Stream-B P3 / prod-verify-fix: bare lexical reference, matching
+        // the runStart pattern above. The earlier `(globalThis as any)
+        // .__wasiRunStartAsync` lookup returned undefined at runtime
+        // because top-level `function` declarations in the preamble's
+        // ES-module scope do NOT auto-attach to globalThis. The result
+        // was that sock_*/poll_oneoff (wrapped in WebAssembly.Suspending)
+        // were invoked from a sync `_start` call stack → V8 trapped with
+        // "trying to suspend without WebAssembly.promising". The 11
+        // sync-only Stream-B probes worked because they never hit a
+        // Suspending import; the 7 async probes failed because they did.
+        // The preamble is statically prepended to this same module body
+        // (loader-pool.ts:523-530), so the symbol is guaranteed in
+        // scope. typeof guard handles the impossible case of a preamble
+        // pre-dating Stream-B (defensive only).
+        const runStartAsync = typeof __wasiRunStartAsync === 'function'
+          ? __wasiRunStartAsync
+          : null;
         const initFS = __wasiInitFS;
         const snapshotFS = __wasiSnapshotFS;
         if (!mk || !runStart || !initFS || !snapshotFS) {
@@ -567,7 +619,16 @@ export function makeWasmRunner(deps: {
             error: 'wasm module did not export a `memory` — WASI requires one.',
           };
         }
-        const r = runStart(inst, { memory: memRef.mem });
+        // Stream-B P3: use async runStart when available so any
+        // suspending socket imports can complete via JSPI. The async
+        // wrapper falls back to sync invocation internally when
+        // WebAssembly.promising isn't available, so this is safe for
+        // non-suspending programs too. Legacy preambles (pre-Stream-B)
+        // that ship without __wasiRunStartAsync still work via the
+        // sync runStart path.
+        const r = runStartAsync
+          ? await runStartAsync(inst, { memory: memRef.mem })
+          : runStart(inst, { memory: memRef.mem });
         const fsDiff = snapshotFS();
         return {
           ok: r.exitCode === 0 && !r.error,
