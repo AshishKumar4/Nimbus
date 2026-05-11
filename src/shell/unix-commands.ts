@@ -104,20 +104,149 @@ function mkClear(): CmdFn {
   return (ctx) => { ctx.stdout.write('\x1b[2J\x1b[H'); return 0; };
 }
 
+/**
+ * BUG-SWEEP-R2-5 (2026-05-11): date strftime format support.
+ *
+ * Pre-fix mkDate only honoured `-u`, `-I`, and `+%s` literal. Any
+ * other `+FMT` was a no-op falling to `now.toString()`. Real shell
+ * scripts use `date +%Y-%m-%d`, `date +%H:%M:%S`, `date +%F`, etc.
+ *
+ * Post-fix: full strftime subset:
+ *   %Y / %C / %y       year (4-digit / century / 2-digit)
+ *   %m / %B / %b / %h  month (numeric / full name / abbrev / abbrev)
+ *   %d / %e            day of month (zero-padded / space-padded)
+ *   %j                 day of year
+ *   %H / %I / %M / %S  hour-24 / hour-12 / minute / second
+ *   %p                 AM/PM
+ *   %A / %a            weekday (full / abbrev)
+ *   %u / %w            ISO weekday (1=Mon..7=Sun) / weekday (0=Sun..6=Sat)
+ *   %s                 unix timestamp (seconds)
+ *   %N                 nanoseconds (zero-pad to 9 digits)
+ *   %F                 %Y-%m-%d
+ *   %T / %R            %H:%M:%S / %H:%M
+ *   %D                 %m/%d/%y
+ *   %z / %Z            timezone offset / name
+ *   %%                 literal %
+ *   %n / %t            newline / tab
+ */
 function mkDate(): CmdFn {
   return (ctx) => {
     const now = new Date();
-    if (ctx.args.includes('-u') || ctx.args.includes('--utc')) {
-      ctx.stdout.write(now.toUTCString() + '\n');
-    } else if (ctx.args.includes('-I') || ctx.args.includes('--iso-8601')) {
-      ctx.stdout.write(now.toISOString() + '\n');
-    } else if (ctx.args.includes('+%s')) {
-      ctx.stdout.write(Math.floor(now.getTime() / 1000) + '\n');
-    } else {
-      ctx.stdout.write(now.toString() + '\n');
+    const useUtc = ctx.args.includes('-u') || ctx.args.includes('--utc');
+    // Find the `+FMT` arg (if any). Real `date +FMT [args]` accepts
+    // only one format; we honour the first.
+    const fmtArg = ctx.args.find(a => a.startsWith('+'));
+    if (fmtArg) {
+      ctx.stdout.write(strftime(now, fmtArg.slice(1), useUtc) + '\n');
+      return 0;
     }
+    if (ctx.args.includes('-I') || ctx.args.includes('--iso-8601')) {
+      ctx.stdout.write(now.toISOString() + '\n');
+      return 0;
+    }
+    if (useUtc) {
+      ctx.stdout.write(now.toUTCString() + '\n');
+      return 0;
+    }
+    ctx.stdout.write(now.toString() + '\n');
     return 0;
   };
+}
+
+const _MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const _MONTHS_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const _DAYS_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const _DAYS_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+function strftime(d: Date, fmt: string, utc: boolean): string {
+  const get = (m: string): any => {
+    switch (m) {
+      case 'FullYear': return utc ? d.getUTCFullYear() : d.getFullYear();
+      case 'Month': return utc ? d.getUTCMonth() : d.getMonth();
+      case 'Date': return utc ? d.getUTCDate() : d.getDate();
+      case 'Hours': return utc ? d.getUTCHours() : d.getHours();
+      case 'Minutes': return utc ? d.getUTCMinutes() : d.getMinutes();
+      case 'Seconds': return utc ? d.getUTCSeconds() : d.getSeconds();
+      case 'Day': return utc ? d.getUTCDay() : d.getDay();
+      case 'Milliseconds': return utc ? d.getUTCMilliseconds() : d.getMilliseconds();
+      default: return 0;
+    }
+  };
+  const pad = (n: number, w: number, ch = '0') => String(n).padStart(w, ch);
+  const yyyy = get('FullYear');
+  const mm0 = get('Month');           // 0..11
+  const dd = get('Date');
+  const hh = get('Hours');
+  const mn = get('Minutes');
+  const ss = get('Seconds');
+  const dow = get('Day');             // 0..6 (Sun..Sat)
+  const ms = get('Milliseconds');
+  // Day of year: difference from Jan 1.
+  const jan1 = utc
+    ? Date.UTC(yyyy, 0, 1)
+    : new Date(yyyy, 0, 1).getTime();
+  const doy = Math.floor((d.getTime() - jan1) / 86400000) + 1;
+  // ISO weekday: 1=Mon..7=Sun.
+  const isoDow = dow === 0 ? 7 : dow;
+  const ampm = hh < 12 ? 'AM' : 'PM';
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  // TZ offset in ±HHMM form.
+  const tzOff = utc ? '+0000' : (() => {
+    const off = -d.getTimezoneOffset();
+    const sign = off >= 0 ? '+' : '-';
+    const abs = Math.abs(off);
+    return sign + pad(Math.floor(abs / 60), 2) + pad(abs % 60, 2);
+  })();
+  const tzName = utc ? 'UTC' : (() => {
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(d);
+      const tz = parts.find(p => p.type === 'timeZoneName');
+      return tz ? tz.value : 'UTC';
+    } catch { return 'UTC'; }
+  })();
+  let out = '';
+  let i = 0;
+  while (i < fmt.length) {
+    const ch = fmt[i];
+    if (ch !== '%') { out += ch; i++; continue; }
+    i++;
+    const spec = fmt[i] || '';
+    i++;
+    switch (spec) {
+      case 'Y': out += String(yyyy); break;
+      case 'C': out += pad(Math.floor(yyyy / 100), 2); break;
+      case 'y': out += pad(yyyy % 100, 2); break;
+      case 'm': out += pad(mm0 + 1, 2); break;
+      case 'B': out += _MONTHS_FULL[mm0]; break;
+      case 'b': case 'h': out += _MONTHS_ABBR[mm0]; break;
+      case 'd': out += pad(dd, 2); break;
+      case 'e': out += String(dd).padStart(2, ' '); break;
+      case 'j': out += pad(doy, 3); break;
+      case 'H': out += pad(hh, 2); break;
+      case 'I': out += pad(h12, 2); break;
+      case 'M': out += pad(mn, 2); break;
+      case 'S': out += pad(ss, 2); break;
+      case 'p': out += ampm; break;
+      case 'P': out += ampm.toLowerCase(); break;
+      case 'A': out += _DAYS_FULL[dow]; break;
+      case 'a': out += _DAYS_ABBR[dow]; break;
+      case 'u': out += String(isoDow); break;
+      case 'w': out += String(dow); break;
+      case 's': out += String(Math.floor(d.getTime() / 1000)); break;
+      case 'N': out += pad(ms * 1_000_000, 9); break;
+      case 'F': out += `${yyyy}-${pad(mm0 + 1, 2)}-${pad(dd, 2)}`; break;
+      case 'T': out += `${pad(hh, 2)}:${pad(mn, 2)}:${pad(ss, 2)}`; break;
+      case 'R': out += `${pad(hh, 2)}:${pad(mn, 2)}`; break;
+      case 'D': out += `${pad(mm0 + 1, 2)}/${pad(dd, 2)}/${pad(yyyy % 100, 2)}`; break;
+      case 'z': out += tzOff; break;
+      case 'Z': out += tzName; break;
+      case '%': out += '%'; break;
+      case 'n': out += '\n'; break;
+      case 't': out += '\t'; break;
+      default: out += '%' + spec; break;  // unknown — preserve literal
+    }
+  }
+  return out;
 }
 
 function mkUptime(): CmdFn {
@@ -421,55 +550,783 @@ function mkSed(vfs: SqliteVFS): CmdFn {
   };
 }
 
+/**
+ * BUG-SWEEP-R2-4 (2026-05-11): expanded awk subset.
+ *
+ * Pre-fix mkAwk supported only:
+ *   {print $N}
+ *   /pattern/ [{print}]
+ * Anything else → 'awk: unsupported program'.
+ *
+ * This extension adds (all in pure JS — no embedded awk-interpreter):
+ *   BEGIN { stmts }     — run before any input line
+ *   END   { stmts }     — run after last line
+ *   /pat/ { stmts }     — per-line conditional action
+ *   { stmts }           — per-line unconditional action
+ *   $0, $1..$N, $NF     — field refs in any expression
+ *   NR, NF              — record number, field count
+ *   print EXPR          — write EXPR to stdout + newline (comma-sep)
+ *   printf "fmt", a, b  — printf-style (%s %d %f %x %o + width.prec)
+ *   sum += $N           — assignment + compound
+ *   simple arithmetic   — + - * / % () in expression position
+ *   numeric literals    — integers and decimals
+ *   string literals     — "..."
+ *   user vars           — assigned via name = expr or compound
+ *
+ * NOT supported:
+ *   - for/while/if (control flow)
+ *   - functions
+ *   - arrays (assoc / indexed)
+ *   - getline
+ *   - regex match operator ~/!~ outside pattern position
+ *
+ * The eval engine is a tiny stmt-list runner that compiles each
+ * statement to a JS closure operating on a shared state {vars,
+ * fields[], NR, NF, separator, stdout, stderr}. Statements are
+ * separated by `;` or `\\n`.
+ *
+ * Failure mode: if we can't parse a statement, write a clear error
+ * to stderr and exit 1 (no silent fail).
+ */
 function mkAwk(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
-    const program = ctx.args[0] || '';
-    const fileArgs = ctx.args.slice(1).filter(a => !a.startsWith('-') && a !== program);
+    const allArgs = ctx.args;
+    // Parse -F separator if present.
+    let separator: string | RegExp = /\s+/;
+    const programArgs: string[] = [];
+    const fileArgs: string[] = [];
+    for (let i = 0; i < allArgs.length; i++) {
+      const a = allArgs[i];
+      if (a === '-F') {
+        const s = allArgs[++i];
+        if (s) separator = s.length === 1 ? s : new RegExp(s);
+      } else if (a.startsWith('-F')) {
+        const s = a.slice(2);
+        if (s) separator = s.length === 1 ? s : new RegExp(s);
+      } else if (a.startsWith('-')) {
+        // Ignore other flags (silent compat).
+      } else if (programArgs.length === 0) {
+        programArgs.push(a);
+      } else {
+        fileArgs.push(a);
+      }
+    }
+    const program = programArgs[0] || '';
     let input = ctx.stdin || '';
     if (fileArgs.length > 0 && !input) {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0])); }
       catch { ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`); return 1; }
     }
-    const sep = ctx.args.includes('-F') ? ctx.args[ctx.args.indexOf('-F') + 1] : /\s+/;
-    // Support: {print $N} and BEGIN/END blocks
-    const printMatch = program.match(/^\{print\s+(.*)\}$/);
-    if (printMatch) {
-      const fields = printMatch[1];
-      for (const line of input.split('\n').filter(Boolean)) {
-        const parts = line.split(sep);
-        const output = fields.replace(/\$(\d+)/g, (_, n) => {
-          const idx = parseInt(n);
-          return idx === 0 ? line : (parts[idx - 1] || '');
-        }).replace(/\$NF/g, parts[parts.length - 1] || '');
-        ctx.stdout.write(output + '\n');
-      }
-    } else if (program.match(/\/.*\//)) {
-      // Pattern matching: /pattern/ {print}
-      const pm = program.match(/\/(.*?)\/\s*(\{.*\})?/);
-      if (pm) {
-        const re = new RegExp(pm[1]);
-        for (const line of input.split('\n').filter(Boolean)) {
-          if (re.test(line)) ctx.stdout.write(line + '\n');
+
+    // ── Parse program into blocks. ──
+    // Block forms:
+    //   BEGIN { stmts }
+    //   END   { stmts }
+    //   /pat/ { stmts }
+    //   /pat/                    (implicit { print })
+    //   { stmts }
+    // Multiple blocks may appear (separated by whitespace/newlines).
+    interface Block { kind: 'BEGIN' | 'END' | 'PATTERN' | 'MAIN'; pattern?: RegExp; body: string }
+    const blocks: Block[] = [];
+    let cursor = 0;
+    const src = program.trim();
+    function skipWS() {
+      while (cursor < src.length && /\s/.test(src[cursor])) cursor++;
+    }
+    function parseBraced(): string {
+      // Assumes src[cursor] === '{'
+      let depth = 0;
+      let start = cursor;
+      while (cursor < src.length) {
+        const ch = src[cursor];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { cursor++; return src.slice(start + 1, cursor - 1); } }
+        else if (ch === '"' || ch === "'") {
+          const quote = ch;
+          cursor++;
+          while (cursor < src.length && src[cursor] !== quote) {
+            if (src[cursor] === '\\') cursor++;
+            cursor++;
+          }
         }
+        cursor++;
       }
-    } else {
-      ctx.stderr.write('awk: unsupported program. Use {print $N} or /pattern/\n');
+      return src.slice(start + 1, cursor);
+    }
+    while (cursor < src.length) {
+      skipWS();
+      if (cursor >= src.length) break;
+      if (src.startsWith('BEGIN', cursor)) {
+        cursor += 5;
+        skipWS();
+        if (src[cursor] !== '{') { ctx.stderr.write('awk: BEGIN without {\n'); return 1; }
+        blocks.push({ kind: 'BEGIN', body: parseBraced() });
+        continue;
+      }
+      if (src.startsWith('END', cursor)) {
+        cursor += 3;
+        skipWS();
+        if (src[cursor] !== '{') { ctx.stderr.write('awk: END without {\n'); return 1; }
+        blocks.push({ kind: 'END', body: parseBraced() });
+        continue;
+      }
+      if (src[cursor] === '/') {
+        // Pattern /pat/ optionally followed by {body}
+        const pstart = cursor + 1;
+        cursor++;
+        while (cursor < src.length && src[cursor] !== '/') {
+          if (src[cursor] === '\\') cursor++;
+          cursor++;
+        }
+        const patSrc = src.slice(pstart, cursor);
+        cursor++; // past closing /
+        skipWS();
+        let body = 'print';
+        if (cursor < src.length && src[cursor] === '{') body = parseBraced();
+        let re: RegExp;
+        try { re = new RegExp(patSrc); }
+        catch (e: any) { ctx.stderr.write(`awk: bad regex /${patSrc}/: ${e?.message || e}\n`); return 1; }
+        blocks.push({ kind: 'PATTERN', pattern: re, body });
+        continue;
+      }
+      if (src[cursor] === '{') {
+        blocks.push({ kind: 'MAIN', body: parseBraced() });
+        continue;
+      }
+      ctx.stderr.write(`awk: parse error at "${src.slice(cursor, cursor + 20)}"\n`);
       return 1;
     }
+
+    // ── Statement evaluator. ──
+    // The evaluator processes a body string by splitting on `;` or
+    // newline, then executes each statement against a state record.
+    // Each statement is matched against shapes:
+    //   print EXPR[, EXPR]*    OR  print
+    //   printf "fmt", EXPR, …
+    //   IDENT = EXPR
+    //   IDENT (+|-|*|/|%)= EXPR
+    //   next  (skip rest of body for this line — rare)
+    interface State {
+      vars: Record<string, any>;
+      fields: string[];  // [$0, $1, $2, ...]
+      NR: number;
+      NF: number;
+      printed: boolean;
+    }
+    /**
+     * Expression evaluator without `new Function`. workerd CSP blocks
+     * dynamic code generation at request time. This is a small
+     * recursive-descent evaluator for the subset:
+     *   - literals: number, string ("...")
+     *   - field refs: $0, $N, $NF
+     *   - builtins: NR, NF
+     *   - user vars: identifier (looked up in st.vars; default 0)
+     *   - binary ops: + - * / % (numeric)
+     *   - parens: (expr)
+     *   - string concat happens via space-join in `print` call sites
+     *
+     * The grammar:
+     *   expr     := term (('+'|'-') term)*
+     *   term     := factor (('*'|'/'|'%') factor)*
+     *   factor   := number | string | '$' (number | 'NF') | ident | '(' expr ')'
+     */
+    function evalExpr(expr: string, st: State): any {
+      const text = expr.trim();
+      let pos = 0;
+      function skipWs() { while (pos < text.length && /\s/.test(text[pos])) pos++; }
+      function peek(): string { return text[pos]; }
+      function consume(ch: string): boolean { skipWs(); if (text[pos] === ch) { pos++; return true; } return false; }
+      function expect(ch: string): void { if (!consume(ch)) throw new Error(`expected '${ch}' at "${text.slice(pos, pos + 20)}"`); }
+      function parseExpr(): any {
+        let left = parseTerm();
+        for (;;) {
+          skipWs();
+          const op = text[pos];
+          if (op === '+' || op === '-') {
+            pos++;
+            const right = parseTerm();
+            const ln = toNum(left), rn = toNum(right);
+            left = op === '+' ? ln + rn : ln - rn;
+          } else break;
+        }
+        return left;
+      }
+      function parseTerm(): any {
+        let left = parseFactor();
+        for (;;) {
+          skipWs();
+          const op = text[pos];
+          if (op === '*' || op === '/' || op === '%') {
+            pos++;
+            const right = parseFactor();
+            const ln = toNum(left), rn = toNum(right);
+            left = op === '*' ? ln * rn : op === '/' ? ln / rn : ln % rn;
+          } else break;
+        }
+        return left;
+      }
+      function parseFactor(): any {
+        skipWs();
+        if (pos >= text.length) throw new Error(`unexpected end of expression`);
+        const ch = text[pos];
+        // Number
+        if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(text[pos + 1]))) {
+          let start = pos;
+          while (pos < text.length && /[0-9.]/.test(text[pos])) pos++;
+          return parseFloat(text.slice(start, pos));
+        }
+        // String literal (double or single quotes)
+        if (ch === '"' || ch === "'") {
+          const quote = ch;
+          pos++;
+          let s = '';
+          while (pos < text.length && text[pos] !== quote) {
+            if (text[pos] === '\\' && pos + 1 < text.length) {
+              const esc = text[pos + 1];
+              s += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc === 'r' ? '\r' : esc === '\\' ? '\\' : esc === '"' ? '"' : esc === "'" ? "'" : esc;
+              pos += 2;
+            } else {
+              s += text[pos];
+              pos++;
+            }
+          }
+          if (pos < text.length) pos++; // skip closing quote
+          return s;
+        }
+        // Parenthesised
+        if (ch === '(') {
+          pos++;
+          const v = parseExpr();
+          expect(')');
+          return v;
+        }
+        // Unary minus
+        if (ch === '-') {
+          pos++;
+          return -toNum(parseFactor());
+        }
+        // Unary plus
+        if (ch === '+') {
+          pos++;
+          return toNum(parseFactor());
+        }
+        // Field ref: $N or $NF
+        if (ch === '$') {
+          pos++;
+          skipWs();
+          if (text.startsWith('NF', pos)) {
+            pos += 2;
+            return st.fields[st.NF] ?? '';
+          }
+          // Parens around index? $($1+1) etc — not supported, just digits.
+          let nStart = pos;
+          while (pos < text.length && /[0-9]/.test(text[pos])) pos++;
+          if (nStart === pos) throw new Error(`expected field index after $ at "${text.slice(pos, pos + 10)}"`);
+          const idx = parseInt(text.slice(nStart, pos), 10);
+          return st.fields[idx] ?? '';
+        }
+        // Identifier: NR, NF, user var
+        if (/[A-Za-z_]/.test(ch)) {
+          let start = pos;
+          while (pos < text.length && /[A-Za-z0-9_]/.test(text[pos])) pos++;
+          const name = text.slice(start, pos);
+          if (name === 'NR') return st.NR;
+          if (name === 'NF') return st.NF;
+          return st.vars[name] !== undefined ? st.vars[name] : 0;
+        }
+        throw new Error(`unexpected '${ch}' at "${text.slice(pos, pos + 20)}"`);
+      }
+      function toNum(v: any): number {
+        if (typeof v === 'number') return v;
+        const n = parseFloat(v);
+        return Number.isFinite(n) ? n : 0;
+      }
+      try {
+        const v = parseExpr();
+        skipWs();
+        if (pos < text.length) {
+          // Trailing junk — could be intentional (e.g. tail of stmt is
+          // separator). Be permissive — return what we have.
+        }
+        return v;
+      } catch (e: any) {
+        throw new Error(`expr error: ${e?.message || e} in "${expr}"`);
+      }
+    }
+    function stripStringsForScan(s: string): string {
+      // Replace string contents with same-length spaces so positions stay aligned.
+      let out = '';
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          out += ch;
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') { out += ' '; i++; }
+            out += ' ';
+            i++;
+          }
+          if (i < s.length) { out += ch; i++; }
+        } else {
+          out += ch;
+          i++;
+        }
+      }
+      return out;
+    }
+    function remapUserVars(s: string): string {
+      // Find identifiers (a-z_), skip ones that are reserved or already
+      // remapped. The simple approach: scan tokens outside string
+      // literals.
+      const RESERVED = new Set([
+        '__f', '__nr', '__nf', '__v',
+        'true', 'false', 'null', 'undefined', 'NaN', 'Infinity',
+        'Math', 'String', 'Number', 'Array', 'Object',
+        'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+        'length',  // for str/array .length access — not a free identifier here
+      ]);
+      let out = '';
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          out += ch;
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') { out += s[i]; i++; }
+            out += s[i]; i++;
+          }
+          if (i < s.length) { out += s[i]; i++; }
+          continue;
+        }
+        if (/[A-Za-z_]/.test(ch)) {
+          let start = i;
+          while (i < s.length && /[A-Za-z0-9_]/.test(s[i])) i++;
+          const ident = s.slice(start, i);
+          // Skip if previous non-ws char is `.` (member access).
+          let prev = start - 1;
+          while (prev >= 0 && /\s/.test(out[prev])) prev--;
+          if (out[prev] === '.') { out += ident; continue; }
+          if (RESERVED.has(ident)) { out += ident; continue; }
+          // Replace with (__v.ident !== undefined ? __v.ident : 0)
+          out += `(__v.${ident}!==undefined?__v.${ident}:0)`;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    }
+    function splitStmts(body: string): string[] {
+      const stmts: string[] = [];
+      let depth = 0;
+      let cur = '';
+      let i = 0;
+      while (i < body.length) {
+        const ch = body[i];
+        if (ch === '"' || ch === "'") {
+          cur += ch;
+          i++;
+          while (i < body.length && body[i] !== ch) {
+            if (body[i] === '\\') { cur += body[i]; i++; }
+            cur += body[i]; i++;
+          }
+          if (i < body.length) { cur += body[i]; i++; }
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (depth === 0 && (ch === ';' || ch === '\n')) {
+          const t = cur.trim();
+          if (t) stmts.push(t);
+          cur = '';
+          i++;
+          continue;
+        }
+        cur += ch;
+        i++;
+      }
+      const t = cur.trim();
+      if (t) stmts.push(t);
+      return stmts;
+    }
+    function execStmt(stmt: string, st: State): void {
+      // print [expr[, expr]*]
+      if (stmt === 'print' || stmt.startsWith('print ') || stmt.startsWith('print\t')) {
+        const rest = stmt.slice(5).trim();
+        if (!rest) { ctx.stdout.write(st.fields[0] + '\n'); st.printed = true; return; }
+        // Comma-separated exprs (space joiner). We must split at top-level commas only.
+        const parts = splitTopLevel(rest, ',');
+        const out = parts.map(p => stringify(evalExpr(p, st))).join(' ');
+        ctx.stdout.write(out + '\n');
+        st.printed = true;
+        return;
+      }
+      // printf "fmt", arg, arg, ...
+      if (stmt.startsWith('printf ') || stmt.startsWith('printf(')) {
+        let rest = stmt.startsWith('printf(') ? stmt.slice(7).replace(/\)\s*$/, '') : stmt.slice(7);
+        rest = rest.trim();
+        const parts = splitTopLevel(rest, ',');
+        if (parts.length === 0) return;
+        const fmt = evalExpr(parts[0], st);
+        const fargs = parts.slice(1).map(p => evalExpr(p, st));
+        ctx.stdout.write(printfFormat(String(fmt), fargs));
+        st.printed = true;
+        return;
+      }
+      // next: skip rest of body (no-op here since we re-enter each block fresh)
+      if (stmt === 'next') return;
+      // assignment: IDENT [op]= EXPR
+      // We require a top-level `=` not part of `==` `<=` `>=` `!=`.
+      const eqIdx = findAssignmentEq(stmt);
+      if (eqIdx > 0) {
+        const lhs = stmt.slice(0, eqIdx).trim();
+        const rhs = stmt.slice(eqIdx + 1).trim();
+        // Compound: lhs ends with op (e.g. `sum +`).
+        let op: string | null = null;
+        let name = lhs;
+        if (/[+\-*/%]$/.test(lhs)) {
+          op = lhs[lhs.length - 1];
+          name = lhs.slice(0, -1).trim();
+        }
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new Error(`bad assignment target "${name}"`);
+        }
+        const rv = evalExpr(rhs, st);
+        if (op) {
+          const cur = st.vars[name] !== undefined ? st.vars[name] : 0;
+          const lhsNum = typeof cur === 'number' ? cur : parseFloat(cur);
+          const rvNum = typeof rv === 'number' ? rv : parseFloat(rv);
+          const lN = Number.isFinite(lhsNum) ? lhsNum : 0;
+          const rN = Number.isFinite(rvNum) ? rvNum : 0;
+          st.vars[name] =
+            op === '+' ? lN + rN :
+            op === '-' ? lN - rN :
+            op === '*' ? lN * rN :
+            op === '/' ? lN / rN :
+            op === '%' ? lN % rN : rv;
+        } else {
+          st.vars[name] = rv;
+        }
+        return;
+      }
+      // Bare expression — evaluate for side effects (rare in awk).
+      evalExpr(stmt, st);
+    }
+    function findAssignmentEq(s: string): number {
+      let depth = 0;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') i++;
+            i++;
+          }
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (depth === 0 && ch === '=') {
+          const next = s[i + 1];
+          const prev = s[i - 1];
+          if (next === '=' || prev === '=' || prev === '!' || prev === '<' || prev === '>') continue;
+          return i;
+        }
+      }
+      return -1;
+    }
+    function splitTopLevel(s: string, sep: string): string[] {
+      const out: string[] = [];
+      let depth = 0;
+      let cur = '';
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (ch === '"' || ch === "'") {
+          cur += ch;
+          i++;
+          while (i < s.length && s[i] !== ch) {
+            if (s[i] === '\\') { cur += s[i]; i++; }
+            cur += s[i]; i++;
+          }
+          if (i < s.length) { cur += s[i]; i++; }
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (depth === 0 && ch === sep) { out.push(cur.trim()); cur = ''; i++; continue; }
+        cur += ch; i++;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    }
+    function stringify(v: any): string {
+      if (v === undefined || v === null) return '';
+      if (typeof v === 'number') {
+        if (Number.isInteger(v)) return String(v);
+        // awk's OFMT default is "%.6g"
+        return printfFormat('%.6g', [v]);
+      }
+      return String(v);
+    }
+    function printfFormat(fmt: string, fargs: any[]): string {
+      let out = '';
+      let i = 0;
+      let argIdx = 0;
+      while (i < fmt.length) {
+        const ch = fmt[i];
+        if (ch === '\\' && i + 1 < fmt.length) {
+          const esc = fmt[i + 1];
+          out += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc === 'r' ? '\r' : esc === '\\' ? '\\' : esc;
+          i += 2;
+          continue;
+        }
+        if (ch === '%' && i + 1 < fmt.length) {
+          // Parse: %[flags][width][.prec]specifier
+          let spec = '%';
+          i++;
+          while (i < fmt.length && /[-+ 0#]/.test(fmt[i])) { spec += fmt[i]; i++; }
+          while (i < fmt.length && /[0-9]/.test(fmt[i])) { spec += fmt[i]; i++; }
+          if (fmt[i] === '.') { spec += fmt[i]; i++; while (i < fmt.length && /[0-9]/.test(fmt[i])) { spec += fmt[i]; i++; } }
+          const conv = fmt[i];
+          i++;
+          if (conv === '%') { out += '%'; continue; }
+          const arg = fargs[argIdx++];
+          out += formatOne(spec + conv, arg);
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    }
+    function formatOne(spec: string, arg: any): string {
+      const conv = spec[spec.length - 1];
+      const flagsAndWidth = spec.slice(1, -1);
+      const dotIdx = flagsAndWidth.indexOf('.');
+      const widthPart = dotIdx >= 0 ? flagsAndWidth.slice(0, dotIdx) : flagsAndWidth;
+      const precPart = dotIdx >= 0 ? flagsAndWidth.slice(dotIdx + 1) : '';
+      let flags = '';
+      let widthStr = '';
+      for (const c of widthPart) {
+        if (/[-+ 0#]/.test(c)) flags += c;
+        else widthStr += c;
+      }
+      const width = widthStr ? parseInt(widthStr, 10) : 0;
+      const prec = precPart ? parseInt(precPart, 10) : -1;
+      let body: string;
+      switch (conv) {
+        case 's': body = String(arg ?? ''); if (prec >= 0) body = body.slice(0, prec); break;
+        case 'd': case 'i': {
+          const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(arg));
+          body = String(Number.isFinite(n) ? n : 0);
+          break;
+        }
+        case 'f': {
+          const n = typeof arg === 'number' ? arg : parseFloat(arg);
+          const p = prec < 0 ? 6 : prec;
+          body = (Number.isFinite(n) ? n : 0).toFixed(p);
+          break;
+        }
+        case 'g': {
+          const n = typeof arg === 'number' ? arg : parseFloat(arg);
+          const p = prec < 0 ? 6 : prec;
+          body = (Number.isFinite(n) ? n : 0).toPrecision(p).replace(/\.?0+$/, '');
+          break;
+        }
+        case 'x': {
+          const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(arg));
+          body = (Number.isFinite(n) ? n : 0).toString(16);
+          break;
+        }
+        case 'o': {
+          const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(arg));
+          body = (Number.isFinite(n) ? n : 0).toString(8);
+          break;
+        }
+        case 'c': {
+          if (typeof arg === 'number') body = String.fromCharCode(arg);
+          else body = String(arg).charAt(0);
+          break;
+        }
+        default: body = String(arg);
+      }
+      if (width > body.length) {
+        const pad = flags.includes('0') && (conv === 'd' || conv === 'i' || conv === 'f' || conv === 'x' || conv === 'o') ? '0' : ' ';
+        body = flags.includes('-') ? body.padEnd(width, ' ') : body.padStart(width, pad);
+      }
+      return body;
+    }
+
+    const state: State = {
+      vars: {},
+      fields: [],
+      NR: 0,
+      NF: 0,
+      printed: false,
+    };
+
+    function runBlock(block: Block): void {
+      const stmts = splitStmts(block.body);
+      for (const s of stmts) {
+        execStmt(s, state);
+      }
+    }
+
+    try {
+      // BEGIN blocks first.
+      for (const b of blocks) if (b.kind === 'BEGIN') runBlock(b);
+      // Main loop over input lines.
+      const lines = input.split('\n');
+      // awk default: drop the final empty line if input ended with \n.
+      if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
+        const parts = typeof separator === 'string' && separator.length === 1
+          ? line.split(separator)
+          : line.split(separator);
+        state.NR = li + 1;
+        state.NF = parts.filter(p => p !== '').length;
+        state.fields = [line, ...parts];
+        for (const b of blocks) {
+          if (b.kind === 'BEGIN' || b.kind === 'END') continue;
+          if (b.kind === 'PATTERN') {
+            if (b.pattern!.test(line)) runBlock(b);
+          } else {
+            // MAIN block (no pattern) — always runs.
+            runBlock(b);
+          }
+        }
+      }
+      // END blocks last.
+      for (const b of blocks) if (b.kind === 'END') runBlock(b);
+    } catch (e: any) {
+      ctx.stderr.write(`awk: ${e?.message || e}\n`);
+      return 1;
+    }
+
     return 0;
   };
 }
 
-function mkXargs(vfs: SqliteVFS): CmdFn {
-  return (ctx) => {
-    const input = ctx.stdin || '';
-    if (!input.trim()) return 0;
-    const cmd = ctx.args.join(' ') || 'echo';
-    const items = input.split(/\s+/).filter(Boolean);
-    // xargs passes all items as arguments to the command
-    // Since we can't execute shell commands from here, we print what would be executed
-    ctx.stdout.write(`${cmd} ${items.join(' ')}\n`);
-    return 0;
+/**
+ * BUG-SWEEP-R2-3 (2026-05-11): real xargs implementation.
+ *
+ * Pre-fix the impl printed the command-line it WOULD execute and
+ * returned 0. Real xargs runs the command, possibly batched (-n),
+ * with arguments substituted (-I).
+ *
+ * We do cross-command dispatch through the same `registry` lifo-sh
+ * uses, so xargs can drive `echo`, `cat`, `rm`, `seq`, lifo-sh
+ * lazy-loaded builtins — anything in the registry. The execution
+ * runs IN-SUPERVISOR (not through facet spawn) which means it
+ * works for pure-builtins but NOT for facet-direct commands like
+ * `node`, `git`, `npm` (the registry resolver returns those by
+ * name but invoking them requires the cp/facet pipeline).
+ *
+ * Supported flags:
+ *   -n NUM        run command with at most NUM args per invocation
+ *   -I REPL       replace REPL in command with the input item
+ *   -0            null-byte separator (rare; bash xargs -0 idiom)
+ *   default args  use args.split(/\s+/) from stdin
+ *
+ * Unsupported (document as gap): -P (parallel), -L (per-line), -p (prompt).
+ */
+function mkXargs(vfs: SqliteVFS, registry: any): CmdFn {
+  return async (ctx) => {
+    const input = (ctx.stdin || '').trim();
+    if (!input) return 0;
+
+    // Parse flags first
+    const args = [...ctx.args];
+    let batchSize = Infinity;
+    let replaceTok: string | null = null;
+    let nullSep = false;
+    while (args.length > 0 && args[0].startsWith('-')) {
+      const a = args.shift()!;
+      if (a === '-n') {
+        const n = parseInt(args.shift() || '', 10);
+        if (Number.isFinite(n) && n > 0) batchSize = n;
+      } else if (a.startsWith('-n')) {
+        const n = parseInt(a.slice(2), 10);
+        if (Number.isFinite(n) && n > 0) batchSize = n;
+      } else if (a === '-I') {
+        replaceTok = args.shift() || '{}';
+        batchSize = 1; // -I implies one-arg-per-invocation
+      } else if (a === '-0' || a === '--null') {
+        nullSep = true;
+      } else if (a === '--') {
+        break;
+      } else {
+        // Unknown flag — push back as cmd token (best-effort behavior)
+        args.unshift(a);
+        break;
+      }
+    }
+
+    // Remaining args: cmd + initial-args. Default: echo.
+    const cmdName = args.shift() || 'echo';
+    const cmdArgsInitial = args;
+
+    // Split stdin into items
+    const items = nullSep
+      ? input.split('\u0000').filter(Boolean)
+      : input.split(/\s+/).filter(Boolean);
+
+    // Resolve target command from registry (handles both eager + lazy maps).
+    let target;
+    try {
+      target = await registry.resolve(cmdName);
+    } catch (_e) { target = null; }
+    if (!target) {
+      // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.
+      ctx.stderr.write(`xargs: ${cmdName}: command not found\n`);
+      return 127;
+    }
+
+    // Run in batches.
+    const newCtx = (newArgs: string[]) => ({
+      args: newArgs,
+      env: ctx.env,
+      cwd: ctx.cwd,
+      vfs: (ctx as any).vfs,
+      stdout: ctx.stdout,
+      stderr: ctx.stderr,
+      stdin: '',  // xargs doesn't pipe its own stdin to children
+      signal: (ctx as any).signal,
+    });
+
+    let exit = 0;
+    if (replaceTok) {
+      // -I: one invocation per item, replacing token in initial args.
+      for (const item of items) {
+        const subbed = cmdArgsInitial.map(a => a.split(replaceTok!).join(item));
+        try {
+          const code = await target(newCtx(subbed));
+          if (typeof code === 'number' && code !== 0) exit = code;
+        } catch (e: any) {
+          ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+          exit = 1;
+        }
+      }
+    } else {
+      // -n N (or unlimited): batch items, append to initial args.
+      const step = Number.isFinite(batchSize) ? batchSize : items.length;
+      for (let i = 0; i < items.length; i += step) {
+        const batch = items.slice(i, i + step);
+        try {
+          const code = await target(newCtx([...cmdArgsInitial, ...batch]));
+          if (typeof code === 'number' && code !== 0) exit = code;
+        } catch (e: any) {
+          ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+          exit = 1;
+        }
+        if (!Number.isFinite(batchSize)) break;  // single batch when no -n
+      }
+    }
+    return exit;
   };
 }
 
@@ -549,6 +1406,167 @@ function mkDiff(vfs: SqliteVFS): CmdFn {
       return hasDiff ? 1 : 0;
     } catch (e: any) { ctx.stderr.write(`diff: ${e.message}\n`); return 2; }
   };
+}
+
+/**
+ * BUG-SWEEP-R2-1 (2026-05-11): POSIX rm with proper -f semantics.
+ *
+ * lifo-sh's rm calls `r.vfs.stat(...)` and catches `e instanceof VFSError`.
+ * Our SqliteVFSProvider's stat method delegates to SqliteVFS.stat which
+ * throws raw `Error("ENOENT: ...")` — NOT VFSError. lifo-sh's rm
+ * therefore falls through to `else throw e`, the error propagates up,
+ * and executeCommand returns exit 1.
+ *
+ * Real-world impact: every `rm -rf <nonexistent> && ...` short-circuits.
+ * The most common cleanup idiom in shell scripts.
+ *
+ * Fix: register our own rm in the registry's `commands` map (takes
+ * precedence over lifo-sh's lazy). Treat -f silently when target is
+ * missing (return 0). Handle both files (unlink) and directories
+ * (rmdir recursive when -r). Translate raw errors so the unix-command
+ * contract is honoured.
+ */
+/**
+ * BUG-SWEEP-R2-3b (2026-05-11): registry-level echo so `X | xargs echo`
+ * resolves. lifo-sh's `echo` is a Shell.builtins entry, NOT in the
+ * registry map. xargs's cross-command dispatch goes through
+ * registry.resolve(name) — without a registry entry for echo it falls
+ * back to 'command not found'. The init.ts override for echo flag
+ * handling targets Shell.builtins; we additionally register a copy
+ * here so registry-driven callers (xargs) can find it. Behaviour
+ * matches the BUG-SWEEP-4 nimbusEcho impl: -n / -e / -E / combined.
+ */
+function mkEcho(): CmdFn {
+  return (ctx) => {
+    const args = ctx.args;
+    let interpretEscapes = false;
+    let suppressNewline = false;
+    let i = 0;
+    while (i < args.length) {
+      const a = args[i];
+      if (a === '--') { i++; break; }
+      if (a === '-n') { suppressNewline = true; i++; continue; }
+      if (a === '-e') { interpretEscapes = true; i++; continue; }
+      if (a === '-E') { interpretEscapes = false; i++; continue; }
+      if (/^-[neE]+$/.test(a)) {
+        for (const ch of a.slice(1)) {
+          if (ch === 'n') suppressNewline = true;
+          else if (ch === 'e') interpretEscapes = true;
+          else if (ch === 'E') interpretEscapes = false;
+        }
+        i++;
+        continue;
+      }
+      break;
+    }
+    let out = args.slice(i).join(' ');
+    if (interpretEscapes) {
+      out = out
+        .replace(/\\\\/g, '\u0000')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .replace(/\\b/g, '\b')
+        .replace(/\\f/g, '\f')
+        .replace(/\\v/g, '\v')
+        .replace(/\\a/g, '\x07')
+        .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
+        .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/\u0000/g, '\\');
+    }
+    ctx.stdout.write(suppressNewline ? out : out + '\n');
+    return 0;
+  };
+}
+
+/**
+ * BUG-SWEEP-R2-3c (2026-05-11): registry-level cat (for xargs cross-
+ * command dispatch). Behaves like lifo-sh's lazy cat: reads files (or
+ * stdin if none), concatenates to stdout.
+ */
+function mkCat(vfs: SqliteVFS): CmdFn {
+  return (ctx) => {
+    const files = ctx.args.filter(a => !a.startsWith('-'));
+    if (files.length === 0) {
+      if (ctx.stdin) ctx.stdout.write(ctx.stdin);
+      return 0;
+    }
+    let exit = 0;
+    for (const f of files) {
+      try {
+        const fp = resolvePath(ctx.cwd, f);
+        const content = vfs.readFileString(fp);
+        ctx.stdout.write(content);
+      } catch (e: any) {
+        ctx.stderr.write(`cat: ${f}: ${e?.message || e}\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
+function mkRm(vfs: SqliteVFS): CmdFn {
+  return (ctx) => {
+    const args = ctx.args;
+    const recursive = args.some(a => a === '-r' || a === '-R' || a === '-rf' || a === '-Rf' || a === '-rR' || a === '--recursive' || (a.startsWith('-') && !a.startsWith('--') && (a.includes('r') || a.includes('R'))));
+    const force = args.some(a => a === '-f' || a === '--force' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
+    const targets = args.filter(a => !a.startsWith('-'));
+    if (targets.length === 0) {
+      if (force) return 0;  // POSIX: rm -f with no operands is silent success
+      ctx.stderr.write('rm: missing operand\n');
+      return 1;
+    }
+    let exit = 0;
+    for (const t of targets) {
+      const fp = resolvePath(ctx.cwd, t);
+      if (!vfs.exists(fp)) {
+        if (force) continue;  // silent success
+        ctx.stderr.write(`rm: cannot remove '${t}': No such file or directory\n`);
+        exit = 1;
+        continue;
+      }
+      try {
+        if (vfs.isDirectory(fp)) {
+          if (!recursive) {
+            ctx.stderr.write(`rm: cannot remove '${t}': Is a directory\n`);
+            exit = 1;
+            continue;
+          }
+          // Recursive delete: walk children, unlink files, rmdir dirs.
+          rmDirRec(vfs, fp);
+        } else {
+          vfs.unlink(fp);
+        }
+      } catch (e: any) {
+        // -f suppresses ENOENT only (file disappeared mid-loop); other
+        // errors (ENOTEMPTY because of a logic bug, ENOTDIR mismatches,
+        // permission errors) must still surface. Pre-fix the broad
+        // `if (force) continue` masked the readdir-iteration bug that
+        // left directories undeleted.
+        const msg = String(e?.message || e);
+        if (force && /ENOENT/.test(msg)) continue;
+        ctx.stderr.write(`rm: cannot remove '${t}': ${msg}\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
+/**
+ * Internal helper: recursive directory delete via SqliteVFS readdir +
+ * unlink/rmdir. vfs.readdir returns `{name, type}[]` not `string[]` —
+ * iterate the name property explicitly.
+ */
+function rmDirRec(vfs: SqliteVFS, path: string): void {
+  const entries = vfs.readdir(path);
+  for (const entry of entries) {
+    const childPath = path + '/' + entry.name;
+    if (entry.type === 'directory') rmDirRec(vfs, childPath);
+    else vfs.unlink(childPath);
+  }
+  vfs.rmdir(path);
 }
 
 function mkTouch(vfs: SqliteVFS): CmdFn {
@@ -861,10 +1879,17 @@ export function registerUnixCommands(
   registry.register('uniq', wrap(mkUniq()));
   registry.register('sed', wrap(mkSed(vfs)));
   registry.register('awk', wrap(mkAwk(vfs)));
-  registry.register('xargs', wrap(mkXargs(vfs)));
+  registry.register('xargs', wrap(mkXargs(vfs, registry)));
   registry.register('tee', wrap(mkTee(vfs)));
   registry.register('du', wrap(mkDu(vfs)));
   registry.register('diff', wrap(mkDiff(vfs)));
+  // Registry-level echo + cat for xargs cross-command dispatch.
+  // Shell.builtins still wins for direct `echo X` invocations; this
+  // entry is only reached when a command (xargs etc.) looks them up
+  // via the registry path.
+  registry.register('echo', wrap(mkEcho()));
+  registry.register('cat', wrap(mkCat(vfs)));
+  registry.register('rm', wrap(mkRm(vfs)));
   registry.register('touch', wrap(mkTouch(vfs)));
   registry.register('stat', wrap(mkStat(vfs)));
   registry.register('base64', wrap(mkBase64(vfs)));
