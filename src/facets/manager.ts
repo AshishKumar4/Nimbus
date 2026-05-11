@@ -363,6 +363,58 @@ ${SHIMS}
       __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
     }
 
+    // ── Unhandled rejection / uncaught error capture ──────────────────
+    //
+    // The try/catch around __compiledFn below catches only SYNCHRONOUS
+    // exceptions. Async fire-and-forget rejections (e.g.
+    //   import('./missing').then(({main}) => main())  // no .catch
+    // ) fire during the microtask drain and are neither caught nor
+    // reported \u2014 pre-fix the facet exits exitCode=0 with empty stderr,
+    // and the W5 zero-silent-OOM contract only catches non-zero exits.
+    //
+    // workerd's globalThis supports the standard WHATWG events:
+    //   - 'unhandledrejection' \u2014 fired on .reject() with no .catch
+    //   - 'error'              \u2014 uncaught synchronous errors on the
+    //                             global scope (e.g. errors thrown in
+    //                             setTimeout-scheduled callbacks that
+    //                             escape the __compiledFn try/catch)
+    //
+    // This listener converts each event into a stderr line + bumps
+    // exitCode to 1 (only on first event; subsequent events still
+    // append stderr). Mirrors real Node's default
+    // unhandled-rejection-is-fatal behaviour.
+    //
+    // See .seal-internal/2026-05-11-unhandled-rejection/audit.md.
+    let __unhandledFired = false;
+    const __reportUnhandled = (label, reason) => {
+      const text = reason && reason.stack
+        ? String(reason.stack)
+        : (reason && reason.message ? String(reason.message) : String(reason));
+      const line = label + ": " + text + "\\n";
+      stderr += line;
+      if (__supervisor) {
+        try {
+          __pendingIO.push(__supervisor.stderr(line).catch((e) =>
+            __onRpcDrop(line.length, e)));
+        } catch {}
+      }
+      if (!__unhandledFired) {
+        __unhandledFired = true;
+        if (exitCode === 0) exitCode = 1;
+      }
+    };
+    globalThis.addEventListener("unhandledrejection", (event) => {
+      __reportUnhandled("Unhandled promise rejection", event && event.reason);
+    });
+    globalThis.addEventListener("error", (event) => {
+      // ErrorEvent \u2014 uncaught synchronous error on the global scope.
+      // The try/catch around __compiledFn captures errors thrown DURING
+      // its synchronous execution; this listener catches errors from
+      // setTimeout/setInterval/microtask callbacks that escape the
+      // entry scope.
+      __reportUnhandled("Uncaught", event && (event.error || event.message));
+    });
+
     const mod = { exports: {} };
     // G2 (runtime-pkg wave): bins commonly check
     //   if (require.main === module) { main(); }
