@@ -325,9 +325,29 @@ function replStepFacetFn(
           '    return {"kind": "pending", "fut": fut}',
           // Per-push complete-stage: await the future, handle SystemExit
           // + runtime exceptions + display the result.
+          // REPL-A2 displayhook: PyodideConsole's async path (code.run_async
+          // inside a ConsoleFuture) does NOT auto-invoke sys.displayhook
+          // on the last expression value the way the CPython REPL does.
+          // We replicate the displayhook behavior explicitly: if the
+          // awaited result is not None, write repr(result)+"\\n" to
+          // stdout_callback and bind builtins._ to the value (matches
+          // CPython REPL convention where `_` holds the last result).
+          //
+          // Bare expressions (`a`, `1+1`, `obj.method()`) are compiled
+          // in 'single' mode by PyodideConsole but the auto-displayhook
+          // hook isn't wired — we wire it here. Statements (`a = 1`,
+          // `def f(): ...`) return None so this is a no-op for them.
+          'import builtins as __nimbus_builtins',
           'async def __nimbus_repl_finish(fut):',
           '    try:',
           '        result = await fut',
+          '        if result is not None:',
+          '            try:',
+          '                rendered = repr(result)',
+          '            except BaseException as re:',
+          '                rendered = "<repr() failed: " + repr(re) + ">"',
+          '            js.__nimbus_repl_stdout_cb(rendered + "\\n")',
+          '            __nimbus_builtins._ = result',
           '    except SystemExit as se:',
           '        code = se.code',
           '        if code is None:',
