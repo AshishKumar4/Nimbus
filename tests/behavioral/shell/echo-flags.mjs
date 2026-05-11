@@ -20,38 +20,59 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
+// Helper: extract the output line(s) BETWEEN the echoed command and
+// the next shell prompt. The command echo always starts with `$ `;
+// the prompt always ends with `$ `. Strip both.
+function commandResult(raw) {
+  const ansi = stripAnsi(raw);
+  // Find the last `\r\n` BEFORE the trailing prompt and return the
+  // segment between the command-echo line and that point.
+  const lines = ansi.split(/\r?\n/);
+  // Drop the last line if it's the prompt.
+  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
+  // Drop the first line (command echo with `$ cmd`).
+  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
+  return lines.join('\n');
+}
+
 // Probe 1: `echo hi` baseline.
 const r1 = await t.run('echo hi', 5_000);
-a.check('echo hi → "hi\\n"', /\bhi\b/.test(stripAnsi(r1.output)) && !/-/.test(stripAnsi(r1.output).split('\n').find(l => l === 'hi') || '-'),
-  `tail: ${JSON.stringify(stripAnsi(r1.output).slice(-150))}`);
-
-// Probe 2: `echo -n nopfx` — flag should be consumed.
-const r2 = await t.run('echo -n nopfx', 5_000);
-const out2 = stripAnsi(r2.output);
-// We assert no `-n nopfx` literal in output AND `nopfx` present.
+const c1 = commandResult(r1.output);
 a.check(
-  'echo -n consumes the flag (no `-n` in output)',
-  /\bnopfx\b/.test(out2) && !/-n nopfx/.test(out2),
-  `tail: ${JSON.stringify(out2.slice(-150))}`,
+  'echo hi → "hi" on its own line',
+  c1 === 'hi',
+  `result=${JSON.stringify(c1)}`,
 );
 
-// Probe 3: `echo -e "a\\tb"` — interpret tab escape.
-const r3 = await t.run('echo -e "a\\tb"', 5_000);
-const out3 = stripAnsi(r3.output);
-// Tab between a and b after the echo command line.
+// Probe 2: `echo -n nopfx` — no newline; prompt follows immediately.
+// The result lines pop drops trailing-prompt line; what remains is
+// the output line WITHOUT trailing newline. We check the buffer
+// directly: after running, last 20 chars should NOT have `\r\n` between
+// `nopfx` and prompt.
+const r2 = await t.run('echo -n nopfx', 5_000);
+const raw2 = stripAnsi(r2.output);
 a.check(
-  'echo -e interprets \\\\t as tab',
-  /a\tb/.test(out3) && !/-e "a/.test(out3),
-  `tail: ${JSON.stringify(out3.slice(-200))}`,
+  'echo -n suppresses trailing newline (prompt follows nopfx with no newline)',
+  /nopfxuser@/.test(raw2) || /nopfx\$/.test(raw2),
+  `tail: ${JSON.stringify(raw2.slice(-150))}`,
+);
+
+// Probe 3: `echo -e "a\\tb"` — output is `a<TAB>b\n`.
+const r3 = await t.run('echo -e "a\\tb"', 5_000);
+const c3 = commandResult(r3.output);
+a.check(
+  'echo -e interprets \\t as a real tab character',
+  c3 === 'a\tb',
+  `result=${JSON.stringify(c3)}`,
 );
 
 // Probe 4: combined `-ne` flag.
 const r4 = await t.run('echo -ne "x\\ty"', 5_000);
-const out4 = stripAnsi(r4.output);
+const raw4 = stripAnsi(r4.output);
 a.check(
-  'echo -ne handles combined flags (tab interp + no-newline)',
-  /x\ty/.test(out4) && !/-ne/.test(out4.split('\n').find(l => l.startsWith('-ne')) || ''),
-  `tail: ${JSON.stringify(out4.slice(-200))}`,
+  'echo -ne handles combined flags: tab interpreted AND no trailing newline',
+  /x\ty(?:user@|\$)/.test(raw4),
+  `tail: ${JSON.stringify(raw4.slice(-200))}`,
 );
 
 await t.close();
