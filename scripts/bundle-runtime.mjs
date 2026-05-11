@@ -75,6 +75,51 @@ const SPECS = {
     // Source: https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT
     license_text: APACHE_2_LLVM_LICENSE_TEXT(),
   },
+  'python/0.29.4': {
+    license: 'MPL-2.0',
+    wasi_namespace: null,        // Pyodide is Emscripten, not WASI
+    memfs_companion: null,
+    upstream_base: 'https://cdn.jsdelivr.net/pyodide/v0.29.4/full',
+    files: [
+      // The wasm module Pyodide instantiates. Goes to share/ so the
+      // user-VFS layout matches binji-clang's convention (bin/ for
+      // exec entry, share/<name>/ for runtime-private blobs).
+      { src: 'pyodide.asm.wasm', vfs: 'share/pyodide/pyodide.asm.wasm' },
+      // The Emscripten JS half. python-runner injects this verbatim
+      // as a LOADER module-source entry so workerd compiles it at
+      // module-load time (CSP-blocked at request time).
+      { src: 'pyodide.asm.js',   vfs: 'share/pyodide/pyodide.asm.js' },
+      // Python 3.13 stdlib. Pyodide writes this into its Emscripten
+      // MEMFS at /lib/python313.zip and CPython imports from there
+      // via the ZipImporter on sys.path.
+      { src: 'python_stdlib.zip', vfs: 'share/pyodide/python_stdlib.zip' },
+      // Lockfile — only used by pyodide.loadPackage / micropip (v3
+      // scope). We ship it so v3 doesn't need to re-bundle from
+      // scratch; v1 ignores its contents.
+      { src: 'pyodide-lock.json', vfs: 'share/pyodide/pyodide-lock.json' },
+      // The user-facing "bin" — a tiny launcher marker. We don't
+      // actually exec this file; the python-runner factory pulls
+      // bytes from the share/ entries and ignores bin/python's
+      // content. The presence of the entry in entrypoints[] is what
+      // wires `python` into the shell registry.
+      { src: 'BIN_MARKER',       vfs: 'bin/python',  mode: 'exec', runner: 'python-runner', binName: 'python' },
+      // Second entrypoint — `python3` is conventional on Linux.
+      { src: 'BIN_MARKER',       vfs: 'bin/python3', mode: 'exec', runner: 'python-runner', binName: 'python3' },
+    ],
+    license_text: MPL_2_LICENSE_TEXT(),
+    /** Source 'BIN_MARKER' is synthesised, not fetched. */
+    synthetic_files: {
+      'BIN_MARKER': Buffer.from(
+        '# Nimbus python-runner launcher marker. The actual Pyodide\n' +
+        '# bootstrap lives in share/pyodide/. This file is here only so\n' +
+        '# `which python` and `ls bin/` find a regular file at the\n' +
+        '# expected path. The shell-registry dispatches `python`\n' +
+        '# directly to the python-runner factory; this file is not\n' +
+        '# read or executed by Nimbus.\n',
+        'utf8',
+      ),
+    },
+  },
 };
 
 const key = `${RUNTIME}/${VERSION}`;
@@ -93,19 +138,31 @@ console.log(`[bundle-runtime] work dir: ${workDir}`);
 console.log(`[bundle-runtime] bucket:   ${BUCKET}`);
 console.log(`[bundle-runtime] account:  ${ACCOUNT}`);
 
-// ── 1. Fetch upstream artifacts ────────────────────────────────────
+// ── 1. Fetch upstream artifacts (or generate synthetic ones) ───────
 const downloaded = [];
+const seenSrc = new Set();  // dedupe — `python` and `python3` share BIN_MARKER
 for (const f of spec.files) {
   const local = join(workDir, f.src);
-  if (!existsSync(local)) {
-    const url = `${spec.upstream_base}/${f.src}`;
-    console.log(`[bundle-runtime] fetch ${url}`);
-    execSync(`curl -sS -L -o "${local}" "${url}"`, { stdio: 'inherit' });
+  // First time we see this `src`: fetch or synthesise, then write
+  // local file. Repeated `src` (e.g. BIN_MARKER for python + python3)
+  // skips the IO but still appends a manifest row pointing at the
+  // same content blob.
+  if (!seenSrc.has(f.src)) {
+    seenSrc.add(f.src);
+    const synthetic = spec.synthetic_files && spec.synthetic_files[f.src];
+    if (synthetic !== undefined) {
+      writeFileSync(local, synthetic);
+      console.log(`[bundle-runtime] synth ${f.src} (${synthetic.length} bytes)`);
+    } else if (!existsSync(local)) {
+      const url = `${spec.upstream_base}/${f.src}`;
+      console.log(`[bundle-runtime] fetch ${url}`);
+      execSync(`curl -sS -L -o "${local}" "${url}"`, { stdio: 'inherit' });
+    }
   }
   const bytes = readFileSync(local);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   downloaded.push({ ...f, local, bytes, sha256, size: bytes.length });
-  console.log(`[bundle-runtime]   ${f.src} → ${(bytes.length / 1024 / 1024).toFixed(2)} MiB sha256=${sha256.slice(0, 16)}…`);
+  console.log(`[bundle-runtime]   ${f.vfs} (← ${f.src}) → ${(bytes.length / 1024 / 1024).toFixed(2)} MiB sha256=${sha256.slice(0, 16)}…`);
 }
 
 // Bundled LICENSE file.
@@ -119,14 +176,15 @@ downloaded.push({
 });
 console.log(`[bundle-runtime]   LICENSE → ${licenseBytes.length} bytes sha256=${licenseSha256.slice(0, 16)}…`);
 
-// ── 2. Upload each file as a content-addressed blob ────────────────
-// Content path: blobs/<name>-<version>/<src-name>
+// ── 2. Upload each file as a content-addressed blob (deduped) ──────
+// Content path: blobs/<name>-<version>/<src-name>. Multiple manifest
+// entries pointing at the same src share one R2 upload.
+const uploadedSrc = new Set();
 for (const f of downloaded) {
+  if (uploadedSrc.has(f.src)) continue;
+  uploadedSrc.add(f.src);
   const r2Key = `blobs/${RUNTIME}-${VERSION}/${f.src}`;
   console.log(`[bundle-runtime] put r2://${BUCKET}/${r2Key}`);
-  // `wrangler r2 object put --file <local>` ships the local file as
-  // the object body. --remote uploads to the real bucket (not the
-  // local simulator).
   execSync(
     `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${r2Key} --file "${f.local}" --remote`,
     { stdio: 'inherit' },
@@ -181,9 +239,21 @@ try {
 }
 
 if (!catalog.runtimes[RUNTIME]) catalog.runtimes[RUNTIME] = { default: VERSION, versions: {} };
+// Catalog size_bytes counts unique blob content (not duplicated
+// manifest entries pointing at the same src).
+const catalogSize = (() => {
+  const seen = new Set();
+  let total = 0;
+  for (const f of downloaded) {
+    if (seen.has(f.src)) continue;
+    seen.add(f.src);
+    total += f.size;
+  }
+  return total;
+})();
 catalog.runtimes[RUNTIME].versions[VERSION] = {
   manifest: manifestR2Key,
-  size_bytes: downloaded.reduce((a, f) => a + f.size, 0),
+  size_bytes: catalogSize,
   license: spec.license,
 };
 // Update default to the just-uploaded version (idempotent — if it was
@@ -205,6 +275,31 @@ console.log(`[bundle-runtime] manifest:  r2://${BUCKET}/${manifestR2Key}`);
 console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key}`);
 
 // ── Bundled LICENSE text generator ────────────────────────────────
+function MPL_2_LICENSE_TEXT() {
+  // Mozilla Public License 2.0 — Pyodide is MPL-2.0-licensed. We
+  // ship an abbreviated header pointing at the canonical text; the
+  // LICENSE file lives next to the runtime install dir as a
+  // disclosure to the user.
+  return [
+    '==============================================================================',
+    'Pyodide is licensed under the Mozilla Public License Version 2.0:',
+    '==============================================================================',
+    '',
+    'Copyright (c) 2018-present Pyodide contributors.',
+    '',
+    'Full license: https://www.mozilla.org/en-US/MPL/2.0/',
+    '',
+    'Pyodide source: https://github.com/pyodide/pyodide',
+    'Release tarball: https://cdn.jsdelivr.net/pyodide/v0.29.4/full/',
+    '',
+    'Bundled in Nimbus for the `nimbus install python` runtime. Python',
+    'itself is under the PSF License Agreement (https://docs.python.org/3/',
+    'license.html); pyodide.asm.wasm contains CPython 3.13 + selected',
+    'standard-library modules statically linked to wasm32-unknown-emscripten.',
+    '',
+  ].join('\n');
+}
+
 function APACHE_2_LLVM_LICENSE_TEXT() {
   // Apache 2.0 with LLVM exception — abbreviated header pointing at
   // the canonical upstream LICENSE.TXT. We don't redistribute the
