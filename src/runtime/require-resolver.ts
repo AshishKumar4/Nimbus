@@ -33,6 +33,7 @@ import {
   resolveExports as sharedResolveExports,
   DEFAULT_CJS_CONDITIONS,
 } from '../_shared/exports-resolver.js';
+import { stripCommentsForImports } from './comment-strip.js';
 
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
@@ -590,9 +591,34 @@ export function prefetchForRequire(
   }
 
   function parseAndResolve(code: string, fromDir: string): void {
+    // esbuild-ast-rewrite (P3 decision: Option D): strip `//` and
+    // `/* */` comments before running IMPORT_RE / REQUIRE_RE so the
+    // regexes don't break on embedded comments. Real-world bite:
+    // chalk's `import { // eslint-disable-line\n a, b\n} from
+    // './utilities.js';` (lines 3-6 of chalk@5.x source/index.js)
+    // and its multi-line `export { ... // TODO ... } from
+    // './vendor/ansi-styles/index.js';` (lines 196-209) both fail
+    // IMPORT_RE's lazy character class because comment characters
+    // are not in `[\w*${}\s,]*?`. Stripping comments to whitespace
+    // (newline-preserved) makes the rest of the regex match
+    // correctly.
+    //
+    // Why Option D (regex + comment-strip) over Option A (full
+    // structured AST extraction via esbuild metafile):
+    //   - Empirical 100-file session bootstrap with AST: ~553 ms
+    //     (P2 measurement, /workspace/.seal-internal/2026-05-11-
+    //     esbuild-ast-rewrite/measure-result.txt). Over the 500 ms
+    //     decision gate, and that's local Node — workerd-wasm cost
+    //     is 2-3× higher.
+    //   - Regex (this preprocessor) per file: ~0.1 ms
+    //   - Correctness gap closed: chalk's bug case now matches both
+    //     specifiers AST found but regex missed.
+    // See `comment-strip.ts` header + the wave's verdict.md.
+    const stripped = stripCommentsForImports(code);
+
     REQUIRE_RE.lastIndex = 0;
     let match;
-    while ((match = REQUIRE_RE.exec(code)) !== null) {
+    while ((match = REQUIRE_RE.exec(stripped)) !== null) {
       const specifier = match[2];
       if (isBuiltin(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir);
@@ -608,7 +634,7 @@ export function prefetchForRequire(
     // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
     // fails because `x` was never added.
     IMPORT_RE.lastIndex = 0;
-    while ((match = IMPORT_RE.exec(code)) !== null) {
+    while ((match = IMPORT_RE.exec(stripped)) !== null) {
       const specifier = match[2];
       if (isBuiltin(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir);
