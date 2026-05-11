@@ -1,14 +1,32 @@
 #!/usr/bin/env bun
 // behavioral/end-to-end-workflow — fresh session → cd app → npm install →
-// npm run dev → /preview/?id=<sid> returns the dev page (200) within 60s.
+// npm run dev → real Chrome navigates to /preview/?id=<sid> and asserts
+// the seeded Nimbus Starter React app actually mounts.
+//
+// Category: R (runtime-behavioral)
+//
+// Replaces the earlier HTML-shell-marker version which only asserted
+// `r.status === 200 && /<div id="root"|<!doctype html>|<html/i.test(r.html)`
+// — that test passes against a static HTML shell even when the React
+// bundle fails to load (the 2026-05-10 false-GREEN incident class).
+//
+// The seeded /home/user/app starter is a Vite + React + TypeScript +
+// Tailwind + React Router project whose Home component renders the
+// heading "A dev environment that lives at the edge." We wait for
+// that exact rendered text via real Chrome — if React fails to
+// hydrate, body.innerText stays empty and the probe goes RED.
 //
 // Black-box surfaces only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep, fetchPreview } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, BASE } from './_driver.mjs';
+import {
+  launchBrowser, openPage,
+  RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
+} from './_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('end-to-end-workflow');
-console.log(`behavioral/end-to-end-workflow — npm install + dev + preview\nBASE=${process.env.BASE}`);
+console.log(`behavioral/end-to-end-workflow — npm install + dev + preview (real Chrome)\nBASE=${BASE}`);
 
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
@@ -16,14 +34,15 @@ console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 await t.connect();
 await sleep(2_500);
+await t.waitForPrompt(60_000);
 
-// Step 1: cd app (the seeded starter ships with package.json + a Vite app).
+// Step 1: cd into the seeded app.
 {
   const r = await t.run('cd /home/user/app && pwd', 10_000);
   a.check('cd /home/user/app succeeds', /\/home\/user\/app/.test(r.output), r.output.slice(-200));
 }
 
-// Step 2: npm install. Up to 120 s.
+// Step 2: npm install.
 {
   t.reset();
   t.cmd('npm install');
@@ -38,53 +57,91 @@ await sleep(2_500);
   await t.waitForNewPrompt(15_000).catch(() => { /* prompt may already be there */ });
 }
 
-// Step 3: npm run dev — long-running. Forks to a long-running facet.
-//    The shell should return promptly (≤5s) with a "[started…]" marker
-//    OR start vite inline; in either case the next step (preview fetch)
-//    is the real assertion.
+// Step 3: npm run dev — long-running.
+let viteReady = false;
 {
   t.reset();
   t.cmd('npm run dev');
-  // Wait for ANY of the dev-server start markers. The Nimbus vite
-  // facet emits its own banner (`Preview:`, `Root:`, `Port:`); upstream
-  // vite emits "ready in", "Local:", "VITE v…"; long-running fork
-  // emits "[started (long-running)…]".
   try {
     const elapsed = await t.waitFor(
       (b) => /ready in|Local:|started \(long-running\)|VITE\s+v|server running|hostname|Preview:\s+|Run\s+vite stop/i.test(b),
       60_000,
       'dev server marker',
     );
-    a.check(`dev server emitted ready/started marker (${(elapsed/1000).toFixed(1)}s)`,
-      true);
-  } catch (e) {
+    a.check(`dev server emitted ready/started marker (${(elapsed/1000).toFixed(1)}s)`, true);
+    viteReady = true;
+  } catch {
     a.check('dev server emitted ready/started marker', false, t.buf.slice(-400));
   }
 }
 
-// Step 4: GET /s/<sid>/preview/ returns 200 with HTML body containing the
-// expected app shell. Vite serves an index.html with a <div id="root"> mount.
-{
-  let ok = false;
-  let lastStatus = null;
-  let lastBody = '';
-  // Poll for up to 60s — vite may need a moment to bind after the
-  // started marker.
-  const t0 = Date.now();
-  while (Date.now() - t0 < 60_000) {
-    const r = await fetchPreview(sid, { path: '' });
-    lastStatus = r.status;
-    lastBody = r.html;
-    if (r.status === 200 && /<div id="root"|<!doctype html>|<html/i.test(r.html)) {
-      ok = true;
-      break;
+// Step 4: Real Chrome navigates to /s/<sid>/preview/ and waits for the
+// seeded React app to mount. The Home() component renders the heading
+// "A dev environment that lives at the edge." — that is the literal
+// user-visible string we assert on.
+let homeRendered = false;
+let homeText = '';
+let runtimeErrors = [];
+
+if (viteReady) {
+  // Bounded settle for port-registry registration (matches pattern
+  // used in scaffoldAndStartVite helper).
+  await sleep(2_000);
+
+  console.log('[end-to-end-workflow] launching headless Chrome...');
+  const browser = await launchBrowser();
+  try {
+    const ctx = await openPage(browser, sid, { waitUntil: 'load' });
+    await ctx.navigatePreview('');
+
+    try {
+      homeText = await ctx.waitForBodyText(
+        (text) =>
+          /dev environment that lives at the edge/i.test(text) &&
+          !/Preview crashed/.test(text),
+        60_000,
+      );
+      homeRendered = true;
+    } catch (e) {
+      homeText = (await ctx.getBodyText().catch(() => '')) || `(error: ${e.message})`;
     }
-    await sleep(1_500);
+
+    runtimeErrors = ctx.collectErrors();
+
+    await ctx.close();
+  } finally {
+    await browser.close();
   }
-  a.check('GET /s/<sid>/preview/ returns 200 with dev-server HTML',
-    ok, `status=${lastStatus} body[0..160]=${lastBody.slice(0, 160)}`);
 }
 
 await t.close();
+
+// Step 5: assert on observable browser behaviour.
+const errorsText = runtimeErrors.map((e) => e.message || e.text || '').join('\n');
+const errorMarker = bodyTextHasErrorMarker(errorsText, RUNTIME_ERROR_MARKERS);
+const homeHasErrorMarker = bodyTextHasErrorMarker(homeText, RUNTIME_ERROR_MARKERS);
+const homeHasCrashBanner = /Preview crashed/.test(homeText);
+
+a.check(
+  'React app mounted: body contains seeded heading "A dev environment that lives at the edge"',
+  homeRendered,
+  homeRendered ? '' : `body[0..360]=${homeText.slice(0, 360)}`,
+);
+a.check(
+  'NO "Preview crashed" overlay on home',
+  !homeHasCrashBanner,
+  homeHasCrashBanner ? `body: ${homeText.slice(0, 360)}` : '',
+);
+a.check(
+  'NO error keyword in body.innerText of home',
+  homeHasErrorMarker === null,
+  homeHasErrorMarker ? `marker="${homeHasErrorMarker}" body: ${homeText.slice(0, 360)}` : '',
+);
+a.check(
+  'NO pageerror or console.error matched runtime-error markers',
+  errorMarker === null,
+  errorMarker ? `marker="${errorMarker}" first error: ${(runtimeErrors[0]?.message || runtimeErrors[0]?.text || '').slice(0, 360)}` : '',
+);
+
 const s = a.summary();
 process.exit(s.fail === 0 ? 0 : 1);
