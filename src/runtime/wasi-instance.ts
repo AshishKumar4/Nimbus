@@ -94,17 +94,24 @@ export const WASI_INSTANCE_PREAMBLE_SRC = `
 // Source mirror: src/runtime/wasi-instance.ts. Keep in sync by hand.
 
 // errno constants
-const __WASI_ESUCCESS    = 0;
-const __WASI_EBADF       = 8;
-const __WASI_EEXIST      = 20;
-const __WASI_EINVAL      = 28;
-const __WASI_EISDIR      = 31;
-const __WASI_ELOOP       = 32;
-const __WASI_ENOENT      = 44;
-const __WASI_ENOSYS      = 52;
-const __WASI_ENOTDIR     = 54;
-const __WASI_ENOTEMPTY   = 55;
-const __WASI_ENOTCAPABLE = 76;
+const __WASI_ESUCCESS       = 0;
+const __WASI_EAGAIN         = 6;
+const __WASI_EBADF          = 8;
+const __WASI_ECONNREFUSED   = 14;
+const __WASI_EEXIST         = 20;
+const __WASI_EHOSTUNREACH   = 23;
+const __WASI_EINVAL         = 28;
+const __WASI_EIO            = 29;
+const __WASI_EISDIR         = 31;
+const __WASI_ELOOP          = 32;
+const __WASI_ENOENT         = 44;
+const __WASI_ENOSYS         = 52;
+const __WASI_ENOTCONN       = 53;
+const __WASI_ENOTDIR        = 54;
+const __WASI_ENOTEMPTY      = 55;
+const __WASI_ENOTSOCK       = 57;
+const __WASI_EPIPE          = 64;
+const __WASI_ENOTCAPABLE    = 76;
 // clock ids
 const __WASI_CLOCK_REALTIME           = 0;
 const __WASI_CLOCK_MONOTONIC          = 1;
@@ -137,6 +144,31 @@ const __WASI_PREOPENTYPE_DIR = 0;
 const __WASI_SYMLOOP_MAX = 40;
 // Default per-fd rights mask (wide-open).
 const __WASI_RIGHTS_ALL = 0xFFFFFFFFFFFFFFFFn;
+// Stream-B B7: sock_shutdown SD flags.
+const __WASI_SDFLAGS_RD = 1;
+const __WASI_SDFLAGS_WR = 2;
+// Stream-B B7: synthetic-path prefix recognised by path_open as a request
+// to open a TCP socket. Mirrors bash's /dev/tcp/<host>/<port> convention
+// (https://www.gnu.org/software/bash/manual/html_node/Redirections.html).
+const __WASI_TCP_PATH_PREFIX = '/dev/tcp/';
+
+// Stream-B B7: resolved at preamble module-init via dynamic import.
+// CF docs: "TCP sockets cannot be created in global scope and shared
+// across requests" — so we only IMPORT the module here (cheap symbol
+// resolution); the actual connect() call lives inside path_open which
+// runs at facet-handler time (i.e., within WorkerEntrypoint.execute()).
+// See /workspace/.seal-internal/2026-05-11-stream-b/p3-spike.md §2.
+let __cfSocketConnect = null;
+// Top-level await is supported in workerd ES modules at module-init.
+// If import fails (no cloudflare:sockets binding, or running under a
+// runtime that doesn't expose it), __cfSocketConnect stays null and
+// path_open('/dev/tcp/...') returns ENOSYS with a clear diagnostic.
+try {
+  const __mod = await import('cloudflare:sockets');
+  __cfSocketConnect = __mod.connect;
+} catch (__e) {
+  // fail-soft: socket support disabled this call.
+}
 
 class __WasiExit { constructor(code) { this.code = code | 0; } }
 
@@ -275,6 +307,54 @@ function __wasiInitFS(opts) {
       origTimes.set(vfsPath, { mtime: t.mtime, atime: t.atime, ctime: t.ctime });
     }
   }
+}
+
+// Stream-B B7 helper: open a TCP socket via cloudflare:sockets when
+// path_open is invoked on a /dev/tcp/<host>/<port> synthetic path.
+// Returns a WASI errno. Allocates a new fd of kind:'socket' on success
+// and writes it to fdOutPtr.
+function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
+  if (typeof __cfSocketConnect !== 'function') {
+    // cloudflare:sockets unavailable in this runtime. Report ENOSYS so
+    // the user program sees a clear errno rather than a hang.
+    return __WASI_ENOSYS;
+  }
+  // pathArg shape: "/dev/tcp/<host>/<port>".
+  const tail = pathArg.substring(__WASI_TCP_PATH_PREFIX.length);
+  const slashIdx = tail.lastIndexOf('/');
+  if (slashIdx <= 0 || slashIdx === tail.length - 1) return __WASI_EINVAL;
+  const host = tail.substring(0, slashIdx);
+  const portStr = tail.substring(slashIdx + 1);
+  const port = parseInt(portStr, 10);
+  if (!host || !(port > 0 && port < 65536)) return __WASI_EINVAL;
+  let socket;
+  try {
+    // Per CF docs: connect() is sync (returns Socket immediately); the
+    // socket.opened promise resolves when the TCP handshake completes.
+    // We do NOT await opened here — sock_send/sock_recv will await it
+    // implicitly via the writable/readable streams (or via socket.opened
+    // before the first read/write).
+    socket = __cfSocketConnect({ hostname: host, port });
+  } catch (e) {
+    // Synchronous errors from connect() (e.g. invalid address). Surface
+    // as ECONNREFUSED since the user-observable behavior is the same.
+    return __WASI_ECONNREFUSED;
+  }
+  const fd = nextFd++;
+  fdTable.set(fd, {
+    kind: 'socket',
+    socket,
+    reader: null,    // lazy: getReader() on first sock_recv
+    writer: null,    // lazy: getWriter() on first sock_send
+    readBuf: new Uint8Array(0),
+    readBufOffset: 0,
+    eof: false,
+    closed: false,
+    halfClosedWr: false,
+    fdflags: fdflags | 0,
+  });
+  writeU32LE(fdOutPtr, fd);
+  return __WASI_ESUCCESS;
 }
 
 // Stream-B B1+B2 helpers: update tracked timestamps for a path. Idempotent.
@@ -588,6 +668,15 @@ function __wasiMakeImports(opts) {
       // Don't delete preopens — they're meant to persist for the program lifetime.
       const entry = fdTable.get(fd);
       if (entry.kind === 'preopen') return __WASI_ESUCCESS;
+      // Stream-B B7: best-effort close of socket streams. The actual
+      // socket.close() is fire-and-forget (sync return per WASI) — if
+      // the program wants to await closure it should sock_shutdown
+      // first. We DO drop the fd-table entry so subsequent ops on this
+      // fd see EBADF.
+      if (entry.kind === 'socket' && !entry.closed) {
+        try { entry.socket.close(); } catch {}
+        entry.closed = true;
+      }
       fdTable.delete(fd);
       return __WASI_ESUCCESS;
     },
@@ -706,6 +795,8 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_REGULAR_FILE;
       } else if (entry.kind === 'symlink') {
         ftype = __WASI_FT_SYMBOLIC_LINK;
+      } else if (entry.kind === 'socket') {
+        ftype = __WASI_FT_SOCKET_STREAM;  // Stream-B B7
       }
       dv.setUint8(statPtr, ftype);
       dv.setUint8(statPtr + 1, 0);
@@ -772,6 +863,15 @@ function __wasiMakeImports(opts) {
     // ── path_open ──
     path_open(baseFd, dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, fdflags, fdOutPtr) {
       const pathArg = readPath(pathPtr, pathLen);
+      // Stream-B B7: synthetic /dev/tcp/<host>/<port> path — open a TCP
+      // socket via cloudflare:sockets. Bash-like convention; matches
+      // /workspace/.seal-internal/2026-05-11-stream-b/p3-spike.md §2.
+      // Intercept BEFORE resolution because /dev/tcp/* doesn't exist in
+      // the in-memory FS — __wasiResolvePath would canonicalize it but
+      // not find any entry.
+      if (pathArg.startsWith(__WASI_TCP_PATH_PREFIX)) {
+        return __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE);
+      }
       // Stream-B B3: honor LOOKUPFLAGS_SYMLINK_FOLLOW (default behavior
       // when bit is set or dirflags omitted). When NOT set, surface the
       // symlink itself as a 'symlink' fd kind so readlink can introspect.
@@ -1314,12 +1414,153 @@ function __wasiMakeImports(opts) {
 
     sched_yield()   { return __WASI_ESUCCESS; },
 
-    // ── DEFERRED to future waves ──
+    // ── poll_oneoff: deferred to P4 ──
     poll_oneoff()   { return __WASI_ENOSYS; },
-    sock_recv()     { return __WASI_ENOSYS; },
-    sock_send()     { return __WASI_ENOSYS; },
-    sock_shutdown() { return __WASI_ENOSYS; },
+
+    // Stream-B B7: sockets via cloudflare:sockets connect() + JSPI.
+    //
+    // sock_send/sock_recv/sock_shutdown are ASYNC fns. They await on
+    // ReadableStream/WritableStream readers/writers, which means the
+    // wasm caller's expectation of a sync errno return must be bridged
+    // via WebAssembly.Suspending. The Suspending wrapper is applied in
+    // the return statement below where the imports object is finalised
+    // (not here — wrapping at definition site would shadow the bare
+    // function in the imports map). The async functions below have
+    // signature compatible with 'new WebAssembly.Suspending(asyncFn)':
+    // they return Promise<i32 errno>.
+
+    async sock_send(fd, siDataPtr, siDataLen, _siFlags, retDataLenPtr) {
+      const entry = fdTable.get(fd);
+      if (!entry || entry.kind !== 'socket') return __WASI_ENOTSOCK;
+      if (entry.closed || entry.halfClosedWr) return __WASI_EPIPE;
+      // Gather iovs into a single Uint8Array per the WASI ciovec_array shape.
+      const dv = view();
+      const memU8 = u8();
+      let total = 0;
+      const parts = [];
+      for (let i = 0; i < siDataLen; i++) {
+        const iov = siDataPtr + i * 8;
+        const bufPtr = dv.getUint32(iov, true);
+        const bufLen = dv.getUint32(iov + 4, true);
+        if (bufLen > 0) parts.push(memU8.slice(bufPtr, bufPtr + bufLen));
+        total += bufLen;
+      }
+      let combined;
+      if (parts.length === 0) combined = new Uint8Array(0);
+      else if (parts.length === 1) combined = parts[0];
+      else {
+        combined = new Uint8Array(total);
+        let off = 0;
+        for (const p of parts) { combined.set(p, off); off += p.length; }
+      }
+      try {
+        if (!entry.writer) entry.writer = entry.socket.writable.getWriter();
+        // Wait for the socket to be connected on first write. socket.opened
+        // resolves after the TCP handshake completes; subsequent writes
+        // are unblocked because opened is a stable resolved promise.
+        await entry.socket.opened;
+        await entry.writer.write(combined);
+      } catch (e) {
+        // Map common errors to spec errnos.
+        const msg = (e && e.message) ? e.message : String(e);
+        if (/refused|ECONNREFUSED/i.test(msg)) return __WASI_ECONNREFUSED;
+        if (/unreach|EHOSTUNREACH/i.test(msg)) return __WASI_EHOSTUNREACH;
+        return __WASI_EIO;
+      }
+      writeU32LE(retDataLenPtr, total);
+      return __WASI_ESUCCESS;
+    },
+
+    async sock_recv(fd, riDataPtr, riDataLen, _riFlags, retDataLenPtr, retFlagsPtr) {
+      const entry = fdTable.get(fd);
+      if (!entry || entry.kind !== 'socket') return __WASI_ENOTSOCK;
+      if (entry.closed) return __WASI_ENOTCONN;
+      const dv = view();
+      const memU8 = u8();
+      // If the local readBuf is empty, fetch a chunk from the stream.
+      if (entry.readBufOffset >= entry.readBuf.length && !entry.eof) {
+        try {
+          if (!entry.reader) entry.reader = entry.socket.readable.getReader();
+          await entry.socket.opened;
+          const { value, done } = await entry.reader.read();
+          if (done) {
+            entry.eof = true;
+            entry.readBuf = new Uint8Array(0);
+            entry.readBufOffset = 0;
+          } else {
+            entry.readBuf = (value instanceof Uint8Array)
+              ? value
+              : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+            entry.readBufOffset = 0;
+          }
+        } catch (e) {
+          const msg = (e && e.message) ? e.message : String(e);
+          if (/refused|ECONNREFUSED/i.test(msg)) return __WASI_ECONNREFUSED;
+          if (/unreach|EHOSTUNREACH/i.test(msg)) return __WASI_EHOSTUNREACH;
+          return __WASI_EIO;
+        }
+      }
+      // Copy from readBuf into the user's iovs, up to total request size.
+      let total = 0;
+      for (let i = 0; i < riDataLen; i++) {
+        const iov = riDataPtr + i * 8;
+        const bufPtr = dv.getUint32(iov, true);
+        const bufLen = dv.getUint32(iov + 4, true);
+        const remain = entry.readBuf.length - entry.readBufOffset;
+        if (remain <= 0) break;
+        const n = Math.min(bufLen, remain);
+        memU8.set(entry.readBuf.subarray(entry.readBufOffset, entry.readBufOffset + n), bufPtr);
+        entry.readBufOffset += n;
+        total += n;
+        if (n < bufLen) break;
+      }
+      writeU32LE(retDataLenPtr, total);
+      if (typeof retFlagsPtr === 'number') {
+        // ROFLAGS_RECV_DATA_TRUNCATED bit; we don't truncate in this impl.
+        dv.setUint16(retFlagsPtr, 0, true);
+      }
+      return __WASI_ESUCCESS;
+    },
+
+    async sock_shutdown(fd, how) {
+      const entry = fdTable.get(fd);
+      if (!entry || entry.kind !== 'socket') return __WASI_ENOTSOCK;
+      const wantRd = (how & __WASI_SDFLAGS_RD) !== 0;
+      const wantWr = (how & __WASI_SDFLAGS_WR) !== 0;
+      try {
+        if (wantWr && !entry.halfClosedWr) {
+          if (entry.writer) {
+            try { await entry.writer.close(); } catch {}
+          }
+          entry.halfClosedWr = true;
+        }
+        if (wantRd && entry.reader) {
+          try { await entry.reader.cancel(); } catch {}
+          entry.eof = true;
+        }
+        if (wantRd && wantWr) {
+          try { await entry.socket.close(); } catch {}
+          entry.closed = true;
+        }
+      } catch (e) {
+        return __WASI_EIO;
+      }
+      return __WASI_ESUCCESS;
+    },
   };
+
+  // Stream-B B7: wrap the async socket imports in WebAssembly.Suspending
+  // so the wasm caller can use sync-shape calls that yield to the JS
+  // event loop. Requires V8 14.2+ (workerd Oct 2025+) — see
+  // /workspace/.seal-internal/2026-05-11-jspi-spike/findings.md.
+  // If Suspending isn't available (older runtime), socket imports remain
+  // async fns that the wasm boundary will reject with a trap — caller
+  // sees a clean failure via __wasiRunStartAsync's catch block.
+  if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
+    imports.sock_send     = new WebAssembly.Suspending(imports.sock_send);
+    imports.sock_recv     = new WebAssembly.Suspending(imports.sock_recv);
+    imports.sock_shutdown = new WebAssembly.Suspending(imports.sock_shutdown);
+  }
 
   return {
     wasiImport: imports,
@@ -1446,9 +1687,10 @@ export interface WasiFsDiff {
   symlinksDeleted?: string[];
 }
 
-/** Total count of functionally-implemented WASI fns (Wave-1 + Wave-2 + Stream-B P2). */
+/** Total count of functionally-implemented WASI fns (Wave-1 + Wave-2 + Stream-B P2 + P3). */
 export const WASI_WAVE2_FN_COUNT = 30;
 export const WASI_STREAM_B_P2_FN_COUNT = 36;  // +6: B2 (real ×2), B3 (×3), B4, B6
+export const WASI_STREAM_B_P3_FN_COUNT = 39;  // +3: B7 sock_send/sock_recv/sock_shutdown
 
 /** Names of the Wave-1 + Wave-2 + Stream-B P2 functionally-implemented WASI fns. */
 export const WASI_WAVE2_FNS: readonly string[] = Object.freeze([
@@ -1476,6 +1718,8 @@ export const WASI_WAVE2_FNS: readonly string[] = Object.freeze([
   'path_symlink', 'path_readlink', 'path_link',     // B3
   'fd_allocate',                                    // B4
   'fd_fdstat_set_rights',                           // B6
+  // Stream-B P3 additions
+  'sock_send', 'sock_recv', 'sock_shutdown',        // B7 — via WebAssembly.Suspending
 ]);
 
 /**

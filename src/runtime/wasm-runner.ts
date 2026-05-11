@@ -77,6 +77,14 @@ declare const __wasiRunStart: (
   instance: WebAssembly.Instance,
   ctx: { memory: WebAssembly.Memory },
 ) => { exitCode: number; error?: string };
+// Stream-B P3: async variant that wraps _start with WebAssembly.promising
+// for JSPI-suspending imports (sock_send/recv/shutdown). Falls back to
+// sync invocation when WebAssembly.promising is unavailable, so behaviour
+// is identical for non-suspending wasm programs.
+declare const __wasiRunStartAsync: (
+  instance: WebAssembly.Instance,
+  ctx: { memory: WebAssembly.Memory },
+) => Promise<{ exitCode: number; error?: string }>;
 declare const __wasiInitFS: (opts: {
   root: string;
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
@@ -533,6 +541,12 @@ export function makeWasmRunner(deps: {
       if (args.mode === 'wasi') {
         const mk = __wasiMakeImports;
         const runStart = __wasiRunStart;
+        // Stream-B P3: prefer the async runStart so socket-using wasm
+        // (sock_send/recv/shutdown wrapped in WebAssembly.Suspending)
+        // can yield via WebAssembly.promising(_start). Falls back to
+        // sync runStart automatically when __wasiRunStartAsync is
+        // undefined (legacy preamble).
+        const runStartAsync = (globalThis as any).__wasiRunStartAsync || null;
         const initFS = __wasiInitFS;
         const snapshotFS = __wasiSnapshotFS;
         if (!mk || !runStart || !initFS || !snapshotFS) {
@@ -594,7 +608,16 @@ export function makeWasmRunner(deps: {
             error: 'wasm module did not export a `memory` — WASI requires one.',
           };
         }
-        const r = runStart(inst, { memory: memRef.mem });
+        // Stream-B P3: use async runStart when available so any
+        // suspending socket imports can complete via JSPI. The async
+        // wrapper falls back to sync invocation internally when
+        // WebAssembly.promising isn't available, so this is safe for
+        // non-suspending programs too. Legacy preambles (pre-Stream-B)
+        // that ship without __wasiRunStartAsync still work via the
+        // sync runStart path.
+        const r = runStartAsync
+          ? await runStartAsync(inst, { memory: memRef.mem })
+          : runStart(inst, { memory: memRef.mem });
         const fsDiff = snapshotFS();
         return {
           ok: r.exitCode === 0 && !r.error,
