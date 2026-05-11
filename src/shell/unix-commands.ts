@@ -675,6 +675,86 @@ function mkDiff(vfs: SqliteVFS): CmdFn {
  * (rmdir recursive when -r). Translate raw errors so the unix-command
  * contract is honoured.
  */
+/**
+ * BUG-SWEEP-R2-3b (2026-05-11): registry-level echo so `X | xargs echo`
+ * resolves. lifo-sh's `echo` is a Shell.builtins entry, NOT in the
+ * registry map. xargs's cross-command dispatch goes through
+ * registry.resolve(name) — without a registry entry for echo it falls
+ * back to 'command not found'. The init.ts override for echo flag
+ * handling targets Shell.builtins; we additionally register a copy
+ * here so registry-driven callers (xargs) can find it. Behaviour
+ * matches the BUG-SWEEP-4 nimbusEcho impl: -n / -e / -E / combined.
+ */
+function mkEcho(): CmdFn {
+  return (ctx) => {
+    const args = ctx.args;
+    let interpretEscapes = false;
+    let suppressNewline = false;
+    let i = 0;
+    while (i < args.length) {
+      const a = args[i];
+      if (a === '--') { i++; break; }
+      if (a === '-n') { suppressNewline = true; i++; continue; }
+      if (a === '-e') { interpretEscapes = true; i++; continue; }
+      if (a === '-E') { interpretEscapes = false; i++; continue; }
+      if (/^-[neE]+$/.test(a)) {
+        for (const ch of a.slice(1)) {
+          if (ch === 'n') suppressNewline = true;
+          else if (ch === 'e') interpretEscapes = true;
+          else if (ch === 'E') interpretEscapes = false;
+        }
+        i++;
+        continue;
+      }
+      break;
+    }
+    let out = args.slice(i).join(' ');
+    if (interpretEscapes) {
+      out = out
+        .replace(/\\\\/g, '\u0000')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .replace(/\\b/g, '\b')
+        .replace(/\\f/g, '\f')
+        .replace(/\\v/g, '\v')
+        .replace(/\\a/g, '\x07')
+        .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
+        .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/\u0000/g, '\\');
+    }
+    ctx.stdout.write(suppressNewline ? out : out + '\n');
+    return 0;
+  };
+}
+
+/**
+ * BUG-SWEEP-R2-3c (2026-05-11): registry-level cat (for xargs cross-
+ * command dispatch). Behaves like lifo-sh's lazy cat: reads files (or
+ * stdin if none), concatenates to stdout.
+ */
+function mkCat(vfs: SqliteVFS): CmdFn {
+  return (ctx) => {
+    const files = ctx.args.filter(a => !a.startsWith('-'));
+    if (files.length === 0) {
+      if (ctx.stdin) ctx.stdout.write(ctx.stdin);
+      return 0;
+    }
+    let exit = 0;
+    for (const f of files) {
+      try {
+        const fp = resolvePath(ctx.cwd, f);
+        const content = vfs.readFileString(fp);
+        ctx.stdout.write(content);
+      } catch (e: any) {
+        ctx.stderr.write(`cat: ${f}: ${e?.message || e}\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
 function mkRm(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
     const args = ctx.args;
@@ -1052,6 +1132,12 @@ export function registerUnixCommands(
   registry.register('tee', wrap(mkTee(vfs)));
   registry.register('du', wrap(mkDu(vfs)));
   registry.register('diff', wrap(mkDiff(vfs)));
+  // Registry-level echo + cat for xargs cross-command dispatch.
+  // Shell.builtins still wins for direct `echo X` invocations; this
+  // entry is only reached when a command (xargs etc.) looks them up
+  // via the registry path.
+  registry.register('echo', wrap(mkEcho()));
+  registry.register('cat', wrap(mkCat(vfs)));
   registry.register('rm', wrap(mkRm(vfs)));
   registry.register('touch', wrap(mkTouch(vfs)));
   registry.register('stat', wrap(mkStat(vfs)));
