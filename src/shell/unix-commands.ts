@@ -104,20 +104,149 @@ function mkClear(): CmdFn {
   return (ctx) => { ctx.stdout.write('\x1b[2J\x1b[H'); return 0; };
 }
 
+/**
+ * BUG-SWEEP-R2-5 (2026-05-11): date strftime format support.
+ *
+ * Pre-fix mkDate only honoured `-u`, `-I`, and `+%s` literal. Any
+ * other `+FMT` was a no-op falling to `now.toString()`. Real shell
+ * scripts use `date +%Y-%m-%d`, `date +%H:%M:%S`, `date +%F`, etc.
+ *
+ * Post-fix: full strftime subset:
+ *   %Y / %C / %y       year (4-digit / century / 2-digit)
+ *   %m / %B / %b / %h  month (numeric / full name / abbrev / abbrev)
+ *   %d / %e            day of month (zero-padded / space-padded)
+ *   %j                 day of year
+ *   %H / %I / %M / %S  hour-24 / hour-12 / minute / second
+ *   %p                 AM/PM
+ *   %A / %a            weekday (full / abbrev)
+ *   %u / %w            ISO weekday (1=Mon..7=Sun) / weekday (0=Sun..6=Sat)
+ *   %s                 unix timestamp (seconds)
+ *   %N                 nanoseconds (zero-pad to 9 digits)
+ *   %F                 %Y-%m-%d
+ *   %T / %R            %H:%M:%S / %H:%M
+ *   %D                 %m/%d/%y
+ *   %z / %Z            timezone offset / name
+ *   %%                 literal %
+ *   %n / %t            newline / tab
+ */
 function mkDate(): CmdFn {
   return (ctx) => {
     const now = new Date();
-    if (ctx.args.includes('-u') || ctx.args.includes('--utc')) {
-      ctx.stdout.write(now.toUTCString() + '\n');
-    } else if (ctx.args.includes('-I') || ctx.args.includes('--iso-8601')) {
-      ctx.stdout.write(now.toISOString() + '\n');
-    } else if (ctx.args.includes('+%s')) {
-      ctx.stdout.write(Math.floor(now.getTime() / 1000) + '\n');
-    } else {
-      ctx.stdout.write(now.toString() + '\n');
+    const useUtc = ctx.args.includes('-u') || ctx.args.includes('--utc');
+    // Find the `+FMT` arg (if any). Real `date +FMT [args]` accepts
+    // only one format; we honour the first.
+    const fmtArg = ctx.args.find(a => a.startsWith('+'));
+    if (fmtArg) {
+      ctx.stdout.write(strftime(now, fmtArg.slice(1), useUtc) + '\n');
+      return 0;
     }
+    if (ctx.args.includes('-I') || ctx.args.includes('--iso-8601')) {
+      ctx.stdout.write(now.toISOString() + '\n');
+      return 0;
+    }
+    if (useUtc) {
+      ctx.stdout.write(now.toUTCString() + '\n');
+      return 0;
+    }
+    ctx.stdout.write(now.toString() + '\n');
     return 0;
   };
+}
+
+const _MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const _MONTHS_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const _DAYS_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const _DAYS_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+function strftime(d: Date, fmt: string, utc: boolean): string {
+  const get = (m: string): any => {
+    switch (m) {
+      case 'FullYear': return utc ? d.getUTCFullYear() : d.getFullYear();
+      case 'Month': return utc ? d.getUTCMonth() : d.getMonth();
+      case 'Date': return utc ? d.getUTCDate() : d.getDate();
+      case 'Hours': return utc ? d.getUTCHours() : d.getHours();
+      case 'Minutes': return utc ? d.getUTCMinutes() : d.getMinutes();
+      case 'Seconds': return utc ? d.getUTCSeconds() : d.getSeconds();
+      case 'Day': return utc ? d.getUTCDay() : d.getDay();
+      case 'Milliseconds': return utc ? d.getUTCMilliseconds() : d.getMilliseconds();
+      default: return 0;
+    }
+  };
+  const pad = (n: number, w: number, ch = '0') => String(n).padStart(w, ch);
+  const yyyy = get('FullYear');
+  const mm0 = get('Month');           // 0..11
+  const dd = get('Date');
+  const hh = get('Hours');
+  const mn = get('Minutes');
+  const ss = get('Seconds');
+  const dow = get('Day');             // 0..6 (Sun..Sat)
+  const ms = get('Milliseconds');
+  // Day of year: difference from Jan 1.
+  const jan1 = utc
+    ? Date.UTC(yyyy, 0, 1)
+    : new Date(yyyy, 0, 1).getTime();
+  const doy = Math.floor((d.getTime() - jan1) / 86400000) + 1;
+  // ISO weekday: 1=Mon..7=Sun.
+  const isoDow = dow === 0 ? 7 : dow;
+  const ampm = hh < 12 ? 'AM' : 'PM';
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  // TZ offset in ±HHMM form.
+  const tzOff = utc ? '+0000' : (() => {
+    const off = -d.getTimezoneOffset();
+    const sign = off >= 0 ? '+' : '-';
+    const abs = Math.abs(off);
+    return sign + pad(Math.floor(abs / 60), 2) + pad(abs % 60, 2);
+  })();
+  const tzName = utc ? 'UTC' : (() => {
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(d);
+      const tz = parts.find(p => p.type === 'timeZoneName');
+      return tz ? tz.value : 'UTC';
+    } catch { return 'UTC'; }
+  })();
+  let out = '';
+  let i = 0;
+  while (i < fmt.length) {
+    const ch = fmt[i];
+    if (ch !== '%') { out += ch; i++; continue; }
+    i++;
+    const spec = fmt[i] || '';
+    i++;
+    switch (spec) {
+      case 'Y': out += String(yyyy); break;
+      case 'C': out += pad(Math.floor(yyyy / 100), 2); break;
+      case 'y': out += pad(yyyy % 100, 2); break;
+      case 'm': out += pad(mm0 + 1, 2); break;
+      case 'B': out += _MONTHS_FULL[mm0]; break;
+      case 'b': case 'h': out += _MONTHS_ABBR[mm0]; break;
+      case 'd': out += pad(dd, 2); break;
+      case 'e': out += String(dd).padStart(2, ' '); break;
+      case 'j': out += pad(doy, 3); break;
+      case 'H': out += pad(hh, 2); break;
+      case 'I': out += pad(h12, 2); break;
+      case 'M': out += pad(mn, 2); break;
+      case 'S': out += pad(ss, 2); break;
+      case 'p': out += ampm; break;
+      case 'P': out += ampm.toLowerCase(); break;
+      case 'A': out += _DAYS_FULL[dow]; break;
+      case 'a': out += _DAYS_ABBR[dow]; break;
+      case 'u': out += String(isoDow); break;
+      case 'w': out += String(dow); break;
+      case 's': out += String(Math.floor(d.getTime() / 1000)); break;
+      case 'N': out += pad(ms * 1_000_000, 9); break;
+      case 'F': out += `${yyyy}-${pad(mm0 + 1, 2)}-${pad(dd, 2)}`; break;
+      case 'T': out += `${pad(hh, 2)}:${pad(mn, 2)}:${pad(ss, 2)}`; break;
+      case 'R': out += `${pad(hh, 2)}:${pad(mn, 2)}`; break;
+      case 'D': out += `${pad(mm0 + 1, 2)}/${pad(dd, 2)}/${pad(yyyy % 100, 2)}`; break;
+      case 'z': out += tzOff; break;
+      case 'Z': out += tzName; break;
+      case '%': out += '%'; break;
+      case 'n': out += '\n'; break;
+      case 't': out += '\t'; break;
+      default: out += '%' + spec; break;  // unknown — preserve literal
+    }
+  }
+  return out;
 }
 
 function mkUptime(): CmdFn {
