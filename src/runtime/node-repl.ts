@@ -58,6 +58,10 @@ class NodeReplAdapter implements ReplAdapter {
   banner(): string {
     return (
       `Welcome to Node.js ${NODE_VERSION} (Nimbus).\r\n` +
+      'Note: stateful REPL not supported in workerd (CSP blocks runtime\r\n' +
+      'eval/new-Function). console.log + side-effect ops work per line;\r\n' +
+      'var/let/const declarations do NOT persist across submits.\r\n' +
+      'For full Node: `node -e "..."` or `node script.js`.\r\n' +
       'Type ".help" for more information.\r\n'
     );
   }
@@ -248,6 +252,13 @@ function nodeReplStepFacetFn(
           stderr: g.__nimbus_node_stderr.slice(stderrStart).join(''),
           exit: true,
           exitCode: exprErr.__nimbus_exit_code,
+        };
+      }
+      if (exprErr && /EvalError|Code generation from strings disallowed/i.test(exprErr.message || '')) {
+        return {
+          stdout: g.__nimbus_node_stdout.slice(stdoutStart).join(''),
+          stderr: g.__nimbus_node_stderr.slice(stderrStart).join('') +
+            'workerd CSP: cannot evaluate JS at request time. Use `node -e "<code>"` instead.\n',
         };
       }
       try {

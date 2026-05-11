@@ -68,6 +68,10 @@ class BunReplAdapter implements ReplAdapter {
   banner(): string {
     return (
       `Bun ${BUN_VERSION} (Nimbus)\r\n` +
+      'Note: stateful REPL not supported in workerd (CSP blocks runtime\r\n' +
+      'eval/new-Function). console.log + side-effect ops work per line;\r\n' +
+      'var/let/const declarations do NOT persist across submits.\r\n' +
+      'For full Bun: `bun -e "..."` or `bun script.ts`.\r\n' +
       'Type ".exit" or press Ctrl-D to exit.\r\n'
     );
   }
@@ -262,17 +266,10 @@ function bunReplStepFacetFn(
     let result: any;
     let evaluatedAs: 'expr' | 'stmt' = 'stmt';
     try {
-      // Build a single Function body: replay history + current line as
-      // expression-mode (last line yields a value via return).
       const histBody = g.__nimbus_bun_history.join('\n');
       const exprFn = new Function(histBody + '\nreturn (' + source + '\n);');
       result = exprFn.call(globalThis);
       evaluatedAs = 'expr';
-      // Record the current line as a statement (no return wrap) for
-      // future pushes — but only if the line wasn't a pure expression
-      // (assignments inside Function body wouldn't persist; record
-      // anyway to preserve declaration intent. We re-run the FULL
-      // history each push so declarations re-take effect.)
       g.__nimbus_bun_history.push(source);
     } catch (exprErr: any) {
       if (exprErr && exprErr.__nimbus_exit_code !== undefined) {
@@ -281,6 +278,16 @@ function bunReplStepFacetFn(
           stderr: g.__nimbus_bun_stderr.slice(stderrStart).join(''),
           exit: true,
           exitCode: exprErr.__nimbus_exit_code,
+        };
+      }
+      // workerd CSP blocks dynamic code → EvalError. Surface a clear
+      // message instead of the cryptic stack so users know to use
+      // `bun -e` for full functionality.
+      if (exprErr && /EvalError|Code generation from strings disallowed/i.test(exprErr.message || '')) {
+        return {
+          stdout: g.__nimbus_bun_stdout.slice(stdoutStart).join(''),
+          stderr: g.__nimbus_bun_stderr.slice(stderrStart).join('') +
+            'workerd CSP: cannot evaluate JS at request time. Use `bun -e "<code>"` instead.\n',
         };
       }
       try {
