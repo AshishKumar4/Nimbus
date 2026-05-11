@@ -492,6 +492,28 @@ export function prefetchForRequire(
         }
       }
     }
+    // Bug class C (audit 2026-05-11): also ship the IMMEDIATE-directory
+    // package.json even when the file is outside node_modules. This is
+    // what makes the runtime __resolveFile's pkg.main directory-load
+    // branch fire for user-written packages — e.g. require('./mod')
+    // where mod/package.json#main='entry.js'. Without this piggy-back
+    // the runtime resolver sees mod/ as an empty directory and falls
+    // off the end of the resolve chain.
+    const lastSlash = vfsPath.lastIndexOf('/');
+    if (lastSlash > 0 && !vfsPath.includes('node_modules/')) {
+      const dirPkgJson = vfsPath.substring(0, lastSlash) + '/package.json';
+      if (!visited.has(dirPkgJson) && vfs.exists(dirPkgJson) && !vfs.isDirectory(dirPkgJson)) {
+        visited.add(dirPkgJson);
+        try {
+          const pkgContent = vfs.readFileString(dirPkgJson);
+          if (totalBytes + pkgContent.length <= MAX_BYTES) {
+            bundle[dirPkgJson] = pkgContent;
+            totalBytes += pkgContent.length;
+            fileCount++;
+          }
+        } catch { /* ignore */ }
+      }
+    }
 
     // Recursively resolve require() calls in this file
     if (vfsPath.endsWith('.js') || vfsPath.endsWith('.mjs') || vfsPath.endsWith('.cjs')) {
