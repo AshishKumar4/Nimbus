@@ -102,65 +102,176 @@ export function makeClangRunnerFactory(deps: {
       // Parse sysroot.tar ONCE on supervisor side.
       const sysroot = parseUstar(sysrootBytes);
 
-      // Read input .c bytes.
-      const inputCAbs = resolveVfsPath(parsed.inputPath, cwd);
-      if (!vfs.exists(inputCAbs)) {
-        ctx.stderr.write(`${binName}: ${parsed.inputPath}: No such file or directory\n`);
+      // Validate all user-supplied source inputs exist in the user's
+      // session VFS. Collect their bytes for memfs population.
+      const userSourceFiles: Record<string, Uint8Array> = {};
+      // Pre-built objects/archives the user passed (e.g. extra.o, libfoo.a)
+      // — shipped to the LINK step only (not compile).
+      const preBuiltLinkInputs: string[] = [];
+      const sourceInputs: string[] = [];
+      for (const input of parsed.inputPaths) {
+        const inputAbs = resolveVfsPath(input, cwd);
+        if (!vfs.exists(inputAbs)) {
+          ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
+          return 1;
+        }
+        const inputBytes = vfs.readFile(inputAbs);
+        userSourceFiles[input] = inputBytes;
+        if (isSourceExt(input)) {
+          sourceInputs.push(input);
+        } else {
+          // .o / .a — pass through to link as a pre-built input. The
+          // path inside memfs is the user-supplied relative path.
+          preBuiltLinkInputs.push(input);
+        }
+      }
+      if (sourceInputs.length === 0 && preBuiltLinkInputs.length === 0) {
+        ctx.stderr.write(`${binName}: no compilable / linkable inputs\n`);
         return 1;
       }
-      const inputCBytes = vfs.readFile(inputCAbs);
+
+      // Walk the user's cwd to gather headers (.h/.hpp/.hxx/.inc/...)
+      // and any sibling headers users typically expect to be visible
+      // to #include "..." resolution. Real clang/gcc auto-search the
+      // dir of the including source for quote-form includes; we ship
+      // those files to memfs at their relative-to-cwd paths so the
+      // memfs layout reproduces the user's working tree.
+      //
+      // Size-capped (4 MiB, 200 files, depth 8) so accidental
+      // huge-projects don't OOM the facet. Real C-tutorial projects
+      // are vastly under the cap.
+      const userIncludeBundle = collectIncludeBundle(vfs as any, cwd.replace(/^\/+/, ''));
 
       // ── COMPILE PHASE ────────────────────────────────────────────
-      // Ship: clang.wasm + memfs.wasm + C-include subset of sysroot.
+      // Ship: clang.wasm + memfs.wasm + C-include subset of sysroot
+      // + user's source files + user's header bundle.
       const compileSysroot = filterSysrootForCompile(sysroot);
       const clangBytes = vfs.readFile(clangVfsPath);
-      const objPath = parsed.outputPath + '.o';
 
-      const compileArgv = [
-        'clang', '-cc1', '-emit-obj',
-        '-disable-free',
-        '-isysroot', '/',
-        '-internal-isystem', '/include/c++/v1',
-        '-internal-isystem', '/include',
-        '-internal-isystem', '/lib/clang/8.0.1/include',
-        '-ferror-limit', '19',
-        '-fmessage-length', '80',
-        '-fcolor-diagnostics',
-        '-O2',
-        '-o', objPath,
-        '-x', 'c',
-        parsed.inputPath,
-      ];
-
-      const compileResult = await dispatchClangFacet(facetMgr, {
-        primaryName: 'clang',
-        primaryBytes: clangBytes,
-        memfsBytes,
-        sysrootFiles: { ...compileSysroot, [parsed.inputPath]: inputCBytes },
-        argv: compileArgv,
-        outputPaths: [objPath],
-      });
-
-      if (compileResult.stdout) ctx.stdout.write(compileResult.stdout);
-      if (compileResult.stderr) ctx.stderr.write(compileResult.stderr);
-      if (compileResult.error) {
-        ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
-        return 1;
+      // Build -I flag list. We pass each user -I path verbatim AND add
+      // an implicit '.' (cwd) for quote-form lookup. wasm-clang's -cc1
+      // mode does NOT add cwd to the quote search list by default
+      // (the driver normally does that for "foo.h" includes), so we
+      // wire it ourselves. This is what makes
+      //   clang main.c   (main.c does #include "greet.h", greet.h
+      //                    next to main.c)
+      // succeed without an explicit -I from the user.
+      const userIncludeFlags: string[] = [];
+      for (const ip of parsed.includePaths) {
+        userIncludeFlags.push('-I', ip);
       }
-      if (compileResult.exitCode !== 0) {
-        return compileResult.exitCode;
+      userIncludeFlags.push('-I', '.');
+
+      // Compile each source to its own .o. Object file naming: replace
+      // the source extension with .o. Collisions across cwd subdirs
+      // (e.g. src/foo.c and lib/foo.c both → foo.o) are avoided by
+      // keeping the directory component (memfs preserves user layout).
+      const objPaths: string[] = [];
+      const objBytesMap: Record<string, Uint8Array> = {};
+      for (const src of sourceInputs) {
+        const objPath = src.replace(/\.(c|cc|cpp|cxx|c\+\+|C)$/, '.o');
+        // For C++ inputs use -x c++; default -x c.
+        const isCpp = /\.(cc|cpp|cxx|c\+\+|C)$/.test(src);
+        const compileArgv = [
+          'clang', '-cc1', '-emit-obj',
+          '-disable-free',
+          '-isysroot', '/',
+          '-internal-isystem', '/include/c++/v1',
+          '-internal-isystem', '/include',
+          '-internal-isystem', '/lib/clang/8.0.1/include',
+          '-ferror-limit', '19',
+          '-fmessage-length', '80',
+          '-fcolor-diagnostics',
+          '-O2',
+          ...userIncludeFlags,
+          '-o', objPath,
+          '-x', isCpp ? 'c++' : 'c',
+          src,
+        ];
+        // Per compile we ship: the current source file + the user's
+        // header bundle. Multi-TU is handled at link time, not compile,
+        // so sibling sources stay out of memfs (smaller payload, no
+        // surface for unintended cross-TU textual inclusion via -I.).
+        const oneSourceFile: Record<string, Uint8Array> = { [src]: userSourceFiles[src] };
+        const compileResult = await dispatchClangFacet(facetMgr, {
+          primaryName: 'clang',
+          primaryBytes: clangBytes,
+          memfsBytes,
+          sysrootFiles: {
+            ...compileSysroot,
+            ...oneSourceFile,
+            // User's headers from cwd tree (so quote-form #include
+            // resolves; this is the primary clang-include-fix payload).
+            ...userIncludeBundle,
+          },
+          argv: compileArgv,
+          outputPaths: [objPath],
+        });
+
+        if (compileResult.stdout) ctx.stdout.write(compileResult.stdout);
+        if (compileResult.stderr) ctx.stderr.write(compileResult.stderr);
+        if (compileResult.error) {
+          ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
+          return 1;
+        }
+        if (compileResult.exitCode !== 0) {
+          return compileResult.exitCode;
+        }
+        const objBytes = compileResult.outputFiles[objPath];
+        if (!objBytes || objBytes.length === 0) {
+          ctx.stderr.write(`${binName}: compile produced no ${objPath} (internal error)\n`);
+          return 1;
+        }
+        objPaths.push(objPath);
+        objBytesMap[objPath] = objBytes;
       }
-      const objBytes = compileResult.outputFiles[objPath];
-      if (!objBytes || objBytes.length === 0) {
-        ctx.stderr.write(`${binName}: compile produced no ${objPath} (internal error)\n`);
-        return 1;
+
+      // -c (compile-only): flush each .o to the user VFS, no link.
+      if (parsed.compileOnly) {
+        for (const objPath of objPaths) {
+          const objVfsPath = resolveVfsPath(objPath, cwd);
+          const parent = objVfsPath.replace(/\/[^/]+$/, '');
+          if (parent && parent !== objVfsPath && !vfs.exists(parent)) {
+            vfs.mkdir(parent, { recursive: true });
+          }
+          vfs.writeFile(objVfsPath, objBytesMap[objPath]);
+        }
+        // Honor user's -o for single-input compile-only: rename the one
+        // .o to the requested output if -o was passed.
+        if (sourceInputs.length === 1 && parsed.outputPath !== 'a.out') {
+          const fromVfs = resolveVfsPath(objPaths[0], cwd);
+          const toVfs   = resolveVfsPath(parsed.outputPath, cwd);
+          if (fromVfs !== toVfs) {
+            try {
+              vfs.writeFile(toVfs, vfs.readFile(fromVfs));
+              vfs.unlink(fromVfs);
+            } catch { /* best-effort */ }
+          }
+        }
+        return 0;
+      }
+
+      // Add pre-built .o / .a inputs (the user passed them on argv
+      // alongside .c sources, e.g. `clang main.c extra.o -o out`).
+      const preBuiltBytesMap: Record<string, Uint8Array> = {};
+      for (const lp of preBuiltLinkInputs) {
+        preBuiltBytesMap[lp] = userSourceFiles[lp];
       }
 
       // ── LINK PHASE ───────────────────────────────────────────────
-      // Ship: lld.wasm + memfs.wasm + lib subset of sysroot + .o.
+      // Ship: lld.wasm + memfs.wasm + lib subset of sysroot + .o's.
       const linkSysroot = filterSysrootForLink(sysroot);
       const lldBytes = vfs.readFile(lldVfsPath);
       const stackSize = 1024 * 1024;
+      // User-supplied -L paths and -l libraries flow through. The user
+      // -L paths point at user-VFS dirs; we currently don't ship user
+      // libraries (they'd need their own collect step), so -l<name>
+      // works only against the sysroot's -L paths today. -L user-side
+      // would no-op silently in v1 — out of scope for this wave.
+      const userLinkFlags: string[] = [];
+      for (const lp of parsed.libraryPaths) {
+        userLinkFlags.push('-L', lp);
+      }
       const linkArgv = [
         'wasm-ld',
         '--no-threads',
@@ -174,18 +285,20 @@ export function makeClangRunnerFactory(deps: {
         // modern doesn't, so we link compiler-rt explicitly. wasm-ld
         // dead-strips unused builtins, so binji binaries are unaffected.
         '-L/lib/clang/8.0.1/lib/wasi',
+        ...userLinkFlags,
         '/lib/wasm32-wasi/crt1.o',
-        objPath,
+        ...objPaths,
+        ...preBuiltLinkInputs,
         '-lc',
+        ...parsed.libraries.map((l) => '-l' + l),
         '-lclang_rt.builtins-wasm32',
         '-o', parsed.outputPath,
       ];
-      // The .o file lives at objPath inside memfs for the link call.
       const linkResult = await dispatchClangFacet(facetMgr, {
         primaryName: 'wasm-ld',
         primaryBytes: lldBytes,
         memfsBytes,
-        sysrootFiles: { ...linkSysroot, [objPath]: objBytes },
+        sysrootFiles: { ...linkSysroot, ...objBytesMap, ...preBuiltBytesMap },
         argv: linkArgv,
         outputPaths: [parsed.outputPath],
       });
@@ -221,25 +334,81 @@ export function makeClangRunnerFactory(deps: {
 // ── argv parser ──────────────────────────────────────────────────────
 
 interface ParsedArgv {
+  /** All input source files (.c/.cpp/.cc/.cxx) in user-supplied order. */
+  inputPaths: string[];
+  /** Backward-compat alias for the FIRST input. Several existing code
+   *  paths still reference `inputPath`; we keep this name pointing at
+   *  inputPaths[0] for those callers. */
   inputPath: string;
+  /** -I include directories (cwd-relative or absolute) passed by user. */
+  includePaths: string[];
+  /** -L library search directories (cwd-relative or absolute). */
+  libraryPaths: string[];
+  /** -l library names (without 'lib' prefix or '.a' suffix). */
+  libraries: string[];
+  /** Output path from -o. Defaults to 'a.out'. */
   outputPath: string;
+  /** If true, user passed -c (compile-only, no link). */
+  compileOnly: boolean;
   error?: string;
   exitCode: number;
 }
 
+/** Recognized C / C++ source extensions for input classification. */
+function isSourceExt(p: string): boolean {
+  return /\.(c|cc|cpp|cxx|c\+\+|C)$/.test(p);
+}
+
 function parseUserArgv(argv: string[]): ParsedArgv {
-  let inputC = '';
+  const inputPaths: string[] = [];
+  const includePaths: string[] = [];
+  const libraryPaths: string[] = [];
+  const libraries: string[] = [];
   let outputPath = 'a.out';
+  let compileOnly = false;
+  // Flags that take a separate argv slot for their value.
+  const takesArg = new Set(['-o', '-x', '-isystem', '-include', '-isysroot',
+                            '-target', '--target', '-std', '-MF', '-MT', '-MQ']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-o' && i + 1 < argv.length) { outputPath = argv[i + 1]; i++; continue; }
+    if (a === '-c') { compileOnly = true; continue; }
+    // -I<path> or -I <path>
+    if (a === '-I' && i + 1 < argv.length) { includePaths.push(argv[i + 1]); i++; continue; }
+    if (a.startsWith('-I')) { includePaths.push(a.substring(2)); continue; }
+    // -L<path> or -L <path>
+    if (a === '-L' && i + 1 < argv.length) { libraryPaths.push(argv[i + 1]); i++; continue; }
+    if (a.startsWith('-L')) { libraryPaths.push(a.substring(2)); continue; }
+    // -l<name> or -l <name>
+    if (a === '-l' && i + 1 < argv.length) { libraries.push(argv[i + 1]); i++; continue; }
+    if (a.startsWith('-l')) { libraries.push(a.substring(2)); continue; }
+    // Skip recognised takes-arg flags we don't yet interpret.
+    if (takesArg.has(a) && i + 1 < argv.length) { i++; continue; }
+    // Any other -flag is opaque to the parser; the user passes them
+    // through (we don't currently relay arbitrary flags to clang-cc1,
+    // see compileArgv construction).
     if (a.startsWith('-')) continue;
-    if (!inputC) inputC = a;
+    // Positional. If it looks like a source file, take it; else ignore.
+    if (isSourceExt(a)) {
+      inputPaths.push(a);
+    } else if (a.endsWith('.o') || a.endsWith('.a')) {
+      // Pre-built objects/archives — treat as link-only inputs. We
+      // surface them as inputs so the link step picks them up; the
+      // compile step skips them (it only walks .c/.cc/.cpp).
+      inputPaths.push(a);
+    }
+    // else: drop silently (e.g. typos). clang would warn; we don't yet.
   }
-  if (!inputC) {
-    return { inputPath: '', outputPath: '', exitCode: 2, error: 'no input files' };
+  if (inputPaths.length === 0) {
+    return {
+      inputPaths: [], inputPath: '', includePaths, libraryPaths, libraries,
+      outputPath: '', compileOnly, exitCode: 2, error: 'no input files',
+    };
   }
-  return { inputPath: inputC, outputPath, exitCode: 0 };
+  return {
+    inputPaths, inputPath: inputPaths[0], includePaths, libraryPaths, libraries,
+    outputPath, compileOnly, exitCode: 0,
+  };
 }
 
 function resolveVfsPath(rel: string, cwd: string): string {
@@ -247,6 +416,91 @@ function resolveVfsPath(rel: string, cwd: string): string {
   if (rel.startsWith('/')) return rel.replace(/^\/+/, '');
   if (rel === '.') return cwdN;
   return `${cwdN}/${rel}`;
+}
+
+/**
+ * Recognise headers / inline-include files. The compile facet ships
+ * these alongside the .c sources so `#include "foo.h"` (quote-form)
+ * resolves against the directory of the including source file — which
+ * is how clang / gcc behave on real Unix.
+ */
+function isHeaderExt(name: string): boolean {
+  return /\.(h|hh|hpp|hxx|H|inc|ipp|tcc)$/.test(name);
+}
+
+/**
+ * Walk a VFS directory recursively to collect headers + (optionally)
+ * source files, with bounded depth and total size cap, returning a
+ * map of memfs-relative-path → bytes.
+ *
+ * Layout convention: paths returned are RELATIVE TO `rootVfsPath`, so
+ * a header at `home/user/sub/foo.h` (when rootVfsPath is `home/user`)
+ * comes out as `sub/foo.h`. This matches the layout the user passes
+ * on argv (e.g. `clang sub/lib.c -o out`, with `lib.c` including
+ * `"helpers.h"` next to itself).
+ *
+ * `extra` extensions can be added (used to include `.c/.cpp/.o/.a` when
+ * looking under -L / sibling source dirs). Empty by default.
+ *
+ * Anti-DoS:
+ *   - MAX_FILES = 200 (covers realistic user projects without ballooning
+ *     the facet payload).
+ *   - MAX_BYTES = 4 MiB.
+ *   - MAX_DEPTH = 8 (deep enough for typical "src/", "include/", "lib/" trees).
+ *   - skipDirs prunes obvious non-source directories.
+ */
+function collectIncludeBundle(
+  vfs: { exists: (p: string) => boolean;
+         isDirectory: (p: string) => boolean;
+         readFile: (p: string) => Uint8Array;
+         readdir: (p: string) => { name: string; type: string }[] },
+  rootVfsPath: string,
+  opts: { extraExts?: RegExp; maxFiles?: number; maxBytes?: number; maxDepth?: number } = {},
+): Record<string, Uint8Array> {
+  const extraExts = opts.extraExts ?? null;
+  const MAX_FILES = opts.maxFiles ?? 200;
+  const MAX_BYTES = opts.maxBytes ?? 4 * 1024 * 1024;
+  const MAX_DEPTH = opts.maxDepth ?? 8;
+  const out: Record<string, Uint8Array> = {};
+  if (!vfs.exists(rootVfsPath) || !vfs.isDirectory(rootVfsPath)) return out;
+  // Directories pruned regardless of depth — these never contain user
+  // headers and would balloon the payload if traversed.
+  const skipDirs = new Set([
+    '.nimbus', 'node_modules', '.cache', '.npm', '.git',
+    'dist', 'build', '.next', '.nuxt', '.svelte-kit', 'coverage',
+  ]);
+  const root = rootVfsPath.replace(/^\/+/, '').replace(/\/+$/, '');
+  let totalBytes = 0;
+  let fileCount = 0;
+  const stack: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
+  while (stack.length > 0) {
+    const { dir, depth } = stack.pop()!;
+    if (depth > MAX_DEPTH) continue;
+    let entries: { name: string; type: string }[];
+    try { entries = vfs.readdir(dir); } catch { continue; }
+    for (const e of entries) {
+      const childAbs = dir + '/' + e.name;
+      const rel = childAbs.startsWith(root + '/') ? childAbs.substring(root.length + 1) : childAbs;
+      if (e.type === 'directory') {
+        if (skipDirs.has(e.name)) continue;
+        stack.push({ dir: childAbs, depth: depth + 1 });
+        continue;
+      }
+      const isHeader = isHeaderExt(e.name);
+      const isExtra = extraExts && extraExts.test(e.name);
+      if (!isHeader && !isExtra) continue;
+      let bytes: Uint8Array;
+      try { bytes = vfs.readFile(childAbs); } catch { continue; }
+      totalBytes += bytes.length;
+      fileCount++;
+      if (totalBytes > MAX_BYTES || fileCount > MAX_FILES) {
+        // Cap reached — stop walking but return what we have.
+        return out;
+      }
+      out[rel] = bytes;
+    }
+  }
+  return out;
 }
 
 // ── ustar parser (supervisor-side) ───────────────────────────────────
