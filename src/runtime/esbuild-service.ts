@@ -423,20 +423,27 @@ function convertEsmImportsToRequire(src: string): { requires: string; body: stri
     // Side-effect import: `import "m";` / `import 'm';`
     let m = line.match(/^[ \t]*import\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) { requires.push(`require(${JSON.stringify(m[1])});`); continue; }
+    // Identifier class: JS spec allows `$` and `_` in addition to `\w`
+    // (letters/digits/underscore). esbuild's ESM-pass-1 emits `process$1`
+    // when colliding with a global (e.g. `import process from 'node:process'`
+    // becomes `process$1`). Pre-fix `\w+` truncated at `$`, all the regexes
+    // below missed → line fell through to bodyLines → top-level `import`
+    // statement survived into the async-IIFE wrap → SyntaxError
+    // "import statement outside module" at facet pre-compile.
     // Default + namespace: `import x, * as ns from "m";`
-    m = line.match(/^[ \t]*import\s+(\w+)\s*,\s*\*\s+as\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) {
       const def = m[1], ns = m[2], mod = m[3];
       requires.push(`const ${ns} = require(${JSON.stringify(mod)}); const ${def} = ${ns}.__esModule ? ${ns}.default : ${ns};`);
       continue;
     }
     // Default + named: `import x, { a, b as c } from "m";`
-    m = line.match(/^[ \t]*import\s+(\w+)\s*,\s*\{([^}]+)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) {
       const def = m[1], bindings = m[2], mod = m[3];
       const tmp = `_nimbus_m_${counter++}`;
       const named = bindings.split(',').map((b) => {
-        const am = b.trim().match(/^(\w+)(?:\s+as\s+(\w+))?$/);
+        const am = b.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
         if (!am) return b.trim();
         return am[2] ? `${am[1]}: ${am[2]}` : am[1];
       }).join(', ');
@@ -444,14 +451,14 @@ function convertEsmImportsToRequire(src: string): { requires: string; body: stri
       continue;
     }
     // Namespace: `import * as ns from "m";`
-    m = line.match(/^[ \t]*import\s+\*\s+as\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    m = line.match(/^[ \t]*import\s+\*\s+as\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) { requires.push(`const ${m[1]} = require(${JSON.stringify(m[2])});`); continue; }
     // Named only: `import { a, b as c } from "m";`
     m = line.match(/^[ \t]*import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) {
       const bindings = m[1], mod = m[2];
       const named = bindings.split(',').map((b) => {
-        const am = b.trim().match(/^(\w+)(?:\s+as\s+(\w+))?$/);
+        const am = b.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
         if (!am) return b.trim();
         return am[2] ? `${am[1]}: ${am[2]}` : am[1];
       }).join(', ');
@@ -459,7 +466,7 @@ function convertEsmImportsToRequire(src: string): { requires: string; body: stri
       continue;
     }
     // Default only: `import x from "m";`
-    m = line.match(/^[ \t]*import\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    m = line.match(/^[ \t]*import\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
     if (m) {
       const def = m[1], mod = m[2];
       requires.push(`const ${def} = (() => { const _m = require(${JSON.stringify(mod)}); return _m && _m.__esModule ? _m.default : _m; })();`);
