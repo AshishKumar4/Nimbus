@@ -408,18 +408,25 @@ function buildPyodidePreamble(asmJsSrc: string): string {
     '}',
     'if (typeof globalThis.document === "undefined") globalThis.document = undefined;',
     '// Pyodide\'s env-detect derives IN_BROWSER_WEB_WORKER via',
-    '//   typeof WorkerGlobalScope != "undefined" && self instanceof WorkerGlobalScope',
-    '// In workerd, WorkerGlobalScope may exist but `self` is an',
-    '// instance of ServiceWorkerGlobalScope (or similar), not the',
-    '// expected WorkerGlobalScope. The branch then falls through to',
-    '// "Cannot determine runtime environment" inside the asm.js. Shim',
-    '// a WorkerGlobalScope ctor that `self` IS an instance of \u2014',
-    '// `Object` works since every object is an Object instance.',
-    'if (typeof globalThis.WorkerGlobalScope === "undefined") {',
-    '  globalThis.WorkerGlobalScope = Object;',
-    '}',
-    '// Ensure `self` references globalThis (workerd already binds this',
-    '// but be explicit for portability across pyodide versions).',
+    '//   typeof WorkerGlobalScope != "undefined"',
+    '//   && typeof self != "undefined"',
+    '//   && self instanceof WorkerGlobalScope',
+    '//',
+    '// In workerd, WorkerGlobalScope is defined (as a real class) but',
+    '// `self` is an instance of ServiceWorkerGlobalScope (or another',
+    '// variant), NOT WorkerGlobalScope. The `instanceof` is therefore',
+    '// false; combined with IN_NODE=false / IN_BROWSER_MAIN_THREAD=false /',
+    '// IN_SHELL=false, all flags are false and the asm.js throws',
+    '// "Cannot determine runtime environment".',
+    '//',
+    '// Force-replace WorkerGlobalScope with Object \u2014 every object is an',
+    '// instance of Object, so `self instanceof WorkerGlobalScope` becomes',
+    '// true. __pyodideRun also save+restores around _createPyodideModule;',
+    '// this line covers any pyodide internals that touch the constructor',
+    '// at module-load time (rare; defensive).',
+    'globalThis.WorkerGlobalScope = Object;',
+    '// Ensure `self` references globalThis (workerd binds this; explicit',
+    '// for portability across pyodide versions).',
     'if (typeof globalThis.self === "undefined") globalThis.self = globalThis;',
     '',
     '// ── BEGIN: pyodide.asm.js (inlined; ~1 MiB) ─────────────────────',
@@ -583,7 +590,9 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // ENVIRONMENT_IS_NODE has been captured into module-init lexical
   // scope so we can restore process.
   const __origProcess = globalThis.process;
+  const __origWGS = globalThis.WorkerGlobalScope;
   globalThis.process = undefined;
+  globalThis.WorkerGlobalScope = Object;
   let pyodideMod;
   try {
     pyodideMod = await globalThis._createPyodideModule(settings);
@@ -592,6 +601,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
     }
   } catch (e) {
     globalThis.process = __origProcess;
+    globalThis.WorkerGlobalScope = __origWGS;
     // Emscripten throws ExitStatus on sys.exit / proc_exit.
     if (e && e.name === 'ExitStatus') {
       exitCode = e.status | 0;
@@ -608,8 +618,9 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       error: '_createPyodideModule failed: ' + (e && e.message),
     };
   }
-  // Restore process on the success path.
+  // Restore process + WorkerGlobalScope on the success path.
   globalThis.process = __origProcess;
+  globalThis.WorkerGlobalScope = __origWGS;
 
   // ── Step 3: bootstrap CPython interpreter. ─────────────────────
   //
