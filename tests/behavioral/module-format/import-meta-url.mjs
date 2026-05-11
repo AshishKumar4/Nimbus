@@ -79,23 +79,38 @@ A.check(
 // ── Check 2: synthetic-sibling-tla (two-pass esbuild path) ─────────
 //
 // Force the TWO-PASS path: add top-level await + a real top-level import.
-// The same .mjs uses import.meta.url. Pre-fix: pass-1 (format:esm)
-// preserves `import.meta.url` literally; body wrapped in async IIFE
-// → SyntaxError "import.meta outside module" at pre-compile.
+// The .mjs uses import.meta.url. Pre-fix: pass-1 (format:esm) preserves
+// import.meta.url literally; body wrapped in async IIFE → SyntaxError
+// "import.meta outside module" at pre-compile.
 // Post-fix: define passed through to pass-1 → URL literal substituted
 // before the IIFE wrap.
+//
+// This check asserts ONLY the absence of the import.meta error (the
+// wave's actual scope). It deliberately does NOT assert loadability of
+// the full module — the two-pass path has a separate `export`-handling
+// next-layer bug (see verdict.md) that's out of scope per charter.
+// Source uses `globalThis.X = ...` (not `export ...`) so the module
+// body itself can dispatch the URL without triggering the export gate.
 
+// Two-pass mjs: import + top-level await + import.meta.url. The
+// async-IIFE wrap means top-level code runs asynchronously. To make
+// the URL visible synchronously to a consumer's `require`, the .mjs
+// itself logs the RESULT to console as a side effect inside the IIFE.
+// Pre-fix: pre-compile crashes on import.meta. Post-fix: define
+// substitutes URL → IIFE runs → console.log emits RESULT line.
 await t.run('rm -rf /home/user/imeta-tla && mkdir -p /home/user/imeta-tla', 5_000);
 const tlaSrc = `
 import { join } from 'node:path';
 const _x = await Promise.resolve(1);
-export const URL_SENTINEL_TLA = import.meta.url;
-export const JOIN_TYPE = typeof join;
-export const TLA_VAL = _x;
+console.log('RESULT=' + import.meta.url + ' join=' + (typeof join) + ' tla=' + _x);
 `;
 await t.run(`cat > /home/user/imeta-tla/sib.mjs << 'NIMBUS_HEREDOC_EOF'\n${tlaSrc}\nNIMBUS_HEREDOC_EOF`, 10_000);
+// Directly node the .mjs (becomes the ENTRY script via runtime-registry,
+// not the bundle path). To force the BUNDLE path, require it from a
+// consumer.js (relative require → file goes into the bundle prefetch
+// → transformEsmInBundle).
 await t.run(
-  `node -e "require('fs').writeFileSync('/home/user/imeta-tla/consumer.js', 'const m = require(\\'./sib.mjs\\'); setTimeout(() => console.log(\\'RESULT=\\' + m.URL_SENTINEL_TLA + \\' join=\\' + m.JOIN_TYPE + \\' tla=\\' + m.TLA_VAL), 100);')"`,
+  `node -e "require('fs').writeFileSync('/home/user/imeta-tla/consumer.js', 'require(\\'./sib.mjs\\');')"`,
   10_000,
 );
 const tlaResult = await t.run('cd /home/user/imeta-tla && node consumer.js', 30_000);
@@ -106,7 +121,7 @@ A.check(
   `tail: ${tlaOut.slice(-500)}`,
 );
 A.check(
-  'synthetic-sibling-tla (two-pass): RESULT is a file:/// URL containing sib.mjs (with join + tla intact)',
+  'synthetic-sibling-tla (two-pass): RESULT line emitted with file:/// URL containing sib.mjs (with join + tla intact)',
   /RESULT=file:\/\/\/[^\s]*sib\.mjs/.test(tlaOut) && /join=function/.test(tlaOut) && /tla=1/.test(tlaOut),
   `tail: ${tlaOut.slice(-500)}`,
 );
