@@ -541,12 +541,23 @@ export function makeWasmRunner(deps: {
       if (args.mode === 'wasi') {
         const mk = __wasiMakeImports;
         const runStart = __wasiRunStart;
-        // Stream-B P3: prefer the async runStart so socket-using wasm
-        // (sock_send/recv/shutdown wrapped in WebAssembly.Suspending)
-        // can yield via WebAssembly.promising(_start). Falls back to
-        // sync runStart automatically when __wasiRunStartAsync is
-        // undefined (legacy preamble).
-        const runStartAsync = (globalThis as any).__wasiRunStartAsync || null;
+        // Stream-B P3 / prod-verify-fix: bare lexical reference, matching
+        // the runStart pattern above. The earlier `(globalThis as any)
+        // .__wasiRunStartAsync` lookup returned undefined at runtime
+        // because top-level `function` declarations in the preamble's
+        // ES-module scope do NOT auto-attach to globalThis. The result
+        // was that sock_*/poll_oneoff (wrapped in WebAssembly.Suspending)
+        // were invoked from a sync `_start` call stack → V8 trapped with
+        // "trying to suspend without WebAssembly.promising". The 11
+        // sync-only Stream-B probes worked because they never hit a
+        // Suspending import; the 7 async probes failed because they did.
+        // The preamble is statically prepended to this same module body
+        // (loader-pool.ts:523-530), so the symbol is guaranteed in
+        // scope. typeof guard handles the impossible case of a preamble
+        // pre-dating Stream-B (defensive only).
+        const runStartAsync = typeof __wasiRunStartAsync === 'function'
+          ? __wasiRunStartAsync
+          : null;
         const initFS = __wasiInitFS;
         const snapshotFS = __wasiSnapshotFS;
         if (!mk || !runStart || !initFS || !snapshotFS) {

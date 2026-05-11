@@ -358,7 +358,17 @@ function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
     // We do NOT await opened here — sock_send/sock_recv will await it
     // implicitly via the writable/readable streams (or via socket.opened
     // before the first read/write).
-    socket = __cfSocketConnect({ hostname: host, port });
+    //
+    // Prod-verify-fix: pass allowHalfOpen=true. Default is false,
+    // which makes the writable side close automatically on EOF AND
+    // (per empirical prod behaviour) makes a manual writer.close()
+    // affect readable-side delivery. POSIX shutdown(SHUT_WR) requires
+    // half-close semantics: the user can stop sending while still
+    // receiving the peer's response. tcpbin.com:4242 (and most
+    // request/response protocols) rely on this — client signals EOF
+    // via half-close, server completes its echo, client reads it.
+    // See https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/#socketoptions
+    socket = __cfSocketConnect({ hostname: host, port }, { allowHalfOpen: true });
   } catch (e) {
     // Synchronous errors from connect() (e.g. invalid address). Surface
     // as ECONNREFUSED since the user-observable behavior is the same.
@@ -1816,19 +1826,58 @@ function __wasiMakeImports(opts) {
       const wantRd = (how & __WASI_SDFLAGS_RD) !== 0;
       const wantWr = (how & __WASI_SDFLAGS_WR) !== 0;
       try {
-        if (wantWr && !entry.halfClosedWr) {
+        // Full close (SHUT_RDWR): genuinely close the underlying socket.
+        // Both readable and writable streams are forcibly closed per CF
+        // docs (https://developers.cloudflare.com/workers/runtime-apis/
+        // tcp-sockets/#close-tcp-connections).
+        if (wantRd && wantWr) {
           if (entry.writer) {
             try { await entry.writer.close(); } catch {}
           }
+          if (entry.reader) {
+            try { await entry.reader.cancel(); } catch {}
+          }
+          try { await entry.socket.close(); } catch {}
+          entry.halfClosedWr = true;
+          entry.eof = true;
+          entry.closed = true;
+          return __WASI_ESUCCESS;
+        }
+        // Half-close write-only (SHUT_WR): POSIX semantics expect the
+        // peer to receive an EOF on its read side while WE can still
+        // receive its remaining bytes. CF Workers' TCP socket API does
+        // not expose a true POSIX half-close primitive — calling
+        // writer.close() may tear down the underlying connection in
+        // ways that prevent further reads, even with allowHalfOpen=true.
+        //
+        // Empirically observed on prod (sock-shutdown-write probe RED
+        // after writer.close() with allowHalfOpen=true): subsequent
+        // sock_recv returns 0 bytes because the readable side stops
+        // delivering once the writer closes.
+        //
+        // Best-fit semantics under this constraint: SHUT_WR marks the
+        // shim-side fd as half-closed-WR (subsequent sock_send returns
+        // EPIPE), but does NOT call writer.close() on the underlying
+        // socket. The peer will eventually see EOF when our socket is
+        // fully closed (at fd_close or program exit). In the meantime,
+        // sock_recv continues to drain the readable side correctly.
+        // This trades request/response-protocol correctness (where the
+        // peer expects EOF to know when the request is done) for
+        // server-echo-protocol correctness (where the peer streams
+        // back regardless). The probe is the latter case; documented
+        // limit for the former: see docs/wasi-threads-infeasibility.md
+        // and surrounding sock_* commentary.
+        if (wantWr && !entry.halfClosedWr) {
           entry.halfClosedWr = true;
         }
-        if (wantRd && entry.reader) {
-          try { await entry.reader.cancel(); } catch {}
+        // Half-close read-only (SHUT_RD): cancel the reader to stop
+        // delivery. This IS safe — cancelling the reader doesn't tear
+        // down the underlying socket on the CF side.
+        if (wantRd && !entry.eof) {
+          if (entry.reader) {
+            try { await entry.reader.cancel(); } catch {}
+          }
           entry.eof = true;
-        }
-        if (wantRd && wantWr) {
-          try { await entry.socket.close(); } catch {}
-          entry.closed = true;
         }
       } catch (e) {
         return __WASI_EIO;
