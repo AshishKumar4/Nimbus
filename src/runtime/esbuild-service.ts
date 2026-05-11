@@ -480,7 +480,180 @@ function convertEsmImportsToRequire(src: string): { requires: string; body: stri
     // we don't yet recognise.
     bodyLines.push(line);
   }
-  return { requires: requires.join('\n'), body: bodyLines.join('\n') };
+  // ── Pass 2: scan bodyLines for top-level `export` statements. ──────
+  //
+  // After import-stripping, the body still has every `export` statement
+  // verbatim. The async-IIFE wrap (the caller wraps body in
+  // `;(async () => { ... })();`) makes those exports illegal grammar
+  // ('export' is module-only, not legal in function bodies) →
+  // SyntaxError "Unexpected token 'export'" at facet pre-compile.
+  //
+  // Rewrite each top-level export to a CJS-compatible equivalent (see
+  // .seal-internal/2026-05-11-sk-exports-fix/audit.md for shape table).
+  // Same defences as imports:
+  //   - String-content masking (template-literal exports don't trigger)
+  //   - $-aware identifier regex ([\w$]+, esbuild emits foo$1 ids)
+  //
+  // Multi-line `export { ... }` lists are coalesced before shape match.
+  const bodySrc = bodyLines.join('\n');
+  const bodyLines2 = bodySrc.split('\n');
+  const strippedBody = stripCommentsAndStrings(bodySrc).split('\n');
+  const out: string[] = [];
+  let i = 0;
+  let exportCounter = 0;
+  while (i < bodyLines2.length) {
+    const line = bodyLines2[i];
+    const cls = strippedBody[i] ?? '';
+    if (!/^[ \t]*export\b/.test(cls)) {
+      out.push(line);
+      i++;
+      continue;
+    }
+    // Multi-line collector: if the stripped line opens a `{` for an
+    // `export { ... }` list and doesn't close it on the same line,
+    // accumulate subsequent lines until the matching `}` (tracked on
+    // the stripped lines so string `}`s don't trip us).
+    let coalesced = line;
+    let coalescedCls = cls;
+    if (/^[ \t]*export\s*\{/.test(cls) && !/\}/.test(cls)) {
+      let j = i + 1;
+      while (j < bodyLines2.length) {
+        coalesced += ' ' + bodyLines2[j];
+        coalescedCls += ' ' + (strippedBody[j] ?? '');
+        if (/\}/.test(strippedBody[j] ?? '')) { j++; break; }
+        j++;
+      }
+      i = j;
+    } else {
+      i++;
+    }
+
+    // Helper: emit a `__esModule = true` marker exactly once.
+    // (Mirrors esbuild's own emit; consumers using the __esModule check
+    // in convertEsmImportsToRequire's default-import shim then pick
+    // .default correctly.)
+    const ensureEsmMarker = (() => {
+      let emitted = false;
+      return () => {
+        if (emitted) return '';
+        emitted = true;
+        return 'module.exports.__esModule = true; ';
+      };
+    })();
+
+    // Shape regexes operate on the COALESCED ORIGINAL line. We use the
+    // stripped version only for classification (already done above).
+    let m: RegExpMatchArray | null;
+
+    // export default function/class — declaration form
+    // `export default function foo(args){...}` (named declaration)
+    m = coalesced.match(/^([ \t]*)export\s+default\s+(async\s+)?function\s*([\w$]+)\s*([\s\S]*)$/);
+    if (m) {
+      const indent = m[1], asyncKw = m[2] || '', name = m[3], rest = m[4];
+      out.push(`${indent}${asyncKw}function ${name} ${rest}`);
+      out.push(`${ensureEsmMarker()}module.exports.default = ${name};`);
+      continue;
+    }
+    // export default class K {...}
+    m = coalesced.match(/^([ \t]*)export\s+default\s+class\s+([\w$]+)\s*([\s\S]*)$/);
+    if (m) {
+      const indent = m[1], name = m[2], rest = m[3];
+      out.push(`${indent}class ${name} ${rest}`);
+      out.push(`${ensureEsmMarker()}module.exports.default = ${name};`);
+      continue;
+    }
+    // export default <anonymous-function | anonymous-class | expression>
+    // Match any remaining `export default …` shape and emit as assignment.
+    m = coalesced.match(/^([ \t]*)export\s+default\s+([\s\S]*)$/);
+    if (m) {
+      const indent = m[1];
+      let rest = m[2];
+      // Strip trailing semicolon (we add our own).
+      rest = rest.replace(/;\s*$/, '');
+      out.push(`${indent}${ensureEsmMarker()}module.exports.default = (${rest});`);
+      continue;
+    }
+
+    // export named-declaration: const/let/var
+    m = coalesced.match(/^([ \t]*)export\s+(const|let|var)\s+([\w$]+)\s*=\s*([\s\S]*)$/);
+    if (m) {
+      const indent = m[1], kw = m[2], name = m[3];
+      let rest = m[4];
+      rest = rest.replace(/;\s*$/, '');
+      out.push(`${indent}${kw} ${name} = ${rest};`);
+      out.push(`${ensureEsmMarker()}module.exports.${name} = ${name};`);
+      continue;
+    }
+    // export function NAME(...) {...}
+    m = coalesced.match(/^([ \t]*)export\s+(async\s+)?function\s*\*?\s*([\w$]+)\s*([\s\S]*)$/);
+    if (m) {
+      const indent = m[1], asyncKw = m[2] || '', name = m[3], rest = m[4];
+      // Preserve generator-star if present (function\s*\*).
+      const generatorStar = /^export\s+(?:async\s+)?function\s*\*/.test(coalesced.replace(/^[ \t]+/, '')) ? '*' : '';
+      out.push(`${indent}${asyncKw}function${generatorStar} ${name} ${rest}`);
+      out.push(`${ensureEsmMarker()}module.exports.${name} = ${name};`);
+      continue;
+    }
+    // export class NAME { ... } / export class NAME extends X { ... }
+    m = coalesced.match(/^([ \t]*)export\s+class\s+([\w$]+)\s*([\s\S]*)$/);
+    if (m) {
+      const indent = m[1], name = m[2], rest = m[3];
+      out.push(`${indent}class ${name} ${rest}`);
+      out.push(`${ensureEsmMarker()}module.exports.${name} = ${name};`);
+      continue;
+    }
+
+    // export { x, y as z } from 'm' / export * from 'm' / export * as ns from 'm'
+    m = coalesced.match(/^([ \t]*)export\s*\*\s+as\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    if (m) {
+      const indent = m[1], ns = m[2], mod = m[3];
+      out.push(`${indent}${ensureEsmMarker()}module.exports.${ns} = require(${JSON.stringify(mod)});`);
+      continue;
+    }
+    m = coalesced.match(/^([ \t]*)export\s*\*\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    if (m) {
+      const indent = m[1], mod = m[2];
+      const tmp = `_nimbus_re_${exportCounter++}`;
+      out.push(`${indent}${ensureEsmMarker()}{ const ${tmp} = require(${JSON.stringify(mod)}); for (const _k in ${tmp}) { if (_k !== "default" && _k !== "__esModule") module.exports[_k] = ${tmp}[_k]; } }`);
+      continue;
+    }
+    m = coalesced.match(/^([ \t]*)export\s*\{([^}]*)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+    if (m) {
+      const indent = m[1], bindings = m[2], mod = m[3];
+      const tmp = `_nimbus_re_${exportCounter++}`;
+      const parts = bindings.split(',').map((b) => b.trim()).filter(Boolean);
+      const assigns: string[] = [];
+      for (const p of parts) {
+        const am = p.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+        if (!am) continue;
+        const src = am[1], dst = am[2] || am[1];
+        assigns.push(`module.exports.${dst} = ${tmp}.${src};`);
+      }
+      out.push(`${indent}${ensureEsmMarker()}{ const ${tmp} = require(${JSON.stringify(mod)}); ${assigns.join(' ')} }`);
+      continue;
+    }
+    // export { x, y as z }  (binding-only list — no `from`)
+    m = coalesced.match(/^([ \t]*)export\s*\{([^}]*)\}\s*;?\s*$/);
+    if (m) {
+      const indent = m[1], bindings = m[2];
+      const parts = bindings.split(',').map((b) => b.trim()).filter(Boolean);
+      const assigns: string[] = [];
+      for (const p of parts) {
+        const am = p.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+        if (!am) continue;
+        const src = am[1], dst = am[2] || am[1];
+        assigns.push(`module.exports.${dst} = ${src};`);
+      }
+      out.push(`${indent}${ensureEsmMarker()}${assigns.join(' ')}`);
+      continue;
+    }
+
+    // Unknown export shape — leave in body (esbuild will surface a clear
+    // error at the next pass, or this is a future-syntax variant we
+    // don't yet recognise).
+    out.push(coalesced);
+  }
+  return { requires: requires.join('\n'), body: out.join('\n') };
 }
 
 // ── esbuild-wasm imports ────────────────────────────────────────────────
