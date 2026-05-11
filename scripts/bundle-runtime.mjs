@@ -75,6 +75,49 @@ const SPECS = {
     // Source: https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT
     license_text: APACHE_2_LLVM_LICENSE_TEXT(),
   },
+  // ── Ruby (v1, 2026-05-11) ────────────────────────────────────────
+  // ruby.wasm 2.9.3-2.9.4 from npm @ruby/3.3-wasm-wasi (Ruby 3.3.x
+  // built on WASI). We bundle ONLY the `ruby+stdlib.wasm` artifact
+  // (34.3 MiB) — it's self-contained, stdlib is packed via wasi-vfs
+  // into the wasm. No separate stdlib zip transport needed (unlike
+  // Pyodide which ships python_stdlib.zip alongside the asm.js).
+  //
+  // Upstream channel: npm tarball — the script downloads the tarball
+  // (`upstream_base + '/' + src`) and extracts the wasm by file
+  // name via the `tarball_extract` flag. Each spec.files entry's
+  // `src` is interpreted as the path INSIDE the extracted tarball.
+  //
+  // See /workspace/.seal-internal/2026-05-11-ruby-v1/audit.md for
+  // the full artifact audit + import/export breakdown.
+  'ruby/3.3.4': {
+    license: 'Ruby+BSD-2-Clause',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    memfs_companion: null,
+    upstream_base: 'https://registry.npmjs.org/@ruby/3.3-wasm-wasi/-/3.3-wasm-wasi-2.9.3-2.9.4.tgz',
+    tarball_extract: 'package/dist',  // strip this prefix from src paths inside the tarball
+    files: [
+      // The Ruby wasm — includes Ruby 3.3.x interpreter + stdlib packed
+      // via wasi-vfs. ruby-runner instantiates this at child-facet
+      // module-init time and drives it via the Ruby ABI exports
+      // (`ruby-init`, `ruby-init-loadpath`, `rb-eval-string-protect`).
+      { src: 'ruby+stdlib.wasm', vfs: 'share/ruby/ruby+stdlib.wasm' },
+      // User-facing bin entries. The shell registry dispatches `ruby`
+      // and `ruby3` to ruby-runner; this file is a marker, not exec.
+      { src: 'BIN_MARKER', vfs: 'bin/ruby',  mode: 'exec', runner: 'ruby-runner', binName: 'ruby' },
+      { src: 'BIN_MARKER', vfs: 'bin/ruby3', mode: 'exec', runner: 'ruby-runner', binName: 'ruby3' },
+    ],
+    synthetic_files: {
+      'BIN_MARKER': Buffer.from(
+        '# Nimbus ruby-runner launcher marker. The actual Ruby wasm\n' +
+        '# lives in share/ruby/. This file is here only so `which ruby`\n' +
+        '# and `ls bin/` find a regular file at the expected path. The\n' +
+        '# shell-registry dispatches `ruby` directly to the ruby-runner\n' +
+        '# factory; this file is not read or executed by Nimbus.\n',
+        'utf8',
+      ),
+    },
+    license_text: RUBY_LICENSE_TEXT(),
+  },
   'python/0.29.4': {
     license: 'MPL-2.0',
     wasi_namespace: null,        // Pyodide is Emscripten, not WASI
@@ -219,6 +262,22 @@ for (const f of spec.files) {
     if (synthetic !== undefined) {
       writeFileSync(local, synthetic);
       console.log(`[bundle-runtime] synth ${f.src} (${synthetic.length} bytes)`);
+    } else if (spec.tarball_extract) {
+      // Tarball extraction path: download the tarball ONCE (cached
+      // across files), then extract `<tarball_extract>/<src>` into
+      // `<workDir>/<src>` (basename only). Used by ruby-3.3.x where
+      // the upstream channel is a single npm tarball containing
+      // multiple files.
+      const tarballLocal = join(workDir, '_tarball.tgz');
+      if (!existsSync(tarballLocal)) {
+        console.log(`[bundle-runtime] fetch tarball ${spec.upstream_base}`);
+        execSync(`curl -sS -L -k -o "${tarballLocal}" "${spec.upstream_base}"`, { stdio: 'inherit' });
+      }
+      console.log(`[bundle-runtime] extract ${spec.tarball_extract}/${f.src}`);
+      execSync(
+        `tar -xzf "${tarballLocal}" -C "${workDir}" --strip-components=2 "${spec.tarball_extract}/${f.src}"`,
+        { stdio: 'inherit' },
+      );
     } else if (!existsSync(local)) {
       const url = `${spec.upstream_base}/${f.src}`;
       console.log(`[bundle-runtime] fetch ${url}`);
@@ -483,6 +542,35 @@ function APACHE_2_LLVM_LICENSE_TEXT() {
     'in Nimbus under the original LLVM Apache 2.0 + LLVM Exception license.',
     'See the canonical LICENSE.TXT for the full text including the WebAssembly',
     'runtime exception clauses.',
+    '',
+  ].join('\n');
+}
+
+function RUBY_LICENSE_TEXT() {
+  // Ruby is dual-licensed under the Ruby License + BSD-2-Clause.
+  // ruby.wasm packaging adds MIT for the JS bindings (which we
+  // re-implement, so we don't redistribute their JS — only the wasm).
+  // The wasm itself carries: Ruby License + BSD-2-Clause for the
+  // interpreter, plus various permissive licenses for bundled gems
+  // and the C extensions in stdlib.
+  return [
+    '==============================================================================',
+    'Ruby is dual-licensed under the Ruby License (2-clause variant) and BSD-2-Clause:',
+    '==============================================================================',
+    '',
+    'Copyright (c) Yukihiro Matsumoto. All rights reserved.',
+    '',
+    'Ruby License full text: https://www.ruby-lang.org/en/about/license.txt',
+    'BSD-2-Clause full text: https://opensource.org/license/bsd-2-clause/',
+    '',
+    'Ruby source: https://github.com/ruby/ruby',
+    'ruby.wasm source: https://github.com/ruby/ruby.wasm',
+    'Release tarball: https://registry.npmjs.org/@ruby/3.3-wasm-wasi/-/3.3-wasm-wasi-2.9.3-2.9.4.tgz',
+    '',
+    'Bundled in Nimbus for the `nimbus install ruby` runtime. ruby+stdlib.wasm',
+    'contains Ruby 3.3.x + the standard library packed via wasi-vfs, compiled',
+    'to wasm32-unknown-wasi. The full Ruby standard library license list is in',
+    'the upstream LEGAL file: https://github.com/ruby/ruby/blob/master/LEGAL.',
     '',
   ].join('\n');
 }
