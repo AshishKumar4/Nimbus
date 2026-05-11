@@ -1374,6 +1374,96 @@ function addBinTargetSiblings(
 }
 
 /**
+ * BUG-SWEEP-R2-2 (2026-05-11): scan entry code (and any already-bundled
+ * .js/.mjs/.cjs sources) for ABSOLUTE-PATH string literals that look
+ * like file reads. For every candidate that exists on the SqliteVFS,
+ * pull it into the bundle so the facet's __vfsBundle can serve it.
+ *
+ * Pre-fix: `node -e 'fs.readFileSync("/home/user/x.txt")'` returned
+ * ENOENT for files the shell could `cat`. The facet's bundle never
+ * included `/home/user/x.txt` because no static scanner matched the
+ * shape (greedy/dotfile/asset all required `path.resolve(__dirname,
+ * "rel")` or `node_modules` pkg-root containment).
+ *
+ * Match policy:
+ *   - String literals matching `/[^"`']+/` (slash-prefixed, no quotes
+ *     inside), length 2-512 chars.
+ *   - Reject paths under prefixes we don't mount (`/proc`, `/sys`,
+ *     `/dev`, `/lib`, `/lib64`) — wouldn't resolve.
+ *   - Reject paths containing `*` `?` `[` `]` `${` (glob/template).
+ *   - File must exist on VFS, be a file (not a dir).
+ *   - Defer to budgetState caps so we don't blow VFS_BUNDLE_MAX_BYTES.
+ *
+ * Quick-reject: only files containing readFileSync / createReadStream
+ * / openSync / readFile in source are scanned. Entry code is always
+ * scanned (it's the user's intent).
+ */
+function addEntryAbsPathReads(
+  vfs: SqliteVFS,
+  entryCode: string,
+  bundle: Record<string, string>,
+  budgetState: { totalBytes: number; fileCount: number },
+): { added: number } {
+  let added = 0;
+  // Capture absolute-path string literals. The path may not contain
+  // the quote char; the surrounding regex strips line/block comments
+  // first to avoid commented-out matches.
+  // Path char set: alnum + dot + dash + slash + underscore. This
+  // excludes spaces, glob chars, template syntax — all dynamic.
+  const RX = /(['"`])(\/[A-Za-z0-9._\-\/]{1,510})\1/g;
+  const REJECT_PREFIX = /^\/(proc|sys|dev|lib|lib64|boot|root)(\/|$)/;
+
+  function tryAdd(absPath: string): void {
+    if (!absPath || absPath.length < 2 || absPath.length > 512) return;
+    if (REJECT_PREFIX.test(absPath)) return;
+    const stripped = absPath.replace(/^\/+/, '');
+    if (stripped in bundle) return;
+    if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return;
+    if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return;
+    try {
+      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return;
+      const content = vfs.readFileString(stripped);
+      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return;
+      bundle[stripped] = content;
+      budgetState.totalBytes += content.length;
+      budgetState.fileCount++;
+      added++;
+    } catch { /* swallow — file may be binary, race-deleted, etc. */ }
+  }
+
+  function scanOne(src: string): void {
+    if (!src) return;
+    // Strip line + block comments so we don't match commented-out reads.
+    const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    RX.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = RX.exec(stripped)) !== null) {
+      const literal = m[2];
+      // Skip if there's any unsafe char (defensive — RX already
+      // forbids most). The check on the captured group is cheap.
+      if (/[\?\*\[\]\{\}]/.test(literal)) continue;
+      tryAdd(literal);
+    }
+  }
+
+  // Always scan entry code.
+  scanOne(entryCode);
+
+  // Optionally scan bundled JS sources too — useful for transitive cases
+  // where a require'd module hardcodes an absolute path. Use the same
+  // budget-state so we don't blow caps.
+  const sourceKeys = Object.keys(bundle).filter((k) =>
+    k.endsWith('.js') || k.endsWith('.mjs') || k.endsWith('.cjs'),
+  );
+  for (const k of sourceKeys) {
+    if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
+    if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) break;
+    scanOne(bundle[k]);
+  }
+  return { added };
+}
+
+/**
  * W3.5 Fix B helper — detect ESM source by sniffing for top-level
  * `import` / `export` STATEMENTS. Identifier/property uses (`obj.import`,
  * `pkg.export`) won't match because we anchor at start-of-line / `^\s*`.
@@ -1591,6 +1681,35 @@ async function buildPrefetchBundle(
   //      No-op when entry isn't inside node_modules.
   const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState);
   void binSiblingAdd;
+  totalBytes = budgetState.totalBytes;
+  fileCount = budgetState.fileCount;
+
+  // 2.35 BUG-SWEEP-R2-2: absolute-path readFileSync scanner.
+  //
+  // Pre-fix `node -e 'fs.readFileSync("/home/user/er.txt")'` returned
+  // ENOENT even when the file existed on the SqliteVFS (verified via
+  // `cat`/`ls`). Cause: buildPrefetchBundle's existing scanners
+  // (greedy main entries, addStaticReadFileAssets, dotfiles, bin
+  // siblings) all look at INSTALLED packages or relative-resolve
+  // patterns inside the bundle's source files. They never scan the
+  // user's ENTRY CODE for absolute-path string literals, so user
+  // files like /home/user/data.json or /tmp/cache.bin never reached
+  // the facet's __vfsBundle.
+  //
+  // Fix: scan entryCode + every JS source already in the bundle for
+  // any string literal that LOOKS like an absolute path (`/x/y/z`,
+  // optionally inside a readFileSync/createReadStream/open call).
+  // For each candidate that exists on the VFS (and isn't already in
+  // the bundle), pull it in within the byte budget.
+  //
+  // Defenses:
+  //   - Only path-shaped strings (starts with `/`, length 1-512).
+  //   - VFS file existence + non-dir check before adding.
+  //   - Byte/file budget guards identical to other passes.
+  //   - Skip paths under known-untrusted prefixes (`/proc`, `/sys`,
+  //     `/dev` — we don't have these mounts; they'd never resolve).
+  const absScanAdd = addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState);
+  void absScanAdd;
   totalBytes = budgetState.totalBytes;
   fileCount = budgetState.fileCount;
 

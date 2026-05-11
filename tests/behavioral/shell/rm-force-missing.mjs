@@ -68,14 +68,19 @@ a.check(
 );
 
 // Probe 5: `rm -rf` actually deletes a populated directory recursively.
+// Use `stat` (registered command, errors with "No such file") to
+// verify the directory is GONE post-delete. lifo-sh's `ls` on a
+// missing dir is silent, so we use stat for an unambiguous signal.
 await t.run('mkdir -p /tmp/bsr2-recur/sub && touch /tmp/bsr2-recur/sub/f.txt /tmp/bsr2-recur/g.txt', 10_000);
 const before = await t.run('ls /tmp/bsr2-recur', 5_000);
-const r5 = await t.run('rm -rf /tmp/bsr2-recur && echo GONE && ls /tmp/bsr2-recur 2>&1', 10_000);
+const r5 = await t.run('rm -rf /tmp/bsr2-recur && echo GONE', 10_000);
+const r5stat = await t.run('stat /tmp/bsr2-recur 2>&1', 5_000);
 const out5 = stripAnsi(r5.output);
+const out5stat = stripAnsi(r5stat.output);
 a.check(
-  '`rm -rf <dir>` actually removes a populated directory',
-  /\bsub\b/.test(stripAnsi(before.output)) && /GONE/.test(out5) && /(No such file|cannot)/.test(out5),
-  `tail: ${JSON.stringify(out5.slice(-250))}`,
+  '`rm -rf <dir>` actually removes a populated directory recursively',
+  /\bsub\b/.test(stripAnsi(before.output)) && /GONE/.test(out5) && /No such file/.test(out5stat),
+  `out5: ${JSON.stringify(out5.slice(-150))}, stat: ${JSON.stringify(out5stat.slice(-150))}`,
 );
 
 await t.close();
