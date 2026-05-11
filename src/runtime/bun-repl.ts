@@ -67,11 +67,12 @@ class BunReplAdapter implements ReplAdapter {
 
   banner(): string {
     return (
-      `Bun ${BUN_VERSION} (Nimbus)\r\n` +
-      'Note: stateful REPL not supported in workerd (CSP blocks runtime\r\n' +
-      'eval/new-Function). console.log + side-effect ops work per line;\r\n' +
-      'var/let/const declarations do NOT persist across submits.\r\n' +
-      'For full Bun: `bun -e "..."` or `bun script.ts`.\r\n' +
+      `Bun ${BUN_VERSION} emulation (Nimbus, over Cloudflare workerd)\r\n` +
+      'This is not Bun itself. It is a Bun-compatible API surface on top of\r\n' +
+      "workerd's V8. workerd's CSP blocks runtime eval/new-Function, so the\r\n" +
+      'REPL cannot persist `var`/`let`/`const` across lines. `console.log` and\r\n' +
+      'side-effect calls work per line. For stateful work, run a script:\r\n' +
+      '  `bun -e "<code>"`   or   `bun script.ts`\r\n' +
       'Type ".exit" or press Ctrl-D to exit.\r\n'
     );
   }

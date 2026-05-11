@@ -57,11 +57,12 @@ class NodeReplAdapter implements ReplAdapter {
 
   banner(): string {
     return (
-      `Welcome to Node.js ${NODE_VERSION} (Nimbus).\r\n` +
-      'Note: stateful REPL not supported in workerd (CSP blocks runtime\r\n' +
-      'eval/new-Function). console.log + side-effect ops work per line;\r\n' +
-      'var/let/const declarations do NOT persist across submits.\r\n' +
-      'For full Node: `node -e "..."` or `node script.js`.\r\n' +
+      `Node.js ${NODE_VERSION} compatibility layer (Nimbus, over Cloudflare workerd)\r\n` +
+      'This is not Node.js itself. It is the workerd `nodejs_compat` API\r\n' +
+      "surface on top of V8. workerd's CSP blocks runtime eval/new-Function,\r\n" +
+      'so the REPL cannot persist `var`/`let`/`const` across lines.\r\n' +
+      '`console.log` and side-effect calls work per line. For stateful work,\r\n' +
+      'run a script:  `node -e "<code>"`   or   `node script.js`\r\n' +
       'Type ".help" for more information.\r\n'
     );
   }
