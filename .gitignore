@@ -39,7 +39,10 @@ WORKERD-*.md
 CIRRUS-OOM-TRACE.txt
 FINAL-*.md
 HYPOTHESIS-*.md
-AGENTS.md
+# AGENTS.md tracked as of CLN-1b (2026-05-11) — contains project-specific
+# context for future sessions / contributors. Previously gitignored on the
+# assumption each sandbox had its own local context; the refreshed file
+# is purely architectural docs and benefits from versioned history.
 
 # Root-level probe / repro / verify ad-hoc scripts (the canonical
 # build scripts under scripts/ are tracked).

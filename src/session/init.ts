@@ -74,6 +74,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '../runtime/process-logs.js';
 import {
   NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE,
+  NODE_VERSION,
 } from '../constants.js';
 import { enc } from '../_shared/bytes.js';
 import {
@@ -405,7 +406,9 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // live in the spec object.
     const nodeSpec: RuntimeSpec = {
       name: 'node',
-      version: 'v20.0.0',
+      // CLN-1b: was stale literal 'v20.0.0'; pull from src/constants.ts
+      // canonical (src/runtime/node-shims.ts already does the same).
+      version: NODE_VERSION,
       helpText:
         'Usage: node [options] [script.js] [arguments]\n' +
         '       node -e "code"\n\n' +
