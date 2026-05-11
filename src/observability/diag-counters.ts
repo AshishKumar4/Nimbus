@@ -30,9 +30,13 @@
  * RIGHT NOW (only meaningful while installPhase === 'resolve'):
  *   idle → fetching → parsing → caching → done
  */
-export type InstallPhase =
-  | 'idle' | 'resolve' | 'hoist' | 'diff'
-  | 'fetch' | 'write' | 'link-bins' | 'bundle' | 'done';
+// CLN-1 (2026-05-11): InstallPhase moved to _shared/install-phase.ts so
+// it can't drift between this module and npm/installer.ts again. The
+// merged union includes both 'idle' (resting state) and 'lock-check'
+// (parsing package-lock.json). See _shared/install-phase.ts for full
+// semantics documentation.
+export type { InstallPhase } from '../_shared/install-phase.js';
+import type { InstallPhase } from '../_shared/install-phase.js';
 
 export type ResolverPhase =
   | 'idle' | 'fetching' | 'parsing' | 'caching' | 'done';

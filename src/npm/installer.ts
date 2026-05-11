@@ -90,9 +90,12 @@ import { enc } from '../_shared/bytes.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export type InstallPhase =
-  | 'lock-check' | 'resolve' | 'hoist' | 'diff'
-  | 'fetch' | 'write' | 'link-bins' | 'bundle' | 'done';
+// CLN-1 (2026-05-11): InstallPhase moved to _shared/install-phase.ts so
+// installer.ts and observability/diag-counters.ts can't drift again.
+// Re-exported here so external callers that already imported InstallPhase
+// from this module continue to work.
+export type { InstallPhase } from '../_shared/install-phase.js';
+import type { InstallPhase } from '../_shared/install-phase.js';
 
 export interface InstallProgress {
   phase: InstallPhase;

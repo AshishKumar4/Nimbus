@@ -45,7 +45,11 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
-import { R2CacheClient } from '../npm/r2-cache.js';
+// CLN-1 (2026-05-11): also import R2_CACHE_PREFIX + L2_KEY_HOST so the
+// cache-purge helpers below don't hardcode the synthetic key shape.
+// Bumping R2_CACHE_PREFIX 'v1' → 'v2' now invalidates the L2 cache key
+// shape used here automatically.
+import { R2CacheClient, R2_CACHE_PREFIX, L2_KEY_HOST } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT, hashKeyToShard } from '../loaders/fanout-pool.js';
 
@@ -1109,7 +1113,7 @@ async function handleCacheTestEndpoint(
     const payload = String(body.payload || JSON.stringify({ name, versions: {} }));
     if (!name) return Response.json({ error: 'missing name' }, { status: 400 });
     // Purge L2 first so the next bench read starts from L3 cold.
-    await purgeL2(`https://nimbus-cache.invalid/v1/p/${encodeURIComponent(name)}.json`);
+    await purgeL2(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/p/${encodeURIComponent(name)}.json`);
     const ok = await r2.putPackument(name, payload);
     return Response.json({ seeded: ok, name, payloadBytes: payload.length });
   }
@@ -1141,7 +1145,7 @@ async function handleCacheTestEndpoint(
     const version = String(body.version || '');
     const sizeKb = Math.max(1, Math.min(15360, Number(body.sizeKb) || 16)); // up to 15 MiB (under MAX_R2_TARBALL_BYTES = 30 MiB)
     if (!name || !version) return Response.json({ error: 'missing name/version' }, { status: 400 });
-    await purgeL2(`https://nimbus-cache.invalid/v1/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`);
+    await purgeL2(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`);
     // Synthetic payload — bytes are arbitrary; the cache layer doesn't
     // care about content. Probe just measures fetch latency.
     const bytes = new Uint8Array(sizeKb * 1024);
