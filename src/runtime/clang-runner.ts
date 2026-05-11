@@ -167,17 +167,22 @@ export function makeClangRunnerFactory(deps: {
         '--export-dynamic',
         '-z', `stack-size=${stackSize}`,
         '-L/lib/wasm32-wasi',
-        // Stream-C: compiler-rt builtins live in the per-clang resource
-        // dir. Modern wasi-libc pulls __muloti4 / __divti3 (128-bit math
-        // emitted by utimensat's timespec arithmetic) from this archive.
-        // binji-2020's libc.a self-bundled these — modern doesn't, so
-        // we link the archive explicitly. The path matches the sysroot
-        // layout shipped in the clang@wasi-libc-modern manifest.
-        '-L/lib/clang/8.0.1/lib/wasi',
         '/lib/wasm32-wasi/crt1.o',
         objPath,
         '-lc',
-        '-lclang_rt.builtins-wasm32',
+        // Stream-C: compiler-rt builtins live in the per-clang resource
+        // dir at lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a.
+        // Modern wasi-libc's utimensat / 128-bit math references __muloti4 /
+        // __divti3 from compiler-rt. binji-2020's libc.a self-bundled
+        // these. We link compiler-rt via -L + -l ONLY if the user code
+        // resolves to undefined symbols from there. wasm-ld 8 emits a
+        // link error in that case, surfaced to the user; the user can
+        // pass `-Wl,-L/lib/clang/8.0.1/lib/wasi -Wl,-lclang_rt.builtins-wasm32`
+        // manually if they hit it. Auto-linking compiler-rt in the default
+        // link line caused (empirically on prod) the simplest binaries
+        // to balloon by ~11KB and hang during execution under wasm-ld 8's
+        // dead-strip semantics — root cause not identified after timebox.
+        // See /workspace/.seal-internal/2026-05-11-stream-c/verdict.md.
         '-o', parsed.outputPath,
       ];
       // The .o file lives at objPath inside memfs for the link call.
