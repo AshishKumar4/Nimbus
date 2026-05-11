@@ -551,6 +551,77 @@ function mkDiff(vfs: SqliteVFS): CmdFn {
   };
 }
 
+/**
+ * BUG-SWEEP-R2-1 (2026-05-11): POSIX rm with proper -f semantics.
+ *
+ * lifo-sh's rm calls `r.vfs.stat(...)` and catches `e instanceof VFSError`.
+ * Our SqliteVFSProvider's stat method delegates to SqliteVFS.stat which
+ * throws raw `Error("ENOENT: ...")` — NOT VFSError. lifo-sh's rm
+ * therefore falls through to `else throw e`, the error propagates up,
+ * and executeCommand returns exit 1.
+ *
+ * Real-world impact: every `rm -rf <nonexistent> && ...` short-circuits.
+ * The most common cleanup idiom in shell scripts.
+ *
+ * Fix: register our own rm in the registry's `commands` map (takes
+ * precedence over lifo-sh's lazy). Treat -f silently when target is
+ * missing (return 0). Handle both files (unlink) and directories
+ * (rmdir recursive when -r). Translate raw errors so the unix-command
+ * contract is honoured.
+ */
+function mkRm(vfs: SqliteVFS): CmdFn {
+  return (ctx) => {
+    const args = ctx.args;
+    const recursive = args.some(a => a === '-r' || a === '-R' || a === '-rf' || a === '-Rf' || a === '-rR' || a === '--recursive' || (a.startsWith('-') && !a.startsWith('--') && (a.includes('r') || a.includes('R'))));
+    const force = args.some(a => a === '-f' || a === '--force' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
+    const targets = args.filter(a => !a.startsWith('-'));
+    if (targets.length === 0) {
+      if (force) return 0;  // POSIX: rm -f with no operands is silent success
+      ctx.stderr.write('rm: missing operand\n');
+      return 1;
+    }
+    let exit = 0;
+    for (const t of targets) {
+      const fp = resolvePath(ctx.cwd, t);
+      if (!vfs.exists(fp)) {
+        if (force) continue;  // silent success
+        ctx.stderr.write(`rm: cannot remove '${t}': No such file or directory\n`);
+        exit = 1;
+        continue;
+      }
+      try {
+        if (vfs.isDirectory(fp)) {
+          if (!recursive) {
+            ctx.stderr.write(`rm: cannot remove '${t}': Is a directory\n`);
+            exit = 1;
+            continue;
+          }
+          // Recursive delete: walk children, unlink files, rmdir dirs.
+          rmDirRec(vfs, fp);
+        } else {
+          vfs.unlink(fp);
+        }
+      } catch (e: any) {
+        if (force) continue;
+        ctx.stderr.write(`rm: cannot remove '${t}': ${e?.message || e}\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
+/** Internal helper: recursive directory delete via SqliteVFS readdir + unlink/rmdir. */
+function rmDirRec(vfs: SqliteVFS, path: string): void {
+  const children = vfs.readdir(path);
+  for (const child of children) {
+    const childPath = path + '/' + child;
+    if (vfs.isDirectory(childPath)) rmDirRec(vfs, childPath);
+    else vfs.unlink(childPath);
+  }
+  vfs.rmdir(path);
+}
+
 function mkTouch(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
     for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
@@ -865,6 +936,7 @@ export function registerUnixCommands(
   registry.register('tee', wrap(mkTee(vfs)));
   registry.register('du', wrap(mkDu(vfs)));
   registry.register('diff', wrap(mkDiff(vfs)));
+  registry.register('rm', wrap(mkRm(vfs)));
   registry.register('touch', wrap(mkTouch(vfs)));
   registry.register('stat', wrap(mkStat(vfs)));
   registry.register('base64', wrap(mkBase64(vfs)));
