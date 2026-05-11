@@ -602,8 +602,14 @@ function mkRm(vfs: SqliteVFS): CmdFn {
           vfs.unlink(fp);
         }
       } catch (e: any) {
-        if (force) continue;
-        ctx.stderr.write(`rm: cannot remove '${t}': ${e?.message || e}\n`);
+        // -f suppresses ENOENT only (file disappeared mid-loop); other
+        // errors (ENOTEMPTY because of a logic bug, ENOTDIR mismatches,
+        // permission errors) must still surface. Pre-fix the broad
+        // `if (force) continue` masked the readdir-iteration bug that
+        // left directories undeleted.
+        const msg = String(e?.message || e);
+        if (force && /ENOENT/.test(msg)) continue;
+        ctx.stderr.write(`rm: cannot remove '${t}': ${msg}\n`);
         exit = 1;
       }
     }
@@ -611,12 +617,16 @@ function mkRm(vfs: SqliteVFS): CmdFn {
   };
 }
 
-/** Internal helper: recursive directory delete via SqliteVFS readdir + unlink/rmdir. */
+/**
+ * Internal helper: recursive directory delete via SqliteVFS readdir +
+ * unlink/rmdir. vfs.readdir returns `{name, type}[]` not `string[]` —
+ * iterate the name property explicitly.
+ */
 function rmDirRec(vfs: SqliteVFS, path: string): void {
-  const children = vfs.readdir(path);
-  for (const child of children) {
-    const childPath = path + '/' + child;
-    if (vfs.isDirectory(childPath)) rmDirRec(vfs, childPath);
+  const entries = vfs.readdir(path);
+  for (const entry of entries) {
+    const childPath = path + '/' + entry.name;
+    if (entry.type === 'directory') rmDirRec(vfs, childPath);
     else vfs.unlink(childPath);
   }
   vfs.rmdir(path);
