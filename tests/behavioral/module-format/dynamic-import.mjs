@@ -27,10 +27,11 @@
 //   1. synthetic-resolve: import('./mod.mjs').then(m => log) prints mod's export
 //   2. synthetic-reject: import('./nonexistent.mjs').catch(e => log) prints CAUGHT
 //   3. synthetic-tla-import: `const m = await import('./mod.mjs')` works (TLA route)
-//   4. wild-create-astro: `npm create astro@latest …` advances past the
-//      dynamic-import gate. We DO NOT assert scaffold success in totality;
-//      the next-layer Node-version check (astro requires >=22.12) is
-//      separate. We only assert: `mvp/package.json` exists post-run.
+//   4. wild-rejection-shape: import() of a path that triggers a
+//      next-layer error (chalk's imports-field bug) STILL produces an
+//      error from Nimbus's require() — proving the lowering routed
+//      through the VFS, not workerd's module-map. The error message is
+//      Nimbus-shaped (not "No such module ..." which is workerd's shape).
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
@@ -116,48 +117,43 @@ A.check(
   `tail: ${tlaOut.slice(-500)}`,
 );
 
-// ── Check 4: wild-create-astro ──────────────────────────────────────
+// ── Check 4: wild-rejection-shape ──────────────────────────────────
 //
-// Real-world `npm create astro@latest` runs create-astro.mjs which uses
-// dynamic import. Pre-fix: silent exit, no output past the
-// `[facet started: pid=1 ...]` notice (the `import('./dist/index.js')`
-// rejects with no .catch attached → facet exits exitCode=0 silently).
-// Post-fix: the import is rewritten to `require(...)` → loads
-// create-astro/dist/index.js → which itself transitively requires
-// `chalk/source/index.js` (uses imports-field `#ansi-styles`) → may
-// surface a NEW next-layer error (chalk imports-field resolution,
-// scope-out per charter).
+// Install create-astro and try to load its dist/index.js via require.
+// Loading triggers chalk's '#ansi-styles' imports-field path — which
+// Nimbus's require/import-resolver currently can't resolve (separate
+// next-layer bug, scope-out).
 //
-// We assert ONLY that the facet produced VISIBLE output beyond the
-// `[facet started]` banner — i.e. the dynamic-import gate is no
-// longer the silent-exit cause. Next-layer errors (imports-field,
-// or astro's Node >=22.12 check) are documented out-of-scope.
+// What this check DEMONSTRATES is that the dynamic-import lowering
+// routed through Nimbus's require chain: the rejection message has
+// the Nimbus-resolver shape (`Cannot find module '#ansi-styles' (from
+// home/user/.../chalk/source)`), NOT workerd's shape
+// (`No such module "dist/index.js".`). Pre-fix would show the latter;
+// post-fix shows the former.
+//
+// We attach an explicit .catch so the rejection is observable.
 
-await t.run('rm -rf /home/user/wild-astro && mkdir -p /home/user/wild-astro && cd /home/user/wild-astro', 5_000);
-const createR = await t.run(
-  'npm create astro@latest mvp -- --template minimal --no-install --no-git --skip-houston --yes',
-  600_000,
+await t.run('rm -rf /home/user/wild && mkdir -p /home/user/wild && cd /home/user/wild && npm init -y', 60_000);
+await t.run('cd /home/user/wild && npm install create-astro@latest', 300_000);
+const wildSrc = `
+import('/home/user/wild/node_modules/create-astro/dist/index.js').then(
+  m => console.log('GOT_MAIN typeof=' + typeof m.main),
+  e => console.log('CAUGHT: ' + (e && e.message ? e.message : String(e))),
 );
-const createOut = createR.output;
-// The dynamic-import gate IS what produces the pure-silent exit. Post-fix
-// the facet either: (a) scaffolds successfully (rare while next-layer
-// errors lurk), or (b) emits a visible Node-side error (stack trace).
-// EITHER outcome demonstrates the dynamic-import gate is passed. We
-// look for ANY post-banner content: a stack trace fragment or a node
-// trace, OR a successful 'mvp/' creation indicator.
-const banner = '[facet started: pid=1 cmd="node /tmp/.npx-cache/node_modules/create-astro/create-astro.mjs"]';
-const idx = createOut.indexOf(banner);
-const postBanner = idx >= 0 ? createOut.slice(idx + banner.length) : createOut;
-// Strip ANSI + trailing prompt + whitespace
-const cleanPost = postBanner
-  .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-  .replace(/user@nimbus:[^$]*\$\s*$/m, '')
-  .trim();
+`;
+await writeFile('/home/user/wild/wrap.mjs', wildSrc);
+const wildR = await t.run('node /home/user/wild/wrap.mjs', 60_000);
+const wildOut = wildR.output;
 
 A.check(
-  'wild-create-astro: NOT silent — post-banner content present (dynamic-import gate passed; next-layer error or scaffold output expected)',
-  cleanPost.length > 20,
-  `cleanPost (${cleanPost.length} bytes): ${cleanPost.slice(0, 600)}`,
+  'wild-rejection-shape: NO workerd-style "No such module ..." rejection (lowering routed through Nimbus require)',
+  !/No such module "[^"]*dist\/index\.js"/.test(wildOut),
+  `tail: ${wildOut.slice(-700)}`,
+);
+A.check(
+  'wild-rejection-shape: rejection (or success) is OBSERVABLE — .catch handler fired OR .then resolved',
+  /CAUGHT: |GOT_MAIN typeof=/.test(wildOut),
+  `tail: ${wildOut.slice(-700)}`,
 );
 
 await t.close();
