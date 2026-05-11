@@ -37,7 +37,11 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 const BUCKET = 'nimbus-runtime-cache';
-const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID || 'f44999d1ddda7012e9a87729eba250f1';
+const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID;
+if (!ACCOUNT) {
+  console.error('ERROR: CLOUDFLARE_ACCOUNT_ID env var required');
+  process.exit(1);
+}
 const WRANGLER = './node_modules/.bin/wrangler';
 
 if (!process.argv[2] || !process.argv[3]) {
