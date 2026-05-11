@@ -161,8 +161,15 @@ type R2BucketLike = {
 //   - `nimbus-cache.invalid.` is reserved per RFC 6761 (`.invalid.`
 //     TLD) so it can never resolve and never escapes the worker.
 
-/** Synthetic L2 cache-key host. RFC-6761 reserved TLD. */
-const L2_KEY_HOST = 'https://nimbus-cache.invalid';
+/**
+ * Synthetic L2 cache-key host. RFC-6761 reserved TLD.
+ *
+ * CLN-1 (2026-05-11): exported so `session/routes.ts` cache-purge helpers
+ * can use the same constant instead of hardcoding the literal. Bumping
+ * the schema (e.g. `nimbus-cache-v2.invalid`) now only requires editing
+ * one line.
+ */
+export const L2_KEY_HOST = 'https://nimbus-cache.invalid';
 
 /** Build the L2 cache-key Request for a packument name. */
 function packumentL2Key(name: string): Request {
