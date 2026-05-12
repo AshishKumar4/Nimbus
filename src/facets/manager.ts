@@ -434,6 +434,33 @@ ${SHIMS}
     // See .seal-internal/2026-05-11-unhandled-rejection/audit.md.
     let __unhandledFired = false;
     const __reportUnhandled = (label, reason) => {
+      // framework-fixes-F3 (2026-05-12): suppress reports whose reason
+      // is a __ProcessExit. process.exit(N) throws __ProcessExit by
+      // design (see __processMod.exit in node-shims.ts:2158) to halt
+      // user code. The outer try/catch at __compiledFn unwraps it for
+      // the SYNCHRONOUS case, but async fire-and-forget paths (e.g.
+      // create-remix's deprecation banner that calls process.exit(0)
+      // from an async main() with no .catch()) bubble it to the
+      // unhandled-rejection listener. Pre-fix that produced a noisy
+      // 'Unhandled promise rejection: Error: process.exit(0)' line
+      // alongside the expected exit. exitCode is already set correctly
+      // by the __processMod.exit shim AND by the catch in main run loop.
+      //
+      // Concrete repro: npm create remix@latest prints a deprecation
+      // banner from upstream + process.exit(0). User sees the banner
+      // (the user-facing semantic the upstream tool emits) and exit 0
+      // (correct), but ALSO the rejection noise (artifact of our shim
+      // shape). This filter removes the noise without changing exit
+      // semantics.
+      //
+      // The filter matches BOTH the class identity (reason instanceof
+      // __ProcessExit) AND the message shape (reason.message starts
+      // with 'process.exit(') because in async paths the unhandled-
+      // rejection event sometimes loses the prototype chain across
+      // microtask hops.
+      if (reason instanceof __ProcessExit) return;
+      if (reason && typeof reason.message === "string" &&
+          /^process\\.exit\\(/.test(reason.message)) return;
       const text = reason && reason.stack
         ? String(reason.stack)
         : (reason && reason.message ? String(reason.message) : String(reason));
@@ -1679,6 +1706,34 @@ function __cacheKey(src: string): string {
 }
 
 /**
+ * framework-fixes-F4 (2026-05-12): helper for the "esbuild unavailable
+ * or fatally errored" paths. Walks the bundle for ESM-shaped files and
+ * replaces each with a JS-valid diagnostic shim that throws an
+ * informative Error at require-time. Mirrors the per-file catch in
+ * transformEsmInBundle so the user gets the same actionable error
+ * surface regardless of whether transform failed for the whole batch
+ * or for one file.
+ *
+ * Does NOT touch non-ESM files (which the pre-compile loop handles
+ * fine as-is).
+ */
+function _markBundleEsmAsFailed(
+  bundle: Record<string, string | Uint8Array>,
+  reason: string,
+): void {
+  for (const path of Object.keys(bundle)) {
+    if (!path.endsWith('.js') && !path.endsWith('.mjs')) continue;
+    const src = bundle[path];
+    if (typeof src !== 'string') continue;
+    if (!looksLikeEsm(src)) continue;
+    const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason}`);
+    bundle[path] =
+      '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
+      '(function () { throw new Error(' + escapedReason + '); })();\n';
+  }
+}
+
+/**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
  * Mutates `bundle` in place. Errors are swallowed (the file is left as
  * ESM source); the facet's pre-compile loop will record the SyntaxError
@@ -1747,10 +1802,38 @@ async function transformEsmInBundle(
       bundle[path] = t.code;
       __esmTransformCache.set(key, t.code);
       transformed++;
-    } catch {
-      // Leave the original ESM source. The pre-compile loop will record
-      // the SyntaxError into __compileFailures (Fix C) and __loadModule
-      // will surface it as "pre-compile failed at facet startup: ...".
+    } catch (e: any) {
+      // framework-fixes-F4 (2026-05-12): replace the source with a
+      // JS-valid module that throws an INFORMATIVE Error when require'd.
+      //
+      // Pre-fix this catch swallowed the failure silently. The pre-
+      // compile loop then re-saw the ESM source and emitted the
+      // SyntaxError "Cannot use import statement outside a module" into
+      // __compileFailures. __loadModule surfaced that as the user error
+      // — but it told the user nothing about WHY esbuild rejected the
+      // file (was it TLA at module scope? a TypeScript file mistyped
+      // as .js? an unsupported syntax? our esbuild service not init?).
+      //
+      // Post-fix the replacement source is parseable CJS that, when
+      // require()'d, throws a real Error carrying the esbuild reason.
+      // The pre-compile loop succeeds, the file lands in
+      // __compiledModules, and the failure surfaces at require time
+      // with FULL diagnostic context. Net effect for users: the same
+      // upstream tool still fails, but they now see WHY.
+      //
+      // Probe: tests/behavioral/npm-create/new/create-astro-diagnostic.mjs
+      // asserts the user-visible error contains "esbuild transform" so
+      // future diagnostic regressions are caught.
+      const reason = (e && e.message) ? String(e.message).replace(/\n/g, ' ') : String(e);
+      const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason}`);
+      // Build a valid CJS module that throws on load. Use IIFE to keep
+      // module-scope flat (no TLA, no top-level await). Esbuild-cache
+      // this so repeated submits don't re-run the same transform.
+      const diagnosticSrc =
+        '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
+        '(function () { throw new Error(' + escapedReason + '); })();\n';
+      bundle[path] = diagnosticSrc;
+      __esmTransformCache.set(key, diagnosticSrc);
       failed++;
     }
   }
@@ -1888,11 +1971,21 @@ async function buildPrefetchBundle(
       // OR smaller than the ESM source. We don't try to thread totalBytes
       // through the transform because the eviction loop below recomputes
       // the encoded size from scratch anyway.
-    } catch {
-      // Esbuild init / dispatch failure is non-fatal: the pre-compile
-      // loop will swallow the SyntaxError on each ESM file (Fix C
-      // surfaces it later via __compileFailures).
+    } catch (e: any) {
+      // framework-fixes-F4 (2026-05-12): the prior catch was silent.
+      // Replace every detected-ESM source with the SAME diagnostic
+      // shim transformEsmInBundle's per-file catch installs, so the
+      // user sees "esbuild transform failed (service-level): <reason>"
+      // instead of a bare "Cannot use import statement..." parse
+      // error with no context.
+      const reason = (e && e.message) ? String(e.message).replace(/\n/g, ' ') : String(e);
+      _markBundleEsmAsFailed(bundle, `esbuild service unavailable: ${reason}`);
     }
+  } else {
+    // framework-fixes-F4 (2026-05-12): no esbuild service available at
+    // all (lazy-init failed or never wired). Same diagnostic-shim
+    // treatment so users see WHY the ESM file couldn't be transformed.
+    _markBundleEsmAsFailed(bundle, 'esbuild service not initialized (likely lazy-init failure)');
   }
 
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
