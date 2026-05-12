@@ -87,10 +87,19 @@ Counts (verifiable by enumerating the imports table in
 - **Multi-TU + user headers** (`0a7d0f2`) — `clang a.c b.c -o prog` works.
   User `#include "your-header.h"` resolves from cwd; `-I<dir>` adds
   search paths.
-- **v13-crt1 stdio polish** (`5eb01d5`) — stdio flushed on `exit()` and
-  on normal `main` return via the C runtime's atexit chain. Global
-  destructors run in order. Behavioral probes shipped; the matching
-  sysroot is staged in R2 for the next deploy wave to flip.
+- **v13-crt1 stdio polish** (`5eb01d5`) — new crt1.o that calls
+  `__wasm_call_dtors` after `main` returns, which runs the libc
+  atexit chain (`__funcs_on_exit` + `__stdio_exit`) so buffered
+  printf output flushes and `atexit()` handlers fire. PRE-v13
+  prod behavior: a program that does
+  `printf("line one\n"); printf("line two\n"); return 0;` emits
+  only "line one"; the second printf is buffered in libc's stdout
+  FILE and lost because v12 crt1 calls `__wasi_proc_exit` directly.
+  Behavioral probes shipped (`tests/behavioral/clang-stdio/`);
+  matching sysroot tarball staged in R2 (sha256 7d036684…)
+  for the next deploy wave to flip via catalog update. The
+  source code in this repo is unchanged for v13 — the fix is a
+  pure sysroot swap.
 
 Probes: `tests/behavioral/clang-includes/` (9), `tests/behavioral/clang-stdio/` (8),
 `tests/behavioral/wasi-paths/` (8).

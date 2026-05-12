@@ -109,15 +109,15 @@ Press Ctrl-D or type `exit` / `.exit` to leave. Probes: `tests/behavioral/repl/`
 
 `clang` compiles C to `wasm32-wasi` in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate; the user VFS is mounted into a virtual `memfs` so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
 
-What's wired today:
+What's wired today (v12 sysroot, currently deployed):
 
 - Modern wasi-libc sysroot (binji-shape, derived from upstream wasi-sdk-19).
 - Multi-translation-unit compile + link (`clang a.c b.c -o prog`).
 - User headers in cwd or under `-I<dir>`.
 - `fopen("...", "r" | "w" | "a")` against VFS paths (relative + absolute).
-- `printf` / `fprintf` / `puts` — stdio flushed on `exit()` and on normal `main` return via the C runtime's atexit chain.
-- `atexit()` handlers run; global destructors run on exit.
 - 128-bit math intrinsics (`__muloti4`, `__divti3`) provided via linked `libclang_rt.builtins-wasm32.a`.
+
+Currently has the rough edges that the v13 sysroot (staged in R2, awaiting deploy) fixes — most notably stdio-buffer flush on `main` return and `atexit()` handler firing. v13 sysroot + probes are landed in `tests/behavioral/clang-stdio/`; activation is a deploy-time catalog flip, not a code change.
 
 Probes: `tests/behavioral/clang/`, `tests/behavioral/clang-includes/`, `tests/behavioral/clang-stdio/`, `tests/behavioral/wasi-paths/`.
 
