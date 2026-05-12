@@ -368,6 +368,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
               vfs: sqliteFs,
               terminal: self.terminal,
               installRoot,
+              // REPL-R7-1: thread the shell so ReplSession can drain
+              // shell.pasteQueue on attach (multi-line WS frames like
+              // `python\nexit(7)` would otherwise drop the tail input).
+              shell: self.shell,
             });
           }
           // Args present (one-shot mode: -c, script, -m, -). Fall
