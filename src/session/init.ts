@@ -1820,6 +1820,268 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       try { self.shell.setCwd(persisted.cwd); } catch { /* fail-soft */ }
     }
 
+    // ── SHELL-R6-1 + SHELL-R6-2 + SHELL-R6-3 ─────────────────────────
+    //
+    // Three interpreter-level patches over @lifo-sh/core's Interpreter
+    // (instance: self.shell.interpreter). All three are upstream bugs;
+    // patching at the interpreter instance avoids touching the
+    // node_modules tree (postinstall) while still giving us full
+    // control over the affected semantics.
+    //
+    // The patches are idempotent: each one keeps a reference to the
+    // original and replaces the bound method on the instance.
+    //
+    // SHELL-R6-1 (executeListEntries — `&&`/`||` chain):
+    //   Pre-fix: `false && A || B` produces neither A nor B because
+    //   the original loop does `break` when a connector "short-
+    //   circuits", abandoning the rest of the chain. POSIX semantic is
+    //   "skip the IMMEDIATELY NEXT entry, keep evaluating the
+    //   remaining connectors against the unchanged exit code."
+    //
+    // SHELL-R6-2 (executePipelineCommands — broken-pipe abort):
+    //   Pre-fix: `yes | head -n 5` hangs forever because `head`
+    //   reads all of stdin via readAll() and `yes` is never aborted
+    //   when `head` exits. Patched version creates a per-pipeline
+    //   AbortController, swaps it into config.getAbortSignal for the
+    //   duration, and aborts it the moment the LAST command in the
+    //   pipeline (the consumer) resolves — propagating SIGPIPE-like
+    //   semantics to producer commands that watch their `e.signal`.
+    //
+    // SHELL-R6-3 (wait builtin — registered below in step 3):
+    //   Pre-fix: `wait` is "command not found". Implementing it lets
+    //   users reliably collect background-job output before continuing.
+    //
+    // Layer notes:
+    //   - These are not in src/shell/ because the bug is in the
+    //     interpreter's control-flow, not in a builtin or a
+    //     line-preprocessor wrapper. Shimming at executeLine wouldn't
+    //     help — the parsed AST already encodes the connectors.
+    //   - We bind methods to the interpreter instance so the
+    //     prototype stays untouched (other sessions sharing the same
+    //     module won't see our patches — important because the Shell
+    //     class itself is per-session-instance but the prototype
+    //     methods would be shared).
+    {
+      const interp = (self.shell as any).interpreter;
+      if (interp) {
+        // ── SHELL-R6-1: corrected executeListEntries ──
+        const originalExecutePipeline = interp.executePipeline.bind(interp);
+        interp.executeListEntries = async function patchedExecuteListEntries(
+          entries: any[],
+          t: any,
+        ): Promise<number> {
+          let s = 0;
+          let skipNext = false;
+          for (let n = 0; n < entries.length; n++) {
+            const entry = entries[n];
+            if (!skipNext) {
+              s = await originalExecutePipeline(entry.pipeline, t);
+            }
+            skipNext = false;
+            // Decide whether to skip the NEXT entry based on this
+            // entry's connector + the *current* exit status (whether
+            // we just executed or carried forward from a skip).
+            if (entry.connector === '&&' && s !== 0) skipNext = true;
+            else if (entry.connector === '||' && s === 0) skipNext = true;
+          }
+          (this as any).lastExitCode = s;
+          return s;
+        };
+
+        // ── SHELL-R6-2: corrected executePipelineCommands ──
+        //
+        // Per-pipeline AbortController + config.getAbortSignal swap.
+        // When the LAST command in the pipeline resolves (the
+        // consumer side), abort the per-pipeline controller, which
+        // cascades to all sibling commands' per-command signals via
+        // the upstream-link they set up at executeSimpleCommand
+        // creation (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5194).
+        const originalExecuteCommand = interp.executeCommand.bind(interp);
+
+        // The pipe class used by lifo-sh between pipeline commands.
+        // We need a reference to call .close() at the right moment.
+        // It's not exported, but we can instantiate one via a probe
+        // and capture the constructor. Easier: just rely on the
+        // close-on-completion semantics already in place AND add the
+        // abort propagation as a separate concern.
+        interp.executePipelineCommands = async function patchedExecutePipelineCommands(
+          commands: any[],
+          stdin: any,
+        ): Promise<number> {
+          const pipes: any[] = [];
+          const promises: Promise<number>[] = [];
+
+          // Per-pipeline abort: linked to upstream (if any) so cancel
+          // still flows through, AND we trigger it ourselves when the
+          // consumer finishes.
+          const perPipelineCtrl = new AbortController();
+          const origGetAbortSignal = (this as any).config.getAbortSignal;
+          (this as any).config.getAbortSignal = () => {
+            // Re-derive the linked signal each call. Per-command code
+            // in lifo-sh calls this once at command-spawn time, but
+            // we keep the chaining honest in case multiple calls
+            // happen during pipeline setup.
+            const upstream = origGetAbortSignal ? origGetAbortSignal.call((this as any).config) : null;
+            if (upstream && !upstream.aborted) {
+              upstream.addEventListener('abort', () => perPipelineCtrl.abort(), { once: true });
+            } else if (upstream && upstream.aborted) {
+              perPipelineCtrl.abort();
+            }
+            return perPipelineCtrl.signal;
+          };
+
+          // Need a way to construct the same pipe class lifo-sh uses
+          // internally. Easiest: probe the prototype of an existing
+          // execution by calling original executePipelineCommands with
+          // 2 trivial commands… too circular. Better: lazy-discover
+          // by running a tiny one-shot probe at startup, or import
+          // the class.
+          //
+          // Pragmatic: lifo-sh's pipe class is not exported, but its
+          // shape is `{ reader: { read, readAll }, writer: { write }, close() }`.
+          // We reimplement it inline — small footprint, exact shape.
+          class R6Pipe {
+            buffer: string[] = [];
+            closed = false;
+            waiting: ((v: string | null) => void) | null = null;
+            writer = {
+              write: (e: string) => {
+                if (this.closed) return;  // SIGPIPE — drop write
+                if (this.waiting) {
+                  const t = this.waiting;
+                  this.waiting = null;
+                  t(e);
+                } else {
+                  this.buffer.push(e);
+                }
+              },
+            };
+            reader = {
+              read: (): Promise<string | null> => this.read(),
+              readAll: (): Promise<string> => this.readAll(),
+            };
+            read(): Promise<string | null> {
+              if (this.buffer.length > 0) return Promise.resolve(this.buffer.shift()!);
+              if (this.closed) return Promise.resolve(null);
+              return new Promise((resolve) => { this.waiting = resolve; });
+            }
+            async readAll(): Promise<string> {
+              const out: string[] = [];
+              while (true) {
+                const t = await this.read();
+                if (t === null) break;
+                out.push(t);
+              }
+              return out.join('');
+            }
+            close(): void {
+              this.closed = true;
+              if (this.waiting) {
+                const w = this.waiting;
+                this.waiting = null;
+                w(null);
+              }
+            }
+          }
+
+          try {
+            for (let o = 0; o < commands.length; o++) {
+              const a = o > 0 ? pipes[o - 1].reader : undefined;
+              let c: any;
+              if (o < commands.length - 1) {
+                const f = new R6Pipe();
+                pipes.push(f);
+                c = f.writer;
+              }
+              const isLast = o === commands.length - 1;
+              const l = commands[o];
+              const u = o === 0 ? stdin : undefined;
+              const h = originalExecuteCommand(l, a, c, u).then((f: number) => {
+                if (o < commands.length - 1) pipes[o].close();
+                if (isLast) {
+                  // Consumer done — abort all upstream producers.
+                  // They watch e.signal via the per-command AbortController
+                  // that linked to our perPipelineCtrl.signal.
+                  perPipelineCtrl.abort();
+                  // Close any still-open upstream pipes so producers'
+                  // writes become no-ops (defense-in-depth).
+                  for (const p of pipes) p.close();
+                }
+                return f;
+              });
+              promises.push(h);
+            }
+            const i = await Promise.all(promises);
+            return i[i.length - 1];
+          } finally {
+            (this as any).config.getAbortSignal = origGetAbortSignal;
+          }
+        };
+      }
+    }
+
+    // ── SHELL-R6-3: `wait` builtin ───────────────────────────────────
+    //
+    // POSIX: `wait` (no args) blocks until all currently-running
+    // background jobs finish; `wait %N` or `wait pid` waits for a
+    // specific one. lifo-sh's jobTable already tracks job promises
+    // (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5386 — `zi`).
+    //
+    // We register at the Shell.builtins map (same pattern as the
+    // BUG-SWEEP-4 echo override below). This must run AFTER Shell
+    // construction (jobTable doesn't exist before).
+    //
+    // Note: this addresses the `wait: command not found` half of
+    // SHELL-R6-B3. The naked `cmd &` racing-past-prompt issue is a
+    // deeper architectural limit of lifo-sh's `executeList`
+    // background path (it prints `[N] PID (background)` then
+    // immediately returns 0, with the printPrompt() of the line
+    // editor happening before the background job's stdout drains).
+    // A correct fix would need to defer the prompt until job output
+    // settles, which spans the Shell + line-editor + executor —
+    // beyond R6's scope. With `wait` available, users have a
+    // reliable path: `cmd & wait` collects output deterministically.
+    {
+      const shellAny = self.shell as any;
+      if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {
+        shellAny.builtins.set('wait', async function nimbusWait(args: string[], t: any) {
+          const jobTable = shellAny.jobTable;
+          if (!jobTable || typeof jobTable.list !== 'function') {
+            // jobTable unavailable — nothing to wait on, succeed silently.
+            return 0;
+          }
+          const targetIds: number[] = [];
+          if (args.length > 0) {
+            for (const a of args) {
+              const m = /^%(\d+)$/.exec(a) || /^(\d+)$/.exec(a);
+              if (!m) {
+                try { t.write(`wait: ${a}: not a valid job id\n`); } catch {}
+                return 127;
+              }
+              targetIds.push(parseInt(m[1], 10));
+            }
+          }
+          const jobs = jobTable.list().filter((j: any) => {
+            if (targetIds.length === 0) return j.status === 'running';
+            return targetIds.includes(j.id);
+          });
+          if (jobs.length === 0) return 0;
+          // Await each job's promise; ignore individual failures so we
+          // mirror POSIX `wait` (returns exit code of the LAST one).
+          let last = 0;
+          for (const j of jobs) {
+            try {
+              const r = await j.promise;
+              last = (typeof r === 'number') ? r : 0;
+            } catch {
+              last = 1;
+            }
+          }
+          return last;
+        });
+      }
+    }
+
     // ── Heredoc support (<<) — all logic lives in shell-features.ts ──
     HeredocHandler.install(self.shell, self.terminal, self.sqliteFs!);
 
