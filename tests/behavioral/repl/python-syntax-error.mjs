@@ -19,12 +19,25 @@ t.reset();
 t.cmd('python');
 await t.waitFor((b) => /^>>> /m.test(b), 30_000, 'python repl prompt');
 
-// Invalid syntax (mismatched paren).
+// Invalid syntax that is NON-RECOVERABLE (so the REPL must emit
+// SyntaxError, not a `... ` continuation prompt). Pre-fix this
+// probe used `print("hi"` which is *recoverable* — PyodideConsole
+// (correctly, matching CPython's interactive behaviour) returns
+// `incomplete` and shows a `... ` continuation prompt waiting for
+// the closing paren. The probe then timed out on
+// /SyntaxError|incomplete input|EOL/, which is a probe-side bug
+// in expressing intent.
+//
+// Use a syntactically unrecoverable form instead: a leading `]`
+// can never be the start of a valid expression, so the REPL must
+// emit SyntaxError immediately. See:
+//   https://docs.python.org/3/library/code.html#code.compile_command
+const unrecoverable = '] = 1';  // SyntaxError, NOT continuation.
 t.reset();
-t.cmd('print("hi"');
-await t.waitFor((b) => /SyntaxError|incomplete input|EOL/.test(b), 10_000, 'syntax error msg');
+t.cmd(unrecoverable);
+await t.waitFor((b) => /SyntaxError/.test(b), 10_000, 'syntax error msg');
 const out1 = stripAnsi(t.buf);
-const hasErr = /SyntaxError|incomplete input|EOL/.test(out1);
+const hasErr = /SyntaxError/.test(out1);
 a.check('invalid syntax surfaces SyntaxError', hasErr,
   hasErr ? '' : JSON.stringify(out1.slice(-200)));
 

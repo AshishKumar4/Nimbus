@@ -95,9 +95,19 @@ if (viteReady) {
     await ctx.navigatePreview('');
 
     try {
+      // The seeded Home.tsx renders the heading as
+      //   "A dev environment<br />that lives at the edge."
+      // Real Chrome's body.innerText materialises the `<br />` as a
+      // newline, so the literal phrase is split across lines:
+      //   "A dev environment\nthat lives at the edge."
+      // Pre-fix the regex was /dev environment that lives at the edge/
+      // which only matches single-line — it never matched the rendered
+      // body and the probe went RED even when the React app mounted
+      // correctly. Use \s+ to span the newline. The `Preview crashed`
+      // negative still rules out the visible-failure case.
       homeText = await ctx.waitForBodyText(
         (text) =>
-          /dev environment that lives at the edge/i.test(text) &&
+          /dev environment\s+that lives at the edge/i.test(text) &&
           !/Preview crashed/.test(text),
         60_000,
       );
