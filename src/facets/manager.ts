@@ -387,6 +387,29 @@ ${SHIMS}
       __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
     }
 
+    // ── console-facet (2026-05-12): expose the shimmed console on
+    // globalThis so user code can reach it via BOTH \`console.log(...)\`
+    // (resolved through the __compiledFn positional 'console' param)
+    // AND \`globalThis.console.log(...)\` (resolved through the global
+    // scope). Pre-fix, only the positional binding was patched; calls
+    // through globalThis hit workerd's native console which writes
+    // to the worker log (NOT our supervisor stdout/stderr stream) so
+    // the output was lost from the user's perspective.
+    //
+    // Verbatim repro on prod:
+    //   $ node -e 'console.log("bare")'                  -> "bare"
+    //   $ node -e 'globalThis.console.log("global")'     -> (silent)
+    //   $ node -e 'console.log(globalThis.console === console)' -> false
+    //
+    // workerd's globalThis.console descriptor is writable+configurable
+    // (verified empirically — see smoketest-globalthis-write.mjs in
+    // /workspace/.seal-internal/2026-05-12-console-facet/), so a plain
+    // assignment is sufficient. Do NOT touch globalThis.process /
+    // globalThis.Buffer here — Pyodide / Ruby bootstrap paths detect a
+    // Node-shaped env via globalThis.process and would take the wrong
+    // code path; see AGENTS.md gotcha #4.
+    try { globalThis.console = __consoleMod; } catch { /* readonly fallback */ }
+
     // ── Unhandled rejection / uncaught error capture ──────────────────
     //
     // The try/catch around __compiledFn below catches only SYNCHRONOUS
@@ -651,6 +674,12 @@ ${SHIMS}
       __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
       __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
     }
+
+    // console-facet (2026-05-12): mirror the shimmed console onto
+    // globalThis so user code can reach it via globalThis.console.log
+    // as well as bare console.log. See generateFacetCode for the full
+    // rationale (verbatim repro + workerd descriptor empirical check).
+    try { globalThis.console = __consoleMod; } catch { /* readonly fallback */ }
 
     const mod = { exports: {} };
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
