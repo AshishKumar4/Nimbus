@@ -790,6 +790,121 @@ const __fsMod = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  constants module (framework-fixes-F1) ───────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// require('node:constants') (and the legacy bare require('constants'))
+// expose a FLAT object of POSIX/Linux/OpenSSL constants. Real Node ships
+// ~234 constants; we ship the ones that actually get touched by:
+//   - create-next-app (touches UV_FS_O_FILEMAP — verified via grep on
+//     unpkg.com/create-next-app@latest/dist/index.js)
+//   - typical fs.openSync flag composition (O_RDONLY, O_WRONLY, O_RDWR,
+//     O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_DIRECTORY, etc.)
+//   - typical fs.access mode composition (F_OK, R_OK, W_OK, X_OK)
+//   - typical fs.copyFile mode composition (COPYFILE_EXCL etc.)
+//   - signal/errno tables (shared shape with __osMod.constants.signals
+//     etc. — flat here, nested there; both shapes are real-Node-accurate
+//     and we expose both via the right module).
+//   - dlopen flags (RTLD_*) for libraries that probe defined-ness.
+//   - SSL_OP_* / TLS_*_VERSION for libs that probe TLS options
+//     (vanilla openssl numeric values — semantic match real Node's).
+//
+// Values match real Node v20 on Linux exactly. Verified via
+// node -e 'console.log(require("node:constants"))'.
+//
+// History: F1 root cause in framework-fixes wave. Pre-fix create-next-app
+// errored with "Cannot find module 'node:constants'" at module init.
+const __constantsMod = {
+  // ── dlopen flags ──────────────────────────────────────────────────
+  RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0, RTLD_DEEPBIND: 8,
+  // ── errno (Linux ABI) ─────────────────────────────────────────────
+  E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EADDRNOTAVAIL: 99, EAFNOSUPPORT: 97,
+  EAGAIN: 11, EALREADY: 114, EBADF: 9, EBADMSG: 74, EBUSY: 16,
+  ECANCELED: 125, ECHILD: 10, ECONNABORTED: 103, ECONNREFUSED: 111,
+  ECONNRESET: 104, EDEADLK: 35, EDESTADDRREQ: 89, EDOM: 33, EDQUOT: 122,
+  EEXIST: 17, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 113, EIDRM: 43,
+  EILSEQ: 84, EINPROGRESS: 115, EINTR: 4, EINVAL: 22, EIO: 5,
+  EISCONN: 106, EISDIR: 21, ELOOP: 40, EMFILE: 24, EMLINK: 31,
+  EMSGSIZE: 90, EMULTIHOP: 72, ENAMETOOLONG: 36, ENETDOWN: 100,
+  ENETRESET: 102, ENETUNREACH: 101, ENFILE: 23, ENOBUFS: 105,
+  ENODATA: 61, ENODEV: 19, ENOENT: 2, ENOEXEC: 8, ENOLCK: 37,
+  ENOLINK: 67, ENOMEM: 12, ENOMSG: 42, ENOPROTOOPT: 92, ENOSPC: 28,
+  ENOSR: 63, ENOSTR: 60, ENOSYS: 38, ENOTCONN: 107, ENOTDIR: 20,
+  ENOTEMPTY: 39, ENOTSOCK: 88, ENOTSUP: 95, ENOTTY: 25, ENXIO: 6,
+  EOPNOTSUPP: 95, EOVERFLOW: 75, EPERM: 1, EPIPE: 32, EPROTO: 71,
+  EPROTONOSUPPORT: 93, EPROTOTYPE: 91, ERANGE: 34, EROFS: 30,
+  ESPIPE: 29, ESRCH: 3, ESTALE: 116, ETIME: 62, ETIMEDOUT: 110,
+  ETXTBSY: 26, EWOULDBLOCK: 11, EXDEV: 18,
+  // ── Process priority (os.setPriority / os.getPriority) ────────────
+  PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0,
+  PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20,
+  // ── Signals (POSIX + Linux) ───────────────────────────────────────
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
+  SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
+  SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
+  SIGTERM: 15, SIGCHLD: 17, SIGSTKFLT: 16, SIGCONT: 18, SIGSTOP: 19,
+  SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
+  SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
+  SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
+  // ── File-type bits (stat.mode masks) ──────────────────────────────
+  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192,
+  S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152,
+  // ── File-open flags (fs.openSync / fs.constants.O_*) ──────────────
+  O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
+  O_CREAT: 64, O_EXCL: 128, O_NOCTTY: 256, O_TRUNC: 512, O_APPEND: 1024,
+  O_DIRECTORY: 65536, O_NOATIME: 262144, O_NOFOLLOW: 131072,
+  O_SYNC: 1052672, O_DSYNC: 4096, O_DIRECT: 16384, O_NONBLOCK: 2048,
+  // libuv-specific fs flag — create-next-app touches this directly.
+  UV_FS_O_FILEMAP: 0,
+  // ── File-permission bits (chmod / stat.mode user/group/other) ─────
+  S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64,
+  S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8,
+  S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1,
+  // ── fs.access mode constants ──────────────────────────────────────
+  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+  // ── fs.copyFile mode constants (libuv shape + Node alias) ─────────
+  UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1,
+  UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2,
+  UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4,
+  // ── OpenSSL / TLS option flags ────────────────────────────────────
+  // Numeric values from real Node v20. Libraries probe defined-ness;
+  // we ship the surface so constants.SSL_OP_* doesn't undefined-throw.
+  OPENSSL_VERSION_NUMBER: 810549328,
+  SSL_OP_ALL: 2147485776, SSL_OP_ALLOW_NO_DHE_KEX: 1024,
+  SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144,
+  SSL_OP_CIPHER_SERVER_PREFERENCE: 4194304,
+  SSL_OP_CISCO_ANYCONNECT: 32768, SSL_OP_COOKIE_EXCHANGE: 8192,
+  SSL_OP_CRYPTOPRO_TLSEXT_BUG: 2147483648,
+  SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS: 2048,
+  SSL_OP_LEGACY_SERVER_CONNECT: 4, SSL_OP_NO_COMPRESSION: 131072,
+  SSL_OP_NO_ENCRYPT_THEN_MAC: 524288, SSL_OP_NO_QUERY_MTU: 4096,
+  SSL_OP_NO_RENEGOTIATION: 1073741824,
+  SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION: 65536,
+  SSL_OP_NO_SSLv2: 0, SSL_OP_NO_SSLv3: 33554432,
+  SSL_OP_NO_TICKET: 16384, SSL_OP_NO_TLSv1: 67108864,
+  SSL_OP_NO_TLSv1_1: 268435456, SSL_OP_NO_TLSv1_2: 134217728,
+  SSL_OP_NO_TLSv1_3: 536870912, SSL_OP_PRIORITIZE_CHACHA: 2097152,
+  SSL_OP_TLS_ROLLBACK_BUG: 8388608,
+  // ── TLS version numbers ───────────────────────────────────────────
+  TLS1_VERSION: 769, TLS1_1_VERSION: 770,
+  TLS1_2_VERSION: 771, TLS1_3_VERSION: 772,
+  // ── crypto engine method flags ────────────────────────────────────
+  ENGINE_METHOD_RSA: 1, ENGINE_METHOD_DSA: 2, ENGINE_METHOD_DH: 4,
+  ENGINE_METHOD_RAND: 8, ENGINE_METHOD_EC: 2048,
+  ENGINE_METHOD_CIPHERS: 64, ENGINE_METHOD_DIGESTS: 128,
+  ENGINE_METHOD_PKEY_METHS: 512, ENGINE_METHOD_PKEY_ASN1_METHS: 1024,
+  ENGINE_METHOD_ALL: 65535, ENGINE_METHOD_NONE: 0,
+  // ── DH / RSA padding ──────────────────────────────────────────────
+  DH_CHECK_P_NOT_SAFE_PRIME: 2, DH_CHECK_P_NOT_PRIME: 1,
+  DH_UNABLE_TO_CHECK_GENERATOR: 4, DH_NOT_SUITABLE_GENERATOR: 8,
+  RSA_PKCS1_PADDING: 1, RSA_NO_PADDING: 3,
+  RSA_PKCS1_OAEP_PADDING: 4, RSA_X931_PADDING: 5,
+  RSA_PKCS1_PSS_PADDING: 6,
+  RSA_PSS_SALTLEN_DIGEST: -1, RSA_PSS_SALTLEN_MAX_SIGN: -2,
+  RSA_PSS_SALTLEN_AUTO: -2,
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  os module ──────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __osMod = {
@@ -2067,6 +2182,16 @@ const builtins = {};
 builtins.fs = __fsMod;
 builtins.path = __pathMod;
 builtins.os = __osMod;
+// framework-fixes-F1 (2026-05-12): 'node:constants' (legacy 'constants').
+// Pre-fix require('node:constants') threw "Cannot find module" because
+// the table didn't include it. create-next-app touches
+// constants.UV_FS_O_FILEMAP at module init; that crash blocked the entire
+// scaffold flow. See __constantsMod definition above for the full shape.
+builtins.constants = __constantsMod;
+// Also register under the 'node:'-prefixed key. __requireFrom (this
+// file ~line 2900) has a fast-path strip but the explicit registration
+// matches the dns/promises + util/types convention.
+builtins["node:constants"] = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
 // X.5-R: real Node's \`require('stream')\` re-exports EventEmitter
