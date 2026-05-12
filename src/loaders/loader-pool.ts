@@ -422,21 +422,43 @@ export class NimbusLoaderPool {
    * for nothing — the length+endpoints fingerprint is a strong-
    * enough discriminator and identical bytes produce identical
    * fingerprints (warm reuse).
+   *
+   * Per-call wasm fingerprinting MUST be content-sensitive: when a user
+   * compiles two .c files (e.g. `clang a.c -o a` then `clang b.c -o b`)
+   * the resulting .wasm binaries may differ by only a few bytes deep
+   * inside the code section. The old fingerprint
+   * `name + len + first + last` collided for such cases, returning the
+   * same cache key and forcing a warm-isolate reuse that served the
+   * FIRST binary's WebAssembly.Module on the second dispatch (verified
+   * in prod: ./a and ./b were both 7572 bytes with identical first/last
+   * bytes, differing only at offset 651 — clang-state-fix wave repro).
+   *
+   * Fix: hash the ACTUAL bytes via djb2 over the full content. Per-call
+   * wasm is typically the user's compiled binary (KBs to a few MiB);
+   * djb2 of a few MiB takes microseconds on the supervisor side and
+   * runs once per dispatch (not per request — warm-reuse-on-match still
+   * works for the legitimate "same bytes" case). The savings of NOT
+   * hashing the wasm were marginal; the correctness cost was severe.
    */
   #fingerprintWasm(
     entries: Array<{ name: string; bytes: ArrayBuffer }>,
   ): string {
     if (entries.length === 0) return '0';
-    const fp = entries
-      .map((w) => {
-        const u = new Uint8Array(w.bytes);
-        const len = u.byteLength;
-        const first = len > 0 ? u[0] : 0;
-        const last = len > 0 ? u[len - 1] : 0;
-        return `${w.name}:${len}:${first}:${last}`;
-      })
-      .join('|');
-    return hashSource(fp);
+    const parts: string[] = [];
+    for (const w of entries) {
+      const u = new Uint8Array(w.bytes);
+      const len = u.byteLength;
+      // djb2 over the bytes. Faster than crypto.subtle.digest at small
+      // sizes, deterministic, and good enough for cache-key
+      // disambiguation (NOT cryptographic — the loader cache doesn't
+      // protect against malicious inputs).
+      let h = 5381;
+      for (let i = 0; i < len; i++) {
+        h = ((h << 5) + h + u[i]) | 0;
+      }
+      parts.push(`${w.name}:${len}:${(h >>> 0).toString(36)}`);
+    }
+    return hashSource(parts.join('|'));
   }
 
   /**
