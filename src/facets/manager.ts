@@ -1436,7 +1436,24 @@ function addBinTargetSiblings(
   if (pkgEnd > segs.length) return { added: 0 };
   const pkgRoot = segs.slice(0, pkgEnd).join('/');
 
-  const MAX_PKG_FILES = 200;
+  // npm-create-fix wave (2026-05-12): bumped from 200 to 1000 to cover
+  // multi-template scaffolds. create-vite ships 242 files + 74 dirs (316
+  // visit entries) across 21 template-* subdirs; the 200-cap exhausted
+  // BFS budget before late-alphabetical template files (vanilla, vue, etc.)
+  // were bundled, causing readFileSync ENOENT in the facet and silent
+  // partial scaffolding (only .gitignore + index.html materialized for
+  // `npm create vite@latest test-vite -- --template vanilla`).
+  //
+  // 1000 covers the documented create-* family (create-vite ~316, create-
+  // nuxt ~700, create-react-router ~400). Still well below the global
+  // VFS_BUNDLE_MAX_FILES = 4000 (constants.ts:74) and the
+  // VFS_BUNDLE_MAX_BYTES = 24 MiB content cap, both of which retain the
+  // defense against pathological 4000+ file barrel packages.
+  //
+  // See /workspace/.seal-internal/2026-05-12-npm-create-gap/findings.md
+  // for the prior wave's empirical investigation (243 manifest entries,
+  // only 140/243 readable pre-bump on prod 11df6ca).
+  const MAX_PKG_FILES = 1000;
 
   // BFS walk pkgRoot. Skip nested `node_modules` (those are
   // separate packages with their own walk if/when they become
