@@ -431,11 +431,25 @@ export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
    */
 export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code: number, durationMs: number): void {
     const bufSize = self.processLogs.size(pid);
-    const shouldDump = bufSize > 0 && (code !== 0 || bufSize > 0);
-    //                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    // Reads as redundant but is deliberate: Fix 4's intent is "non-empty
-    // buffer → dump, regardless of code". Keeping the full expression so
-    // the code self-documents WHY we're dumping on clean exits.
+    // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
+    //
+    // Pre-fix policy was "dump regardless of code when buffer non-empty"
+    // (Fix 4 from W3.5 era, intent: catch clean-but-silent failure
+    // where user couldn't see live output e.g. across reconnect).
+    //
+    // Real-world cost: for every successful `node -e`, `python -c`,
+    // `npx X --version`, etc., user saw output once live + once
+    // again in the post-exit dump. Annoying double-print for the
+    // common-case interactive session.
+    //
+    // New policy:
+    //   - Non-zero exit AND non-empty buffer → dump (failure context)
+    //   - Zero exit → no dump (live stream already showed it)
+    //
+    // Reconnect-replay path is preserved by the `logs <pid>` shell
+    // command + `/api/processes/<pid>/logs` endpoint, neither of
+    // which depends on the inline dump.
+    const shouldDump = bufSize > 0 && code !== 0;
 
     if (shouldDump) {
       self._emitExitDump(pid, code);
