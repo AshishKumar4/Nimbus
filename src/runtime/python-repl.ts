@@ -343,7 +343,7 @@ function replStepFacetFn(
           // buffer before each push. PyodideConsole inherits from
           // CPython's code.InteractiveConsole, whose .push(line)
           // *appends* to self.buffer and joins with "\\n". The host
-          // (this file, python-repl.ts line ~252) sends the ENTIRE
+          // (the host file, python-repl.ts line ~252) sends the ENTIRE
           // multi-line block on each push() — not just the new line —
           // so without reset the buffer grows quadratically AND the
           // joined source contains duplicate prior lines.
@@ -364,7 +364,7 @@ function replStepFacetFn(
           // full source IS the entire buffer state. Side effect: we
           // also need to be able to detect "incomplete" the way
           // InteractiveConsole does — by trying to compile and seeing
-          // E_INCOMPLETE. PyodideConsole.push does this anyway, and
+          // E_INCOMPLETE. PyodideConsole.push does so anyway, and
           // since we always pass the FULL accumulated source from the
           // host, "incomplete" is signalled correctly on the partial-
           // block case.
