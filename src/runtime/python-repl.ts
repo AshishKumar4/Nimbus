@@ -42,6 +42,23 @@ export interface PythonReplDeps {
   terminal: WebSocketTerminal;
   /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/python/0.29.4'. */
   installRoot: string;
+  /**
+   * REPL-R7-1 (2026-05-12): optional lifo-sh Shell reference.
+   *
+   * When a user pastes / sends a multi-line WS frame like
+   * `python\nexit(7)`, lifo-sh's input handler splits on \r\n and
+   * pushes everything after the first line into shell.pasteQueue.
+   * Those lines are processed ONLY when the shell becomes idle —
+   * but our REPL is running and the shell is blocked awaiting
+   * runPythonRepl. Result: REPL hangs at `>>> ` because the input
+   * never reaches it.
+   *
+   * Threading shell here lets ReplSession drain pasteQueue
+   * immediately on attach. If undefined, the REPL still works for
+   * single-line invocations (the common case) — it just won't
+   * recover paste-pending input.
+   */
+  shell?: any;
 }
 
 /**
@@ -321,7 +338,38 @@ function replStepFacetFn(
           //
           // Per-push driver returns a dict for the JS host to inspect:
           //   {kind: incomplete|complete|syntax-error|exit, exit_code}
+          //
+          // REPL-R7-2 (2026-05-12): reset the PyodideConsole internal
+          // buffer before each push. PyodideConsole inherits from
+          // CPython's code.InteractiveConsole, whose .push(line)
+          // *appends* to self.buffer and joins with "\\n". The host
+          // (this file, python-repl.ts line ~252) sends the ENTIRE
+          // multi-line block on each push() — not just the new line —
+          // so without reset the buffer grows quadratically AND the
+          // joined source contains duplicate prior lines.
+          //
+          // Concrete repro:
+          //   line 1 typed: "def foo():"   → push #1
+          //     buffer=["def foo():"] source="def foo():" → incomplete
+          //   line 2 typed: "  return 42"  → host re-sends full block
+          //     push #2 source="def foo():\\n  return 42"
+          //     PRE-FIX: buffer becomes
+          //       ["def foo():", "def foo():\\n  return 42"]
+          //     joined="def foo():\\ndef foo():\\n  return 42"
+          //     → IndentationError: "expected an indented block after
+          //       function definition on line 1" (because line 2 is
+          //       "def foo():" at column 0, not indented).
+          //
+          // Fix: clear .buffer before each push so the host-provided
+          // full source IS the entire buffer state. Side effect: we
+          // also need to be able to detect "incomplete" the way
+          // InteractiveConsole does — by trying to compile and seeing
+          // E_INCOMPLETE. PyodideConsole.push does this anyway, and
+          // since we always pass the FULL accumulated source from the
+          // host, "incomplete" is signalled correctly on the partial-
+          // block case.
           'def __nimbus_repl_step(source):',
+          '    __nimbus_repl_console.buffer.clear()',
           '    fut = __nimbus_repl_console.push(source)',
           '    sc = fut.syntax_check',
           '    if sc == "incomplete":',
@@ -556,6 +604,9 @@ function uint8ToBase64(u8: Uint8Array): string {
  */
 export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
   const adapter = new PythonReplAdapter(deps);
-  const session = new ReplSession(adapter, deps.terminal);
+  // REPL-R7-1: pass shell so ReplSession can drain pasteQueue on
+  // attach. Without this, multi-line WS frames (paste cases) drop
+  // input on the floor and the REPL hangs.
+  const session = new ReplSession(adapter, deps.terminal, deps.shell);
   return await session.run();
 }

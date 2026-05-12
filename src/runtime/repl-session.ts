@@ -62,6 +62,30 @@ export class ReplSession {
   private adapter: ReplAdapter;
   private terminal: WebSocketTerminal;
   private detachReplCb: (() => void) | null = null;
+  /**
+   * REPL-R7-1 (2026-05-12): optional reference to the lifo-sh Shell.
+   *
+   * Required when the REPL is launched from a multi-line WS frame
+   * (e.g. user pastes `python\nexit(7)`). lifo-sh's input handler
+   * (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5855
+   * `handleInput`) splits the frame on \r\n and pushes lines AFTER
+   * the first into `shell.pasteQueue`, which is drained ONLY when
+   * the shell becomes idle (after executeLine returns). While our
+   * REPL is running, those pasteQueue lines sit there waiting and
+   * the REPL itself receives no input → user sees a hung `>>> `
+   * prompt that never responds.
+   *
+   * If `shell` is provided, ReplSession will, immediately after
+   * attaching its replCallback, drain shell.pasteQueue and feed the
+   * lines into the callback (suffixed with \r each — matches what
+   * the WS frame originally would have looked like). This makes the
+   * paste path work transparently for REPL launches.
+   *
+   * The shell reference is optional so existing adapters (bun, node,
+   * ruby) that haven't been updated keep working with their
+   * pre-fix behavior.
+   */
+  private shellRef: any = null;
 
   /** Current line buffer (chars typed since the last enter). */
   private lineBuf: string = '';
@@ -98,9 +122,11 @@ export class ReplSession {
   private inputQueue: string = '';
   private draining: boolean = false;
 
-  constructor(adapter: ReplAdapter, terminal: WebSocketTerminal) {
+  constructor(adapter: ReplAdapter, terminal: WebSocketTerminal, shell?: any) {
     this.adapter = adapter;
     this.terminal = terminal;
+    // REPL-R7-1: optional shell reference for pasteQueue drain.
+    this.shellRef = shell ?? null;
     this.closedPromise = new Promise<void>((resolve) => {
       this.closedResolve = resolve;
     });
@@ -127,6 +153,38 @@ export class ReplSession {
         void this.drainInput();
       }
     });
+
+    // REPL-R7-1: drain any input that the shell received in the SAME
+    // WS frame as the REPL-launching command (`python\nexit(7)` style
+    // pastes). Without this drain, those lines sit forever in
+    // shell.pasteQueue while the REPL hangs at `>>> `.
+    //
+    // Each pasteQueue entry is a single line (no \r/\n). We re-frame
+    // each into the replCallback as `line + \r` so handleInput
+    // processes it through the normal Enter-triggered submitLine
+    // path — same behavior as if the user had typed and pressed
+    // Enter for each line.
+    //
+    // Best-effort: if shellRef is null or pasteQueue is missing,
+    // skip silently. Mutate the queue (shift) so the shell doesn't
+    // try to re-process the same items when it drains its own queue
+    // after this REPL exits.
+    if (this.shellRef && Array.isArray(this.shellRef.pasteQueue)) {
+      const pq: string[] = this.shellRef.pasteQueue;
+      if (pq.length > 0) {
+        const drained = pq.splice(0).filter(line => line !== undefined && line !== null);
+        if (drained.length > 0) {
+          // Feed via inputQueue + draining (same path as a real WS
+          // frame). Each line ends with \r so handleInput's
+          // submitLine fires per line.
+          this.inputQueue += drained.join('\r') + '\r';
+          if (!this.draining) {
+            this.draining = true;
+            void this.drainInput();
+          }
+        }
+      }
+    }
 
     // 4. Wait until close() is called.
     await this.closedPromise;
