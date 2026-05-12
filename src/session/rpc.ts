@@ -355,11 +355,27 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
     const cmdFromTable = self.processTable.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
 
-    // Fix 4: dump whenever the ring buffer has bytes, regardless of code.
-    // A facet that exits 0 but has a stderr traceback in the buffer is the
-    // clean-but-silent case we're hunting. The replay surfaces it even if
-    // the user's terminal was detached during the live stream.
-    if (self.processLogs.size(pid) > 0) {
+    // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
+    //
+    // Pre-fix Fix-4 policy was "dump whenever the ring buffer has
+    // bytes, regardless of code" (intent: catch the
+    // clean-but-silent failure where stderr traceback was buffered
+    // but user wasn't watching). Real-world cost: every successful
+    // `node -e`, `python -c`, etc. printed stdout once live, then
+    // again as a post-exit dump — double-print on the happy path.
+    //
+    // New policy:
+    //   - Non-zero exit AND non-empty buffer → dump (failure context)
+    //   - Zero exit → no dump (live stream already showed it)
+    //
+    // Reconnect-replay path is preserved by the `logs <pid>` shell
+    // command + `/api/processes/<pid>/logs` endpoint, neither of
+    // which depends on the inline dump.
+    //
+    // NOTE: _emitShellExecDone (below) carries an identical gate;
+    // both paths must agree because either may fire first depending
+    // on facet vs. shell-finalizer ordering.
+    if (code !== 0 && self.processLogs.size(pid) > 0) {
       self._emitExitDump(pid, code);
     }
 
