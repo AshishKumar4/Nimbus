@@ -3176,8 +3176,27 @@ export function registerUnixCommands(
   }));
 
   // read — read a line (stub, returns empty for non-interactive)
+  // shell-polish (2026-05-12): `read VAR` is registered here as a
+  // NO-OP fallback (matches the pre-existing stub behaviour). The
+  // REAL working implementation lives in src/session/init.ts as a
+  // lifo-sh shell builtin (shellAny.builtins.set('read', ...)).
+  //
+  // Why two registrations: lifo-sh's interpreter executes registered
+  // shell commands with `ctx.env = { ...this.config.env }` — a SHALLOW
+  // COPY (see node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5197).
+  // Mutating ctx.env inside a registered command therefore CANNOT
+  // propagate the var-assignment back to the shell. Builtins, by
+  // contrast, run inside the interp instance with direct access to
+  // `this.env` (the real shell env). The wait builtin in shell-r6 uses
+  // the same workaround.
+  //
+  // Keep the registry stub so `type read` reports "shell builtin" and
+  // `which read` doesn't error; the builtin always wins dispatch
+  // (interp.executeSimpleCommand checks builtins.get BEFORE
+  // registry.resolve — index-Djm2onjx.js:5182-5186).
   registry.register('read', wrap((ctx) => {
-    const varName = ctx.args[0] || 'REPLY';
+    const args = ctx.args.filter((a) => !a.startsWith('-'));
+    const varName = args[0] || 'REPLY';
     ctx.env[varName] = '';
     return 0;
   }));
