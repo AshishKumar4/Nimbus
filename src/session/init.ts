@@ -2045,6 +2045,63 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // settles, which spans the Shell + line-editor + executor —
     // beyond R6's scope. With `wait` available, users have a
     // reliable path: `cmd & wait` collects output deterministically.
+    // ── shell-polish (2026-05-12): real `read` as a lifo-sh builtin ──
+    //
+    // Pre-fix `read VAR < file` set VAR to "" because the registered
+    // command in src/shell/unix-commands.ts mutates ctx.env which is a
+    // shallow COPY of the shell env (see node_modules/@lifo-sh/core/dist
+    // /index-Djm2onjx.js:5197 — `env: { ...this.config.env }`). Builtins
+    // run with direct `this.env` access (no copy), so a builtin CAN
+    // mutate the shell env. The same workaround pattern as the `wait`
+    // builtin below.
+    //
+    // Builtin signature per node_modules/@lifo-sh/core/dist
+    // /index-Djm2onjx.js:5182-5184 is `(args, stdout, stderr, stdin)`.
+    // The stdin arg is either:
+    //   - the redirect-file reader for `read x < file` (has .read())
+    //   - the pipe reader for `echo X | read x` (also has .read())
+    //   - undefined when no stdin
+    //
+    // We drain one line from stdin (real bash: `read` consumes until \n
+    // or EOF). The line goes into shellAny.env[VAR].
+    {
+      const shellAny = self.shell as any;
+      if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {
+        shellAny.builtins.set(
+          'read',
+          async function nimbusRead(args: string[], _stdout: any, _stderr: any, stdin: any) {
+            // Drop flag-args (we tolerate -r, -p, -t, -n but don't
+            // implement non-defaults). Treat all reads as raw.
+            const positional = args.filter((a) => !a.startsWith('-'));
+            const varName = positional[0] || 'REPLY';
+            // Drain stdin if present.
+            let content = '';
+            if (stdin && typeof stdin.readAll === 'function') {
+              try { content = await stdin.readAll(); } catch { content = ''; }
+            } else if (stdin && typeof stdin.read === 'function') {
+              // Some stream shapes only expose .read() yielding chunks.
+              const parts: string[] = [];
+              try {
+                let chunk;
+                while ((chunk = await stdin.read()) !== null && chunk !== undefined) {
+                  parts.push(String(chunk));
+                }
+              } catch { /* fail-soft */ }
+              content = parts.join('');
+            }
+            // Real `read` consumes ONE line — first newline or all of stdin.
+            const firstNewline = content.indexOf('\n');
+            const line = firstNewline >= 0 ? content.substring(0, firstNewline) : content;
+            // Mutate the shell env in place — this is the whole point of
+            // the builtin shim.
+            shellAny.env[varName] = line;
+            // POSIX: exit 1 on EOF (no input).
+            return content.length === 0 ? 1 : 0;
+          },
+        );
+      }
+    }
+
     {
       const shellAny = self.shell as any;
       if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {

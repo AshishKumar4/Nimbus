@@ -630,7 +630,28 @@ export class HeredocHandler {
       } else if (info.command) {
         // Pipe heredoc content as stdin to command: `command << DELIM`
         // Use shell.execute() which supports stdin option.
-        await this.shell.execute(info.command, { stdin: content });
+        //
+        // shell-polish (2026-05-12): MUST pass onStdout / onStderr so
+        // the command's output reaches the terminal. Pre-fix:
+        //
+        //   $ cat << 'EOF'
+        //   > hi
+        //   > 2
+        //   > EOF
+        //   user@nimbus:~$       <-- expected "hi\n2" before this prompt
+        //
+        // Without onStdout, shell.execute() ran cat with stdin=content
+        // but cat's stdout was buffered to nowhere — the terminal saw
+        // only the prompt return. The redirect path (cat > file <<...)
+        // worked because we wrote directly to VFS at line 624-628.
+        // Fix: stream stdout + stderr to the terminal via the same
+        // onStdout/onStderr signature used by shell.execute callers
+        // in src/session/init.ts:2217-2218.
+        await this.shell.execute(info.command, {
+          stdin: content,
+          onStdout: (d: string) => this.terminal.write(d),
+          onStderr: (d: string) => this.terminal.write(d),
+        });
       }
     } catch (e: any) {
       this.terminal.write(`\x1b[31mheredoc error: ${e?.message || e}\x1b[0m\r\n`);
