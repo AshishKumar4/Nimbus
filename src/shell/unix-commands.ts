@@ -925,16 +925,69 @@ function mkGrep(vfs: SqliteVFS): CmdFn {
   };
 }
 
+/**
+ * SHELL-R6-B2 follow-on: streaming head.
+ *
+ * When invoked on a pipeline (`producer | head`), receives a pipe
+ * reader (object with .read()) — NOT a coalesced string — and reads
+ * line-by-line until N lines are emitted. Closes the reader by
+ * draining null (or by the SHELL-R6-2 abort cascade kicking in when
+ * we return).
+ *
+ * Why: lifo-sh's head reads via readAll(), which never returns when
+ * upstream is `yes`. Our SHELL-R6-2 pipeline abort only fires when
+ * the consumer resolves — so head must resolve quickly via its own
+ * line-count termination, which then triggers the cascade.
+ *
+ * Backward compat: file-args (head FILE) and the string-stdin case
+ * (when wrap already coalesced) still work via the same code path.
+ */
 function mkHead(vfs: SqliteVFS): CmdFn {
-  return (ctx) => {
+  return async (ctx: any) => {
     let n = 10;
     const nIdx = ctx.args.indexOf('-n');
     if (nIdx >= 0) n = parseInt(ctx.args[nIdx + 1]) || 10;
-    const files = ctx.args.filter(a => !a.startsWith('-') && (ctx.args.indexOf(a) !== nIdx + 1));
-    if (files.length === 0 && ctx.stdin) {
-      ctx.stdout.write(ctx.stdin.split('\n').slice(0, n).join('\n') + '\n');
+    const files = ctx.args.filter((a: string) => !a.startsWith('-') && (ctx.args.indexOf(a) !== nIdx + 1));
+
+    if (files.length === 0) {
+      // Pipe / stdin case.
+      const stdin = ctx.stdin;
+      if (!stdin) return 0;
+      // Streaming pipe-reader path: read chunks until N lines.
+      if (typeof stdin !== 'string' && typeof stdin.read === 'function') {
+        let buffered = '';
+        let emitted = 0;
+        const out: string[] = [];
+        while (emitted < n) {
+          const chunk: string | null = await stdin.read();
+          if (chunk === null) break;
+          buffered += chunk;
+          // Process complete lines while we have them.
+          let nlIdx;
+          while (emitted < n && (nlIdx = buffered.indexOf('\n')) !== -1) {
+            out.push(buffered.substring(0, nlIdx));
+            buffered = buffered.substring(nlIdx + 1);
+            emitted++;
+          }
+        }
+        // Handle a partial line if N hit mid-buffer and producer hasn't
+        // sent a trailing newline yet — emit it only if we haven't
+        // already hit the N-line cap (POSIX head includes partial
+        // tail).
+        if (emitted < n && buffered.length > 0) {
+          out.push(buffered);
+        }
+        ctx.stdout.write(out.join('\n') + '\n');
+        return 0;
+      }
+      // Legacy string-stdin path (kept for wrap's pre-coalesced case).
+      if (typeof stdin === 'string') {
+        ctx.stdout.write(stdin.split('\n').slice(0, n).join('\n') + '\n');
+        return 0;
+      }
       return 0;
     }
+
     for (const f of files) {
       const fp = resolvePath(ctx.cwd, f);
       try {
@@ -2890,6 +2943,45 @@ function mkXxd(vfs: SqliteVFS): CmdFn {
  * The shell passes stdin as an object with .readAll() when piping,
  * but our commands expect a plain string.
  */
+/**
+ * SHELL-R6-B2 follow-on: wrapStreaming for commands that handle pipe
+ * readers directly (head, tail, etc — commands that can terminate
+ * before the producer drains).
+ *
+ * Behavior:
+ *   - If ctx.stdin is a terminal stdin (has .feed), drain buffered
+ *     bytes to a string (same as wrap — terminal stdin's
+ *     buffer-then-close pattern doesn't match streaming).
+ *   - If ctx.stdin is a pipe reader (has .read), PASS IT THROUGH
+ *     unchanged so the command can read line-by-line. The command
+ *     is responsible for terminating itself (e.g. head -n N stops
+ *     after N lines, triggering the pipeline-abort cascade from
+ *     SHELL-R6-2).
+ *   - String stdin / other shapes: same as wrap.
+ */
+function wrapStreaming(fn: CmdFn): (ctx: Ctx) => Promise<number> {
+  return async (ctx: Ctx) => {
+    try {
+      if (ctx.stdin && typeof ctx.stdin !== 'string') {
+        const stdinObj = ctx.stdin as any;
+        const isTerminalStdin = typeof stdinObj.feed === 'function';
+        if (isTerminalStdin) {
+          const buf: string[] = Array.isArray(stdinObj.buffer)
+            ? stdinObj.buffer.splice(0)
+            : [];
+          (ctx as any).stdin = buf.join('');
+        }
+        // else: leave as pipe reader for the command to handle.
+      }
+      const result = fn(ctx);
+      return await result;
+    } catch (e: any) {
+      ctx.stderr.write(`${e?.message || e}\n`);
+      return 1;
+    }
+  };
+}
+
 function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
   return async (ctx: Ctx) => {
     try {
@@ -2958,7 +3050,10 @@ export function registerUnixCommands(
   registry.register('tree', wrap(mkTree(vfs)));
   registry.register('find', wrap(mkFind(vfs)));
   registry.register('grep', wrap(mkGrep(vfs)));
-  registry.register('head', wrap(mkHead(vfs)));
+  // SHELL-R6-B2: head uses streaming wrap so a pipe reader passes
+  // through (head terminates after N lines, triggering the abort
+  // cascade for upstream producers like `yes`).
+  registry.register('head', wrapStreaming(mkHead(vfs)));
   registry.register('tail', wrap(mkTail(vfs)));
   registry.register('wc', wrap(mkWc(vfs)));
   registry.register('sort', wrap(mkSort(vfs)));

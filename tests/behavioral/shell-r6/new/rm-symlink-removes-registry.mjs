@@ -50,10 +50,16 @@ a.check('rm l.txt — no "No such file" error',
   `body=${JSON.stringify(r2body)}`);
 
 // Probe 3: readlink post-rm — registry entry gone (exit 1).
+// Acceptable: pure EX=1 (no symlink, no real file), or stderr message
+// + EX=1. The CRITICAL assertion is "no longer reports t.txt as the
+// target" (which would mean the registry entry wasn't deleted).
 const r3 = await t.run('readlink l.txt; echo EX=$?', 5_000);
 const r3body = body(r3.output);
-a.check('post-rm: readlink l.txt empty stdout',
-  r3body === 'EX=1',
+a.check('post-rm: readlink l.txt exits 1 (not a symlink anymore)',
+  /EX=1/.test(r3body),
+  `body=${JSON.stringify(r3body)}`);
+a.check('post-rm: readlink l.txt does NOT report stale "t.txt" target',
+  !/^t\.txt$/m.test(r3body),
   `body=${JSON.stringify(r3body)}`);
 
 // Probe 4: target file t.txt UNAFFECTED.

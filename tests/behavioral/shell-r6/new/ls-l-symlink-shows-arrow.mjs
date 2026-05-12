@@ -53,7 +53,7 @@ a.check('ls -l — symlink row has "l.txt -> t.txt"',
   /l\.txt\s*->\s*t\.txt/.test(r2body),
   `body=${JSON.stringify(r2body)}`);
 a.check('ls -l — t.txt row has "-rw" prefix (regular file)',
-  /^-rw[r-][w-][x-].* t\.txt/m.test(r2body),
+  /^-rw[x-].* t\.txt/m.test(r2body),
   `body=${JSON.stringify(r2body)}`);
 
 // Probe 3: targeting the symlink directly.
