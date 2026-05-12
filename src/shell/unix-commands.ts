@@ -12,7 +12,21 @@
  */
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SymlinkRegistry } from '../vfs/symlink-registry.js';
 import { enc } from '../_shared/bytes.js';
+
+/**
+ * SHELL-FOLLOWUPS-4 (2026-05-11): per-vfs symlink registry singleton.
+ * Cached on the VFS instance via a side property so `ln -s` + `readlink`
+ * + `ls -la` share the same registry within a session.
+ */
+function getSymlinkRegistry(vfs: SqliteVFS): SymlinkRegistry {
+  const v = vfs as any;
+  if (!v.__nimbus_symlink_registry) {
+    v.__nimbus_symlink_registry = new SymlinkRegistry(vfs);
+  }
+  return v.__nimbus_symlink_registry;
+}
 
 type Ctx = {
   args: string[];
@@ -49,24 +63,271 @@ function globMatch(pattern: string, name: string): boolean {
 
 // ── Command implementations ─────────────────────────────────────────────
 
+/**
+ * SHELL-FOLLOWUPS-1 (2026-05-11): POSIX-conformant `which`.
+ *
+ * Pre-fix: `which clang` printed `clang: nimbus built-in`. Real POSIX
+ * which prints the resolved absolute path (`/usr/local/bin/clang`)
+ * or exits 1 silently. Scripts using `which` output to feed into
+ * `dirname`, `$()`, etc. all broke:
+ *   PATH_PREFIX=$(dirname $(which clang))   # expected /usr/local/bin
+ *
+ * Behaviour matches GNU `which`:
+ *   - PATH search: walk `$PATH`, return first hit's absolute path.
+ *   - Found in PATH: print path to stdout, exit 0.
+ *   - Resolved as shell builtin (no -a): exit 1, NO output.
+ *   - Resolved as shell builtin (with -a): print
+ *     "<cmd>: shell built-in command" + continue search PATH.
+ *   - Not found anywhere: stderr "<cmd>: not in (PATH)", exit 1.
+ *
+ * For our facet-direct runtimes (clang, node, bun, python, ruby,
+ * git, npm, etc.), we don't have real on-disk binaries — they
+ * dispatch through the registry. To preserve script compatibility,
+ * we return canonical POSIX paths under /usr/local/bin and /usr/bin:
+ *
+ *   clang, clang++, cc                → /usr/local/bin/clang
+ *   wasm-ld, lld                      → /usr/local/bin/wasm-ld
+ *   node, nodejs                      → /usr/local/bin/node
+ *   bun                               → /usr/local/bin/bun
+ *   npm, npx                          → /usr/local/bin/npm
+ *   git                               → /usr/bin/git
+ *   python, python3                   → /usr/bin/python3
+ *   ruby, ruby3                       → /usr/bin/ruby
+ *   wrangler, nimbus-wrangler         → /usr/local/bin/wrangler
+ *   esbuild, tsc, vite, rollup, etc.  → /usr/local/bin/<name>
+ *
+ * These paths are virtual but POSIX-shaped so scripts do the right
+ * thing with `dirname $(which X)` etc. The paths don't have to
+ * exist on the VFS (real GNU which just stat-walks PATH and
+ * doesn't require execute bit at lookup time for stdout — it does
+ * for exit code, but match what users expect first).
+ *
+ * If the user has installed a real binary in PATH (npm install + npx
+ * resolution into /home/user/node_modules/.bin/X), prefer the actual
+ * VFS-resolved path over the canonical fallback.
+ */
+const _CANONICAL_BIN_PATHS: Record<string, string> = {
+  // /usr/local/bin (locally-installed runtimes)
+  clang: '/usr/local/bin/clang',
+  'clang++': '/usr/local/bin/clang++',
+  cc: '/usr/local/bin/clang',
+  'wasm-ld': '/usr/local/bin/wasm-ld',
+  lld: '/usr/local/bin/wasm-ld',
+  node: '/usr/local/bin/node',
+  nodejs: '/usr/local/bin/node',
+  bun: '/usr/local/bin/bun',
+  npm: '/usr/local/bin/npm',
+  npx: '/usr/local/bin/npx',
+  pnpm: '/usr/local/bin/pnpm',
+  yarn: '/usr/local/bin/yarn',
+  esbuild: '/usr/local/bin/esbuild',
+  tsc: '/usr/local/bin/tsc',
+  vite: '/usr/local/bin/vite',
+  rollup: '/usr/local/bin/rollup',
+  webpack: '/usr/local/bin/webpack',
+  wrangler: '/usr/local/bin/wrangler',
+  'nimbus-wrangler': '/usr/local/bin/nimbus-wrangler',
+  // /usr/bin (system runtimes)
+  git: '/usr/bin/git',
+  python: '/usr/bin/python3',
+  python3: '/usr/bin/python3',
+  ruby: '/usr/bin/ruby',
+  ruby3: '/usr/bin/ruby',
+  sh: '/usr/bin/sh',
+  bash: '/usr/bin/bash',
+  // Framework CLIs
+  astro: '/usr/local/bin/astro',
+  nuxt: '/usr/local/bin/nuxt',
+  nuxi: '/usr/local/bin/nuxi',
+  next: '/usr/local/bin/next',
+  remix: '/usr/local/bin/remix',
+  'svelte-kit': '/usr/local/bin/svelte-kit',
+  husky: '/usr/local/bin/husky',
+  lefthook: '/usr/local/bin/lefthook',
+  'simple-git-hooks': '/usr/local/bin/simple-git-hooks',
+  'lint-staged': '/usr/local/bin/lint-staged',
+  yorkie: '/usr/local/bin/yorkie',
+  // Self
+  nimbus: '/usr/local/bin/nimbus',
+};
+
+/** Resolve a command name to a path via PATH-walk + canonical-bin
+ *  fallback. Returns null if not findable. Skip-canonical when the
+ *  caller knows the command is a shell builtin (no fallback). */
+function _whichLookup(
+  vfs: SqliteVFS,
+  name: string,
+  envPath: string,
+): string | null {
+  // 1. Real on-disk binary in $PATH (npm-installed node_modules/.bin,
+  //    user-placed scripts, etc.).
+  const paths = (envPath || '/usr/local/bin:/usr/bin:/bin').split(':');
+  for (const dir of paths) {
+    if (!dir) continue;
+    const stripped = dir.replace(/^\/+/, '').replace(/\/+$/, '');
+    const fp = stripped + '/' + name;
+    if (vfs.exists(fp) && !vfs.isDirectory(fp)) {
+      return '/' + fp;
+    }
+  }
+  // 2. Canonical-bin fallback for our facet-direct runtimes.
+  if (_CANONICAL_BIN_PATHS[name]) {
+    return _CANONICAL_BIN_PATHS[name];
+  }
+  return null;
+}
+
 function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {
   return async (ctx) => {
-    for (const name of ctx.args) {
-      // Check registry (use resolve for async-safe lookup)
-      const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
-      if (resolved) {
-        ctx.stdout.write(`${name}: nimbus built-in\n`);
-      } else {
-        const paths = (ctx.env.PATH || '/usr/bin:/bin').split(':');
-        let found = false;
-        for (const dir of paths) {
-          const fp = resolvePath('/', dir + '/' + name);
-          if (vfs.exists(fp)) { ctx.stdout.write(`${dir}/${name}\n`); found = true; break; }
+    // Parse flags. Supports -a (show all matches), -s (silent — no
+    // stdout, only exit code). Default behaviour matches GNU which.
+    let showAll = false;
+    let silent = false;
+    const names: string[] = [];
+    for (const a of ctx.args) {
+      if (a === '-a' || a === '--all') { showAll = true; continue; }
+      if (a === '-s' || a === '--silent') { silent = true; continue; }
+      if (a.startsWith('-') && a !== '-') {
+        // Combined short flags
+        for (const ch of a.slice(1)) {
+          if (ch === 'a') showAll = true;
+          else if (ch === 's') silent = true;
         }
-        if (!found) { ctx.stderr.write(`which: ${name}: not found\n`); return 1; }
+        continue;
+      }
+      names.push(a);
+    }
+    if (names.length === 0) {
+      ctx.stderr.write('Usage: which [-as] command [command ...]\n');
+      return 1;
+    }
+    let anyMissing = false;
+    for (const name of names) {
+      // Classify: is it a registry-resolvable command (shell builtin)?
+      let isBuiltin = false;
+      try {
+        const resolved = typeof registry.resolve === 'function'
+          ? await registry.resolve(name)
+          : null;
+        isBuiltin = !!resolved;
+      } catch { /* registry unavailable; treat as not-builtin */ }
+      // 1. PATH-walk + canonical-bin lookup.
+      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      let found = false;
+      if (path) {
+        if (!silent) ctx.stdout.write(path + '\n');
+        found = true;
+      }
+      // 2. With -a, also report builtins (real GNU which behaviour).
+      if (showAll && isBuiltin) {
+        if (!silent) ctx.stdout.write(`${name}: shell built-in command\n`);
+        found = true;
+      }
+      // 3. Without -a, if no PATH match but is builtin: GNU which
+      //    exits 1 silently (with -s suppresses stderr too).
+      if (!path && isBuiltin && !showAll) {
+        // Exit 1; no output. Matches GNU `which` default.
+        anyMissing = true;
+        continue;
+      }
+      if (!found) {
+        if (!silent) ctx.stderr.write(`which: no ${name} in (${ctx.env.PATH || '/usr/local/bin:/usr/bin:/bin'})\n`);
+        anyMissing = true;
+      }
+    }
+    return anyMissing ? 1 : 0;
+  };
+}
+
+/**
+ * SHELL-FOLLOWUPS-2 (2026-05-11): `whereis` companion to `which`.
+ * GNU whereis prints binary, source, and manpage paths. We only have
+ * binaries on the virtual VFS; print just the binary path. With no
+ * match, print just the name (matches `whereis` behavior on missing).
+ */
+function mkWhereis(vfs: SqliteVFS): CmdFn {
+  return (ctx) => {
+    const names = ctx.args.filter(a => !a.startsWith('-'));
+    if (names.length === 0) {
+      ctx.stderr.write('Usage: whereis name [name ...]\n');
+      return 1;
+    }
+    for (const name of names) {
+      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      if (path) {
+        ctx.stdout.write(`${name}: ${path}\n`);
+      } else {
+        // GNU whereis prints just "name:" when nothing found.
+        ctx.stdout.write(`${name}:\n`);
       }
     }
     return 0;
+  };
+}
+
+/**
+ * SHELL-FOLLOWUPS-3 (2026-05-11): POSIX `command -v` / `command -V`.
+ * Used by shell scripts as the portable alternative to `which`:
+ *   command -v clang  → prints path, exit 0 if found, exit 1 if not
+ *   command -V clang  → verbose form (similar to `type`)
+ *   command clang ARG → invoke clang bypassing any function/alias
+ *
+ * For the invoke case (no -v/-V), we don't have a way to bypass
+ * alias/function within lifo-sh from here, so we just dispatch to
+ * the registry. Aliases are checked at executeLine time so `command
+ * X` going through our normal dispatch IS bypassing the alias
+ * (because lifo-sh's executeSimpleCommand only consults aliases
+ * for the head word).
+ */
+function mkCommand(vfs: SqliteVFS, registry: any): CmdFn {
+  return async (ctx) => {
+    const args = [...ctx.args];
+    let mode: '-v' | '-V' | 'invoke' = 'invoke';
+    if (args[0] === '-v') { mode = '-v'; args.shift(); }
+    else if (args[0] === '-V') { mode = '-V'; args.shift(); }
+    if (args.length === 0) {
+      if (mode === 'invoke') return 0;
+      ctx.stderr.write('command: missing operand\n');
+      return 1;
+    }
+    if (mode === '-v') {
+      // Print path or builtin marker; exit 0 if found.
+      const name = args[0];
+      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      if (path) { ctx.stdout.write(path + '\n'); return 0; }
+      try {
+        const resolved = await registry.resolve(name);
+        if (resolved) { ctx.stdout.write(name + '\n'); return 0; }
+      } catch { /* registry miss */ }
+      return 1;
+    }
+    if (mode === '-V') {
+      const name = args[0];
+      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      if (path) { ctx.stdout.write(`${name} is ${path}\n`); return 0; }
+      try {
+        const resolved = await registry.resolve(name);
+        if (resolved) { ctx.stdout.write(`${name} is a shell builtin\n`); return 0; }
+      } catch { /* miss */ }
+      ctx.stderr.write(`command: ${name}: not found\n`);
+      return 1;
+    }
+    // invoke mode: dispatch directly via registry. Bypasses aliases
+    // because we're calling the resolved cmd not the alias name.
+    const name = args[0];
+    try {
+      const resolved = await registry.resolve(name);
+      if (!resolved) {
+        ctx.stderr.write(`command: ${name}: not found\n`);
+        return 127;
+      }
+      const subCtx = { ...ctx, args: args.slice(1) };
+      const code = await resolved(subCtx);
+      return typeof code === 'number' ? code : 0;
+    } catch (e: any) {
+      ctx.stderr.write(`command: ${name}: ${e?.message || e}\n`);
+      return 1;
+    }
   };
 }
 
@@ -1797,14 +2058,25 @@ function mkCat(vfs: SqliteVFS): CmdFn {
     // about the /dev provider mounted on Kernel.VFS. lifo-sh's
     // executeCommand passes Kernel.VFS as ctx.vfs.
     const kvfs: any = (ctx as any).vfs;
+    // SHELL-FOLLOWUPS-4: dereference symlinks via SymlinkRegistry
+    // before any read. Real cat reads through symlinks transparently.
+    const reg = getSymlinkRegistry(vfs);
     let exit = 0;
-    for (const f of files) {
+    for (const fOrig of files) {
+      const f = (() => {
+        const fp = resolvePath(ctx.cwd, fOrig);
+        const resolved = reg.resolveChain(fp);
+        if (resolved === null) {
+          // ELOOP: too many hops
+          ctx.stderr.write(`cat: ${fOrig}: Too many levels of symbolic links\n`);
+          return null;
+        }
+        return resolved === fp ? fOrig : '/' + resolved;
+      })();
+      if (f === null) { exit = 1; continue; }
       try {
         let content: string;
         // Try Kernel.VFS first (handles mounted providers like /dev).
-        // Kernel.VFS.readFile returns Uint8Array; readFileString returns
-        // string. lifo-sh's Kernel exposes both via the same interface
-        // SqliteVFS uses (duck-typed: readFileString -> string).
         if (kvfs && typeof kvfs.readFile === 'function') {
           try {
             const raw = kvfs.readFile(f.startsWith('/') ? f : ctx.cwd + '/' + f);
@@ -1812,8 +2084,6 @@ function mkCat(vfs: SqliteVFS): CmdFn {
               ? raw
               : new TextDecoder('utf-8').decode(raw);
           } catch (kErr: any) {
-            // Fall back to SqliteVFS for paths that don't go through
-            // Kernel mounts (e.g. relative paths to internal storage).
             const fp = resolvePath(ctx.cwd, f);
             content = vfs.readFileString(fp);
             void kErr;
@@ -1824,7 +2094,7 @@ function mkCat(vfs: SqliteVFS): CmdFn {
         }
         ctx.stdout.write(content);
       } catch (e: any) {
-        ctx.stderr.write(`cat: ${f}: ${e?.message || e}\n`);
+        ctx.stderr.write(`cat: ${fOrig}: ${e?.message || e}\n`);
         exit = 1;
       }
     }
@@ -2234,24 +2504,60 @@ function mkFalse(): CmdFn { return () => 1; }
  * When real symlinks land in VFS, this command will become the
  * read-side of the symlink table.
  */
+/**
+ * SHELL-FOLLOWUPS-4 (2026-05-11): real symlink readlink.
+ * Pre-fix: ln -s did file-copy; readlink returned exit 1 with no
+ * output (no symlink table existed). Now backed by SymlinkRegistry:
+ *   - GNU readlink prints target (relative or absolute as stored)
+ *   - exit 1 silently for non-symlinks (matches GNU readlink default)
+ *   - exit 1 + stderr for missing files
+ * Flags: -f (canonicalize — follow chain to final target), default
+ * (one-hop). -e variant (verify) deferred.
+ */
 function mkReadlink(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
-    const targets = ctx.args.filter(a => !a.startsWith('-'));
+    const args = [...ctx.args];
+    let canonicalize = false;
+    const targets: string[] = [];
+    for (const a of args) {
+      if (a === '-f' || a === '--canonicalize') { canonicalize = true; continue; }
+      if (a.startsWith('-') && a !== '-') {
+        for (const ch of a.slice(1)) if (ch === 'f') canonicalize = true;
+        continue;
+      }
+      targets.push(a);
+    }
     if (targets.length === 0) {
       ctx.stderr.write('readlink: missing operand\n');
       return 1;
     }
+    const reg = getSymlinkRegistry(vfs);
     let exit = 0;
     for (const t of targets) {
       const fp = resolvePath(ctx.cwd, t);
-      if (!vfs.exists(fp)) {
-        ctx.stderr.write(`readlink: ${t}: No such file or directory\n`);
+      if (canonicalize) {
+        // -f: follow chain; succeed even if target doesn't exist YET
+        // (matches `readlink -f` which canonicalizes anyway).
+        const resolved = reg.resolveChain(fp);
+        if (resolved !== null) {
+          ctx.stdout.write('/' + resolved + '\n');
+          continue;
+        }
+        ctx.stderr.write(`readlink: ${t}: Too many levels of symbolic links\n`);
         exit = 1;
         continue;
       }
-      // Without symlink support, every existing entry is non-symlink.
-      // GNU readlink exits 1 without output for non-symlinks unless
-      // -f/-e is given. Match that to avoid 'command not found'.
+      // Default: one-hop. Print target verbatim (preserves relative/absolute).
+      const direct = reg.readlink(fp);
+      if (direct !== null) {
+        ctx.stdout.write(direct + '\n');
+        continue;
+      }
+      // Not a symlink. GNU readlink exits 1 silently for regular
+      // files / dirs; emits stderr for missing.
+      if (!vfs.exists(fp)) {
+        ctx.stderr.write(`readlink: ${t}: No such file or directory\n`);
+      }
       exit = 1;
     }
     return exit;
@@ -2416,6 +2722,8 @@ export function registerUnixCommands(
   vfs: SqliteVFS,
 ): void {
   registry.register('which', wrap(mkWhich(vfs, registry)));
+  registry.register('whereis', wrap(mkWhereis(vfs)));
+  registry.register('command', wrap(mkCommand(vfs, registry)));
   registry.register('type', wrap(mkType(vfs, registry)));
   registry.register('env', wrap(mkEnv()));
   registry.register('export', wrap(mkExport()));
@@ -2467,16 +2775,63 @@ export function registerUnixCommands(
   registry.register('chown', wrap(() => 0));
 
   // ln — symlink stub (no-ops on VFS but doesn't error)
+  /**
+   * SHELL-FOLLOWUPS-4 (2026-05-11): real `ln -s` via SymlinkRegistry.
+   * Pre-fix: ln -s did file-copy; modifications to the "link"
+   * created a new file (no two-way reflection); readlink returned
+   * empty.
+   *
+   * Now:
+   *   - `ln -s TARGET LINKPATH` registers LINKPATH → TARGET in the
+   *     symlink registry.
+   *   - Real GNU `ln -s` doesn't require TARGET to exist (dangling
+   *     symlinks are valid). We allow that.
+   *   - Hard links (`ln` without -s) still do file-copy — Nimbus
+   *     VFS doesn't expose inode-level hard-linking and that's
+   *     documented out of scope.
+   *
+   * Subsequent operations (cat / ls / cat-via-redirect) need to
+   * consult the registry to see through the symlink. That work
+   * lives in mkCat / mkLs wrappers and the SqliteVFS read-path —
+   * for v1, we wire it in the COMMANDS that need it (cat already
+   * goes through Kernel.VFS which doesn't yet know about the
+   * registry; we patch cat directly here to dereference symlinks).
+   */
   registry.register('ln', wrap((ctx) => {
-    // ln -s source target — in our VFS, just copy the file
-    const args = ctx.args.filter((a: string) => !a.startsWith('-'));
-    if (args.length >= 2) {
-      const src = resolvePath(ctx.cwd, args[0]);
-      const dest = resolvePath(ctx.cwd, args[1]);
-      try {
-        const content = vfs.readFileString(src);
-        vfs.writeFile(dest, content);
-      } catch {}
+    const args = ctx.args;
+    const symbolic = args.some(a => a === '-s' || (a.startsWith('-') && !a.startsWith('--') && a.includes('s')));
+    const force = args.some(a => a === '-f' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
+    const positional = args.filter(a => !a.startsWith('-'));
+    if (positional.length < 2) {
+      ctx.stderr.write('ln: missing operand\n');
+      return 1;
+    }
+    const target = positional[0];  // what the link points TO
+    const linkPath = positional[1];  // the link file itself
+    const linkFp = resolvePath(ctx.cwd, linkPath);
+    if (symbolic) {
+      // Symbolic link via registry. Don't require target to exist.
+      const reg = getSymlinkRegistry(vfs);
+      // GNU `ln` without -f errors if link exists.
+      if (!force && (vfs.exists(linkFp) || reg.isSymlink(linkFp))) {
+        ctx.stderr.write(`ln: failed to create symbolic link '${linkPath}': File exists\n`);
+        return 1;
+      }
+      // Remove existing real-file at linkPath if -f and not a symlink.
+      if (force && vfs.exists(linkFp) && !reg.isSymlink(linkFp)) {
+        try { vfs.unlink(linkFp); } catch { /* fail-soft */ }
+      }
+      reg.set(linkFp, target);
+      return 0;
+    }
+    // Hard link mode (default): file-copy semantics (legacy behaviour).
+    const srcFp = resolvePath(ctx.cwd, target);
+    try {
+      const content = vfs.readFileString(srcFp);
+      vfs.writeFile(linkFp, content);
+    } catch (e: any) {
+      ctx.stderr.write(`ln: ${target}: ${e?.message || e}\n`);
+      return 1;
     }
     return 0;
   }));
