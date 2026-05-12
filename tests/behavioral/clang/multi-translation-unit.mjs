@@ -55,14 +55,33 @@ await t.run(heredocCommand('main.c', mainC), 10_000);
 }
 
 // Verify the linked output is wasm.
+//
+// PROBE-CLEANUP (2026-05-12): pre-fix this used `readFileSync('multi')`
+// — a relative path. Inside the node facet, Node's cwd doesn't track
+// the shell's cwd (separate facet realm), so the relative read ENOENTed
+// even though `./multi` (the shell builtin runner) ran correctly. The
+// link step worked; the probe just couldn't VERIFY the bytes.
+//
+// Use the home-dir absolute path (probe creates files in cwd which is
+// /home/user — see heredocCommand calls above). xxd is a Nimbus shell
+// builtin and reads via the VFS directly, bypassing node entirely.
 {
-  const { output } = await t.run(
-    `node -e "const b = require('fs').readFileSync('multi').subarray(0,4); console.log('M'+'AGIC='+Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''))"`,
-    15_000,
-  );
+  // xxd dumps the whole file; head -1 limits stdout to just the first
+  // 16-byte line which contains the wasm magic + version. xxd is a
+  // Nimbus shell builtin reading directly from the VFS (no node facet
+  // cwd-resolution needed).
+  //
+  // Pre-fix the probe used readFileSync('multi') — a relative path
+  // resolved against the node facet's cwd, which doesn't track the
+  // shell's. The link step succeeded; the relative-path read just
+  // ENOENTed. See /workspace/.seal-internal/2026-05-12-probe-cleanup/.
+  const { output } = await t.run('xxd /home/user/multi | head -1', 15_000);
   const stripped = stripAnsi(output);
-  const isWasm = /MAGIC=0061736d/.test(stripped);
-  a.check('multi has wasm magic', isWasm, isWasm ? '' : JSON.stringify(stripped.slice(-200)));
+  // xxd first-line shape: "00000000: 00 61 73 6d 01 00 00 00 ..."
+  // (each byte as a separate hex pair). Wasm magic = 00 61 73 6d.
+  const isWasm = /\b00\s+61\s+73\s+6d\b/i.test(stripped);
+  a.check('multi has wasm magic', isWasm,
+    isWasm ? '' : JSON.stringify(stripped.slice(-200)));
 }
 
 // Run it; expect both greet_a and greet_b prints.

@@ -40,7 +40,26 @@ function detectExitCode(out, label) {
   // Look for "exited with code N" emitted by Nimbus's process exit
   // banner. NOT the literal text "code N" anywhere — the formal
   // diagnostic line.
+  //
+  // SHELL-FOLLOWUPS-R5 (2026-05-11) made this banner conditional:
+  //   non-zero exits emit "exited with code N" (failure context);
+  //   clean exits emit no banner (interactive UX). Callers for the
+  //   exit(0) case must therefore use detectExitCodeViaShell() which
+  //   samples $? out-of-band — that's the only way to observe a
+  //   suppressed clean exit.
   const m = out.match(/exited with code (-?\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// SHELL-FOLLOWUPS-R5 adaptation: for clean exits (code 0) the banner
+// is intentionally suppressed. Sample $? via an in-line echo to
+// observe the exit code instead. Used only for the exit(0) case;
+// non-zero exits still go through the banner path so detectExitCode()
+// remains the canonical surface for them.
+async function detectExitCodeViaShell(term, cmd) {
+  const r = await term.run(`${cmd}; echo NIMBUS_EX=$?`, 30_000);
+  const out = stripAnsi(r.output);
+  const m = out.match(/NIMBUS_EX=(\d+)/);
   return m ? parseInt(m[1], 10) : null;
 }
 
@@ -82,10 +101,15 @@ const t3Out = /c-marker/.test(e3Out);
 const t3Code = detectExitCode(e3Out, 't3') === 21;
 
 // ── Test 4: process.exit(0) — success-path flush ──
-const e4 = await t.run('node -e "console.log(\'d-marker\'); process.exit(0);"', 30_000);
+// SHELL-FOLLOWUPS-R5: code=0 emits no exit banner (intentional UX
+// quiet path). Verify flush by stdout-content check; verify code via
+// $? sample. Both must succeed for the test to pass.
+const t4Cmd = "node -e \"console.log('d-marker'); process.exit(0);\"";
+const e4 = await t.run(t4Cmd, 30_000);
 const e4Out = stripAnsi(e4.output);
 const t4Out = /d-marker/.test(e4Out);
-const t4Code = detectExitCode(e4Out, 't4') === 0;
+const t4ShellEx = await detectExitCodeViaShell(t, t4Cmd);
+const t4Code = t4ShellEx === 0;
 
 // ── Test 5: stdout written via process.stdout.write (NOT console.log) ──
 //
