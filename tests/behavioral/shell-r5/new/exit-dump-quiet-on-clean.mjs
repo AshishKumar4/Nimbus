@@ -66,15 +66,22 @@ a.check('node clean-exit — no "exited with code 0" banner',
 // (echo + stream).
 const r2 = await t.run('node -e "console.log(\'L-A\'); console.log(\'L-B\'); console.log(\'L-C\')"', 15_000);
 const r2raw = stripAnsi(r2.output);
-a.check('node multi-line clean — L-A count ≤ 2',
+// Each L-X literal appears twice in correctly-behaving output:
+// once in the echoed shell command (because console.log('L-X') is
+// literal source on the input line) and once in node's stdout.
+// Pre-fix the count was 3 (echo + stream + dump). Post-fix it's 2.
+a.check('node multi-line clean — L-A count ≤ 2 (no dump)',
   countOccurrences(r2raw, 'L-A') <= 2,
   `count=${countOccurrences(r2raw, 'L-A')} raw=${JSON.stringify(r2raw)}`);
-a.check('node multi-line clean — L-B count ≤ 1 (stdout only, not in echo)',
-  countOccurrences(r2raw, 'L-B') === 1,
+a.check('node multi-line clean — L-B count ≤ 2 (no dump)',
+  countOccurrences(r2raw, 'L-B') <= 2,
   `count=${countOccurrences(r2raw, 'L-B')} raw=${JSON.stringify(r2raw)}`);
-a.check('node multi-line clean — L-C count ≤ 1',
-  countOccurrences(r2raw, 'L-C') === 1,
+a.check('node multi-line clean — L-C count ≤ 2 (no dump)',
+  countOccurrences(r2raw, 'L-C') <= 2,
   `count=${countOccurrences(r2raw, 'L-C')} raw=${JSON.stringify(r2raw)}`);
+a.check('node multi-line clean — no "exited with code 0" banner',
+  !/Process \d+ .* exited with code 0/.test(r2raw),
+  `raw=${JSON.stringify(r2raw)}`);
 
 // Probe 4 (negative control): non-zero exit MAY surface the dump for
 // diagnostics — we only assert the error marker is present at least once.
