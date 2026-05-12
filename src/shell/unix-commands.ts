@@ -2041,6 +2041,215 @@ function mkEcho(): CmdFn {
 }
 
 /**
+ * SHELL-R6-4 (2026-05-12): symlink-aware `ls`.
+ *
+ * Pre-fix: lifo-sh's lazy `ls` (node_modules/@lifo-sh/core/dist/ls-*.js)
+ * formats `mode` with first-char `d` or `-`; it has no symlink concept,
+ * and our SymlinkRegistry entries are not in the VFS dir listing at all,
+ * so `ls -l` after `ln -s t.txt l.txt` showed ONLY `t.txt`.
+ *
+ * Post-fix:
+ *   - `ls` lists VFS dir entries AND SymlinkRegistry entries whose link
+ *     path lives in the queried directory.
+ *   - `ls -l` shows `lrwxrwxrwx  1 user user  N <mtime> <name> -> <target>`
+ *     for symlinks (`N` = target string length, matches GNU coreutils).
+ *   - Non-symlink rows go through the same formatter so columns line up.
+ *   - Hidden-file rule (skip if leading `.`) still honored unless `-a`.
+ *
+ * Args supported: `-l` long, `-a` all, `-1` one-per-line, plus path
+ * positional. Matches lifo-sh's flag surface so we don't regress.
+ */
+function mkLs(vfs: SqliteVFS): CmdFn {
+  return (ctx) => {
+    const args = ctx.args;
+    const flagLong = args.some(a => /^-[la]*l[la]*$/.test(a));
+    const flagAll = args.some(a => /^-[la]*a[la]*$/.test(a));
+    const flagOne = args.some(a => /^-[la1]*1[la1]*$/.test(a));
+    const positionals = args.filter(a => !a.startsWith('-'));
+    const targets = positionals.length > 0 ? positionals : [ctx.cwd];
+
+    const reg = getSymlinkRegistry(vfs);
+    const kvfs: any = (ctx as any).vfs;
+
+    function modeStr(mode: number, isDir: boolean, isLink: boolean): string {
+      if (isLink) return 'lrwxrwxrwx';
+      const prefix = isDir ? 'd' : '-';
+      const bits = [
+        mode & 0o400 ? 'r' : '-',
+        mode & 0o200 ? 'w' : '-',
+        mode & 0o100 ? 'x' : '-',
+        mode & 0o040 ? 'r' : '-',
+        mode & 0o020 ? 'w' : '-',
+        mode & 0o010 ? 'x' : '-',
+        mode & 0o004 ? 'r' : '-',
+        mode & 0o002 ? 'w' : '-',
+        mode & 0o001 ? 'x' : '-',
+      ].join('');
+      return prefix + bits;
+    }
+
+    function fmtTime(mtime: number): string {
+      const d = new Date(mtime);
+      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+      const day = String(d.getDate()).padStart(2, ' ');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      return `${mon} ${day} ${hh}:${mm}`;
+    }
+
+    type Entry = {
+      name: string;
+      type: 'file' | 'directory' | 'symlink';
+      size: number;
+      mtime: number;
+      mode: number;
+      linkTarget?: string;
+    };
+
+    function listDir(dirPath: string): Entry[] {
+      const fp = resolvePath(ctx.cwd, dirPath);
+      const out: Entry[] = [];
+      // Real entries via ctx.vfs.readdirStat (Kernel.VFS — handles
+      // mounts like /dev) with fallback to closure-captured SqliteVFS.
+      let real: any[] = [];
+      try {
+        if (kvfs && typeof kvfs.readdirStat === 'function') {
+          real = kvfs.readdirStat(fp);
+        } else {
+          const names = vfs.readdir(fp);
+          real = names.map(n => {
+            const childPath = (fp === '/' ? '' : fp.replace(/^\/+/, '').replace(/\/+$/, ''))
+              + '/' + n.name;
+            try {
+              const s = vfs.stat(childPath);
+              return { name: n.name, type: n.type, size: (s as any).size ?? 0,
+                       mtime: (s as any).mtime ?? Date.now(), mode: (s as any).mode ?? 0o644 };
+            } catch {
+              return { name: n.name, type: n.type, size: 0, mtime: Date.now(), mode: 0o644 };
+            }
+          });
+        }
+      } catch (e: any) {
+        ctx.stderr.write(`ls: cannot access '${dirPath}': ${e?.message || e}\n`);
+        return [];
+      }
+      for (const r of real) {
+        out.push({
+          name: r.name,
+          type: r.type === 'directory' ? 'directory' : 'file',
+          size: r.size ?? 0,
+          mtime: r.mtime ?? Date.now(),
+          mode: r.mode ?? 0o644,
+        });
+      }
+      // Inject symlink entries whose link path is in this directory.
+      const normDir = fp.replace(/^\/+/, '').replace(/\/+$/, '');
+      for (const { link, target } of reg.list()) {
+        const linkNorm = link.replace(/^\/+/, '').replace(/\/+$/, '');
+        const lastSlash = linkNorm.lastIndexOf('/');
+        const linkDir = lastSlash >= 0 ? linkNorm.substring(0, lastSlash) : '';
+        if (linkDir === normDir) {
+          const linkName = lastSlash >= 0 ? linkNorm.substring(lastSlash + 1) : linkNorm;
+          // Filter dotfiles unless -a (consistent with real entries).
+          if (!flagAll && linkName.startsWith('.')) continue;
+          out.push({
+            name: linkName,
+            type: 'symlink',
+            size: target.length,
+            mtime: Date.now(),
+            mode: 0o777,
+            linkTarget: target,
+          });
+        }
+      }
+      // Filter dotfiles among real entries unless -a.
+      const filtered = flagAll ? out : out.filter(e => !e.name.startsWith('.'));
+      filtered.sort((a, b) => a.name.localeCompare(b.name));
+      return filtered;
+    }
+
+    function fmtRow(e: Entry, long: boolean): string {
+      if (!long) return e.name;
+      const isDir = e.type === 'directory';
+      const isLink = e.type === 'symlink';
+      const mode = modeStr(e.mode, isDir, isLink);
+      const size = String(e.size).padStart(6, ' ');
+      const time = fmtTime(e.mtime);
+      const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
+      return `${mode}  1 user user ${size} ${time} ${e.name}${arrow}`;
+    }
+
+    let exit = 0;
+    // First pass: separate file-args from dir-args (real `ls` lists
+    // each file inline; dirs get listed as their contents).
+    const fileEntries: Entry[] = [];
+    const dirArgs: string[] = [];
+    for (const arg of targets) {
+      const fp = resolvePath(ctx.cwd, arg);
+      // Symlink check: a symlink-arg is displayed as the link itself
+      // (without -L which we don't implement).
+      if (reg.isSymlink(fp)) {
+        const target = reg.readlink(fp) || '';
+        fileEntries.push({
+          name: arg,
+          type: 'symlink',
+          size: target.length,
+          mtime: Date.now(),
+          mode: 0o777,
+          linkTarget: target,
+        });
+        continue;
+      }
+      try {
+        const s: any = kvfs && typeof kvfs.stat === 'function' ? kvfs.stat(fp) : vfs.stat(fp);
+        if (s.type === 'directory') {
+          dirArgs.push(arg);
+        } else {
+          fileEntries.push({
+            name: arg,
+            type: 'file',
+            size: s.size ?? 0,
+            mtime: s.mtime ?? Date.now(),
+            mode: s.mode ?? 0o644,
+          });
+        }
+      } catch (e: any) {
+        ctx.stderr.write(`ls: cannot access '${arg}': ${e?.message || e}\n`);
+        exit = 1;
+      }
+    }
+
+    // Render file-args first.
+    if (fileEntries.length > 0) {
+      if (flagLong) {
+        for (const e of fileEntries) ctx.stdout.write(fmtRow(e, true) + '\n');
+      } else if (flagOne) {
+        for (const e of fileEntries) ctx.stdout.write(e.name + '\n');
+      } else {
+        ctx.stdout.write(fileEntries.map(e => e.name).join('  ') + '\n');
+      }
+    }
+    // Then dir-args (with header if multiple).
+    for (let i = 0; i < dirArgs.length; i++) {
+      const d = dirArgs[i];
+      if (dirArgs.length > 1 || fileEntries.length > 0) {
+        if (fileEntries.length > 0 || i > 0) ctx.stdout.write('\n');
+        ctx.stdout.write(`${d}:\n`);
+      }
+      const rows = listDir(d);
+      if (flagLong) {
+        for (const e of rows) ctx.stdout.write(fmtRow(e, true) + '\n');
+      } else if (flagOne) {
+        for (const e of rows) ctx.stdout.write(e.name + '\n');
+      } else if (rows.length > 0) {
+        ctx.stdout.write(rows.map(e => e.name).join('  ') + '\n');
+      }
+    }
+    return exit;
+  };
+}
+
+/**
  * BUG-SWEEP-R2-3c (2026-05-11): registry-level cat (for xargs cross-
  * command dispatch). Behaves like lifo-sh's lazy cat: reads files (or
  * stdin if none), concatenates to stdout.
@@ -2113,9 +2322,24 @@ function mkRm(vfs: SqliteVFS): CmdFn {
       ctx.stderr.write('rm: missing operand\n');
       return 1;
     }
+    // SHELL-R6-5: SymlinkRegistry awareness. Real `rm` removes the
+    // LINK, not the target. Pre-fix this loop went straight to
+    // vfs.exists which is false for registry-only symlink entries
+    // (no real file), producing "No such file or directory" while
+    // `readlink` still reported the registry entry.
+    const reg = getSymlinkRegistry(vfs);
     let exit = 0;
     for (const t of targets) {
       const fp = resolvePath(ctx.cwd, t);
+      // Symlink path FIRST. If `fp` is registered as a symlink we
+      // delete the registry entry and skip the vfs-level operations.
+      // Real `rm` never follows symlinks (it removes the link
+      // itself); recursive flag has no effect on the symlink itself
+      // either — it acts on the link node only.
+      if (reg.isSymlink(fp)) {
+        reg.delete(fp);
+        continue;
+      }
       if (!vfs.exists(fp)) {
         if (force) continue;  // silent success
         ctx.stderr.write(`rm: cannot remove '${t}': No such file or directory\n`);
@@ -2751,6 +2975,7 @@ export function registerUnixCommands(
   // via the registry path.
   registry.register('echo', wrap(mkEcho()));
   registry.register('cat', wrap(mkCat(vfs)));
+  registry.register('ls', wrap(mkLs(vfs)));
   registry.register('rm', wrap(mkRm(vfs)));
   registry.register('touch', wrap(mkTouch(vfs)));
   registry.register('stat', wrap(mkStat(vfs)));
