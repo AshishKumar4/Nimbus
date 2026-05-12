@@ -248,7 +248,9 @@ export default {
  */
 function generateFacetCode(userCode: string, vfsState: FacetVfsState): string {
   const safeCode = JSON.stringify(userCode);
-  const safeBundle = JSON.stringify(vfsState.bundle);
+  // hardening-r5: route through binary-safe serializer so Uint8Array
+  // cells survive the module-text round-trip.
+  const safeBundle = _serializeBundleForFacet(vfsState.bundle);
   const safeManifest = JSON.stringify(vfsState.manifest);
   return `
 import { DurableObject } from "cloudflare:workers";
@@ -553,7 +555,8 @@ ${SHIMS}
  */
 function generateEntrypointCode(userCode: string, vfsState: FacetVfsState): string {
   const safeCode = JSON.stringify(userCode);
-  const safeBundle = JSON.stringify(vfsState.bundle);
+  // hardening-r5: same binary-safe serializer as generateFacetCode.
+  const safeBundle = _serializeBundleForFacet(vfsState.bundle);
   const safeManifest = JSON.stringify(vfsState.manifest);
   return `
 ${REAL_NODE_IMPORTS}
@@ -745,12 +748,97 @@ ${SHIMS}
  * — three orders of magnitude smaller than the content bundle.
  */
 interface FacetVfsState {
-  bundle: Record<string, string>;
+  // hardening-r5: bundle cells may be Uint8Array for binary content
+  // (images, wasm modules, sqlite blobs, etc.). Pre-fix every cell was
+  // forced through vfs.readFileString() which UTF-8-decoded binary
+  // bytes ≥ 0x80 to U+FFFD; the JSON-embedded module form then
+  // serialized U+FFFD as 3 bytes (EF BF BD), and a cross-process
+  // read returned 3× the original byte count. See
+  // /workspace/.seal-internal/2026-05-12-hardening-r5/repro-binary.mjs
+  // for the canonical 256→512 byte demo.
+  bundle: Record<string, string | Uint8Array>;
   manifest: Record<string, string[]>;
   /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
   reachableCount: number;
   /** Diagnostics: was the bundle truncated by the encoded-size cap? */
   truncated: boolean;
+}
+
+/**
+ * hardening-r5: read a file from the VFS and decide whether to keep it
+ * as a string (valid UTF-8 text — the hot path for source code,
+ * package.json, configs) or as Uint8Array bytes (binary — wasm
+ * modules, images, sqlite blobs, etc.).
+ *
+ * Strategy: read bytes, attempt a fatal UTF-8 decode. If decode
+ * succeeds the file IS valid UTF-8 and the string round-trips
+ * losslessly through JSON; return string. If decode throws (any
+ * invalid byte sequence) return Uint8Array.
+ *
+ * Throws on read errors (caller wraps in try/catch — matches the
+ * pre-fix readFileString contract).
+ */
+function _readBundleCell(
+  vfs: { readFile(p: string): Uint8Array },
+  path: string,
+): string | Uint8Array {
+  const bytes = vfs.readFile(path);
+  // Bun/workerd both support fatal:true on TextDecoder. Cast to any
+  // because TypeScript's lib.dom.d.ts marks ignoreBOM as required when
+  // an options object is provided; at runtime both fields are optional.
+  try {
+    return new TextDecoder('utf-8', { fatal: true } as any).decode(bytes);
+  } catch {
+    return bytes;
+  }
+}
+
+/**
+ * hardening-r5: byte-length of a bundle cell for budget accounting.
+ * Strings counted as char-length (a slight under-count for non-ASCII
+ * but matches the pre-fix behaviour); Uint8Array counted as byteLength.
+ */
+function _bundleCellLength(cell: string | Uint8Array): number {
+  return typeof cell === 'string' ? cell.length : cell.byteLength;
+}
+
+/**
+ * hardening-r5: emit a JS expression that, when evaluated inside the
+ * facet's module-init context, yields a `Record<string, string |
+ * Uint8Array>` with binary cells revived from base64. Strings stay as
+ * JSON strings (the hot path). Binary cells become `{ __b64: "..." }`
+ * markers and are revived by a tiny inline loop.
+ *
+ * The output is a SELF-EXECUTING IIFE expression so it can be substituted
+ * directly into `const __MODULE_VFS_BUNDLE = ${expr};` template slots.
+ */
+function _serializeBundleForFacet(bundle: Record<string, string | Uint8Array>): string {
+  const strCells: Record<string, string> = {};
+  const binCells: Record<string, string> = {};
+  for (const [k, v] of Object.entries(bundle)) {
+    if (typeof v === 'string') {
+      strCells[k] = v;
+    } else {
+      // Uint8Array → base64. btoa requires a binary string; we build it
+      // 8K chars at a time to avoid String.fromCharCode argument-count
+      // limits on large files (~1MB+).
+      let bin = '';
+      const CHUNK = 8192;
+      for (let i = 0; i < v.byteLength; i += CHUNK) {
+        bin += String.fromCharCode.apply(
+          null,
+          Array.from(v.subarray(i, Math.min(i + CHUNK, v.byteLength))),
+        );
+      }
+      binCells[k] = btoa(bin);
+    }
+  }
+  // The IIFE revives binary cells in-place. atob → binary string →
+  // Uint8Array (Uint8Array.from(str, c=>c.charCodeAt(0))).
+  // Note: when binCells is empty (the overwhelming common case —
+  // source code is all text) the IIFE collapses to a JSON literal,
+  // costing only the IIFE wrapper bytes (~30) per facet boot.
+  return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}return __b;})()`;
 }
 
 const MANIFEST_MAX_DEPTH = 12;
@@ -839,7 +927,7 @@ function buildManifest(
 export function greedyAddMainEntries(
   vfs: SqliteVFS,
   cwd: string,
-  bundle: Record<string, string>,
+  bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
 ): { added: number } {
   let added = 0;
@@ -856,10 +944,12 @@ export function greedyAddMainEntries(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
-      const content = vfs.readFileString(stripped);
-      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return false;
+      // hardening-r5: preserve binary content as Uint8Array.
+      const content = _readBundleCell(vfs, stripped);
+      const cellLen = _bundleCellLength(content);
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
       bundle[stripped] = content;
-      budgetState.totalBytes += content.length;
+      budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
       return true;
@@ -1029,7 +1119,7 @@ export function greedyAddMainEntries(
 export function addStaticReadFileAssets(
   vfs: SqliteVFS,
   cwd: string,
-  bundle: Record<string, string>,
+  bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
 ): { added: number } {
   let added = 0;
@@ -1057,10 +1147,12 @@ export function addStaticReadFileAssets(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
-      const content = vfs.readFileString(stripped);
-      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return false;
+      // hardening-r5: preserve binary content as Uint8Array.
+      const content = _readBundleCell(vfs, stripped);
+      const cellLen = _bundleCellLength(content);
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
       bundle[stripped] = content;
-      budgetState.totalBytes += content.length;
+      budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
       return true;
@@ -1075,6 +1167,10 @@ export function addStaticReadFileAssets(
   for (const sourcePath of sourceKeys) {
     const src = bundle[sourcePath];
     if (!src || src.length === 0) continue;
+    // hardening-r5: skip binary cells (a .js extension on a binary file
+    // is rare but possible — defensive guard prevents .replace() throwing
+    // on a Uint8Array).
+    if (typeof src !== 'string') continue;
     // Strip line + block comments before regex-matching so the pattern
     // doesn't fire inside `// fs.readFileSync(...)` etc.
     const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -1168,7 +1264,7 @@ export function addStaticReadFileAssets(
 export function addStaticReadFileDotfilesAndCompiled(
   vfs: SqliteVFS,
   cwd: string,
-  bundle: Record<string, string>,
+  bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
 ): { added: number } {
   let added = 0;
@@ -1221,10 +1317,12 @@ export function addStaticReadFileDotfilesAndCompiled(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
-      const content = vfs.readFileString(stripped);
-      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return false;
+      // hardening-r5: preserve binary content as Uint8Array.
+      const content = _readBundleCell(vfs, stripped);
+      const cellLen = _bundleCellLength(content);
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
       bundle[stripped] = content;
-      budgetState.totalBytes += content.length;
+      budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
       return true;
@@ -1239,6 +1337,10 @@ export function addStaticReadFileDotfilesAndCompiled(
   for (const sourcePath of sourceKeys) {
     const src = bundle[sourcePath];
     if (!src || src.length === 0) continue;
+    // hardening-r5: skip binary cells (a .js extension on a binary file
+    // is rare but possible — defensive guard prevents .replace() throwing
+    // on a Uint8Array).
+    if (typeof src !== 'string') continue;
     // Strip line + block comments before regex-matching so the pattern
     // doesn't fire inside `// fs.readFileSync(...)` etc.
     const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -1316,7 +1418,7 @@ export function addStaticReadFileDotfilesAndCompiled(
 function addBinTargetSiblings(
   vfs: SqliteVFS,
   scriptPath: string | undefined,
-  bundle: Record<string, string>,
+  bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
 ): { added: number } {
   if (!scriptPath) return { added: 0 };
@@ -1361,11 +1463,13 @@ function addBinTargetSiblings(
       if (bundle[child] !== undefined) continue;
       if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return { added };
       if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return { added };
-      let content: string;
-      try { content = vfs.readFileString(child); } catch { continue; }
-      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return { added };
+      // hardening-r5: preserve binary content as Uint8Array.
+      let content: string | Uint8Array;
+      try { content = _readBundleCell(vfs, child); } catch { continue; }
+      const cellLen = _bundleCellLength(content);
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return { added };
       bundle[child] = content;
-      budgetState.totalBytes += content.length;
+      budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
     }
@@ -1401,7 +1505,7 @@ function addBinTargetSiblings(
 function addEntryAbsPathReads(
   vfs: SqliteVFS,
   entryCode: string,
-  bundle: Record<string, string>,
+  bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
 ): { added: number } {
   let added = 0;
@@ -1422,10 +1526,12 @@ function addEntryAbsPathReads(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return;
-      const content = vfs.readFileString(stripped);
-      if (budgetState.totalBytes + content.length > VFS_BUNDLE_MAX_BYTES) return;
+      // hardening-r5: preserve binary content as Uint8Array.
+      const content = _readBundleCell(vfs, stripped);
+      const cellLen = _bundleCellLength(content);
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return;
       bundle[stripped] = content;
-      budgetState.totalBytes += content.length;
+      budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
     } catch { /* swallow — file may be binary, race-deleted, etc. */ }
@@ -1458,7 +1564,12 @@ function addEntryAbsPathReads(
   for (const k of sourceKeys) {
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) break;
-    scanOne(bundle[k]);
+    // hardening-r5: scanOne expects string. Binary cells (rare with a
+    // .js extension but possible) are skipped — scanOne would throw on
+    // a Uint8Array .replace() call.
+    const cell = bundle[k];
+    if (typeof cell !== 'string') continue;
+    scanOne(cell);
   }
   return { added };
 }
@@ -1537,7 +1648,7 @@ function __cacheKey(src: string): string {
  * Returns the count of files transformed (for diagnostics).
  */
 async function transformEsmInBundle(
-  bundle: Record<string, string>,
+  bundle: Record<string, string | Uint8Array>,
   esbuild: EsbuildService,
 ): Promise<{ transformed: number; failed: number }> {
   let transformed = 0;
@@ -1547,11 +1658,15 @@ async function transformEsmInBundle(
   for (const path of Object.keys(bundle)) {
     if (!path.endsWith('.js') && !path.endsWith('.mjs')) continue;
     const src = bundle[path];
+    // hardening-r5: binary cells (rare for .js/.mjs but defensive) are
+    // not ESM. Skip — looksLikeEsm + esbuild.transform expect strings.
+    if (typeof src !== 'string') continue;
     if (!looksLikeEsm(src)) continue;
     candidates.push(path);
   }
   for (const path of candidates) {
     const src = bundle[path];
+    if (typeof src !== 'string') continue;
     // `import.meta.url` substitution mirrors the sibling fix at
     // src/runtime/runtime-registry.ts:383-389 (framework-gaps-fix P5).
     // Without `define`, esbuild's CJS transform reduces `import.meta.url`
@@ -1626,7 +1741,7 @@ async function buildPrefetchBundle(
 ): Promise<FacetVfsState> {
   // 1. Static reachable-set walk from entry.
   const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
-  const bundle: Record<string, string> = { ...prefetch.bundle };
+  const bundle: Record<string, string | Uint8Array> = { ...prefetch.bundle };
   let totalBytes = 0;
   let fileCount = 0;
   for (const k of Object.keys(bundle)) {

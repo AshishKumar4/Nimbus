@@ -236,7 +236,20 @@ export function registerGitCommands(
         case 'clone': {
           const url = subArgs[0];
           if (!url) { ctx.stderr.write('usage: git clone <url> [dir]\n'); return 1; }
-          const dest = subArgs[1] ? getDir(ctx) + '/' + subArgs[1] : dir + '/' + url.split('/').pop()?.replace('.git', '');
+          // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
+          // resolved to `<cwd>//tmp/x` because the `subArgs[1]` branch
+          // unconditionally prepended getDir(ctx). The clone "succeeded" into
+          // <cwd>//tmp/x (note double slash) and the user's later `cd /tmp/x`
+          // hit ENOENT. Real-world git treats absolute targets as absolute.
+          // See /workspace/.seal-internal/2026-05-12-hardening-r5/repro-git.mjs.
+          let dest: string;
+          if (subArgs[1]) {
+            dest = subArgs[1].startsWith('/')
+              ? subArgs[1]
+              : getDir(ctx) + '/' + subArgs[1];
+          } else {
+            dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
+          }
           const depthFlag = getFlag(subArgs, '--depth');
           const noShallow = subArgs.includes('--no-shallow');
           const depth = depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1);
