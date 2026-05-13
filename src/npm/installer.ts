@@ -241,23 +241,21 @@ export class NpmInstaller {
       // layer dispatches to NimbusFanoutPool.submitMany — width <5 in-DO
       // (POC C), width ≥5 peer-DO (POC B). Per-package task body is
       // self-contained (resolveOnePackumentInFacet), supervisor builds
-      // layer N+1 from layer N's edges. Replaces the pre-F-2 single
-      // resolve-facet path. See audit/sections/F2-RESOLVER-FANOUT-plan.md.
+      // layer N+1 from layer N's edges.
       //
-      // Selection: env NIMBUS_RESOLVER_PATH=facet forces the legacy
-      // single-facet path. Default is `fanout`. The legacy path lives
-      // ONLY for A/B profile measurement (see profile-layer-widths.mjs);
-      // it is NOT a runtime auto-fallback (per anti-requirement).
-      // Missing env.LOADER throws at construction either way; missing
-      // env.NIMBUS_SESSION throws at the first wide-layer submitMany.
-      const __resolverPathSel = ((globalThis as any).process?.env?.NIMBUS_RESOLVER_PATH === 'facet') ? 'facet' : 'fanout';
+      // legacy-cleanup (2026-05-13): the legacy single-facet
+      // `resolveTreeViaFacet` path + `NIMBUS_RESOLVER_PATH=facet`
+      // env-var selector + supporting body were removed. They existed
+      // only for A/B profile measurement (against the deleted
+      // scripts/profile-layer-widths.mjs); runtime always took the
+      // fanout path by default. Missing env.LOADER throws at
+      // construction; missing env.NIMBUS_SESSION throws at the first
+      // wide-layer submitMany.
       phaseStart = Date.now();
       setInstallPhase('resolve');
       setResolverPath('in-facet');
-      log(`Resolving ${Object.keys(specs).length} dependencies (path: ${__resolverPathSel}, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
-      resolved = __resolverPathSel === 'facet'
-        ? await this.resolveTreeViaFacet(specs, log, { frameworkAware })
-        : await this.resolveTreeViaFanout(specs, log, { frameworkAware });
+      log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
+      resolved = await this.resolveTreeViaFanout(specs, log, { frameworkAware });
       phases['resolve'] = Date.now() - phaseStart;
 
       if (resolved.size === 0) {
@@ -500,140 +498,13 @@ export class NpmInstaller {
   // so they were deleted along with their feature flags.
   //
   // Single resolver: src/npm-resolve-facet.ts (called from
-  // resolveTreeViaFacet below).
+  // resolveTreeViaFanout below).
   // Single fetcher : src/npm-install-batch-facet.ts (called from
   // fetchViaBatchFacet below).
   //
   // env.LOADER and ctx are platform requirements; if either is
   // missing the install fails loud at the first await on the facet
   // pool — that's a deploy bug, not a runtime branch.
-
-  /**
-   * Resolve the dep graph in a NimbusLoaderPool isolate.
-   *
-   * Cache strategy: pre-load ALL cached registry entries from
-   * pkg_registry_cache and ship them to the facet so cache hits don't
-   * cost a fetch. For a fresh DO (cold session) this is empty. For
-   * a warm DO with prior installs, it's bounded by the cache size —
-   * we cap at MAX_CACHED_ENTRIES_INLINE to keep the RPC arg under
-   * workerd's 32 MiB structured-clone cap.
-   */
-  private async resolveTreeViaFacet(
-    specs: Record<string, string>,
-    log: (msg: string) => void,
-    opts: { frameworkAware?: boolean } = {},
-  ): Promise<Map<string, ResolvedPackage>> {
-    const frameworkAware = !!opts.frameworkAware;
-    // Pre-load cached entries. Cached registry entries are ~500 B each;
-    // cap at 5000 for ~2.5 MiB total. Facets that find a cache miss for
-    // a transitive dep beyond this cap will simply re-fetch — same as
-    // a cold session — which is correct, just slower for warm-cache
-    // pathological cases. Threshold can be raised after we have prod
-    // data on cache size distributions.
-    const MAX_CACHED_ENTRIES_INLINE = 5000;
-    const allCached = this.cache.dumpRegistryEntries(MAX_CACHED_ENTRIES_INLINE);
-    const cachedEntries: FacetCachedEntry[] = allCached.map((e) => ({
-      name: e.name,
-      version: e.version,
-      tarballUrl: e.tarballUrl,
-      integrity: e.integrity,
-      depsJson: e.depsJson,
-      exportsJson: e.exportsJson,
-      main: e.main,
-      moduleField: e.moduleField,
-      binJson: e.binJson,
-      fetchedAt: e.fetchedAt,
-    }));
-    log(`  resolver-facet: shipping ${cachedEntries.length} cached entries`);
-
-    // F-2 profiling: forward NIMBUS_DIAG_INSTALL_PIPELINE=1 into the
-    // facet so the in-DO BFS emits per-layer-width lines into messages.
-    // Same env-gated diag posture as resolver.ts. Zero cost in prod.
-    const __f2Diag = ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
-    const facetSpec: ResolveFacetSpec = {
-      specs,
-      cachedEntries,
-      frameworkAware,
-      // Concurrency 4 inside the facet (NOT 6 like the legacy in-supervisor
-      // resolver). Worst-case 4 × ~20 MiB packument parse buffers = 80 MiB
-      // transient peak inside the facet's 128 MiB cap. Concurrency 6 would
-      // peak at ~120 MiB, leaving < 10 MiB headroom — same defense-in-depth
-      // tradeoff we made in pre-bundle (concurrency 2 there because slices
-      // are larger). If prod data shows we have margin, raise to 6.
-      concurrency: 4,
-      fetchTimeoutMs: 15_000,
-      retries: 3,
-      ...(__f2Diag ? { __f2DiagWidths: true } as any : {}),
-    };
-
-    const pool = new NimbusLoaderPool(this.env, this.ctx!, {
-      // One facet for the whole walk — the facet itself runs pLimit(6)
-      // internally. Per the plan's topology choice; per-spec dispatch
-      // would multiply cold-start costs across 456+ transitive deps.
-      concurrency: 1,
-      // The facet fetches up to ~456 packuments serially-ish (pLimit 6).
-      // At ~1-2 s per packument worst case, total budget needs headroom.
-      // 5 minutes is generous — typical real installs complete in 30-90 s.
-      timeoutMs: 5 * 60_000,
-      retries: 0,
-      tag: 'npm-resolve',
-      preamble: NPM_RESOLVE_PREAMBLE,
-    });
-
-    let result: ResolveFacetResult;
-    try {
-      try {
-        result = await pool.submit<ResolveFacetSpec, ResolveFacetResult>(
-          resolveTreeInFacet,
-          facetSpec,
-        );
-      } catch (e: any) {
-        const msg = e?.remoteMessage || e?.message || String(e);
-        log(`  resolver-facet failed: ${msg}`);
-        throw new Error(`resolver-facet failed: ${msg}`);
-      }
-    } finally {
-      try { pool.dispose(); } catch { /* best-effort */ }
-    }
-
-    // Surface facet messages into the install log.
-    for (const m of result.messages) log(m);
-    // W6.5: drain telemetry events the facet collected and forward to
-    // the registry sink. Defensive: older facet builds may not return
-    // the field, so handle missing/undefined gracefully.
-    const facetEvents = (result as any).registryEvents;
-    if (Array.isArray(facetEvents)) {
-      for (const ev of facetEvents) {
-        try { emitRegistryEvent(ev); } catch { /* sink errors swallowed inside emitRegistryEvent */ }
-      }
-    }
-    // [W4] Fold packument R2 race outcomes into supervisor diag.r2.
-    const rfc: any = result.facetCounters;
-    recordR2RaceCounters({
-      pipelinedTarballRaceWins: 0,
-      pipelinedTarballRaceLosses: 0,
-      pipelinedPackumentRaceWins: rfc.pipelinedPackumentRaceWins ?? 0,
-      pipelinedPackumentRaceLosses: rfc.pipelinedPackumentRaceLosses ?? 0,
-    });
-    // cache-obs-2: fold per-tier cache events into the DO singleton.
-    recordCacheStatEvents((result as any).cacheStatEvents);
-    const r2WinSuffix = (rfc.pipelinedPackumentRaceWins ?? 0) > 0
-      ? `, R2 packument cache wins=${rfc.pipelinedPackumentRaceWins}/${(rfc.pipelinedPackumentRaceWins ?? 0) + (rfc.pipelinedPackumentRaceLosses ?? 0)}`
-      : '';
-    log(
-      `  resolver-facet: ${result.resolved.length} resolved, ` +
-      `${result.facetCounters.packumentsDecoded} packuments fetched (` +
-      `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB), ` +
-      `peak in-flight=${result.facetCounters.inFlightPeak}, ` +
-      `cache writes=${result.cacheWriteCount}` +
-      r2WinSuffix +
-      `, elapsed=${(result.elapsed / 1000).toFixed(1)}s`,
-    );
-
-    const resolved = new Map<string, ResolvedPackage>();
-    for (const pkg of result.resolved) resolved.set(pkg.name, pkg);
-    return resolved;
-  }
 
   /**
    * F-2 frontier-coordinator path. Replaces the single-resolve-facet
@@ -912,7 +783,7 @@ export class NpmInstaller {
       if (r.failed > 0) log(`  resolver-fanout cache write: ${r.failed} entries failed`);
     }
 
-    // Diag/counters parity with resolveTreeViaFacet.
+    // Diag/counters: same shape the supervisor's r2-race telemetry expects.
     recordR2RaceCounters({
       pipelinedTarballRaceWins: 0,
       pipelinedTarballRaceLosses: 0,
@@ -1187,7 +1058,7 @@ export class NpmInstaller {
       recordR2RaceCounters({
         pipelinedTarballRaceWins: fc.pipelinedTarballRaceWins ?? 0,
         pipelinedTarballRaceLosses: fc.pipelinedTarballRaceLosses ?? 0,
-        // Resolver counters folded separately at resolveTreeViaFacet().
+        // Resolver counters folded separately at resolveTreeViaFanout().
         pipelinedPackumentRaceWins: 0,
         pipelinedPackumentRaceLosses: 0,
       });
