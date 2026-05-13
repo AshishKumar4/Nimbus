@@ -236,8 +236,11 @@ export class NimbusSession extends CloudflareDurableObject {
   // S4: visibility relaxed (was `private`) so ./nimbus-session-hib.ts's
   // HibHost interface can declare it. Per plan §IX.1.
   processLogs: ProcessLogStore = new ProcessLogStore();
-  /** Janitor timer handle for dropOlderThan sweeps. */
-  processLogsTimer: any = null;
+  /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
+   *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
+   *  prevented hibernation per CF DO docs). The alarm itself lives in
+   *  DO storage at key `w1_next_alarm_reasons`. */
+  processLogsJanitorWired: boolean = false;
 
   // ── W9 — hibernation persistence + auto-response config ───────────────
   /**
@@ -356,6 +359,11 @@ export class NimbusSession extends CloudflareDurableObject {
     if (ctxExports) setCtxExports(ctxExports);
     this.processTable = new ProcessTable();
     this.portRegistry = new PortRegistry();
+    // W1: log-janitor moved to alarm-driven scheduling (was a
+    // self-renewing setTimeout chain at rpc.ts:_ensureLogJanitor;
+    // per CF DO docs that prevented hibernation, billing duration
+    // continuously). The delegator below forwards `this.ctx` so
+    // scheduleAlarm can write to ctx.storage.
     this._ensureLogJanitor();
 
     // ── W9 (CF research §C.3 + §C.4) ──────────────────────────────────
@@ -415,11 +423,20 @@ export class NimbusSession extends CloudflareDurableObject {
   }
 
   /**
-   * W9: alarm handler. Today only flush; if more subsystems need alarms,
-   * route through a single `nextAlarmReason` storage key checked here.
+   * W1: multi-reason alarm handler. Routes via a `w1_next_alarm_reasons`
+   * storage map managed by `scheduleAlarm` (see ./hibernation.ts).
+   * Dispatches every pending reason whose deadline has passed, then
+   * re-arms `ctx.storage.setAlarm` at the earliest remaining deadline.
+   * Today's reasons: 'w9-flush' (process-log SQL drain) and
+   * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
+   * orphan-pid predicate so we close over `processTable` here.
    */
   async alarm(): Promise<void> {
-    return _w9DoDispatchAlarm(this);
+    return _w9DoDispatchAlarm(
+      this,
+      this.ctx,
+      _rpc._logJanitorOrphanCheck(this as any),
+    );
   }
 
   /** W9: increment + persist isolate-gen counter once per fresh isolate. */
@@ -492,7 +509,7 @@ export class NimbusSession extends CloudflareDurableObject {
   _emitExitDump(pid: number, code: number): void { return _rpc._emitExitDump(this as any, pid, code); }
   _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void { return _rpc._emitShellExecDone(this as any, pid, cmd, code, durationMs); }
   _reportExternalExit(pid: number, code: number, reason: string): void { return _rpc._reportExternalExit(this as any, pid, code, reason); }
-  _ensureLogJanitor(): void { return _rpc._ensureLogJanitor(this as any); }
+  _ensureLogJanitor(): void { return _rpc._ensureLogJanitor(this as any, this.ctx); }
 
   // Misc supervisor RPC
   async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return _rpc._rpcPrefetch(this as any, cwd, entryCode); }
