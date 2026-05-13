@@ -774,7 +774,6 @@ export class NpmInstaller {
         // Per anti-requirement: no fallback. Log + propagate.
         const msg = e?.remoteMessage || e?.message || String(e);
         log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
-        try { /* fanoutPool has no dispose; constructor is stateless */ } catch {}
         throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`);
       }
 

@@ -194,23 +194,4 @@ export async function runFresh(
  */
 export const runNodeScript = runFresh;
 
-/**
- * BACKWARD-COMPAT shim. The arch-gaps wave's `detectLongRunning(code,
- * args)` is replaced by `isLongRunningInvocation(args)`. Kept as a
- * thin wrapper that ignores `code` so existing imports compile; the
- * audit/probes/arch-gaps/g3-functional/node-runner-shape.mjs probe
- * still grep-matches the symbol name.
- *
- * Returns true ONLY for argv flags; NEVER for content-based signals.
- * This is the architectural change of the
- * fresh-isolate-bun-behavioral wave: no content sniff.
- */
-export function detectLongRunning(_code: string, args: string[]): boolean {
-  return isLongRunningInvocation(args);
-}
 
-/**
- * Result type alias kept for backward compat with the arch-gaps wave.
- */
-export type RunNodeResult = RunFreshResult;
-export type RunNodeOpts = RunFreshOpts;

@@ -577,13 +577,10 @@ export class CirrusReal {
    *    getDurableObjectClass is unavailable — the prod and the
    *    flag-stripped local dev case after the 2026-05-08
    *    deploy-flag-fix tightening) [d1-fix]
-   *  - 'loader-load' (legacy pre-D'.1 stateless worker; no longer
-   *    used by start() but the type is preserved for any external
-   *    code that switches on it)
    *  - null (not started, or stop()'d)
    *  Surfaced via /api/_diag/cirrus.kind for the probe.
    */
-  private _kind: 'do-facet' | 'fetcher-fallback' | 'loader-load' | null = null;
+  private _kind: 'do-facet' | 'fetcher-fallback' | null = null;
   /** [D'.1] timestamp when the facet stub was successfully obtained
    *  (after ctx.facets.get returned). Used to compute the supervisor-
    *  side bootMs that includes module compilation + facet binding,

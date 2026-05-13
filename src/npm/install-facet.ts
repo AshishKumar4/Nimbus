@@ -1,24 +1,10 @@
 /**
  * npm-install-facet.ts — per-package install spec shape.
  *
- * Pre-Phase-2 this module exported `fetchAndStagePackage`, a
- * `(spec, env) => result` function that ran inside a NimbusLoaderPool
- * worker dispatched once per package via `pool.map(fn, specs)`. With
- * 4-way concurrency it hit the workerd per-DO dynamic-worker cap
- * (resolver-facet + fetch-proxy + 4 install-pool slots + pre-bundle =
- * 7 workers) and surfaced the "Too many concurrent dynamic workers"
- * error documented in WORKERD-CRASH.md.
- *
- * Phase 2 A'.1 collapsed the install to a single dispatch via
- * src/npm-install-batch-facet.ts. The batch facet receives the WHOLE
- * `FacetPackageSpec[]` and loops internally with `pLimit(3)`,
- * spending one loader entry instead of N. The per-package
- * `fetchAndStagePackage` function and the `FacetPackageResult`
- * interface were both deleted along with the legacy pool path.
- *
- * Only the `FacetPackageSpec` interface remains — both
- * `npm-installer.ts` and `npm-install-batch-facet.ts` use it as the
- * supervisor↔facet wire shape for one package.
+ * The supervisor↔facet wire shape for one npm package install. Sent
+ * as a `FacetPackageSpec[]` over a single RPC call to the install
+ * batch facet (src/npm/install-batch-facet.ts), which loops with
+ * pLimit(3) and writes each package into the VFS in parallel.
  */
 
 /** Per-package install spec the supervisor sends to the install
