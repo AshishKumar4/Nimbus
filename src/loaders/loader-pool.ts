@@ -347,12 +347,13 @@ export class NimbusLoaderPool {
           props: { doId: supDoId, pid: 0 },
         });
       } else {
-        // SupervisorRPC unavailable — likely running without ctx.exports
-        // (legacy LOADER.load path). We still construct the pool but the
-        // facet will get env.SUPERVISOR === undefined. Callers that need
-        // SUPERVISOR should check availability before dispatch.
-        // (A facet that tries to call env.SUPERVISOR.writeBatch will
-        // throw a plain TypeError; that's the clearest failure mode.)
+        // SupervisorRPC unavailable — running without ctx.exports
+        // (e.g. unit-test harness, or LOADER.load contexts where the
+        // bindings.SUPERVISOR auto-wire isn't set up). We still construct
+        // the pool but the facet will get env.SUPERVISOR === undefined.
+        // Callers that need SUPERVISOR should check availability before
+        // dispatch. (A facet that tries to call env.SUPERVISOR.writeBatch
+        // will throw a plain TypeError; that's the clearest failure mode.)
       }
     }
     this.bindings = Object.keys(bindings).length > 0 ? bindings : undefined;
