@@ -37,7 +37,7 @@
 
 import type { LogChunk, PersistAdapter, ProcessExitInfo, ProcessLogStore } from '../runtime/process-logs.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from './ws-hibernation-config.js';
-import { W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
+import { W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS, W1_NEXT_ALARM_REASONS_KEY } from './keys.js';
 
 export type { WsHibernationConfigResult };
 
@@ -228,15 +228,73 @@ export function ensureHibSchema(host: HibHost, ctx: any): void {
 }
 
 /**
+ * W1: canonical alarm-reason strings. Stored in the
+ * `W1_NEXT_ALARM_REASONS_KEY` map. Forward-compat: dispatcher silently
+ * drops unknown reasons so a rollback from a future deploy that added
+ * new reasons doesn't leave the alarm stuck.
+ */
+export type AlarmReason = 'w9-flush' | 'log-janitor';
+
+/**
+ * W1: schedule (or re-schedule) an alarm reason. Coordinated via a
+ * single map in DO storage so multiple subsystems (W9 debounced flush +
+ * W1 log-janitor sweep) don't clobber each other's `setAlarm()` calls.
+ *
+ * Semantics:
+ *   - Reads the existing reasons map.
+ *   - Sets `map[reason] = whenMs` IF `whenMs` is sooner than the
+ *     currently-pending deadline for that reason (or no entry exists).
+ *     Later-than-pending requests are silently ignored — the existing
+ *     alarm will fire and re-arm anyway.
+ *   - Writes the map back and calls `ctx.storage.setAlarm(min(deadlines))`.
+ *
+ * Cost: 1 storage read + 1 storage write + 1 setAlarm per call. setAlarm
+ * itself is billed as 1 row written per DO pricing. At W1's 60s
+ * cadence, this is ~$0.05/mo/session at scale — dwarfed by the
+ * hibernation duration savings.
+ *
+ * Fail-soft: any throw is swallowed with a warn. On older runtimes /
+ * wrangler-dev where setAlarm is unavailable, this is a no-op (the
+ * subsystem's in-isolate setTimeout fallback continues to work).
+ */
+export async function scheduleAlarm(
+  ctx: any,
+  reason: AlarmReason,
+  whenMs: number,
+): Promise<void> {
+  try {
+    const setAlarmFn = (ctx?.storage as any)?.setAlarm;
+    if (typeof setAlarmFn !== 'function') return;
+    const existing = (await ctx.storage.get(W1_NEXT_ALARM_REASONS_KEY)) as
+      | Record<string, number>
+      | undefined;
+    const map: Record<string, number> = { ...(existing || {}) };
+    // Earliest-deadline-first: only update if new request is sooner or
+    // this reason has no pending entry.
+    if (!(reason in map) || whenMs < map[reason]) {
+      map[reason] = whenMs;
+      await ctx.storage.put(W1_NEXT_ALARM_REASONS_KEY, map);
+    }
+    const earliest = Math.min(...Object.values(map));
+    setAlarmFn.call(ctx.storage, earliest);
+  } catch (e: any) {
+    console.warn('[nimbus/W1] scheduleAlarm threw:', e?.message);
+  }
+}
+
+/**
  * W9: ensure the alarm is set for the next flush window. Cheap to
- * call repeatedly — we only set the alarm if it isn't already set.
- * `setAlarm` writes to storage, so we additionally bracket with a
- * timer-based fallback so tests + hot-path appends don't block.
+ * call repeatedly — we only schedule the in-isolate flush timer if
+ * it isn't already set. The persistent alarm goes through scheduleAlarm
+ * so it coordinates with W1's log-janitor sweep.
  */
 export function scheduleHibFlush(host: HibHost, ctx: any): void {
   if (host._w9FlushTimer) return;
-  // Local timer for fast in-isolate flush; alarm ensures the post-
-  // hibernation case also drains.
+  // Local timer for fast in-isolate flush. SHORT-LIVED (250 ms); the
+  // callback nulls itself so this timer does not persistently prevent
+  // hibernation — once it fires, the DO is timer-free again.
+  // Per CF docs, transient setTimeout during an active request is the
+  // expected pattern; what blocks hibernation is a RECURRING timer.
   host._w9FlushTimer = setTimeout(() => {
     host._w9FlushTimer = null;
     try {
@@ -245,25 +303,93 @@ export function scheduleHibFlush(host: HibHost, ctx: any): void {
       console.warn('[nimbus/W9] flush threw:', e?.message);
     }
   }, W9_FLUSH_DEBOUNCE_MS);
-  // Best-effort alarm (storage). On older runtimes / wrangler-dev where
-  // setAlarm is unavailable this is a no-op.
-  try {
-    const fn = (ctx.storage as any).setAlarm;
-    if (typeof fn === 'function') {
-      fn.call(ctx.storage, Date.now() + W9_FLUSH_DEBOUNCE_MS * 4);
-    }
-  } catch { /* fail-soft */ }
+  // Persistent alarm: fires post-hibernation if the in-isolate timer
+  // didn't get a chance to run (DO evicted under memory pressure
+  // before the 250ms debounce expired). Coordinated via scheduleAlarm
+  // so W1's log-janitor doesn't clobber it (or vice-versa).
+  // Fire-and-forget — scheduleAlarm is fail-soft.
+  void scheduleAlarm(ctx, 'w9-flush', Date.now() + W9_FLUSH_DEBOUNCE_MS * 4);
 }
 
 /**
- * W9: alarm handler. Today only flush; if more subsystems need alarms,
- * route through a single `nextAlarmReason` storage key checked here.
+ * W1: multi-reason alarm dispatcher. Called from the DO's `alarm()`
+ * handler.
+ *
+ * For each pending reason whose deadline has passed, run its handler.
+ * Reasons supported today:
+ *   - `'w9-flush'` → processLogs.flush()
+ *   - `'log-janitor'` → processLogs.dropOlderThan(orphanCheck); re-arm
+ *     for next 60s cycle.
+ *
+ * `janitorOrphanCheck` is the orphan-pid predicate provided by the
+ * caller (typically `(pid) => !host.processTable.get(pid)`). Decoupled
+ * so HibHost doesn't need to import ProcessTable.
+ *
+ * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
+ * earliest remaining deadline. If no reasons remain, deletes the map
+ * key and does NOT call setAlarm — the DO becomes hibernation-eligible
+ * after the 10s idle window.
+ *
+ * Forward/back-compat: unknown reasons silently dropped.
  */
-export async function dispatchAlarm(host: HibHost): Promise<void> {
+export async function dispatchAlarm(
+  host: HibHost,
+  ctx: any,
+  janitorOrphanCheck?: (pid: number) => boolean,
+): Promise<void> {
   try {
-    host.processLogs.flush();
+    const now = Date.now();
+    const existing = (await ctx?.storage?.get?.(W1_NEXT_ALARM_REASONS_KEY)) as
+      | Record<string, number>
+      | undefined;
+    // Legacy path: pre-W1 deploys had no map. dispatchAlarm was called
+    // with no map and unconditionally ran processLogs.flush(). Preserve
+    // that on a missing map (one-time post-deploy, then the map is
+    // populated by the next scheduleHibFlush / scheduleAlarm call).
+    if (!existing || Object.keys(existing).length === 0) {
+      try { host.processLogs.flush(); } catch (e: any) {
+        console.warn('[nimbus/W9] legacy flush threw:', e?.message);
+      }
+      return;
+    }
+    const map: Record<string, number> = { ...existing };
+    // Snapshot fireable reasons BEFORE running any of them, so a
+    // handler that schedules itself for the next cycle doesn't get
+    // immediately re-fired in the same dispatch.
+    const fired: AlarmReason[] = [];
+    for (const [reason, when] of Object.entries(map)) {
+      if (when <= now) fired.push(reason as AlarmReason);
+    }
+    for (const reason of fired) {
+      delete map[reason];
+      try {
+        if (reason === 'w9-flush') {
+          host.processLogs.flush();
+        } else if (reason === 'log-janitor') {
+          host.processLogs.dropOlderThan(undefined, janitorOrphanCheck);
+          // Self-renew: schedule next sweep 60s out.
+          map['log-janitor'] = now + 60_000;
+        }
+        // Unknown reasons silently dropped (forward-compat).
+      } catch (e: any) {
+        console.warn(`[nimbus/W1] dispatch ${reason} threw:`, e?.message);
+      }
+    }
+    // Re-arm or clear.
+    const setAlarmFn = (ctx?.storage as any)?.setAlarm;
+    if (Object.keys(map).length > 0) {
+      await ctx.storage.put(W1_NEXT_ALARM_REASONS_KEY, map);
+      const earliest = Math.min(...Object.values(map));
+      if (typeof setAlarmFn === 'function') {
+        setAlarmFn.call(ctx.storage, earliest);
+      }
+    } else {
+      try { await ctx.storage.delete(W1_NEXT_ALARM_REASONS_KEY); } catch {}
+      // No remaining reasons → no setAlarm call → DO becomes
+      // hibernation-eligible after the 10s idle window.
+    }
   } catch (e: any) {
-    console.warn('[nimbus/W9] alarm flush threw:', e?.message);
+    console.warn('[nimbus/W1] dispatchAlarm threw:', e?.message);
   }
 }
 

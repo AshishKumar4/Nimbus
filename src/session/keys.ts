@@ -39,3 +39,23 @@ export const SESSION_BASE_PATH_KEY = 'session-base-path';
  *  hibernation so vite resumes serving after wake without re-running
  *  /api/start-vite. */
 export const VITE_CONFIG_KEY = 'vite-config';
+
+/** W1: multi-reason alarm coordination map.
+ *
+ *  JSON-serialised `Record<reason, deadlineMsEpoch>` where keys are
+ *  canonical reason strings (e.g. 'w9-flush', 'log-janitor'). The
+ *  alarm() dispatcher reads this on fire, dispatches every reason
+ *  whose deadline has passed, and re-arms `ctx.storage.setAlarm` at
+ *  the earliest remaining deadline.
+ *
+ *  Why a map (not a single nextAlarmAt + reason): two subsystems
+ *  (W9 debounced flush + W1 log-janitor sweep) can have distinct
+ *  deadlines. Without the map, the later setAlarm() call would
+ *  overwrite the earlier reason silently, breaking whichever
+ *  subsystem expected its deadline.
+ *
+ *  Forward-compat: dispatcher silently drops unknown reasons so a
+ *  rollback from a future deploy that added new reasons doesn't
+ *  leave the alarm stuck.
+ */
+export const W1_NEXT_ALARM_REASONS_KEY = 'w1_next_alarm_reasons';
