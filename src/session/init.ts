@@ -1487,9 +1487,9 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         longRunning: true,
       });
 
-      // Banner — kept for back-compat. Now also reports the resolved
-      // port and PID so the user can verify the multi-target routing.
-      ctx.stdout.write('\n\x1b[1;36m  Nimbus Vite Dev Server v2.0\x1b[0m\n\n');
+      // Banner — reports the resolved port and PID so the user can
+      // verify the multi-target routing.
+      ctx.stdout.write('\n\x1b[1;36m  Nimbus Vite Dev Server\x1b[0m\n\n');
       ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Preview:    \x1b[36m' + previewBasePath + '/\x1b[0m');
       if (resolvedPort !== vitePortDefault) {
         ctx.stdout.write('  \x1b[2m(also: ' + previewBasePath + '/?port=' + resolvedPort + ')\x1b[0m');

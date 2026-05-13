@@ -122,13 +122,6 @@ function hashCode(s: string): string {
   return 'code-' + (h >>> 0).toString(36);
 }
 
-// generateNpmFacetCode() removed — the legacy in-facet npm installer has been
-// superseded by the supervisor-side pipeline: npm-installer.ts orchestrates,
-// npm-resolver.ts handles packument + semver, npm-tarball.ts handles tarball
-// fetch/extract, and npm-install-facet.ts is the small pure-fn facet body
-// dispatched via NimbusLoaderPool. A ~193-line dead stub used to live here;
-// it was removed in Arc A Phase 1 of the refactor.
-
 /**
  * Generate vite dev server facet code.
  * Long-running dynamic worker that serves files via SUPERVISOR RPC.

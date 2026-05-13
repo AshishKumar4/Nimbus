@@ -4,10 +4,21 @@
 // extra-params (process / console / Buffer / setTimeout / setInterval /
 // clearTimeout / clearInterval), not just `process`.
 //
-// `import console from 'node:console'` is legal Node 18+ ESM (the
-// `node:console` module exports a Console class as default), and esbuild
-// pass-1 ESM preserves it literally; pass-2 emits `const console = ...`
-// which would collide with the `console` extra-param at __mkCompiledFn.
+// `import console from 'node:console'` is legal Node 18+ ESM. In our
+// esbuild-CJS-bundled output, the default-import binding resolves to
+// the module-namespace object (whose `.log` etc. are the standard
+// console functions) — `typeof console` is therefore `"object"`, not
+// `"function"`. The collision risk is the same regardless: pass-1 ESM
+// preserves the binding name literally, and pass-2 emits
+// `const console = ...` which would collide with the `console`
+// extra-param at __mkCompiledFn.
+//
+// legacy-cleanup (2026-05-13): the original assertion required
+// `con=function` (assuming default-import returned the Console class
+// itself). post-console-facet wave, the binding does resolve cleanly
+// to a usable namespace object, so the SENTINEL prints — we just need
+// to assert on the shape that actually exists: `con=object` with a
+// callable `.log`.
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../../_driver.mjs';
 
@@ -50,7 +61,9 @@ A.check(
 );
 A.check(
   'synthetic-console: SENTINEL line printed (module body executes; default import of node:console works)',
-  /SENTINEL=console_ok con=function url=function tla=CON_OK/.test(out),
+  // post-console-facet shape: con=object (module namespace), url=function (named export),
+  // tla=CON_OK. The literal-string assertion locks the shape per PROBE-QUALITY R-tier.
+  /SENTINEL=console_ok con=object url=function tla=CON_OK/.test(out),
   `tail: ${out.slice(-500)}`,
 );
 

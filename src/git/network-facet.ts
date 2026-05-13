@@ -354,11 +354,6 @@ function createBufferedFs(supervisor, stats) {
   // a type:'bytes' ReadableStream with a 256 KiB highwater, so the
   // wrapper isolate sees bounded residency regardless of wave size.
   // Same pattern as src/npm/install-batch-facet.ts:421-440.
-  const supportsStreaming =
-    supervisor && typeof supervisor.writeBatchStream === 'function' &&
-    // @ts-ignore — preamble symbol injected at module-prepend time.
-    typeof encodeWriteBatchStream === 'function';
-
   async function flushWave() {
     if (writeBuffer.size === 0 && dirBuffer.size === 0 && deleteBuffer.size === 0) return;
     const payload = buildPayload(writeBuffer, dirBuffer, deleteBuffer);
@@ -393,19 +388,14 @@ function createBufferedFs(supervisor, stats) {
     dirBuffer.clear();
     deleteBuffer.clear();
     bufferBytes = 0;
-    if (supportsStreaming) {
-      // W7 streaming path. encodeWriteBatchStream is a top-level
-      // function in the prepended W7_FRAME_PREAMBLE source.
-      // @ts-ignore — preamble symbol.
-      const stream = encodeWriteBatchStream(payload);
-      await supervisor.writeBatchStream(stream);
-    } else {
-      // Pre-W7 supervisor — fall back to legacy structured-clone.
-      // Vulnerable to the wrapper-isolate OOM (the bug this fix
-      // addresses); kept for compatibility with stale deployed
-      // code that hasn't picked up the W7 supervisor RPC.
-      await supervisor.writeBatch(payload);
-    }
+    // W7 streaming path. encodeWriteBatchStream is a top-level
+    // function in the prepended W7_FRAME_PREAMBLE source. The pre-W7
+    // structured-clone fallback (writeBatch) was deleted in the
+    // legacy-cleanup wave — all live supervisors carry the streaming
+    // RPC since 2026-05-09 (commit 89a64ef9).
+    // @ts-ignore — preamble symbol injected at module-prepend time.
+    const stream = encodeWriteBatchStream(payload);
+    await supervisor.writeBatchStream(stream);
     stats.filesWritten += wavefilesWritten;
     stats.bytesWritten += wavebytesWritten;
   }

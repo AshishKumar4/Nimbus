@@ -2479,7 +2479,7 @@ function mkStat(vfs: SqliteVFS): CmdFn {
           displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
         } catch (_e) { /* fall through to SqliteVFS */ }
       }
-      // Fall back to SqliteVFS direct (legacy / non-mounted paths).
+      // Fall back to SqliteVFS direct for non-mounted paths.
       if (!st) {
         try {
           const fp = resolvePath(ctx.cwd, f);
