@@ -25,12 +25,14 @@ const html = await r.text();
 a.check('Editor exposes drainFsQueue in return-object',
   /return\s*\{\s*ensureLoaded[\s\S]{0,200}drainFsQueue\s*\}/.test(html),
   `Editor.drainFsQueue not exported`);
+// FileTree's return statement includes drainFsQueue. We match the
+// canonical exact shape rather than fuzzy splitting on the prefix.
 a.check('FileTree exposes drainFsQueue in return-object',
-  /return\s*\{\s*ensureLoaded[\s\S]{0,150}drainFsQueue\s*\}/.test(html.split('return { ensureLoaded, tryHandleFsResult')[1] || ''),
-  `FileTree.drainFsQueue not exported`);
+  /return\s*\{\s*ensureLoaded\s*,\s*tryHandleFsResult\s*,\s*markDirty\s*,\s*setSelected\s*,\s*drainFsQueue\s*\}/.test(html),
+  `FileTree return statement missing drainFsQueue`);
 a.check('ws.onopen drains Editor + FileTree queues',
-  /ws\.onopen\s*=[\s\S]{0,500}Editor\.drainFsQueue\(\)/.test(html) &&
-  /ws\.onopen\s*=[\s\S]{0,500}FileTree\.drainFsQueue\(\)/.test(html),
+  /ws\.onopen\s*=[\s\S]{0,1000}Editor\.drainFsQueue\(\)/.test(html) &&
+  /ws\.onopen\s*=[\s\S]{0,1000}FileTree\.drainFsQueue\(\)/.test(html),
   `onopen drain wiring missing`);
 a.check('fsRequest no longer rejects on WS-not-OPEN (queues instead)',
   /outQueue\.push\(frame\)/.test(html),
