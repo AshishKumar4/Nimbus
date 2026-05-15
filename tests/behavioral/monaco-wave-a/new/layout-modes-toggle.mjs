@@ -16,22 +16,19 @@ const sid = await mintSession();
 const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
 const html = await r.text();
 
-// JS handlers — onclick wiring for each of the 5 modes (hotfix
-// course-correct renamed the editor modes).
-const modes = ['terminal-only', 'preview-only', 'split', 'editor-split', 'editor-split-with-term'];
+// JS handlers — onclick wiring for each of the 4 modes (monaco-wave-b
+// dropped 'editor-split' and renamed 'editor-split-with-term' → 'editor').
+const modes = ['terminal-only', 'preview-only', 'split', 'editor'];
 for (const m of modes) {
   a.check(`setLayout('${m}') reference present`,
     new RegExp("setLayout\\(['\"]" + m + "['\"]\\)").test(html),
     `not found`);
 }
 
-// CSS — class rules for new modes.
-a.check('.main.editor-split rule present',
-  /\.main\.editor-split\b/.test(html),
-  `.main.editor-split CSS missing`);
-a.check('.main.editor-split-with-term rule present',
-  /\.main\.editor-split-with-term\b/.test(html),
-  `.main.editor-split-with-term CSS missing`);
+// CSS — class rules for the canonical editor mode.
+a.check('.main.editor rule present',
+  /\.main\.editor\b/.test(html),
+  `.main.editor CSS missing`);
 
 // Editor panel DOM exists.
 a.check('panel-editor DOM element present',

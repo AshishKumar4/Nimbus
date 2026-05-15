@@ -10,8 +10,8 @@
 //      that would auto-fetch (i.e. no top-level <script src="...monaco...">).
 //   2. The Editor module IS present in the page (so the lazy hook
 //      exists and will fire on user demand).
-//   3. The new layout-mode buttons (#btnEditor, #btnEditorTerm) ARE
-//      present.
+//   3. The new layout-mode button (#btnEditor) IS present. (Wave-B
+//      dropped #btnEditorTerm; single canonical 'editor' mode.)
 //   4. The fs-* WS protocol surface is referenced (sanity that the
 //      JS side has the hooks).
 //
@@ -53,9 +53,6 @@ a.check('Editor module is wired (inline JS references Monaco)',
 a.check('toolbar has #btnEditor button',
   /id=["']btnEditor["']/.test(html),
   `btnEditor missing`);
-a.check('toolbar has #btnEditorTerm button',
-  /id=["']btnEditorTerm["']/.test(html),
-  `btnEditorTerm missing`);
 
 // Invariant 4: fs-* WS protocol references in inline JS.
 a.check('JS references fs-read protocol',
