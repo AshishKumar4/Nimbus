@@ -16,8 +16,9 @@ const sid = await mintSession();
 const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
 const html = await r.text();
 
-// JS handlers — onclick wiring for each of the 5 modes.
-const modes = ['terminal-only', 'preview-only', 'split', 'editor-only', 'editor-bottom'];
+// JS handlers — onclick wiring for each of the 5 modes (hotfix
+// course-correct renamed the editor modes).
+const modes = ['terminal-only', 'preview-only', 'split', 'editor-split', 'editor-split-with-term'];
 for (const m of modes) {
   a.check(`setLayout('${m}') reference present`,
     new RegExp("setLayout\\(['\"]" + m + "['\"]\\)").test(html),
@@ -25,12 +26,12 @@ for (const m of modes) {
 }
 
 // CSS — class rules for new modes.
-a.check('.main.editor-only rule present',
-  /\.main\.editor-only\b/.test(html),
-  `.main.editor-only CSS missing`);
-a.check('.main.editor-bottom rule present',
-  /\.main\.editor-bottom\b/.test(html),
-  `.main.editor-bottom CSS missing`);
+a.check('.main.editor-split rule present',
+  /\.main\.editor-split\b/.test(html),
+  `.main.editor-split CSS missing`);
+a.check('.main.editor-split-with-term rule present',
+  /\.main\.editor-split-with-term\b/.test(html),
+  `.main.editor-split-with-term CSS missing`);
 
 // Editor panel DOM exists.
 a.check('panel-editor DOM element present',

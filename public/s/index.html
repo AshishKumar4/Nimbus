@@ -111,24 +111,68 @@
     .main.preview-only .resize-handle { display: none; }
     .main.preview-only .panel-preview { flex: 1; }
 
-    /* monaco-wave-a (2026-05-13): editor + editor+terminal-bottom modes.
-       editor-only: editor takes the full main area.
-       editor+terminal-bottom: editor on top, terminal on bottom — vscode-style. */
-    .main.editor-only .panel-terminal,
-    .main.editor-only .panel-preview,
-    .main.editor-only .resize-handle { display: none; }
-    .main.editor-only .panel-editor { flex: 1; display: flex; }
+    /* monaco-wave-a (2026-05-13, hotfix course-correct):
+       Two new layout modes that put the editor in the LEFT half:
+       - 'editor-split'           : editor LEFT + preview RIGHT (mirrors
+                                    existing terminal+preview split)
+       - 'editor-split-with-term' : editor TL + terminal BL + preview R
+                                    (3-pane VSCode-style)
+       Existing terminal-only / split / preview-only modes unchanged.
 
-    .main.editor-bottom { flex-direction: column; }
-    .main.editor-bottom .panel-preview,
-    .main.editor-bottom .resize-handle { display: none; }
-    .main.editor-bottom .panel-editor { flex: 1 1 60%; display: flex; min-height: 200px; }
-    .main.editor-bottom .panel-terminal { flex: 0 0 40%; min-height: 120px; border-top: 1px solid #30363d; }
-    .main.editor-bottom .vresize-handle { display: block; }
+       Both .panel-editor and .panel-terminal live INSIDE
+       .panel-left-stack. In 1D modes the stack is display:contents
+       (transparent — children flex directly into .main). In 3-pane
+       mode the stack flips to flex column so editor + terminal
+       stack vertically. */
 
-    /* Editor panel */
-    .panel-editor { flex: 1; display: none; flex-direction: column; background: #1e1e1e; overflow: hidden; min-width: 0; min-height: 0; }
+    /* Editor panel — hidden by default; shown by mode-specific rules. */
+    .panel-editor {
+      flex: 1; display: none; flex-direction: column;
+      background: #1e1e1e;        /* VSCode dark editor background */
+      overflow: hidden; min-width: 0; min-height: 0;
+    }
     .panel-editor.active { display: flex; }
+
+    /* Wrapper for the left half. display:contents makes it
+       layout-transparent in modes that want editor/terminal as direct
+       siblings of .main (terminal-only, split, editor-split). */
+    .panel-left-stack { display: contents; }
+
+    /* editor-split: editor LEFT + preview RIGHT. Hide terminal. */
+    .main.editor-split .panel-terminal { display: none; }
+    .main.editor-split .panel-editor { display: flex; flex: 1; min-width: 0; }
+    .main.editor-split .resize-handle { display: block; }
+    .main.editor-split .panel-preview { display: flex; flex: 1; min-width: 0; }
+
+    /* editor-split-with-term: 3-pane. Left half is a vertical stack
+       (editor on top + terminal on bottom). Right half is preview. */
+    .main.editor-split-with-term .panel-left-stack {
+      display: flex; flex: 1; flex-direction: column;
+      min-width: 0; min-height: 0; overflow: hidden;
+    }
+    .main.editor-split-with-term .panel-editor {
+      display: flex; flex: 1 1 60%; min-height: 200px;
+      border-bottom: 1px solid #30363d;
+    }
+    .main.editor-split-with-term .panel-terminal {
+      display: flex; flex: 0 0 40%; min-height: 120px;
+    }
+    .main.editor-split-with-term .resize-handle { display: block; }
+    .main.editor-split-with-term .panel-preview { display: flex; flex: 1; min-width: 0; }
+
+    /* VSCode-like editor statusbar (bottom-of-editor bar with
+       line:col, language, encoding). */
+    .editor-statusbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 2px 12px;
+      background: #007acc;        /* VSCode blue */
+      color: #ffffff;
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      flex-shrink: 0;
+      min-height: 20px;
+    }
+    .editor-statusbar .sep { color: rgba(255,255,255,0.5); }
     .editor-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; font-size: 11px; color: #8b949e; min-height: 24px; }
     .editor-bar .editor-tab { padding: 2px 8px; background: #21262d; border: 1px solid #30363d; border-radius: 3px; color: #c9d1d9; font-family: ui-monospace, Menlo, monospace; font-size: 11px; display: flex; align-items: center; gap: 6px; }
     .editor-bar .editor-tab.dirty::after { content: '●'; color: #d29922; font-size: 10px; }
@@ -165,12 +209,14 @@
     <button id="btnTerminal" class="active" title="Terminal">Terminal</button>
     <button id="btnPreview" title="Preview">Preview</button>
     <button id="btnSplit" title="Split view">Split</button>
-    <!-- monaco-wave-a (2026-05-13): two new layout modes. Editor toggles
-         to a Monaco-only view; Editor+Term flips to VSCode-style with
-         editor on top + terminal on bottom. Both lazy-load Monaco on
-         first click (perf-invariant: cold session must NOT download). -->
-    <button id="btnEditor" title="Editor (Monaco)">Editor</button>
-    <button id="btnEditorTerm" title="Editor + Terminal (VSCode-style)">Edit+Term</button>
+    <!-- monaco-wave-a (2026-05-13, hotfix course-correct):
+         Two new layout modes that mirror the existing split shape but
+         put the Monaco editor in the LEFT pane instead of terminal:
+         - Edit+Preview: editor LEFT, preview RIGHT (drop-in for split)
+         - Edit+Term+Preview: 3-pane VSCode-style (editor TL + term BL + preview R)
+         Both lazy-load Monaco on first click (perf-invariant). -->
+    <button id="btnEditor" title="Editor + Preview (2-pane split)">Edit+Preview</button>
+    <button id="btnEditorTerm" title="Editor + Terminal + Preview (3-pane VSCode-style)">Edit+Term+Preview</button>
     <div class="sep"></div>
     <button id="btnProcs" title="Toggle process logs panel">
       <span class="procs-dot"></span>
@@ -181,11 +227,40 @@
     <span class="vite-status" id="viteStatus"></span>
   </div>
   <div class="main" id="mainPanel">
-    <div class="panel-terminal">
-      <div id="terminal-container"></div>
-      <div class="logs-panel" id="logsPanel">
-        <div class="logs-tabbar" id="logsTabBar"></div>
-        <div class="logs-panel-body" id="logsPanelBody"></div>
+    <!-- monaco-wave-a (2026-05-13, hotfix course-correct):
+         The .panel-left-stack wrapper is display:contents in 1D modes
+         (terminal+preview, editor+preview) — its children act as
+         direct flex children of .main. In editor-split-with-term mode,
+         CSS flips it to display:flex; flex-direction:column so editor
+         and terminal stack vertically in the LEFT half. -->
+    <div class="panel-left-stack" id="leftStack">
+      <div class="panel-editor" id="editorPanel">
+        <div class="editor-bar">
+          <div class="editor-tab editor-tab-empty" id="editorTab">no file</div>
+          <span class="editor-hint">
+            <kbd>Ctrl+P</kbd> open file &nbsp;·&nbsp; <kbd>Ctrl+S</kbd> save
+          </span>
+          <span class="editor-status" id="editorStatus" style="margin-left:8px;color:#6e7681;font-family:ui-monospace,Menlo,monospace;font-size:10px"></span>
+        </div>
+        <div class="editor-placeholder" id="editorPlaceholder">
+          <div>Press <span class="key">Ctrl</span>+<span class="key">P</span> to open a file.</div>
+          <div style="font-size:11px;color:#6e7681">Monaco loads on demand.</div>
+        </div>
+        <div id="monaco-container" style="display:none"></div>
+        <div class="editor-statusbar" id="editorStatusBar">
+          <span id="editorStatusPos">—</span>
+          <span class="sep">·</span>
+          <span id="editorStatusLang">plaintext</span>
+          <span class="sep">·</span>
+          <span id="editorStatusEnc">UTF-8</span>
+        </div>
+      </div>
+      <div class="panel-terminal">
+        <div id="terminal-container"></div>
+        <div class="logs-panel" id="logsPanel">
+          <div class="logs-tabbar" id="logsTabBar"></div>
+          <div class="logs-panel-body" id="logsPanelBody"></div>
+        </div>
       </div>
     </div>
     <div class="resize-handle" id="resizeHandle"></div>
@@ -196,23 +271,6 @@
         <button id="btnReloadPreview" title="Reload">&#8635;</button>
       </div>
       <iframe id="preview-frame" src="about:blank"></iframe>
-    </div>
-    <!-- monaco-wave-a (2026-05-13): editor panel sibling to terminal +
-         preview. Hidden in default 'split' layout (matches charter:
-         editor is opt-in). Active in 'editor-only' and 'editor-bottom'
-         layout modes via .active class. -->
-    <div class="panel-editor" id="editorPanel">
-      <div class="editor-bar">
-        <div class="editor-tab editor-tab-empty" id="editorTab">no file</div>
-        <span class="editor-hint">
-          <kbd>Ctrl+P</kbd> open file &nbsp;·&nbsp; <kbd>Ctrl+S</kbd> save
-        </span>
-      </div>
-      <div class="editor-placeholder" id="editorPlaceholder">
-        <div>Press <span class="key">Ctrl</span>+<span class="key">P</span> to open a file.</div>
-        <div style="font-size:11px;color:#6e7681">Monaco loads on demand.</div>
-      </div>
-      <div id="monaco-container" style="display:none"></div>
     </div>
   </div>
   <!-- monaco-wave-a (2026-05-13): Ctrl+P command palette. Lazy-populated
@@ -320,9 +378,10 @@
     const mainPanel = document.getElementById('mainPanel');
     const viteStatus = document.getElementById('viteStatus');
     let ws = null, rd = 1000, statsTimer = null;
-    // monaco-wave-a (2026-05-13): layout enum extended with two new modes.
-    //   'editor-only'    : Monaco fills .main; no terminal/preview.
-    //   'editor-bottom'  : Monaco on top + terminal on bottom (VSCode-style).
+    // monaco-wave-a (2026-05-13, hotfix course-correct): layout enum
+    // extended with two new modes that put the editor in the LEFT half:
+    //   'editor-split'           : editor LEFT + preview RIGHT
+    //   'editor-split-with-term' : editor TL + terminal BL + preview R
     // Old modes preserved verbatim: 'split', 'terminal-only', 'preview-only'.
     let layout = 'split';
 
@@ -333,18 +392,20 @@
       document.getElementById('btnTerminal').classList.toggle('active', mode === 'terminal-only');
       document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
       document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
-      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor-only');
-      document.getElementById('btnEditorTerm').classList.toggle('active', mode === 'editor-bottom');
+      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor-split');
+      document.getElementById('btnEditorTerm').classList.toggle('active', mode === 'editor-split-with-term');
       // Editor panel visibility — drives display:flex via .active.
       const editorPanel = document.getElementById('editorPanel');
-      const wantEditor = (mode === 'editor-only' || mode === 'editor-bottom');
+      const wantEditor = (mode === 'editor-split' || mode === 'editor-split-with-term');
       editorPanel.classList.toggle('active', wantEditor);
       // Lazy-init Monaco the FIRST time the user switches to an
       // editor mode. Cold session never pays the 5 MB download.
       if (wantEditor) Editor.ensureLoaded();
       setTimeout(() => {
         try { fitAddon.fit(); } catch {}
-        // Re-layout Monaco after the panel resizes.
+        // Re-layout Monaco after the panel resizes. automaticLayout:true
+        // already handles this but explicit layout() on mode switch
+        // avoids a one-frame flash where the editor sees its old size.
         if (window.__nimbusMonacoEditor) {
           try { window.__nimbusMonacoEditor.layout(); } catch {}
         }
@@ -353,8 +414,8 @@
     document.getElementById('btnTerminal').onclick = () => setLayout('terminal-only');
     document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
     document.getElementById('btnSplit').onclick = () => setLayout('split');
-    document.getElementById('btnEditor').onclick = () => setLayout('editor-only');
-    document.getElementById('btnEditorTerm').onclick = () => setLayout('editor-bottom');
+    document.getElementById('btnEditor').onclick = () => setLayout('editor-split');
+    document.getElementById('btnEditorTerm').onclick = () => setLayout('editor-split-with-term');
     document.getElementById('btnRefresh').onclick = () => reloadPreview();
     document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
 
@@ -506,16 +567,94 @@
         // Hide the placeholder once Monaco mounts.
         const ph = document.getElementById('editorPlaceholder');
         if (ph) ph.style.display = 'none';
+
+        // monaco-wave-a hotfix (2026-05-13): full VSCode-like options
+        // (per user feedback "current is useless — make it proper, nice").
+        // This config mirrors VSCode 1.95+ defaults for a TS/JS file.
+        // Verified against actual VSCode source (monaco.IEditorOptions).
         editor = window.monaco.editor.create(container, {
           value: '',
           language: 'plaintext',
-          theme: 'vs-dark',
+          theme: 'vs-dark',                                  // VSCode dark theme
+          // Critical for split-pane resize — Monaco re-measures on
+          // ResizeObserver hits without explicit layout() calls.
           automaticLayout: true,
-          minimap: { enabled: false },
-          fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
-          fontSize: 13,
+          // Visual chrome.
+          minimap: { enabled: true, side: 'right', renderCharacters: true, maxColumn: 120, scale: 1 },
+          lineNumbers: 'on',
+          lineNumbersMinChars: 3,
+          glyphMargin: false,
+          folding: true,
+          renderLineHighlight: 'all',
+          renderWhitespace: 'selection',
+          renderControlCharacters: false,
+          renderFinalNewline: 'on',
+          // Cursor + selection chrome.
+          cursorBlinking: 'smooth',
+          cursorSmoothCaretAnimation: 'on',
+          cursorStyle: 'line',
+          cursorWidth: 2,
+          // Typography. VSCode defaults to 14px Menlo/Monaco/Consolas.
+          fontFamily: "Menlo, Monaco, 'Courier New', 'JetBrains Mono', 'Fira Code', monospace",
+          fontSize: 14,
+          lineHeight: 22,
+          fontLigatures: true,
+          // Whitespace / indent.
+          tabSize: 2,
+          insertSpaces: true,
+          detectIndentation: true,
+          trimAutoWhitespace: true,
+          // Bracket / indent guides — the colorful nested brackets +
+          // dotted vertical indent lines users expect from VSCode.
+          bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
+          guides: {
+            bracketPairs: 'active',
+            bracketPairsHorizontal: 'active',
+            indentation: true,
+            highlightActiveIndentation: true,
+            highlightActiveBracketPair: true,
+          },
+          matchBrackets: 'always',
+          // Editing behavior.
+          autoIndent: 'full',
+          autoClosingBrackets: 'languageDefined',
+          autoClosingQuotes: 'languageDefined',
+          autoSurround: 'languageDefined',
+          formatOnPaste: true,
+          formatOnType: true,
+          // Multi-cursor and selection ergonomics.
+          multiCursorModifier: 'alt',
+          columnSelection: false,
+          // Word wrap (toggle-friendly default).
           wordWrap: 'on',
+          wordWrapColumn: 120,
+          wrappingIndent: 'indent',
+          // Scrolling.
+          smoothScrolling: true,
+          mouseWheelScrollSensitivity: 1,
+          fastScrollSensitivity: 5,
           scrollBeyondLastLine: false,
+          scrollbar: {
+            vertical: 'auto',
+            horizontal: 'auto',
+            useShadows: true,
+            verticalScrollbarSize: 14,
+            horizontalScrollbarSize: 14,
+          },
+          // Suggest / IntelliSense (works for built-in languages even
+          // without LSP — Monaco ships JS/TS/JSON/HTML/CSS workers
+          // lazily; we leave the defaults).
+          suggestOnTriggerCharacters: true,
+          acceptSuggestionOnEnter: 'on',
+          quickSuggestions: { other: true, comments: false, strings: false },
+          parameterHints: { enabled: true, cycle: true },
+          // Misc polish.
+          stickyScroll: { enabled: true },
+          links: true,
+          dragAndDrop: true,
+          mouseStyle: 'text',
+          contextmenu: true,
+          copyWithSyntaxHighlighting: false,
         });
         window.__nimbusMonacoEditor = editor;
         // Dirty-state tracking.
@@ -524,8 +663,21 @@
           const cur = editor.getValue();
           setTabFile(openPath, cur !== originalContent);
         });
+        // Cursor position → status bar.
+        const statusPos = document.getElementById('editorStatusPos');
+        const statusLang = document.getElementById('editorStatusLang');
+        editor.onDidChangeCursorPosition((e) => {
+          if (statusPos) statusPos.textContent = 'Ln ' + e.position.lineNumber + ', Col ' + e.position.column;
+        });
+        editor.onDidChangeModelLanguage((e) => {
+          if (statusLang) statusLang.textContent = e.newLanguage || 'plaintext';
+        });
         // Ctrl+S save — Monaco intercepts the keystroke when focused.
         editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, () => save());
+        // Cmd+P / Ctrl+P inside the editor → palette (palette also has
+        // a global keydown handler but registering at the editor level
+        // is what real VSCode does, so feel matches).
+        editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyP, () => openPalette());
         // Layout once after creation so the editor sizes correctly.
         setTimeout(() => editor.layout(), 0);
       }
@@ -559,6 +711,11 @@
         editor.setModel(model);
         if (old) try { old.dispose(); } catch {}
         setTabFile(path, false);
+        // Reflect language in the bottom statusbar.
+        const statusLang = document.getElementById('editorStatusLang');
+        if (statusLang) statusLang.textContent = lang;
+        const statusPos = document.getElementById('editorStatusPos');
+        if (statusPos) statusPos.textContent = 'Ln 1, Col 1';
         editor.focus();
       }
 

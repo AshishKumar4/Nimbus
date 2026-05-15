@@ -132,8 +132,21 @@ export class WebSocketTerminal {
       case 'fs-write':
       case 'fs-list':
         if (this.fsCallback) {
+          // monaco-wave-a hotfix (2026-05-13): auto-echo reqId from
+          // the inbound msg into every reply frame. The client side
+          // (public/s/index.html Editor.fsRequest) keys its pending-
+          // request Map on reqId; without echo, every request hangs
+          // until the 15s timeout. Doing the merge HERE (vs at every
+          // reply site in init.ts's handler) means the handler stays
+          // ignorant of multiplexing — single source of truth.
+          const reqId = (msg as any).reqId;
           const reply = (frame: any) => {
-            try { this.ws.send(JSON.stringify(frame)); } catch {}
+            try {
+              const merged = (reqId !== undefined && frame && typeof frame === 'object')
+                ? { ...frame, reqId }
+                : frame;
+              this.ws.send(JSON.stringify(merged));
+            } catch {}
           };
           try { this.fsCallback(msg, reply); } catch (e: any) {
             reply({
