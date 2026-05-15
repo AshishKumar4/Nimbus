@@ -24,6 +24,20 @@ export class WebSocketTerminal {
    * fragile. Additive only — when null, behavior is identical to pre-W1.
    */
   private replCallback: ((data: string) => void) | null = null;
+  /**
+   * monaco-wave-a (2026-05-13): Editor-pane file-system bridge.
+   *
+   * When non-null, fs-* messages (fs-read / fs-write / fs-list) are
+   * routed to this callback INSTEAD of the shell. The callback is
+   * supplied by init.ts which holds the SqliteVFS handle; it uses
+   * the same `reply` lambda we provide to send back fs-*-result
+   * frames over the live WS.
+   *
+   * Additive — when null, fs-* messages are silently dropped (same
+   * pre-Wave-A behavior, since handleMessage's switch had no case
+   * for them).
+   */
+  private fsCallback: ((msg: any, reply: (frame: any) => void) => void) | null = null;
   private _cols: number = 80;
   private _rows: number = 24;
   private buffer: string[] = [];
@@ -100,7 +114,7 @@ export class WebSocketTerminal {
 
   onData(callback: (data: string) => void): void { this.dataCallback = callback; }
 
-  handleMessage(msg: { type: string; data?: string; cols?: number; rows?: number }): void {
+  handleMessage(msg: { type: string; data?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void {
     switch (msg.type) {
       case 'input':
         if (msg.data) this.sendData(msg.data);
@@ -109,7 +123,53 @@ export class WebSocketTerminal {
         if (msg.cols) this._cols = msg.cols;
         if (msg.rows) this._rows = msg.rows;
         break;
+      // monaco-wave-a (2026-05-13): editor-pane fs bridge. Route to
+      // the registered fsCallback (set by init.ts which holds the
+      // SqliteVFS). Callback uses the reply lambda to push fs-*-result
+      // frames over this WS. Untouched messages (no callback) are
+      // silently dropped — same pre-Wave-A behavior.
+      case 'fs-read':
+      case 'fs-write':
+      case 'fs-list':
+        if (this.fsCallback) {
+          // monaco-wave-a hotfix (2026-05-13): auto-echo reqId from
+          // the inbound msg into every reply frame. The client side
+          // (public/s/index.html Editor.fsRequest) keys its pending-
+          // request Map on reqId; without echo, every request hangs
+          // until the 15s timeout. Doing the merge HERE (vs at every
+          // reply site in init.ts's handler) means the handler stays
+          // ignorant of multiplexing — single source of truth.
+          const reqId = (msg as any).reqId;
+          const reply = (frame: any) => {
+            try {
+              const merged = (reqId !== undefined && frame && typeof frame === 'object')
+                ? { ...frame, reqId }
+                : frame;
+              this.ws.send(JSON.stringify(merged));
+            } catch {}
+          };
+          try { this.fsCallback(msg, reply); } catch (e: any) {
+            reply({
+              type: msg.type + '-result',
+              path: msg.path, dir: msg.dir,
+              ok: false,
+              error: 'fs handler threw: ' + (e?.message || String(e)),
+            });
+          }
+        }
+        break;
     }
+  }
+
+  /**
+   * monaco-wave-a (2026-05-13): install the fs-* message handler.
+   * The callback receives the raw message + a reply lambda that
+   * accepts a JSON-serializable frame and pushes it over this WS.
+   * Single-slot (last call wins) — init.ts is the only caller and
+   * reinstalls on warm rejoin via `attach()`.
+   */
+  onFs(cb: (msg: any, reply: (frame: any) => void) => void): void {
+    this.fsCallback = cb;
   }
 
   sendData(data: string): void {

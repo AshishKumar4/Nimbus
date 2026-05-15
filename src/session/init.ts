@@ -232,6 +232,127 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     const sqliteFs = self.sqliteFs!;
     const facetMgr = self.facetManager!;
 
+    // ── monaco-wave-a (2026-05-13): editor-pane fs bridge ──
+    //
+    // The terminal hosts the WS that the editor pane reuses for
+    // fs-read / fs-write / fs-list messages. We install the handler
+    // here because this is the first point in init where sqliteFs is
+    // in scope; the terminal stays a stable instance across warm
+    // rejoins (attach() swaps ws ref), so installing once is enough.
+    //
+    // Protocol (all replies are paired `<type>-result` frames):
+    //   IN  { type:'fs-read',  path }
+    //   OUT { type:'fs-read-result',  path, content?, error?, binary? }
+    //   IN  { type:'fs-write', path, content }
+    //   OUT { type:'fs-write-result', path, ok, error? }
+    //   IN  { type:'fs-list',  dir, recursive? }
+    //   OUT { type:'fs-list-result',  dir, entries:[{path,type}], error? }
+    //
+    // Binary refuse: fs-read uses readFile(bytes) + fatal:true UTF-8
+    // decode. Throws on invalid bytes → reply { binary:true } with no
+    // content. The editor pane shows a friendly placeholder; this is
+    // the same heuristic hardening-r5 already uses for VFS<->facet
+    // serialization (see manager.ts _readBundleCell).
+    //
+    // Path normalization: strip leading '/'. SqliteVFS is rooted at
+    // the bare filename space ('home/user/...' etc.). The editor pane
+    // sends absolute paths (POSIX-shaped) so we normalize here.
+    self.terminal.onFs((msg: any, reply: (frame: any) => void) => {
+      const stripSlash = (p: string) => (p || '').replace(/^\/+/, '');
+      try {
+        if (msg.type === 'fs-read') {
+          const p = stripSlash(String(msg.path || ''));
+          if (!sqliteFs.exists(p)) {
+            reply({ type: 'fs-read-result', path: msg.path, error: 'ENOENT: no such file or directory' });
+            return;
+          }
+          if (sqliteFs.isDirectory(p)) {
+            reply({ type: 'fs-read-result', path: msg.path, error: 'EISDIR: is a directory' });
+            return;
+          }
+          // Read bytes; attempt strict UTF-8 decode. Non-UTF-8 → mark
+          // binary so the editor shows a friendly placeholder rather
+          // than mojibake.
+          const bytes = sqliteFs.readFile(p);
+          try {
+            const content = new TextDecoder('utf-8', { fatal: true } as any).decode(bytes);
+            reply({ type: 'fs-read-result', path: msg.path, content });
+          } catch {
+            reply({
+              type: 'fs-read-result',
+              path: msg.path,
+              binary: true,
+              error: 'binary file (non-UTF-8) — editor cannot display',
+            });
+          }
+          return;
+        }
+        if (msg.type === 'fs-write') {
+          const p = stripSlash(String(msg.path || ''));
+          if (!p) {
+            reply({ type: 'fs-write-result', path: msg.path, ok: false, error: 'empty path' });
+            return;
+          }
+          // Ensure parent exists (mkdir -p the directory chain).
+          const lastSlash = p.lastIndexOf('/');
+          if (lastSlash > 0) {
+            try { sqliteFs.mkdir(p.substring(0, lastSlash), { recursive: true }); } catch {}
+          }
+          const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
+          sqliteFs.writeFile(p, content);
+          reply({ type: 'fs-write-result', path: msg.path, ok: true });
+          return;
+        }
+        if (msg.type === 'fs-list') {
+          const dir = stripSlash(String(msg.dir || ''));
+          const recursive = msg.recursive === true;
+          if (dir && !sqliteFs.exists(dir)) {
+            reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOENT' });
+            return;
+          }
+          if (dir && !sqliteFs.isDirectory(dir)) {
+            reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOTDIR' });
+            return;
+          }
+          // BFS walk with per-call cap so a 10k-file project doesn't
+          // ship a megabyte JSON frame. 2000 entries is well above
+          // typical project sizes (vite scaffold = ~30 files; even
+          // node_modules tree of a 50-dep project under 2000).
+          const MAX_ENTRIES = 2000;
+          const out: { path: string; type: string }[] = [];
+          const queue: string[] = [dir];
+          while (queue.length > 0 && out.length < MAX_ENTRIES) {
+            const cur = queue.shift()!;
+            let entries: { name: string; type: string }[];
+            try { entries = sqliteFs.readdir(cur); } catch { continue; }
+            for (const e of entries) {
+              if (out.length >= MAX_ENTRIES) break;
+              if (e.name === 'node_modules' || e.name === '.git') continue;  // skip noisy
+              const child = cur ? cur + '/' + e.name : e.name;
+              out.push({ path: '/' + child, type: e.type });
+              if (recursive && e.type === 'directory') queue.push(child);
+            }
+          }
+          reply({
+            type: 'fs-list-result',
+            dir: msg.dir,
+            entries: out,
+            truncated: out.length >= MAX_ENTRIES,
+          });
+          return;
+        }
+        reply({ type: msg.type + '-result', ok: false, error: 'unknown fs message type' });
+      } catch (e: any) {
+        reply({
+          type: msg.type + '-result',
+          path: msg.path,
+          dir: msg.dir,
+          ok: false,
+          error: (e?.message || String(e)),
+        });
+      }
+    });
+
     // ── True-OS Wave-3 v1.1: ./<wasm-binary> shell-side dispatch ──
     // When the user invokes `./hello` (or any `./X` / `/abs/X`)
     // shell-form path and the file:
