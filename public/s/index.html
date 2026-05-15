@@ -84,6 +84,14 @@
     /* Resize handle */
     .resize-handle { width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0; }
     .resize-handle:hover { background: #58a6ff; }
+    /* monaco-polish (2026-05-14): vertical resize handle for editor (top) ↔
+       terminal (bottom) inside the editor-stack column. Hidden outside
+       editor mode (rule under .main.editor below). */
+    .vresize-handle {
+      display: none; height: 4px; background: #30363d;
+      cursor: row-resize; flex-shrink: 0;
+    }
+    .vresize-handle:hover { background: #58a6ff; }
 
     /* Preview panel */
     .panel-preview { flex: 1; display: flex; flex-direction: column; background: #0d1117; overflow: hidden; min-width: 0; }
@@ -232,12 +240,12 @@
       min-width: 0; min-height: 0; overflow: hidden;
     }
     .main.editor .panel-editor {
-      display: flex; flex: 1 1 60%; min-height: 200px;
-      border-bottom: 1px solid #30363d;
+      display: flex; flex: 1 1 60%; min-height: 100px;
     }
     .main.editor .panel-terminal {
-      display: flex; flex: 0 0 40%; min-height: 120px;
+      display: flex; flex: 0 0 40%; min-height: 80px;
     }
+    .main.editor .vresize-handle { display: block; }
     .main.editor .resize-handle { display: block; }
     .main.editor .panel-preview { display: flex; flex: 1; min-width: 0; }
 
@@ -350,6 +358,10 @@
           <span id="editorStatusEnc">UTF-8</span>
         </div>
       </div>
+      <!-- monaco-polish (2026-05-14): vertical resize handle between
+           editor (top) and terminal (bottom) inside the editor-stack
+           column. Visible only in editor mode (.main.editor). -->
+      <div class="vresize-handle" id="editorTerminalResizeHandle"></div>
       <div class="panel-terminal">
         <div id="terminal-container"></div>
         <div class="logs-panel" id="logsPanel">
@@ -499,6 +511,11 @@
         FileTree.ensureLoaded();
       }
       setTimeout(() => {
+        // monaco-polish: re-apply persisted pane dims for this layout.
+        // PaneResizer uses inline flex which is mode-specific (split vs
+        // editor have different pane structures); onLayoutChange picks
+        // the right elements for the active mode.
+        try { if (typeof PaneResizer !== 'undefined') PaneResizer.onLayoutChange(); } catch {}
         try { fitAddon.fit(); } catch {}
         // Re-layout Monaco after the panel resizes. automaticLayout:true
         // already handles this but explicit layout() on mode switch
@@ -1399,26 +1416,10 @@
       btnRefresh.addEventListener('click', refreshTree);
       searchInput.addEventListener('input', rerender);
 
-      // ── Resize handle for the tree pane ──
-      const treeResizeHandle = document.getElementById('treeResizeHandle');
-      let treeResizing = false;
-      treeResizeHandle.addEventListener('mousedown', (e) => {
-        treeResizing = true; e.preventDefault();
-        document.body.style.cursor = 'col-resize';
-      });
-      document.addEventListener('mousemove', (e) => {
-        if (!treeResizing) return;
-        const rect = mainPanel.getBoundingClientRect();
-        const w = Math.max(160, Math.min(600, e.clientX - rect.left));
-        panel.style.width = w + 'px';
-        try { fitAddon.fit(); } catch {}
-        if (window.__nimbusMonacoEditor) {
-          try { window.__nimbusMonacoEditor.layout(); } catch {}
-        }
-      });
-      document.addEventListener('mouseup', () => {
-        if (treeResizing) { treeResizing = false; document.body.style.cursor = ''; }
-      });
+      // monaco-polish (2026-05-14): tree-resize handler moved into
+      // PaneResizer (below module def, top-level scope) so all 3
+      // handles share a single persistence layer. Inline width is
+      // restored from localStorage in PaneResizer.restoreDims().
 
       // Mark a path dirty in the tree (called by Editor when buffer
       // diverges from disk).
@@ -1477,25 +1478,193 @@
       }
     }
 
-    // ── Resize handle ──
-    let resizing = false;
-    const resizeHandle = document.getElementById('resizeHandle');
-    resizeHandle.addEventListener('mousedown', (e) => {
-      resizing = true; e.preventDefault();
-      document.body.style.cursor = 'col-resize';
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!resizing) return;
-      const rect = mainPanel.getBoundingClientRect();
-      const pct = ((e.clientX - rect.left) / rect.width) * 100;
-      const clamped = Math.max(20, Math.min(80, pct));
-      mainPanel.querySelector('.panel-terminal').style.flex = clamped + ' 0 0%';
-      mainPanel.querySelector('.panel-preview').style.flex = (100 - clamped) + ' 0 0%';
-      fitAddon.fit();
-    });
-    document.addEventListener('mouseup', () => {
-      if (resizing) { resizing = false; document.body.style.cursor = ''; fitAddon.fit(); }
-    });
+    // ── monaco-polish (2026-05-14): pane resize manager ──
+    //
+    // Owns the 3 resize handles in editor mode + 1 in split mode:
+    //   H1 tree ↔ editor-stack (col, in editor mode)         — TreeResizeHandle in FileTree IIFE
+    //   H2 editor-stack ↔ preview (col, in editor + split)    — #resizeHandle (mode-aware)
+    //   V1 editor ↔ terminal (row, in editor mode)            — #editorTerminalResizeHandle
+    //
+    // Each handle persists its dimension to localStorage so a reload
+    // restores the user's layout. Keyed per-session.
+    //
+    // Triggers Monaco editor.layout() + xterm fitAddon.fit() after
+    // every drag-end so the wrapped panes re-measure. Mid-drag does
+    // a cheap fit too (xterm) for the "live shrink" feel; Monaco
+    // automaticLayout:true handles itself.
+    const PaneResizer = (function() {
+      const LS_DIMS = 'nimbus.pane.dims.' + (SESSION_PREFIX || 'noid');
+      // Default flex basis percentages — match the CSS defaults above.
+      // Persisted to LS; restored before first setLayout call.
+      let dims = {
+        treeWidth: 250,      // px
+        middlePct: 60,       // % of main width for left-stack/terminal (rest = preview)
+        editorPct: 60,       // % of left-stack height for editor (rest = terminal)
+      };
+
+      function loadDims() {
+        try {
+          const raw = localStorage.getItem(LS_DIMS);
+          if (raw) Object.assign(dims, JSON.parse(raw));
+        } catch {}
+      }
+      function saveDims() {
+        try { localStorage.setItem(LS_DIMS, JSON.stringify(dims)); } catch {}
+      }
+
+      function applyMonacoLayout() {
+        if (window.__nimbusMonacoEditor) {
+          try { window.__nimbusMonacoEditor.layout(); } catch {}
+        }
+      }
+      function applyTerminalFit() {
+        try { fitAddon.fit(); } catch {}
+      }
+      function applyAll() {
+        // Tree width — applied as inline width on .panel-tree.
+        const tree = document.getElementById('treePanel');
+        if (tree) tree.style.width = dims.treeWidth + 'px';
+        // Middle ↔ preview flex.
+        applyMiddlePreviewFlex();
+        // Editor ↔ terminal flex (inside left-stack).
+        applyEditorTerminalFlex();
+        applyTerminalFit();
+        applyMonacoLayout();
+      }
+
+      // Map middlePct → flex basis on the two children that actually
+      // compete for horizontal space in each mode:
+      //   - split mode:    .panel-terminal vs .panel-preview
+      //   - editor mode:   .panel-left-stack vs .panel-preview
+      // In editor mode .panel-left-stack is flex:1 (CSS rule); we
+      // override with explicit basis. Same for .panel-terminal in split.
+      function applyMiddlePreviewFlex() {
+        const stack = document.getElementById('leftStack');
+        const term = mainPanel.querySelector('.panel-terminal');
+        const prev = mainPanel.querySelector('.panel-preview');
+        const middlePct = Math.max(20, Math.min(80, dims.middlePct));
+        if (layout === 'editor') {
+          // stack drives middle width; terminal is INSIDE stack.
+          if (stack) stack.style.flex = middlePct + ' 0 0%';
+          if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
+          if (term) term.style.flex = '';  // unset; vertical handler owns it
+        } else if (layout === 'split') {
+          if (term) term.style.flex = middlePct + ' 0 0%';
+          if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
+          if (stack) stack.style.flex = '';
+        } else {
+          // Other modes (terminal-only / preview-only) don't use either
+          // handle visibly; clear inline so CSS defaults take effect.
+          if (term) term.style.flex = '';
+          if (prev) prev.style.flex = '';
+          if (stack) stack.style.flex = '';
+        }
+      }
+
+      function applyEditorTerminalFlex() {
+        if (layout !== 'editor') return;
+        const editor = document.getElementById('editorPanel');
+        const term = mainPanel.querySelector('.panel-terminal');
+        const editorPct = Math.max(10, Math.min(90, dims.editorPct));
+        if (editor) editor.style.flex = editorPct + ' 0 0%';
+        if (term) term.style.flex = (100 - editorPct) + ' 0 0%';
+      }
+
+      // Drag wiring.
+      let activeHandle = null;
+      let dragStartXY = 0;
+      let dragStartDim = 0;
+      let dragStartTotal = 0;
+
+      function startDrag(kind, e) {
+        activeHandle = kind;
+        e.preventDefault();
+        const rect = mainPanel.getBoundingClientRect();
+        const stack = document.getElementById('leftStack');
+        if (kind === 'tree') {
+          dragStartXY = e.clientX;
+          dragStartDim = dims.treeWidth;
+          dragStartTotal = rect.width;
+          document.body.style.cursor = 'col-resize';
+        } else if (kind === 'middle') {
+          dragStartXY = e.clientX;
+          dragStartDim = dims.middlePct;
+          dragStartTotal = rect.width;
+          document.body.style.cursor = 'col-resize';
+        } else if (kind === 'editor-terminal') {
+          dragStartXY = e.clientY;
+          dragStartDim = dims.editorPct;
+          // The vertical handle moves within the left-stack column.
+          dragStartTotal = stack ? stack.getBoundingClientRect().height : rect.height;
+          document.body.style.cursor = 'row-resize';
+        }
+      }
+
+      function onMove(e) {
+        if (!activeHandle) return;
+        if (activeHandle === 'tree') {
+          const dx = e.clientX - dragStartXY;
+          dims.treeWidth = Math.max(160, Math.min(600, dragStartDim + dx));
+          const tree = document.getElementById('treePanel');
+          if (tree) tree.style.width = dims.treeWidth + 'px';
+          applyTerminalFit();
+          applyMonacoLayout();
+        } else if (activeHandle === 'middle') {
+          const dx = e.clientX - dragStartXY;
+          const pctDelta = (dx / dragStartTotal) * 100;
+          dims.middlePct = Math.max(20, Math.min(80, dragStartDim + pctDelta));
+          applyMiddlePreviewFlex();
+          applyTerminalFit();
+          applyMonacoLayout();
+        } else if (activeHandle === 'editor-terminal') {
+          const dy = e.clientY - dragStartXY;
+          const pctDelta = (dy / dragStartTotal) * 100;
+          dims.editorPct = Math.max(10, Math.min(90, dragStartDim + pctDelta));
+          applyEditorTerminalFlex();
+          applyTerminalFit();
+          applyMonacoLayout();
+        }
+      }
+
+      function endDrag() {
+        if (!activeHandle) return;
+        activeHandle = null;
+        document.body.style.cursor = '';
+        saveDims();
+        applyTerminalFit();
+        applyMonacoLayout();
+      }
+
+      // Wire up the three handles.
+      function bindHandles() {
+        const h1 = document.getElementById('treeResizeHandle');
+        const h2 = document.getElementById('resizeHandle');
+        const v1 = document.getElementById('editorTerminalResizeHandle');
+        if (h1) h1.addEventListener('mousedown', (e) => startDrag('tree', e));
+        if (h2) h2.addEventListener('mousedown', (e) => startDrag('middle', e));
+        if (v1) v1.addEventListener('mousedown', (e) => startDrag('editor-terminal', e));
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', endDrag);
+      }
+
+      function restoreDims() {
+        loadDims();
+        // Apply tree width inline so first paint shows the persisted size.
+        const tree = document.getElementById('treePanel');
+        if (tree) tree.style.width = dims.treeWidth + 'px';
+      }
+
+      // Re-apply dims any time setLayout() switches modes — the inline
+      // flex values are mode-specific (split vs editor have different
+      // pane structures).
+      function onLayoutChange() {
+        applyMiddlePreviewFlex();
+        applyEditorTerminalFlex();
+      }
+
+      bindHandles();
+      return { restoreDims, applyAll, onLayoutChange };
+    })();
 
     // ── Status ──
     function setStatus(s) {
@@ -2007,7 +2176,12 @@
     // and ProcessTable is populated by then, no arbitrary delay needed.
 
     term.focus();
-    setLayout('split');
+    // monaco-polish (2026-05-14): default to editor mode on page load.
+    // Restore any persisted pane dims (tree width, middle/preview ratio,
+    // editor/terminal ratio) BEFORE activating layout so the first paint
+    // shows the user's prior arrangement.
+    PaneResizer.restoreDims();
+    setLayout('editor');
     connect();
   </script>
 </body>

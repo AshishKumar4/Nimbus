@@ -1,14 +1,17 @@
 #!/usr/bin/env bun
-// monaco-wave-b/regression/monaco-lazy-not-on-cold — perf-invariant
-// preserved. Adding the FileTree must NOT cause Monaco (or the
-// tree's heavy code) to load eagerly.
+// monaco-wave-b/regression/monaco-lazy-not-on-cold — perf-invariant.
+//
+// monaco-polish (2026-05-14): contract narrowed. Editor is now the
+// DEFAULT mode on cold session, so Monaco DOES fetch on cold. The
+// preserved invariant is structural: no <script src="...monaco..."
+// in the served HTML. Monaco loader is appended via document.head
+// at runtime inside Editor.ensureLoaded(), not as a top-level
+// pre-fetched script.
 //
 // We assert:
-//   1. No <script src="...monaco...."> auto-fetch tag.
-//   2. FileTree.ensureLoaded() only called from setLayout when
-//      switching to 'editor' (NOT at page-load).
-//   3. Monaco loader URL only appears inside ensureLoaded() body
-//      (not as a top-level <script src>).
+//   1. No <script src="...monaco..."> tag in initial HTML.
+//   2. FileTree.ensureLoaded gated on editor-mode in setLayout.
+//   3. FileTree IIFE state-only (no fs-* fires until ensureLoaded).
 
 import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
 
@@ -39,11 +42,14 @@ a.check('FileTree IIFE present (state-only, no eager fs calls)',
   /const FileTree\s*=\s*\(function\(\)/.test(html),
   `FileTree IIFE missing`);
 
-// Default layout is 'split' (not 'editor'). So the page starts in
-// terminal+preview mode and Monaco is not requested.
-a.check("Initial setLayout('split') (not 'editor')",
-  /\bsetLayout\(['"]split['"]\)/.test(html),
-  `initial setLayout('split') missing`);
+// monaco-polish (2026-05-14): default mode is 'editor' (user
+// request). Page-load contract: Monaco is fetched at runtime via
+// document.head.appendChild, NOT via a top-level <script src>.
+// The 'no eager <script src>' check above covers the structural
+// invariant; the active mode is irrelevant to that property.
+a.check("Initial setLayout call present",
+  /\bsetLayout\(['"][a-z-]+['"]\)\s*;/.test(html),
+  `initial setLayout missing`);
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
