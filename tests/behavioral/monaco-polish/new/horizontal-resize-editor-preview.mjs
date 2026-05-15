@@ -18,8 +18,8 @@ a.check('#resizeHandle DOM still present',
   /id=["']resizeHandle["']/.test(html),
   `resizeHandle missing`);
 
-a.check("PaneResizer binds startDrag('middle', e) on #resizeHandle",
-  /resizeHandle[\s\S]{0,200}startDrag\(['"]middle['"]\s*,\s*e\)/.test(html),
+a.check("PaneResizer binds startDrag('middle', e) for #resizeHandle",
+  /h2\s*=\s*document\.getElementById\(['"]resizeHandle['"]\)[\s\S]{0,300}h2\.addEventListener\(['"]mousedown['"]\s*,\s*\(e\)\s*=>\s*startDrag\(['"]middle['"]\s*,\s*e\)\)/.test(html),
   `middle-handle bind missing`);
 
 // applyMiddlePreviewFlex dispatches by layout: split → terminal+preview,
