@@ -1,24 +1,19 @@
 #!/usr/bin/env bun
-// monaco-wave-a/new/monaco-lazy-not-on-cold — perf invariant.
+// monaco-wave-a/new/monaco-lazy-not-on-cold — structural perf invariant.
 //
-// Charter: "Monaco 5MB. MUST lazy-load on first editor activation
-// only. Cold session terminal-only MUST NOT download Monaco."
+// monaco-polish (2026-05-14): contract narrowed. Editor is now the
+// DEFAULT mode on cold session, so Monaco WILL be requested via
+// document.head.appendChild on every fresh page load. The preserved
+// invariant is purely STRUCTURAL: no <script src="...monaco..."> in
+// the served HTML. Monaco loader is appended at runtime, never as
+// a top-level pre-fetched script.
 //
-// The cold-session HTML is served by the asset binding. This probe
-// fetches /s/<sid>/ AND /index.html, asserts:
-//   1. Monaco's loader script URL is NOT in any <script src=...> tag
-//      that would auto-fetch (i.e. no top-level <script src="...monaco...">).
-//   2. The Editor module IS present in the page (so the lazy hook
-//      exists and will fire on user demand).
-//   3. The new layout-mode button (#btnEditor) IS present. (Wave-B
-//      dropped #btnEditorTerm; single canonical 'editor' mode.)
-//   4. The fs-* WS protocol surface is referenced (sanity that the
-//      JS side has the hooks).
-//
-// What this DOESN'T cover (deferred to puppeteer probe): actual
-// runtime fetch of Monaco only on click. The HTML-shape assertions
-// here catch the bug at the source-file level — if Monaco script is
-// in a top-level <script src> tag, it WILL load on page render.
+// We assert:
+//   1. NO <script src="...monaco..."> tag in initial HTML.
+//   2. Editor module present (so the runtime hook exists).
+//   3. #btnEditor present (single canonical mode).
+//   4. fs-* protocol references present.
+//   5. Ctrl+P keydown handler present.
 
 import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
 
