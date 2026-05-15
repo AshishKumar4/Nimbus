@@ -111,19 +111,18 @@
     .main.preview-only .resize-handle { display: none; }
     .main.preview-only .panel-preview { flex: 1; }
 
-    /* monaco-wave-a (2026-05-13, hotfix course-correct):
-       Two new layout modes that put the editor in the LEFT half:
-       - 'editor-split'           : editor LEFT + preview RIGHT (mirrors
-                                    existing terminal+preview split)
-       - 'editor-split-with-term' : editor TL + terminal BL + preview R
-                                    (3-pane VSCode-style)
-       Existing terminal-only / split / preview-only modes unchanged.
+    /* monaco-wave-a + Wave-B (2026-05-13/14):
+       Editor layout mode — 4-pane VSCode-style:
+         FILE TREE | editor-stack (editor TOP + terminal BOTTOM) | PREVIEW
+       Single mode: 'editor'. Dropped earlier 'editor-split' (editor+preview
+       without terminal) per user feedback "I don't need 'edit + preview'
+       at all". Renamed 'editor-split-with-term' → 'editor' for clarity.
 
-       Both .panel-editor and .panel-terminal live INSIDE
-       .panel-left-stack. In 1D modes the stack is display:contents
-       (transparent — children flex directly into .main). In 3-pane
-       mode the stack flips to flex column so editor + terminal
-       stack vertically. */
+       Editor + terminal live INSIDE .panel-left-stack. In 1D modes
+       (terminal-only / split / preview-only) the stack is
+       display:contents (layout-transparent — children flex directly
+       into .main). In editor mode the stack flips to flex column so
+       editor (top) + terminal (bottom) stack vertically. */
 
     /* Editor panel — hidden by default; shown by mode-specific rules. */
     .panel-editor {
@@ -133,32 +132,114 @@
     }
     .panel-editor.active { display: flex; }
 
-    /* Wrapper for the left half. display:contents makes it
-       layout-transparent in modes that want editor/terminal as direct
-       siblings of .main (terminal-only, split, editor-split). */
+    /* Wrapper for the editor-stack column. display:contents in 1D
+       modes (transparent). flex column in editor mode. */
     .panel-left-stack { display: contents; }
 
-    /* editor-split: editor LEFT + preview RIGHT. Hide terminal. */
-    .main.editor-split .panel-terminal { display: none; }
-    .main.editor-split .panel-editor { display: flex; flex: 1; min-width: 0; }
-    .main.editor-split .resize-handle { display: block; }
-    .main.editor-split .panel-preview { display: flex; flex: 1; min-width: 0; }
+    /* monaco-wave-b: File-tree sidebar. Lives as a FIRST child of
+       .main; visible only in 'editor' mode. ~250px default width,
+       resizable via .tree-resize-handle. */
+    .panel-tree {
+      display: none; flex-direction: column;
+      width: 250px; min-width: 160px; max-width: 600px;
+      background: #181818;        /* slightly darker than editor bg */
+      border-right: 1px solid #30363d;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .tree-resize-handle {
+      display: none;
+      width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0;
+    }
+    .tree-resize-handle:hover { background: #58a6ff; }
 
-    /* editor-split-with-term: 3-pane. Left half is a vertical stack
-       (editor on top + terminal on bottom). Right half is preview. */
-    .main.editor-split-with-term .panel-left-stack {
+    .tree-toolbar {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 6px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      flex-shrink: 0;
+      min-height: 28px;
+    }
+    .tree-toolbar .tree-title {
+      flex: 1;
+      font-size: 11px; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.5px; font-family: ui-monospace, Menlo, monospace;
+      padding-left: 4px;
+    }
+    .tree-toolbar button {
+      background: transparent; border: 1px solid transparent;
+      color: #8b949e; padding: 2px 6px; font-size: 14px;
+      cursor: pointer; border-radius: 3px; line-height: 1;
+    }
+    .tree-toolbar button:hover { background: #30363d; color: #c9d1d9; }
+
+    .tree-search-wrap {
+      padding: 4px 6px; background: #161b22;
+      border-bottom: 1px solid #30363d; flex-shrink: 0;
+    }
+    .tree-search {
+      width: 100%;
+      background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 3px 6px; font-size: 11px; border-radius: 3px;
+      font-family: ui-monospace, Menlo, monospace; outline: none;
+    }
+    .tree-search:focus { border-color: #58a6ff; }
+
+    .tree-body {
+      flex: 1; overflow: auto; padding: 4px 0;
+      font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+      color: #c9d1d9;
+    }
+    .tree-body::-webkit-scrollbar { width: 8px; }
+    .tree-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    .tree-body::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+    /* Tree nodes — each row has its own indent calculated via padding-left.
+       Hover + selected states match VSCode dark. */
+    .tree-node {
+      display: flex; align-items: center; gap: 4px;
+      padding: 2px 8px 2px 4px;
+      cursor: pointer; user-select: none;
+      white-space: nowrap; overflow: hidden;
+      line-height: 20px;
+    }
+    .tree-node:hover { background: #21262d; }
+    .tree-node.selected { background: #1f6feb44; color: #58a6ff; }
+    .tree-node.hidden { display: none; }
+    .tree-node .tree-chevron {
+      width: 12px; flex-shrink: 0; color: #6e7681;
+      font-size: 9px; text-align: center;
+      transition: transform 0.15s;
+    }
+    .tree-node.dir > .tree-chevron { color: #c9d1d9; }
+    .tree-node.dir.expanded > .tree-chevron { transform: rotate(90deg); }
+    .tree-node.file > .tree-chevron { visibility: hidden; }
+    .tree-node .tree-icon { width: 14px; flex-shrink: 0; text-align: center; }
+    .tree-node .tree-label { overflow: hidden; text-overflow: ellipsis; }
+    .tree-node.dirty .tree-label::after { content: ' ●'; color: #d29922; }
+    .tree-children { /* unused; tree is flat with calculated indent */ }
+    .tree-empty {
+      padding: 16px 12px; color: #6e7681; font-style: italic;
+      font-size: 11px; text-align: center;
+    }
+
+    /* Editor layout (single mode, monaco-wave-b): file tree | editor-stack | preview */
+    .main.editor .panel-tree { display: flex; }
+    .main.editor .tree-resize-handle { display: block; }
+    .main.editor .panel-left-stack {
       display: flex; flex: 1; flex-direction: column;
       min-width: 0; min-height: 0; overflow: hidden;
     }
-    .main.editor-split-with-term .panel-editor {
+    .main.editor .panel-editor {
       display: flex; flex: 1 1 60%; min-height: 200px;
       border-bottom: 1px solid #30363d;
     }
-    .main.editor-split-with-term .panel-terminal {
+    .main.editor .panel-terminal {
       display: flex; flex: 0 0 40%; min-height: 120px;
     }
-    .main.editor-split-with-term .resize-handle { display: block; }
-    .main.editor-split-with-term .panel-preview { display: flex; flex: 1; min-width: 0; }
+    .main.editor .resize-handle { display: block; }
+    .main.editor .panel-preview { display: flex; flex: 1; min-width: 0; }
 
     /* VSCode-like editor statusbar (bottom-of-editor bar with
        line:col, language, encoding). */
@@ -209,14 +290,11 @@
     <button id="btnTerminal" class="active" title="Terminal">Terminal</button>
     <button id="btnPreview" title="Preview">Preview</button>
     <button id="btnSplit" title="Split view">Split</button>
-    <!-- monaco-wave-a (2026-05-13, hotfix course-correct):
-         Two new layout modes that mirror the existing split shape but
-         put the Monaco editor in the LEFT pane instead of terminal:
-         - Edit+Preview: editor LEFT, preview RIGHT (drop-in for split)
-         - Edit+Term+Preview: 3-pane VSCode-style (editor TL + term BL + preview R)
-         Both lazy-load Monaco on first click (perf-invariant). -->
-    <button id="btnEditor" title="Editor + Preview (2-pane split)">Edit+Preview</button>
-    <button id="btnEditorTerm" title="Editor + Terminal + Preview (3-pane VSCode-style)">Edit+Term+Preview</button>
+    <!-- monaco-wave-b (2026-05-14): single canonical Editor mode.
+         Drops Edit+Preview (per user "I don't need edit+preview at all").
+         Layout: file tree | editor (top) + terminal (bottom) | preview.
+         Lazy-loads Monaco + the tree on first click. -->
+    <button id="btnEditor" title="Editor (file tree + Monaco + terminal + preview)">Editor</button>
     <div class="sep"></div>
     <button id="btnProcs" title="Toggle process logs panel">
       <span class="procs-dot"></span>
@@ -227,12 +305,29 @@
     <span class="vite-status" id="viteStatus"></span>
   </div>
   <div class="main" id="mainPanel">
+    <!-- monaco-wave-b (2026-05-14): file-tree sidebar. Visible ONLY
+         in editor mode (CSS toggles display:flex on .main.editor).
+         The .tree-resize-handle sits between tree and editor stack;
+         dragging it adjusts .panel-tree's width inline. -->
+    <div class="panel-tree" id="treePanel">
+      <div class="tree-toolbar">
+        <span class="tree-title">Explorer</span>
+        <button id="btnTreeNewFile" title="New File">＋</button>
+        <button id="btnTreeNewDir" title="New Folder">📁</button>
+        <button id="btnTreeRefresh" title="Refresh tree (re-fetch root)">⟳</button>
+      </div>
+      <div class="tree-search-wrap">
+        <input id="treeSearch" class="tree-search" placeholder="Filter files…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="tree-body" id="treeBody"></div>
+    </div>
+    <div class="tree-resize-handle" id="treeResizeHandle"></div>
     <!-- monaco-wave-a (2026-05-13, hotfix course-correct):
          The .panel-left-stack wrapper is display:contents in 1D modes
-         (terminal+preview, editor+preview) — its children act as
-         direct flex children of .main. In editor-split-with-term mode,
+         (terminal-only, split, preview-only) — its children act as
+         direct flex children of .main. In editor mode (monaco-wave-b),
          CSS flips it to display:flex; flex-direction:column so editor
-         and terminal stack vertically in the LEFT half. -->
+         and terminal stack vertically in the MIDDLE column. -->
     <div class="panel-left-stack" id="leftStack">
       <div class="panel-editor" id="editorPanel">
         <div class="editor-bar">
@@ -378,10 +473,10 @@
     const mainPanel = document.getElementById('mainPanel');
     const viteStatus = document.getElementById('viteStatus');
     let ws = null, rd = 1000, statsTimer = null;
-    // monaco-wave-a (2026-05-13, hotfix course-correct): layout enum
-    // extended with two new modes that put the editor in the LEFT half:
-    //   'editor-split'           : editor LEFT + preview RIGHT
-    //   'editor-split-with-term' : editor TL + terminal BL + preview R
+    // monaco-wave-b (2026-05-14): single 'editor' mode replaces the
+    // Wave-A duo of 'editor-split' (dropped per user feedback) and
+    // 'editor-split-with-term' (renamed → 'editor'). Layout:
+    //   file tree | editor (top) + terminal (bottom) | preview
     // Old modes preserved verbatim: 'split', 'terminal-only', 'preview-only'.
     let layout = 'split';
 
@@ -392,15 +487,17 @@
       document.getElementById('btnTerminal').classList.toggle('active', mode === 'terminal-only');
       document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
       document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
-      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor-split');
-      document.getElementById('btnEditorTerm').classList.toggle('active', mode === 'editor-split-with-term');
+      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor');
       // Editor panel visibility — drives display:flex via .active.
       const editorPanel = document.getElementById('editorPanel');
-      const wantEditor = (mode === 'editor-split' || mode === 'editor-split-with-term');
+      const wantEditor = (mode === 'editor');
       editorPanel.classList.toggle('active', wantEditor);
-      // Lazy-init Monaco the FIRST time the user switches to an
-      // editor mode. Cold session never pays the 5 MB download.
-      if (wantEditor) Editor.ensureLoaded();
+      // Lazy-init Monaco + the file tree the FIRST time the user
+      // switches to editor mode. Cold session pays neither cost.
+      if (wantEditor) {
+        Editor.ensureLoaded();
+        FileTree.ensureLoaded();
+      }
       setTimeout(() => {
         try { fitAddon.fit(); } catch {}
         // Re-layout Monaco after the panel resizes. automaticLayout:true
@@ -414,8 +511,7 @@
     document.getElementById('btnTerminal').onclick = () => setLayout('terminal-only');
     document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
     document.getElementById('btnSplit').onclick = () => setLayout('split');
-    document.getElementById('btnEditor').onclick = () => setLayout('editor-split');
-    document.getElementById('btnEditorTerm').onclick = () => setLayout('editor-split-with-term');
+    document.getElementById('btnEditor').onclick = () => setLayout('editor');
     document.getElementById('btnRefresh').onclick = () => reloadPreview();
     document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
 
@@ -657,11 +753,16 @@
           copyWithSyntaxHighlighting: false,
         });
         window.__nimbusMonacoEditor = editor;
-        // Dirty-state tracking.
+        // Dirty-state tracking. Also propagate to FileTree so the
+        // tree row shows the dirty dot (matches editor tab).
         editor.onDidChangeModelContent(() => {
           if (!openPath) return;
           const cur = editor.getValue();
-          setTabFile(openPath, cur !== originalContent);
+          const dirty = cur !== originalContent;
+          setTabFile(openPath, dirty);
+          if (typeof FileTree !== 'undefined') {
+            try { FileTree.markDirty(openPath, dirty); } catch {}
+          }
         });
         // Cursor position → status bar.
         const statusPos = document.getElementById('editorStatusPos');
@@ -684,6 +785,26 @@
 
       async function openFile(path) {
         if (!path) return;
+        // monaco-wave-b: dirty-prompt before switching files. If the
+        // current buffer has unsaved changes, ask the user whether
+        // to (a) save first, (b) discard and switch, or (c) cancel.
+        // Skip when switching to the SAME file (no-op) or when there
+        // is no editor yet.
+        if (editor && openPath && openPath !== path) {
+          const cur = editor.getValue();
+          if (cur !== originalContent) {
+            const choice = confirm(
+              'Unsaved changes in ' + openPath + '\n\n' +
+              'OK = save and switch.\n' +
+              'Cancel = discard changes and switch.'
+            );
+            if (choice) {
+              await save();
+            }
+            // Either way, proceed to load the new file (the user
+            // explicitly chose to leave the current buffer).
+          }
+        }
         await ensureLoaded();
         let result;
         try {
@@ -716,6 +837,11 @@
         if (statusLang) statusLang.textContent = lang;
         const statusPos = document.getElementById('editorStatusPos');
         if (statusPos) statusPos.textContent = 'Ln 1, Col 1';
+        // monaco-wave-b: mirror selection into the file tree (so
+        // palette/Ctrl+P opens highlight the row).
+        if (typeof FileTree !== 'undefined') {
+          try { FileTree.setSelected(path); FileTree.markDirty(path, false); } catch {}
+        }
         editor.focus();
       }
 
@@ -735,6 +861,9 @@
         }
         originalContent = content;
         setTabFile(openPath, false);
+        if (typeof FileTree !== 'undefined') {
+          try { FileTree.markDirty(openPath, false); } catch {}
+        }
         setStatusFlash('saved');
       }
 
@@ -852,6 +981,384 @@
       });
 
       return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult };
+    })();
+
+    // ── monaco-wave-b (2026-05-14): FileTree module ──
+    //
+    // VSCode-style left sidebar showing the user VFS (rooted at
+    // /home/user). Lazy-loads on first editor-mode activation. Tree
+    // is flat in DOM (one .tree-node per row) with padding-left
+    // calculated per depth — gives a clean expand/collapse animation
+    // without nested ULs.
+    //
+    // Behavior:
+    //   - First render: lazy fs-list /home/user (recursive=false)
+    //   - Folder click: toggle expanded; on first expand, lazy
+    //     fs-list that folder
+    //   - File click: Editor.openFile(path) — Editor handles dirty
+    //     prompt + Monaco model swap
+    //   - Search filter: client-side substring on path, hides nodes
+    //   - New file/folder: prompt + fs-write (empty content for
+    //     file; for folder we synthesize an empty .keep file inside
+    //     so fs-list shows it — VFS has no separate mkdir over WS)
+    //   - Refresh: re-fetch root, drop cached children
+    //   - Expanded state persisted via localStorage keyed on session id
+    //
+    // Memory: tree state is a flat Map<path, node>; max 10k entries
+    // before we stop expanding to protect the browser.
+    const FileTree = (function() {
+      const panel = document.getElementById('treePanel');
+      const body = document.getElementById('treeBody');
+      const searchInput = document.getElementById('treeSearch');
+      const btnNewFile = document.getElementById('btnTreeNewFile');
+      const btnNewDir = document.getElementById('btnTreeNewDir');
+      const btnRefresh = document.getElementById('btnTreeRefresh');
+
+      const ROOT = '/home/user';
+      const MAX_NODES = 10_000;
+      const LS_KEY = 'nimbus.tree.expanded.' + (SESSION_PREFIX || 'noid');
+
+      // node: { path, name, type:'file'|'directory', depth, parent, children?:Set<path>, loaded:bool, selected:bool, hidden:bool }
+      const nodes = new Map();
+      // Insertion-ordered list of paths for stable render.
+      const renderOrder = [];
+      let loaded = false;
+      let pending = null;
+      let nextReqId = 70_000;
+      const pendingReqs = new Map();
+      let selectedPath = null;
+
+      function loadExpandedSet() {
+        try {
+          const raw = localStorage.getItem(LS_KEY);
+          if (!raw) return new Set([ROOT]);
+          return new Set(JSON.parse(raw));
+        } catch { return new Set([ROOT]); }
+      }
+      function saveExpandedSet(set) {
+        try { localStorage.setItem(LS_KEY, JSON.stringify(Array.from(set))); } catch {}
+      }
+      const expanded = loadExpandedSet();
+      expanded.add(ROOT);
+
+      function fsRequest(frame, resultType) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('WS not connected'));
+        const reqId = nextReqId++;
+        frame.reqId = reqId;
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => {
+            if (pendingReqs.has(reqId)) {
+              pendingReqs.delete(reqId);
+              reject(new Error('fs request timed out'));
+            }
+          }, 15000);
+          pendingReqs.set(reqId, { resolve, t });
+          try { ws.send(JSON.stringify(frame)); }
+          catch (e) { clearTimeout(t); pendingReqs.delete(reqId); reject(e); }
+        });
+      }
+      // Hook into main WS onmessage like the Editor module does.
+      function tryHandleFsResult(msg) {
+        if (!msg || typeof msg.type !== 'string') return false;
+        if (!msg.type.endsWith('-result')) return false;
+        const reqId = msg.reqId;
+        if (typeof reqId !== 'number') return false;
+        const slot = pendingReqs.get(reqId);
+        if (!slot) return false;
+        pendingReqs.delete(reqId);
+        clearTimeout(slot.t);
+        slot.resolve(msg);
+        return true;
+      }
+
+      function iconFor(node) {
+        if (node.type === 'directory') return node.expanded ? '📂' : '📁';
+        // Light extension-based icons.
+        const ext = (node.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+        const m = {
+          js:'📜', mjs:'📜', cjs:'📜', ts:'📘', tsx:'📘', jsx:'📜',
+          py:'🐍', rb:'💎', go:'🐹', rs:'🦀',
+          c:'🔧', h:'🔧', cpp:'🔧', hpp:'🔧',
+          json:'⚙️', yaml:'⚙️', yml:'⚙️', toml:'⚙️',
+          md:'📝', html:'🌐', css:'🎨', scss:'🎨',
+          sh:'🐚', bash:'🐚',
+          png:'🖼️', jpg:'🖼️', jpeg:'🖼️', gif:'🖼️', svg:'🖼️',
+          lock:'🔒',
+        };
+        return m[ext] || '📄';
+      }
+
+      function relativeName(path) {
+        const i = path.lastIndexOf('/');
+        return i >= 0 ? path.substring(i + 1) : path;
+      }
+      function parentOf(path) {
+        const i = path.lastIndexOf('/');
+        if (i <= 0) return '';
+        return path.substring(0, i);
+      }
+      function depthOf(path) {
+        // /home/user/foo/bar.txt → 2 (relative to /home/user which is root, depth 0)
+        if (!path.startsWith(ROOT)) return 0;
+        const rest = path.substring(ROOT.length).replace(/^\/+/, '');
+        if (!rest) return 0;
+        return rest.split('/').length;
+      }
+
+      function ensureNode(path, type) {
+        let n = nodes.get(path);
+        if (n) {
+          if (type) n.type = type;
+          return n;
+        }
+        n = {
+          path, name: relativeName(path) || path,
+          type: type || 'file',
+          depth: depthOf(path),
+          loaded: false, expanded: expanded.has(path),
+          dirty: false,
+        };
+        nodes.set(path, n);
+        return n;
+      }
+
+      async function loadFolder(path) {
+        let result;
+        try {
+          result = await fsRequest({ type: 'fs-list', dir: path, recursive: false }, 'fs-list-result');
+        } catch (e) {
+          body.innerHTML = '<div class="tree-empty">fs-list failed: ' + escapeHtml(e?.message || String(e)) + '</div>';
+          return;
+        }
+        if (result.error) {
+          body.innerHTML = '<div class="tree-empty">' + escapeHtml(result.error) + '</div>';
+          return;
+        }
+        const entries = result.entries || [];
+        const folder = ensureNode(path, 'directory');
+        folder.loaded = true;
+        // Insert children — sort: directories first, alphabetical.
+        entries.sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+          return a.path.localeCompare(b.path);
+        });
+        for (const e of entries) {
+          if (nodes.size >= MAX_NODES) break;
+          ensureNode(e.path, e.type);
+        }
+        rerender();
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;',
+        })[c]);
+      }
+
+      // Compute the rendered order: walk tree depth-first, including
+      // only children of expanded folders. Hidden filter applied at
+      // search time.
+      function computeOrder() {
+        const out = [];
+        function walk(parentPath, depth) {
+          // Collect direct children of parentPath in the nodes map.
+          const children = [];
+          for (const n of nodes.values()) {
+            if (parentOf(n.path) === parentPath) children.push(n);
+          }
+          children.sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+          for (const c of children) {
+            out.push(c);
+            if (c.type === 'directory' && expanded.has(c.path)) {
+              walk(c.path, depth + 1);
+            }
+          }
+        }
+        walk(ROOT, 1);
+        return out;
+      }
+
+      function rerender() {
+        const order = computeOrder();
+        const filter = (searchInput.value || '').trim().toLowerCase();
+        body.innerHTML = '';
+        if (order.length === 0) {
+          body.innerHTML = '<div class="tree-empty">Empty</div>';
+          return;
+        }
+        const frag = document.createDocumentFragment();
+        let visibleCount = 0;
+        for (const n of order) {
+          const matchesFilter = !filter || n.path.toLowerCase().includes(filter);
+          if (!matchesFilter) continue;
+          visibleCount++;
+          const div = document.createElement('div');
+          let cls = 'tree-node ' + (n.type === 'directory' ? 'dir' : 'file');
+          if (n.type === 'directory' && expanded.has(n.path)) cls += ' expanded';
+          if (selectedPath === n.path) cls += ' selected';
+          if (n.dirty) cls += ' dirty';
+          div.className = cls;
+          div.dataset.path = n.path;
+          div.style.paddingLeft = (8 + (n.depth - 1) * 14) + 'px';
+          div.innerHTML =
+            '<span class="tree-chevron">▶</span>' +
+            '<span class="tree-icon">' + iconFor(n) + '</span>' +
+            '<span class="tree-label"></span>';
+          div.querySelector('.tree-label').textContent = n.name;
+          div.addEventListener('click', () => handleNodeClick(n));
+          frag.appendChild(div);
+        }
+        body.appendChild(frag);
+        if (visibleCount === 0 && filter) {
+          body.innerHTML = '<div class="tree-empty">No matches for "' + escapeHtml(filter) + '"</div>';
+        }
+      }
+
+      function setSelected(path) {
+        selectedPath = path;
+        rerender();
+      }
+
+      async function handleNodeClick(node) {
+        if (node.type === 'directory') {
+          if (expanded.has(node.path)) {
+            expanded.delete(node.path);
+          } else {
+            expanded.add(node.path);
+            if (!node.loaded) {
+              // Show a tentative state immediately, then async load.
+              rerender();
+              await loadFolder(node.path);
+              saveExpandedSet(expanded);
+              return;
+            }
+          }
+          saveExpandedSet(expanded);
+          rerender();
+        } else {
+          setSelected(node.path);
+          Editor.openFile(node.path);
+        }
+      }
+
+      async function ensureLoaded() {
+        if (loaded) return;
+        if (pending) return pending;
+        panel.classList.add('loading');
+        pending = (async () => {
+          // Ensure root node + load it.
+          ensureNode(ROOT, 'directory');
+          await loadFolder(ROOT);
+          // Auto-expand any persisted-expanded folders that are
+          // already in the tree from the root load.
+          for (const path of expanded) {
+            if (path === ROOT) continue;
+            const n = nodes.get(path);
+            if (n && n.type === 'directory' && !n.loaded) {
+              await loadFolder(path);
+            }
+          }
+          loaded = true;
+        })();
+        try { await pending; } finally { pending = null; panel.classList.remove('loading'); }
+      }
+
+      // Toolbar actions.
+      async function refreshTree() {
+        // Drop all cached children of root + re-fetch.
+        nodes.clear();
+        loaded = false;
+        await ensureLoaded();
+      }
+      async function newFile() {
+        // Place in the currently-selected directory, or the root.
+        let parent = ROOT;
+        if (selectedPath) {
+          const n = nodes.get(selectedPath);
+          if (n) parent = n.type === 'directory' ? n.path : parentOf(n.path);
+        }
+        const name = prompt('New file name (relative to ' + parent + '):');
+        if (!name) return;
+        const path = parent + '/' + name.replace(/^\/+/, '');
+        try {
+          await fsRequest({ type: 'fs-write', path, content: '' }, 'fs-write-result');
+          // Refresh the parent folder.
+          const pn = nodes.get(parent);
+          if (pn) {
+            pn.loaded = false;
+            await loadFolder(parent);
+          }
+          expanded.add(parent);
+          saveExpandedSet(expanded);
+          setSelected(path);
+          Editor.openFile(path);
+        } catch (e) {
+          alert('Create file failed: ' + (e?.message || e));
+        }
+      }
+      async function newDir() {
+        let parent = ROOT;
+        if (selectedPath) {
+          const n = nodes.get(selectedPath);
+          if (n) parent = n.type === 'directory' ? n.path : parentOf(n.path);
+        }
+        const name = prompt('New folder name (relative to ' + parent + '):');
+        if (!name) return;
+        const dirPath = parent + '/' + name.replace(/^\/+/, '');
+        // Synthesize via .keep file — fs-write auto-mkdirs the parent
+        // chain (init.ts handler does this).
+        try {
+          await fsRequest({ type: 'fs-write', path: dirPath + '/.keep', content: '' }, 'fs-write-result');
+          const pn = nodes.get(parent);
+          if (pn) { pn.loaded = false; await loadFolder(parent); }
+          expanded.add(dirPath);
+          saveExpandedSet(expanded);
+          rerender();
+        } catch (e) {
+          alert('Create folder failed: ' + (e?.message || e));
+        }
+      }
+
+      btnNewFile.addEventListener('click', newFile);
+      btnNewDir.addEventListener('click', newDir);
+      btnRefresh.addEventListener('click', refreshTree);
+      searchInput.addEventListener('input', rerender);
+
+      // ── Resize handle for the tree pane ──
+      const treeResizeHandle = document.getElementById('treeResizeHandle');
+      let treeResizing = false;
+      treeResizeHandle.addEventListener('mousedown', (e) => {
+        treeResizing = true; e.preventDefault();
+        document.body.style.cursor = 'col-resize';
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!treeResizing) return;
+        const rect = mainPanel.getBoundingClientRect();
+        const w = Math.max(160, Math.min(600, e.clientX - rect.left));
+        panel.style.width = w + 'px';
+        try { fitAddon.fit(); } catch {}
+        if (window.__nimbusMonacoEditor) {
+          try { window.__nimbusMonacoEditor.layout(); } catch {}
+        }
+      });
+      document.addEventListener('mouseup', () => {
+        if (treeResizing) { treeResizing = false; document.body.style.cursor = ''; }
+      });
+
+      // Mark a path dirty in the tree (called by Editor when buffer
+      // diverges from disk).
+      function markDirty(path, isDirty) {
+        const n = nodes.get(path);
+        if (!n) return;
+        if (n.dirty === !!isDirty) return;
+        n.dirty = !!isDirty;
+        rerender();
+      }
+
+      return { ensureLoaded, tryHandleFsResult, markDirty, setSelected };
     })();
 
     // Which preview backend the iframe currently points at. Driven by
@@ -986,6 +1493,8 @@
           // Editor's pending-request resolver. Return early so the
           // shell-side dispatch doesn't see them as unknown types.
           if (Editor.tryHandleFsResult(msg)) return;
+          // monaco-wave-b: FileTree consumes fs-list results too.
+          if (FileTree.tryHandleFsResult(msg)) return;
           if (msg.type === 'output') {
             term.write(msg.data);
             // Snappy preview switch: both vite (/preview/) and wrangler
