@@ -227,6 +227,12 @@ export class NimbusSession extends CloudflareDurableObject {
    * Non-hibernatable (we use server.accept(), not ctx.acceptWebSocket).
    */
   _cirrusHmrWsClients: Map<WebSocket, string> | null = null;
+  /** file-tree-watch (2026-05-15): per-WS fs-watch subscriptions.
+   *  Lazily created on first fs-watch-subscribe by src/session/fs-watch.ts;
+   *  cleaned up unconditionally in src/session/ws.ts on wsClose / wsError.
+   *  Optional (undefined) until first subscribe so memory stays at 0
+   *  for terminal-only sessions. */
+  _fsWatchSubs?: Map<WebSocket, import('./fs-watch.js').FsWatchSub[]>;
   nimbusWrangler: NimbusWrangler | null = null;
   npmInstaller: NpmInstaller | null = null;
   /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */

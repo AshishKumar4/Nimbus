@@ -37,6 +37,12 @@ import { dec } from '../_shared/bytes.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '../observability/oom-discriminator.js';
 import { flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
 import { persistShellState } from './state-store.js';
+import {
+  handleFsWatchSubscribe,
+  handleFsWatchUnsubscribe,
+  cleanupFsWatchOnClose,
+  type FsWatchSub,
+} from './fs-watch.js';
 import type { ProcessLogStore } from '../runtime/process-logs.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
@@ -54,6 +60,12 @@ export interface WsHost {
   kernel: Kernel | null;
   cirrusReal: CirrusReal | null;
   _cirrusHmrWsClients: Map<WebSocket, string> | null;
+  /** file-tree-watch (2026-05-15): per-WS fs-watch subscriptions.
+   *  Keyed on the live WebSocket; cleaned up unconditionally in
+   *  wsClose / wsError. See src/session/fs-watch.ts for the protocol
+   *  + lifecycle. Optional (undefined) until first subscribe so
+   *  memory stays at 0 for terminal-only sessions. */
+  _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
   processLogs: ProcessLogStore;
   wranglerAliasBannerShown: boolean;
   _w9PersistWired: boolean;
@@ -152,6 +164,42 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     }
     const data = typeof message === 'string' ? message : dec.decode(message);
     const msg = JSON.parse(data);
+    // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE
+    // delegating to the terminal. These messages are WS-scoped (the
+    // bus listener captures `ws`), so the dispatch site needs the live
+    // ws ref — the terminal.onFs callback only has (msg, reply). Reply
+    // pattern mirrors the fs-* reqId-echo at ws-terminal.ts:142-150.
+    if (msg && (msg.type === 'fs-watch-subscribe' || msg.type === 'fs-watch-unsubscribe')) {
+      const reqId = (msg as any).reqId;
+      const reply = (frame: any) => {
+        try {
+          const merged = (reqId !== undefined && frame && typeof frame === 'object')
+            ? { ...frame, reqId }
+            : frame;
+          ws.send(JSON.stringify(merged));
+        } catch { /* WS may be closing */ }
+      };
+      try {
+        if (msg.type === 'fs-watch-subscribe') {
+          const r = handleFsWatchSubscribe(self, ws, msg);
+          if (r.ok) {
+            reply({ type: 'fs-watch-subscribe-result', ok: true, subId: r.subId });
+          } else {
+            reply({ type: 'fs-watch-subscribe-result', ok: false, error: r.error });
+          }
+        } else {
+          const r = handleFsWatchUnsubscribe(self, ws, msg);
+          reply({ type: 'fs-watch-unsubscribe-result', ok: true, removed: r.removed });
+        }
+      } catch (e: any) {
+        reply({
+          type: msg.type + '-result',
+          ok: false,
+          error: 'fs-watch handler threw: ' + (e?.message || String(e)),
+        });
+      }
+      return;
+    }
     if (self.terminal) self.terminal.handleMessage(msg);
     // ── B'.1 snapshot ───────────────────────────────────────────────
     // Persist Shell state to DO SQLite after the terminal has handled
@@ -179,6 +227,11 @@ export async function wsClose(
   // closed by `vite stop` / navigation — nulled the session's
   // shell/terminal/kernel, silently freezing the user's terminal tab.
   const att = wsKind(ws);
+  // file-tree-watch (2026-05-15): drop any fs-watch subscriptions on
+  // this WS regardless of kind. Shell WS is the canonical carrier in
+  // practice; unconditional cleanup is defensive against any future
+  // WS kind that might subscribe. Idempotent + no-op when map empty.
+  try { cleanupFsWatchOnClose(self, ws); } catch { /* best-effort */ }
   // W9: process-logs sockets close routinely (user closes a log tab).
   // Don't touch shell/terminal — and don't bother flushing here either
   // because process-logs ws close doesn't imply session lifecycle.
@@ -274,6 +327,9 @@ export async function wsError(self: WsHost, ws: WebSocket, _error?: any): Promis
   // Audit F1: same discriminator as webSocketClose. A socket error
   // on an HMR WS must not take down the terminal tab.
   const att = wsKind(ws);
+  // file-tree-watch (2026-05-15): drop fs-watch subscriptions on this
+  // WS. Mirror of the cleanup in wsClose above.
+  try { cleanupFsWatchOnClose(self, ws); } catch { /* best-effort */ }
   // W9: process-logs error — same drop-and-return policy as close.
   if (att.kind === 'process-logs') {
     return;
