@@ -572,10 +572,23 @@
       // Send a fs-* message; await the paired result. Resolves with the
       // result frame; rejects on error or timeout (15s — generous for
       // big trees, tight enough that a hung session surfaces fast).
+      // file-tree-fix (2026-05-14): outbound queue for fs-* frames
+      // sent before ws.onopen fires. User repro: "fs-list failed:
+      // WS not connected" when clicking Editor before terminal prompt.
+      //
+      // Race window: connect() runs at page-load and ws is in CONNECTING
+      // state (readyState === 0). If the user clicks Editor BEFORE
+      // ws.onopen fires, setLayout('editor') invokes Editor.ensureLoaded
+      // → eventually fsRequest, which pre-fix rejected synchronously.
+      //
+      // Fix: register the pending request synchronously (reqId assigned,
+      // resolve/reject stored), queue the frame in `outQueue`, return
+      // the promise. When ws.onopen fires (drainFsQueue below),
+      // we ws.send() every queued frame. The response handler
+      // (tryHandleFsResult) is unchanged; it resolves the same pending
+      // entry whenever the server replies.
+      const outQueue = [];
       function fsRequest(frame, resultType) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          return Promise.reject(new Error('WS not connected'));
-        }
         const reqId = nextReqId++;
         frame.reqId = reqId;
         return new Promise((resolve, reject) => {
@@ -586,9 +599,37 @@
             }
           }, 15000);
           pending.set(reqId, { resolve, reject, t, resultType });
-          try { ws.send(JSON.stringify(frame)); }
-          catch (e) { clearTimeout(t); pending.delete(reqId); reject(e); }
+          // Try to send now if the WS is OPEN; otherwise queue.
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify(frame)); }
+            catch (e) {
+              // OPEN but send threw — surface the failure immediately.
+              clearTimeout(t); pending.delete(reqId); reject(e);
+            }
+          } else {
+            outQueue.push(frame);
+          }
         });
+      }
+      // Drain the outbound queue. Called from ws.onopen. Idempotent
+      // (safe to call multiple times — empty queue is a no-op).
+      // Resilient to reconnects: queue accumulates while ws.readyState
+      // is CONNECTING/CLOSED and flushes on next onopen.
+      function drainFsQueue() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const drained = outQueue.splice(0);
+        for (const frame of drained) {
+          try { ws.send(JSON.stringify(frame)); }
+          catch (e) {
+            // Send failed on a drained frame — reject the pending entry.
+            const slot = pending.get(frame.reqId);
+            if (slot) {
+              pending.delete(frame.reqId);
+              clearTimeout(slot.t);
+              slot.reject(e);
+            }
+          }
+        }
       }
       // Hook into the main WS onmessage to deliver fs-*-result frames.
       // Called by connect() right after parsing each incoming message —
@@ -980,7 +1021,7 @@
         }
       });
 
-      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult };
+      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult, drainFsQueue };
     })();
 
     // ── monaco-wave-b (2026-05-14): FileTree module ──
@@ -1041,8 +1082,10 @@
       const expanded = loadExpandedSet();
       expanded.add(ROOT);
 
+      // file-tree-fix (2026-05-14): outbound queue mirroring Editor's
+      // pattern. See Editor.fsRequest for the race rationale.
+      const outQueue = [];
       function fsRequest(frame, resultType) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('WS not connected'));
         const reqId = nextReqId++;
         frame.reqId = reqId;
         return new Promise((resolve, reject) => {
@@ -1052,10 +1095,31 @@
               reject(new Error('fs request timed out'));
             }
           }, 15000);
-          pendingReqs.set(reqId, { resolve, t });
-          try { ws.send(JSON.stringify(frame)); }
-          catch (e) { clearTimeout(t); pendingReqs.delete(reqId); reject(e); }
+          pendingReqs.set(reqId, { resolve, reject, t });
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify(frame)); }
+            catch (e) {
+              clearTimeout(t); pendingReqs.delete(reqId); reject(e);
+            }
+          } else {
+            outQueue.push(frame);
+          }
         });
+      }
+      function drainFsQueue() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const drained = outQueue.splice(0);
+        for (const frame of drained) {
+          try { ws.send(JSON.stringify(frame)); }
+          catch (e) {
+            const slot = pendingReqs.get(frame.reqId);
+            if (slot) {
+              pendingReqs.delete(frame.reqId);
+              clearTimeout(slot.t);
+              if (slot.reject) slot.reject(e);
+            }
+          }
+        }
       }
       // Hook into main WS onmessage like the Editor module does.
       function tryHandleFsResult(msg) {
@@ -1123,6 +1187,14 @@
       }
 
       async function loadFolder(path) {
+        // Show a loading hint if this is the FIRST load AND the WS
+        // hasn't opened yet (queue fix — request is pending until
+        // ws.onopen drains it). Without this hint, users staring at
+        // an empty tree-body would see no feedback. Cleared on
+        // success / error path below.
+        if (path === ROOT && !loaded && (!ws || ws.readyState !== WebSocket.OPEN)) {
+          body.innerHTML = '<div class="tree-empty">Waiting for connection…</div>';
+        }
         let result;
         try {
           result = await fsRequest({ type: 'fs-list', dir: path, recursive: false }, 'fs-list-result');
@@ -1358,7 +1430,7 @@
         rerender();
       }
 
-      return { ensureLoaded, tryHandleFsResult, markDirty, setSelected };
+      return { ensureLoaded, tryHandleFsResult, markDirty, setSelected, drainFsQueue };
     })();
 
     // Which preview backend the iframe currently points at. Driven by
@@ -1474,6 +1546,13 @@
       ws.onopen = () => {
         setStatus('connected'); rd = 1000;
         ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+        // file-tree-fix (2026-05-14): drain any fs-* frames that
+        // Editor / FileTree queued before WS opened. User repro
+        // was a cold session where clicking Editor before the first
+        // ws.onopen produced "fs-list failed: WS not connected".
+        // Drain order doesn't matter — server processes per-reqId.
+        try { if (typeof Editor !== 'undefined') Editor.drainFsQueue(); } catch {}
+        try { if (typeof FileTree !== 'undefined') FileTree.drainFsQueue(); } catch {}
         refreshStats();
         if (statsTimer) clearInterval(statsTimer);
         statsTimer = setInterval(() => {
