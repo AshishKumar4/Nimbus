@@ -170,8 +170,8 @@ export function renderMotdBanner(version: string): string {
   const INNER_WIDTH = 48; // columns between the two ║
   const lines = [
     `Nimbus v${version} — Cloud Dev Environment`,
-    'node · npm · esbuild · vite · wrangler dev',
-    '10 GB VFS · Dynamic Workers · HMR',
+    'node · npm · vite · clang · python · ruby',
+    '10 GB VFS · REPLs · nimbus install · HMR',
   ];
   const padLine = (content: string): string => {
     // 2-space left margin inside the box, then content, then trailing
@@ -1123,16 +1123,43 @@ export class NimbusSession extends CloudflareDurableObject {
         'console.log("2 + 2 =", 2 + 2);\n'
       );
     }
+    // seed-refresh (2026-05-15): symmetric to hello.js — give new users
+    // a starter C file so the clang demo in README.md / Docs.tsx works
+    // without typing the source by hand.
+    if (!fs.exists('home/user/hello.c')) {
+      fs.writeFile('home/user/hello.c',
+        '#include <stdio.h>\n' +
+        '\n' +
+        'int main(void) {\n' +
+        '  printf("Hello from Nimbus C!\\n");\n' +
+        '  return 0;\n' +
+        '}\n'
+      );
+    }
     if (!fs.exists('home/user/welcome.txt')) {
       fs.writeFile('home/user/welcome.txt',
         `Welcome to Nimbus v${NIMBUS_VERSION}!\n\n` +
         'Cloud-native dev environment on Cloudflare Workers.\n\n' +
-        '  node hello.js          — run in isolated dynamic worker\n' +
-        '  npm install <pkg>      — install npm packages\n' +
-        '  esbuild src/app.ts     — transform TypeScript/JSX\n' +
-        '  vite                   — start dev server with HMR\n' +
-        '  nimbus-wrangler dev      — run Cloudflare Worker locally\n' +
-        '  df                     — filesystem + cache stats\n'
+        'JavaScript / TypeScript:\n' +
+        '  node hello.js              — run in isolated dynamic worker\n' +
+        '  npm install <pkg>          — install npm packages\n' +
+        '  vite                       — start dev server with HMR\n' +
+        '  nimbus-wrangler dev        — run Cloudflare Worker locally\n' +
+        '\n' +
+        'More languages (install on demand):\n' +
+        "  nimbus install clang       — then: clang hello.c -o hello && ./hello\n" +
+        "  nimbus install python      — then: python -c 'print(\"hi\")'\n" +
+        "  nimbus install ruby        — then: ruby -e 'puts \"hi\"'\n" +
+        '\n' +
+        'Interactive REPLs (after install):\n' +
+        '  python                     — Pyodide CPython 3.13\n' +
+        '  ruby                       — ruby.wasm 3.3\n' +
+        '  node                       — bare REPL\n' +
+        '\n' +
+        'System:\n' +
+        '  nimbus install --list      — show installed runtimes\n' +
+        '  nimbus install --available — show catalog\n' +
+        '  df                         — filesystem + cache stats\n'
       );
     }
 
