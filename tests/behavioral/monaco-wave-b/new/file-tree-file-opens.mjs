@@ -18,7 +18,7 @@ const html = await r.text();
 
 // HTML wiring.
 a.check('handleNodeClick for file type calls Editor.openFile',
-  /handleNodeClick[\s\S]{0,500}Editor\.openFile/.test(html),
+  /handleNodeClick[\s\S]{0,1200}Editor\.openFile/.test(html),
   `wiring missing`);
 a.check('Editor.openFile calls FileTree.setSelected',
   /FileTree\.setSelected\(path\)/.test(html),

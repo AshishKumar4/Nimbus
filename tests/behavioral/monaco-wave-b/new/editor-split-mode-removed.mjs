@@ -44,8 +44,12 @@ a.check('.main.editor CSS rule present',
 a.check('NO btnEditorTerm (renamed to single btnEditor)',
   !/id=["']btnEditorTerm["']/.test(html),
   `old btnEditorTerm still present`);
+// Strip HTML comments before checking for stale labels — a 'Edit+Preview'
+// reference in a code comment is expected (commit-history doc).
+const stripped = html.replace(/<!--[\s\S]*?-->/g, '');
 a.check('Toolbar button labeled "Editor" (single mode)',
-  />Editor</.test(html) && !/Edit\+Preview/.test(html),
+  /id=["']btnEditor["'][^>]*>\s*Editor\s*</.test(html) &&
+  !/<button[^>]*>[^<]*Edit\+Preview[^<]*<\/button>/.test(stripped),
   `toolbar label missing or stale`);
 
 const sum = a.summary();
