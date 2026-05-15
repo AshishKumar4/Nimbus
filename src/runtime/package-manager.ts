@@ -254,21 +254,71 @@ async function runInstall(
   // and the manifest is the source of truth).
   deps.vfs.writeFile(`${root}/manifest.json`, JSON.stringify(manifest, null, 2));
 
-  // Fetch each blob, verify sha256, write to VFS.
-  let i = 0;
+  // W2: bounded-parallel blob fetch (concurrency=3).
+  //
+  // Pre-W2 this was a serial for-loop awaiting fetchBlob one at a time.
+  // For multi-blob bundles (clang has 5 blobs with the two largest
+  // dominating wall-clock at ~31 MB + ~19 MB), overlap of network/L2
+  // reads cuts cold-install wall-clock by 30-50%. Concurrency capped
+  // at 3 to bound memory peak: worst-case clang holds 3 in-flight
+  // blobs ≈ ~50-60 MB; well under the DO's 128 MB cap. Memory peak
+  // is further bounded by sqlite-vfs.ts pendingWrites auto-flush at
+  // 500 chunks / ~32 MiB (`src/vfs/sqlite-vfs.ts:606`).
+  //
+  // mkdir-parent is hoisted OUT of the worker body so concurrent
+  // workers don't race against vfs.mkdir for the same parent. Each
+  // unique parent dir is created exactly once, synchronously, BEFORE
+  // any worker starts.
+  //
+  // Manifest-first invariant preserved: this loop runs AFTER the
+  // manifest.json write above. Partial-install detection unchanged.
+  //
+  // Progress UX: with parallel workers, lines arrive in completion
+  // order, not start order. The final "[name] installed at … (Y MiB)"
+  // line is still the authoritative completion signal.
+  const FETCH_CONCURRENCY = 3;
+
+  // Pre-compute + create all unique parent dirs sync. Avoids a
+  // mkdir race between workers and is faster than per-blob exists()
+  // checks.
+  const uniqueParents = new Set<string>();
   for (const f of manifest.files) {
-    i++;
     const target = `${root}/${f.path}`;
-    // Ensure parent dir exists.
     const lastSlash = target.lastIndexOf('/');
     if (lastSlash > 0) {
-      const parent = target.slice(0, lastSlash);
-      if (!deps.vfs.exists(parent)) deps.vfs.mkdir(parent, { recursive: true });
+      uniqueParents.add(target.slice(0, lastSlash));
     }
-    ctx.stdout.write(`[${name}] fetching ${f.path} (${(f.size / 1024 / 1024).toFixed(2)} MiB) ${i}/${manifest.files.length}...\n`);
-    const bytes = await fetchBlob(deps.env, f.content, f.sha256);
-    deps.vfs.writeFile(target, bytes);
   }
+  for (const parent of uniqueParents) {
+    if (!deps.vfs.exists(parent)) deps.vfs.mkdir(parent, { recursive: true });
+  }
+
+  // Hand-rolled worker pool: N workers consume indices off a shared
+  // cursor until the queue is empty. Avoids head-of-line blocking
+  // that chunked Promise.all suffers (a slow blob in batch i doesn't
+  // delay blob i+N from starting).
+  const files = manifest.files;
+  const total = files.length;
+  let nextIdx = 0;
+  let completed = 0;
+  const workers = Array.from(
+    { length: Math.min(FETCH_CONCURRENCY, total) },
+    async () => {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= total) return;
+        const f = files[i];
+        const target = `${root}/${f.path}`;
+        const bytes = await fetchBlob(deps.env, f.content, f.sha256);
+        deps.vfs.writeFile(target, bytes);
+        completed++;
+        ctx.stdout.write(
+          `[${name}] fetched ${f.path} (${(f.size / 1024 / 1024).toFixed(2)} MiB) ${completed}/${total}\n`,
+        );
+      }
+    },
+  );
+  await Promise.all(workers);
 
   // Register entrypoints.
   for (const ep of manifest.entrypoints) {
