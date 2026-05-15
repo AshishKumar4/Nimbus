@@ -86,6 +86,9 @@ export interface SessionInternal {
   cirrusReal: CirrusReal | null;
   /** Phase-2 cirrus-hmr WebSocket → clientId map. */
   _cirrusHmrWsClients: Map<WebSocket, string> | null;
+  /** file-tree-watch (2026-05-15): per-WS fs-watch subscriptions; see
+   *  ./fs-watch.ts. Cleaned up unconditionally in wsClose / wsError. */
+  _fsWatchSubs?: Map<WebSocket, import('./fs-watch.js').FsWatchSub[]>;
   nimbusWrangler: NimbusWrangler | null;
   npmInstaller: NpmInstaller | null;
   /** Singleton fetch proxy entrypoint for npm installs. */

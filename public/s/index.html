@@ -1038,7 +1038,17 @@
         }
       });
 
-      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult, drainFsQueue };
+      // file-tree-watch (2026-05-15): external invalidation of the
+      // Cmd+P 5s-TTL palette cache. Called by the fs-watch-event
+      // dispatcher in ws.onmessage so a terminal-side write makes
+      // the next openPalette re-run fs-list instead of serving
+      // stale results.
+      function invalidateFileListCache() {
+        fileListCache = null;
+        fileListCachedAt = 0;
+      }
+
+      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult, drainFsQueue, invalidateFileListCache };
     })();
 
     // ── monaco-wave-b (2026-05-14): FileTree module ──
@@ -1431,7 +1441,179 @@
         rerender();
       }
 
-      return { ensureLoaded, tryHandleFsResult, markDirty, setSelected, drainFsQueue };
+      // ── file-tree-watch (2026-05-15): subscribe + event apply ─────
+      //
+      // Server-side fs-watch protocol (src/session/fs-watch.ts):
+      //
+      //   IN  { type:'fs-watch-subscribe', reqId, paths:['/home/user'] }
+      //   OUT { type:'fs-watch-subscribe-result', reqId, ok, subId? }
+      //   PUSH { type:'fs-watch-event', subId, events:VfsEvent[], dropped? }
+      //   IN  { type:'fs-watch-unsubscribe', reqId, subId? }
+      //
+      // Local lifecycle:
+      //   - subscribeOnce() is called from ws.onopen (after drainFsQueue).
+      //     Re-invocations are no-ops while a subId is live; on WS close
+      //     the server-side listener is reaped (ws.ts cleanup) so the
+      //     next reconnect re-subscribes fresh.
+      //   - applyWatchEvent() coalesces all 'fs-watch-event' frames into
+      //     per-parent refresh actions on a single 100ms window — 5+
+      //     events that share the same parent dir produce ONE re-fetch
+      //     of that folder, not N.
+      //
+      // Coalescing layers (composed):
+      //   Server (50ms debounce, SUB_MAX_QUEUE=200, drop-oldest)
+      //     → batches of up to 200 VfsEvents per frame
+      //   Client (100ms per-parent debounce)
+      //     → one fs-list per unique parent per window
+      //
+      // A `dropped:N` field on the incoming frame means the server
+      // dropped N events to honor its cap; we respond by force-
+      // refreshing the entire root (cheapest correct recovery).
+      let watchSubId = null;
+      const pendingParentRefresh = new Set();
+      let watchRefreshTimer = null;
+      let lastWatchFrameAt = 0;
+      let watchFrameCount = 0;
+      let watchEventCount = 0;
+      const WATCH_COALESCE_MS = 100;
+
+      function subscribeOnce() {
+        if (watchSubId) return; // already subscribed
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // Fire-and-forget — record the subId on the success result.
+        // We use fsRequest's queued-send semantics for the reply
+        // routing (pendingReqs keyed by reqId), but tolerate failures.
+        fsRequest(
+          { type: 'fs-watch-subscribe', paths: [ROOT] },
+          'fs-watch-subscribe-result',
+        ).then((r) => {
+          if (r && r.ok && typeof r.subId === 'string') {
+            watchSubId = r.subId;
+          }
+        }).catch(() => { /* server may not support fs-watch yet */ });
+      }
+
+      function scheduleParentRefreshFlush() {
+        if (watchRefreshTimer) return;
+        watchRefreshTimer = setTimeout(async () => {
+          watchRefreshTimer = null;
+          if (pendingParentRefresh.size === 0) return;
+          const parents = Array.from(pendingParentRefresh);
+          pendingParentRefresh.clear();
+          for (const parent of parents) {
+            const pn = nodes.get(parent);
+            // Only re-fetch dirs we've already loaded (cheap + bounded).
+            // Unloaded dirs are loaded lazily on expand.
+            if (pn && pn.type === 'directory' && pn.loaded) {
+              // Drop cached children then re-load the folder. The
+              // ensureNode at the end of loadFolder keeps the node
+              // entry alive (avoiding flicker on the user's selection).
+              // We drop child nodes from the Map so loadFolder's
+              // re-insert produces a clean view that reflects deletes.
+              const prefix = parent + '/';
+              for (const path of Array.from(nodes.keys())) {
+                if (path !== parent && parentOf(path) === parent) {
+                  nodes.delete(path);
+                }
+                else if (path !== parent && path.startsWith(prefix)) {
+                  // children of children — drop too so a deleted subtree
+                  // disappears in one cycle
+                  nodes.delete(path);
+                }
+              }
+              try { await loadFolder(parent); } catch { /* fail-soft */ }
+            }
+          }
+        }, WATCH_COALESCE_MS);
+      }
+
+      // file-tree-watch: dispatch an inbound fs-watch-event frame to
+      // the tree's incremental refresh pipeline. Returns true if the
+      // frame was consumed (caller short-circuits the rest of its
+      // onmessage chain), false otherwise.
+      function applyWatchEvent(msg) {
+        if (!msg || msg.type !== 'fs-watch-event') return false;
+        watchFrameCount++;
+        lastWatchFrameAt = Date.now();
+        // Server-side drop signal → cheapest correct recovery is a
+        // full root re-fetch. Clear the queue + force refresh.
+        if (typeof msg.dropped === 'number' && msg.dropped > 0) {
+          pendingParentRefresh.clear();
+          if (watchRefreshTimer) {
+            clearTimeout(watchRefreshTimer);
+            watchRefreshTimer = null;
+          }
+          // schedule async refresh of root (preserves expanded state)
+          (async () => {
+            const expandedSnapshot = new Set(expanded);
+            const wasLoaded = new Set();
+            for (const n of nodes.values()) {
+              if (n.type === 'directory' && n.loaded) wasLoaded.add(n.path);
+            }
+            nodes.clear();
+            loaded = false;
+            try { await ensureLoaded(); } catch {}
+            // Re-load previously-loaded subdirs that are still expanded.
+            for (const path of wasLoaded) {
+              if (path === ROOT) continue;
+              if (!expandedSnapshot.has(path)) continue;
+              try { await loadFolder(path); } catch {}
+            }
+          })();
+          return true;
+        }
+        const events = Array.isArray(msg.events) ? msg.events : [];
+        if (events.length === 0) return true;
+        watchEventCount += events.length;
+        // Per-parent coalescing — collect unique parent dirs that need
+        // a refresh. SqliteVFS paths are bare ('home/user/x.txt'); we
+        // prepend '/' to match the absolute-path convention used by
+        // the FileTree (ROOT === '/home/user').
+        for (const ev of events) {
+          if (!ev || typeof ev.path !== 'string') continue;
+          const abs = ev.path.startsWith('/') ? ev.path : '/' + ev.path;
+          if (!abs.startsWith(ROOT)) continue; // outside our watched root
+          // For unlinkDir / rename(old), the affected parent is the
+          // *old* path's parent; the new-path's parent gets refresh
+          // via the same path entry below. For other events, just the
+          // event path's parent.
+          pendingParentRefresh.add(parentOf(abs));
+          if (ev.type === 'rename' && typeof ev.oldPath === 'string') {
+            const oldAbs = ev.oldPath.startsWith('/') ? ev.oldPath : '/' + ev.oldPath;
+            if (oldAbs.startsWith(ROOT)) {
+              pendingParentRefresh.add(parentOf(oldAbs));
+            }
+          }
+        }
+        // Invalidate the Cmd+P palette cache so the next openPalette
+        // re-fetches the file list. Editor exposes this; tolerate
+        // either lazy-init order.
+        try {
+          if (typeof Editor !== 'undefined' && typeof Editor.invalidateFileListCache === 'function') {
+            Editor.invalidateFileListCache();
+          }
+        } catch { /* best-effort */ }
+        if (pendingParentRefresh.size > 0) scheduleParentRefreshFlush();
+        return true;
+      }
+
+      // Diagnostic accessor for probes (cleanup-on-disconnect verifies
+      // counts return to 0 on the server side; this is the client-side
+      // mirror — useful for the coalescing probe).
+      function getWatchStats() {
+        return {
+          subId: watchSubId,
+          frameCount: watchFrameCount,
+          eventCount: watchEventCount,
+          lastFrameAt: lastWatchFrameAt,
+          pendingParents: pendingParentRefresh.size,
+        };
+      }
+
+      return {
+        ensureLoaded, tryHandleFsResult, markDirty, setSelected, drainFsQueue,
+        subscribeOnce, applyWatchEvent, getWatchStats,
+      };
     })();
 
     // Which preview backend the iframe currently points at. Driven by
@@ -1722,6 +1904,11 @@
         // Drain order doesn't matter — server processes per-reqId.
         try { if (typeof Editor !== 'undefined') Editor.drainFsQueue(); } catch {}
         try { if (typeof FileTree !== 'undefined') FileTree.drainFsQueue(); } catch {}
+        // file-tree-watch (2026-05-15): subscribe the FileTree to
+        // server-pushed fs-watch-event frames so terminal-side writes
+        // (e.g. `touch foo.c`) appear in the sidebar within ~150 ms
+        // without needing a manual refresh click.
+        try { if (typeof FileTree !== 'undefined') FileTree.subscribeOnce(); } catch {}
         refreshStats();
         if (statsTimer) clearInterval(statsTimer);
         statsTimer = setInterval(() => {
@@ -1743,6 +1930,10 @@
           if (Editor.tryHandleFsResult(msg)) return;
           // monaco-wave-b: FileTree consumes fs-list results too.
           if (FileTree.tryHandleFsResult(msg)) return;
+          // file-tree-watch (2026-05-15): server-pushed fs-watch-event
+          // frames (no reqId) route to FileTree.applyWatchEvent which
+          // coalesces per-parent refreshes on a 100ms window.
+          if (FileTree.applyWatchEvent(msg)) return;
           if (msg.type === 'output') {
             term.write(msg.data);
             // Snappy preview switch: both vite (/preview/) and wrangler
