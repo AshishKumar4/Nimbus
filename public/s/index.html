@@ -103,11 +103,51 @@
 
     /* Layout modes */
     .main.terminal-only .panel-preview,
+    .main.terminal-only .panel-editor,
     .main.terminal-only .resize-handle { display: none; }
     .main.terminal-only .panel-terminal { flex: 1; }
     .main.preview-only .panel-terminal,
+    .main.preview-only .panel-editor,
     .main.preview-only .resize-handle { display: none; }
     .main.preview-only .panel-preview { flex: 1; }
+
+    /* monaco-wave-a (2026-05-13): editor + editor+terminal-bottom modes.
+       editor-only: editor takes the full main area.
+       editor+terminal-bottom: editor on top, terminal on bottom — vscode-style. */
+    .main.editor-only .panel-terminal,
+    .main.editor-only .panel-preview,
+    .main.editor-only .resize-handle { display: none; }
+    .main.editor-only .panel-editor { flex: 1; display: flex; }
+
+    .main.editor-bottom { flex-direction: column; }
+    .main.editor-bottom .panel-preview,
+    .main.editor-bottom .resize-handle { display: none; }
+    .main.editor-bottom .panel-editor { flex: 1 1 60%; display: flex; min-height: 200px; }
+    .main.editor-bottom .panel-terminal { flex: 0 0 40%; min-height: 120px; border-top: 1px solid #30363d; }
+    .main.editor-bottom .vresize-handle { display: block; }
+
+    /* Editor panel */
+    .panel-editor { flex: 1; display: none; flex-direction: column; background: #1e1e1e; overflow: hidden; min-width: 0; min-height: 0; }
+    .panel-editor.active { display: flex; }
+    .editor-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; font-size: 11px; color: #8b949e; min-height: 24px; }
+    .editor-bar .editor-tab { padding: 2px 8px; background: #21262d; border: 1px solid #30363d; border-radius: 3px; color: #c9d1d9; font-family: ui-monospace, Menlo, monospace; font-size: 11px; display: flex; align-items: center; gap: 6px; }
+    .editor-bar .editor-tab.dirty::after { content: '●'; color: #d29922; font-size: 10px; }
+    .editor-bar .editor-tab-empty { color: #6e7681; font-style: italic; }
+    .editor-bar .editor-hint { margin-left: auto; color: #6e7681; font-family: ui-monospace, Menlo, monospace; }
+    #monaco-container { flex: 1; min-height: 0; min-width: 0; }
+    .editor-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #8b949e; font-family: ui-monospace, Menlo, monospace; font-size: 13px; padding: 24px; text-align: center; }
+    .editor-placeholder .key { background: #21262d; border: 1px solid #30363d; padding: 1px 6px; border-radius: 3px; color: #c9d1d9; font-size: 11px; }
+
+    /* Command palette (Ctrl+P) */
+    .palette-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 1000; display: none; align-items: flex-start; justify-content: center; padding-top: 80px; }
+    .palette-overlay.active { display: flex; }
+    .palette-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px; width: 520px; max-width: 90vw; max-height: 60vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+    .palette-input { background: #0d1117; border: none; border-bottom: 1px solid #30363d; color: #c9d1d9; padding: 10px 14px; font-size: 13px; outline: none; font-family: ui-monospace, Menlo, monospace; border-radius: 6px 6px 0 0; }
+    .palette-list { overflow-y: auto; max-height: 400px; }
+    .palette-item { padding: 6px 14px; color: #c9d1d9; font-family: ui-monospace, Menlo, monospace; font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .palette-item.active { background: #1f6feb44; color: #58a6ff; }
+    .palette-item:hover { background: #21262d; }
+    .palette-empty { padding: 14px; color: #6e7681; font-style: italic; font-size: 12px; text-align: center; }
   </style>
 </head>
 <body>
@@ -125,6 +165,12 @@
     <button id="btnTerminal" class="active" title="Terminal">Terminal</button>
     <button id="btnPreview" title="Preview">Preview</button>
     <button id="btnSplit" title="Split view">Split</button>
+    <!-- monaco-wave-a (2026-05-13): two new layout modes. Editor toggles
+         to a Monaco-only view; Editor+Term flips to VSCode-style with
+         editor on top + terminal on bottom. Both lazy-load Monaco on
+         first click (perf-invariant: cold session must NOT download). -->
+    <button id="btnEditor" title="Editor (Monaco)">Editor</button>
+    <button id="btnEditorTerm" title="Editor + Terminal (VSCode-style)">Edit+Term</button>
     <div class="sep"></div>
     <button id="btnProcs" title="Toggle process logs panel">
       <span class="procs-dot"></span>
@@ -150,6 +196,32 @@
         <button id="btnReloadPreview" title="Reload">&#8635;</button>
       </div>
       <iframe id="preview-frame" src="about:blank"></iframe>
+    </div>
+    <!-- monaco-wave-a (2026-05-13): editor panel sibling to terminal +
+         preview. Hidden in default 'split' layout (matches charter:
+         editor is opt-in). Active in 'editor-only' and 'editor-bottom'
+         layout modes via .active class. -->
+    <div class="panel-editor" id="editorPanel">
+      <div class="editor-bar">
+        <div class="editor-tab editor-tab-empty" id="editorTab">no file</div>
+        <span class="editor-hint">
+          <kbd>Ctrl+P</kbd> open file &nbsp;·&nbsp; <kbd>Ctrl+S</kbd> save
+        </span>
+      </div>
+      <div class="editor-placeholder" id="editorPlaceholder">
+        <div>Press <span class="key">Ctrl</span>+<span class="key">P</span> to open a file.</div>
+        <div style="font-size:11px;color:#6e7681">Monaco loads on demand.</div>
+      </div>
+      <div id="monaco-container" style="display:none"></div>
+    </div>
+  </div>
+  <!-- monaco-wave-a (2026-05-13): Ctrl+P command palette. Lazy-populated
+       fuzzy file finder; fs-list message sent on first open per
+       editor session. -->
+  <div class="palette-overlay" id="paletteOverlay">
+    <div class="palette-box">
+      <input class="palette-input" id="paletteInput" placeholder="Type a file name…" autocomplete="off" spellcheck="false">
+      <div class="palette-list" id="paletteList"></div>
     </div>
   </div>
   <div class="footer">
@@ -248,7 +320,11 @@
     const mainPanel = document.getElementById('mainPanel');
     const viteStatus = document.getElementById('viteStatus');
     let ws = null, rd = 1000, statsTimer = null;
-    let layout = 'split'; // 'terminal-only', 'preview-only', 'split'
+    // monaco-wave-a (2026-05-13): layout enum extended with two new modes.
+    //   'editor-only'    : Monaco fills .main; no terminal/preview.
+    //   'editor-bottom'  : Monaco on top + terminal on bottom (VSCode-style).
+    // Old modes preserved verbatim: 'split', 'terminal-only', 'preview-only'.
+    let layout = 'split';
 
     // ── Layout controls ──
     function setLayout(mode) {
@@ -257,13 +333,369 @@
       document.getElementById('btnTerminal').classList.toggle('active', mode === 'terminal-only');
       document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
       document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
-      setTimeout(() => fitAddon.fit(), 50);
+      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor-only');
+      document.getElementById('btnEditorTerm').classList.toggle('active', mode === 'editor-bottom');
+      // Editor panel visibility — drives display:flex via .active.
+      const editorPanel = document.getElementById('editorPanel');
+      const wantEditor = (mode === 'editor-only' || mode === 'editor-bottom');
+      editorPanel.classList.toggle('active', wantEditor);
+      // Lazy-init Monaco the FIRST time the user switches to an
+      // editor mode. Cold session never pays the 5 MB download.
+      if (wantEditor) Editor.ensureLoaded();
+      setTimeout(() => {
+        try { fitAddon.fit(); } catch {}
+        // Re-layout Monaco after the panel resizes.
+        if (window.__nimbusMonacoEditor) {
+          try { window.__nimbusMonacoEditor.layout(); } catch {}
+        }
+      }, 50);
     }
     document.getElementById('btnTerminal').onclick = () => setLayout('terminal-only');
     document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
     document.getElementById('btnSplit').onclick = () => setLayout('split');
+    document.getElementById('btnEditor').onclick = () => setLayout('editor-only');
+    document.getElementById('btnEditorTerm').onclick = () => setLayout('editor-bottom');
     document.getElementById('btnRefresh').onclick = () => reloadPreview();
     document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
+
+    // ── monaco-wave-a (2026-05-13): Editor module ──
+    //
+    // Lazy-loads Monaco via cdnjs UMD on first call to ensureLoaded().
+    // Cold session (terminal-only flow) never pays the ~5MB download.
+    //
+    // Owns the open file, dirty state, Ctrl+P palette, Ctrl+S save.
+    // All fs operations route through the live WS via fs-read /
+    // fs-write / fs-list messages → init.ts handler → SqliteVFS.
+    //
+    // Perf-invariant: probes assert monaco-* scripts NOT loaded on a
+    // cold terminal-only session (see tests/behavioral/monaco-wave-a/
+    // new/monaco-lazy-not-on-cold.mjs).
+    const Editor = (function() {
+      // CDN choice: cdnjs hosts Monaco's UMD AMD-loader (`loader.min.js`)
+      // which fetches the remaining vs/* chunks on demand. Total cold
+      // download is ~2 MB for the editor + lazy languages. Pinned to
+      // 0.52.0 (latest as of 2025-Q1) — same major as VSCode 1.95+.
+      const MONACO_VERSION = '0.52.0';
+      const MONACO_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/' + MONACO_VERSION + '/min';
+      let loaded = false;
+      let loading = null;
+      // Cached fs-list result from a previous Ctrl+P (5s TTL).
+      let fileListCache = null;
+      let fileListCachedAt = 0;
+      // Pending fs-read / fs-write / fs-list resolves keyed by op id.
+      // The terminal WS multiplexes; we tag each message with a `reqId`
+      // so concurrent reads (e.g. preview tab + palette refresh) don't
+      // race on the same path.
+      const pending = new Map();
+      let nextReqId = 1;
+
+      // Current open file state.
+      let openPath = null;        // POSIX absolute path or null
+      let originalContent = '';   // last-saved content (for dirty check)
+      let editor = null;          // Monaco editor instance
+
+      function tabEl() { return document.getElementById('editorTab'); }
+      function setTabFile(path, dirty) {
+        const el = tabEl();
+        if (!path) {
+          el.textContent = 'no file';
+          el.classList.add('editor-tab-empty');
+          el.classList.remove('dirty');
+          return;
+        }
+        // Show just the basename in the tab for clarity; full path in
+        // the title attribute.
+        const base = path.split('/').pop() || path;
+        el.textContent = base;
+        el.title = path;
+        el.classList.remove('editor-tab-empty');
+        el.classList.toggle('dirty', !!dirty);
+      }
+
+      // Send a fs-* message; await the paired result. Resolves with the
+      // result frame; rejects on error or timeout (15s — generous for
+      // big trees, tight enough that a hung session surfaces fast).
+      function fsRequest(frame, resultType) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          return Promise.reject(new Error('WS not connected'));
+        }
+        const reqId = nextReqId++;
+        frame.reqId = reqId;
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => {
+            if (pending.has(reqId)) {
+              pending.delete(reqId);
+              reject(new Error('fs request timed out'));
+            }
+          }, 15000);
+          pending.set(reqId, { resolve, reject, t, resultType });
+          try { ws.send(JSON.stringify(frame)); }
+          catch (e) { clearTimeout(t); pending.delete(reqId); reject(e); }
+        });
+      }
+      // Hook into the main WS onmessage to deliver fs-*-result frames.
+      // Called by connect() right after parsing each incoming message —
+      // returns true to indicate the message was handled here (and the
+      // shell-side dispatch should skip it).
+      function tryHandleFsResult(msg) {
+        if (!msg || typeof msg.type !== 'string') return false;
+        if (!msg.type.endsWith('-result')) return false;
+        const reqId = msg.reqId;
+        if (typeof reqId !== 'number') return false;
+        const slot = pending.get(reqId);
+        if (!slot) return false;
+        pending.delete(reqId);
+        clearTimeout(slot.t);
+        slot.resolve(msg);
+        return true;
+      }
+
+      // Detect language from extension. Monaco built-ins cover most.
+      function languageFor(path) {
+        const m = /\.([^.]+)$/.exec(path || '');
+        const ext = m ? m[1].toLowerCase() : '';
+        const map = {
+          js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+          ts: 'typescript', tsx: 'typescript', jsx: 'javascript',
+          py: 'python', rb: 'ruby', go: 'go', rs: 'rust',
+          c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp',
+          java: 'java', kt: 'kotlin', swift: 'swift',
+          json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini',
+          md: 'markdown', html: 'html', css: 'css', scss: 'scss',
+          sh: 'shell', bash: 'shell', zsh: 'shell',
+          xml: 'xml', sql: 'sql', dockerfile: 'dockerfile',
+        };
+        return map[ext] || 'plaintext';
+      }
+
+      function ensureLoaded() {
+        if (loaded) return Promise.resolve();
+        if (loading) return loading;
+        loading = new Promise((resolve, reject) => {
+          // Step 1: AMD loader. cdnjs ships the UMD `loader.min.js` that
+          // bootstraps Monaco's internal AMD module graph.
+          const script = document.createElement('script');
+          script.src = MONACO_BASE + '/vs/loader.min.js';
+          script.onload = () => {
+            // Step 2: configure paths + require the editor module.
+            const requireJs = window.require;
+            if (!requireJs || typeof requireJs.config !== 'function') {
+              reject(new Error('Monaco AMD loader failed to register'));
+              return;
+            }
+            requireJs.config({ paths: { 'vs': MONACO_BASE + '/vs' } });
+            requireJs(['vs/editor/editor.main'], () => {
+              try {
+                createEditor();
+                loaded = true;
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            });
+          };
+          script.onerror = () => reject(new Error('Failed to load Monaco AMD loader from ' + script.src));
+          document.head.appendChild(script);
+        });
+        return loading;
+      }
+
+      function createEditor() {
+        const container = document.getElementById('monaco-container');
+        container.style.display = 'block';
+        // Hide the placeholder once Monaco mounts.
+        const ph = document.getElementById('editorPlaceholder');
+        if (ph) ph.style.display = 'none';
+        editor = window.monaco.editor.create(container, {
+          value: '',
+          language: 'plaintext',
+          theme: 'vs-dark',
+          automaticLayout: true,
+          minimap: { enabled: false },
+          fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+          fontSize: 13,
+          wordWrap: 'on',
+          scrollBeyondLastLine: false,
+        });
+        window.__nimbusMonacoEditor = editor;
+        // Dirty-state tracking.
+        editor.onDidChangeModelContent(() => {
+          if (!openPath) return;
+          const cur = editor.getValue();
+          setTabFile(openPath, cur !== originalContent);
+        });
+        // Ctrl+S save — Monaco intercepts the keystroke when focused.
+        editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, () => save());
+        // Layout once after creation so the editor sizes correctly.
+        setTimeout(() => editor.layout(), 0);
+      }
+
+      async function openFile(path) {
+        if (!path) return;
+        await ensureLoaded();
+        let result;
+        try {
+          result = await fsRequest({ type: 'fs-read', path }, 'fs-read-result');
+        } catch (e) {
+          setStatusFlash('open failed: ' + (e?.message || e));
+          return;
+        }
+        if (result.error) {
+          if (result.binary) {
+            setStatusFlash('binary file refused: ' + path);
+          } else {
+            setStatusFlash('open failed: ' + result.error);
+          }
+          return;
+        }
+        const content = result.content || '';
+        openPath = path;
+        originalContent = content;
+        const lang = languageFor(path);
+        // Recreate model so language detection takes effect (Monaco
+        // doesn't auto-relanguage on setValue).
+        const model = window.monaco.editor.createModel(content, lang);
+        const old = editor.getModel();
+        editor.setModel(model);
+        if (old) try { old.dispose(); } catch {}
+        setTabFile(path, false);
+        editor.focus();
+      }
+
+      async function save() {
+        if (!openPath || !editor) return;
+        const content = editor.getValue();
+        let result;
+        try {
+          result = await fsRequest({ type: 'fs-write', path: openPath, content }, 'fs-write-result');
+        } catch (e) {
+          setStatusFlash('save failed: ' + (e?.message || e));
+          return;
+        }
+        if (!result.ok) {
+          setStatusFlash('save failed: ' + (result.error || 'unknown'));
+          return;
+        }
+        originalContent = content;
+        setTabFile(openPath, false);
+        setStatusFlash('saved');
+      }
+
+      let flashTimer = null;
+      function setStatusFlash(text) {
+        const el = tabEl();
+        const prior = el.textContent;
+        el.textContent = text;
+        if (flashTimer) clearTimeout(flashTimer);
+        flashTimer = setTimeout(() => setTabFile(openPath, false), 1400);
+      }
+
+      // ── Ctrl+P palette ──
+      const overlay = document.getElementById('paletteOverlay');
+      const input = document.getElementById('paletteInput');
+      const list = document.getElementById('paletteList');
+      let paletteFiles = [];
+      let paletteFiltered = [];
+      let paletteActive = 0;
+
+      async function openPalette() {
+        await ensureLoaded();
+        overlay.classList.add('active');
+        input.value = '';
+        input.focus();
+        // Re-fetch list if cache stale.
+        const now = Date.now();
+        if (!fileListCache || (now - fileListCachedAt) > 5000) {
+          list.innerHTML = '<div class="palette-empty">Loading…</div>';
+          try {
+            const r = await fsRequest({ type: 'fs-list', dir: '/home/user', recursive: true }, 'fs-list-result');
+            fileListCache = (r.entries || []).filter(e => e.type !== 'directory').map(e => e.path);
+            fileListCachedAt = Date.now();
+          } catch (e) {
+            list.innerHTML = '<div class="palette-empty">fs-list failed: ' + (e?.message || e) + '</div>';
+            return;
+          }
+        }
+        paletteFiles = fileListCache.slice();
+        renderPalette('');
+      }
+      function closePalette() {
+        overlay.classList.remove('active');
+        if (editor) editor.focus();
+      }
+      function renderPalette(q) {
+        const needle = q.toLowerCase();
+        // Simple substring + suffix-rank filter. Plenty fast for a few
+        // thousand files (5 MB cap on fs-list anyway).
+        paletteFiltered = paletteFiles
+          .filter(p => p.toLowerCase().includes(needle))
+          .slice(0, 80);
+        paletteActive = 0;
+        if (paletteFiltered.length === 0) {
+          list.innerHTML = '<div class="palette-empty">No matches.</div>';
+          return;
+        }
+        list.innerHTML = paletteFiltered.map((p, i) =>
+          '<div class="palette-item' + (i === 0 ? ' active' : '') + '" data-idx="' + i + '">' + p + '</div>'
+        ).join('');
+        // Click to open.
+        list.querySelectorAll('.palette-item').forEach(el => {
+          el.addEventListener('click', () => {
+            const idx = parseInt(el.dataset.idx, 10);
+            const path = paletteFiltered[idx];
+            if (path) {
+              closePalette();
+              openFile(path);
+            }
+          });
+        });
+      }
+      function moveActive(delta) {
+        const next = Math.max(0, Math.min(paletteFiltered.length - 1, paletteActive + delta));
+        if (next === paletteActive) return;
+        paletteActive = next;
+        list.querySelectorAll('.palette-item').forEach((el, i) => {
+          el.classList.toggle('active', i === paletteActive);
+          if (i === paletteActive) el.scrollIntoView({ block: 'nearest' });
+        });
+      }
+      input.addEventListener('input', () => renderPalette(input.value));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(1); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const path = paletteFiltered[paletteActive];
+          if (path) { closePalette(); openFile(path); }
+        }
+      });
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closePalette();
+      });
+
+      // Global Ctrl+P / Cmd+P binding. Fires anywhere on the page so
+      // users can open the palette from the terminal pane too — matches
+      // VSCode UX.
+      document.addEventListener('keydown', (e) => {
+        const isCtrlP = (e.ctrlKey || e.metaKey) && e.key === 'p' && !e.shiftKey && !e.altKey;
+        if (isCtrlP) {
+          e.preventDefault();
+          openPalette();
+          return;
+        }
+        // Ctrl+S anywhere also saves (Monaco's own binding covers
+        // the editor-focus case but a click outside the editor would
+        // otherwise lose the keystroke).
+        const isCtrlS = (e.ctrlKey || e.metaKey) && e.key === 's' && !e.shiftKey && !e.altKey;
+        if (isCtrlS && openPath) {
+          e.preventDefault();
+          save();
+        }
+      });
+
+      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult };
+    })();
 
     // Which preview backend the iframe currently points at. Driven by
     // /api/stats polling: wrangler.running > vite.running > placeholder.
@@ -393,6 +825,10 @@
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
+          // monaco-wave-a (2026-05-13): fs-*-result frames route to
+          // Editor's pending-request resolver. Return early so the
+          // shell-side dispatch doesn't see them as unknown types.
+          if (Editor.tryHandleFsResult(msg)) return;
           if (msg.type === 'output') {
             term.write(msg.data);
             // Snappy preview switch: both vite (/preview/) and wrangler
