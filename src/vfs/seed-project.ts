@@ -349,16 +349,16 @@ export default function App() {
 `;
 
 const HOME_TSX = `import { motion } from 'framer-motion';
-import { Zap, HardDrive, Cpu, ArrowRight, BookOpen } from 'lucide-react';
+import { Zap, HardDrive, Languages, ArrowRight, BookOpen } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import SystemStats from '../components/SystemStats';
 import Card from '../components/Card';
 
 const features = [
   {
-    icon: Cpu,
-    title: 'Edge-Native Runtime',
-    desc: 'Node, npm, git, vite and 60+ Unix utilities, all running inside one Durable Object \u2014 no cold starts, no containers.',
+    icon: Languages,
+    title: 'Multi-language',
+    desc: 'Node + npm + git out of the box. nimbus install clang | python | ruby adds LLVM, Pyodide CPython 3.13, and ruby.wasm 3.3 \u2014 each with REPLs and persistent state.',
     accent: 'from-orange-400/20 to-orange-600/5',
     iconBg: 'from-orange-500/20 to-orange-600/10',
     iconColor: 'text-orange-300',
@@ -533,7 +533,7 @@ export default function Home() {
 `;
 
 const DOCS_TSX = `import Card from '../components/Card';
-import { Terminal, GitBranch, Package, Rocket } from 'lucide-react';
+import { Terminal, GitBranch, Package, Rocket, Cpu, Code2, Boxes } from 'lucide-react';
 
 const sections = [
   {
@@ -543,13 +543,28 @@ const sections = [
   },
   {
     icon: Package,
-    title: 'Install packages',
+    title: 'Install npm packages',
     body: 'npm install works against the real registry. Nimbus uses a batched VFS + content-addressed cache so 500-package installs land in ~80 seconds.',
   },
   {
     icon: GitBranch,
     title: 'Clone a real repo',
     body: 'git clone https://github.com/you/your-repo. Network and packfile processing run in a facet worker to keep the supervisor DO unblocked.',
+  },
+  {
+    icon: Boxes,
+    title: 'Install more runtimes',
+    body: 'nimbus install clang | python | ruby. Per-user wasm bundles streamed from R2 into the VFS. nimbus install --list shows what is installed; --available shows the catalog.',
+  },
+  {
+    icon: Cpu,
+    title: 'Compile native code',
+    body: 'nimbus install clang, then clang hello.c -o hello && ./hello. LLVM 8 → wasm32-wasi, multi-translation-unit + user headers + fopen. A starter hello.c is already in your home directory.',
+  },
+  {
+    icon: Code2,
+    title: 'Run Python and Ruby',
+    body: "After nimbus install python (Pyodide 3.13) or ruby (ruby.wasm 3.3): python -c 'print(1+1)' / ruby -e 'puts 1+1', or just type python / ruby for an interactive REPL with persistent state.",
   },
   {
     icon: Rocket,
@@ -565,7 +580,7 @@ export default function Docs() {
         <div className="text-xs font-semibold uppercase tracking-wider text-orange-400/80">Documentation</div>
         <h1 className="mt-2 text-5xl font-bold tracking-tight text-slate-100">Get started</h1>
         <p className="text-slate-400 mt-3 text-lg max-w-2xl">
-          Four things worth knowing about Nimbus before you ship something with it.
+          Seven things worth knowing about Nimbus before you ship something with it.
         </p>
       </header>
       <div className="space-y-4">
@@ -853,6 +868,34 @@ re-seeding on normal boots; deleting it opts back in.)
 
 Delete anything you don't want. The seed never runs again once
 \`~/.nimbus-seeded\` exists, so your edits are safe.
+
+## Beyond JS
+
+Nimbus ships a package manager (\`nimbus install\`) that streams
+additional runtimes from R2 into your VFS on demand:
+
+    nimbus install --available     # show catalog
+    nimbus install clang           # LLVM 8 -> wasm32-wasi, ~50 MiB
+    nimbus install python          # Pyodide CPython 3.13, ~12 MiB
+    nimbus install ruby            # ruby.wasm 3.3, ~34 MiB
+
+Then use them like native binaries:
+
+    clang ~/hello.c -o hello && ./hello
+    python -c 'print("hi")'
+    ruby   -e 'puts "hi"'
+
+Or drop into an interactive REPL (state persists across pushes within
+the same session):
+
+    python      # >>> >>>
+    ruby        # irb-style
+    node        # bare REPL
+    bun         # bun REPL
+
+A starter \`~/hello.c\` is seeded alongside this project so \`nimbus
+install clang && clang ~/hello.c -o hello && ./hello\` works out of the
+box.
 
 ## Other frameworks
 
