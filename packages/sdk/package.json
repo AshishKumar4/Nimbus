@@ -1,0 +1,61 @@
+{
+  "name": "@nimbus-sh/sdk",
+  "version": "0.1.0",
+  "description": "Nimbus SDK — token mint, types, and Node/Worker-agnostic client helpers.",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./token": {
+      "workspace": "./src/token.ts",
+      "types": "./src/token.ts",
+      "import": "./src/token.ts"
+    },
+    "./session": {
+      "workspace": "./src/session.ts",
+      "types": "./src/session.ts",
+      "import": "./src/session.ts"
+    },
+    "./errors": {
+      "workspace": "./src/errors.ts",
+      "types": "./src/errors.ts",
+      "import": "./src/errors.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@nimbus-sh/worker": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@nimbus-sh/worker": { "optional": true }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250327.0",
+    "@nimbus-sh/worker": "workspace:^",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

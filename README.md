@@ -16,6 +16,39 @@ Cloud dev environments today are either heavy VMs (slow to start, expensive to i
 - **The URL is the session.** Bookmark it, share it, hand it to a teammate — they join the same filesystem.
 - **10 GB of persistent storage per session**, SQLite-backed, durable across reconnects and DO eviction.
 
+## Embed Nimbus in your Workers project (SDK, v0.1)
+
+Nimbus ships as an npm-installable SDK. A third-party Workers project
+embeds the full Nimbus runtime in ~14 LOC of TypeScript + a ~30 LOC
+`wrangler.jsonc`:
+
+```bash
+npx @nimbus-sh/cli create-nimbus-app my-app
+cd my-app
+bun install
+wrangler secret put JWT_SECRET    # 32+ hex chars
+wrangler deploy
+```
+
+That's it. The scaffolder writes a minimal embedder Worker that
+re-exports Nimbus's Durable Object + RPC classes and calls
+`createNimbusHandler()` for the request handler. Customize with hooks,
+custom routes, and auth modes — see the per-package READMEs below.
+
+### Packages
+
+| Package | What |
+|---|---|
+| [`@nimbus-sh/worker`](packages/worker) | The runtime: `NimbusSession` DO + `createNimbusHandler` factory + auth surface. |
+| [`@nimbus-sh/sdk`](packages/sdk) | Token mint/verify + typed errors + session URL helpers (Node + Workers + browser). |
+| [`@nimbus-sh/react`](packages/react) | `<NimbusTerminal />` React component. |
+| [`@nimbus-sh/cli`](packages/cli) | `create-nimbus-app` scaffolder + `token mint` + `runtime sync`. |
+| [`@nimbus-sh/config`](packages/config) | Typed `buildNimbusWranglerConfig()` helper. |
+
+The live demo at https://nimbus.ashishkmr472.workers.dev runs from
+[`apps/dogfood`](apps/dogfood) and IS the canonical reference embedder
+— same shape any external project ships.
+
 ## Quickstart
 
 ### Try the live demo
