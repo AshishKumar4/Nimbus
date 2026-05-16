@@ -1447,7 +1447,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         const entry = self.processTable.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot);
         self.processTable.setLongRunning(entry.pid);
         try {
-          self.cirrusReal.start(self.ctx, entry.pid);
+          // [sdk-phase-1] start() is now async because it ASSETS-fetches
+          // the large Vite/plugin-react bundles on first invocation
+          // (cached per-isolate after). The enclosing function is async.
+          await self.cirrusReal.start(self.ctx, entry.pid);
         } finally {
           // Cirrus-real boot allocation done (or threw). Pre-bundle is
           // free to resume. If start() threw, the gate must still

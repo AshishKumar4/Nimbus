@@ -6,7 +6,7 @@
 import { makeAsserter } from '../../_driver.mjs';
 const a = makeAsserter('auth/new/extract-bearer-from-request');
 
-const { extractBearerToken } = await import('../../../../src/auth/middleware.ts');
+const { extractBearerToken } = await import('../../../../packages/worker/src/auth/middleware.ts');
 
 // 1. Authorization header.
 {

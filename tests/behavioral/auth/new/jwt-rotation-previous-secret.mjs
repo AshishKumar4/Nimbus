@@ -5,8 +5,8 @@
 import { makeAsserter } from '../../_driver.mjs';
 const a = makeAsserter('auth/new/jwt-rotation-previous-secret');
 
-const { issueNimbusToken, verifyNimbusToken } = await import('../../../../src/auth/token.ts');
-const { NimbusTokenSignatureError } = await import('../../../../src/auth/types.ts');
+const { issueNimbusToken, verifyNimbusToken } = await import('../../../../packages/worker/src/auth/token.ts');
+const { NimbusTokenSignatureError } = await import('../../../../packages/worker/src/auth/types.ts');
 
 const OLD = 'old-secret-' + Math.random().toString(36).slice(2);
 const NEW = 'new-secret-' + Math.random().toString(36).slice(2);

@@ -8,7 +8,7 @@
 import { makeAsserter } from '../../_driver.mjs';
 const a = makeAsserter('auth/new/jwt-mint-verify-roundtrip');
 
-const { issueNimbusToken, verifyNimbusToken } = await import('../../../../src/auth/token.ts');
+const { issueNimbusToken, verifyNimbusToken } = await import('../../../../packages/worker/src/auth/token.ts');
 
 const SECRET = 'test-secret-' + Math.random().toString(36).slice(2);
 const env = { JWT_SECRET: SECRET };

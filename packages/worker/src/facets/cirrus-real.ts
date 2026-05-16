@@ -51,8 +51,22 @@
  *                               facet loop  ──>  chokidar / ws shim
  */
 
-import { REAL_VITE_BUNDLE, REAL_VITE_VERSION, ROLLUP_WASM_BASE64, VITE_CLIENT_MJS, VITE_ENV_MJS } from '../real-vite-bundle.generated.js';
-import { CIRRUS_PLUGIN_REACT_BUNDLE, CIRRUS_PLUGIN_REACT_VERSION } from '../cirrus-plugin-react.generated.js';
+// [sdk-phase-1] Large blobs (REAL_VITE_BUNDLE 4.6 MB, ROLLUP_WASM 2.5 MB,
+// CIRRUS_PLUGIN_REACT_BUNDLE 3.0 MB) now ship via the ASSETS binding
+// instead of inline. We import async getters here; start() became async
+// so it can await them. CIRRUS_NPM_CJS_BUNDLES stays inline (1.2 MB,
+// used inside the sync part of start()).
+import {
+  REAL_VITE_VERSION,
+  VITE_CLIENT_MJS,
+  VITE_ENV_MJS,
+  getRealViteBundle,
+  getRollupWasmBase64,
+} from '../real-vite-bundle.generated.js';
+import {
+  CIRRUS_PLUGIN_REACT_VERSION,
+  getCirrusPluginReactBundle,
+} from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_BUNDLES, CIRRUS_NPM_CJS_VERSIONS } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '../constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
@@ -653,7 +667,7 @@ export class CirrusReal {
    *  string when the project is in the known-good envelope. */
   private _sizeWarning: string = '';
 
-  start(ctx: DurableObjectState, pid: number): void {
+  async start(ctx: DurableObjectState, pid: number): Promise<void> {
     if (this.facetStub) return;
     this.pid = pid;
     this._startedAt = Date.now();
@@ -734,12 +748,22 @@ export class CirrusReal {
       }
     }
 
+    // [sdk-phase-1] Pre-fetch the three large assets from the ASSETS
+    // binding before assembling the synthetic module code + loader
+    // config. After first call, all three are cached per-isolate, so
+    // subsequent start() invocations on the same supervisor pay zero.
+    const [realViteBundle, rollupWasmBase64, cirrusPluginReactBundle] = await Promise.all([
+      getRealViteBundle(this.env as { ASSETS: { fetch: Fetcher['fetch'] } }),
+      getRollupWasmBase64(this.env as { ASSETS: { fetch: Fetcher['fetch'] } }),
+      getCirrusPluginReactBundle(this.env as { ASSETS: { fetch: Fetcher['fetch'] } }),
+    ]);
+
     const syntheticCode = generateSyntheticModuleCode({
       viteVersion: REAL_VITE_VERSION,
       snapshotFiles: mergedFiles,
       snapshotDirs: snapshot.dirs,
       existingPaths: snapshot.existingPaths,
-      rollupWasmBase64: ROLLUP_WASM_BASE64,
+      rollupWasmBase64,
       cjsPrebuiltBundles,
       viteClientMjs: VITE_CLIENT_MJS,
       viteEnvMjs: VITE_ENV_MJS,
@@ -788,7 +812,7 @@ export class CirrusReal {
         mainModule: 'main.js',
         modules: {
           'main.js': mainCode,
-          'vite.bundle.js': REAL_VITE_BUNDLE,
+          'vite.bundle.js': realViteBundle,
           'synthetic.js': syntheticCode,
           // Phase 1 shims.
           'cirrus-fs.js': fsShim,
@@ -807,7 +831,7 @@ export class CirrusReal {
                   import * as _v from './vite.bundle.js';
                   export default _v.default || _v;
                 `,
-                'cirrus-plugin-react.js': CIRRUS_PLUGIN_REACT_BUNDLE,
+                'cirrus-plugin-react.js': cirrusPluginReactBundle,
               }
             : {}),
         },

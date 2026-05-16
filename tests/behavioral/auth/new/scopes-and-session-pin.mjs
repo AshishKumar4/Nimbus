@@ -5,9 +5,9 @@
 import { makeAsserter } from '../../_driver.mjs';
 const a = makeAsserter('auth/new/scopes-and-session-pin');
 
-const { issueNimbusToken, verifyNimbusToken } = await import('../../../../src/auth/token.ts');
-const { requireScopes, requireSessionPin } = await import('../../../../src/auth/middleware.ts');
-const { NimbusScopeError, NimbusSessionPinError } = await import('../../../../src/auth/types.ts');
+const { issueNimbusToken, verifyNimbusToken } = await import('../../../../packages/worker/src/auth/token.ts');
+const { requireScopes, requireSessionPin } = await import('../../../../packages/worker/src/auth/middleware.ts');
+const { NimbusScopeError, NimbusSessionPinError } = await import('../../../../packages/worker/src/auth/types.ts');
 
 const env = { JWT_SECRET: 'rot' };
 

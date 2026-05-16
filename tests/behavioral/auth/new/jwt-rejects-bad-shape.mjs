@@ -5,7 +5,7 @@
 import { makeAsserter } from '../../_driver.mjs';
 const a = makeAsserter('auth/new/jwt-rejects-bad-shape');
 
-const { issueNimbusToken, verifyNimbusToken } = await import('../../../../src/auth/token.ts');
+const { issueNimbusToken, verifyNimbusToken } = await import('../../../../packages/worker/src/auth/token.ts');
 const {
   NimbusAuthConfigError,
   NimbusTokenMalformedError,
@@ -13,7 +13,7 @@ const {
   NimbusTokenClaimsError,
   NimbusTokenExpiredError,
   NimbusTokenTtlError,
-} = await import('../../../../src/auth/types.ts');
+} = await import('../../../../packages/worker/src/auth/types.ts');
 
 const SECRET = 'test-secret';
 const env = { JWT_SECRET: SECRET };
