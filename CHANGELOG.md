@@ -9,6 +9,90 @@ behavioral surface rather than an API revision.
 
 ---
 
+## 2026-05-16 — SDK Phase 1 (monorepo + HS256 auth + ASSETS-fetch)
+
+First major step toward Nimbus-as-installable-SDK. Per
+`/workspace/.seal-internal/2026-05-15-sdk-design/research.md`. Branch
+`sdk-phase-1` off main `7de9fdd`.
+
+### Monorepo conversion
+Repo restructured into a bun-workspace monorepo:
+
+- `apps/dogfood/` — the live-demo embedder = canonical reference for
+  third-party use. Six-and-a-half LOC of content + the canonical
+  ~30 LOC `wrangler.jsonc`.
+- `packages/worker/` — `@nimbus-sh/worker` runtime (was `src/`).
+- `packages/sdk/` — `@nimbus-sh/sdk` env-agnostic client.
+- `packages/react/` — `@nimbus-sh/react` `<NimbusTerminal />` component.
+- `packages/cli/` — `@nimbus-sh/cli` scaffolder + ops.
+- `packages/config/` — `@nimbus-sh/config` typed wrangler helper.
+
+Per-package tsconfigs + subpath exports + `workspace:^` internal deps.
+
+### HS256 JWT auth (Mossaic-pattern, fresh shot)
+After AGT-1.1's API-key approach was reverted in May, this wave ships
+the Mossaic-pattern tenant-scoped HS256 JWT surface that the prior
+SDK research recommended:
+
+- `packages/worker/src/auth/{types,token,middleware,index}.ts` —
+  issue/verify via WebCrypto subtle (no jose dep), claims
+  `{ scope:'nimbus', tn, sub?, scopes?, sid?, iat, exp }`.
+- Class hierarchy of typed errors: `NimbusAuthError` base + 8
+  subclasses with stable `.code` + `.httpStatus`.
+- DO instance naming refactored to `${tn}:${sub||'_'}:${sessionId}`
+  (was `${sessionId}`) — single call site at
+  `_shared/session-router.ts:109`.
+- Three auth modes via `createNimbusHandler({ auth: { mode } })`:
+  `'auto'` (default — verify if JWT_SECRET set, otherwise legacy),
+  `'enforce'` (always verify), `'legacy'` (never verify).
+- Legacy-public fallback preserves live-demo bit-for-bit when
+  `NIMBUS_LEGACY_PUBLIC=1` env is set.
+
+### ASSETS-fetch promote
+Three large generated TS blobs moved from inline-in-Worker-bundle to
+the ASSETS binding (same pattern proven for esbuild-wasm):
+
+| Blob | Before (inline) | After |
+|---|---|---|
+| `real-vite-bundle.js` | 4.6 MB | 3.7 MB ASSETS |
+| `cirrus-plugin-react.bundle.js` | 3.0 MB | 2.8 MB ASSETS |
+| `rollup.wasm` | 0.5 MB base64 | 0.5 MB ASSETS raw |
+
+Kept inline: git-bundle (488 KB), tailwind-play (417 KB), esbuild
+adapter (123 KB), npm-cjs (1.2 MB, sync-use), vite client/env mjs
+(32 KB combined).
+
+New `packages/worker/src/runtime/assets-loader.ts` exposes
+`loadAssetText` / `loadAssetBytes` with per-isolate caching, concurrent-
+call dedup, and failure-not-cached semantics. `cirrus-real.ts:start()`
+became async to `await Promise.all([...])` the three asset fetches.
+
+**Bundle size delta: Worker `index.js` 13 MB → 5.0 MB (-62%).**
+Total Upload (worker + assets): 24,272 KiB → 16,712 KiB (-31%).
+
+### Probes
+- `tests/behavioral/auth/new/` × 5 — 63 JWT assertions GREEN
+- `tests/behavioral/auth/regression/legacy-public-still-works.mjs` —
+  prod regression gate
+- `tests/behavioral/assets-fetch/new/` × 2 — 17 assertions GREEN
+  (loader caching + bundle-size ≤ 6 MB)
+- `tests/behavioral/sdk-config/new/` × 1 — 25 assertions GREEN
+
+### Gates
+- Typecheck: 2 baseline errors unchanged
+- 24/24 critical-path probes GREEN on prod
+- prod deploy GREEN (Worker startup 26 ms, version 1eb3b3e8)
+- `npm install` round-trip (transitive-dep-resolution) GREEN —
+  proves SUPERVISOR loopback binding is wired correctly after the
+  embedder-must-re-export-RPC-classes lesson
+
+### Known gap
+Charter target Worker bundle ≤ 1.5 MB not hit; we landed at 5.0 MB.
+Remaining ~5 MB is the runtime substrate (npm installer + vfs +
+session init). Deferred to Phase 2 with code splitting.
+
+---
+
 ## 2026-05-11 — Stream A + Stream B + Stream C + Bug-Sweeps R1–R4
 
 Massive multi-stream day. 91 commits between `0f37108` and `2268c1b`. Probe
