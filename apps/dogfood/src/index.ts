@@ -3,19 +3,54 @@
  *
  * This file IS the live demo at https://nimbus.ashishkmr472.workers.dev
  * AND the canonical reference embedder for `@nimbus-sh/worker`. Any
- * third-party project ships a file identical to this minus the
- * `NIMBUS_LEGACY_PUBLIC=1` env (set in wrangler.jsonc#vars below).
+ * third-party project ships a file identical to this.
  *
- * Six lines of content (excluding comments + imports). That's the SDK's
- * goal: a worker entry point should be as small as a "hello world"
- * Worker but bring full Nimbus capabilities.
+ * Three-and-a-half lines of content (excluding comments + imports):
+ *
+ *   import { NimbusSession, createNimbusHandler, ...nimbusRpcClasses }
+ *     from '@nimbus-sh/worker';
+ *   export { NimbusSession, ...nimbusRpcClasses };
+ *   export default createNimbusHandler();
+ *
+ * Why re-export the RPC classes? Cloudflare's `enable_ctx_exports`
+ * feature (default at compat-date ≥ 2026-04-01) walks the *main
+ * module's* exports to find DO + RPC classes. Nimbus uses these
+ * classes internally for loopback bindings (env.SUPERVISOR,
+ * env.ASSETS-via-RPC, etc.). Without the re-export, the runtime can't
+ * find them and child facets get `env.SUPERVISOR === undefined`.
+ *
+ * The convenience: `@nimbus-sh/worker` re-exports every required class
+ * by name, so an `export { ... } from '@nimbus-sh/worker'` does the
+ * whole job.
  */
 
-import { NimbusSession, createNimbusHandler } from '@nimbus-sh/worker';
+import {
+  NimbusSession,
+  SupervisorRPC,
+  NimbusAssetsRPC,
+  NimbusLoaderRPC,
+  NimbusLoadedWorker,
+  NimbusLoadedEntrypoint,
+  NimbusDurableObjectNamespace,
+  NimbusDOStub,
+  CirrusHmrRPC,
+  createNimbusHandler,
+} from '@nimbus-sh/worker';
 
-// Re-export the DO class so wrangler's `durable_objects.bindings[].class_name`
-// lookup finds it in this module's exports.
-export { NimbusSession };
+// Re-export the DO class + every RPC class so wrangler discovers them
+// for `durable_objects.bindings[].class_name` and `enable_ctx_exports`
+// auto-populates loopback bindings.
+export {
+  NimbusSession,
+  SupervisorRPC,
+  NimbusAssetsRPC,
+  NimbusLoaderRPC,
+  NimbusLoadedWorker,
+  NimbusLoadedEntrypoint,
+  NimbusDurableObjectNamespace,
+  NimbusDOStub,
+  CirrusHmrRPC,
+};
 
 // `auth: { mode: 'auto' }` (the default) honors NIMBUS_LEGACY_PUBLIC=1
 // from env.vars. The live demo runs in legacy mode (no JWT verification);

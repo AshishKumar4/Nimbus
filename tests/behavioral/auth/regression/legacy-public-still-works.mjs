@@ -7,7 +7,7 @@
 // users do NOT have tokens, and `createNimbusHandler()` with auth.mode
 // default must auto-resolve to legacy mode when JWT_SECRET is unset.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('auth/regression/legacy-public-still-works');
@@ -22,10 +22,9 @@ await t.waitForPrompt(15_000);
 a.check('WebSocket connected + prompt seen without any token', t.connected === true);
 
 // Send a command and verify output flow (round-trips through the DO).
-t.send('echo hello-from-legacy-public\n');
-const out = stripAnsi(await t.collectUntil('hello-from-legacy-public', 5_000));
-a.check('command output round-trips DO → WS', /hello-from-legacy-public/.test(out),
-  `out=${JSON.stringify(out.slice(-200))}`);
+const { output } = await t.run('echo hello-from-legacy-public');
+a.check('command output round-trips DO → WS', /hello-from-legacy-public/.test(output),
+  `output=${JSON.stringify(output.slice(-200))}`);
 
 await t.close();
 const sum = a.summary();

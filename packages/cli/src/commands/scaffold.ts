@@ -171,9 +171,33 @@ function renderWranglerJsonc(name: string): string {
 }
 
 function renderIndexTs(): string {
-  return `import { NimbusSession, createNimbusHandler } from '@nimbus-sh/worker';
+  return `import {
+  NimbusSession,
+  SupervisorRPC,
+  NimbusAssetsRPC,
+  NimbusLoaderRPC,
+  NimbusLoadedWorker,
+  NimbusLoadedEntrypoint,
+  NimbusDurableObjectNamespace,
+  NimbusDOStub,
+  CirrusHmrRPC,
+  createNimbusHandler,
+} from '@nimbus-sh/worker';
 
-export { NimbusSession };
+// Re-export the DO class + every RPC class so wrangler's
+// \`durable_objects.bindings[].class_name\` lookup + \`enable_ctx_exports\`
+// auto-populate loopback bindings (env.SUPERVISOR, etc.).
+export {
+  NimbusSession,
+  SupervisorRPC,
+  NimbusAssetsRPC,
+  NimbusLoaderRPC,
+  NimbusLoadedWorker,
+  NimbusLoadedEntrypoint,
+  NimbusDurableObjectNamespace,
+  NimbusDOStub,
+  CirrusHmrRPC,
+};
 
 export default createNimbusHandler();
 `;
