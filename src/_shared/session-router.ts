@@ -8,14 +8,24 @@
  * (and the deprecated `/worker/*`), `/port/<n>/*` — the same shape it
  * did in the single-session era.
  *
- * Session identity flows two places:
- *   1. The DO ID — derived via `env.NIMBUS_SESSION.idFromName(sessionId)`.
- *      Deterministic, so the same URL always points at the same DO.
+ * Session identity flows three places:
+ *   1. The DO ID — derived via `env.NIMBUS_SESSION.idFromName(doName)`.
+ *      `doName` is `${tenant}:${sub || '_'}:${sessionId}` when tenant
+ *      scoping is on (JWT verified upstream); falls back to
+ *      `legacy:public:_:${sessionId}` when `NIMBUS_LEGACY_PUBLIC === "1"`
+ *      or `JWT_SECRET` is unset. The fallback preserves the live-demo
+ *      single-tenant behavior while letting third-party embedders enforce
+ *      tenant isolation by default. Caller (the worker fetch handler)
+ *      passes `tenantSegment` in via {@link forwardToSession}.
  *   2. The `X-Nimbus-Base` request header — set to the URL-prefix the DO
  *      is mounted at (e.g. `/s/nimble-otter-4271`). ViteDevServer uses
  *      this to emit correct `<base href>`, module URLs, `import.meta.env
  *      .BASE_URL`, and router `basename` so the user's React app resolves
  *      `<NavLink to="/docs">` → `/s/nimble-otter-4271/preview/docs`.
+ *   3. The `X-Nimbus-Tenant` request header — set to the verified
+ *      `${tenant}:${sub}` so downstream RPC handlers can audit cross-
+ *      session multi-tenancy invariants. Optional; never trusted as
+ *      authority (the DO name itself is the trust boundary).
  *
  * Why a header instead of the DO auto-detecting?
  *   - The DO never sees the outer URL (we forward a rewritten Request).
@@ -29,6 +39,21 @@ export const SESSION_ROUTE_PREFIX = '/s';
 
 /** Header the Worker sets on forwarded requests. The DO reads it. */
 export const BASE_PATH_HEADER = 'X-Nimbus-Base';
+
+/**
+ * Header the Worker sets to inform the DO of its tenant scope. The DO
+ * reads it for audit-logging / RPC-routing; it does NOT use it for
+ * authority — the DO instance name is the trust boundary.
+ */
+export const TENANT_HEADER = 'X-Nimbus-Tenant';
+
+/**
+ * DO-name segment used when tenant scoping is disabled (legacy-public).
+ * Picked so it cannot collide with a verified token's
+ * `${tn}:${sub || '_'}` (because `legacy` is never a valid `tn` shape
+ * starting with that exact prefix-then-colon when JWT_SECRET is set).
+ */
+export const LEGACY_PUBLIC_DO_SEGMENT = 'legacy:public:_';
 
 /**
  * Match `/s/<id>(/<rest>)?` with `<id>` being ANY lowercase-letters-digits-
@@ -69,30 +94,58 @@ export function parseSessionRoute(pathname: string): ParsedSessionRoute | null {
 }
 
 /**
+ * Options for {@link forwardToSession}.
+ *
+ * `tenantSegment` is the verified `${tn}:${sub || '_'}` from JWT, or
+ * {@link LEGACY_PUBLIC_DO_SEGMENT} when running in legacy-public mode.
+ * The worker fetch handler computes this BEFORE calling this function
+ * — the router itself does not parse tokens.
+ */
+export interface ForwardOptions {
+  /** Verified tenant segment for DO naming. */
+  tenantSegment: string;
+}
+
+/**
  * Forward a request to the session's DO.
  *
  * Contract:
  *   - Caller has already validated the session ID (or tolerates whatever
  *     DO spawns if they didn't — still safe, but malformed IDs should be
  *     rejected upstream with 400).
+ *   - Caller has already verified the token (or chosen legacy-public).
+ *     We trust `opts.tenantSegment` verbatim.
  *   - Original request's method, body, and headers are preserved.
  *   - `X-Nimbus-Base` is injected so the DO can thread it into ViteDevServer.
+ *   - `X-Nimbus-Tenant` is injected for audit/observability (NOT authority).
  *   - WebSocket upgrades flow naturally: `stub.fetch()` returns a Response
  *     with a `webSocket` field and status 101, which workerd passes through.
+ *
+ * @param request The inbound Request. Method/body/headers preserved.
+ * @param route Output of {@link parseSessionRoute}.
+ * @param env Bindings env. Must carry `NIMBUS_SESSION` DO namespace.
+ * @param opts Tenant scoping. See {@link ForwardOptions}.
  */
 export function forwardToSession(
   request: Request,
   route: ParsedSessionRoute,
   env: any,
+  opts: ForwardOptions,
 ): Promise<Response> {
   const url = new URL(request.url);
   // Rebuild the URL the DO will see: same origin, inner path, preserved query.
   const innerUrl = new URL(route.innerPath + url.search + url.hash, url.origin);
 
-  // Clone headers and set X-Nimbus-Base. We can't mutate the original
-  // Request's headers directly (they're immutable on a real Request).
+  // Clone headers and set the X-Nimbus-* metadata. We can't mutate the
+  // original Request's headers directly (they're immutable on a real Request).
   const headers = new Headers(request.headers);
   headers.set(BASE_PATH_HEADER, route.basePath);
+  headers.set(TENANT_HEADER, opts.tenantSegment);
+  // Defense in depth: strip any user-supplied `nimbus_token` query param
+  // BEFORE forwarding so it doesn't end up in inner-DO logs / referrers.
+  // The DO has its own header-based auth model post-router (none today,
+  // but this future-proofs the surface).
+  innerUrl.searchParams.delete('nimbus_token');
 
   // Build the forwarded Request. Preserve body + method. For GETs/HEADs,
   // body is undefined (Request constructor rejects bodies there anyway).
@@ -106,7 +159,12 @@ export function forwardToSession(
     redirect: 'manual',
   });
 
-  const id = env.NIMBUS_SESSION.idFromName(route.sessionId);
+  // Tenant-scoped DO instance name. `tenantSegment` is `${tn}:${sub||'_'}`
+  // (verified token) or `legacy:public:_` (legacy mode). Either way, the
+  // sessionId is appended — different tenants get different DOs even with
+  // the same sessionId in the URL.
+  const doName = `${opts.tenantSegment}:${route.sessionId}`;
+  const id = env.NIMBUS_SESSION.idFromName(doName);
   const stub = env.NIMBUS_SESSION.get(id);
   return stub.fetch(inner);
 }

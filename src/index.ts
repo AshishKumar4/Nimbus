@@ -14,15 +14,13 @@
  *      reachable as exports of the entrypoint module.
  *
  *   2. Route HTTP/WS requests to the right session via the session
- *      ID embedded in /s/<id>/* paths. The session ID is the sole
- *      identity of the user's Durable Object; URL → DO mapping is
- *      a stable contract.
+ *      ID embedded in /s/<id>/* paths. URL → DO mapping is a stable
+ *      contract delegated to {@link createNimbusHandler}.
  *
- * The fetch handler also installs the default w6.5 registry-event
- * sink at module-load time (line ~50), so any installer-event
- * (registry swap, drain) shows up in `wrangler tail` as a single
- * JSON line. F-observability will replace it with
- * env.INSTALL_METRICS.writeDataPoint().
+ * The fetch handler delegates to `createNimbusHandler({ auth: { mode:
+ * 'auto' } })` — same shape an external embedder uses via
+ * `@nimbus-sh/worker`. This file's only deploy-specific logic is the
+ * W6.5 registry-event sink installed at module-load time.
  */
 
 import {
@@ -36,14 +34,8 @@ import {
 } from './session/nimbus-session.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
-import { generateSessionId, isValidSessionId } from './_shared/session-id.js';
-import {
-  parseSessionRoute,
-  forwardToSession,
-  renderInvalidSessionHtml,
-  SESSION_ROUTE_PREFIX,
-} from './_shared/session-router.js';
-import { setCtxExports, getCtxExports as _getCtxExports } from './session/ctx-exports.js';
+import { createNimbusHandler } from './router/index.js';
+import { getCtxExports as _getCtxExports } from './session/ctx-exports.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 
 // W6.5: install the default registry-event sink at module top so events
@@ -52,28 +44,17 @@ import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 // lands, replace this with `env.INSTALL_METRICS.writeDataPoint(...)`.
 //
 // Format: `[w6.5/registry] {"type":"swap","from":"...","to":"...","ctx":"top"}`
-//
-// Per W6.5-plan §5.6: prefix `[w6.5/registry]` checked against existing
-// taxonomy (no collisions with [w6/...], [w7/...], [w12/...]).
 setRegistryEventSink((e) => {
   try {
     console.log(`[w6.5/registry] ${JSON.stringify(e)}`);
   } catch {
-    // Defensive — never break the install path on telemetry serialization
-    // (RegistryEvent is plain-JSON-shaped, so this should never throw).
+    // Defensive — never break the install path on telemetry serialization.
   }
 });
 
 // Re-export inner-Worker binding shims so wrangler bundles them AND
 // ctx.exports auto-populates Service Bindings for them (via
-// enable_ctx_exports; default at compat date 2026-04-01+). The
-// nimbus-wrangler inner-env synthesis uses:
-//   ctx.exports.NimbusAssetsRPC(...)                →  env.ASSETS
-//   ctx.exports.NimbusLoaderRPC(...)                →  env.LOADER
-//   ctx.exports.NimbusLoadedWorker(...)             →  return of LOADER.load/get
-//   ctx.exports.NimbusLoadedEntrypoint(...)         →  return of worker.getEntrypoint()
-//   ctx.exports.NimbusDurableObjectNamespace(...)   →  env.MY_DO (per binding)
-//   ctx.exports.NimbusDOStub(...)                   →  return of MY_DO.get(id)
+// enable_ctx_exports; default at compat date 2026-04-01+).
 export {
   NimbusSession,
   SupervisorRPC,
@@ -83,115 +64,21 @@ export {
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
   NimbusDOStub,
-  // Phase 2 real-vite HMR RPC (facet ↔ supervisor event pump).
   CirrusHmrRPC,
 };
 
 /**
  * Module-level reference to ctx.exports from the fetch handler.
  * Used by NimbusSession to create loopback bindings for facets.
- * Set once on the first fetch() call.
- *
- * Storage lives in `./ctx-exports.ts` (a leaf module) so helpers like the
- * NimbusLoaderPool can read it without importing the full DO class graph.
+ * Set once on the first fetch() call by createNimbusHandler.
  */
 export function getCtxExports(): any {
   return _getCtxExports();
 }
 
-/**
- * Legacy root-path DO routes. Before multi-session landed, everything
- * hit a single `idFromName('default-session')` DO at root paths.
- * Old bookmarks to these URLs get a friendly redirect to the landing
- * page rather than a silent 404.
- */
-const LEGACY_ROOT_PATHS = ['/ws', '/api/', '/preview', '/worker', '/__nimbus/', '/port/'];
-
-function isLegacyRootPath(pathname: string): boolean {
-  for (const p of LEGACY_ROOT_PATHS) {
-    if (p.endsWith('/')) {
-      if (pathname.startsWith(p)) return true;
-    } else {
-      if (pathname === p || pathname.startsWith(p + '/')) return true;
-    }
-  }
-  return false;
-}
-
-export default {
-  async fetch(request: Request, env: any, ctx: any): Promise<Response> {
-    // Capture ctx.exports on first call (provides loopback bindings)
-    if (ctx?.exports) setCtxExports(ctx.exports);
-
-    const url = new URL(request.url);
-
-    // ── /new — spawn a fresh session and redirect ──────────────────────
-    // POST is the canonical path (HTML form submission). GET is accepted
-    // too so `curl -L` works ergonomically from the CLI.
-    if (url.pathname === '/new') {
-      if (request.method !== 'POST' && request.method !== 'GET') {
-        return new Response('Method not allowed', { status: 405 });
-      }
-      const sessionId = generateSessionId();
-      const target = `${SESSION_ROUTE_PREFIX}/${sessionId}/`;
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: target,
-          // No cache: each /new call should mint a fresh ID.
-          'Cache-Control': 'no-store',
-        },
-      });
-    }
-
-    // ── /s/<id>/... — session-scoped routes forward to a DO ────────────
-    const route = parseSessionRoute(url.pathname);
-    if (route) {
-      if (!isValidSessionId(route.sessionId)) {
-        return new Response(renderInvalidSessionHtml(route.sessionId), {
-          status: 400,
-          headers: {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-store',
-          },
-        });
-      }
-      // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell
-      // from public/s/index.html via the ASSETS binding. The HTML then
-      // opens its own WebSocket against /s/<id>/ws which flows through the
-      // DO forwarder below.
-      if (route.innerPath === '/' || route.innerPath === '') {
-        if (env.ASSETS) {
-          const shellUrl = new URL('/s/index.html', url.origin);
-          return env.ASSETS.fetch(new Request(shellUrl.toString(), {
-            method: 'GET',
-            headers: request.headers,
-          }));
-        }
-        // No ASSETS binding (older config) — send a minimal fallback pointing
-        // people back to the landing page so the deploy doesn't hard-break.
-        return new Response(
-          '<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>',
-          { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
-        );
-      }
-      return forwardToSession(request, route, env);
-    }
-
-    // ── Back-compat: old root DO paths 302 to the landing page ─────────
-    // Before multi-session, `/ws`, `/api/*`, `/preview/*` etc. hit a
-    // shared DO. Now they're dead ends. Anyone with a stale bookmark
-    // lands on the Nimbus landing page where they can launch a new one.
-    if (isLegacyRootPath(url.pathname)) {
-      return new Response(null, {
-        status: 302,
-        headers: { Location: '/', 'Cache-Control': 'no-store' },
-      });
-    }
-
-    // Everything else — Worker returns 404. The asset binding (for `/`
-    // and `/s/*` static files) runs BEFORE this handler, so we only
-    // hit this line for paths with no matching asset and no route.
-    return new Response('Not found', { status: 404 });
-  },
-};
+// Worker default export — a `createNimbusHandler()` instance running in
+// auto auth mode. The live demo and dogfood embedder are bit-identical
+// from here on; the only difference is `NIMBUS_LEGACY_PUBLIC=1` env var
+// (set on the live demo, unset for the dogfood) flipping auth.mode to
+// 'legacy' inside the auto-resolver.
+export default createNimbusHandler();
