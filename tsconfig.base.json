@@ -3,20 +3,13 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
-    "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
+    "isolatedModules": true,
     "customConditions": ["workspace"]
-  },
-  "include": [
-    "packages/worker/src/**/*.ts",
-    "packages/sdk/src/**/*.ts",
-    "packages/config/src/**/*.ts",
-    "apps/dogfood/src/**/*.ts"
-  ]
+  }
 }

@@ -1,0 +1,77 @@
+{
+  "name": "@nimbus-sh/worker",
+  "version": "0.1.0",
+  "description": "Nimbus — cloud dev environment runtime for Cloudflare Workers. Re-export NimbusSession + createNimbusHandler from your Worker.",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/worker"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./router": {
+      "workspace": "./src/router/index.ts",
+      "types": "./src/router/index.ts",
+      "import": "./src/router/index.ts"
+    },
+    "./auth": {
+      "workspace": "./src/auth/index.ts",
+      "types": "./src/auth/index.ts",
+      "import": "./src/auth/index.ts"
+    },
+    "./templates/wrangler.jsonc": "./templates/wrangler.jsonc",
+    "./public/*": "./public/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "public",
+    "scripts",
+    "templates",
+    "README.md"
+  ],
+  "scripts": {
+    "bundle:git": "node scripts/bundle-git.mjs",
+    "bundle:facets": "node scripts/bundle-facet-workers.mjs",
+    "bundle:esbuild": "node scripts/bundle-esbuild-wasm.mjs",
+    "bundle:tailwind": "node scripts/bundle-tailwind-play.mjs",
+    "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:tailwind",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lifo-sh/core": "^0.5.5",
+    "clean-git-ref": "^2.0.1",
+    "crc-32": "^1.2.2",
+    "diff": "^9.0.0",
+    "diff3": "^0.0.4",
+    "esbuild-wasm": "0.24.2",
+    "ignore": "^7.0.5",
+    "is-git-ref-name-valid": "^1.0.0",
+    "isomorphic-git": "github:AshishKumar4/cf-git",
+    "minimisted": "^2.0.1",
+    "pako": "1.0.11",
+    "pify": "^6.1.0",
+    "readable-stream": "^4.7.0",
+    "sha.js": "^2.4.12",
+    "simple-get": "^4.0.1",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250327.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

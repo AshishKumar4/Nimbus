@@ -68,7 +68,28 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const PKG_DIR = path.join(ROOT, 'node_modules', 'esbuild-wasm');
+// Walk up looking for node_modules/esbuild-wasm. Handles both
+// packages/worker/node_modules/esbuild-wasm (legacy single-pkg layout)
+// and ../../node_modules/esbuild-wasm (monorepo hoist).
+function resolvePkgDir(start, pkgName) {
+  let dir = start;
+  while (true) {
+    const candidate = path.join(dir, 'node_modules', pkgName);
+    try {
+      // Throws if missing; cheap stat.
+      // eslint-disable-next-line n/no-sync
+      require('node:fs').statSync(candidate);
+      return candidate;
+    } catch { /* fall through */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(`Cannot locate node_modules/${pkgName} starting at ${start}`);
+}
+const { createRequire } = await import('node:module');
+const require = createRequire(import.meta.url);
+const PKG_DIR = resolvePkgDir(ROOT, 'esbuild-wasm');
 const JS_SRC = path.join(PKG_DIR, 'esm', 'browser.js');
 const WASM_SRC = path.join(PKG_DIR, 'esbuild.wasm');
 const PKG_JSON = path.join(PKG_DIR, 'package.json');

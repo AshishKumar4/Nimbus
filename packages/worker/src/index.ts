@@ -38,6 +38,36 @@ import { createNimbusHandler } from './router/index.js';
 import { getCtxExports as _getCtxExports } from './session/ctx-exports.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 
+// Re-export the composable factory + companion types so embedders can
+// build their own default-export handlers. The thin path:
+//   import { createNimbusHandler, NimbusSession } from '@nimbus-sh/worker';
+//   export { NimbusSession };
+//   export default createNimbusHandler();
+export { createNimbusHandler } from './router/index.js';
+export type {
+  NimbusHandler,
+  NimbusHooks,
+  NimbusHookContext,
+  CustomRoutes,
+  CreateNimbusHandlerOptions,
+  AuthMode,
+  NimbusAuthConfig,
+} from './router/index.js';
+// Auth surface — embedders need `issueNimbusToken` / `verifyNimbusToken`
+// to mint tokens from custom routes. Re-exported here for the canonical
+// `@nimbus-sh/worker` entry; `@nimbus-sh/sdk/token` re-re-exports from
+// the dedicated auth subpath for non-Worker callers.
+export {
+  issueNimbusToken,
+  verifyNimbusToken,
+  NimbusAuthError,
+} from './auth/index.js';
+export type {
+  NimbusAuthEnv,
+  NimbusTokenClaims,
+  VerifiedNimbusToken,
+} from './auth/index.js';
+
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)
 // land in `wrangler tail` as one JSON line per event. When F-observability

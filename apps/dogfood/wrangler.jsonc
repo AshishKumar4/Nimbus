@@ -1,6 +1,11 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "nimbus",
+  // [sdk-phase-1] Worker entry now lives in packages/worker. The
+  // dogfood embedder is the live demo at nimbus.ashishkmr472.workers.dev
+  // and serves as the canonical reference embedder for the SDK.
+  // The 2-line src/index.ts here re-exports from @nimbus-sh/worker
+  // — exactly the shape a third-party embedder ships.
   "main": "src/index.ts",
   "compatibility_date": "2026-04-01",
   // [DEPLOY-FLAG-FIX 2026-05-08] Removed `experimental` and `replica_routing`.
@@ -101,7 +106,10 @@
     "NIMBUS_DIAG_INSTALL_PIPELINE": ""
   },
   "assets": {
-    "directory": "./public",
+    // [sdk-phase-1] points at the @nimbus-sh/worker package's public/
+    // dir via the workspace symlink in node_modules/. Third-party
+    // embedders use the same path resolved through their npm install.
+    "directory": "../../node_modules/@nimbus-sh/worker/public",
     "binding": "ASSETS",
     // Invoke the Worker for all session-scoped paths so it can forward to the
     // right Durable Object (or serve the xterm UI shell for `/s/<id>/`). The
