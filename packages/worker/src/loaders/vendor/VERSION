@@ -1,0 +1,20 @@
+cloudflare-parallel vendored snapshot
+
+source:   https://github.com/AshishKumar4/cloudflare-parallel
+commit:   25d8abca52ebe20d918ce088a6227ef2c54470da
+ref:      refs/heads/main
+imported: 2026-04-23
+
+Files (7):
+  codegen.ts     2649 bytes
+  errors.ts      1347 bytes
+  index.ts       1141 bytes
+  pool.ts       17932 bytes
+  primitives.ts  1271 bytes
+  serialize.ts   1170 bytes
+  types.ts       2018 bytes
+
+All files are verbatim copies of upstream. Do not edit in-place — the Nimbus-
+specific pool wrapper (stable-slot isolate reuse, default compat date,
+SupervisorRPC bindings injection) lives at ../facet-pool.ts. To bump, replace
+all seven files from a newer upstream commit and update this VERSION file.

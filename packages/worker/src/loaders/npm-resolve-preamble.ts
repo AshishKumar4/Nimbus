@@ -1,0 +1,231 @@
+/**
+ * npm-resolve-preamble.ts — preamble injected into NimbusLoaderPool isolates
+ * that run src/npm-resolve-facet.ts.
+ *
+ * NimbusLoaderPool serialises the user function via fn.toString() and runs
+ * it inside a dynamic worker. Names referenced by the function at module
+ * scope are NOT in that worker's lexical scope at runtime — they must be
+ * re-declared in the preamble.
+ *
+ * The resolver-facet references the following preamble symbols:
+ *   - SHOULD_SKIP_PACKAGE(name) → boolean
+ *   - SHOULD_SWAP(name)         → { from, to } | undefined
+ *   - SHOULD_REJECT_FAIL(name)  → { from, reason, suggest? } | undefined
+ *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → entry | undefined
+ *   - PARSE_SEMVER(v) → [major, minor, patch] | null
+ *   - COMPARE_SEMVER(a, b) → number
+ *   - SATISFIES_RANGE(version, range) → boolean
+ *   - RESOLVE_VERSION(versions, range) → string | null
+ *
+ * All of these are pasted from src/npm-resolver.ts and src/wasm-swap-registry.ts
+ * and MUST stay byte-equivalent. Divergence between supervisor and facet
+ * resolution would mean the facet picks different versions / makes different
+ * swap-or-reject decisions than the legacy in-supervisor path, breaking
+ * both correctness and the NIMBUS_FACET_RESOLVER=0 fallback contract.
+ *
+ * Registry data is duplicated below and gated by the preamble parity test.
+ *
+ * Preamble bytes are part of the loader-cache key for NimbusLoaderPool —
+ * any edit invalidates the warm slot and forces a re-load on next
+ * dispatch. Acceptable cost for a one-shot resolver phase.
+ */
+
+export const NPM_RESOLVE_PREAMBLE: string = `
+// ── Skip list (mirrors src/npm-resolver.ts SKIP_PACKAGES) ──
+// vite is exempted when frameworkAware=true so framework CLIs can import it
+// from node_modules.
+const __SKIP_PACKAGES = new Set([
+  // rollup resolves through the drop-in @rollup/wasm-node swap.
+  'typescript', 'vite', 'webpack', 'parcel',
+  'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
+  'prettier', 'eslint', 'stylelint',
+  'chokidar', 'node-gyp', 'node-pre-gyp',
+  '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
+  'husky', 'lint-staged', 'commitlint',
+]);
+const __FRAMEWORK_REQUIRED_PACKAGES = new Set([
+  'vite',
+]);
+const __SKIP_PREFIXES = [
+  '@types/',
+  '@eslint/',
+  '@typescript-eslint/',
+  'eslint-plugin-',
+  'eslint-config-',
+];
+function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
+  if (frameworkAware && __FRAMEWORK_REQUIRED_PACKAGES.has(name)) return false;
+  if (__SKIP_PACKAGES.has(name)) return true;
+  for (const p of __SKIP_PREFIXES) if (name.startsWith(p)) return true;
+  return false;
+}
+
+// ── Swap / reject registry (mirrors src/wasm-swap-registry.ts) ─────
+const __WASM_SWAPS = new Map([
+  ['esbuild', { from: 'esbuild', to: 'esbuild-wasm' }],
+  // rollup -> @rollup/wasm-node (drop-in WASM build).
+  ['rollup',  { from: 'rollup',  to: '@rollup/wasm-node' }],
+]);
+// Mirror of REJECT_INSTALL in src/wasm-swap-registry.ts. Entries with
+// transitive='warn' are tagged so the resolver can decide skip-vs-throw.
+const __REJECT_INSTALL = new Map([
+  ['sharp',                          { from: 'sharp',                          reason: 'Native libvips bindings; not portable to Workers.', transitive: 'fail' }],
+  ['sqlite3',                        { from: 'sqlite3',                        reason: 'Native sqlite3 .node binding.', transitive: 'fail' }],
+  ['better-sqlite3',                 { from: 'better-sqlite3',                 reason: 'Native sqlite .node binding.', transitive: 'fail' }],
+  ['canvas',                         { from: 'canvas',                         reason: 'Native Cairo bindings.', transitive: 'fail' }],
+  ['sodium-native',                  { from: 'sodium-native',                  reason: 'Native libsodium.', transitive: 'fail' }],
+  ['fsevents',                       { from: 'fsevents',                       reason: 'macOS-only filesystem watcher; never runs in Workers.', transitive: 'warn' }],
+  ['bufferutil',                     { from: 'bufferutil',                     reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
+  ['utf-8-validate',                 { from: 'utf-8-validate',                 reason: 'Native binding for ws speedups; install requires node-gyp.', transitive: 'warn' }],
+  ['node-pty',                       { from: 'node-pty',                       reason: 'PTY syscalls unavailable in workerd.', transitive: 'fail' }],
+  ['robotjs',                        { from: 'robotjs',                        reason: 'Desktop automation; sandboxed Workers cannot access OS UI.', transitive: 'fail' }],
+  ['electron',                       { from: 'electron',                       reason: 'Embedded Chromium runtime; not applicable to Workers.', transitive: 'fail' }],
+  ['bcrypt',                         { from: 'bcrypt',                         reason: 'Native bcrypt; require() name differs from bcryptjs.', transitive: 'fail' }],
+  ['argon2',                         { from: 'argon2',                         reason: 'Native Argon2 C bindings.', transitive: 'fail' }],
+  ['node-sass',                      { from: 'node-sass',                      reason: 'Native libsass; deprecated upstream.', transitive: 'fail' }],
+  ['grpc',                           { from: 'grpc',                           reason: 'Deprecated native gRPC.', transitive: 'fail' }],
+  ['@swc/core',                      { from: '@swc/core',                      reason: 'Native Rust SWC.', transitive: 'fail' }],
+  ['prisma',                         { from: 'prisma',                         reason: 'Native query engine; not portable to Workers in this configuration.', transitive: 'fail' }],
+  ['@prisma/client',                 { from: '@prisma/client',                 reason: 'Native Prisma query engine.', transitive: 'fail' }],
+  ['node-gyp',                       { from: 'node-gyp',                       reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
+  ['node-pre-gyp',                   { from: 'node-pre-gyp',                   reason: 'Build-time native compiler; never runs in Workers.', transitive: 'warn' }],
+  ['puppeteer',                      { from: 'puppeteer',                      reason: 'Bundled Chromium binary (~150 MB).', transitive: 'fail' }],
+  ['playwright',                     { from: 'playwright',                     reason: 'Bundled browsers (~300 MB).', transitive: 'fail' }],
+  ['sql.js',                         { from: 'sql.js',                         reason: 'Installs but fails at runtime because dist/sql-wasm.wasm is not available to the runtime loader.', transitive: 'fail' }],
+  ['@swc/wasm-web',                  { from: '@swc/wasm-web',                  reason: 'Installs but fails at runtime because its generated code path depends on workerd-blocked dynamic code generation.', transitive: 'fail' }],
+  ['@img/sharp-wasm32',              { from: '@img/sharp-wasm32',              reason: 'WASM build of sharp; wasm32-cpu-only AND libvips initThreads() fails under workerd (no pthread).', transitive: 'fail' }],
+  ['@napi-rs/canvas',                { from: '@napi-rs/canvas',                reason: 'Native bindings only; no WASM build published.', transitive: 'fail' }],
+  ['@napi-rs/canvas-wasm32-wasi',    { from: '@napi-rs/canvas-wasm32-wasi',    reason: 'Package does not exist on npm (404); @napi-rs/canvas has no WASM/WASI build.', transitive: 'fail' }],
+  // Tailwind v4 oxide + lightningcss native parents.
+  ['@tailwindcss/oxide',             { from: '@tailwindcss/oxide',             reason: 'Native Rust Tailwind v4 oxide engine; only platform-specific .node bindings + wasm32-wasi shard; workerd has no node:wasi.', transitive: 'fail' }],
+  ['lightningcss',                   { from: 'lightningcss',                   reason: 'Native Rust CSS parser; .node bindings + wasm32-wasi-only WASM build; workerd has no node:wasi; detect-libc also fails.', transitive: 'fail' }],
+]);
+function SHOULD_SWAP(name) {
+  return __WASM_SWAPS.get(name);
+}
+function SHOULD_REJECT_FAIL(name) {
+  const r = __REJECT_INSTALL.get(name);
+  if (r && r.transitive === 'fail') return r;
+  return undefined;
+}
+function SHOULD_WARN_SKIP_TRANSITIVE(name) {
+  const r = __REJECT_INSTALL.get(name);
+  if (r && r.transitive === 'warn') return r;
+  return undefined;
+}
+
+// ── Registry telemetry: facet-side event collection ──────────────────────
+// The facet cannot import the registry's emitRegistryEvent (preamble has
+// no import surface). Instead, decision sites push into a shared
+// __pendingEvents array which resolveTreeInFacet returns inside
+// ResolveFacetResult.registryEvents. The supervisor drains it and
+// flushes via emitRegistryEvent (npm-installer.ts).
+//
+// Shape of each entry:
+//   { type: 'swap',            from, to,                     ctx: 'transitive' }
+//   { type: 'reject',          from, reason, suggest?,       ctx: 'transitive' }
+//   { type: 'transitive-skip', from, reason }
+//
+// Note: ctx is always 'transitive' from this path (the supervisor's
+// applyW6Registry handles 'top'-ctx events directly without the facet).
+const __pendingEvents = [];
+function __EMIT_EVENT(e) { __pendingEvents.push(e); }
+function __DRAIN_EVENTS() {
+  // Hand ownership to caller; reset for next run (defensive — facet
+  // function bodies are re-instantiated per run anyway).
+  const out = __pendingEvents.slice();
+  __pendingEvents.length = 0;
+  return out;
+}
+
+// ── Semver helpers (pasted from src/npm-resolver.ts:83-202) ─────────────
+function PARSE_SEMVER(v) {
+  const m = v.replace(/^v/, '').match(/^(\\d+)\\.(\\d+)\\.(\\d+)/);
+  return m ? [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])] : null;
+}
+
+function COMPARE_SEMVER(a, b) {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+function __SATISFIES_COMPARATOR(version, comparator) {
+  const comp = comparator.trim();
+  if (!comp || comp === '*' || comp === 'latest' || comp === '' || comp === 'x') return true;
+  let op = '';
+  let rangeStr = comp;
+  const prefixMatch = comp.match(/^([~^]|>=|<=|>|<|=)\\s*/);
+  if (prefixMatch) {
+    op = prefixMatch[1];
+    rangeStr = comp.slice(prefixMatch[0].length);
+  }
+  rangeStr = rangeStr.replace(/\\.x/g, '.0');
+  if (rangeStr.match(/^\\d+$/)) rangeStr += '.0.0';
+  else if (rangeStr.match(/^\\d+\\.\\d+$/)) rangeStr += '.0';
+  const vParts = PARSE_SEMVER(version);
+  const rParts = PARSE_SEMVER(rangeStr);
+  if (!vParts || !rParts) return false;
+  const cmp = COMPARE_SEMVER(vParts, rParts);
+  switch (op) {
+    case '^': {
+      if (rParts[0] > 0) {
+        return vParts[0] === rParts[0] && cmp >= 0;
+      }
+      if (rParts[1] > 0) {
+        return vParts[0] === 0 && vParts[1] === rParts[1] && cmp >= 0;
+      }
+      return vParts[0] === 0 && vParts[1] === 0 && vParts[2] === rParts[2];
+    }
+    case '~': {
+      return vParts[0] === rParts[0] && vParts[1] === rParts[1] && vParts[2] >= rParts[2];
+    }
+    case '>=': return cmp >= 0;
+    case '>':  return cmp > 0;
+    case '<=': return cmp <= 0;
+    case '<':  return cmp < 0;
+    case '=':  return cmp === 0;
+    default: {
+      if (comp.match(/^\\d/)) {
+        return cmp === 0;
+      }
+      return cmp === 0;
+    }
+  }
+}
+
+function SATISFIES_RANGE(version, range) {
+  const trimmed = range.trim();
+  if (!trimmed || trimmed === '*' || trimmed === 'latest' || trimmed === '') return true;
+  const orParts = trimmed.split(/\\s*\\|\\|\\s*/);
+  for (const orPart of orParts) {
+    const hyphen = orPart.match(/^(\\S+)\\s+-\\s+(\\S+)$/);
+    if (hyphen) {
+      if (__SATISFIES_COMPARATOR(version, '>=' + hyphen[1]) &&
+          __SATISFIES_COMPARATOR(version, '<=' + hyphen[2])) {
+        return true;
+      }
+      continue;
+    }
+    const andParts = orPart.trim().split(/\\s+/);
+    const allMatch = andParts.every((part) => __SATISFIES_COMPARATOR(version, part));
+    if (allMatch) return true;
+  }
+  return false;
+}
+
+function RESOLVE_VERSION(versions, range) {
+  if (!range || range === 'latest' || range === '*' || range === '') return null;
+  const matching = versions.filter((v) => {
+    if (v.includes('-') && !range.includes('-')) return false;
+    return SATISFIES_RANGE(v, range);
+  });
+  if (matching.length === 0) return null;
+  matching.sort((a, b) => {
+    const ap = PARSE_SEMVER(a);
+    const bp = PARSE_SEMVER(b);
+    if (!ap || !bp) return 0;
+    return COMPARE_SEMVER(bp, ap);
+  });
+  return matching[0];
+}
+// ── end npm-resolve preamble ────────────────────────────────────────────
+`;
