@@ -1,0 +1,40 @@
+{
+  "name": "@nimbus-sh/config",
+  "version": "0.1.1",
+  "description": "Typed wrangler-config helper for Nimbus embedders. Generates a valid wrangler.jsonc from one function call.",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/config"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
