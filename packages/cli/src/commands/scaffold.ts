@@ -307,8 +307,14 @@ The session UI includes an Agent surface inside the editor workspace. It can
 use the same sandbox tools as the terminal: shell exec, files, runtime
 installs, processes, logs, and preview ports.
 
-For user-owned Cloudflare Workers AI quota, create a Cloudflare OAuth client
-with this redirect URL:
+For user-owned Cloudflare Workers AI quota, create a Cloudflare OAuth client:
+
+- Client Name: Nimbus Agent
+- Response Type: Code
+- Grant type: Authorization Code
+- Token Authentication Method: None
+
+Use this redirect URL:
 
 \`\`\`
 https://${wranglerName}.your-account.workers.dev/api/nimbus/oauth/callback
@@ -325,10 +331,12 @@ Set the non-secret values in \`wrangler.jsonc\`:
 }
 \`\`\`
 
-Then store the OAuth client secret:
+Then store a 32+ character cookie encryption secret. Nimbus uses this to keep
+Cloudflare OAuth tokens in encrypted HttpOnly browser cookies instead of
+Durable Object storage:
 
 \`\`\`bash
-npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 \`\`\`
 
 For owner-token fallback, set \`NIMBUS_CLOUDFLARE_ACCOUNT_ID\` in

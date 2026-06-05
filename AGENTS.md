@@ -126,6 +126,8 @@ Agent capabilities:
 - account selection from the connected Cloudflare token
 - AI SDK tool calling through Cloudflare Workers AI's OpenAI-compatible
   endpoint, with optional AI Gateway routing
+- encrypted `HttpOnly` browser cookies for user OAuth tokens and PKCE state;
+  do not persist user OAuth tokens in Durable Object storage
 - sandbox tools for exec, files, runtime install, processes, logs, and ports
 
 Agent configuration:
@@ -133,9 +135,10 @@ Agent configuration:
 | Env var | What |
 |---|---|
 | `NIMBUS_CF_OAUTH_CLIENT_ID` | Cloudflare OAuth client ID. |
-| `NIMBUS_CF_OAUTH_CLIENT_SECRET` | Optional OAuth client secret; set with `wrangler secret put`. |
 | `NIMBUS_CF_OAUTH_SCOPES` | Space-delimited OAuth scope IDs selected from Cloudflare. |
 | `NIMBUS_CF_OAUTH_REDIRECT_URI` | Optional override; defaults to `<origin>/api/nimbus/oauth/callback`. |
+| `NIMBUS_AGENT_COOKIE_SECRET` | 32+ character secret for encrypting browser-held OAuth cookies; set with `wrangler secret put`. Falls back to `JWT_SECRET`. |
+| `NIMBUS_CF_OAUTH_CLIENT_SECRET` | Optional only for confidential OAuth clients; do not set it for the public PKCE flow. |
 | `NIMBUS_CLOUDFLARE_ACCOUNT_ID` | Owner-account fallback account ID. |
 | `NIMBUS_CLOUDFLARE_API_TOKEN` | Owner-token fallback secret; set with `wrangler secret put`. |
 | `NIMBUS_AGENT_MODEL` | Model name, default `@cf/moonshotai/kimi-k2.6`. |

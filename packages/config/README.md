@@ -67,7 +67,7 @@ writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
 Agent secrets are never written by this package. Store them with Wrangler:
 
 ```bash
-npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 ```
 

@@ -227,6 +227,12 @@ runtime installs, long-running processes, logs, and preview ports. Model calls
 use the AI SDK with Cloudflare Workers AI's OpenAI-compatible endpoint and an
 optional AI Gateway name.
 
+For user-owned quota, create a Cloudflare OAuth client with response type
+`Code`, grant type `Authorization Code`, token authentication method `None`,
+and redirect URL `https://<your-nimbus-host>/api/nimbus/oauth/callback`.
+Nimbus uses PKCE and stores user OAuth tokens only in encrypted `HttpOnly`,
+`Secure`, `SameSite=Lax` browser cookies scoped to the session URL.
+
 Non-secret values can be generated with `@nimbus-sh/config` or written as
 `vars`:
 
@@ -242,7 +248,7 @@ Non-secret values can be generated with `@nimbus-sh/config` or written as
 Secrets stay in Workers secret storage:
 
 ```bash
-npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 ```
 

@@ -81,7 +81,7 @@ export interface BuildWranglerOptions {
     extraAliases?: Record<string, string>;
     /**
      * Optional session Agent configuration. Secrets are intentionally excluded:
-     * set `NIMBUS_CF_OAUTH_CLIENT_SECRET` and `NIMBUS_CLOUDFLARE_API_TOKEN`
+     * set `NIMBUS_AGENT_COOKIE_SECRET` and `NIMBUS_CLOUDFLARE_API_TOKEN`
      * with `wrangler secret put`.
      */
     agent?: {

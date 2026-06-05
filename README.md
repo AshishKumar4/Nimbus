@@ -144,17 +144,25 @@ The agent uses the AI SDK with Cloudflare Workers AI's OpenAI-compatible
 endpoint and an optional AI Gateway name. User OAuth can spend the user's own
 Cloudflare quota; owner-token fallback can spend the deployment owner's quota.
 
-Configure OAuth when each user should spend their own Cloudflare quota:
+Configure OAuth when each user should spend their own Cloudflare quota. In
+Cloudflare's **Create OAuth client** form, use:
 
-```bash
-# In Cloudflare: create an OAuth client with Authorization Code flow.
-# Redirect URL:
-#   https://<your-nimbus-host>/api/nimbus/oauth/callback
-#
-# Select the account/API scopes your client needs for account selection and
-# AI Gateway / Workers AI inference. Cloudflare exposes the current scope IDs
-# in the dashboard and through GET /client/v4/oauth/scopes.
-```
+- **Client Name:** `Nimbus Agent`
+- **Response Type:** `Code`
+- **Grant type:** `Authorization Code`
+- **Token Authentication Method:** `None`
+- **Redirect (Callback) URLs:** `https://<your-nimbus-host>/api/nimbus/oauth/callback`
+- **Client URL:** `https://<your-nimbus-host>`
+
+Nimbus uses Authorization Code + PKCE. User OAuth tokens are stored only in
+encrypted, `HttpOnly`, `Secure`, `SameSite=Lax` browser cookies scoped to the
+session URL. Nimbus does not persist user OAuth tokens in Durable Object
+storage.
+
+On the scopes step, select the narrow account scopes needed for the Agent:
+`Account Read`, `Workers AI Edit`, and, when routing through AI Gateway,
+`AI Gateway Run` plus `AI Gateway Read`. Cloudflare exposes the current scope
+IDs in the dashboard and through `GET /client/v4/oauth/scopes`.
 
 Add non-secret values to `wrangler.jsonc` or generate them with
 `@nimbus-sh/config`:
@@ -173,7 +181,7 @@ Add non-secret values to `wrangler.jsonc` or generate them with
 Store secrets with Wrangler:
 
 ```bash
-npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 ```
 
 For a deployment-owner fallback instead of user OAuth:

@@ -11,10 +11,11 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateText, jsonSchema, stepCountIs, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
-const AUTH_KEY = 'nimbus:agent:auth';
 const MESSAGES_KEY = 'nimbus:agent:messages';
-const OAUTH_STATE_PREFIX = 'nimbus:agent:oauth-state:';
+const AUTH_COOKIE = 'nimbus_agent_oauth';
+const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_STORED_MESSAGES = 80;
 const MAX_MODEL_MESSAGES = 24;
 const MAX_TOOL_ROUNDS = 6;
@@ -29,17 +30,19 @@ const SYSTEM_PROMPT = 'You are the Nimbus session agent. You can inspect and edi
 export async function handleAgentRequest(self, request, url) {
     const path = url.pathname;
     if (path === '/api/agent/status' && request.method === 'GET') {
-        return json(await agentStatus(self, url));
+        return agentStatus(self, request, url);
     }
     if (path === '/api/agent/oauth/start' && request.method === 'POST') {
         return oauthStart(self, request, url);
     }
     if (path === '/api/agent/oauth/callback' && request.method === 'GET') {
-        return oauthCallback(self, url);
+        return oauthCallback(self, request, url);
     }
     if (path === '/api/agent/oauth/logout' && request.method === 'POST') {
-        await self.ctx.storage.delete(AUTH_KEY);
-        return json({ ok: true });
+        const headers = new Headers();
+        appendCookie(headers, clearAuthCookie(request));
+        appendCookie(headers, clearStateCookie());
+        return json({ ok: true }, 200, headers);
     }
     if (path === '/api/agent/account' && request.method === 'POST') {
         return selectAccount(self, request);
@@ -70,13 +73,24 @@ export function parseAgentOAuthStateParam(state) {
         return null;
     return payload;
 }
-async function agentStatus(self, url) {
+async function agentStatus(self, request, url) {
     const config = readConfig(self, url);
-    const auth = await loadAuth(self);
+    const authResult = await loadFreshAuth(self, request);
+    const auth = authResult.auth;
+    let user = null;
+    let accounts = [];
+    if (auth?.accessToken) {
+        [user, accounts] = await Promise.all([
+            fetchUserInfo(auth.accessToken).catch((e) => ({ error: String(e?.message || e) })),
+            fetchAccounts(auth.accessToken).catch(() => []),
+        ]);
+    }
     const ownerConfigured = !!(config.ownerAccountId && config.ownerToken);
     const oauthConfigured = !!config.oauthClientId;
     const connected = !!auth?.accessToken || ownerConfigured;
-    return {
+    const headers = new Headers();
+    applyAuthCookieResult(headers, authResult);
+    return json({
         ok: true,
         configured: oauthConfigured || ownerConfigured,
         model: config.model,
@@ -86,8 +100,8 @@ async function agentStatus(self, url) {
             connected: !!auth?.accessToken,
             clientId: oauthConfigured ? config.oauthClientId : null,
             scopes: config.oauthScopes,
-            user: auth?.user ?? null,
-            accounts: auth?.accounts ?? [],
+            user,
+            accounts,
             accountId: auth?.accountId ?? null,
             expiresAt: auth?.expiresAt ?? null,
         },
@@ -104,7 +118,7 @@ async function agentStatus(self, url) {
             'processes',
             'ports',
         ],
-    };
+    }, 200, headers);
 }
 async function oauthStart(self, request, url) {
     const config = readConfig(self, url);
@@ -134,7 +148,6 @@ async function oauthStart(self, request, url) {
         createdAt: now,
         expiresAt: now + OAUTH_STATE_TTL_MS,
     };
-    await self.ctx.storage.put(OAUTH_STATE_PREFIX + nonce, stored);
     const authUrl = new URL(CF_OAUTH_AUTH_URL);
     authUrl.searchParams.set('client_id', config.oauthClientId);
     authUrl.searchParams.set('response_type', 'code');
@@ -145,9 +158,19 @@ async function oauthStart(self, request, url) {
     if (config.oauthScopes.length > 0) {
         authUrl.searchParams.set('scope', config.oauthScopes.join(' '));
     }
-    return json({ ok: true, authUrl: authUrl.toString(), expiresAt: stored.expiresAt });
+    const headers = new Headers();
+    try {
+        appendCookie(headers, await sealStateCookie(self, stored));
+    }
+    catch (e) {
+        return json({
+            error: e?.message || String(e),
+            code: 'E_AGENT_COOKIE_SECRET',
+        }, 409);
+    }
+    return json({ ok: true, authUrl: authUrl.toString(), expiresAt: stored.expiresAt }, 200, headers);
 }
-async function oauthCallback(self, url) {
+async function oauthCallback(self, request, url) {
     const code = url.searchParams.get('code');
     const error = url.searchParams.get('error');
     const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
@@ -155,9 +178,7 @@ async function oauthCallback(self, url) {
         return oauthResultHtml(false, 'Cloudflare authorization failed.', payload?.sessionId);
     if (!code || !payload)
         return oauthResultHtml(false, 'OAuth callback is missing code or state.', payload?.sessionId);
-    const stateKey = OAUTH_STATE_PREFIX + payload.nonce;
-    const stored = await self.ctx.storage.get(stateKey);
-    await self.ctx.storage.delete(stateKey);
+    const stored = await loadStateCookie(self, request);
     if (!stored || stored.expiresAt < Date.now()) {
         return oauthResultHtml(false, 'OAuth session expired. Connect again.', payload.sessionId);
     }
@@ -171,10 +192,7 @@ async function oauthCallback(self, url) {
         const accessToken = String(token.access_token || '');
         if (!accessToken)
             throw new Error('Cloudflare did not return an access token');
-        const [user, accounts] = await Promise.all([
-            fetchUserInfo(accessToken).catch((e) => ({ error: String(e?.message || e) })),
-            fetchAccounts(accessToken).catch(() => []),
-        ]);
+        const accounts = await fetchAccounts(accessToken).catch(() => []);
         const auth = {
             mode: 'oauth',
             accessToken,
@@ -182,15 +200,19 @@ async function oauthCallback(self, url) {
             tokenType: token.token_type ? String(token.token_type) : 'Bearer',
             expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
             connectedAt: Date.now(),
-            user,
-            accounts,
             accountId: accounts[0]?.id ?? null,
+            sessionId: payload.sessionId,
+            tenantSegment: payload.tenantSegment,
         };
-        await self.ctx.storage.put(AUTH_KEY, auth);
-        return oauthResultHtml(true, 'Cloudflare connected.', payload.sessionId);
+        const headers = new Headers();
+        appendCookie(headers, clearStateCookie());
+        appendCookie(headers, await sealAuthCookie(self, request, auth));
+        return oauthResultHtml(true, 'Cloudflare connected.', payload.sessionId, headers);
     }
     catch (e) {
-        return oauthResultHtml(false, e?.message || String(e), payload.sessionId);
+        const headers = new Headers();
+        appendCookie(headers, clearStateCookie());
+        return oauthResultHtml(false, e?.message || String(e), payload.sessionId, headers);
     }
 }
 async function selectAccount(self, request) {
@@ -198,27 +220,33 @@ async function selectAccount(self, request) {
     const accountId = String(body?.accountId || '');
     if (!isAccountId(accountId))
         return json({ error: 'invalid account id' }, 400);
-    const auth = await loadAuth(self);
+    const authResult = await loadFreshAuth(self, request);
+    const auth = authResult.auth;
     if (!auth)
         return json({ error: 'not connected' }, 409);
-    if (!auth.accounts.some((a) => a.id === accountId)) {
+    const accounts = await fetchAccounts(auth.accessToken).catch(() => []);
+    if (!accounts.some((a) => a.id === accountId)) {
         return json({ error: 'account is not available for this OAuth token' }, 400);
     }
-    auth.accountId = accountId;
-    await self.ctx.storage.put(AUTH_KEY, auth);
-    return json({ ok: true, accountId });
+    const next = { ...auth, accountId };
+    const headers = new Headers();
+    applyAuthCookieResult(headers, authResult);
+    appendCookie(headers, await sealAuthCookie(self, request, next));
+    return json({ ok: true, accountId }, 200, headers);
 }
 async function agentChat(self, request, url) {
     const body = await readJson(request);
     const text = String(body?.message || '').trim();
     if (!text)
         return json({ error: 'message is required' }, 400);
-    const credentials = await loadAiCredentials(self, url);
-    if (!credentials) {
+    const credentialResult = await loadAiCredentials(self, request, url);
+    if (!credentialResult.credentials) {
+        const headers = new Headers();
+        applyAuthCookieResult(headers, credentialResult.authResult);
         return json({
             error: 'Connect Cloudflare or configure an owner API token before chatting.',
             code: 'E_AGENT_AI_NOT_CONFIGURED',
-        }, 409);
+        }, 409, headers);
     }
     const config = readConfig(self, url);
     const messages = await loadMessages(self);
@@ -226,24 +254,28 @@ async function agentChat(self, request, url) {
     messages.push(userMessage);
     await saveMessages(self, messages);
     try {
-        const result = await runAiSdkTurn(self, config, credentials, messages);
+        const result = await runAiSdkTurn(self, config, credentialResult.credentials, messages);
         const assistantText = result.text || 'Done.';
         const assistantMessage = makeMessage('assistant', assistantText);
         const nextMessages = [...messages, ...result.toolEvents, assistantMessage];
         await saveMessages(self, nextMessages);
+        const headers = new Headers();
+        applyAuthCookieResult(headers, credentialResult.authResult);
         return json({
             ok: true,
             message: assistantMessage,
             toolEvents: result.toolEvents,
             messages: trimMessagesForClient(nextMessages),
-        });
+        }, 200, headers);
     }
     catch (e) {
+        const headers = new Headers();
+        applyAuthCookieResult(headers, credentialResult.authResult);
         return json({
             error: e?.message || String(e),
             code: 'E_AGENT_TURN_FAILED',
             messages: trimMessagesForClient(messages),
-        }, 502);
+        }, 502, headers);
     }
 }
 async function runAiSdkTurn(self, config, credentials, messages) {
@@ -457,34 +489,40 @@ async function runTool(self, name, args) {
         return { error: e?.message || String(e) };
     }
 }
-async function loadAiCredentials(self, url) {
+async function loadAiCredentials(self, request, url) {
     const config = readConfig(self, url);
-    const auth = await loadFreshAuth(self);
+    const authResult = await loadFreshAuth(self, request);
+    const auth = authResult.auth;
     if (auth?.accessToken && auth.accountId) {
         return {
-            mode: 'oauth',
-            accessToken: auth.accessToken,
-            accountId: auth.accountId,
+            authResult,
+            credentials: {
+                mode: 'oauth',
+                accessToken: auth.accessToken,
+                accountId: auth.accountId,
+            },
         };
     }
     if (config.ownerToken && config.ownerAccountId) {
         return {
-            mode: 'owner-token',
-            accessToken: config.ownerToken,
-            accountId: config.ownerAccountId,
+            authResult,
+            credentials: {
+                mode: 'owner-token',
+                accessToken: config.ownerToken,
+                accountId: config.ownerAccountId,
+            },
         };
     }
-    return null;
+    return { credentials: null, authResult };
 }
-async function loadFreshAuth(self) {
-    const auth = await loadAuth(self);
+async function loadFreshAuth(self, request) {
+    const auth = await loadAuth(self, request);
     if (!auth)
-        return null;
+        return { auth: null };
     if (!auth.expiresAt || auth.expiresAt > Date.now() + 60_000)
-        return auth;
+        return { auth };
     if (!auth.refreshToken) {
-        await self.ctx.storage.delete(AUTH_KEY);
-        return null;
+        return { auth: null, clearCookie: clearAuthCookie(request) };
     }
     try {
         const token = await refreshToken(self, auth.refreshToken);
@@ -495,12 +533,13 @@ async function loadFreshAuth(self) {
             tokenType: token.token_type ? String(token.token_type) : auth.tokenType,
             expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : auth.expiresAt,
         };
-        await self.ctx.storage.put(AUTH_KEY, next);
-        return next;
+        return {
+            auth: next,
+            setCookie: await sealAuthCookie(self, request, next),
+        };
     }
     catch {
-        await self.ctx.storage.delete(AUTH_KEY);
-        return null;
+        return { auth: null, clearCookie: clearAuthCookie(request) };
     }
 }
 async function exchangeCode(self, code, codeVerifier, redirectUri) {
@@ -565,9 +604,125 @@ async function fetchAccounts(accessToken) {
         .map((account) => ({ id: String(account.id || ''), name: String(account.name || account.id || '') }))
         .filter((account) => isAccountId(account.id));
 }
-async function loadAuth(self) {
-    const auth = await self.ctx.storage.get(AUTH_KEY);
-    return auth?.mode === 'oauth' ? auth : null;
+async function loadAuth(self, request) {
+    const value = readCookie(request, AUTH_COOKIE);
+    if (!value)
+        return null;
+    const auth = await unsealCookie(self, value).catch(() => null);
+    if (!auth || auth.mode !== 'oauth' || !auth.accessToken)
+        return null;
+    const route = routeContext(request);
+    if (auth.sessionId !== route.sessionId ||
+        auth.tenantSegment !== route.tenantSegment) {
+        return null;
+    }
+    return auth;
+}
+async function loadStateCookie(self, request) {
+    const value = readCookie(request, STATE_COOKIE);
+    if (!value)
+        return null;
+    const state = await unsealCookie(self, value).catch(() => null);
+    if (!state || state.v !== 1 || !isNonce(state.nonce))
+        return null;
+    if (!isSessionId(state.sessionId) || !isTenantSegment(state.tenantSegment))
+        return null;
+    if (!state.codeVerifier || !state.redirectUri)
+        return null;
+    return state;
+}
+async function sealStateCookie(self, state) {
+    return serializeCookie(STATE_COOKIE, await sealCookie(self, state), {
+        path: '/',
+        maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
+    });
+}
+async function sealAuthCookie(self, request, auth) {
+    return serializeCookie(AUTH_COOKIE, await sealCookie(self, auth), {
+        path: authCookiePath(request),
+        maxAge: AUTH_COOKIE_TTL_SECONDS,
+    });
+}
+function clearStateCookie() {
+    return serializeCookie(STATE_COOKIE, '', { path: '/', maxAge: 0 });
+}
+function clearAuthCookie(request) {
+    return serializeCookie(AUTH_COOKIE, '', { path: authCookiePath(request), maxAge: 0 });
+}
+function applyAuthCookieResult(headers, result) {
+    if (!result)
+        return;
+    if (result.clearCookie)
+        appendCookie(headers, result.clearCookie);
+    if (result.setCookie)
+        appendCookie(headers, result.setCookie);
+}
+function appendCookie(headers, cookie) {
+    headers.append('Set-Cookie', cookie);
+}
+async function sealCookie(self, value) {
+    const key = await cookieCryptoKey(self);
+    const iv = new Uint8Array(12);
+    crypto.getRandomValues(iv);
+    const plaintext = new TextEncoder().encode(JSON.stringify(value));
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
+    const packed = new Uint8Array(iv.length + ciphertext.length);
+    packed.set(iv, 0);
+    packed.set(ciphertext, iv.length);
+    return 'v1.' + base64Url(packed);
+}
+async function unsealCookie(self, value) {
+    if (!value.startsWith('v1.'))
+        return null;
+    const packed = base64UrlDecode(value.slice(3));
+    if (packed.length <= 12)
+        return null;
+    const iv = packed.slice(0, 12);
+    const ciphertext = packed.slice(12);
+    const key = await cookieCryptoKey(self);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+    return JSON.parse(new TextDecoder().decode(plaintext));
+}
+async function cookieCryptoKey(self) {
+    const env = self.env;
+    const secret = envString(env, 'NIMBUS_AGENT_COOKIE_SECRET') || envString(env, 'JWT_SECRET');
+    if (!secret || secret.length < 32) {
+        throw new Error('Set NIMBUS_AGENT_COOKIE_SECRET or JWT_SECRET to a 32+ character value before enabling Cloudflare OAuth');
+    }
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
+    return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+function serializeCookie(name, value, opts) {
+    return [
+        `${name}=${value}`,
+        `Path=${opts.path}`,
+        `Max-Age=${Math.max(0, Math.floor(opts.maxAge))}`,
+        'HttpOnly',
+        'Secure',
+        'SameSite=Lax',
+    ].join('; ');
+}
+function readCookie(request, name) {
+    const header = request.headers.get('Cookie') || request.headers.get('cookie') || '';
+    const target = name + '=';
+    for (const part of header.split(';')) {
+        const item = part.trim();
+        if (item.startsWith(target))
+            return item.slice(target.length);
+    }
+    return null;
+}
+function authCookiePath(request) {
+    const base = request.headers.get(BASE_PATH_HEADER) || '';
+    return base.startsWith('/s/') ? base : '/s';
+}
+function routeContext(request) {
+    const base = request.headers.get(BASE_PATH_HEADER) || '';
+    const sessionId = base.startsWith('/s/') ? base.slice(3).split('/')[0] : '';
+    return {
+        sessionId,
+        tenantSegment: request.headers.get(TENANT_HEADER) || 'legacy:public:_',
+    };
 }
 async function loadMessages(self) {
     const messages = await self.ctx.storage.get(MESSAGES_KEY);
@@ -683,16 +838,21 @@ async function readJson(request) {
         return null;
     }
 }
-function json(body, status = 200) {
+function json(body, status = 200, headers) {
+    const responseHeaders = new Headers(headers);
+    responseHeaders.set('Cache-Control', 'no-store');
     return Response.json(body, {
         status,
-        headers: { 'Cache-Control': 'no-store' },
+        headers: responseHeaders,
     });
 }
-function oauthResultHtml(ok, message, sessionId) {
+function oauthResultHtml(ok, message, sessionId, headers) {
     const sessionPath = sessionId && isSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
     const safeMessage = escapeHtml(message);
     const safePath = escapeHtml(sessionPath);
+    const responseHeaders = new Headers(headers);
+    responseHeaders.set('Content-Type', 'text/html; charset=utf-8');
+    responseHeaders.set('Cache-Control', 'no-store');
     return new Response(`<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -713,7 +873,7 @@ setTimeout(function(){ try { window.close(); } catch {} }, 700);
 </script>
 </body></html>`, {
         status: ok ? 200 : 400,
-        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+        headers: responseHeaders,
     });
 }
 function encodeState(payload) {

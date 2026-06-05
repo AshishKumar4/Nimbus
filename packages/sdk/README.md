@@ -76,8 +76,10 @@ The bundled session UI includes an Agent surface in the editor workspace.
 Configure it with Worker vars
 `NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`,
 `NIMBUS_AGENT_MODEL`, `NIMBUS_AGENT_GATEWAY_ID`, and the secrets
-`NIMBUS_CF_OAUTH_CLIENT_SECRET` or `NIMBUS_CLOUDFLARE_API_TOKEN` when you
-want Cloudflare OAuth or owner-token Workers AI access.
+`NIMBUS_AGENT_COOKIE_SECRET` or `NIMBUS_CLOUDFLARE_API_TOKEN` when you want
+Cloudflare OAuth or owner-token Workers AI access. User OAuth uses
+Authorization Code + PKCE and encrypted browser cookies; Nimbus does not store
+user OAuth tokens in Durable Object storage.
 
 ## Programmatic sandbox quickstart
 
