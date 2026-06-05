@@ -86,7 +86,7 @@
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "@lifo-sh/core": "^0.5.5",
         "clean-git-ref": "^2.0.1",
