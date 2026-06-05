@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Inter, system-ui, sans-serif" role="img" aria-label="Five-layer architecture: edge, supervisor, compute fan-out, child isolate, durable storage with peer-DO sibling pool branch">
+  <title>Layered architecture</title>
+  <desc>Layer 1 is the edge router. Layer 2 is the supervisor Durable Object with a 64 MiB application ceiling. Layer 3 is the Worker Loader compute fan-out plus a peer-DO sibling pool branch when fan-out width is at least five. Layer 4 is the cirrus-real DO Facet running Vite. Layer 5 is durable storage and per-colo cache: DO SQLite, R2, env.ASSETS, and caches.default.</desc>
+
+  <defs>
+    <style>
+      .group-frame { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; }
+      .layer       { fill: #ffffff; stroke: #0f172a; stroke-width: 1.4; }
+      .layer-supervisor { fill: #fef3c7; stroke: #b45309; stroke-width: 1.4; }
+      .node        { fill: #ffffff; stroke: #475569; stroke-width: 1.2; }
+      .store       { fill: #f1f5f9; stroke: #475569; stroke-width: 1.4; }
+      .branch      { fill: #f8fafc; stroke: #b45309; stroke-width: 1.2; stroke-dasharray: 5 4; }
+      .title       { font-size: 13px; font-weight: 600; fill: #0f172a; }
+      .label       { font-size: 12px; fill: #0f172a; }
+      .label-sm    { font-size: 11px; fill: #0f172a; }
+      .meta        { font-size: 10px; fill: #64748b; }
+      .layer-num   { font-size: 22px; font-weight: 700; fill: #cbd5e1; font-variant-numeric: tabular-nums; }
+      .layer-tag   { font-size: 10px; font-weight: 600; fill: #475569; letter-spacing: 0.04em; text-transform: uppercase; }
+      .edge        { fill: none; stroke: #475569; stroke-width: 1.3; }
+      .edge-warm   { fill: none; stroke: #b45309; stroke-width: 1.3; stroke-dasharray: 5 4; }
+      .edge-rpc    { fill: none; stroke: #b45309; stroke-width: 1.2; stroke-dasharray: 4 4; }
+      .edge-label  { font-size: 10px; fill: #475569; }
+      .edge-label-warm { font-size: 10px; fill: #b45309; }
+      .edge-label-bg { fill: #f8fafc; }
+    </style>
+    <marker id="arr-x" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-y" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <!-- L1 Edge -->
+  <text class="layer-num" x="40" y="68">1</text>
+  <text class="layer-tag" x="40" y="86">Edge</text>
+  <text class="layer-tag" x="40" y="100">&lt; 1 ms</text>
+  <rect class="layer" x="170" y="40" width="1080" height="68" rx="10"/>
+  <rect class="node" x="190" y="56" width="320" height="36" rx="6"/>
+  <text class="label" x="205" y="79">Static UI shell · env.ASSETS</text>
+  <rect class="node" x="530" y="56" width="320" height="36" rx="6"/>
+  <text class="label" x="545" y="79">session-router · SID → DO instance</text>
+
+  <!-- L2 Supervisor (highlight) -->
+  <text class="layer-num" x="40" y="158">2</text>
+  <text class="layer-tag" x="40" y="176">Supervisor</text>
+  <text class="layer-tag" x="40" y="190">64 MiB</text>
+  <rect class="layer-supervisor" x="170" y="130" width="1080" height="80" rx="10"/>
+  <rect class="node" x="190" y="146" width="240" height="48" rx="6"/>
+  <text class="label-sm" x="202" y="166">Shell + 60 unix commands</text>
+  <text class="meta"     x="202" y="180">echoes terminal IO</text>
+
+  <rect class="node" x="450" y="146" width="220" height="48" rx="6"/>
+  <text class="label-sm" x="462" y="166">VFS + LRU</text>
+  <text class="meta"     x="462" y="180">10 GB SQLite-backed</text>
+
+  <rect class="node" x="690" y="146" width="260" height="48" rx="6"/>
+  <text class="label-sm" x="702" y="166">Process table + port registry</text>
+  <text class="meta"     x="702" y="180">single source of truth</text>
+
+  <rect class="node" x="970" y="146" width="260" height="48" rx="6"/>
+  <text class="label-sm" x="982" y="166">Heap estimator + recovery ring</text>
+  <text class="meta"     x="982" y="180">7-component sum · 50-row ring</text>
+
+  <!-- L3 Loaders + L3a Peer-DO branch -->
+  <text class="layer-num" x="40" y="290">3</text>
+  <text class="layer-tag" x="40" y="308">Compute</text>
+  <text class="layer-tag" x="40" y="322">fan-out</text>
+  <text class="layer-tag" x="40" y="336">128 MiB</text>
+
+  <rect class="layer" x="170" y="260" width="640" height="120" rx="10"/>
+  <text class="meta" x="185" y="282">Worker Loader · width &lt; 5 routes here</text>
+  <g>
+    <rect class="node" x="185" y="292" width="180" height="36" rx="6"/>
+    <text class="label-sm" x="195" y="314">npm-resolve · BFS + R2</text>
+    <rect class="node" x="375" y="292" width="200" height="36" rx="6"/>
+    <text class="label-sm" x="385" y="314">npm-install · tar + write</text>
+    <rect class="node" x="585" y="292" width="220" height="36" rx="6"/>
+    <text class="label-sm" x="595" y="314">pre-bundle · esbuild deps</text>
+    <rect class="node" x="185" y="336" width="180" height="36" rx="6"/>
+    <text class="label-sm" x="195" y="358">git network · cf-git fork</text>
+    <rect class="node" x="375" y="336" width="430" height="36" rx="6"/>
+    <text class="label-sm" x="385" y="358">node exec + cp-spawn pool · chain-serialised</text>
+  </g>
+
+  <rect class="branch" x="830" y="260" width="420" height="120" rx="10"/>
+  <text class="layer-tag" x="845" y="280" fill="#b45309">3a · peer-DO sibling pool · width ≥ 5</text>
+  <g>
+    <rect class="node" x="845" y="292" width="390" height="36" rx="6"/>
+    <text class="label-sm" x="855" y="314">NimbusSession sibling · one loader per DO</text>
+    <rect class="node" x="845" y="336" width="390" height="36" rx="6"/>
+    <text class="label-sm" x="855" y="358">stable-id router · MAX_PEER_FANOUT = 32</text>
+  </g>
+
+  <!-- L4 Facet -->
+  <text class="layer-num" x="40" y="442">4</text>
+  <text class="layer-tag" x="40" y="460">Child</text>
+  <text class="layer-tag" x="40" y="474">isolate</text>
+  <rect class="layer" x="170" y="420" width="1080" height="56" rx="10"/>
+  <rect class="node" x="190" y="432" width="1040" height="32" rx="6"/>
+  <text class="label-sm" x="202" y="453">cirrus-real Vite · HMR long-poll + module graph · target: own SQLite + hibernation · current: WorkerEntrypoint fetcher¹</text>
+
+  <!-- L5 Storage -->
+  <text class="layer-num" x="40" y="540">5</text>
+  <text class="layer-tag" x="40" y="558">Durable</text>
+  <text class="layer-tag" x="40" y="572">+ per-colo</text>
+  <rect class="layer" x="170" y="510" width="1080" height="180" rx="10"/>
+
+  <g transform="translate(190,530)">
+    <ellipse class="store" cx="100" cy="8"  rx="100" ry="6"/>
+    <rect class="store" x="0" y="8" width="200" height="100"/>
+    <ellipse class="store" cx="100" cy="108" rx="100" ry="6"/>
+    <ellipse cx="100" cy="8" rx="100" ry="6" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="100" y="44" text-anchor="middle">DO SQLite</text>
+    <text class="meta"  x="100" y="62" text-anchor="middle">10 GB / instance</text>
+    <text class="meta"  x="100" y="78" text-anchor="middle">VFS · session · scrollback</text>
+    <text class="meta"  x="100" y="94" text-anchor="middle">npm cache · recovery ring</text>
+  </g>
+
+  <g transform="translate(430,530)">
+    <ellipse class="store" cx="100" cy="8"  rx="100" ry="6"/>
+    <rect class="store" x="0" y="8" width="200" height="100"/>
+    <ellipse class="store" cx="100" cy="108" rx="100" ry="6"/>
+    <ellipse cx="100" cy="8" rx="100" ry="6" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="100" y="44" text-anchor="middle">R2</text>
+    <text class="meta"  x="100" y="62" text-anchor="middle">multi-tenant</text>
+    <text class="meta"  x="100" y="78" text-anchor="middle">npm tarballs</text>
+    <text class="meta"  x="100" y="94" text-anchor="middle">packuments</text>
+  </g>
+
+  <g transform="translate(670,530)">
+    <ellipse class="store" cx="100" cy="8"  rx="100" ry="6"/>
+    <rect class="store" x="0" y="8" width="200" height="100"/>
+    <ellipse class="store" cx="100" cy="108" rx="100" ry="6"/>
+    <ellipse cx="100" cy="8" rx="100" ry="6" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="100" y="44" text-anchor="middle">env.ASSETS</text>
+    <text class="meta"  x="100" y="62" text-anchor="middle">esbuild-wasm</text>
+    <text class="meta"  x="100" y="78" text-anchor="middle">UI shell</text>
+  </g>
+
+  <g transform="translate(910,530)">
+    <rect class="store" x="0" y="0" width="220" height="120" rx="60"/>
+    <text class="title" x="110" y="44" text-anchor="middle">caches.default</text>
+    <text class="meta"  x="110" y="62" text-anchor="middle">per-colo L2</text>
+    <text class="meta"  x="110" y="78" text-anchor="middle">fronts R2 + env.ASSETS</text>
+    <text class="meta"  x="110" y="94" text-anchor="middle">5-min TTL packument</text>
+  </g>
+
+  <!-- Inter-layer arrows -->
+  <path class="edge" d="M 690 108 V 130" marker-end="url(#arr-x)"/>
+
+  <path class="edge" d="M 460 210 V 260" marker-end="url(#arr-x)"/>
+  <rect class="edge-label-bg" x="385" y="232" width="160" height="14" rx="2"/>
+  <text class="edge-label" x="465" y="243" text-anchor="middle">env.LOADER.get · width &lt; 5</text>
+
+  <path class="edge-warm" d="M 1040 210 V 260" marker-end="url(#arr-y)"/>
+  <rect class="edge-label-bg" x="950" y="232" width="200" height="14" rx="2"/>
+  <text class="edge-label-warm" x="1050" y="243" text-anchor="middle">env.NIMBUS_SESSION.get · width ≥ 5</text>
+
+  <path class="edge-warm" d="M 1040 380 C 1040 396 820 386 810 332" marker-end="url(#arr-y)"/>
+  <rect class="edge-label-bg" x="900" y="392" width="170" height="14" rx="2"/>
+  <text class="edge-label-warm" x="985" y="403" text-anchor="middle">peer DO → 1 loader / DO</text>
+
+  <!-- ctx.facets.get: from L2 right-of-center, goes around L3 to land on L4 -->
+  <path class="edge" d="M 820 210 C 820 230 820 240 820 240 L 820 386 C 820 410 820 410 820 420" marker-end="url(#arr-x)"/>
+  <rect class="edge-label-bg" x="780" y="396" width="80" height="14" rx="2"/>
+  <text class="edge-label" x="820" y="407" text-anchor="middle">ctx.facets.get</text>
+
+  <path class="edge" d="M 690 476 V 510" marker-end="url(#arr-x)"/>
+  <rect class="edge-label-bg" x="680" y="494" width="50" height="14" rx="2"/>
+  <text class="edge-label" x="705" y="505" text-anchor="middle">writes</text>
+
+  <!-- RPC return arrows: dashed amber, hugging the right side of fan-out group up to L2 -->
+  <path class="edge-rpc" d="M 220 292 C 200 270 200 240 220 210" marker-end="url(#arr-y)"/>
+  <rect class="edge-label-bg" x="172" y="244" width="92" height="14" rx="2"/>
+  <text class="edge-label-warm" x="218" y="255" text-anchor="middle">SupervisorRPC</text>
+
+  <path class="edge-rpc" d="M 1210 292 C 1230 270 1230 240 1210 210" marker-end="url(#arr-y)"/>
+  <rect class="edge-label-bg" x="1158" y="244" width="92" height="14" rx="2"/>
+  <text class="edge-label-warm" x="1204" y="255" text-anchor="middle">SupervisorRPC</text>
+
+  <!-- Footnote -->
+  <text class="meta" x="170" y="715">¹ DO-Facet target gated on $experimental compatibility flag (RM-27238); current path is functionally equivalent fetcher fallback.</text>
+  <text class="meta" x="170" y="730">Arrows: solid slate · data + control flow · dashed amber · RPC return path or width ≥ 5 branch.</text>
+</svg>

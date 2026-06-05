@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 760" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Inter, system-ui, sans-serif" role="img" aria-label="Nimbus system topology: browser to Cloudflare edge with NimbusSession Durable Object, Worker Loader fleet, DO Facet, and R2 storage">
+  <title>Nimbus system topology</title>
+  <desc>Browser connects via WebSocket to a session-router Worker, which pins a session ID to a NimbusSession Durable Object. The supervisor inside that DO owns the 10 GB SQLite VFS, fans out compute to Worker Loader isolates over RPC, and runs the Vite dev server in a child DO Facet. R2 is the multi-tenant tarball, packument, and asset cache.</desc>
+
+  <defs>
+    <style>
+      .ink   { fill: #0f172a; }
+      .muted { fill: #475569; }
+      .group-frame { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; }
+      .node        { fill: #ffffff; stroke: #0f172a; stroke-width: 1.4; }
+      .accent      { fill: #fef3c7; stroke: #b45309; stroke-width: 1.4; }
+      .store       { fill: #f1f5f9; stroke: #475569; stroke-width: 1.4; }
+      .title       { font-size: 12px; font-weight: 600; fill: #0f172a; }
+      .label       { font-size: 12px; fill: #0f172a; }
+      .meta        { font-size: 10px; fill: #64748b; }
+      .group-title { font-size: 11px; font-weight: 600; fill: #475569; letter-spacing: 0.04em; text-transform: uppercase; }
+      .edge        { fill: none; stroke: #475569; stroke-width: 1.3; }
+      .edge-rpc    { fill: none; stroke: #b45309; stroke-width: 1.3; stroke-dasharray: 5 4; }
+      .edge-label  { font-size: 10px; fill: #475569; }
+      .edge-label-rpc { font-size: 10px; fill: #b45309; }
+      .edge-label-bg { fill: #f8fafc; }
+    </style>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-bi" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M10 0 L0 5 L10 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-rpc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <!-- Browser column -->
+  <rect class="accent" x="40" y="320" width="170" height="70" rx="8"/>
+  <text class="title" x="125" y="350" text-anchor="middle">Browser</text>
+  <text class="meta"  x="125" y="368" text-anchor="middle">xterm.js</text>
+  <text class="meta"  x="125" y="382" text-anchor="middle">preview iframe</text>
+
+  <!-- Cloudflare Edge frame -->
+  <rect class="group-frame" x="260" y="40" width="940" height="680" rx="14"/>
+  <text class="group-title" x="280" y="68">Cloudflare edge</text>
+
+  <!-- session-router -->
+  <rect class="node" x="290" y="335" width="170" height="50" rx="8"/>
+  <text class="title" x="375" y="358" text-anchor="middle">Worker entrypoint</text>
+  <text class="meta"  x="375" y="374" text-anchor="middle">session-router</text>
+
+  <!-- NimbusSession DO frame -->
+  <rect class="group-frame" x="500" y="100" width="380" height="320" rx="12" stroke-dasharray="4 3"/>
+  <text class="group-title" x="520" y="128">NimbusSession Durable Object · 128 MiB isolate</text>
+
+  <!-- Supervisor -->
+  <rect class="node" x="525" y="150" width="160" height="56" rx="8"/>
+  <text class="title" x="605" y="174" text-anchor="middle">Supervisor</text>
+  <text class="meta"  x="605" y="190" text-anchor="middle">64 MiB app ceiling</text>
+
+  <!-- VFS -->
+  <rect class="node" x="700" y="150" width="160" height="56" rx="8"/>
+  <text class="title" x="780" y="174" text-anchor="middle">10 GB SQLite VFS</text>
+  <text class="meta"  x="780" y="190" text-anchor="middle">64 KiB pages · 32 MiB LRU</text>
+
+  <!-- DO SQLite cylinder -->
+  <g transform="translate(560,240)">
+    <ellipse class="store" cx="130" cy="8"  rx="130" ry="8"/>
+    <rect class="store" x="0" y="8" width="260" height="120"/>
+    <ellipse class="store" cx="130" cy="128" rx="130" ry="8"/>
+    <ellipse cx="130" cy="8" rx="130" ry="8" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="130" y="44" text-anchor="middle">DO SQLite storage</text>
+    <text class="meta"  x="130" y="64" text-anchor="middle">session state · scrollback</text>
+    <text class="meta"  x="130" y="80" text-anchor="middle">npm cache</text>
+    <text class="meta"  x="130" y="96" text-anchor="middle">recovery_event ring (50)</text>
+  </g>
+
+  <!-- Worker Loader fleet -->
+  <rect class="group-frame" x="910" y="100" width="270" height="320" rx="12" stroke-dasharray="4 3"/>
+  <text class="group-title" x="930" y="128">Worker Loader fleet · 128 MiB / isolate</text>
+
+  <g>
+    <rect class="node" x="930" y="148" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="170">npm-resolve</text>
+    <text class="meta"  x="1145" y="170" text-anchor="end">BFS + R2</text>
+
+    <rect class="node" x="930" y="186" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="208">npm-install batch</text>
+    <text class="meta"  x="1145" y="208" text-anchor="end">tar decode + write</text>
+
+    <rect class="node" x="930" y="224" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="246">pre-bundle</text>
+    <text class="meta"  x="1145" y="246" text-anchor="end">esbuild deps</text>
+
+    <rect class="node" x="930" y="262" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="284">tarball stream</text>
+    <text class="meta"  x="1145" y="284" text-anchor="end">gunzip + parse</text>
+
+    <rect class="node" x="930" y="300" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="322">node exec</text>
+    <text class="meta"  x="1145" y="322" text-anchor="end">fresh isolate</text>
+
+    <rect class="node" x="930" y="338" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="360">cp-spawn pool</text>
+    <text class="meta"  x="1145" y="360" text-anchor="end">chain-serialised</text>
+
+    <rect class="node" x="930" y="376" width="230" height="34" rx="6"/>
+    <text class="label" x="945" y="398">git network</text>
+    <text class="meta"  x="1145" y="398" text-anchor="end">cf-git fork</text>
+  </g>
+
+  <!-- DO Facet -->
+  <rect class="group-frame" x="500" y="450" width="380" height="100" rx="12" stroke-dasharray="4 3"/>
+  <text class="group-title" x="520" y="478">DO Facet · cirrus-real Vite</text>
+  <rect class="node" x="525" y="490" width="335" height="48" rx="8"/>
+  <text class="title" x="692" y="510" text-anchor="middle">Real Vite dev server</text>
+  <text class="meta"  x="692" y="528" text-anchor="middle">own SQLite + hibernation (target) · WorkerEntrypoint fetcher (current¹)</text>
+
+  <!-- R2 -->
+  <rect class="group-frame" x="500" y="580" width="680" height="120" rx="12" stroke-dasharray="4 3"/>
+  <text class="group-title" x="520" y="608">R2 · multi-tenant storage</text>
+
+  <g transform="translate(525,624)">
+    <ellipse class="store" cx="80" cy="8"  rx="80" ry="6"/>
+    <rect class="store" x="0" y="8" width="160" height="56"/>
+    <ellipse class="store" cx="80" cy="64" rx="80" ry="6"/>
+    <ellipse cx="80" cy="8" rx="80" ry="6" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="80" y="34" text-anchor="middle">nimbus-npm-cache</text>
+    <text class="meta"  x="80" y="50" text-anchor="middle">tarballs · content-addressed</text>
+  </g>
+  <g transform="translate(700,624)">
+    <ellipse class="store" cx="80" cy="8"  rx="80" ry="6"/>
+    <rect class="store" x="0" y="8" width="160" height="56"/>
+    <ellipse class="store" cx="80" cy="64" rx="80" ry="6"/>
+    <ellipse cx="80" cy="8" rx="80" ry="6" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="80" y="34" text-anchor="middle">packument-cache</text>
+    <text class="meta"  x="80" y="50" text-anchor="middle">5-min TTL mirror</text>
+  </g>
+  <g transform="translate(875,624)">
+    <ellipse class="store" cx="80" cy="8"  rx="80" ry="6"/>
+    <rect class="store" x="0" y="8" width="160" height="56"/>
+    <ellipse class="store" cx="80" cy="64" rx="80" ry="6"/>
+    <ellipse cx="80" cy="8" rx="80" ry="6" fill="none" stroke="#475569" stroke-width="1"/>
+    <text class="title" x="80" y="34" text-anchor="middle">env.ASSETS</text>
+    <text class="meta"  x="80" y="50" text-anchor="middle">esbuild-wasm + UI</text>
+  </g>
+
+  <!-- Edges -->
+
+  <!-- Browser to entry (two arrows) -->
+  <path class="edge" d="M 210 350 H 290" marker-end="url(#arr)" marker-start="url(#arr-bi)"/>
+  <text class="edge-label" x="250" y="342" text-anchor="middle">/ws</text>
+
+  <path class="edge" d="M 210 372 C 240 388 270 388 290 376" marker-end="url(#arr)" marker-start="url(#arr-bi)"/>
+  <text class="edge-label" x="250" y="402" text-anchor="middle">/preview · /port</text>
+
+  <!-- Entry to supervisor (curve north-east) -->
+  <path class="edge" d="M 460 360 C 490 330 500 200 525 178" marker-end="url(#arr)"/>
+  <text class="edge-label" x="468" y="320">SID routing</text>
+
+  <!-- Supervisor to Loaders (clear horizontal in upper area, label below at y=222) -->
+  <path class="edge" d="M 685 178 H 930" marker-end="url(#arr)"/>
+  <rect class="edge-label-bg" x="725" y="216" width="180" height="14" rx="2"/>
+  <text class="edge-label" x="815" y="227" text-anchor="middle">env.LOADER.get + RPC</text>
+
+  <!-- Supervisor to Facet (vertical down, label sits to the right of cylinder) -->
+  <path class="edge" d="M 525 178 C 480 240 480 360 525 490" marker-end="url(#arr)"/>
+  <rect class="edge-label-bg" x="455" y="380" width="80" height="14" rx="2"/>
+  <text class="edge-label" x="495" y="391" text-anchor="middle">ctx.facets.get</text>
+
+  <!-- Supervisor → R2 (stream tarballs): from the cylinder bottom -->
+  <path class="edge" d="M 690 370 C 690 460 700 540 700 624" marker-end="url(#arr)"/>
+  <rect class="edge-label-bg" x="660" y="554" width="100" height="14" rx="2"/>
+  <text class="edge-label" x="710" y="565" text-anchor="middle">stream tarballs</text>
+
+  <!-- Supervisor → env.ASSETS (fetch wasm) — go right of the loader fleet -->
+  <path class="edge" d="M 860 162 C 1180 162 1200 510 1010 612" marker-end="url(#arr)"/>
+  <rect class="edge-label-bg" x="1148" y="328" width="80" height="14" rx="2"/>
+  <text class="edge-label" x="1188" y="339" text-anchor="middle">fetch wasm</text>
+
+  <!-- Loaders RPC back to supervisor (under the supervisor→loader edge, distinct y) -->
+  <path class="edge-rpc" d="M 920 200 C 870 220 730 230 685 200" marker-end="url(#arr-rpc)"/>
+  <rect class="edge-label-bg" x="700" y="244" width="220" height="14" rx="2"/>
+  <text class="edge-label-rpc" x="810" y="255" text-anchor="middle">SupervisorRPC: readFile · writeFile · stdout</text>
+
+  <!-- Facet RPC back to supervisor -->
+  <path class="edge-rpc" d="M 525 490 C 470 460 470 420 525 410" marker-end="url(#arr-rpc)"/>
+  <rect class="edge-label-bg" x="415" y="448" width="105" height="14" rx="2"/>
+  <text class="edge-label-rpc" x="468" y="459" text-anchor="middle">HMR · /preview</text>
+
+  <!-- Legend -->
+  <g transform="translate(40,560)">
+    <text class="group-title" x="0" y="0">Legend</text>
+    <line x1="0" y1="20" x2="40" y2="20" stroke="#475569" stroke-width="1.3"/>
+    <text class="meta" x="50" y="24">data + control flow</text>
+    <line x1="0" y1="42" x2="40" y2="42" stroke="#b45309" stroke-width="1.3" stroke-dasharray="5 4"/>
+    <text class="meta" x="50" y="46">RPC return path</text>
+    <rect x="0" y="58" width="14" height="14" rx="3" fill="#ffffff" stroke="#0f172a" stroke-width="1.4"/>
+    <text class="meta" x="22" y="69">node</text>
+    <rect x="0" y="80" width="14" height="14" rx="3" fill="#f1f5f9" stroke="#475569" stroke-width="1.4"/>
+    <text class="meta" x="22" y="91">durable storage</text>
+    <rect x="0" y="102" width="14" height="14" rx="3" fill="#fef3c7" stroke="#b45309" stroke-width="1.4"/>
+    <text class="meta" x="22" y="113">user-facing surface</text>
+  </g>
+</svg>

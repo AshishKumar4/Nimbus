@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 540" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Inter, system-ui, sans-serif" role="img" aria-label="Session lifecycle: R-B-W-O cold start and warm rejoin paths">
+  <title>Session lifecycle — R-B-W-O</title>
+  <desc>Cold start runs Rehydrate, Build, Wire, Online, then Hydrated and Active. Warm rejoin after a webSocketError replays only Rehydrate-warm, Wire-warm (no-op), Hydrated-warm, and returns to Active. Build and Online are skipped on warm rejoin.</desc>
+
+  <defs>
+    <style>
+      .group-frame { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; }
+      .node        { fill: #ffffff; stroke: #0f172a; stroke-width: 1.4; }
+      .node-warm   { fill: #fef3c7; stroke: #b45309; stroke-width: 1.4; }
+      .node-active { fill: #dcfce7; stroke: #166534; stroke-width: 1.4; }
+      .terminal    { fill: #0f172a; stroke: #0f172a; stroke-width: 1.4; }
+      .title       { font-size: 12px; font-weight: 600; fill: #0f172a; }
+      .label       { font-size: 12px; fill: #0f172a; }
+      .meta        { font-size: 10px; fill: #64748b; }
+      .meta-warm   { font-size: 10px; fill: #b45309; }
+      .group-title { font-size: 11px; font-weight: 600; fill: #475569; letter-spacing: 0.04em; text-transform: uppercase; }
+      .edge        { fill: none; stroke: #475569; stroke-width: 1.3; }
+      .edge-warm   { fill: none; stroke: #b45309; stroke-width: 1.3; }
+      .edge-skip   { fill: none; stroke: #94a3b8; stroke-width: 1.3; stroke-dasharray: 4 4; }
+      .edge-label  { font-size: 10px; fill: #475569; }
+      .edge-label-warm { font-size: 10px; fill: #b45309; }
+    </style>
+    <marker id="arr-l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b45309"/>
+    </marker>
+    <marker id="arr-skip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- Cold-start lane -->
+  <rect class="group-frame" x="20" y="40" width="1200" height="180" rx="14"/>
+  <text class="group-title" x="40" y="68">Cold start · R → B → W → O → hydrated</text>
+
+  <g>
+    <!-- terminal start -->
+    <circle class="terminal" cx="60" cy="140" r="8"/>
+    <text class="meta" x="60" y="170" text-anchor="middle">init</text>
+
+    <!-- cold -->
+    <rect class="node" x="100" y="115" width="120" height="50" rx="8"/>
+    <text class="title" x="160" y="138" text-anchor="middle">cold</text>
+    <text class="meta"  x="160" y="154" text-anchor="middle">no shell</text>
+
+    <!-- rehydrate -->
+    <rect class="node" x="260" y="115" width="140" height="50" rx="8"/>
+    <text class="title" x="330" y="138" text-anchor="middle">R · rehydrate</text>
+    <text class="meta"  x="330" y="154" text-anchor="middle">cwd · env · mounts</text>
+
+    <!-- wire -->
+    <rect class="node" x="440" y="115" width="140" height="50" rx="8"/>
+    <text class="title" x="510" y="138" text-anchor="middle">W · wire</text>
+    <text class="meta"  x="510" y="154" text-anchor="middle">terminal attach</text>
+
+    <!-- build -->
+    <rect class="node" x="620" y="115" width="140" height="50" rx="8"/>
+    <text class="title" x="690" y="138" text-anchor="middle">B · build</text>
+    <text class="meta"  x="690" y="154" text-anchor="middle">kernel + commands</text>
+
+    <!-- online -->
+    <rect class="node" x="800" y="115" width="140" height="50" rx="8"/>
+    <text class="title" x="870" y="138" text-anchor="middle">O · online</text>
+    <text class="meta"  x="870" y="154" text-anchor="middle">MOTD · framework hint</text>
+
+    <!-- hydrated -->
+    <rect class="node" x="980" y="115" width="140" height="50" rx="8"/>
+    <text class="title" x="1050" y="138" text-anchor="middle">hydrated</text>
+    <text class="meta"  x="1050" y="154" text-anchor="middle">scrollback replay</text>
+
+    <!-- active -->
+    <rect class="node-active" x="1140" y="115" width="60" height="50" rx="8"/>
+    <text class="title" x="1170" y="138" text-anchor="middle">active</text>
+    <text class="meta" x="1170" y="154" text-anchor="middle">ready</text>
+  </g>
+
+  <!-- cold-start arrows -->
+  <path class="edge" d="M 68 140 H 100" marker-end="url(#arr-l)"/>
+  <path class="edge" d="M 220 140 H 260" marker-end="url(#arr-l)"/>
+  <path class="edge" d="M 400 140 H 440" marker-end="url(#arr-l)"/>
+  <path class="edge" d="M 580 140 H 620" marker-end="url(#arr-l)"/>
+  <path class="edge" d="M 760 140 H 800" marker-end="url(#arr-l)"/>
+  <path class="edge" d="M 940 140 H 980" marker-end="url(#arr-l)"/>
+  <path class="edge" d="M 1120 140 H 1140" marker-end="url(#arr-l)"/>
+
+  <text class="edge-label" x="240" y="106" text-anchor="middle">/ws upgrade</text>
+  <text class="edge-label" x="420" y="106" text-anchor="middle">attach</text>
+  <text class="edge-label" x="600" y="106" text-anchor="middle">register</text>
+  <text class="edge-label" x="780" y="106" text-anchor="middle">announce</text>
+  <text class="edge-label" x="960" y="106" text-anchor="middle">replay</text>
+  <text class="edge-label" x="1130" y="106" text-anchor="middle">start()</text>
+
+  <!-- Warm rejoin lane -->
+  <rect class="group-frame" x="20" y="280" width="1200" height="180" rx="14"/>
+  <text class="group-title" x="40" y="308">Warm rejoin · R → W → hydrated · B and O skipped</text>
+
+  <g>
+    <!-- drained -->
+    <rect class="node-warm" x="100" y="355" width="120" height="50" rx="8"/>
+    <text class="title" x="160" y="378" text-anchor="middle">drained</text>
+    <text class="meta-warm" x="160" y="394" text-anchor="middle">webSocketError</text>
+
+    <!-- rehydrate-warm -->
+    <rect class="node" x="260" y="355" width="140" height="50" rx="8"/>
+    <text class="title" x="330" y="378" text-anchor="middle">R · rehydrate</text>
+    <text class="meta"  x="330" y="394" text-anchor="middle">shell still alive</text>
+
+    <!-- wire-warm -->
+    <rect class="node" x="440" y="355" width="140" height="50" rx="8"/>
+    <text class="title" x="510" y="378" text-anchor="middle">W · wire</text>
+    <text class="meta"  x="510" y="394" text-anchor="middle">SQL re-read no-op</text>
+
+    <!-- build-skip -->
+    <rect class="node" x="620" y="355" width="140" height="50" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="4 3"/>
+    <text class="title" x="690" y="378" text-anchor="middle" fill="#94a3b8">B · build</text>
+    <text class="meta"  x="690" y="394" text-anchor="middle" fill="#94a3b8">SKIPPED</text>
+
+    <!-- online-skip -->
+    <rect class="node" x="800" y="355" width="140" height="50" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="4 3"/>
+    <text class="title" x="870" y="378" text-anchor="middle" fill="#94a3b8">O · online</text>
+    <text class="meta"  x="870" y="394" text-anchor="middle" fill="#94a3b8">SKIPPED</text>
+
+    <!-- hydrated-warm -->
+    <rect class="node" x="980" y="355" width="140" height="50" rx="8"/>
+    <text class="title" x="1050" y="378" text-anchor="middle">hydrated</text>
+    <text class="meta"  x="1050" y="394" text-anchor="middle">attach + replay</text>
+
+    <!-- active -->
+    <rect class="node-active" x="1140" y="355" width="60" height="50" rx="8"/>
+    <text class="title" x="1170" y="378" text-anchor="middle">active</text>
+    <text class="meta" x="1170" y="394" text-anchor="middle">warmJoin++</text>
+  </g>
+
+  <!-- warm arrows -->
+  <path class="edge-warm" d="M 220 380 H 260" marker-end="url(#arr-w)"/>
+  <path class="edge-warm" d="M 400 380 H 440" marker-end="url(#arr-w)"/>
+  <path class="edge-warm" d="M 580 380 H 620" marker-end="url(#arr-w)" stroke-dasharray="4 3"/>
+  <path class="edge-skip"  d="M 760 380 H 800" marker-end="url(#arr-skip)"/>
+  <path class="edge-warm" d="M 940 380 H 980" marker-end="url(#arr-w)" stroke-dasharray="4 3"/>
+  <path class="edge-warm" d="M 1120 380 H 1140" marker-end="url(#arr-w)"/>
+
+  <text class="edge-label-warm" x="240" y="346" text-anchor="middle">/ws upgrade</text>
+  <text class="edge-label-warm" x="420" y="346" text-anchor="middle">re-read</text>
+  <text class="edge-label" x="600" y="346" text-anchor="middle" fill="#94a3b8">bypass</text>
+  <text class="edge-label" x="780" y="346" text-anchor="middle" fill="#94a3b8">bypass</text>
+  <text class="edge-label-warm" x="960" y="346" text-anchor="middle">attach(newWs)</text>
+
+  <!-- transition arrow active-cold -> drained-warm -->
+  <path class="edge-warm" d="M 1170 165 C 1170 220 220 250 160 355" marker-end="url(#arr-w)"/>
+  <text class="edge-label-warm" x="660" y="234" text-anchor="middle">webSocketClose / webSocketError · invariant: dataLoss = false</text>
+
+  <!-- Footer -->
+  <text class="meta" x="620" y="500" text-anchor="middle">Every transition emits a recovery_event row · 50-entry ring · survives DO eviction</text>
+  <text class="meta" x="620" y="516" text-anchor="middle">10-min realistic-load run · 6 forced webSocketError cycles · warmJoinCount = 6 · zero dataLoss events</text>
+</svg>
