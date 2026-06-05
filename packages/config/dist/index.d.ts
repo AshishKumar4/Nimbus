@@ -79,6 +79,23 @@ export interface BuildWranglerOptions {
      * set. Embedder code that uses additional CJS deps can pass them here.
      */
     extraAliases?: Record<string, string>;
+    /**
+     * Optional session Agent configuration. Secrets are intentionally excluded:
+     * set `NIMBUS_CF_OAUTH_CLIENT_SECRET` and `NIMBUS_CLOUDFLARE_API_TOKEN`
+     * with `wrangler secret put`.
+     */
+    agent?: {
+        model?: string;
+        gatewayId?: string;
+        oauth?: {
+            clientId?: string;
+            scopes?: string[];
+            redirectUri?: string;
+        };
+        owner?: {
+            accountId?: string;
+        };
+    };
 }
 /** Shape of the returned object — a valid wrangler.jsonc. */
 export interface WranglerConfig {

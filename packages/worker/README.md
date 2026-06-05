@@ -215,6 +215,35 @@ await box.startProcess('node --watch /home/user/app/server.js');
 const port = await box.ports.expose(3000);
 ```
 
+## Session Agent
+
+The bundled session shell includes an Agent mode. The route lives inside the
+session Durable Object under `/api/agent/*`; the stable Cloudflare OAuth
+callback is `/api/nimbus/oauth/callback`.
+
+The agent can use the same session tools as the SDK: shell exec, files,
+runtime installs, long-running processes, logs, and preview ports. Model calls
+go through Cloudflare AI Gateway's REST API with a Workers AI model.
+
+Non-secret values can be generated with `@nimbus-sh/config` or written as
+`vars`:
+
+| Var | What |
+|---|---|
+| `NIMBUS_CF_OAUTH_CLIENT_ID` | Cloudflare OAuth client ID. |
+| `NIMBUS_CF_OAUTH_SCOPES` | Space-delimited Cloudflare OAuth scope IDs. |
+| `NIMBUS_CF_OAUTH_REDIRECT_URI` | Optional callback override; default is `<origin>/api/nimbus/oauth/callback`. |
+| `NIMBUS_CLOUDFLARE_ACCOUNT_ID` | Owner-token fallback account ID. |
+| `NIMBUS_AGENT_MODEL` | Workers AI model, default `@cf/moonshotai/kimi-k2.6`. |
+| `NIMBUS_AGENT_GATEWAY_ID` | AI Gateway name, default `default`. |
+
+Secrets stay in Workers secret storage:
+
+```bash
+npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
+```
+
 ### Hooks
 
 ```ts

@@ -36,6 +36,7 @@ import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_
 import { verifyRequestToken, authErrorResponse, NimbusAuthError, NimbusTokenMalformedError, } from '../auth/index.js';
 import { setCtxExports } from '../session/ctx-exports.js';
 import { handleNimbusRemoteApi, } from './remote-api.js';
+import { parseAgentOAuthStateParam } from '../session/agent.js';
 /**
  * Build a Nimbus default-export handler. The returned object is exactly
  * what `export default` expects in a Workers entry module.
@@ -98,6 +99,17 @@ export function createNimbusHandler(options = {}) {
             const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
             if (sdkResponse)
                 return sdkResponse;
+            if (url.pathname === '/api/nimbus/oauth/callback') {
+                const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
+                if (!payload || !isValidSessionId(payload.sessionId)) {
+                    return new Response('Invalid OAuth state', { status: 400 });
+                }
+                return forwardToSession(request, {
+                    sessionId: payload.sessionId,
+                    innerPath: '/api/agent/oauth/callback',
+                    basePath: `${SESSION_ROUTE_PREFIX}/${payload.sessionId}`,
+                }, env, { tenantSegment: payload.tenantSegment });
+            }
             // ── /new — spawn a fresh session and redirect ───────────────────
             if (url.pathname === '/new') {
                 if (request.method !== 'POST' && request.method !== 'GET') {

@@ -66,6 +66,6 @@ export declare class ChildProcessSpawnPool {
      *
      * Returns the exit code.
      */
-    runOne(req: SpawnPoolReq, kind: 'pure-builtin' | 'facet-direct' | 'unknown', hooks: SpawnPoolHooks, childId: number | string): Promise<number>;
+    runOne(req: SpawnPoolReq, kind: 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown', hooks: SpawnPoolHooks, childId: number | string): Promise<number>;
 }
 //# sourceMappingURL=spawn-pool.d.ts.map

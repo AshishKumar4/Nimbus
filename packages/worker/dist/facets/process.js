@@ -53,6 +53,80 @@ const READ_OUTPUT_DEFAULT_WAIT_MS = 250;
  * polls by the caller.
  */
 const WAIT_MAX_MS = 30_000;
+function basenameOfCommand(command) {
+    const text = String(command || '').trim();
+    if (!text)
+        return '';
+    const slash = text.lastIndexOf('/');
+    return slash >= 0 ? text.slice(slash + 1) : text;
+}
+function isShellCommand(command) {
+    const base = basenameOfCommand(command);
+    return base === 'sh' || base === 'bash';
+}
+function normalizeVirtualCommand(command) {
+    const text = String(command || '').trim();
+    if (!text.startsWith('/'))
+        return text;
+    const base = basenameOfCommand(text);
+    const dir = text.slice(0, Math.max(0, text.length - base.length));
+    if (dir === '/bin/' || dir === '/usr/bin/' || dir === '/usr/local/bin/') {
+        return base;
+    }
+    return text;
+}
+function parseShellCommandArgs(args) {
+    const argv = Array.isArray(args) ? args.map(String) : [];
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '--')
+            continue;
+        if (arg === '-c') {
+            const commandLine = argv[i + 1];
+            return typeof commandLine === 'string'
+                ? { commandLine, args: argv.slice(i + 2) }
+                : null;
+        }
+        if (arg.startsWith('-') && arg.length > 2) {
+            for (let j = 1; j < arg.length; j++) {
+                if (arg[j] === 'c') {
+                    const commandLine = argv[i + 1];
+                    return typeof commandLine === 'string'
+                        ? { commandLine, args: argv.slice(i + 2) }
+                        : null;
+                }
+            }
+            continue;
+        }
+        if (!arg.startsWith('-'))
+            return null;
+    }
+    return null;
+}
+function quoteShellToken(value) {
+    const text = String(value);
+    if (text.length === 0)
+        return "''";
+    let simple = true;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        const ch = text[i];
+        const ok = (code >= 48 && code <= 57) ||
+            (code >= 65 && code <= 90) ||
+            (code >= 97 && code <= 122) ||
+            ch === '_' || ch === '-' || ch === '.' || ch === '/' || ch === ':' || ch === '=';
+        if (!ok) {
+            simple = false;
+            break;
+        }
+    }
+    if (simple)
+        return text;
+    return "'" + text.split("'").join("'\\''") + "'";
+}
+function shellLineFromSpawn(command, args) {
+    return [command, ...(Array.isArray(args) ? args : [])].map((part) => quoteShellToken(String(part))).join(' ');
+}
 export class FacetProcessManager {
     children = new Map();
     nextPid = 10_000; // child PIDs start above ProcessTable's range
@@ -108,15 +182,20 @@ export class FacetProcessManager {
             this.deps.processTable.spawn(`${req.command} ${req.args.join(' ')}`.trim(), req.args, req.cwd);
         }
         catch { /* ignore */ }
+        const shellPlan = this._shellPlanFor(req);
+        const normalizedCommand = shellPlan ? 'sh' : normalizeVirtualCommand(req.command);
+        const dispatchReq = shellPlan
+            ? { ...req, command: 'sh', args: ['-c', shellPlan.commandLine, ...shellPlan.args] }
+            : { ...req, command: normalizedCommand };
         // Resolve command kind. Resolution failure → exit 127 (command not
         // found), no facet at all. Same shell semantics.
-        const reg = this.deps.commandRegistry.resolve(req.command);
+        const reg = shellPlan ? { kind: 'shell-direct' } : this.deps.commandRegistry.resolve(normalizedCommand);
         const kind = reg ? reg.kind : 'unknown';
         // Dispatch after the cpSpawn RPC has had a chance to return to the
         // parent facet. That lets immediate child.stdin.write(); child.stdin.end()
         // calls land in the stdin queue before a preseeded child runtime starts.
         setTimeout(() => {
-            void this._dispatch(child, kind, req).catch((e) => {
+            void this._dispatch(child, kind, dispatchReq).catch((e) => {
                 // Last-resort: if both runners somehow throw, exit 1 with the error
                 // on stderr.
                 this._appendOutput(child, 2, `Error: ${e?.message || String(e)}\n`);
@@ -144,7 +223,7 @@ export class FacetProcessManager {
         // pure-builtin / facet-direct correctness; only the dispatch
         // envelope moves to a fresh isolate).
         if (this.deps.spawnPool) {
-            const liveStdin = kind === 'facet-direct';
+            const liveStdin = kind === 'facet-direct' || kind === 'shell-direct';
             // Pure builtins consume stdin from the request payload. Facet-direct
             // commands receive live stdin through NIMBUS_CP_CHILD_PID and
             // supervisor cpReadStdin, which matches Node child_process pipes.
@@ -176,6 +255,10 @@ export class FacetProcessManager {
             return;
         }
         // ── Legacy in-supervisor dispatch (unit-test path) ─────────────
+        if (kind === 'shell-direct') {
+            await this._dispatchShell(child, req, hooks);
+            return;
+        }
         if (kind === 'pure-builtin') {
             // Drain stdin synchronously — pure builtins are sync-style; they
             // expect a complete stdin string. The parent must call stdinEnd()
@@ -240,6 +323,20 @@ export class FacetProcessManager {
         const childEnv = {
             ...(req.env || {}),
         };
+        if (kind === 'shell-direct') {
+            try {
+                const plan = this._shellPlanFor(req);
+                if (!plan) {
+                    return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
+                }
+                const code = await this._runShellLine(plan.commandLine, childEnv, String(req.cwd || '/home/user'), '', hooks);
+                return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
+            }
+            catch (e) {
+                stderrBuf += `shell error: ${e?.message || String(e)}\n`;
+                return { exitCode: 1, stdout: stdoutBuf, stderr: stderrBuf };
+            }
+        }
         if (kind === 'pure-builtin') {
             try {
                 const code = await this.deps.commandRegistry.runPureBuiltin(req.command, req.args, childEnv, String(req.cwd || '/home/user'), typeof req.stdin === 'string' ? req.stdin : '', hooks);
@@ -301,6 +398,50 @@ export class FacetProcessManager {
             await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
         }
         return child.stdinChunks.join('');
+    }
+    _shellPlanFor(req) {
+        const args = Array.isArray(req.args) ? req.args.map(String) : [];
+        if (req.shell) {
+            if (isShellCommand(req.command))
+                return parseShellCommandArgs(args);
+            return { commandLine: shellLineFromSpawn(String(req.command), args), args: [] };
+        }
+        if (!isShellCommand(req.command))
+            return null;
+        return parseShellCommandArgs(args);
+    }
+    async _dispatchShell(child, req, hooks) {
+        const plan = this._shellPlanFor(req);
+        if (!plan) {
+            this._appendOutput(child, 2, `${req.command}: unsupported shell invocation\n`);
+            this._stampExit(child, 127, null);
+            return;
+        }
+        try {
+            const stdin = await this._drainStdinForShell(child);
+            const code = await this._runShellLine(plan.commandLine, child.env, req.cwd, stdin, hooks);
+            this._stampExit(child, typeof code === 'number' ? code : 0, null);
+        }
+        catch (e) {
+            this._appendOutput(child, 2, `shell error: ${e?.message || String(e)}\n`);
+            this._stampExit(child, 1, null);
+        }
+    }
+    async _drainStdinForShell(child) {
+        if (!child.stdinClosed && child.stdinChunks.length === 0) {
+            await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
+        }
+        if (!child.stdinClosed && child.stdinChunks.length > 0) {
+            await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
+        }
+        return child.stdinChunks.join('');
+    }
+    async _runShellLine(commandLine, env, cwd, stdin, hooks) {
+        if (!this.deps.shellExecutor) {
+            hooks.onStderr('sh: shell executor unavailable\n');
+            return 127;
+        }
+        return this.deps.shellExecutor.execute(commandLine, env, cwd || '/home/user', stdin, hooks);
     }
     // ── stdin queue ─────────────────────────────────────────────────────────
     stdinWrite(childPid, data) {

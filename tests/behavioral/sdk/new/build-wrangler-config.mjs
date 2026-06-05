@@ -125,5 +125,34 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
     cfg.sandboxes.proteus.tools.namespace === 'sandbox');
 }
 
+// 9. Agent config writes only non-secret vars; secrets stay in Wrangler secret storage.
+{
+  const c = buildNimbusWranglerConfig({
+    name: 'agent',
+    agent: {
+      model: '@cf/moonshotai/kimi-k2.6',
+      gatewayId: 'default',
+      oauth: {
+        clientId: 'client_123',
+        scopes: ['workers-ai.read', 'account.read'],
+        redirectUri: 'https://nimbus.example.com/api/nimbus/oauth/callback',
+      },
+      owner: {
+        accountId: '0123456789abcdef0123456789abcdef',
+      },
+    },
+  });
+  a.check('agent model var emitted', c.vars?.NIMBUS_AGENT_MODEL === '@cf/moonshotai/kimi-k2.6');
+  a.check('agent gateway var emitted', c.vars?.NIMBUS_AGENT_GATEWAY_ID === 'default');
+  a.check('agent OAuth client var emitted', c.vars?.NIMBUS_CF_OAUTH_CLIENT_ID === 'client_123');
+  a.check('agent OAuth scopes are space-delimited', c.vars?.NIMBUS_CF_OAUTH_SCOPES === 'workers-ai.read account.read');
+  a.check('agent OAuth redirect var emitted',
+    c.vars?.NIMBUS_CF_OAUTH_REDIRECT_URI === 'https://nimbus.example.com/api/nimbus/oauth/callback');
+  a.check('agent owner account var emitted',
+    c.vars?.NIMBUS_CLOUDFLARE_ACCOUNT_ID === '0123456789abcdef0123456789abcdef');
+  a.check('agent secrets are not written to wrangler vars',
+    !('NIMBUS_CF_OAUTH_CLIENT_SECRET' in c.vars) && !('NIMBUS_CLOUDFLARE_API_TOKEN' in c.vars));
+}
+
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

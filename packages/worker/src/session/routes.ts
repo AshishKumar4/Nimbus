@@ -45,6 +45,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
+import { handleAgentRequest } from './agent.js';
 // CLN-1 (2026-05-11): also import R2_CACHE_PREFIX + L2_KEY_HOST so the
 // cache-purge helpers below don't hardcode the synthetic key shape.
 // Bumping R2_CACHE_PREFIX 'v1' → 'v2' now invalidates the L2 cache key
@@ -169,6 +170,10 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
     if (url.pathname === '/api/processes') {
       return handleProcessesListRequest(self.processTable, self.processLogs);
+    }
+
+    if (url.pathname.startsWith('/api/agent/')) {
+      return handleAgentRequest(self, request, url);
     }
 
     // runtime primitive support (P11) — kill / restart by PID for the Process tab UI.

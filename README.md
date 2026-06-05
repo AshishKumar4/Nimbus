@@ -119,6 +119,69 @@ Ruby, clang-to-WASI, process logs, and port routing. It does not claim Docker,
 apt, GPUs, custom Linux images, native Linux ELF execution, or raw TCP
 listeners.
 
+## Session Agent
+
+Every Nimbus session includes an Agent mode in the toolbar. The agent lives
+inside the same `NimbusSession` Durable Object as the terminal, so it can use
+the same filesystem, shell, runtime package manager, process table, logs, and
+preview ports.
+
+The agent calls Cloudflare's AI Gateway REST API with a Workers AI model such
+as `@cf/moonshotai/kimi-k2.6`. Workers AI includes a free daily allocation;
+Cloudflare documents the current allocation as 10,000 Neurons per day at no
+charge, reset at 00:00 UTC.
+
+Configure OAuth when each user should spend their own Cloudflare quota:
+
+```bash
+# In Cloudflare: create an OAuth client with Authorization Code flow.
+# Redirect URL:
+#   https://<your-nimbus-host>/api/nimbus/oauth/callback
+#
+# Select the account/API scopes your client needs for account selection and
+# AI Gateway / Workers AI inference. Cloudflare exposes the current scope IDs
+# in the dashboard and through GET /client/v4/oauth/scopes.
+```
+
+Add non-secret values to `wrangler.jsonc` or generate them with
+`@nimbus-sh/config`:
+
+```jsonc
+{
+  "vars": {
+    "NIMBUS_CF_OAUTH_CLIENT_ID": "<oauth-client-id>",
+    "NIMBUS_CF_OAUTH_SCOPES": "<scope-id-1> <scope-id-2>",
+    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "NIMBUS_AGENT_GATEWAY_ID": "default"
+  }
+}
+```
+
+Store secrets with Wrangler:
+
+```bash
+npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+```
+
+For a deployment-owner fallback instead of user OAuth:
+
+```jsonc
+{
+  "vars": {
+    "NIMBUS_CLOUDFLARE_ACCOUNT_ID": "<account-id>",
+    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "NIMBUS_AGENT_GATEWAY_ID": "default"
+  }
+}
+```
+
+```bash
+npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
+```
+
+The owner token should have the Cloudflare permissions required by AI Gateway
+and Workers AI for the model you choose.
+
 Use [`apps/hosted-demo`](apps/hosted-demo) as the current code-backed reference. It
 runs the live demo and exposes `/api/sdk-smoke` plus `/api/sdk-remote-smoke`,
 which exercise both SDK transports against the deployed app.
@@ -200,6 +263,7 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
 | Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools | ✅ |
 | JS agent CLI primitives — env/home, npm/npx, `child_process.spawn`/`exec`/`execFile`, piped stdio, streams, logs | ✅ |
+| Session Agent — editor toolbar chat with Cloudflare OAuth / Workers AI and sandbox tools | ✅ |
 | `npx <pkg>` — first-class shebang + auto-install fallback | ✅ |
 | `node_modules/.bin/*` resolves and executes | ✅ |
 | Binary file round-trip via `fs.writeFileSync` / `readFileSync` | ✅ |

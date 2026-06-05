@@ -27,6 +27,11 @@ Scaffolds a Nimbus-powered Workers project. `.` uses the current directory.
 The generated app embeds the interactive Nimbus UI and enables the
 authenticated remote sandbox API. Add application-specific auth routes in
 `src/index.ts` when you are ready to mint user tokens from your backend.
+It also includes the session Agent UI. Configure Cloudflare OAuth and Workers
+AI by adding the non-secret `NIMBUS_CF_OAUTH_CLIENT_ID`,
+`NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`, and
+`NIMBUS_AGENT_GATEWAY_ID` vars, then store `NIMBUS_CF_OAUTH_CLIENT_SECRET`
+with `wrangler secret put`.
 
 ```bash
 nimbus init my-nimbus

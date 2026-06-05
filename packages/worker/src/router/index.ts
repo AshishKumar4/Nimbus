@@ -55,6 +55,7 @@ import {
   handleNimbusRemoteApi,
   type NimbusSdkRouterConfig,
 } from './remote-api.js';
+import { parseAgentOAuthStateParam } from '../session/agent.js';
 
 export type {
   NimbusConfig as NimbusSdkConfig,
@@ -229,6 +230,23 @@ export function createNimbusHandler(
 
       const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
       if (sdkResponse) return sdkResponse;
+
+      if (url.pathname === '/api/nimbus/oauth/callback') {
+        const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
+        if (!payload || !isValidSessionId(payload.sessionId)) {
+          return new Response('Invalid OAuth state', { status: 400 });
+        }
+        return forwardToSession(
+          request,
+          {
+            sessionId: payload.sessionId,
+            innerPath: '/api/agent/oauth/callback',
+            basePath: `${SESSION_ROUTE_PREFIX}/${payload.sessionId}`,
+          },
+          env,
+          { tenantSegment: payload.tenantSegment },
+        );
+      }
 
       // ── /new — spawn a fresh session and redirect ───────────────────
       if (url.pathname === '/new') {

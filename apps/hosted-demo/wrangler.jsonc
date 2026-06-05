@@ -96,7 +96,9 @@
     // empty/absent disables. The diag code remains in
     // packages/worker/src/vfs/sqlite-vfs.ts
     // (cheap, hot-path-clean) for future investigations.
-    "NIMBUS_DIAG_INSTALL_PIPELINE": ""
+    "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "NIMBUS_AGENT_GATEWAY_ID": "default"
   },
   "assets": {
     // The static shell assets live in @nimbus-sh/worker even though
@@ -215,7 +217,9 @@
       "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
       "vars": {
-        "NIMBUS_DIAG_INSTALL_PIPELINE": ""
+        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+        "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+        "NIMBUS_AGENT_GATEWAY_ID": "default"
       },
       "durable_objects": {
         "bindings": [

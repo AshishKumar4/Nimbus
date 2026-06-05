@@ -127,8 +127,10 @@ WASI/WebAssembly execution rather than Linux ELF execution.
 
 Nimbus supports the primitives needed by JavaScript and WASM-based agent tools:
 persistent home/config files, npm/npx installs, npm alias dependencies,
-`child_process.spawn`, `exec`, `execFile`, piped stdin/stdout/stderr, process
-streams, logs, outbound HTTPS, and preview ports for HTTP-like agent servers.
+`child_process.spawn`, `exec`, `execFile`, `sh -c`, `/bin/sh -lc`, virtual
+absolute command paths such as `/usr/local/bin/node`, piped
+stdin/stdout/stderr, process streams, logs, outbound HTTPS, and preview ports
+for HTTP-like agent servers.
 
 Tools that ship only native platform shards such as `linux-x64`, `darwin`, or
 `win32` binaries need a WASM build, pure-JS entrypoint, or Nimbus adapter.
@@ -144,6 +146,7 @@ bun tests/behavioral/sdk/new/remote-sdk-client.mjs
 bun tests/behavioral/sdk/new/remote-sdk-handler.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-smoke.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-remote-smoke.mjs
+BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/agent/new/session-agent-panel.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/runtime-primitives/npm-alias-dependency.mjs
 ```

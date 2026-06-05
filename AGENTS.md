@@ -24,7 +24,7 @@ The repo is a Bun workspace monorepo:
 | `packages/cli/` | `@nimbus-sh/cli`: scaffold/setup/token/session/runtime commands. |
 | `packages/create-nimbus-app/` | `npx create-nimbus-app` wrapper. |
 | `packages/config/` | `@nimbus-sh/config`: typed Nimbus and Wrangler config helpers. |
-| `tests/behavioral/` | Black-box behavioral probes. Current discovery count is 310 probes. |
+| `tests/behavioral/` | Black-box behavioral probes. Current discovery count is 311 probes. |
 
 `apps/hosted-demo/src/index.ts` imports the Worker package through the SDK
 entrypoints, exports the required DO/RPC classes, calls `createNimbusHandler`,
@@ -58,6 +58,7 @@ Core files:
 | `packages/worker/src/session/nimbus-session.ts` | DO class, lifecycle, VFS/facet/process/port ownership, diagnostics, hibernation. |
 | `packages/worker/src/session/routes.ts` | DO-internal HTTP/WS routes. |
 | `packages/worker/src/session/init.ts` | Session boot, shell commands, npm/git/vite/wrangler/runtime registration. |
+| `packages/worker/src/session/agent.ts` | Session Agent API, Cloudflare OAuth flow, Workers AI chat loop, sandbox tools. |
 | `packages/worker/src/runtime/node-shims.ts` | Node-compatible fs/path/process/streams/http/child_process shims. |
 | `packages/worker/src/facets/process.ts` | Supervisor-side `child_process` broker. |
 | `packages/worker/src/vfs/sqlite-vfs.ts` | SQLite-backed VFS. |
@@ -108,6 +109,37 @@ Native platform binaries are not Linux-executable in Nimbus. Packages that ship
 only `linux-x64`/`darwin`/`win32` native shards need a WASM build, a pure-JS
 entrypoint, or a Nimbus-specific adapter.
 
+## Session Agent
+
+The browser shell has an Agent mode wired through `packages/worker/public/s/index.html`.
+Session-scoped routes under `/api/agent/*` are handled in
+`packages/worker/src/session/agent.ts`.
+
+Agent capabilities:
+
+- Cloudflare OAuth start/callback/logout with stable callback
+  `/api/nimbus/oauth/callback`
+- account selection from the connected Cloudflare token
+- Workers AI / AI Gateway chat completions through
+  `/accounts/<id>/ai/v1/chat/completions`
+- sandbox tools for exec, files, runtime install, processes, logs, and ports
+
+Agent configuration:
+
+| Env var | What |
+|---|---|
+| `NIMBUS_CF_OAUTH_CLIENT_ID` | Cloudflare OAuth client ID. |
+| `NIMBUS_CF_OAUTH_CLIENT_SECRET` | Optional OAuth client secret; set with `wrangler secret put`. |
+| `NIMBUS_CF_OAUTH_SCOPES` | Space-delimited OAuth scope IDs selected from Cloudflare. |
+| `NIMBUS_CF_OAUTH_REDIRECT_URI` | Optional override; defaults to `<origin>/api/nimbus/oauth/callback`. |
+| `NIMBUS_CLOUDFLARE_ACCOUNT_ID` | Owner-account fallback account ID. |
+| `NIMBUS_CLOUDFLARE_API_TOKEN` | Owner-token fallback secret; set with `wrangler secret put`. |
+| `NIMBUS_AGENT_MODEL` | Model name, default `@cf/moonshotai/kimi-k2.6`. |
+| `NIMBUS_AGENT_GATEWAY_ID` | AI Gateway name, default `default`. |
+
+`@nimbus-sh/config` can generate the non-secret Agent vars. Secrets stay in
+Workers secret storage.
+
 ## Tests
 
 Useful commands:
@@ -123,6 +155,11 @@ Useful commands:
 Probes should assert user-visible behavior, not static strings or HTTP 200
 alone. Use bounded polling with loud failures; do not add sleep-only or
 defensive-catch tests.
+
+Agent-specific probes:
+
+- `tests/behavioral/agent/new/session-agent-panel.mjs`
+- `tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs`
 
 ## Build And Deploy
 

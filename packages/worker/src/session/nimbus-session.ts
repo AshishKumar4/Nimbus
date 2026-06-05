@@ -129,6 +129,18 @@ import {
   _classifyCommand,
 } from './helpers.js';
 
+function normalizeCpCommandName(name: string): string {
+  const text = String(name || '').trim();
+  if (!text.startsWith('/')) return text;
+  const slash = text.lastIndexOf('/');
+  const base = slash >= 0 ? text.slice(slash + 1) : text;
+  const dir = text.slice(0, Math.max(0, text.length - base.length));
+  if (dir === '/bin/' || dir === '/usr/bin/' || dir === '/usr/local/bin/') {
+    return base;
+  }
+  return text;
+}
+
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
 // import site elsewhere in the codebase.
@@ -836,7 +848,8 @@ export class NimbusSession extends CloudflareDurableObject {
           hooks.onStderr('child_process: command registry unavailable\n');
           return 127;
         }
-        const cmd = await registry.resolve(payload.command);
+        const commandName = normalizeCpCommandName(payload.command);
+        const cmd = await registry.resolve(commandName);
         if (!cmd) {
           hooks.onStderr(`${payload.command}: command not found\n`);
           return 127;
@@ -885,14 +898,15 @@ export class NimbusSession extends CloudflareDurableObject {
       // facet-direct table for known facet-only commands. Returns null
       // (→ exit 127) for everything unknown.
       resolve: (name: string) => {
+        const commandName = normalizeCpCommandName(name);
         const registry = this._cpRegistry;
-        if (registry && typeof registry.has === 'function' && registry.has(name)) {
+        if (registry && typeof registry.has === 'function' && registry.has(commandName)) {
           // Registered — classify by name. Reuse the static table so
           // facet-direct commands (node/npm/git/...) keep their kind
           // even when they ALSO happen to be registry entries.
-          return _classifyCommand(name) || { kind: 'pure-builtin' };
+          return _classifyCommand(commandName) || { kind: 'pure-builtin' };
         }
-        return _classifyCommand(name);
+        return _classifyCommand(commandName);
       },
       runPureBuiltin: async (
         name: string,
@@ -904,7 +918,8 @@ export class NimbusSession extends CloudflareDurableObject {
       ): Promise<number> => {
         const registry = this._cpRegistry;
         if (!registry) { hooks.onStderr('cp: registry unavailable\n'); return 127; }
-        const cmd = await registry.resolve(name);
+        const commandName = normalizeCpCommandName(name);
+        const cmd = await registry.resolve(commandName);
         if (!cmd) { hooks.onStderr(`${name}: command not found\n`); return 127; }
         const ac = new AbortController();
         const ctx = {
@@ -946,6 +961,28 @@ export class NimbusSession extends CloudflareDurableObject {
       processLogs: this.processLogs as any,
       vfs: this.sqliteFs!,
       commandRegistry: cmdRegistryAdapter,
+      shellExecutor: {
+        execute: async (
+          commandLine: string,
+          env: Record<string, string>,
+          cwd: string,
+          stdin: string,
+          hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+        ): Promise<number> => {
+          if (!this.shell) {
+            hooks.onStderr('sh: shell unavailable\n');
+            return 127;
+          }
+          const result = await this.shell.execute(String(commandLine), {
+            cwd: cwd || '/home/user',
+            env: { ...(this.shell as any).env, ...(env || {}) },
+            onStdout: (d: string) => hooks.onStdout(String(d)),
+            onStderr: (d: string) => hooks.onStderr(String(d)),
+            stdin,
+          } as any);
+          return typeof (result as any)?.exitCode === 'number' ? (result as any).exitCode : 0;
+        },
+      },
       ctx: this.ctx as any,
       spawnPool,
     });

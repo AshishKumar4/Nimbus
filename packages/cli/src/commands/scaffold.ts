@@ -161,6 +161,10 @@ function renderWranglerJsonc(name: string): string {
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "placement": { "mode": "smart" },
+  "vars": {
+    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "NIMBUS_AGENT_GATEWAY_ID": "default"
+  },
 
   "assets": {
     "directory": "node_modules/@nimbus-sh/worker/public",
@@ -296,6 +300,40 @@ Then visit the URL wrangler prints.
 
 If setup reports Cloudflare R2 error 10042, enable R2 in the Cloudflare
 Dashboard once for this account, then rerun the setup command.
+
+## Agent mode
+
+The session UI includes an Agent tab. It can use the same sandbox tools as
+the terminal: shell exec, files, runtime installs, processes, logs, and
+preview ports.
+
+For user-owned Cloudflare Workers AI quota, create a Cloudflare OAuth client
+with this redirect URL:
+
+\`\`\`
+https://${wranglerName}.your-account.workers.dev/api/nimbus/oauth/callback
+\`\`\`
+
+Set the non-secret values in \`wrangler.jsonc\`:
+
+\`\`\`jsonc
+"vars": {
+  "NIMBUS_CF_OAUTH_CLIENT_ID": "<oauth-client-id>",
+  "NIMBUS_CF_OAUTH_SCOPES": "<scope-id-1> <scope-id-2>",
+  "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+  "NIMBUS_AGENT_GATEWAY_ID": "default"
+}
+\`\`\`
+
+Then store the OAuth client secret:
+
+\`\`\`bash
+npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+\`\`\`
+
+For owner-token fallback, set \`NIMBUS_CLOUDFLARE_ACCOUNT_ID\` in
+\`wrangler.jsonc\` and store \`NIMBUS_CLOUDFLARE_API_TOKEN\` with
+\`wrangler secret put\`.
 
 ## Tokens
 

@@ -70,6 +70,18 @@ import * as _diag from './diag.js';
 //  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
 // Helpers needed by this class file's own logic (not just re-export).
 import { _classifyCommand, } from './helpers.js';
+function normalizeCpCommandName(name) {
+    const text = String(name || '').trim();
+    if (!text.startsWith('/'))
+        return text;
+    const slash = text.lastIndexOf('/');
+    const base = slash >= 0 ? text.slice(slash + 1) : text;
+    const dir = text.slice(0, Math.max(0, text.length - base.length));
+    if (dir === '/bin/' || dir === '/usr/bin/' || dir === '/usr/local/bin/') {
+        return base;
+    }
+    return text;
+}
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
 // import site elsewhere in the codebase.
@@ -703,7 +715,8 @@ export class NimbusSession extends CloudflareDurableObject {
                     hooks.onStderr('child_process: command registry unavailable\n');
                     return 127;
                 }
-                const cmd = await registry.resolve(payload.command);
+                const commandName = normalizeCpCommandName(payload.command);
+                const cmd = await registry.resolve(commandName);
                 if (!cmd) {
                     hooks.onStderr(`${payload.command}: command not found\n`);
                     return 127;
@@ -756,14 +769,15 @@ export class NimbusSession extends CloudflareDurableObject {
             // facet-direct table for known facet-only commands. Returns null
             // (→ exit 127) for everything unknown.
             resolve: (name) => {
+                const commandName = normalizeCpCommandName(name);
                 const registry = this._cpRegistry;
-                if (registry && typeof registry.has === 'function' && registry.has(name)) {
+                if (registry && typeof registry.has === 'function' && registry.has(commandName)) {
                     // Registered — classify by name. Reuse the static table so
                     // facet-direct commands (node/npm/git/...) keep their kind
                     // even when they ALSO happen to be registry entries.
-                    return _classifyCommand(name) || { kind: 'pure-builtin' };
+                    return _classifyCommand(commandName) || { kind: 'pure-builtin' };
                 }
-                return _classifyCommand(name);
+                return _classifyCommand(commandName);
             },
             runPureBuiltin: async (name, args, env, cwd, stdin, hooks) => {
                 const registry = this._cpRegistry;
@@ -771,7 +785,8 @@ export class NimbusSession extends CloudflareDurableObject {
                     hooks.onStderr('cp: registry unavailable\n');
                     return 127;
                 }
-                const cmd = await registry.resolve(name);
+                const commandName = normalizeCpCommandName(name);
+                const cmd = await registry.resolve(commandName);
                 if (!cmd) {
                     hooks.onStderr(`${name}: command not found\n`);
                     return 127;
@@ -818,6 +833,22 @@ export class NimbusSession extends CloudflareDurableObject {
             processLogs: this.processLogs,
             vfs: this.sqliteFs,
             commandRegistry: cmdRegistryAdapter,
+            shellExecutor: {
+                execute: async (commandLine, env, cwd, stdin, hooks) => {
+                    if (!this.shell) {
+                        hooks.onStderr('sh: shell unavailable\n');
+                        return 127;
+                    }
+                    const result = await this.shell.execute(String(commandLine), {
+                        cwd: cwd || '/home/user',
+                        env: { ...this.shell.env, ...(env || {}) },
+                        onStdout: (d) => hooks.onStdout(String(d)),
+                        onStderr: (d) => hooks.onStderr(String(d)),
+                        stdin,
+                    });
+                    return typeof result?.exitCode === 'number' ? result.exitCode : 0;
+                },
+            },
             ctx: this.ctx,
             spawnPool,
         });

@@ -85,7 +85,7 @@ export class ChildProcessSpawnPool {
    */
   async runOne(
     req: SpawnPoolReq,
-    kind: 'pure-builtin' | 'facet-direct' | 'unknown',
+    kind: 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown',
     hooks: SpawnPoolHooks,
     childId: number | string,
   ): Promise<number> {

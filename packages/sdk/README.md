@@ -72,6 +72,12 @@ export default createNimbusHandler({
 });
 ```
 
+The bundled session UI includes Agent mode. Configure it with Worker vars
+`NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`,
+`NIMBUS_AGENT_MODEL`, `NIMBUS_AGENT_GATEWAY_ID`, and the secrets
+`NIMBUS_CF_OAUTH_CLIENT_SECRET` or `NIMBUS_CLOUDFLARE_API_TOKEN` when you
+want Cloudflare OAuth or owner-token Workers AI access.
+
 ## Programmatic sandbox quickstart
 
 The same sandbox handle API works in two modes:

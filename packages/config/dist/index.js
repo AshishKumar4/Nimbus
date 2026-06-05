@@ -95,5 +95,28 @@ export function buildNimbusWranglerConfig(opts) {
     if (opts.legacyPublic) {
         config.vars = { NIMBUS_LEGACY_PUBLIC: '1' };
     }
+    const agentVars = buildAgentVars(opts.agent);
+    if (Object.keys(agentVars).length > 0) {
+        config.vars = { ...(config.vars ?? {}), ...agentVars };
+    }
     return config;
+}
+function buildAgentVars(agent) {
+    if (!agent)
+        return {};
+    const vars = {};
+    if (agent.model)
+        vars.NIMBUS_AGENT_MODEL = agent.model;
+    if (agent.gatewayId)
+        vars.NIMBUS_AGENT_GATEWAY_ID = agent.gatewayId;
+    if (agent.oauth?.clientId)
+        vars.NIMBUS_CF_OAUTH_CLIENT_ID = agent.oauth.clientId;
+    if (agent.oauth?.redirectUri)
+        vars.NIMBUS_CF_OAUTH_REDIRECT_URI = agent.oauth.redirectUri;
+    if (agent.oauth?.scopes && agent.oauth.scopes.length > 0) {
+        vars.NIMBUS_CF_OAUTH_SCOPES = agent.oauth.scopes.join(' ');
+    }
+    if (agent.owner?.accountId)
+        vars.NIMBUS_CLOUDFLARE_ACCOUNT_ID = agent.owner.accountId;
+    return vars;
 }

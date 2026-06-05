@@ -160,6 +160,84 @@
     .main.preview-only .panel-editor,
     .main.preview-only .resize-handle { display: none; }
     .main.preview-only .panel-preview { flex: 1; }
+    .main.agent .panel-tree,
+    .main.agent .tree-resize-handle,
+    .main.agent .panel-left-stack,
+    .main.agent .resize-handle,
+    .main.agent .panel-preview { display: none; }
+    .main.agent .panel-agent { display: flex; }
+
+    /* Agent chat */
+    .panel-agent {
+      display: none; flex: 1; min-width: 0; min-height: 0;
+      background: #0d1117; color: #c9d1d9; flex-direction: column;
+    }
+    .agent-shell {
+      flex: 1; min-height: 0; display: grid;
+      grid-template-rows: auto 1fr auto;
+      max-width: 980px; width: 100%; margin: 0 auto;
+      border-left: 1px solid #30363d; border-right: 1px solid #30363d;
+      background: #0d1117;
+    }
+    .agent-top {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; background: #161b22; border-bottom: 1px solid #30363d;
+      min-height: 38px;
+    }
+    .agent-title { font-size: 12px; font-weight: 600; color: #f0f6fc; }
+    .agent-status { margin-left: auto; font-size: 11px; color: #8b949e; font-family: ui-monospace, Menlo, monospace; }
+    .agent-status.ready { color: #3fb950; }
+    .agent-status.warn { color: #d29922; }
+    .agent-top button,
+    .agent-composer button {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;
+    }
+    .agent-top button:hover,
+    .agent-composer button:hover { background: #30363d; }
+    .agent-top select {
+      background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 3px 8px; border-radius: 4px; font-size: 11px;
+      max-width: 220px;
+    }
+    .agent-messages {
+      min-height: 0; overflow: auto; padding: 18px 18px 22px;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .agent-empty {
+      margin: auto; max-width: 520px; color: #8b949e; text-align: center;
+      font-size: 13px; line-height: 1.6;
+    }
+    .agent-msg {
+      display: grid; grid-template-columns: 74px minmax(0, 1fr);
+      gap: 10px; align-items: start;
+    }
+    .agent-role {
+      color: #6e7681; font: 11px ui-monospace, Menlo, monospace;
+      text-transform: uppercase; padding-top: 4px;
+    }
+    .agent-bubble {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+      font-size: 13px; line-height: 1.55;
+    }
+    .agent-msg.user .agent-bubble { border-color: #1f6feb; background: #0f1a2a; }
+    .agent-msg.tool .agent-bubble {
+      color: #8b949e; background: #10151d; font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px; max-height: 180px; overflow: auto;
+    }
+    .agent-composer {
+      display: grid; grid-template-columns: 1fr auto; gap: 8px;
+      padding: 10px 12px; background: #161b22; border-top: 1px solid #30363d;
+    }
+    .agent-composer textarea {
+      resize: none; min-height: 40px; max-height: 160px; background: #0d1117;
+      border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px;
+      padding: 8px 10px; font: 13px/1.5 ui-monospace, Menlo, monospace; outline: none;
+    }
+    .agent-composer textarea:focus { border-color: #58a6ff; }
+    .agent-composer button { min-width: 72px; font-weight: 600; }
+    .agent-composer button:disabled { opacity: 0.55; cursor: not-allowed; }
 
     /* Editor layout mode:
          FILE TREE | editor-stack (editor TOP + terminal BOTTOM) | PREVIEW
@@ -340,6 +418,7 @@
          file tree | editor (top) + terminal (bottom) | preview.
          Lazy-loads Monaco + the tree on first click. -->
     <button id="btnEditor" title="Editor (file tree + Monaco + terminal + preview)">Editor</button>
+    <button id="btnAgent" title="Agent chat">Agent</button>
     <div class="sep"></div>
     <button id="btnProcs" title="Toggle process logs panel">
       <span class="procs-dot"></span>
@@ -367,6 +446,25 @@
       <div class="tree-body" id="treeBody"></div>
     </div>
     <div class="tree-resize-handle" id="treeResizeHandle"></div>
+    <div class="panel-agent" id="agentPanel">
+      <div class="agent-shell">
+        <div class="agent-top">
+          <div class="agent-title">Nimbus Agent</div>
+          <select id="agentAccount" title="Cloudflare account" style="display:none"></select>
+          <button id="agentConnect" style="display:none">Connect Cloudflare</button>
+          <button id="agentDisconnect" style="display:none">Disconnect</button>
+          <button id="agentClear" title="Clear chat">Clear</button>
+          <div class="agent-status" id="agentStatus">Checking...</div>
+        </div>
+        <div class="agent-messages" id="agentMessages">
+          <div class="agent-empty" id="agentEmpty">Cloudflare connection required.</div>
+        </div>
+        <form class="agent-composer" id="agentForm">
+          <textarea id="agentInput" rows="2" placeholder="Message Nimbus"></textarea>
+          <button id="agentSend" type="submit">Send</button>
+        </form>
+      </div>
+    </div>
     <!-- The .panel-left-stack wrapper is display:contents in 1D modes
          (terminal-only, split, preview-only) — its children act as
          direct flex children of .main. In editor mode, CSS flips it to
@@ -454,6 +552,11 @@
     const STATS_URL = SESSION_PREFIX + '/api/stats';
     const VITE_URL = SESSION_PREFIX + '/preview/';
     const WORKER_URL = SESSION_PREFIX + '/worker/';
+    const AGENT_STATUS_URL = SESSION_PREFIX + '/api/agent/status';
+    const AGENT_MESSAGES_URL = SESSION_PREFIX + '/api/agent/messages';
+    const AGENT_OAUTH_START_URL = SESSION_PREFIX + '/api/agent/oauth/start';
+    const AGENT_OAUTH_LOGOUT_URL = SESSION_PREFIX + '/api/agent/oauth/logout';
+    const AGENT_ACCOUNT_URL = SESSION_PREFIX + '/api/agent/account';
     // The iframe starts pointing at /preview/ which handles its own
     // "no dev server running" placeholder. When the user spawns a
     // wrangler dev (via `wrangler dev` in the terminal), stats polling
@@ -537,6 +640,7 @@
       document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
       document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
       document.getElementById('btnEditor').classList.toggle('active', mode === 'editor');
+      document.getElementById('btnAgent').classList.toggle('active', mode === 'agent');
       // Editor panel visibility — drives display:flex via .active.
       const editorPanel = document.getElementById('editorPanel');
       const wantEditor = (mode === 'editor');
@@ -549,6 +653,9 @@
         Promise.allSettled([editorReady, treeReady])
           .then(() => Editor.openDefaultWelcome())
           .catch(() => {});
+      }
+      if (mode === 'agent') {
+        Agent.ensureLoaded().catch(() => {});
       }
       setTimeout(() => {
         // Re-apply persisted pane dims for this layout.
@@ -569,6 +676,7 @@
     document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
     document.getElementById('btnSplit').onclick = () => setLayout('split');
     document.getElementById('btnEditor').onclick = () => setLayout('editor');
+    document.getElementById('btnAgent').onclick = () => setLayout('agent');
     document.getElementById('btnRefresh').onclick = () => reloadPreview();
     document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
 
@@ -1683,6 +1791,273 @@
       };
     })();
 
+    // ── Agent chat module ─────────────────────────────────────────────
+    const Agent = (function() {
+      const statusEl = document.getElementById('agentStatus');
+      const messagesEl = document.getElementById('agentMessages');
+      const emptyEl = document.getElementById('agentEmpty');
+      const form = document.getElementById('agentForm');
+      const input = document.getElementById('agentInput');
+      const sendBtn = document.getElementById('agentSend');
+      const connectBtn = document.getElementById('agentConnect');
+      const disconnectBtn = document.getElementById('agentDisconnect');
+      const clearBtn = document.getElementById('agentClear');
+      const accountSelect = document.getElementById('agentAccount');
+
+      let loaded = false;
+      let status = null;
+      let messages = [];
+      let busy = false;
+      let oauthPoll = null;
+
+      function setAgentStatus(text, tone) {
+        statusEl.textContent = text;
+        statusEl.className = 'agent-status' + (tone ? ' ' + tone : '');
+      }
+
+      function canChat() {
+        return !!status && status.configured && status.connected && !busy;
+      }
+
+      function applyControls() {
+        const oauth = status?.oauth || {};
+        const owner = status?.ownerToken || {};
+        const connected = !!status?.connected;
+        connectBtn.style.display = oauth.configured && !oauth.connected ? 'inline-block' : 'none';
+        disconnectBtn.style.display = oauth.connected ? 'inline-block' : 'none';
+        accountSelect.style.display = oauth.connected && Array.isArray(oauth.accounts) && oauth.accounts.length > 1
+          ? 'inline-block'
+          : 'none';
+        input.disabled = !canChat();
+        sendBtn.disabled = !canChat();
+        if (!status) {
+          emptyEl.textContent = 'Cloudflare connection required.';
+          setAgentStatus('Checking...', '');
+        } else if (!status.configured) {
+          emptyEl.textContent = 'Configure Cloudflare OAuth or an owner API token to enable chat.';
+          setAgentStatus('AI not configured', 'warn');
+        } else if (connected) {
+          const mode = oauth.connected ? 'Cloudflare connected' : owner.configured ? 'Owner token' : 'Ready';
+          emptyEl.textContent = 'Ask Nimbus to inspect or change this session.';
+          setAgentStatus(mode + ' · ' + status.model, 'ready');
+        } else {
+          emptyEl.textContent = 'Connect Cloudflare to use Workers AI.';
+          setAgentStatus('Connect Cloudflare', 'warn');
+        }
+      }
+
+      function renderAccounts() {
+        const oauth = status?.oauth || {};
+        const accounts = Array.isArray(oauth.accounts) ? oauth.accounts : [];
+        accountSelect.replaceChildren();
+        for (const account of accounts) {
+          const opt = document.createElement('option');
+          opt.value = account.id;
+          opt.textContent = account.name || account.id;
+          opt.selected = account.id === oauth.accountId;
+          accountSelect.appendChild(opt);
+        }
+      }
+
+      function roleLabel(role, name) {
+        if (role === 'tool') return name || 'tool';
+        return role === 'assistant' ? 'Nimbus' : 'You';
+      }
+
+      function renderMessages(list = messages) {
+        messagesEl.replaceChildren();
+        if (!list || list.length === 0) {
+          messagesEl.appendChild(emptyEl);
+          return;
+        }
+        for (const msg of list) {
+          const row = document.createElement('div');
+          row.className = 'agent-msg ' + msg.role;
+          const role = document.createElement('div');
+          role.className = 'agent-role';
+          role.textContent = roleLabel(msg.role, msg.name);
+          const bubble = document.createElement('div');
+          bubble.className = 'agent-bubble';
+          bubble.textContent = msg.content || '';
+          row.append(role, bubble);
+          messagesEl.appendChild(row);
+        }
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      async function refreshStatus() {
+        const r = await fetch(AGENT_STATUS_URL, { headers: { Accept: 'application/json' } });
+        const payload = await r.json();
+        if (!r.ok) throw new Error(payload.error || 'Agent status failed');
+        status = payload;
+        renderAccounts();
+        applyControls();
+        return status;
+      }
+
+      async function loadMessages() {
+        const r = await fetch(AGENT_MESSAGES_URL, { headers: { Accept: 'application/json' } });
+        const payload = await r.json();
+        if (!r.ok) throw new Error(payload.error || 'Agent messages failed');
+        messages = Array.isArray(payload.messages) ? payload.messages : [];
+        renderMessages();
+      }
+
+      async function connectCloudflare() {
+        connectBtn.disabled = true;
+        try {
+          const r = await fetch(AGENT_OAUTH_START_URL, { method: 'POST', headers: { Accept: 'application/json' } });
+          const payload = await r.json();
+          if (!r.ok || !payload.authUrl) {
+            throw new Error(payload.error || 'OAuth start failed');
+          }
+          const popup = window.open(payload.authUrl, 'nimbus-agent-oauth', 'width=720,height=760');
+          if (!popup) location.href = payload.authUrl;
+          setAgentStatus('Waiting for Cloudflare...', 'warn');
+          if (oauthPoll) clearInterval(oauthPoll);
+          oauthPoll = setInterval(() => {
+            if (!popup || popup.closed) {
+              clearInterval(oauthPoll);
+              oauthPoll = null;
+              refreshStatus().catch((e) => setAgentStatus(e?.message || String(e), 'warn'));
+            }
+          }, 1200);
+        } catch (e) {
+          setAgentStatus(e?.message || String(e), 'warn');
+        } finally {
+          connectBtn.disabled = false;
+        }
+      }
+
+      async function selectAccount() {
+        const accountId = accountSelect.value;
+        if (!accountId) return;
+        await fetch(AGENT_ACCOUNT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ accountId }),
+        }).then(async (r) => {
+          const payload = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(payload.error || 'Account switch failed');
+        });
+        await refreshStatus();
+      }
+
+      async function disconnectCloudflare() {
+        disconnectBtn.disabled = true;
+        try {
+          const r = await fetch(AGENT_OAUTH_LOGOUT_URL, { method: 'POST', headers: { Accept: 'application/json' } });
+          const payload = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(payload.error || 'Disconnect failed');
+          status = null;
+          await refreshStatus();
+        } catch (e) {
+          setAgentStatus(e?.message || String(e), 'warn');
+        } finally {
+          disconnectBtn.disabled = false;
+        }
+      }
+
+      async function clearMessages() {
+        const r = await fetch(AGENT_MESSAGES_URL, { method: 'DELETE', headers: { Accept: 'application/json' } });
+        const payload = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          setAgentStatus(payload.error || 'Clear failed', 'warn');
+          return;
+        }
+        messages = [];
+        renderMessages();
+      }
+
+      async function sendMessage(text) {
+        const content = String(text || '').trim();
+        if (!content || busy) return;
+        busy = true;
+        applyControls();
+        input.value = '';
+        const optimistic = {
+          id: 'pending-user',
+          role: 'user',
+          content,
+          createdAt: Date.now(),
+        };
+        const pending = {
+          id: 'pending-assistant',
+          role: 'assistant',
+          content: 'Working...',
+          createdAt: Date.now(),
+        };
+        renderMessages([...messages, optimistic, pending]);
+        try {
+          const r = await fetch(AGENT_MESSAGES_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ message: content }),
+          });
+          const payload = await r.json();
+          if (!r.ok) throw new Error(payload.error || 'Agent request failed');
+          messages = Array.isArray(payload.messages) ? payload.messages : [...messages, optimistic, payload.message];
+          renderMessages();
+        } catch (e) {
+          renderMessages([...messages, optimistic, {
+            id: 'agent-error',
+            role: 'assistant',
+            content: e?.message || String(e),
+            createdAt: Date.now(),
+          }]);
+        } finally {
+          busy = false;
+          applyControls();
+          input.focus();
+        }
+      }
+
+      function wire() {
+        form.addEventListener('submit', (e) => {
+          e.preventDefault();
+          sendMessage(input.value);
+        });
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage(input.value);
+          }
+        });
+        connectBtn.addEventListener('click', connectCloudflare);
+        disconnectBtn.addEventListener('click', disconnectCloudflare);
+        clearBtn.addEventListener('click', clearMessages);
+        accountSelect.addEventListener('change', selectAccount);
+        window.addEventListener('message', (event) => {
+          if (event.origin !== location.origin) return;
+          if (event.data && event.data.type === 'nimbus-agent-oauth') {
+            if (oauthPoll) {
+              clearInterval(oauthPoll);
+              oauthPoll = null;
+            }
+            refreshStatus().catch(() => {});
+          }
+        });
+      }
+
+      async function ensureLoaded() {
+        if (!loaded) {
+          loaded = true;
+          wire();
+        }
+        const results = await Promise.allSettled([refreshStatus(), loadMessages()]);
+        if (results[0].status === 'rejected') {
+          setAgentStatus(results[0].reason?.message || String(results[0].reason), 'warn');
+          input.disabled = true;
+          sendBtn.disabled = true;
+        }
+        if (results[1].status === 'rejected') renderMessages([]);
+      }
+
+      const api = { ensureLoaded, refreshStatus, loadMessages };
+      window.NimbusAgent = api;
+      return api;
+    })();
+
     // Which preview backend the iframe currently points at. Driven by
     // /api/stats polling: wrangler.running > vite.running > placeholder.
     // Tracked separately from iframe.src so user reloads / hash changes
@@ -2503,7 +2878,10 @@
     // Restore persisted pane dims before activating layout so the first paint
     // shows the user's prior arrangement.
     PaneResizer.restoreDims();
-    setLayout('editor');
+    const initialMode = new URLSearchParams(location.search).get('agent') === '1'
+      ? 'agent'
+      : 'editor';
+    setLayout(initialMode);
     connect();
   </script>
 </body>

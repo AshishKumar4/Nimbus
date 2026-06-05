@@ -18,7 +18,7 @@ export interface SpawnInIsolateSpec {
         stdin?: string;
     };
     /** Pre-resolved kind from FacetProcessManager._dispatch. */
-    kind: 'pure-builtin' | 'facet-direct' | 'unknown';
+    kind: 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown';
     /** Stable id the parent captured for the spawn (for hooks-routing). */
     parentChildId: number | string;
 }

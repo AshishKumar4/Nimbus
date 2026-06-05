@@ -89,6 +89,23 @@ export interface BuildWranglerOptions {
    * set. Embedder code that uses additional CJS deps can pass them here.
    */
   extraAliases?: Record<string, string>;
+  /**
+   * Optional session Agent configuration. Secrets are intentionally excluded:
+   * set `NIMBUS_CF_OAUTH_CLIENT_SECRET` and `NIMBUS_CLOUDFLARE_API_TOKEN`
+   * with `wrangler secret put`.
+   */
+  agent?: {
+    model?: string;
+    gatewayId?: string;
+    oauth?: {
+      clientId?: string;
+      scopes?: string[];
+      redirectUri?: string;
+    };
+    owner?: {
+      accountId?: string;
+    };
+  };
 }
 
 /** Shape of the returned object — a valid wrangler.jsonc. */
@@ -190,6 +207,24 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
   if (opts.legacyPublic) {
     config.vars = { NIMBUS_LEGACY_PUBLIC: '1' };
   }
+  const agentVars = buildAgentVars(opts.agent);
+  if (Object.keys(agentVars).length > 0) {
+    config.vars = { ...(config.vars ?? {}), ...agentVars };
+  }
 
   return config;
+}
+
+function buildAgentVars(agent: BuildWranglerOptions['agent']): Record<string, string> {
+  if (!agent) return {};
+  const vars: Record<string, string> = {};
+  if (agent.model) vars.NIMBUS_AGENT_MODEL = agent.model;
+  if (agent.gatewayId) vars.NIMBUS_AGENT_GATEWAY_ID = agent.gatewayId;
+  if (agent.oauth?.clientId) vars.NIMBUS_CF_OAUTH_CLIENT_ID = agent.oauth.clientId;
+  if (agent.oauth?.redirectUri) vars.NIMBUS_CF_OAUTH_REDIRECT_URI = agent.oauth.redirectUri;
+  if (agent.oauth?.scopes && agent.oauth.scopes.length > 0) {
+    vars.NIMBUS_CF_OAUTH_SCOPES = agent.oauth.scopes.join(' ');
+  }
+  if (agent.owner?.accountId) vars.NIMBUS_CLOUDFLARE_ACCOUNT_ID = agent.owner.accountId;
+  return vars;
 }

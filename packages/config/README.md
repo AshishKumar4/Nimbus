@@ -34,6 +34,18 @@ const config = buildNimbusWranglerConfig({
   r2BucketPrefix: 'my-nimbus',
   runtimeCache: 'shared',          // or 'byoa' / { mode, bucket }
   // legacyPublic: true,           // single-tenant mode, no JWT verify
+  agent: {
+    model: '@cf/moonshotai/kimi-k2.6',
+    gatewayId: 'default',
+    oauth: {
+      clientId: '<oauth-client-id>',
+      scopes: ['<scope-id-1>', '<scope-id-2>'],
+      redirectUri: 'https://my-nimbus.workers.dev/api/nimbus/oauth/callback',
+    },
+    owner: {
+      accountId: '<cloudflare-account-id>',
+    },
+  },
 });
 
 writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
@@ -50,6 +62,14 @@ writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
 | `runtimeCache` | `'shared' \| 'byoa' \| { mode, bucket? }` | `'shared'` | Bind `NIMBUS_RUNTIME_CACHE` to the standard account-local bucket `nimbus-runtime-cache-public`, `${prefix}-runtime-cache`, or an explicit bucket. Seed the bucket with `nimbus setup cloudflare` or `nimbus runtime sync`. |
 | `legacyPublic` | `boolean` | `false` | Adds `NIMBUS_LEGACY_PUBLIC=1` to vars (single-tenant mode). |
 | `extraAliases` | `Record<string, string>` | `{}` | Extra entries merged into the alias map. |
+| `agent` | `object` | unset | Emits non-secret Agent vars for Cloudflare OAuth, Workers AI model, AI Gateway, and owner-account fallback. |
+
+Agent secrets are never written by this package. Store them with Wrangler:
+
+```bash
+npx wrangler secret put NIMBUS_CF_OAUTH_CLIENT_SECRET
+npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
+```
 
 ## Why use this over hand-written wrangler.jsonc?
 

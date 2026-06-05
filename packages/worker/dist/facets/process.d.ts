@@ -136,7 +136,7 @@ export interface OutputHooks {
  * Command resolution. The shell registry returns whatever shape it likes;
  * we adapt to a normalized 3-state result.
  */
-export type CommandKind = 'pure-builtin' | 'facet-direct' | 'unknown';
+export type CommandKind = 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown';
 /**
  * The minimum shape we need from the FacetManager. Production passes
  * the real FacetManager; tests pass a mock with execStream.
@@ -158,6 +158,9 @@ export interface CommandRegistryLike {
         kind: CommandKind;
     } | null;
     runPureBuiltin(name: string, args: string[], env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
+}
+export interface ShellExecutorLike {
+    execute(commandLine: string, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
 }
 /**
  * The minimum shape we need from the ProcessLogStore.
@@ -188,6 +191,7 @@ export interface FacetProcessManagerDeps {
         isDirectory(p: string): boolean;
     };
     commandRegistry: CommandRegistryLike;
+    shellExecutor?: ShellExecutorLike;
     /** Optional: ctx for facets.abort/delete in production. */
     ctx?: {
         facets?: {
@@ -204,7 +208,7 @@ export interface FacetProcessManagerDeps {
      * always supplies it).
      */
     spawnPool?: {
-        runOne: (req: any, kind: 'pure-builtin' | 'facet-direct' | 'unknown', hooks: {
+        runOne: (req: any, kind: CommandKind, hooks: {
             onStdout: (d: string) => void;
             onStderr: (d: string) => void;
         }, childId: number | string) => Promise<number>;
@@ -254,6 +258,10 @@ export declare class FacetProcessManager {
      */
     private _waitForStdinEvent;
     private _drainStdinForBuiltin;
+    private _shellPlanFor;
+    private _dispatchShell;
+    private _drainStdinForShell;
+    private _runShellLine;
     stdinWrite(childPid: number, data: string): {
         ok: boolean;
     };
