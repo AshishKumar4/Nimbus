@@ -663,10 +663,12 @@ export async function handleFetch(self, request) {
         // while real-vite was happily serving on /preview/.
         const legacyViteStats = self.viteDevServer?.stats || null;
         const cirrusRealRunning = !!self.cirrusReal?.isRunning;
+        const cirrusRealStats = cirrusRealRunning ? self.cirrusReal?.stats : null;
         const viteStats = cirrusRealRunning
             ? {
+                ...(cirrusRealStats || {}),
                 running: true,
-                root: legacyViteStats?.root ?? 'home/user/app',
+                root: legacyViteStats?.root ?? cirrusRealStats?.root ?? 'home/user/app',
                 backend: 'real',
             }
             : legacyViteStats;

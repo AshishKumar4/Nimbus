@@ -182,6 +182,7 @@ Agent-specific probes:
 - `tests/behavioral/agent/new/session-agent-panel.mjs`
 - `tests/behavioral/editor/monaco/new/welcome-markdown-preview-default.mjs`
 - `tests/behavioral/preview/new/tabbed-preview-auto-focus-port.mjs`
+- `tests/behavioral/preview/new/vite-preview-dedupes-port-tab.mjs`
 - `tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs`
 
 ## Build And Deploy

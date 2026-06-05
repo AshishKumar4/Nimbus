@@ -1283,11 +1283,23 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         .replace(/^\/+/,   '')       // leading /
         .replace(/\/+$/,   '');      // trailing /
 
+      // Argv expansion: package.json scripts commonly write
+      // `--port ${PORT:-3000}`. Resolve it once and feed both Vite
+      // backends so `/api/stats`, `/preview/`, and port tabs agree.
+      const expandedArgs = expandArgvShellDefaults(args, ctx.env || {});
+      const vitePortDefault = 5173;
+      const resolvedPort = resolveLongRunningPort({
+        argv: expandedArgs,
+        env: ctx.env,
+        configPort: viteConfig.port,
+        fallback: vitePortDefault,
+      });
+
       // ── Preflight: node_modules guard ────────────────────────────────────
       // Direct `vite` invocation requires installed deps. Bail loudly BEFORE
       // spawning a dev server that would just serve broken modules and
       // confuse the user. --force / --no-install-check bypasses the check.
-      const bypassInstallCheck = args.includes('--force') || args.includes('--no-install-check');
+      const bypassInstallCheck = expandedArgs.includes('--force') || expandedArgs.includes('--no-install-check');
       if (!bypassInstallCheck) {
         const guard = checkNodeModulesGuard(self.sqliteFs!, vfsRoot);
         if (guard.missing) {
@@ -1322,9 +1334,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       const useReal = shouldUseRealVite({ env: sessionEnv, viteConfigSource: realViteCfgSource });
       if (useReal) {
         if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
-        // 5173 is Vite's default; under workerd it's a routing key, not
-        // a real socket, so we reuse the same number per session.
-        const vitePort = viteConfig.port || 5173;
+        const vitePort = resolvedPort;
         const previewBasePath = self.viteBasePath;
 
         // Acquire the heavy-alloc gate so the fire-and-forget pre-bundle
@@ -1554,19 +1564,6 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // tears it down via the same primitives that handle every other
       // long-running facet.
       //
-      // Argv expansion: package.json scripts commonly write
-      // `--port ${PORT:-3000}`. Nimbus's shell doesn't expand
-      // parameter substitution, so we do it here against ctx.env right
-      // before argv parsing — see runtime/long-running-handle.ts.
-      const expandedArgs = expandArgvShellDefaults(args, ctx.env || {});
-      const vitePortDefault = 5173;
-      const resolvedPort = resolveLongRunningPort({
-        argv: expandedArgs,
-        env: ctx.env,
-        configPort: viteConfig.port,
-        fallback: vitePortDefault,
-      });
-
       // Allocate PID FIRST so we can plumb it into ViteDevServer's
       // process-log wiring at construction time. The PID stays valid
       // for the life of this dev-server instance; subsequent log lines

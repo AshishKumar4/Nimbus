@@ -177,6 +177,7 @@ BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-r
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/agent/new/session-agent-panel.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/editor/monaco/new/welcome-markdown-preview-default.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/preview/new/tabbed-preview-auto-focus-port.mjs
+BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/preview/new/vite-preview-dedupes-port-tab.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/runtime-primitives/npm-alias-dependency.mjs
 ```

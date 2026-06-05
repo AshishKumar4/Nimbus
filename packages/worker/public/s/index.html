@@ -2595,19 +2595,27 @@
       return ports;
     }
 
-    function syncPortPreviewTabs(portStats) {
+    function syncPortPreviewTabs(portStats, canonicalPort, canonicalTabId) {
       const ports = normalizePortStats(portStats);
-      const live = new Set(ports.map((p) => 'port:' + p.port));
+      const hiddenPort = Number.isInteger(canonicalPort) && canonicalPort > 0 ? canonicalPort : null;
+      const visiblePorts = hiddenPort == null
+        ? ports
+        : ports.filter((p) => p.port !== hiddenPort);
+      const live = new Set(visiblePorts.map((p) => 'port:' + p.port));
       let activeWasRemoved = false;
+      let activeWasCanonicalAlias = false;
 
       for (const [id, tab] of previewTabs) {
         if (tab.type === 'port' && !live.has(id)) {
           previewTabs.delete(id);
-          if (activePreviewTabId === id) activeWasRemoved = true;
+          if (activePreviewTabId === id) {
+            activeWasRemoved = true;
+            activeWasCanonicalAlias = hiddenPort != null && tab.port === hiddenPort;
+          }
         }
       }
 
-      for (const entry of ports) {
+      for (const entry of visiblePorts) {
         const id = 'port:' + entry.port;
         const existed = previewTabs.has(id);
         ensurePreviewTab({
@@ -2623,7 +2631,7 @@
       }
 
       if (activeWasRemoved || !activePreviewTabId || !previewTabs.has(activePreviewTabId)) {
-        activatePreviewTab(firstAppTabId());
+        activatePreviewTab(activeWasCanonicalAlias && canonicalTabId ? canonicalTabId : firstAppTabId());
       } else {
         renderPreviewTabs();
       }
@@ -2701,7 +2709,13 @@
       return div.innerHTML;
     }
 
-    function applyPreviewTarget(kind, portStats) {
+    function previewBackendPort(kind, stats) {
+      const raw = kind === 'vite' ? stats?.vite?.port : null;
+      const n = Number(raw);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    }
+
+    function applyPreviewTarget(kind, stats) {
       const previousKind = previewBackendKind;
       previewBackendKind = kind === 'worker' || kind === 'vite' ? kind : 'none';
       const appKind = previewBackendKind === 'worker' ? 'worker' : 'vite';
@@ -2709,7 +2723,7 @@
       const shouldFocusApp = previousKind !== previewBackendKind && previewBackendKind !== 'none';
       if (shouldFocusApp) activatePreviewTab(appTab.id);
       if (!activePreviewTabId) activatePreviewTab(appTab.id);
-      syncPortPreviewTabs(portStats);
+      syncPortPreviewTabs(stats?.ports, previewBackendPort(previewBackendKind, stats), appTab.id);
     }
 
     function reloadPreview() {
@@ -2927,7 +2941,7 @@
         let kind = 'none';
         if (s.wrangler?.running) kind = 'worker';
         else if (s.vite?.running) kind = 'vite';
-        applyPreviewTarget(kind, s.ports);
+        applyPreviewTarget(kind, s);
 
         if (s.wrangler?.running) {
           viteStatus.textContent = 'worker running (' + (s.wrangler.name || '?') + ')';
