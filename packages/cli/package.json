@@ -1,0 +1,52 @@
+{
+  "name": "@nimbus-sh/cli",
+  "version": "0.1.5",
+  "description": "Nimbus CLI — `create-nimbus-app` scaffolder + `token mint` + `runtime sync`.",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/cli"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "cli": "dist/bin.js",
+    "nimbus": "dist/bin.js",
+    "create-nimbus-app": "dist/scaffold-bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nimbus-sh/sdk": "^0.1.2",
+    "@nimbus-sh/worker": "^0.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
