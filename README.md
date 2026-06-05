@@ -1,10 +1,20 @@
 # Nimbus
 
-A Linux-like development environment that runs entirely on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → wasm32-wasi), and 60+ Unix commands. No Docker. No containers. No cold-start wait. 
+A free and open-source Linux-like development environment that runs entirely on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → wasm32-wasi), and 60+ Unix commands. No Docker. No containers. No cold-start wait.
 
 🌐 **Try it now:** https://nimbus.ashishkumarsingh.com
 
 ![Demo](docs/demo.gif)
+
+## Free and open source alpha
+
+Nimbus is an MIT-licensed hobby alpha. The repo, SDK, Worker runtime, React
+bindings, CLI, and config helpers are public and self-hostable.
+
+The hosted demo at https://nimbus.ashishkumarsingh.com is free for evaluation.
+It is not a managed service, has no SLA, may be rate-limited or reset, and
+should not be used for secrets or production data. For real workloads, deploy
+Nimbus to your own Cloudflare account with `npx create-nimbus-app`.
 
 ## Why Nimbus
 
@@ -125,8 +135,8 @@ which exercise both SDK transports against the deployed app.
 | [`@nimbus-sh/config`](packages/config) | Typed `defineNimbusConfig()` and `buildNimbusWranglerConfig()` helpers. |
 
 The live demo at https://nimbus.ashishkumarsingh.com runs from
-[`apps/hosted-demo`](apps/hosted-demo) and IS the canonical reference embedder
-— same shape any external project ships.
+[`apps/hosted-demo`](apps/hosted-demo) and is the canonical reference embedder:
+the same shape any external project ships.
 
 ## Quickstart
 
@@ -275,8 +285,15 @@ Or just one probe:
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/clang-stdio/new/multi-printf-no-fflush.mjs
 ```
 
-## License + credits
+## License and credits
 
-MIT. Built by [Ashish Kumar Singh](https://github.com/AshishKumar4) on top of [LIFO OS](https://github.com/lifo-sh/lifo) by [Sanket Sahu](https://github.com/sanketsahu), which seeded the shell interpreter, coreutils, and Node.js shim (MIT). The Cloudflare-native primitives — Durable Objects with SQLite storage, Worker Loaders, R2, `caches.default`, and WorkerEntrypoint RPC — are the architectural backbone.
+Nimbus is MIT licensed. See [`LICENSE`](LICENSE).
 
-Contributions welcome. Open an issue or PR at https://github.com/AshishKumar4/Nimbus.
+Built by [Ashish Kumar Singh](https://github.com/AshishKumar4) on top of
+[LIFO OS](https://github.com/lifo-sh/lifo) by
+[Sanket Sahu](https://github.com/sanketsahu), which seeded the shell
+interpreter, coreutils, and Node.js shim. See [`NOTICE.md`](NOTICE.md) for
+third-party credits and runtime license notes.
+
+Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md)
+and open an issue or PR at https://github.com/AshishKumar4/Nimbus.

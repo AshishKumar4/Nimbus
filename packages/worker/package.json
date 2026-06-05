@@ -2,6 +2,14 @@
   "name": "@nimbus-sh/worker",
   "version": "0.1.2",
   "description": "Nimbus runtime package for Cloudflare Workers, re-exported publicly through @nimbus-sh/sdk/worker.",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "webassembly",
+    "sandbox",
+    "runtime"
+  ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
@@ -38,7 +46,9 @@
     "dist",
     "public",
     "scripts",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
   "scripts": {
     "bundle:git": "node scripts/bundle-git.mjs",

@@ -106,7 +106,6 @@ async function main() {
     ' * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,',
     ' *   W7_MAGIC, W7_TRAILER.',
     ' *',
-    ` * Generated at: ${new Date().toISOString()}`,
     ` * Tar size: ${(tarStripped.length / 1024).toFixed(2)} KiB`,
     ` * W7 size:  ${(w7Stripped.length / 1024).toFixed(2)} KiB`,
     ' */',

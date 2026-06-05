@@ -2,6 +2,13 @@
   "name": "@nimbus-sh/cli",
   "version": "0.1.5",
   "description": "Nimbus CLI — `create-nimbus-app` scaffolder + `token mint` + `runtime sync`.",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "sandbox",
+    "cli",
+    "developer-environment"
+  ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
@@ -28,7 +35,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",

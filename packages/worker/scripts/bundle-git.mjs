@@ -87,7 +87,6 @@ async function main() {
       ' * Consumed by git-network-facet.ts: passed to LOADER.load()\'s',
       ' * `modules` record so the facet can `import` isomorphic-git.',
       ' *',
-      ` * Generated at: ${new Date().toISOString()}`,
       ` * Size: ${(code.length / 1024).toFixed(1)} KiB`,
       ' */',
       '',

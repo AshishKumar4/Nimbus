@@ -2,6 +2,13 @@
   "name": "@nimbus-sh/react",
   "version": "0.1.1",
   "description": "React component for embedding a Nimbus terminal in your app. <NimbusTerminal /> is a typed iframe wrapper with token + tenant props.",
+  "keywords": [
+    "react",
+    "cloudflare",
+    "workers",
+    "terminal",
+    "sandbox"
+  ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
@@ -24,7 +31,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",

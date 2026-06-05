@@ -2,6 +2,13 @@
   "name": "create-nimbus-app",
   "version": "0.1.4",
   "description": "Create a Nimbus-powered Cloudflare Workers app.",
+  "keywords": [
+    "create",
+    "cloudflare",
+    "workers",
+    "sandbox",
+    "developer-environment"
+  ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
@@ -16,7 +23,9 @@
   },
   "files": [
     "bin.js",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
   "dependencies": {
     "@nimbus-sh/cli": "^0.1.5"

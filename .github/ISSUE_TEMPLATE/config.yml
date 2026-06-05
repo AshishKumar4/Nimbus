@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/AshishKumar4/Nimbus/security
+    about: Please use private vulnerability reporting if it is available.

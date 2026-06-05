@@ -1,7 +1,25 @@
 {
   "name": "nimbus-monorepo",
   "version": "0.1.0",
+  "description": "Free and open-source Cloudflare Worker sandbox runtime for browser dev environments and programmatic code execution.",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishKumar4/Nimbus.git"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "sandbox",
+    "developer-environment",
+    "webassembly",
+    "code-execution",
+    "open-source"
+  ],
   "type": "module",
   "workspaces": [
     "packages/*",

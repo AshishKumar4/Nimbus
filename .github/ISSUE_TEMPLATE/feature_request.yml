@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a focused Nimbus improvement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or developer problem should Nimbus solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: Describe the API, command, UI behavior, or runtime capability you want.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Mention current workarounds or related tools.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Anything Nimbus must preserve, such as Cloudflare Worker limits, SDK compatibility, or runtime policy.

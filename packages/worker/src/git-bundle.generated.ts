@@ -8,7 +8,6 @@
  * Consumed by git-network-facet.ts: passed to LOADER.load()'s
  * `modules` record so the facet can `import` isomorphic-git.
  *
- * Generated at: 2026-06-05T03:17:36.371Z
  * Size: 466.1 KiB
  */
 

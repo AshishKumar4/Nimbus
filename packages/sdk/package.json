@@ -2,6 +2,14 @@
   "name": "@nimbus-sh/sdk",
   "version": "0.1.2",
   "description": "Nimbus SDK — Worker embedder, programmatic sandboxes, token mint, and client helpers.",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "sandbox",
+    "sdk",
+    "code-execution"
+  ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
@@ -49,7 +57,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",

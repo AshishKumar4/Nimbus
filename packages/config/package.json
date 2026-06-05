@@ -2,6 +2,13 @@
   "name": "@nimbus-sh/config",
   "version": "0.1.1",
   "description": "Typed wrangler-config helper for Nimbus embedders. Generates a valid wrangler.jsonc from one function call.",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "wrangler",
+    "config",
+    "sandbox"
+  ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
@@ -24,7 +31,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
