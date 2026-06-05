@@ -13,6 +13,7 @@ import {
   generateText,
   jsonSchema,
   stepCountIs,
+  streamText,
   tool as aiTool,
   type ModelMessage,
   type ToolSet,
@@ -88,6 +89,19 @@ interface StoredMessage {
   createdAt: number;
   name?: string;
 }
+
+type AgentStreamEvent =
+  | { type: 'start'; messages: StoredMessage[] }
+  | { type: 'message'; message: StoredMessage }
+  | { type: 'assistant-start'; messageId: string; createdAt: number }
+  | { type: 'text-delta'; delta: string }
+  | { type: 'reasoning-delta'; delta: string }
+  | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
+  | { type: 'tool-result'; toolCallId: string; toolName: string; input: unknown; output: unknown; message: StoredMessage }
+  | { type: 'tool-error'; toolCallId: string; toolName: string; input: unknown; error: string; message: StoredMessage }
+  | { type: 'finish-step'; finishReason?: string; usage?: unknown }
+  | { type: 'done'; message: StoredMessage; toolEvents: StoredMessage[]; messages: StoredMessage[] }
+  | { type: 'error'; error: string; code: string; messages: StoredMessage[] };
 
 interface AiCredentials {
   mode: 'oauth' | 'owner-token';
@@ -352,8 +366,21 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
   messages.push(userMessage);
   await saveMessages(self, messages);
 
+  if (body?.stream === false) {
+    return agentChatJson(self, config, credentialResult, messages);
+  }
+
+  return agentChatStream(self, config, credentialResult, messages, userMessage);
+}
+
+async function agentChatJson(
+  self: Host,
+  config: ReturnType<typeof readConfig>,
+  credentialResult: Awaited<ReturnType<typeof loadAiCredentials>>,
+  messages: StoredMessage[],
+): Promise<Response> {
   try {
-    const result = await runAiSdkTurn(self, config, credentialResult.credentials, messages);
+    const result = await runAiSdkTurn(self, config, credentialResult.credentials!, messages);
     const assistantText = result.text || 'Done.';
     const assistantMessage = makeMessage('assistant', assistantText);
     const nextMessages = [...messages, ...result.toolEvents, assistantMessage];
@@ -375,6 +402,122 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
       messages: trimMessagesForClient(messages),
     }, 502, headers);
   }
+}
+
+function agentChatStream(
+  self: Host,
+  config: ReturnType<typeof readConfig>,
+  credentialResult: Awaited<ReturnType<typeof loadAiCredentials>>,
+  messages: StoredMessage[],
+  userMessage: StoredMessage,
+): Response {
+  const headers = new Headers();
+  headers.set('Cache-Control', 'no-store');
+  headers.set('Content-Type', 'application/x-ndjson; charset=utf-8');
+  applyAuthCookieResult(headers, credentialResult.authResult);
+
+  const credentials = credentialResult.credentials!;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      const emit = (event: AgentStreamEvent) => {
+        controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+      };
+
+      const toolEvents: StoredMessage[] = [];
+      const assistantMessageId = crypto.randomUUID();
+      const assistantCreatedAt = Date.now();
+      let assistantText = '';
+
+      emit({ type: 'start', messages: trimMessagesForClient(messages) });
+      emit({ type: 'message', message: userMessage });
+      emit({ type: 'assistant-start', messageId: assistantMessageId, createdAt: assistantCreatedAt });
+
+      try {
+        const result = streamText({
+          model: createCloudflareModel(config, credentials),
+          system: SYSTEM_PROMPT,
+          messages: buildModelMessages(messages),
+          tools: createAiSdkTools(self),
+          stopWhen: stepCountIs(MAX_TOOL_ROUNDS),
+          maxRetries: 0,
+        });
+
+        for await (const chunk of result.fullStream) {
+          if (chunk.type === 'text-delta') {
+            assistantText += chunk.text;
+            emit({ type: 'text-delta', delta: chunk.text });
+          } else if (chunk.type === 'reasoning-delta') {
+            emit({ type: 'reasoning-delta', delta: chunk.text });
+          } else if (chunk.type === 'tool-call') {
+            emit({
+              type: 'tool-call',
+              toolCallId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              input: chunk.input,
+            });
+          } else if (chunk.type === 'tool-result') {
+            const output = compactStreamValue(chunk.output);
+            const toolMessage = makeToolMessage(chunk.toolName, chunk.input, output);
+            toolEvents.push(toolMessage);
+            emit({
+              type: 'tool-result',
+              toolCallId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              input: chunk.input,
+              output,
+              message: toolMessage,
+            });
+          } else if (chunk.type === 'tool-error') {
+            const error = stringifyError(chunk.error);
+            const output = { error };
+            const toolMessage = makeToolMessage(chunk.toolName, chunk.input, output);
+            toolEvents.push(toolMessage);
+            emit({
+              type: 'tool-error',
+              toolCallId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              input: chunk.input,
+              error,
+              message: toolMessage,
+            });
+          } else if (chunk.type === 'finish-step') {
+            emit({
+              type: 'finish-step',
+              finishReason: chunk.finishReason,
+              usage: chunk.usage,
+            });
+          }
+        }
+
+        const assistantMessage = {
+          id: assistantMessageId,
+          role: 'assistant' as const,
+          content: assistantText.trim() || summarizeToolEvents(toolEvents) || 'Done.',
+          createdAt: assistantCreatedAt,
+        };
+        const nextMessages = [...messages, ...toolEvents, assistantMessage];
+        await saveMessages(self, nextMessages);
+        emit({
+          type: 'done',
+          message: assistantMessage,
+          toolEvents,
+          messages: trimMessagesForClient(nextMessages),
+        });
+      } catch (e: any) {
+        emit({
+          type: 'error',
+          error: e?.message || String(e),
+          code: 'E_AGENT_TURN_FAILED',
+          messages: trimMessagesForClient(messages),
+        });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, { status: 200, headers });
 }
 
 async function runAiSdkTurn(
@@ -509,15 +652,30 @@ function collectToolEvents(result: { steps?: Array<{ toolResults?: any[] }> }): 
   for (const step of result.steps || []) {
     for (const toolResult of step.toolResults || []) {
       const toolName = String(toolResult?.toolName || 'tool');
-      const payload = {
-        tool: toolName,
-        input: toolResult?.input,
-        output: toolResult?.output,
-      };
-      events.push(makeMessage('tool', truncate(safeJsonStringify(payload), MAX_TOOL_RESULT_CHARS), toolName));
+      events.push(makeToolMessage(toolName, toolResult?.input, toolResult?.output));
     }
   }
   return events;
+}
+
+function makeToolMessage(toolName: string, input: unknown, output: unknown): StoredMessage {
+  return makeMessage('tool', truncate(safeJsonStringify({
+    tool: toolName,
+    input,
+    output,
+  }), MAX_TOOL_RESULT_CHARS), toolName);
+}
+
+function stringifyError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function compactStreamValue(value: unknown): unknown {
+  if (typeof value === 'string') return truncate(value, MAX_TOOL_RESULT_CHARS);
+  const text = safeJsonStringify(value);
+  if (text.length <= MAX_TOOL_RESULT_CHARS) return value;
+  return truncate(text, MAX_TOOL_RESULT_CHARS);
 }
 
 function summarizeToolEvents(events: StoredMessage[]): string {

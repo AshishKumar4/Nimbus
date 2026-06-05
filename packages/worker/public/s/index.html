@@ -96,7 +96,36 @@
     /* Preview panel */
     .panel-preview { flex: 1; display: flex; flex-direction: column; background: #0d1117; overflow: hidden; min-width: 0; }
     .panel-preview.hidden { display: none; }
-    .preview-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .preview-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; min-width: 0; }
+    .preview-live-dot { color: #3fb950; font-size: 12px; flex: 0 0 auto; }
+    .preview-tabs {
+      display: flex; align-items: center; gap: 3px; min-width: 110px; max-width: 45%;
+      overflow-x: auto; scrollbar-width: none; flex: 0 1 auto;
+    }
+    .preview-tabs::-webkit-scrollbar { display: none; }
+    .preview-bar .preview-tab {
+      height: 22px; display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+      max-width: 150px; padding: 0 8px; border-radius: 4px 4px 0 0;
+      border: 1px solid transparent; border-bottom-color: transparent;
+      background: transparent; color: #8b949e; font-size: 11px; line-height: 1;
+      white-space: nowrap; cursor: pointer;
+    }
+    .preview-bar .preview-tab:hover { background: #21262d; color: #c9d1d9; }
+    .preview-bar .preview-tab.active {
+      background: #0d1117; color: #f0f6fc; border-color: #30363d;
+      border-bottom-color: #0d1117;
+    }
+    .preview-bar .preview-tab.running::before {
+      content: ""; width: 6px; height: 6px; border-radius: 999px;
+      background: #3fb950; box-shadow: 0 0 8px rgba(63,185,80,0.55);
+      flex: 0 0 auto;
+    }
+    .preview-bar .preview-tab.markdown::before {
+      content: "md"; color: #79c0ff; font: 9px/1 ui-monospace, Menlo, monospace;
+      border: 1px solid rgba(121,192,255,0.35); border-radius: 3px; padding: 1px 2px;
+      flex: 0 0 auto;
+    }
+    .preview-tab-label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .preview-bar .url-bar { flex: 1; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; font-size: 11px; border-radius: 4px; font-family: monospace; }
     .preview-bar button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; padding: 2px 4px; }
     .preview-bar button:hover { color: #c9d1d9; }
@@ -154,73 +183,189 @@
     /* Agent chat */
     .panel-agent {
       display: none; flex: 1; min-width: 0; min-height: 0;
-      background: #0d1117; color: #c9d1d9; flex-direction: column;
+      background: #0f141b; color: #d6dee8; flex-direction: column;
     }
     .agent-shell {
       flex: 1; min-height: 0; display: grid;
       grid-template-rows: auto 1fr auto;
       width: 100%;
-      background: #0d1117;
+      background:
+        linear-gradient(180deg, rgba(88,166,255,0.04), rgba(63,185,80,0.015) 28%, transparent 48%),
+        #0f141b;
     }
     .agent-top {
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px 12px; background: #161b22; border-bottom: 1px solid #30363d;
-      min-height: 38px;
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px; background: rgba(22,27,34,0.96);
+      border-bottom: 1px solid #30363d; min-height: 40px;
     }
-    .agent-title { font-size: 12px; font-weight: 600; color: #f0f6fc; }
-    .agent-status { margin-left: auto; font-size: 11px; color: #8b949e; font-family: ui-monospace, Menlo, monospace; }
+    .agent-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    .agent-title { font-size: 12px; font-weight: 650; color: #f0f6fc; white-space: nowrap; }
+    .agent-subtitle {
+      color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; max-width: 220px;
+    }
+    .agent-status {
+      margin-left: auto; font-size: 11px; color: #8b949e;
+      font-family: ui-monospace, Menlo, monospace; display: inline-flex;
+      align-items: center; gap: 6px; min-width: 0; white-space: nowrap;
+    }
+    .agent-status::before {
+      content: ''; width: 6px; height: 6px; border-radius: 50%;
+      background: #6e7681; box-shadow: 0 0 0 1px rgba(255,255,255,0.05);
+    }
     .agent-status.ready { color: #3fb950; }
+    .agent-status.ready::before { background: #3fb950; box-shadow: 0 0 8px rgba(63,185,80,0.55); }
     .agent-status.warn { color: #d29922; }
+    .agent-status.warn::before { background: #d29922; box-shadow: 0 0 8px rgba(210,153,34,0.45); }
+    .agent-status.streaming { color: #58a6ff; }
+    .agent-status.streaming::before { background: #58a6ff; animation: pulse 1.1s ease-in-out infinite; }
     .agent-top button,
     .agent-composer button {
       background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
-      padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;
+      padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 11px;
     }
     .agent-top button:hover,
     .agent-composer button:hover { background: #30363d; }
+    .agent-top button:disabled,
+    .agent-composer button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .agent-top .agent-secondary { color: #8b949e; }
     .agent-top select {
       background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
-      padding: 3px 8px; border-radius: 4px; font-size: 11px;
-      max-width: 220px;
+      padding: 4px 8px; border-radius: 6px; font-size: 11px;
+      max-width: 260px;
     }
     .agent-messages {
-      min-height: 0; overflow: auto; padding: 18px 18px 22px;
-      display: flex; flex-direction: column; gap: 12px;
+      min-height: 0; overflow: auto; padding: 22px 18px 26px;
+      display: flex; flex-direction: column; gap: 16px;
+      scrollbar-width: thin; scrollbar-color: #30363d transparent;
     }
     .agent-empty {
-      margin: auto; max-width: 520px; color: #8b949e; text-align: center;
-      font-size: 13px; line-height: 1.6;
+      margin: auto; max-width: 560px; color: #8b949e; text-align: center;
+      font-size: 13px; line-height: 1.6; padding: 28px;
+      border: 1px dashed #30363d; border-radius: 8px;
+      background: rgba(22,27,34,0.55);
     }
     .agent-msg {
-      display: grid; grid-template-columns: 74px minmax(0, 1fr);
-      gap: 10px; align-items: start;
+      width: min(900px, 100%); margin: 0 auto;
+      display: flex; gap: 10px; align-items: flex-start;
     }
-    .agent-role {
-      color: #6e7681; font: 11px ui-monospace, Menlo, monospace;
-      text-transform: uppercase; padding-top: 4px;
+    .agent-msg.user { justify-content: flex-end; }
+    .agent-avatar {
+      width: 24px; height: 24px; border-radius: 6px; flex: 0 0 auto;
+      display: grid; place-items: center; margin-top: 2px;
+      border: 1px solid #30363d; background: #161b22;
+      color: #8b949e; font: 10px ui-monospace, Menlo, monospace;
+    }
+    .agent-msg.assistant .agent-avatar { color: #7ee787; border-color: rgba(63,185,80,0.35); background: rgba(63,185,80,0.08); }
+    .agent-msg.user .agent-avatar { display: none; }
+    .agent-content {
+      min-width: 0; max-width: min(760px, 86%); display: flex; flex-direction: column; gap: 8px;
+    }
+    .agent-msg.user .agent-content { align-items: flex-end; }
+    .agent-meta {
+      color: #6e7681; font: 10px ui-monospace, Menlo, monospace;
+      text-transform: uppercase; letter-spacing: 0.02em;
     }
     .agent-bubble {
-      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
-      padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere;
-      font-size: 13px; line-height: 1.55;
+      border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere;
+      font-size: 13px; line-height: 1.58; color: #d6dee8;
     }
-    .agent-msg.user .agent-bubble { border-color: #1f6feb; background: #0f1a2a; }
-    .agent-msg.tool .agent-bubble {
-      color: #8b949e; background: #10151d; font-family: ui-monospace, Menlo, monospace;
-      font-size: 11px; max-height: 180px; overflow: auto;
+    .agent-msg.assistant .agent-bubble {
+      background: rgba(22,27,34,0.78); border: 1px solid rgba(48,54,61,0.85);
+    }
+    .agent-msg.user .agent-bubble {
+      background: linear-gradient(180deg, rgba(31,111,235,0.24), rgba(31,111,235,0.15));
+      border: 1px solid rgba(88,166,255,0.65); color: #f0f6fc;
+      max-width: min(680px, 76%);
+    }
+    .agent-bubble p { margin: 0 0 10px; }
+    .agent-bubble p:last-child { margin-bottom: 0; }
+    .agent-bubble ul, .agent-bubble ol { margin: 6px 0 10px 18px; }
+    .agent-bubble li { margin: 3px 0; }
+    .agent-bubble code {
+      background: rgba(110,118,129,0.25); border-radius: 4px;
+      padding: 0.12em 0.35em; color: #f0f6fc;
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em;
+    }
+    .agent-bubble pre {
+      margin: 8px 0; padding: 10px 12px; border-radius: 8px;
+      border: 1px solid #30363d; background: #0d1117; overflow: auto;
+      white-space: pre;
+    }
+    .agent-bubble pre code { background: transparent; padding: 0; }
+    .agent-thinking {
+      display: inline-flex; align-items: center; gap: 7px;
+      color: #8b949e; font-size: 12px; padding: 4px 0;
+    }
+    .agent-thinking .dots { display: inline-flex; gap: 4px; }
+    .agent-thinking .dots span {
+      width: 5px; height: 5px; border-radius: 50%; background: #58a6ff;
+      animation: agent-dot 1s ease-in-out infinite;
+    }
+    .agent-thinking .dots span:nth-child(2) { animation-delay: 120ms; }
+    .agent-thinking .dots span:nth-child(3) { animation-delay: 240ms; }
+    @keyframes agent-dot { 0%, 70%, 100% { opacity: 0.32; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
+    .agent-cursor {
+      display: inline-block; width: 2px; height: 1em; margin-left: 2px;
+      background: #58a6ff; vertical-align: -0.15em; animation: agent-cursor 1s steps(1) infinite;
+    }
+    @keyframes agent-cursor { 0%, 45% { opacity: 1; } 46%, 100% { opacity: 0; } }
+    .agent-reasoning {
+      border-left: 2px solid rgba(88,166,255,0.65); padding: 7px 10px;
+      background: rgba(88,166,255,0.06); color: #8b949e; border-radius: 0 8px 8px 0;
+      font-size: 12px; line-height: 1.5;
+    }
+    .agent-reasoning summary { cursor: pointer; color: #79c0ff; font-weight: 600; }
+    .agent-reasoning pre { margin-top: 7px; white-space: pre-wrap; font: 12px/1.5 ui-monospace, Menlo, monospace; color: #c9d1d9; }
+    .agent-tools { display: flex; flex-direction: column; gap: 7px; }
+    .agent-tool {
+      border: 1px solid #30363d; background: rgba(13,17,23,0.72);
+      border-radius: 8px; overflow: hidden;
+    }
+    .agent-tool summary {
+      display: flex; align-items: center; gap: 8px; cursor: pointer;
+      padding: 7px 9px; list-style: none; user-select: none;
+    }
+    .agent-tool summary::-webkit-details-marker { display: none; }
+    .agent-tool .tool-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: #6e7681; flex: 0 0 auto;
+    }
+    .agent-tool.running .tool-dot { background: #58a6ff; box-shadow: 0 0 8px rgba(88,166,255,0.7); animation: pulse 1s ease-in-out infinite; }
+    .agent-tool.done .tool-dot { background: #3fb950; }
+    .agent-tool.error .tool-dot { background: #ff7b72; }
+    .agent-tool .tool-name { font: 12px ui-monospace, Menlo, monospace; color: #f0f6fc; }
+    .agent-tool .tool-state { margin-left: auto; color: #8b949e; font-size: 11px; }
+    .agent-tool.running .tool-state { color: #58a6ff; }
+    .agent-tool.done .tool-state { color: #3fb950; }
+    .agent-tool.error .tool-state { color: #ff7b72; }
+    .agent-tool-body {
+      border-top: 1px solid #30363d; padding: 8px 9px; display: grid;
+      gap: 8px; background: rgba(22,27,34,0.55);
+    }
+    .agent-tool-body label {
+      display: block; color: #6e7681; font-size: 10px; text-transform: uppercase;
+      margin-bottom: 4px; font-family: ui-monospace, Menlo, monospace;
+    }
+    .agent-tool-body pre {
+      margin: 0; max-height: 190px; overflow: auto; white-space: pre-wrap;
+      background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      padding: 8px; color: #c9d1d9; font: 11px/1.5 ui-monospace, Menlo, monospace;
     }
     .agent-composer {
       display: grid; grid-template-columns: 1fr auto; gap: 8px;
-      padding: 10px 12px; background: #161b22; border-top: 1px solid #30363d;
+      padding: 12px 14px; background: rgba(22,27,34,0.96);
+      border-top: 1px solid #30363d;
     }
     .agent-composer textarea {
-      resize: none; min-height: 40px; max-height: 160px; background: #0d1117;
-      border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px;
-      padding: 8px 10px; font: 13px/1.5 ui-monospace, Menlo, monospace; outline: none;
+      resize: none; min-height: 44px; max-height: 170px; background: #0d1117;
+      border: 1px solid #30363d; color: #f0f6fc; border-radius: 8px;
+      padding: 10px 12px; font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; outline: none;
     }
-    .agent-composer textarea:focus { border-color: #58a6ff; }
-    .agent-composer button { min-width: 72px; font-weight: 600; }
-    .agent-composer button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .agent-composer textarea:focus {
+      border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88,166,255,0.16);
+    }
+    .agent-composer button { min-width: 76px; font-weight: 650; }
+    .agent-composer button.streaming { border-color: #ff7b72; color: #ff7b72; }
 
     /* Editor workspace:
          FILE TREE | editor-stack (editor TOP + terminal BOTTOM) | PREVIEW
@@ -451,11 +596,14 @@
       <div class="panel-agent" id="agentPanel">
         <div class="agent-shell">
           <div class="agent-top">
-            <div class="agent-title">Nimbus Agent</div>
+            <div class="agent-heading">
+              <div class="agent-title">Nimbus Agent</div>
+              <div class="agent-subtitle" id="agentSubtitle">Workspace operator</div>
+            </div>
             <select id="agentAccount" title="Cloudflare account" style="display:none"></select>
             <button id="agentConnect" style="display:none">Connect Cloudflare</button>
-            <button id="agentDisconnect" style="display:none">Disconnect</button>
-            <button id="agentClear" title="Clear chat">Clear</button>
+            <button id="agentDisconnect" class="agent-secondary" style="display:none">Disconnect</button>
+            <button id="agentClear" class="agent-secondary" title="Clear chat">Clear</button>
             <div class="agent-status" id="agentStatus">Checking...</div>
           </div>
           <div class="agent-messages" id="agentMessages">
@@ -480,7 +628,8 @@
     <div class="resize-handle" id="resizeHandle"></div>
     <div class="panel-preview" id="previewPanel">
       <div class="preview-bar">
-        <span style="color:#3fb950;font-size:12px">&#9679;</span>
+        <span class="preview-live-dot">&#9679;</span>
+        <div class="preview-tabs" id="previewTabs" aria-label="Preview tabs"></div>
         <input class="url-bar" id="urlBar" value="" readonly>
         <button id="btnReloadPreview" title="Reload">&#8635;</button>
       </div>
@@ -596,6 +745,7 @@
     const stText = document.getElementById('statusText');
     const previewFrame = document.getElementById('preview-frame');
     const previewPanel = document.getElementById('previewPanel');
+    const previewTabsEl = document.getElementById('previewTabs');
     const markdownPreview = document.getElementById('markdown-preview');
     const markdownPreviewBody = document.getElementById('markdown-preview-body');
     const mainPanel = document.getElementById('mainPanel');
@@ -1760,6 +1910,7 @@
     // ── Agent chat module ─────────────────────────────────────────────
     const Agent = (function() {
       const statusEl = document.getElementById('agentStatus');
+      const subtitleEl = document.getElementById('agentSubtitle');
       const messagesEl = document.getElementById('agentMessages');
       const emptyEl = document.getElementById('agentEmpty');
       const form = document.getElementById('agentForm');
@@ -1774,40 +1925,49 @@
       let status = null;
       let messages = [];
       let busy = false;
+      let currentAbort = null;
       let oauthPoll = null;
+      let renderSeq = 0;
 
       function setAgentStatus(text, tone) {
         statusEl.textContent = text;
         statusEl.className = 'agent-status' + (tone ? ' ' + tone : '');
       }
 
-      function canChat() {
-        return !!status && status.configured && status.connected && !busy;
+      function canStartChat() {
+        return !!status && status.configured && status.connected;
       }
 
       function applyControls() {
         const oauth = status?.oauth || {};
         const owner = status?.ownerToken || {};
         const connected = !!status?.connected;
+        const canStart = canStartChat();
         connectBtn.style.display = oauth.configured && !oauth.connected ? 'inline-block' : 'none';
         disconnectBtn.style.display = oauth.connected ? 'inline-block' : 'none';
         accountSelect.style.display = oauth.connected && Array.isArray(oauth.accounts) && oauth.accounts.length > 1
           ? 'inline-block'
           : 'none';
-        input.disabled = !canChat();
-        sendBtn.disabled = !canChat();
+        input.disabled = !canStart || busy;
+        sendBtn.disabled = !canStart || (!busy && !input.value.trim());
+        sendBtn.textContent = busy ? 'Stop' : 'Send';
+        sendBtn.classList.toggle('streaming', busy);
         if (!status) {
           emptyEl.textContent = 'Cloudflare connection required.';
+          subtitleEl.textContent = 'Workspace operator';
           setAgentStatus('Checking...', '');
         } else if (!status.configured) {
           emptyEl.textContent = 'Configure Cloudflare OAuth or an owner API token to enable chat.';
+          subtitleEl.textContent = 'Cloudflare Workers AI';
           setAgentStatus('AI not configured', 'warn');
         } else if (connected) {
           const mode = oauth.connected ? 'Cloudflare connected' : owner.configured ? 'Owner token' : 'Ready';
           emptyEl.textContent = 'Ask Nimbus to inspect or change this session.';
-          setAgentStatus(mode + ' · ' + status.model, 'ready');
+          subtitleEl.textContent = 'Shell · files · runtimes · previews';
+          setAgentStatus((busy ? 'Streaming' : mode) + ' · ' + status.model, busy ? 'streaming' : 'ready');
         } else {
           emptyEl.textContent = 'Connect Cloudflare to use Workers AI.';
+          subtitleEl.textContent = 'Use your Cloudflare quota';
           setAgentStatus('Connect Cloudflare', 'warn');
         }
       }
@@ -1830,25 +1990,205 @@
         return role === 'assistant' ? 'Nimbus' : 'You';
       }
 
+      function formatTime(ts) {
+        const date = new Date(ts || Date.now());
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      }
+
       function renderMessages(list = messages) {
+        renderSeq++;
+        const seq = renderSeq;
         messagesEl.replaceChildren();
         if (!list || list.length === 0) {
           messagesEl.appendChild(emptyEl);
           return;
         }
         for (const msg of list) {
-          const row = document.createElement('div');
-          row.className = 'agent-msg ' + msg.role;
-          const role = document.createElement('div');
-          role.className = 'agent-role';
-          role.textContent = roleLabel(msg.role, msg.name);
-          const bubble = document.createElement('div');
-          bubble.className = 'agent-bubble';
-          bubble.textContent = msg.content || '';
-          row.append(role, bubble);
-          messagesEl.appendChild(row);
+          messagesEl.appendChild(renderMessage(msg, seq));
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function renderMessage(msg, seq) {
+        if (msg.role === 'tool') return renderStoredToolMessage(msg);
+
+        const row = document.createElement('div');
+        row.className = 'agent-msg ' + msg.role;
+        const avatar = document.createElement('div');
+        avatar.className = 'agent-avatar';
+        avatar.textContent = msg.role === 'assistant' ? 'N' : '';
+        const content = document.createElement('div');
+        content.className = 'agent-content';
+
+        const meta = document.createElement('div');
+        meta.className = 'agent-meta';
+        meta.textContent = roleLabel(msg.role, msg.name) + (msg.createdAt ? ' · ' + formatTime(msg.createdAt) : '');
+
+        const text = String(msg.content || '');
+        const hasLiveTools = Array.isArray(msg.tools) && msg.tools.length > 0;
+        const hasReasoning = !!msg.reasoning;
+        const isStreaming = !!msg.streaming;
+
+        if (msg.role === 'assistant') content.appendChild(meta);
+
+        if (hasReasoning) content.appendChild(renderReasoning(msg.reasoning));
+        if (hasLiveTools) content.appendChild(renderToolList(msg.tools));
+
+        if (text || msg.error) {
+          const bubble = document.createElement('div');
+          bubble.className = 'agent-bubble';
+          if (msg.error) {
+            bubble.textContent = msg.error;
+          } else if (msg.role === 'assistant') {
+            renderMarkdownInto(bubble, text, { cursor: isStreaming, seq });
+          } else {
+            bubble.textContent = text;
+          }
+          content.appendChild(bubble);
+        } else if (isStreaming) {
+          content.appendChild(renderThinking(hasLiveTools ? 'Waiting for tool results' : 'Thinking'));
+        }
+
+        if (msg.role === 'user') {
+          content.appendChild(meta);
+          row.append(content);
+        } else {
+          row.append(avatar, content);
+        }
+        return row;
+      }
+
+      function renderStoredToolMessage(msg) {
+        const payload = parseToolPayload(msg);
+        const row = document.createElement('div');
+        row.className = 'agent-msg assistant';
+        const avatar = document.createElement('div');
+        avatar.className = 'agent-avatar';
+        avatar.textContent = 'T';
+        const content = document.createElement('div');
+        content.className = 'agent-content';
+        content.appendChild(renderToolList([{
+          toolCallId: msg.id,
+          toolName: payload.tool || msg.name || 'tool',
+          input: payload.input,
+          output: payload.output ?? msg.content,
+          status: payload.output?.error ? 'error' : 'done',
+          durationMs: payload.durationMs,
+        }]));
+        row.append(avatar, content);
+        return row;
+      }
+
+      function parseToolPayload(msg) {
+        try {
+          const parsed = JSON.parse(msg.content || '{}');
+          if (parsed && typeof parsed === 'object') return parsed;
+        } catch {}
+        return { tool: msg.name || 'tool', output: msg.content || '' };
+      }
+
+      function renderThinking(label) {
+        const wrap = document.createElement('div');
+        wrap.className = 'agent-thinking';
+        const dots = document.createElement('span');
+        dots.className = 'dots';
+        dots.append(document.createElement('span'), document.createElement('span'), document.createElement('span'));
+        const text = document.createElement('span');
+        text.textContent = label;
+        wrap.append(dots, text);
+        return wrap;
+      }
+
+      function renderReasoning(text) {
+        const details = document.createElement('details');
+        details.className = 'agent-reasoning';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Thinking';
+        const pre = document.createElement('pre');
+        pre.textContent = text;
+        details.append(summary, pre);
+        return details;
+      }
+
+      function renderToolList(tools) {
+        const wrap = document.createElement('div');
+        wrap.className = 'agent-tools';
+        for (const tool of tools) wrap.appendChild(renderToolCard(tool));
+        return wrap;
+      }
+
+      function renderToolCard(tool) {
+        const status = tool.status || 'done';
+        const details = document.createElement('details');
+        details.className = 'agent-tool ' + status;
+        if (status === 'running' || status === 'error') details.open = true;
+
+        const summary = document.createElement('summary');
+        const dot = document.createElement('span');
+        dot.className = 'tool-dot';
+        const name = document.createElement('span');
+        name.className = 'tool-name';
+        name.textContent = tool.toolName || 'tool';
+        const state = document.createElement('span');
+        state.className = 'tool-state';
+        state.textContent = toolStateLabel(tool);
+        summary.append(dot, name, state);
+
+        const body = document.createElement('div');
+        body.className = 'agent-tool-body';
+        if (tool.input !== undefined) body.appendChild(renderToolSection('Input', tool.input));
+        if (tool.output !== undefined) body.appendChild(renderToolSection(status === 'error' ? 'Error' : 'Output', tool.output));
+        if (tool.error) body.appendChild(renderToolSection('Error', tool.error));
+        details.append(summary, body);
+        return details;
+      }
+
+      function toolStateLabel(tool) {
+        if (tool.status === 'running') return 'running';
+        if (tool.status === 'error') return tool.durationMs ? 'failed · ' + formatDuration(tool.durationMs) : 'failed';
+        return tool.durationMs ? 'done · ' + formatDuration(tool.durationMs) : 'done';
+      }
+
+      function formatDuration(ms) {
+        if (!Number.isFinite(ms) || ms < 100) return '<0.1s';
+        return (ms / 1000).toFixed(1) + 's';
+      }
+
+      function renderToolSection(label, value) {
+        const section = document.createElement('div');
+        const title = document.createElement('label');
+        title.textContent = label;
+        const pre = document.createElement('pre');
+        pre.textContent = prettyValue(value);
+        section.append(title, pre);
+        return section;
+      }
+
+      function prettyValue(value) {
+        if (typeof value === 'string') return value;
+        try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+      }
+
+      function renderMarkdownInto(el, text, opts = {}) {
+        const token = String((opts.seq || renderSeq) + ':' + text.length + ':' + (opts.cursor ? '1' : '0'));
+        el.dataset.renderToken = token;
+        el.textContent = text;
+        renderMarkdown(text).then((html) => {
+          if (el.dataset.renderToken !== token) return;
+          el.innerHTML = html;
+          if (opts.cursor) {
+            const cursor = document.createElement('span');
+            cursor.className = 'agent-cursor';
+            el.appendChild(cursor);
+          }
+        }).catch(() => {
+          if (opts.cursor) {
+            const cursor = document.createElement('span');
+            cursor.className = 'agent-cursor';
+            el.appendChild(cursor);
+          }
+        });
       }
 
       async function refreshStatus() {
@@ -1937,8 +2277,13 @@
 
       async function sendMessage(text) {
         const content = String(text || '').trim();
-        if (!content || busy) return;
+        if (busy) {
+          stopStreaming();
+          return;
+        }
+        if (!content) return;
         busy = true;
+        currentAbort = new AbortController();
         applyControls();
         input.value = '';
         const optimistic = {
@@ -1950,38 +2295,132 @@
         const pending = {
           id: 'pending-assistant',
           role: 'assistant',
-          content: 'Working...',
+          content: '',
           createdAt: Date.now(),
+          streaming: true,
+          reasoning: '',
+          tools: [],
         };
-        renderMessages([...messages, optimistic, pending]);
+        let liveList = [...messages, optimistic, pending];
+        renderMessages(liveList);
+        const repaint = () => {
+          liveList = [...messages, pending];
+          renderMessages(liveList);
+        };
         try {
           const r = await fetch(AGENT_MESSAGES_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify({ message: content }),
+            headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+            body: JSON.stringify({ message: content, stream: true }),
+            signal: currentAbort.signal,
           });
-          const payload = await r.json();
-          if (!r.ok) throw new Error(payload.error || 'Agent request failed');
-          messages = Array.isArray(payload.messages) ? payload.messages : [...messages, optimistic, payload.message];
-          renderMessages();
+          if (!r.ok || !r.body) {
+            const payload = await r.json().catch(() => ({}));
+            throw new Error(payload.error || 'Agent request failed');
+          }
+          await readAgentStream(r.body, pending, repaint);
         } catch (e) {
-          renderMessages([...messages, optimistic, {
-            id: 'agent-error',
-            role: 'assistant',
-            content: e?.message || String(e),
-            createdAt: Date.now(),
-          }]);
+          if (e?.name !== 'AbortError') {
+            pending.streaming = false;
+            pending.error = e?.message || String(e);
+            repaint();
+          }
         } finally {
           busy = false;
+          currentAbort = null;
           applyControls();
           input.focus();
         }
       }
 
+      function stopStreaming() {
+        if (currentAbort) currentAbort.abort();
+      }
+
+      async function readAgentStream(body, liveAssistant, repaint) {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let lineEnd = buffer.indexOf('\n');
+          while (lineEnd >= 0) {
+            const line = buffer.slice(0, lineEnd).trim();
+            buffer = buffer.slice(lineEnd + 1);
+            if (line) applyStreamEvent(JSON.parse(line), liveAssistant, repaint);
+            lineEnd = buffer.indexOf('\n');
+          }
+        }
+        const tail = buffer.trim();
+        if (tail) applyStreamEvent(JSON.parse(tail), liveAssistant, repaint);
+      }
+
+      function applyStreamEvent(event, liveAssistant, repaint) {
+        if (!event || typeof event !== 'object') return;
+        if (event.type === 'start') {
+          if (Array.isArray(event.messages)) messages = event.messages;
+        } else if (event.type === 'assistant-start') {
+          liveAssistant.id = event.messageId || liveAssistant.id;
+          liveAssistant.createdAt = event.createdAt || liveAssistant.createdAt;
+        } else if (event.type === 'text-delta') {
+          liveAssistant.content += String(event.delta || '');
+        } else if (event.type === 'reasoning-delta') {
+          liveAssistant.reasoning = (liveAssistant.reasoning || '') + String(event.delta || '');
+        } else if (event.type === 'tool-call') {
+          upsertLiveTool(liveAssistant, {
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            input: event.input,
+            status: 'running',
+            startedAt: Date.now(),
+          });
+        } else if (event.type === 'tool-result' || event.type === 'tool-error') {
+          const tool = upsertLiveTool(liveAssistant, {
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            input: event.input,
+          });
+          tool.status = event.type === 'tool-error' ? 'error' : 'done';
+          tool.output = event.type === 'tool-error' ? { error: event.error } : event.output;
+          tool.error = event.type === 'tool-error' ? event.error : '';
+          if (tool.startedAt) tool.durationMs = Date.now() - tool.startedAt;
+        } else if (event.type === 'done') {
+          liveAssistant.streaming = false;
+          if (Array.isArray(event.messages)) {
+            messages = event.messages;
+            renderMessages();
+            return;
+          }
+          if (event.message) {
+            messages = [...messages, ...(Array.isArray(event.toolEvents) ? event.toolEvents : []), event.message];
+          }
+        } else if (event.type === 'error') {
+          liveAssistant.streaming = false;
+          liveAssistant.error = event.error || 'Agent request failed';
+          if (Array.isArray(event.messages)) messages = event.messages;
+          setAgentStatus(liveAssistant.error, 'warn');
+        }
+        repaint();
+      }
+
+      function upsertLiveTool(liveAssistant, patch) {
+        if (!Array.isArray(liveAssistant.tools)) liveAssistant.tools = [];
+        let tool = liveAssistant.tools.find((item) => item.toolCallId === patch.toolCallId);
+        if (!tool) {
+          tool = { status: 'running' };
+          liveAssistant.tools.push(tool);
+        }
+        Object.assign(tool, patch);
+        return tool;
+      }
+
       function wire() {
         form.addEventListener('submit', (e) => {
           e.preventDefault();
-          sendMessage(input.value);
+          if (busy) stopStreaming();
+          else sendMessage(input.value);
         });
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -1989,6 +2428,7 @@
             sendMessage(input.value);
           }
         });
+        input.addEventListener('input', applyControls);
         connectBtn.addEventListener('click', connectCloudflare);
         disconnectBtn.addEventListener('click', disconnectCloudflare);
         clearBtn.addEventListener('click', clearMessages);
@@ -2024,19 +2464,169 @@
       return api;
     })();
 
-    // Which preview backend the iframe currently points at. Driven by
-    // /api/stats polling: wrangler.running > vite.running > placeholder.
-    // Tracked separately from iframe.src so user reloads / hash changes
-    // don't confuse the switcher. Starts as null so the first
-    // applyPreviewTarget call always paints (even if nothing is running
-    // yet — that still wants the VITE_URL placeholder loaded).
-    let activePreview = null; // null | 'vite' | 'worker' | 'none'
-    let previewSurface = 'app'; // 'app' | 'markdown'
+    // Tabbed preview surface. Markdown preview and live app previews share
+    // the right pane without fighting over a single iframe.
+    let previewBackendKind = 'none'; // 'vite' | 'worker' | 'none'
+    let activePreviewTabId = null;
+    let markdownRenderSeq = 0;
+    const previewTabs = new Map();
     let markdownRendererPromise = null;
     let markdownRenderer = null;
 
     function previewUrlFor(kind) {
       return kind === 'worker' ? WORKER_URL : VITE_URL;
+    }
+
+    function portPreviewUrl(port) {
+      return SESSION_PREFIX + '/port/' + Number(port) + '/';
+    }
+
+    function absolutePreviewUrl(url) {
+      return new URL(url, location.origin).href;
+    }
+
+    function shortPathLabel(path) {
+      const parts = String(path || '').split('/').filter(Boolean);
+      return parts[parts.length - 1] || 'Markdown';
+    }
+
+    function appTabFor(kind) {
+      const appKind = kind === 'worker' ? 'worker' : 'vite';
+      return {
+        id: 'app:' + appKind,
+        type: 'app',
+        kind: appKind,
+        label: appKind === 'worker' ? 'Worker' : 'Preview',
+        title: appKind === 'worker' ? 'Cloudflare Worker preview' : 'Vite preview',
+        url: previewUrlFor(appKind),
+        running: previewBackendKind === appKind,
+      };
+    }
+
+    function renderPreviewTabs() {
+      if (!previewTabsEl) return;
+      previewTabsEl.innerHTML = '';
+      for (const tab of previewTabs.values()) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = [
+          'preview-tab',
+          tab.type === 'markdown' ? 'markdown' : '',
+          tab.running ? 'running' : '',
+          tab.id === activePreviewTabId ? 'active' : '',
+        ].filter(Boolean).join(' ');
+        button.title = tab.title || tab.url || tab.path || tab.label;
+        button.onclick = () => activatePreviewTab(tab.id);
+
+        const label = document.createElement('span');
+        label.className = 'preview-tab-label';
+        label.textContent = tab.label;
+        button.appendChild(label);
+
+        previewTabsEl.appendChild(button);
+      }
+    }
+
+    function ensurePreviewTab(tab, options = {}) {
+      const existing = previewTabs.get(tab.id);
+      const merged = {
+        ...(existing || {}),
+        ...tab,
+        createdAt: existing?.createdAt || Date.now(),
+        updatedAt: Date.now(),
+      };
+      previewTabs.set(tab.id, merged);
+      if (!existing && options.focusNew) {
+        activatePreviewTab(tab.id);
+      } else {
+        renderPreviewTabs();
+      }
+      return merged;
+    }
+
+    function firstAppTabId() {
+      const port = [...previewTabs.values()].filter((tab) => tab.type === 'port').pop();
+      if (port) return port.id;
+      const preferred = previewBackendKind === 'worker' ? 'app:worker' : 'app:vite';
+      if (previewTabs.has(preferred)) return preferred;
+      if (previewTabs.has('app:vite')) return 'app:vite';
+      if (previewTabs.has('app:worker')) return 'app:worker';
+      return ensurePreviewTab(appTabFor('vite')).id;
+    }
+
+    function activatePreviewTab(id) {
+      const tab = previewTabs.get(id);
+      if (!tab) return;
+      activePreviewTabId = id;
+      renderPreviewTabs();
+      if (tab.type === 'markdown') {
+        previewPanel.classList.add('markdown-mode');
+        if (previewFrame) previewFrame.style.display = 'none';
+        if (markdownPreview) markdownPreview.classList.add('active');
+        setPreviewUrlBar('Markdown Preview · ' + tab.path);
+        paintMarkdownPreview(tab.markdown || '').catch(() => {});
+        return;
+      }
+
+      previewPanel.classList.remove('markdown-mode');
+      if (markdownPreview) markdownPreview.classList.remove('active');
+      if (previewFrame) {
+        previewFrame.style.display = 'block';
+        const next = absolutePreviewUrl(tab.url);
+        if (previewFrame.src !== next) previewFrame.src = tab.url;
+      }
+      setPreviewUrlBar(tab.url);
+    }
+
+    function normalizePortStats(portStats) {
+      const raw = Array.isArray(portStats?.ports)
+        ? portStats.ports
+        : Array.isArray(portStats)
+          ? portStats
+          : [];
+      const seen = new Set();
+      const ports = [];
+      for (const entry of raw) {
+        const port = Number(entry?.port);
+        if (!Number.isInteger(port) || port <= 0 || seen.has(port)) continue;
+        seen.add(port);
+        ports.push({ port, pid: Number(entry?.pid) || 0 });
+      }
+      return ports;
+    }
+
+    function syncPortPreviewTabs(portStats) {
+      const ports = normalizePortStats(portStats);
+      const live = new Set(ports.map((p) => 'port:' + p.port));
+      let activeWasRemoved = false;
+
+      for (const [id, tab] of previewTabs) {
+        if (tab.type === 'port' && !live.has(id)) {
+          previewTabs.delete(id);
+          if (activePreviewTabId === id) activeWasRemoved = true;
+        }
+      }
+
+      for (const entry of ports) {
+        const id = 'port:' + entry.port;
+        const existed = previewTabs.has(id);
+        ensurePreviewTab({
+          id,
+          type: 'port',
+          port: entry.port,
+          pid: entry.pid,
+          label: ':' + entry.port,
+          title: 'Port ' + entry.port,
+          url: portPreviewUrl(entry.port),
+          running: true,
+        }, { focusNew: !existed });
+      }
+
+      if (activeWasRemoved || !activePreviewTabId || !previewTabs.has(activePreviewTabId)) {
+        activatePreviewTab(firstAppTabId());
+      } else {
+        renderPreviewTabs();
+      }
     }
 
     function setPreviewUrlBar(value) {
@@ -2045,26 +2635,33 @@
     }
 
     function showAppPreview() {
-      previewSurface = 'app';
-      if (markdownPreview) markdownPreview.classList.remove('active');
-      if (previewFrame) previewFrame.style.display = 'block';
-      previewPanel.classList.remove('markdown-mode');
-      const kind = (activePreview === null || activePreview === 'none') ? 'vite' : activePreview;
-      const url = previewUrlFor(kind);
-      if (previewFrame && (previewFrame.src === 'about:blank' || !previewFrame.src.includes(url))) {
-        previewFrame.src = url;
-      }
-      setPreviewUrlBar(url);
+      ensurePreviewTab(appTabFor(previewBackendKind));
+      activatePreviewTab(firstAppTabId());
     }
 
     async function showMarkdownPreview(path, markdown) {
-      previewSurface = 'markdown';
-      previewPanel.classList.add('markdown-mode');
-      if (previewFrame) previewFrame.style.display = 'none';
-      if (markdownPreview) markdownPreview.classList.add('active');
-      setPreviewUrlBar('Markdown Preview · ' + path);
+      const id = 'markdown:' + path;
+      ensurePreviewTab({
+        id,
+        type: 'markdown',
+        label: shortPathLabel(path),
+        title: path,
+        path,
+        markdown: markdown || '',
+        running: false,
+      });
+      activatePreviewTab(id);
+      if (activePreviewTabId !== id) return;
+      await paintMarkdownPreview(markdown || '');
+    }
+
+    async function paintMarkdownPreview(markdown) {
+      const seq = ++markdownRenderSeq;
       const html = await renderMarkdown(markdown || '');
-      if (markdownPreviewBody) markdownPreviewBody.innerHTML = html;
+      const active = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
+      if (seq === markdownRenderSeq && active?.type === 'markdown' && markdownPreviewBody) {
+        markdownPreviewBody.innerHTML = html;
+      }
     }
 
     async function renderMarkdown(markdown) {
@@ -2104,38 +2701,34 @@
       return div.innerHTML;
     }
 
-    function applyPreviewTarget(kind) {
-      // Idempotent: only update iframe + URL bar when the backend kind
-      // actually changes. Avoids tearing down the inner app on every
-      // 5-second stats poll.
-      if (activePreview === kind && previewSurface === 'app') return;
-      activePreview = kind;
-      if (previewSurface !== 'app') return;
-      const url = previewUrlFor(kind);
-      // Always use the VITE_URL path when nothing is running — that
-      // endpoint serves the styled "no dev server" placeholder, which
-      // self-refreshes via its own polling loop.
-      previewFrame.src = url;
-      setPreviewUrlBar(url);
+    function applyPreviewTarget(kind, portStats) {
+      const previousKind = previewBackendKind;
+      previewBackendKind = kind === 'worker' || kind === 'vite' ? kind : 'none';
+      const appKind = previewBackendKind === 'worker' ? 'worker' : 'vite';
+      const appTab = ensurePreviewTab(appTabFor(appKind));
+      const shouldFocusApp = previousKind !== previewBackendKind && previewBackendKind !== 'none';
+      if (shouldFocusApp) activatePreviewTab(appTab.id);
+      if (!activePreviewTabId) activatePreviewTab(appTab.id);
+      syncPortPreviewTabs(portStats);
     }
 
     function reloadPreview() {
-      if (previewSurface === 'markdown') {
+      const active = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
+      if (active?.type === 'markdown') {
         Editor.refreshMarkdownPreview().catch(() => {});
         return;
       }
       // Refreshing without a running backend should re-poll the
       // placeholder so users see dev-server status update promptly.
-      if (previewFrame.src === 'about:blank' ||
-          (!previewFrame.src.includes('/preview') && !previewFrame.src.includes('/worker'))) {
-        previewFrame.src = previewUrlFor(
-          (activePreview === 'none' || activePreview === null) ? 'vite' : activePreview
-        );
+      if (!active || previewFrame.src === 'about:blank') {
+        activatePreviewTab(firstAppTabId());
       } else {
         try { previewFrame.contentWindow?.location.reload(); }
         catch { previewFrame.src = previewFrame.src; }
       }
     }
+
+    applyPreviewTarget('none', null);
 
     // ── Pane resize manager ──
     //
@@ -2334,7 +2927,7 @@
         let kind = 'none';
         if (s.wrangler?.running) kind = 'worker';
         else if (s.vite?.running) kind = 'vite';
-        applyPreviewTarget(kind);
+        applyPreviewTarget(kind, s.ports);
 
         if (s.wrangler?.running) {
           viteStatus.textContent = 'worker running (' + (s.wrangler.name || '?') + ')';

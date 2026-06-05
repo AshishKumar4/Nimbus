@@ -38,6 +38,11 @@ try {
     url: document.getElementById('urlBar')?.value || '',
     markdownActive: document.getElementById('markdown-preview')?.classList.contains('active') || false,
     iframeHidden: getComputedStyle(document.getElementById('preview-frame')).display === 'none',
+    previewTabs: Array.from(document.querySelectorAll('#previewTabs .preview-tab')).map((tab) => ({
+      text: tab.textContent || '',
+      active: tab.classList.contains('active'),
+      markdown: tab.classList.contains('markdown'),
+    })),
     h1: document.querySelector('#markdown-preview-body h1')?.textContent || '',
     h2s: Array.from(document.querySelectorAll('#markdown-preview-body h2')).map((h) => h.textContent || ''),
     codeCount: document.querySelectorAll('#markdown-preview-body code').length,
@@ -50,12 +55,31 @@ try {
   a.check('markdown preview surface is active and iframe hidden',
     state.markdownActive && state.iframeHidden && /Markdown Preview/.test(state.url),
     JSON.stringify(state));
+  a.check('preview pane keeps Markdown and app previews as tabs',
+    state.previewTabs.some((tab) => tab.text.includes('Preview'))
+    && state.previewTabs.some((tab) => tab.text.includes('welcome.md') && tab.active && tab.markdown),
+    JSON.stringify(state));
   a.check('markdown rendered headings, not raw markdown',
     /^Welcome to Nimbus/.test(state.h1) && state.h2s.includes('Start Here') && !state.rawPrefix.startsWith('# '),
     JSON.stringify(state));
   a.check('markdown code spans rendered',
     state.codeCount >= 3,
     JSON.stringify(state));
+
+  await ctx.page.click('#previewTabs .preview-tab:not(.markdown)');
+  await ctx.page.waitForFunction(() => {
+    const frame = document.getElementById('preview-frame');
+    const url = document.getElementById('urlBar')?.value || '';
+    return frame && getComputedStyle(frame).display !== 'none' && /\/preview\/$/.test(url);
+  }, { timeout: 15_000 });
+  const appTabState = await ctx.page.evaluate(() => ({
+    iframeHidden: getComputedStyle(document.getElementById('preview-frame')).display === 'none',
+    url: document.getElementById('urlBar')?.value || '',
+    activeTab: document.querySelector('#previewTabs .preview-tab.active')?.textContent || '',
+  }));
+  a.check('app preview tab restores the iframe',
+    !appTabState.iframeHidden && appTabState.activeTab.includes('Preview') && /\/preview\/$/.test(appTabState.url),
+    JSON.stringify(appTabState));
 
   const serious = [
     ...ctx.pageErrors.map((e) => e.message),

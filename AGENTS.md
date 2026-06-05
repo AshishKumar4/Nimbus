@@ -126,9 +126,13 @@ Agent capabilities:
 - account selection from the connected Cloudflare token
 - AI SDK tool calling through Cloudflare Workers AI's OpenAI-compatible
   endpoint, with optional AI Gateway routing
+- streaming chat responses with thinking state and inline tool-call/result
+  indicators in the browser surface
 - encrypted `HttpOnly` browser cookies for user OAuth tokens and PKCE state;
   do not persist user OAuth tokens in Durable Object storage
 - sandbox tools for exec, files, runtime install, processes, logs, and ports
+- tabbed preview pane for Markdown, default app preview, Worker preview, and
+  live `/port/<n>/` previews; newly exposed ports auto-focus
 
 Agent configuration:
 
@@ -176,6 +180,8 @@ defensive-catch tests.
 Agent-specific probes:
 
 - `tests/behavioral/agent/new/session-agent-panel.mjs`
+- `tests/behavioral/editor/monaco/new/welcome-markdown-preview-default.mjs`
+- `tests/behavioral/preview/new/tabbed-preview-auto-focus-port.mjs`
 - `tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs`
 
 ## Build And Deploy

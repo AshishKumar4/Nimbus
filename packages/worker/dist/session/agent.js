@@ -8,7 +8,7 @@
  * Nimbus deployment owner quota.
  */
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateText, jsonSchema, stepCountIs, tool as aiTool, } from 'ai';
+import { generateText, jsonSchema, stepCountIs, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
@@ -253,6 +253,12 @@ async function agentChat(self, request, url) {
     const userMessage = makeMessage('user', text);
     messages.push(userMessage);
     await saveMessages(self, messages);
+    if (body?.stream === false) {
+        return agentChatJson(self, config, credentialResult, messages);
+    }
+    return agentChatStream(self, config, credentialResult, messages, userMessage);
+}
+async function agentChatJson(self, config, credentialResult, messages) {
     try {
         const result = await runAiSdkTurn(self, config, credentialResult.credentials, messages);
         const assistantText = result.text || 'Done.';
@@ -277,6 +283,115 @@ async function agentChat(self, request, url) {
             messages: trimMessagesForClient(messages),
         }, 502, headers);
     }
+}
+function agentChatStream(self, config, credentialResult, messages, userMessage) {
+    const headers = new Headers();
+    headers.set('Cache-Control', 'no-store');
+    headers.set('Content-Type', 'application/x-ndjson; charset=utf-8');
+    applyAuthCookieResult(headers, credentialResult.authResult);
+    const credentials = credentialResult.credentials;
+    const stream = new ReadableStream({
+        async start(controller) {
+            const encoder = new TextEncoder();
+            const emit = (event) => {
+                controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+            };
+            const toolEvents = [];
+            const assistantMessageId = crypto.randomUUID();
+            const assistantCreatedAt = Date.now();
+            let assistantText = '';
+            emit({ type: 'start', messages: trimMessagesForClient(messages) });
+            emit({ type: 'message', message: userMessage });
+            emit({ type: 'assistant-start', messageId: assistantMessageId, createdAt: assistantCreatedAt });
+            try {
+                const result = streamText({
+                    model: createCloudflareModel(config, credentials),
+                    system: SYSTEM_PROMPT,
+                    messages: buildModelMessages(messages),
+                    tools: createAiSdkTools(self),
+                    stopWhen: stepCountIs(MAX_TOOL_ROUNDS),
+                    maxRetries: 0,
+                });
+                for await (const chunk of result.fullStream) {
+                    if (chunk.type === 'text-delta') {
+                        assistantText += chunk.text;
+                        emit({ type: 'text-delta', delta: chunk.text });
+                    }
+                    else if (chunk.type === 'reasoning-delta') {
+                        emit({ type: 'reasoning-delta', delta: chunk.text });
+                    }
+                    else if (chunk.type === 'tool-call') {
+                        emit({
+                            type: 'tool-call',
+                            toolCallId: chunk.toolCallId,
+                            toolName: chunk.toolName,
+                            input: chunk.input,
+                        });
+                    }
+                    else if (chunk.type === 'tool-result') {
+                        const output = compactStreamValue(chunk.output);
+                        const toolMessage = makeToolMessage(chunk.toolName, chunk.input, output);
+                        toolEvents.push(toolMessage);
+                        emit({
+                            type: 'tool-result',
+                            toolCallId: chunk.toolCallId,
+                            toolName: chunk.toolName,
+                            input: chunk.input,
+                            output,
+                            message: toolMessage,
+                        });
+                    }
+                    else if (chunk.type === 'tool-error') {
+                        const error = stringifyError(chunk.error);
+                        const output = { error };
+                        const toolMessage = makeToolMessage(chunk.toolName, chunk.input, output);
+                        toolEvents.push(toolMessage);
+                        emit({
+                            type: 'tool-error',
+                            toolCallId: chunk.toolCallId,
+                            toolName: chunk.toolName,
+                            input: chunk.input,
+                            error,
+                            message: toolMessage,
+                        });
+                    }
+                    else if (chunk.type === 'finish-step') {
+                        emit({
+                            type: 'finish-step',
+                            finishReason: chunk.finishReason,
+                            usage: chunk.usage,
+                        });
+                    }
+                }
+                const assistantMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: assistantText.trim() || summarizeToolEvents(toolEvents) || 'Done.',
+                    createdAt: assistantCreatedAt,
+                };
+                const nextMessages = [...messages, ...toolEvents, assistantMessage];
+                await saveMessages(self, nextMessages);
+                emit({
+                    type: 'done',
+                    message: assistantMessage,
+                    toolEvents,
+                    messages: trimMessagesForClient(nextMessages),
+                });
+            }
+            catch (e) {
+                emit({
+                    type: 'error',
+                    error: e?.message || String(e),
+                    code: 'E_AGENT_TURN_FAILED',
+                    messages: trimMessagesForClient(messages),
+                });
+            }
+            finally {
+                controller.close();
+            }
+        },
+    });
+    return new Response(stream, { status: 200, headers });
 }
 async function runAiSdkTurn(self, config, credentials, messages) {
     const model = createCloudflareModel(config, credentials);
@@ -403,15 +518,30 @@ function collectToolEvents(result) {
     for (const step of result.steps || []) {
         for (const toolResult of step.toolResults || []) {
             const toolName = String(toolResult?.toolName || 'tool');
-            const payload = {
-                tool: toolName,
-                input: toolResult?.input,
-                output: toolResult?.output,
-            };
-            events.push(makeMessage('tool', truncate(safeJsonStringify(payload), MAX_TOOL_RESULT_CHARS), toolName));
+            events.push(makeToolMessage(toolName, toolResult?.input, toolResult?.output));
         }
     }
     return events;
+}
+function makeToolMessage(toolName, input, output) {
+    return makeMessage('tool', truncate(safeJsonStringify({
+        tool: toolName,
+        input,
+        output,
+    }), MAX_TOOL_RESULT_CHARS), toolName);
+}
+function stringifyError(error) {
+    if (error instanceof Error)
+        return error.message;
+    return String(error);
+}
+function compactStreamValue(value) {
+    if (typeof value === 'string')
+        return truncate(value, MAX_TOOL_RESULT_CHARS);
+    const text = safeJsonStringify(value);
+    if (text.length <= MAX_TOOL_RESULT_CHARS)
+        return value;
+    return truncate(text, MAX_TOOL_RESULT_CHARS);
 }
 function summarizeToolEvents(events) {
     return events.length > 0 ? 'Done.' : '';

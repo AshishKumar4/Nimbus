@@ -143,6 +143,8 @@ runtime package manager, process table, logs, and preview ports.
 The agent uses the AI SDK with Cloudflare Workers AI's OpenAI-compatible
 endpoint and an optional AI Gateway name. User OAuth can spend the user's own
 Cloudflare quota; owner-token fallback can spend the deployment owner's quota.
+Responses stream into the chat UI, with thinking state, tool-call status,
+tool inputs, and tool results rendered inline.
 
 Configure OAuth when each user should spend their own Cloudflare quota. In
 Cloudflare's **Create OAuth client** form, use:
@@ -249,7 +251,10 @@ cd Markflow && npm install  # real npm against registry.npmjs.org
 npm run dev                  # vite dev server — preview in the iframe
 ```
 
-The preview iframe on the right shows your running app at `/s/<id>/preview/`.
+The preview pane on the right is tabbed. It keeps Markdown preview, the default
+app preview at `/s/<id>/preview/`, Worker preview, and live port previews
+together. When a new process exposes a port, Nimbus opens and focuses that port
+tab automatically.
 
 Or write some C:
 
