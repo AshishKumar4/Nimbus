@@ -1,0 +1,21 @@
+{
+  "name": "@nimbus-sh/hosted-demo",
+  "version": "0.1.0",
+  "description": "Nimbus live demo — the canonical SDK embedder. This is what runs at nimbus.ashishkumarsingh.com.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "bun run --cwd ../../packages/worker bundle",
+    "predeploy": "bun run --cwd ../../packages/worker bundle",
+    "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy -e production"
+  },
+  "dependencies": {
+    "@nimbus-sh/sdk": "workspace:^",
+    "@nimbus-sh/worker": "workspace:^"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
