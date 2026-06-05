@@ -122,7 +122,7 @@ export class ChildProcessSpawnPool {
         );
       } catch (e: any) {
         const msg = (e && e.message) ? String(e.message) : String(e);
-        return { exitCode: 1, marker: '', stdout: '', stderr: 'spawn-pool: ' + msg + '\n' } as SpawnInIsolateResult;
+        return { exitCode: 1, stdout: '', stderr: 'spawn-pool: ' + msg + '\n' } as SpawnInIsolateResult;
       }
     });
     // Update the chain BEFORE awaiting so the next caller serializes
@@ -137,10 +137,6 @@ export class ChildProcessSpawnPool {
       return 1;
     }
     const r = results[0];
-    // Emit the per-isolate marker FIRST so the probe sees it ahead of
-    // any user-command stderr. The probe's regex `[g3-spawn-isolate]
-    // tok=…` matches this exact line.
-    if (r.marker) hooks.onStderr(r.marker);
     if (r.stdout) hooks.onStdout(r.stdout);
     if (r.stderr) hooks.onStderr(r.stderr);
     return typeof r.exitCode === 'number' ? r.exitCode : 1;

@@ -2,7 +2,7 @@
 // file-tree/panel/regression/terminal-only-still-works — pre-editor
 // terminal-only mode + keystroke/echo path preserved.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/terminal-only-still-works');

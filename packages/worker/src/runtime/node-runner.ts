@@ -93,6 +93,8 @@ export interface RunFreshOpts {
   cwd?: string;
   filename?: string;
   dirname?: string;
+  stdin?: string;
+  captureOutput?: boolean;
   /** Display label for the long-running spawn. Defaults to the
    *  command + filename. Surfaced in the [started (long-running)]
    *  notice + /api/processes listing. */

@@ -252,6 +252,7 @@ export declare class FacetProcessManager {
      * on full stdin so we have to commit upfront — the parent should have
      * called stdinEnd() before the wait ticks expire.
      */
+    private _waitForStdinEvent;
     private _drainStdinForBuiltin;
     stdinWrite(childPid: number, data: string): {
         ok: boolean;

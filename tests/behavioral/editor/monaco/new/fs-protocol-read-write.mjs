@@ -12,7 +12,7 @@
 // src/session/init.ts).
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, makeAsserter, sleep } from '../../_driver.mjs';
+import { mintSession, WS_BASE, makeAsserter, sleep } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/fs-protocol-read-write');

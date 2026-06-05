@@ -11,8 +11,8 @@
 // a flush. We measure this via hib.flushCount which increments on every
 // processLogs.flush() that has dirty data.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../_driver.mjs';
-import { diagMemory } from '../../heap-correctness/_diag.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driver.mjs';
+import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-lifecycle/alarms/alarm-coordination-w9-flush');

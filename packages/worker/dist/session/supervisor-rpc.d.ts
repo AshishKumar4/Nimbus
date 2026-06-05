@@ -231,6 +231,10 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         ok: boolean;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
+    cpReadStdin(childPid: number, waitMs: number): Promise<{
+        data: string;
+        ended: boolean;
+    }>;
     cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
         chunks: {
             seq: number;

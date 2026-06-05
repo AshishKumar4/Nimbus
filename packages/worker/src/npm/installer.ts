@@ -1064,15 +1064,8 @@ export class NpmInstaller {
     if (explicitPackages && explicitPackages.length > 0) {
       // Explicit packages: npm install react react-dom@18.2.0
       for (const pkg of explicitPackages) {
-        const atIdx = pkg.lastIndexOf('@');
-        if (atIdx > 0 && !pkg.startsWith('@')) {
-          specs[pkg.substring(0, atIdx)] = pkg.substring(atIdx + 1);
-        } else if (pkg.startsWith('@') && pkg.indexOf('@', 1) > 0) {
-          const idx = pkg.indexOf('@', 1);
-          specs[pkg.substring(0, idx)] = pkg.substring(idx + 1);
-        } else {
-          specs[pkg] = 'latest';
-        }
+        const parsed = parseExplicitPackageSpec(pkg);
+        specs[parsed.name] = parsed.range;
       }
       return this.applyW6Registry(specs);
     }
@@ -1312,15 +1305,7 @@ export class NpmInstaller {
 
       for (const spec of explicitPackages) {
         // Find the resolved package matching this spec
-        const atIdx = spec.lastIndexOf('@');
-        let name: string;
-        if (spec.startsWith('@') && spec.indexOf('@', 1) > 0) {
-          name = spec.substring(0, spec.indexOf('@', 1));
-        } else if (atIdx > 0 && !spec.startsWith('@')) {
-          name = spec.substring(0, atIdx);
-        } else {
-          name = spec;
-        }
+        const { name } = parseExplicitPackageSpec(spec);
 
         // W6: if a swap fired, the user typed `name` but `resolved` is
         // keyed by the swap target (e.g. user typed 'esbuild', resolved
@@ -2124,6 +2109,33 @@ function parentOf(path: string): string {
   return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
 }
 
+function parseExplicitPackageSpec(spec: string): { name: string; range: string } {
+  const aliasMarker = spec.indexOf('@npm:');
+  if (aliasMarker > 0) {
+    return {
+      name: spec.slice(0, aliasMarker),
+      range: 'npm:' + spec.slice(aliasMarker + '@npm:'.length),
+    };
+  }
+
+  const rangeAt = findPackageRangeSeparator(spec);
+  if (rangeAt >= 0) {
+    return {
+      name: spec.slice(0, rangeAt),
+      range: spec.slice(rangeAt + 1) || 'latest',
+    };
+  }
+  return { name: spec, range: 'latest' };
+}
+
+function findPackageRangeSeparator(spec: string): number {
+  if (!spec) return -1;
+  if (spec[0] !== '@') return spec.indexOf('@');
+  const slash = spec.indexOf('/');
+  if (slash < 0) return -1;
+  return spec.indexOf('@', slash + 1);
+}
+
 function safeJsonParse<T>(json: string, fallback: T): T {
   try { return JSON.parse(json); } catch { return fallback; }
 }
@@ -2163,4 +2175,3 @@ function mergeFacetCounters(
     pipelinedTarballRaceLosses: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceLosses || 0), 0),
   };
 }
-

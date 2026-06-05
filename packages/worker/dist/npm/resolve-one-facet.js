@@ -74,6 +74,33 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const messages = [];
     const events = [];
     const cacheWrites = [];
+    const parseRegistryRequest = (name, range) => {
+        const text = String(range || 'latest');
+        if (!text.startsWith('npm:')) {
+            return { installName: name, registryName: name, range: text, alias: false };
+        }
+        const target = text.slice(4);
+        const findSeparator = (specText) => {
+            if (!specText)
+                return -1;
+            if (specText[0] !== '@')
+                return specText.indexOf('@');
+            const slash = specText.indexOf('/');
+            if (slash < 0)
+                return -1;
+            return specText.indexOf('@', slash + 1);
+        };
+        const splitAt = findSeparator(target);
+        const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
+        const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
+        return {
+            installName: name,
+            registryName: registryName || name,
+            range: targetRange || 'latest',
+            alias: true,
+        };
+    };
+    const request = parseRegistryRequest(spec.name, spec.range);
     // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
     // (spliced from supervisor RPC return.events) and the L4 path
     // (post-network-fetch). Threaded through `out()` into the result.
@@ -98,7 +125,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         return out(null, 0, 'skipped');
     }
     // 2. Registry policy.
-    let effName = spec.name;
+    let effName = request.registryName;
     // @ts-ignore — preamble.
     const __swap = SHOULD_SWAP(spec.name);
     if (__swap) {
@@ -137,18 +164,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const entries = spec.cachedEntries || [];
         if (entries.length === 0)
             return null;
-        const cleanRange = (spec.range || '').replace(/^[~^>=<\s]+/, '');
+        const cleanRange = (request.range || '').replace(/^[~^>=<\s]+/, '');
         if (/^\d+\.\d+\.\d+$/.test(cleanRange)) {
-            const exact = entries.find((e) => e.name === effName && e.version === cleanRange);
+            const exact = entries.find((e) => e.name === request.installName && e.version === cleanRange);
             if (exact)
                 return exact;
         }
-        const candidates = entries.filter((e) => e.name === effName);
+        const candidates = entries.filter((e) => e.name === request.installName);
         if (candidates.length === 0)
             return null;
         const versions = candidates.map((e) => e.version);
         // @ts-ignore — preamble.
-        const picked = RESOLVE_VERSION(versions, spec.range);
+        const picked = RESOLVE_VERSION(versions, request.range);
         if (!picked)
             return null;
         return candidates.find((e) => e.version === picked) || null;
@@ -320,26 +347,27 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
     // 6. Pick version.
     let version = null;
-    if (spec.range && data.versions[spec.range])
-        version = spec.range;
-    if (!version && spec.range && spec.range !== 'latest') {
+    if (request.range && data.versions[request.range])
+        version = request.range;
+    if (!version && request.range && request.range !== 'latest') {
         const allVersions = Object.keys(data.versions);
         // @ts-ignore — preamble.
-        version = RESOLVE_VERSION(allVersions, spec.range);
+        version = RESOLVE_VERSION(allVersions, request.range);
     }
     if (!version) {
-        version = data['dist-tags']?.[spec.range] || data['dist-tags']?.latest || null;
+        version = data['dist-tags']?.[request.range] || data['dist-tags']?.latest || null;
     }
     if (!version || !data.versions[version]) {
-        messages.push(`[resolve-one] ${effName}: no version satisfies ${spec.range}`);
+        messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
         return out(null, bytes, packumentSource);
     }
     // 7. Materialise ResolvedPackage.
     const vData = data.versions[version];
     const versionToResolved = (v) => {
+        const packageName = request.installName || v.name;
         const binField = v.bin || {};
         const bin = typeof binField === 'string'
-            ? { [String(v.name).split('/').pop()]: binField }
+            ? { [String(packageName).split('/').pop()]: binField }
             : binField;
         let peerDependencies;
         let allPeers;
@@ -365,7 +393,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             ? Object.fromEntries(Object.entries(v.optionalDependencies).filter(([, r]) => typeof r === 'string'))
             : undefined;
         const resolvedOut = {
-            name: v.name,
+            name: packageName,
             version: v.version,
             tarballUrl: v.dist?.tarball || '',
             integrity: v.dist?.integrity || v.dist?.shasum || '',

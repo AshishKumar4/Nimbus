@@ -9,7 +9,7 @@
 // whose link path is in this dir; long format prints `lrwxrwxrwx ...
 // link -> target`.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r6/new/ls-l-symlink-shows-arrow');

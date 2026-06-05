@@ -5,7 +5,7 @@
 // the toolbar buttons, the search input, and the WS handler hookup
 // must all be present in the served page.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-renders');

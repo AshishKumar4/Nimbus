@@ -2,7 +2,7 @@
 // file-tree/panel/regression/ctrl-s-still-works — editor Ctrl+S save.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep } from '../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/ctrl-s-still-works');

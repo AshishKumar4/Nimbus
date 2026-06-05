@@ -172,12 +172,18 @@ function _pathLookup(
   return null;
 }
 
-async function _registryResolved(registry: any, name: string): Promise<CmdFn | null> {
+async function _registryResolved(
+  registry: any,
+  name: string,
+  options: { includeInstallHints?: boolean } = {},
+): Promise<CmdFn | null> {
   try {
     const resolved = typeof registry.resolve === 'function'
       ? await registry.resolve(name)
       : null;
-    if (resolved && !isRuntimeInstallHintHandler(resolved)) return resolved;
+    if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
+      return resolved;
+    }
   } catch {
     // Registry misses are normal for unknown commands.
   }
@@ -197,7 +203,9 @@ async function _whichLookup(
   if (diskPath) return diskPath;
   const canonicalPath = _CANONICAL_BIN_PATHS[name];
   if (!canonicalPath) return null;
-  return await _registryResolved(registry, name) ? canonicalPath : null;
+  return await _registryResolved(registry, name, { includeInstallHints: true })
+    ? canonicalPath
+    : null;
 }
 
 function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {

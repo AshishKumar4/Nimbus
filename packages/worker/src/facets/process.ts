@@ -213,6 +213,7 @@ export const CHILD_PROCESS_MAX_DEPTH = 8;
  * signal (real Node would return false from .write).
  */
 const STDIN_QUEUE_MAX_BYTES = 256 * 1024; // 256 KiB
+const STDIN_ATTACH_WAIT_MS = 500;
 
 /**
  * How long the parent's cpReadOutput long-poll waits for new chunks
@@ -293,14 +294,17 @@ export class FacetProcessManager {
     const reg = this.deps.commandRegistry.resolve(req.command);
     const kind: CommandKind = reg ? reg.kind : 'unknown';
 
-    // Dispatch — fire-and-forget. The promise resolves when the command
-    // completes, at which point we stamp the exit slot.
-    void this._dispatch(child, kind, req).catch((e) => {
-      // Last-resort: if both runners somehow throw, exit 1 with the error
-      // on stderr.
-      this._appendOutput(child, 2, `Error: ${e?.message || String(e)}\n`);
-      this._stampExit(child, 1, null);
-    });
+    // Dispatch after the cpSpawn RPC has had a chance to return to the
+    // parent facet. That lets immediate child.stdin.write(); child.stdin.end()
+    // calls land in the stdin queue before a preseeded child runtime starts.
+    setTimeout(() => {
+      void this._dispatch(child, kind, req).catch((e) => {
+        // Last-resort: if both runners somehow throw, exit 1 with the error
+        // on stderr.
+        this._appendOutput(child, 2, `Error: ${e?.message || String(e)}\n`);
+        this._stampExit(child, 1, null);
+      });
+    }, 0);
 
     return { childPid: pid };
   }
@@ -325,17 +329,19 @@ export class FacetProcessManager {
     // pure-builtin / facet-direct correctness; only the dispatch
     // envelope moves to a fresh isolate).
     if (this.deps.spawnPool) {
-      // Pure-builtins consume stdin; drain before dispatch. facet-direct
-      // reads stdin lazily via cpReadStdin so we don't block on it here.
-      const stdin = kind === 'pure-builtin'
-        ? await this._drainStdinForBuiltin(child)
-        : '';
+      const liveStdin = kind === 'facet-direct';
+      // Pure builtins consume stdin from the request payload. Facet-direct
+      // commands receive live stdin through NIMBUS_CP_CHILD_PID and
+      // supervisor cpReadStdin, which matches Node child_process pipes.
+      const stdin = liveStdin ? '' : await this._drainStdinForBuiltin(child);
       // Single-ownership: build a fresh request payload (not a reference
       // to the caller's req) at the boundary.
       const reqCopy = {
         command: String(req.command),
         args: Array.isArray(req.args) ? [...req.args] : [],
-        env: { ...child.env },
+        env: liveStdin
+          ? { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) }
+          : { ...child.env },
         cwd: String(req.cwd),
         stdio: req.stdio,
         detached: !!req.detached,
@@ -379,9 +385,9 @@ export class FacetProcessManager {
     const payload = JSON.stringify({
       command: req.command,
       args: req.args,
-      env: child.env,
+      env: { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) },
       cwd: req.cwd,
-      stdin: '',  // facet-direct reads stdin via cpReadStdin RPC at runtime
+      stdin: '',
     });
     // Register the facet-slot so kill() can find the abort handle.
     child.facetSlot = { abort: undefined, killed: false };
@@ -447,7 +453,7 @@ export class FacetProcessManager {
       args: req.args,
       env: childEnv,
       cwd: String(req.cwd || '/home/user'),
-      stdin: typeof (req as any).stdin === 'string' ? (req as any).stdin : '',
+      stdin: '',
     });
     try {
       const code = await this.deps.facetMgr.execStream(
@@ -470,10 +476,28 @@ export class FacetProcessManager {
    * on full stdin so we have to commit upfront — the parent should have
    * called stdinEnd() before the wait ticks expire.
    */
+  private async _waitForStdinEvent(child: ChildEntry, waitMs: number): Promise<void> {
+    if (child.stdinClosed) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        const idx = child.stdinWaiters.indexOf(wrapped);
+        if (idx >= 0) child.stdinWaiters.splice(idx, 1);
+        resolve();
+      }, Math.max(0, waitMs));
+      const wrapped = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      child.stdinWaiters.push(wrapped);
+    });
+  }
+
   private async _drainStdinForBuiltin(child: ChildEntry): Promise<string> {
-    const t0 = Date.now();
-    while (!child.stdinClosed && Date.now() - t0 < 50) {
-      await new Promise((r) => setTimeout(r, 5));
+    if (!child.stdinClosed && child.stdinChunks.length === 0) {
+      await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
+    }
+    if (!child.stdinClosed && child.stdinChunks.length > 0) {
+      await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
     }
     return child.stdinChunks.join('');
   }

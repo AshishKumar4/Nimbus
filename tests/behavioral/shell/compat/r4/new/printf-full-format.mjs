@@ -8,7 +8,7 @@
 // %o %c %b %q + flags - + 0 # space + width + .prec). Format string
 // re-runs if extra args remain (bash printf semantics).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r4/new/printf-full-format');

@@ -8,7 +8,7 @@
 // code path. Stdin + file + recursive all routed through the same
 // renderer.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r4/new/grep-flags');

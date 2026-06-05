@@ -9,7 +9,7 @@
 //   - The reqId echo (editor hotfix) works for both calls
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, makeAsserter, sleep } from '../../_driver.mjs';
+import { mintSession, WS_BASE, makeAsserter, sleep } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-folder-expands');

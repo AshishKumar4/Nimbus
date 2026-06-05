@@ -5,7 +5,7 @@
 // post-fix (they were the only chain forms that worked pre-fix). Probes
 // any-regression of the simple cases.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r6/new/chain-op-true-and');

@@ -10,7 +10,7 @@
 // the link resolve to the target's current content; deleting the target
 // causes reads through the link to fail (ENOENT-style).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/ln-s-real-symlink');

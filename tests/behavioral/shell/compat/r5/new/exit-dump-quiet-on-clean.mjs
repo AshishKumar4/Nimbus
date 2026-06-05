@@ -26,7 +26,7 @@
 // at all (processLogs isn't populated for them); this probe therefore
 // uses `node -e` to guarantee the tracked-process code path.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/exit-dump-quiet-on-clean');

@@ -340,7 +340,7 @@ class __ProcessExit extends Error {
 export class NodeProcess extends DurableObject {
   async run(argsJson) {
     const args = JSON.parse(argsJson);
-    const { argv, env, cwd: _cwd, filename, dirname } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __supervisor = this.env?.SUPERVISOR || null;
@@ -367,7 +367,7 @@ export class NodeProcess extends DurableObject {
 ${SHIMS}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
-    if (__supervisor) {
+    if (__supervisor && !captureOutput) {
       __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); };
       __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); };
       __consoleMod.warn = __consoleMod.error;
@@ -455,7 +455,7 @@ ${SHIMS}
         : (reason && reason.message ? String(reason.message) : String(reason));
       const line = label + ": " + text + "\\n";
       stderr += line;
-      if (__supervisor) {
+      if (__supervisor && !captureOutput) {
         try {
           __pendingIO.push(__supervisor.stderr(line).catch((e) =>
             __onRpcDrop(line.length, e)));
@@ -505,14 +505,24 @@ ${SHIMS}
         // Without this, the error is visible only in the local 'stderr'
         // string which gets zeroed below when __supervisor is attached,
         // leaving the user with an empty prompt after a crash.
-        if (__supervisor) {
+        if (__supervisor && !captureOutput) {
           try { __pendingIO.push(__supervisor.stderr(trace + "\\n").catch((e2) => __onRpcDrop((trace || "").length + 1, e2))); } catch {}
         }
       }
     }
 
-    // Drain microtasks
-    await new Promise(r => setTimeout(r, 0));
+    async function __drainPendingIO(maxPasses = 12) {
+      let __settledIO = 0;
+      for (let __pass = 0; __pass < maxPasses; __pass++) {
+        await new Promise(r => setTimeout(r, 0));
+        if (__pendingIO.length <= __settledIO) break;
+        const __slice = __pendingIO.slice(__settledIO);
+        __settledIO = __pendingIO.length;
+        await Promise.allSettled(__slice);
+      }
+    }
+
+    await __drainPendingIO();
 
     // Flush writes via SUPERVISOR RPC if available (live VFS writes)
     const __failedWrites = {};
@@ -523,22 +533,7 @@ ${SHIMS}
         );
       }
     }
-
-    // Await all pending I/O (live stdout, writes)
-    if (__pendingIO.length > 0) {
-      await Promise.allSettled(__pendingIO);
-    }
-
-    // Fix 6: a second drain pass. If any setTimeout-scheduled callback
-    // fired during the first allSettled and pushed more writes, they sit
-    // on __pendingIO past the first drain. Yield once more, then re-settle
-    // if new items arrived. Capped at one additional round so a run-away
-    // setInterval can't hold the facet open forever.
-    const __preSecondDrain = __pendingIO.length;
-    await new Promise(r => setTimeout(r, 0));
-    if (__pendingIO.length > __preSecondDrain) {
-      await Promise.allSettled(__pendingIO.slice(__preSecondDrain));
-    }
+    await __drainPendingIO();
 
     // W8 BLOCKER-1 fix: parent-exit synchronous flush of any live
     // child_process children. Without this, output from spawn-and-forget
@@ -579,8 +574,8 @@ ${SHIMS}
     // - Failed writes fall back to the old vfsWrites path for supervisor-side flush
     return JSON.stringify({
       exitCode,
-      stdout: __supervisor ? "" : stdout,
-      stderr: __supervisor ? "" : stderr,
+      stdout: (__supervisor && !captureOutput) ? "" : stdout,
+      stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
     });
   }
@@ -657,7 +652,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __supervisor = workerEnv?.SUPERVISOR || null;
@@ -681,7 +676,7 @@ export default {
 ${SHIMS}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
-    if (__supervisor) {
+    if (__supervisor && !captureOutput) {
       __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); };
       __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); };
       __consoleMod.warn = __consoleMod.error;
@@ -713,13 +708,24 @@ ${SHIMS}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (__supervisor) {
+        if (__supervisor && !captureOutput) {
           try { __pendingIO.push(__supervisor.stderr(trace + "\\n").catch((e2) => __onRpcDrop((trace || "").length + 1, e2))); } catch {}
         }
       }
     }
 
-    await new Promise(r => setTimeout(r, 0));
+    async function __drainPendingIO(maxPasses = 12) {
+      let __settledIO = 0;
+      for (let __pass = 0; __pass < maxPasses; __pass++) {
+        await new Promise(r => setTimeout(r, 0));
+        if (__pendingIO.length <= __settledIO) break;
+        const __slice = __pendingIO.slice(__settledIO);
+        __settledIO = __pendingIO.length;
+        await Promise.allSettled(__slice);
+      }
+    }
+
+    await __drainPendingIO();
 
     const __failedWrites = {};
     if (__supervisor && Object.keys(__vfsWrites).length > 0) {
@@ -727,15 +733,7 @@ ${SHIMS}
         __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
       }
     }
-    if (__pendingIO.length > 0) await Promise.allSettled(__pendingIO);
-
-    // Fix 6: second drain pass for any setTimeout-scheduled writes that
-    // landed after the first allSettled. Bounded to one additional round.
-    const __preSecondDrain = __pendingIO.length;
-    await new Promise(r => setTimeout(r, 0));
-    if (__pendingIO.length > __preSecondDrain) {
-      await Promise.allSettled(__pendingIO.slice(__preSecondDrain));
-    }
+    await __drainPendingIO();
 
     // W8 BLOCKER-1 fix: parent-exit synchronous flush of child_process
     // children. See generateFacetCode for the rationale.
@@ -760,8 +758,8 @@ ${SHIMS}
 
     return Response.json({
       exitCode,
-      stdout: __supervisor ? "" : stdout,
-      stderr: __supervisor ? "" : stderr,
+      stdout: (__supervisor && !captureOutput) ? "" : stdout,
+      stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
     });
   }
@@ -785,6 +783,7 @@ function generateLongRunningNodeCode(
     cwd?: string;
     filename?: string;
     dirname?: string;
+    stdin?: string;
   },
 ): string {
   const safeCode = JSON.stringify(userCode);
@@ -794,6 +793,7 @@ function generateLongRunningNodeCode(
     cwd: opts.cwd || '/home/user',
     filename: opts.filename || '<script>',
     dirname: opts.dirname || opts.cwd || '/home/user',
+    stdin: opts.stdin || '',
   });
   const safeBundle = _serializeBundleForFacet(vfsState.bundle);
   const safeManifest = JSON.stringify(vfsState.manifest);
@@ -856,7 +856,9 @@ async function __nimbusFlushRuntime() {
       rt.pendingIO.push(rt.supervisor.writeFile(path, content).catch(() => {}));
     }
   }
-  if (rt.pendingIO.length > rt.settledIO) {
+  for (let pass = 0; pass < 12; pass++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (rt.pendingIO.length <= rt.settledIO) break;
     const slice = rt.pendingIO.slice(rt.settledIO);
     rt.settledIO = rt.pendingIO.length;
     await Promise.allSettled(slice);
@@ -868,7 +870,7 @@ async function __nimbusEnsureStarted(workerEnv) {
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
-    const { argv, env, cwd: _cwd, filename, dirname } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __supervisor = workerEnv?.SUPERVISOR || null;
@@ -889,7 +891,7 @@ async function __nimbusEnsureStarted(workerEnv) {
 
 ${SHIMS}
 
-    if (__supervisor) {
+    if (__supervisor && !captureOutput) {
       __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); };
       __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); };
       __consoleMod.warn = __consoleMod.error;
@@ -917,7 +919,7 @@ ${SHIMS}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (__supervisor) {
+        if (__supervisor && !captureOutput) {
           try { __pendingIO.push(__supervisor.stderr(trace + "\\n").catch((e2) => __onRpcDrop((trace || "").length + 1, e2))); } catch {}
         }
       }
@@ -2290,6 +2292,7 @@ export class FacetManager {
       cwd?: string;
       filename?: string;
       dirname?: string;
+      stdin?: string;
       /**
        * G4 (runtime-pkg wave): caller-supplied display label for the
        * processTable entry. When set, takes precedence over the
@@ -2309,6 +2312,9 @@ export class FacetManager {
       skipSpawn?: boolean;
       /** G4: when skipSpawn is true, the PID the caller allocated. */
       callerPid?: number;
+      /** Return stdout/stderr in the result while keeping supervisor RPC
+       *  available for VFS and child_process operations. */
+      captureOutput?: boolean;
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -2503,7 +2509,7 @@ export class FacetManager {
 
   private async _execViaFacets(
     code: string,
-    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string },
+    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; captureOutput?: boolean },
     entry: ProcessEntry,
     vfsState: FacetVfsState,
   ): Promise<FacetExecResult> {
@@ -2550,6 +2556,8 @@ export class FacetManager {
       cwd: opts.cwd || '/home/user',
       filename: opts.filename || '<eval>',
       dirname: opts.dirname || '/home/user',
+      stdin: opts.stdin || '',
+      captureOutput: !!opts.captureOutput,
     });
 
     // Clean up the facet (free SQLite storage) regardless of outcome.
@@ -2572,7 +2580,7 @@ export class FacetManager {
 
   private async _execViaLoader(
     code: string,
-    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string },
+    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; captureOutput?: boolean },
     entry: ProcessEntry,
     vfsState: FacetVfsState,
   ): Promise<FacetExecResult> {
@@ -2599,6 +2607,8 @@ export class FacetManager {
       cwd: opts.cwd || '/home/user',
       filename: opts.filename || '<eval>',
       dirname: opts.dirname || '/home/user',
+      stdin: opts.stdin || '',
+      captureOutput: !!opts.captureOutput,
     });
 
     const response = await entrypoint.fetch(new Request('http://facet/run', {

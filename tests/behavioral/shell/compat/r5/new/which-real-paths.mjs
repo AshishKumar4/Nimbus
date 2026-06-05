@@ -6,7 +6,7 @@
 // Post-fix: POSIX path output for runtimes; exit 1 silently for
 // builtins (default); -a flag shows all forms.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/which-real-paths');

@@ -194,10 +194,12 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | `clang` — LLVM 8 → wasm32-wasi, modern wasi-libc sysroot default, multi-TU + user headers + `fopen` | ✅ |
 | Interactive REPLs — `python`, `ruby`, `node`, `bun` (see [REPL](#repl) for state semantics) | ✅ |
 | `npm install` against the live registry, with cross-session L2 cache | ✅ |
+| npm alias dependencies such as `alias: "npm:<pkg>@<version>"` | ✅ |
 | `git clone` over HTTPS (small repos + 1 600-file repos in 12–17 s) | ✅ |
 | Vite SPA dev server — full HMR to the preview iframe | ✅ |
 | `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
 | Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools | ✅ |
+| JS agent CLI primitives — env/home, npm/npx, `child_process.spawn`/`exec`/`execFile`, piped stdio, streams, logs | ✅ |
 | `npx <pkg>` — first-class shebang + auto-install fallback | ✅ |
 | `node_modules/.bin/*` resolves and executes | ✅ |
 | Binary file round-trip via `fs.writeFileSync` / `readFileSync` | ✅ |
@@ -211,7 +213,7 @@ Nimbus is under active development. Current framework support is:
 
 - **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers, Workers with Static Assets, npm + git workflows, Python and Ruby scripts, clang C compilation (single-file and multi-file).
 - **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use the Vite path. Nuxt has Vite/Nitro caveats.
-- **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, and raw TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
+- **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, and raw TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
 
 ## REPL
 

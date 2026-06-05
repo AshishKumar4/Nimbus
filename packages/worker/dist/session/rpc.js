@@ -610,6 +610,10 @@ export async function _rpcCpStdinEnd(self, childPid) {
     const fpm = self._ensureFacetProcessManager();
     fpm.stdinEnd(childPid);
 }
+export async function _rpcCpReadStdin(self, childPid, waitMs) {
+    const fpm = self._ensureFacetProcessManager();
+    return fpm.cpReadStdin(childPid, waitMs);
+}
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.readOutput(childPid, fd, sinceSeq, waitMs);

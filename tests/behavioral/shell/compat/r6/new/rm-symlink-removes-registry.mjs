@@ -9,7 +9,7 @@
 // Post-fix: mkRm checks SymlinkRegistry FIRST; if symlink, deletes
 // the registry entry, leaving the target file alone.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r6/new/rm-symlink-removes-registry');

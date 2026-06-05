@@ -8,7 +8,7 @@
 // `prefix{a,b,c}suffix` into space-separated `prefixasuffix prefixbsuffix
 // prefixcsuffix` tokens BEFORE lifo-sh's parser sees the line.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/brace-expansion');

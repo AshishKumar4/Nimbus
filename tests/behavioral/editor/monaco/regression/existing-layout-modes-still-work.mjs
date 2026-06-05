@@ -4,7 +4,7 @@
 // remain toggleable. editor added two new modes; this asserts the
 // original three are still wired.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/regression/existing-layout-modes-still-work');

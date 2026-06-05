@@ -33,8 +33,8 @@
 //   6. Snapshot G1 = hib.isolateGen.
 //   7. Assert G1 > G0.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../_driver.mjs';
-import { diagMemory } from '../../heap-correctness/_diag.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driver.mjs';
+import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-lifecycle/alarms/hibernation-eligible-after-idle');

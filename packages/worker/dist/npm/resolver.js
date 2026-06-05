@@ -169,26 +169,56 @@ export function resolveVersion(versions, range) {
     });
     return matching[0];
 }
+function parseRegistryRequest(name, range) {
+    const text = String(range || 'latest');
+    if (!text.startsWith('npm:')) {
+        return { installName: name, registryName: name, range: text, alias: false };
+    }
+    const target = text.slice(4);
+    const splitAt = findPackageRangeSeparator(target);
+    const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
+    const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
+    return {
+        installName: name,
+        registryName: registryName || name,
+        range: targetRange || 'latest',
+        alias: true,
+    };
+}
+function findPackageRangeSeparator(spec) {
+    if (!spec)
+        return -1;
+    if (spec[0] !== '@')
+        return spec.indexOf('@');
+    const slash = spec.indexOf('/');
+    if (slash < 0)
+        return -1;
+    return spec.indexOf('@', slash + 1);
+}
 // ── Package resolution ──────────────────────────────────────────────────
 /**
  * Resolve a single package from the registry.
  * Checks cache first, then fetches from npm.
  */
 export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
+    const request = parseRegistryRequest(name, versionRange);
+    const cacheName = request.installName;
+    const registryName = request.registryName;
+    const requestedRange = request.range;
     // 1. Check for exact version in registry cache
     try {
-        const cleanRange = versionRange.replace(/^[~^>=<\s]+/, '');
+        const cleanRange = requestedRange.replace(/^[~^>=<\s]+/, '');
         if (cleanRange.match(/^\d+\.\d+\.\d+$/)) {
-            const cached = cache.getRegistryEntry(name, cleanRange);
+            const cached = cache.getRegistryEntry(cacheName, cleanRange);
             if (cached) {
-                log?.(`  ${name}: found exact ${cleanRange} in cache`);
+                log?.(`  ${cacheName}: found exact ${cleanRange} in cache`);
                 return registryCacheToResolved(cached);
             }
         }
         // 2. Check if we have cached versions to resolve against
-        const cachedVersions = cache.getRegistryVersions(name);
+        const cachedVersions = cache.getRegistryVersions(cacheName);
         if (cachedVersions.length > 0) {
-            const isDistTag = !versionRange || versionRange === 'latest' || versionRange === '*' || versionRange === '';
+            const isDistTag = !requestedRange || requestedRange === 'latest' || requestedRange === '*' || requestedRange === '';
             if (isDistTag) {
                 // "latest", "*", "" → pick the highest cached version (sort descending)
                 const sorted = cachedVersions
@@ -196,25 +226,25 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
                     .filter(x => x.parsed !== null)
                     .sort((a, b) => compareSemver(b.parsed, a.parsed));
                 if (sorted.length > 0) {
-                    log?.(`  ${name}: resolved ${versionRange || '(empty)'} → ${sorted[0].entry.version} (highest cached)`);
+                    log?.(`  ${cacheName}: resolved ${requestedRange || '(empty)'} → ${sorted[0].entry.version} (highest cached)`);
                     return registryCacheToResolved(sorted[0].entry);
                 }
             }
             else {
                 // Semver range: try to match against cached versions
                 const versions = cachedVersions.map(e => e.version);
-                const resolved = resolveVersion(versions, versionRange);
+                const resolved = resolveVersion(versions, requestedRange);
                 if (resolved) {
                     const entry = cachedVersions.find(e => e.version === resolved);
                     if (entry) {
-                        log?.(`  ${name}: resolved ${versionRange} → ${resolved} from cache`);
+                        log?.(`  ${cacheName}: resolved ${requestedRange} → ${resolved} from cache`);
                         return registryCacheToResolved(entry);
                     }
                 }
                 // Cached versions exist but none match — only skip fetch if cache is fresh
                 const newest = Math.max(...cachedVersions.map(e => e.fetchedAt));
                 if (Date.now() - newest < 3600_000) {
-                    log?.(`  ${name}: ${cachedVersions.length} cached versions, none match ${versionRange}, cache fresh`);
+                    log?.(`  ${cacheName}: ${cachedVersions.length} cached versions, none match ${requestedRange}, cache fresh`);
                     return null;
                 }
             }
@@ -222,18 +252,20 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
     }
     catch (e) {
         // Cache read failed (schema issue, corrupt data, etc.) — fall through to network
-        log?.(`  ${name}: cache read error: ${e?.message}`);
+        log?.(`  ${cacheName}: cache read error: ${e?.message}`);
     }
     // 3. Fetch from registry
-    log?.(`  ${name}: fetching from registry (${fetchFn ? 'proxy' : 'direct'})...`);
+    log?.(request.alias
+        ? `  ${cacheName}: fetching ${registryName} from registry (${fetchFn ? 'proxy' : 'direct'})...`
+        : `  ${registryName}: fetching from registry (${fetchFn ? 'proxy' : 'direct'})...`);
     setResolverPhase('fetching');
-    packumentFetchStart(name);
+    packumentFetchStart(registryName);
     let data;
     let bytesDecoded = 0;
     try {
-        const safeName = name.startsWith('@')
-            ? '@' + encodeURIComponent(name.slice(1))
-            : encodeURIComponent(name);
+        const safeName = registryName.startsWith('@')
+            ? '@' + encodeURIComponent(registryName.slice(1))
+            : encodeURIComponent(registryName);
         const url = `${NPM_REGISTRY}/${safeName}`;
         // retryableFetch: 3 retries on 5xx/network errors with jittered
         // exponential backoff. Per-attempt timeout = the prior single-attempt
@@ -244,14 +276,14 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
             headers: { 'Accept': 'application/json' },
         }, {
             retries: DEFAULT_RETRIES,
-            name,
+            name: registryName,
             fetchImpl: fetchFn,
             perAttemptTimeoutMs: FETCH_TIMEOUT_MS,
             onRetry: (attempt, total, delayMs, reason) => {
-                log?.(`  ${name}: retry ${attempt}/${total} after ${delayMs}ms (${reason})`);
+                log?.(`  ${registryName}: retry ${attempt}/${total} after ${delayMs}ms (${reason})`);
             },
         });
-        log?.(`  ${name}: registry responded ${resp.status}`);
+        log?.(`  ${registryName}: registry responded ${resp.status}`);
         // Dispose the (potentially RPC-stub-backed) Response explicitly once
         // the body is consumed / dropped. When fetchFn is the supervisor fetch
         // proxy, `resp` is a cross-isolate stub returned from
@@ -303,7 +335,7 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
         }
     }
     catch (e) {
-        log?.(`  ${name}: fetch error: ${e?.message}`);
+        log?.(`  ${registryName}: fetch error: ${e?.message}`);
         // Balance counters even on the error path. responseStubDisposed
         // was either already called in the finally above (if we got past
         // retryableFetch) or not — the safe move is to always run
@@ -313,31 +345,33 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
     }
     packumentFetchEnd(bytesDecoded);
     if (!data.versions) {
-        log?.(`  ${name}: no versions field in packument`);
+        log?.(`  ${registryName}: no versions field in packument`);
         return null;
     }
     // Resolve version
     let version = null;
     // Try exact match
-    if (versionRange && data.versions[versionRange]) {
-        version = versionRange;
+    if (requestedRange && data.versions[requestedRange]) {
+        version = requestedRange;
     }
     // Try range resolution
-    if (!version && versionRange && versionRange !== 'latest') {
+    if (!version && requestedRange && requestedRange !== 'latest') {
         const allVersions = Object.keys(data.versions);
-        version = resolveVersion(allVersions, versionRange);
+        version = resolveVersion(allVersions, requestedRange);
     }
     // Try dist-tags
     if (!version) {
-        version = data['dist-tags']?.[versionRange] || data['dist-tags']?.latest || null;
+        version = data['dist-tags']?.[requestedRange] || data['dist-tags']?.latest || null;
     }
     if (!version || !data.versions[version]) {
-        log?.(`  ${name}: could not resolve version for range ${versionRange}`);
+        log?.(`  ${registryName}: could not resolve version for range ${requestedRange}`);
         return null;
     }
-    log?.(`  ${name}: resolved → ${version}`);
+    log?.(request.alias
+        ? `  ${cacheName}: resolved ${registryName}@${requestedRange} → ${version}`
+        : `  ${registryName}: resolved → ${version}`);
     const vData = data.versions[version];
-    const pkg = versionToResolved(vData);
+    const pkg = versionToResolved(vData, cacheName);
     setResolverPhase('caching');
     // Cache the resolved version (non-fatal — if caching fails, we still return the package)
     try {
@@ -360,10 +394,10 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
     }
     // Also cache other popular versions from the packument (non-fatal)
     try {
-        cachePopularVersions(data, cache, pkg.version);
+        cachePopularVersions(data, cache, pkg.version, cacheName);
     }
     catch (e) {
-        console.error(`[npm-resolve] popular version cache failed for ${name}:`, e?.message);
+        console.error(`[npm-resolve] popular version cache failed for ${registryName}:`, e?.message);
     }
     return pkg;
 }
@@ -372,7 +406,7 @@ export async function resolvePackage(name, versionRange, cache, fetchFn, log) {
  * Avoids re-fetching the full packument for transitive deps that reference
  * the same package with a different range.
  */
-function cachePopularVersions(data, cache, alreadyCached) {
+function cachePopularVersions(data, cache, alreadyCached, installName) {
     const versions = Object.keys(data.versions || {});
     // Cache the latest dist-tag version if different
     const latest = data['dist-tags']?.latest;
@@ -393,7 +427,7 @@ function cachePopularVersions(data, cache, alreadyCached) {
         if (!vData)
             continue;
         try {
-            const pkg = versionToResolved(vData);
+            const pkg = versionToResolved(vData, installName);
             cache.putRegistryEntry({
                 name: pkg.name,
                 version: pkg.version,
@@ -412,10 +446,11 @@ function cachePopularVersions(data, cache, alreadyCached) {
     }
 }
 /** Convert npm registry version data to ResolvedPackage. */
-function versionToResolved(vData) {
+function versionToResolved(vData, installName) {
+    const packageName = installName || vData.name;
     const binField = vData.bin || {};
     const bin = typeof binField === 'string'
-        ? { [vData.name.split('/').pop()]: binField }
+        ? { [packageName.split('/').pop()]: binField }
         : binField;
     // X.5-F R2.5: keep the full peer set (including optionals) on a
     // hidden field so the BFS walk can include optional peers when
@@ -431,7 +466,7 @@ function versionToResolved(vData) {
             .filter(([, r]) => typeof r === 'string'))
         : undefined;
     const out = {
-        name: vData.name,
+        name: packageName,
         version: vData.version,
         tarballUrl: vData.dist?.tarball || '',
         integrity: vData.dist?.integrity || vData.dist?.shasum || '',

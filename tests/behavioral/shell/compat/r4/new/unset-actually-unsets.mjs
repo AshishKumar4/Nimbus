@@ -9,7 +9,7 @@
 // Post-fix: override shell.builtins.set('unset', ...) in init.ts to
 // delete from shell.env directly.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r4/new/unset-actually-unsets');

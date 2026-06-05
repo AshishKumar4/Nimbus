@@ -4,7 +4,7 @@
 // after editor's additions (fs-read/fs-write/fs-list).
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, makeAsserter, sleep } from '../../_driver.mjs';
+import { mintSession, WS_BASE, makeAsserter, sleep } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/regression/ws-protocol-existing-still-works');

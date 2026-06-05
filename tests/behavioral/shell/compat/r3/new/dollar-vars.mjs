@@ -9,7 +9,7 @@
 // $0 → 'nimbus-sh' before lifo-sh sees the line. Quote-aware:
 // single-quoted strings preserved.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/dollar-vars');

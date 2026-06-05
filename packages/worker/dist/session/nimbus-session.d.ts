@@ -263,6 +263,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         ok: boolean;
     }>;
     _rpcCpStdinEnd(childPid: number): Promise<void>;
+    _rpcCpReadStdin(childPid: number, waitMs: number): Promise<any>;
     _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<any>;
     _rpcCpDrainOutput(childPid: number): Promise<any>;
     _rpcCpKill(childPid: number, signal: string): Promise<boolean>;

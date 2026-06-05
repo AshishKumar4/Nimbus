@@ -19,7 +19,7 @@
 // (regex on the served HTML's inline JS) rather than via a real
 // browser. A future puppeteer probe could exercise them at runtime.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/monaco-vscode-features');

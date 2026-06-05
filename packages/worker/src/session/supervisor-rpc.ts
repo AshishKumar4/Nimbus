@@ -474,6 +474,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._getStub()._rpcCpStdinEnd(childPid);
   }
 
+  async cpReadStdin(childPid: number, waitMs: number): Promise<{ data: string; ended: boolean }> {
+    return this._getStub()._rpcCpReadStdin(childPid, waitMs);
+  }
+
   async cpReadOutput(
     childPid: number,
     fd: 1 | 2,
@@ -509,5 +513,4 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._getStub()._rpcCpDispatchInline(req, kind);
   }
 }
-
 

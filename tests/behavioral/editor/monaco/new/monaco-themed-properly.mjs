@@ -5,7 +5,7 @@
 // HTML-shape probe — verifies the CSS + inline JS ship the proper
 // theming (the user said "current is useless — make it nice").
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/monaco-themed-properly');

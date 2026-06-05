@@ -11,7 +11,7 @@
 // changing the line-editor's printPrompt flow). Documented here.
 // Users have a reliable path via `cmd & wait`.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r6/new/concurrent-bg-output');

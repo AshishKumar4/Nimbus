@@ -635,6 +635,11 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<v
     fpm.stdinEnd(childPid);
 }
 
+export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number) {
+    const fpm = self._ensureFacetProcessManager();
+    return fpm.cpReadStdin(childPid, waitMs);
+}
+
 export async function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.readOutput(childPid, fd, sinceSeq, waitMs);

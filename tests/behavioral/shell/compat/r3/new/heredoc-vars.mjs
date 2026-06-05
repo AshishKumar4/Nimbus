@@ -9,7 +9,7 @@
 // (from features.ts) on accumulated content when delimiter is not
 // quoted. ${NAME} and $NAME forms supported.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/heredoc-vars');

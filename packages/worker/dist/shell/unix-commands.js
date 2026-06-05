@@ -150,13 +150,14 @@ function _pathLookup(vfs, name, envPath) {
     }
     return null;
 }
-async function _registryResolved(registry, name) {
+async function _registryResolved(registry, name, options = {}) {
     try {
         const resolved = typeof registry.resolve === 'function'
             ? await registry.resolve(name)
             : null;
-        if (resolved && !isRuntimeInstallHintHandler(resolved))
+        if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
             return resolved;
+        }
     }
     catch {
         // Registry misses are normal for unknown commands.
@@ -173,7 +174,9 @@ async function _whichLookup(vfs, registry, name, envPath) {
     const canonicalPath = _CANONICAL_BIN_PATHS[name];
     if (!canonicalPath)
         return null;
-    return await _registryResolved(registry, name) ? canonicalPath : null;
+    return await _registryResolved(registry, name, { includeInstallHints: true })
+        ? canonicalPath
+        : null;
 }
 function mkWhich(vfs, registry) {
     return async (ctx) => {

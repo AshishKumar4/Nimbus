@@ -8,7 +8,7 @@
 // Post-fix: BacktickNormalizer in features.ts rewrites `cmd` →
 // $(cmd) before lifo-sh's parser sees the line. Quote-aware.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r4/new/backtick-substitution');

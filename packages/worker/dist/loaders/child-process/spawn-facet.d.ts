@@ -24,8 +24,6 @@ export interface SpawnInIsolateSpec {
 }
 export interface SpawnInIsolateResult {
     exitCode: number;
-    /** Per-isolate token line used by diagnostics that verify isolate routing. */
-    marker: string;
     stdout: string;
     stderr: string;
 }

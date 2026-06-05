@@ -49,6 +49,7 @@ export function buildRuntimeHandler(spec, ctx0) {
     return async function runtimeHandler(ctx) {
         const args = ctx.args || [];
         const name = spec.name;
+        const captureOutput = !!ctx.__nimbusCaptureOutput;
         // ── Subcommand dispatch ──
         //
         // BEFORE flag-span computation: subcommands like `bun install`
@@ -103,6 +104,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
                 command: `${name} -e ...`,
+                ...(captureOutput ? { captureOutput: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -160,6 +162,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename,
                 dirname,
                 command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+                ...(captureOutput ? { captureOutput: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -308,6 +311,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
             ...(binSpawn ? { skipSpawn: true, callerPid: binSpawn.callerPid } : {}),
+            ...(captureOutput ? { captureOutput: true } : {}),
         });
         if (result.stdout)
             ctx.stdout.write(result.stdout);

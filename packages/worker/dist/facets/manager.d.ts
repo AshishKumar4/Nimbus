@@ -218,6 +218,7 @@ export declare class FacetManager {
         cwd?: string;
         filename?: string;
         dirname?: string;
+        stdin?: string;
         /**
          * G4 (runtime-pkg wave): caller-supplied display label for the
          * processTable entry. When set, takes precedence over the
@@ -237,6 +238,9 @@ export declare class FacetManager {
         skipSpawn?: boolean;
         /** G4: when skipSpawn is true, the PID the caller allocated. */
         callerPid?: number;
+        /** Return stdout/stderr in the result while keeping supervisor RPC
+         *  available for VFS and child_process operations. */
+        captureOutput?: boolean;
     }): Promise<FacetExecResult>;
     /**
      * W5 Lever 5: push a DiagFailure into the OOM ring for every facet

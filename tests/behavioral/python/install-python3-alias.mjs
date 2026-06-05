@@ -27,8 +27,8 @@ await t.waitForPrompt(60_000);
 {
   const { output } = await t.run('which python3', 30_000);
   const stripped = stripAnsi(output);
-  a.check('which python3 does not report hinted runtime as installed',
-    /which: no python3/.test(stripped) && !/shell built-in/.test(stripped),
+  a.check('which python3 reports the installable runtime hint path',
+    /\/usr\/bin\/python3/.test(stripped) && !/which: no python3/.test(stripped),
     JSON.stringify(stripped.slice(-300)));
 }
 

@@ -123,6 +123,17 @@ Capabilities are reported honestly. For example, Python is reported when it is
 installed or installable by policy, and native binary support is reported as
 WASI/WebAssembly execution rather than Linux ELF execution.
 
+## Agentic CLI Compatibility
+
+Nimbus supports the primitives needed by JavaScript and WASM-based agent tools:
+persistent home/config files, npm/npx installs, npm alias dependencies,
+`child_process.spawn`, `exec`, `execFile`, piped stdin/stdout/stderr, process
+streams, logs, outbound HTTPS, and preview ports for HTTP-like agent servers.
+
+Tools that ship only native platform shards such as `linux-x64`, `darwin`, or
+`win32` binaries need a WASM build, pure-JS entrypoint, or Nimbus adapter.
+Nimbus does not execute Linux ELF binaries.
+
 ## Verification
 
 Useful checks:
@@ -133,4 +144,6 @@ bun tests/behavioral/sdk/new/remote-sdk-client.mjs
 bun tests/behavioral/sdk/new/remote-sdk-handler.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-smoke.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-remote-smoke.mjs
+BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs
+BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/runtime-primitives/npm-alias-dependency.mjs
 ```

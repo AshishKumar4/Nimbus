@@ -487,6 +487,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
     async _rpcCpStdinWrite(childPid, data) { return _rpc._rpcCpStdinWrite(this, childPid, data); }
     async _rpcCpStdinEnd(childPid) { return _rpc._rpcCpStdinEnd(this, childPid); }
+    async _rpcCpReadStdin(childPid, waitMs) { return _rpc._rpcCpReadStdin(this, childPid, waitMs); }
     async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs); }
     async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
     async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }
@@ -724,6 +725,7 @@ export class NimbusSession extends CloudflareDurableObject {
                         read: async () => null,
                         readAll: async () => payload.stdin || '',
                     },
+                    __nimbusCaptureOutput: true,
                 };
                 try {
                     const code = await cmd(ctx);
@@ -782,6 +784,7 @@ export class NimbusSession extends CloudflareDurableObject {
                     stderr: { write: (d) => hooks.onStderr(String(d)) },
                     signal: ac.signal,
                     stdin: { read: async () => null, readAll: async () => stdin },
+                    __nimbusCaptureOutput: true,
                 };
                 try {
                     const code = await cmd(ctx);

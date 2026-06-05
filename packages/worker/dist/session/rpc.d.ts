@@ -214,6 +214,7 @@ export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: 
     ok: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
+export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number): Promise<any>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;

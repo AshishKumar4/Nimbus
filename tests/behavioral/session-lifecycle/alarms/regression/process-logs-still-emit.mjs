@@ -11,7 +11,7 @@
 // would notice the absence of expected stderr output or the exit-
 // dump line that normally trails a non-zero exit.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, BASE } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-lifecycle/alarms/process-logs-still-emit');

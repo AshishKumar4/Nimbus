@@ -6,7 +6,7 @@
 // We assert the JS source contains all 5 mode handlers AND the CSS
 // has the corresponding class rules.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/layout-modes-toggle');

@@ -407,6 +407,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async cpStdinEnd(childPid) {
         return this._getStub()._rpcCpStdinEnd(childPid);
     }
+    async cpReadStdin(childPid, waitMs) {
+        return this._getStub()._rpcCpReadStdin(childPid, waitMs);
+    }
     async cpReadOutput(childPid, fd, sinceSeq, waitMs) {
         return this._getStub()._rpcCpReadOutput(childPid, fd, sinceSeq, waitMs);
     }

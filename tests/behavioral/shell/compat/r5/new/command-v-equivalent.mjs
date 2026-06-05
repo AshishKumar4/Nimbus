@@ -3,7 +3,7 @@
 // POSIX `command -v X` is the portable alternative to `which X`.
 // Many install scripts use it: `command -v node >/dev/null || install_node`
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/command-v-equivalent');

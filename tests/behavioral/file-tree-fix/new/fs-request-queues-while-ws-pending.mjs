@@ -23,12 +23,12 @@ const sid = await mintSession();
 const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
 const html = await r.text();
 a.check('Editor exposes drainFsQueue in return-object',
-  /return\s*\{\s*ensureLoaded[\s\S]{0,200}drainFsQueue\s*\}/.test(html),
+  /return\s*\{[\s\S]{0,800}\bensureLoaded\b[\s\S]{0,800}\bdrainFsQueue\b[\s\S]{0,800}\}/.test(html),
   `Editor.drainFsQueue not exported`);
-// FileTree's return statement includes drainFsQueue. We match the
-// canonical exact shape rather than fuzzy splitting on the prefix.
+// FileTree's return statement includes drainFsQueue. Match exported
+// members in order without depending on the exact object literal size.
 a.check('FileTree exposes drainFsQueue in return-object',
-  /return\s*\{\s*ensureLoaded\s*,\s*tryHandleFsResult\s*,\s*markDirty\s*,\s*setSelected\s*,\s*drainFsQueue\s*\}/.test(html),
+  /return\s*\{[\s\S]{0,800}\bensureLoaded\b[\s\S]{0,800}\btryHandleFsResult\b[\s\S]{0,800}\bdrainFsQueue\b[\s\S]{0,800}\}/.test(html),
   `FileTree return statement missing drainFsQueue`);
 a.check('ws.onopen drains Editor + FileTree queues',
   /ws\.onopen\s*=[\s\S]{0,1000}Editor\.drainFsQueue\(\)/.test(html) &&

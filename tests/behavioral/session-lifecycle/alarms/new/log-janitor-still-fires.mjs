@@ -20,8 +20,8 @@
 // dispatcher runs without throwing (DO still healthy, /api/_diag
 // still serves), AND the W9 flush still works (flushCount > 0).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../_driver.mjs';
-import { diagMemory } from '../../heap-correctness/_diag.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driver.mjs';
+import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-lifecycle/alarms/log-janitor-still-fires');

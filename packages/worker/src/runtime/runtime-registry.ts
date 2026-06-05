@@ -66,6 +66,9 @@ export interface RuntimeRunOpts {
    *  runtimes ignore them safely. */
   skipSpawn?: boolean;
   callerPid?: number;
+  /** Capture stdout/stderr in the result instead of streaming to the
+   *  terminal supervisor. Used by child_process pipe semantics. */
+  captureOutput?: boolean;
 }
 
 export interface RuntimeSpec {
@@ -147,6 +150,7 @@ export function buildRuntimeHandler(
   return async function runtimeHandler(ctx: any): Promise<number> {
     const args: string[] = ctx.args || [];
     const name = spec.name;
+    const captureOutput = !!(ctx as any).__nimbusCaptureOutput;
 
     // ── Subcommand dispatch ──
     //
@@ -205,6 +209,7 @@ export function buildRuntimeHandler(
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: `${name} -e ...`,
+        ...(captureOutput ? { captureOutput: true } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -264,6 +269,7 @@ export function buildRuntimeHandler(
         filename,
         dirname,
         command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+        ...(captureOutput ? { captureOutput: true } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -417,6 +423,7 @@ export function buildRuntimeHandler(
       command:
         binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
       ...(binSpawn ? { skipSpawn: true, callerPid: binSpawn.callerPid } : {}),
+      ...(captureOutput ? { captureOutput: true } : {}),
     });
     if (result.stdout) ctx.stdout.write(result.stdout);
     if (result.stderr) ctx.stderr.write(result.stderr);

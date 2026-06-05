@@ -15,7 +15,7 @@
 //   4. fs-* protocol references present.
 //   5. Ctrl+P keydown handler present.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/monaco-lazy-not-on-cold');

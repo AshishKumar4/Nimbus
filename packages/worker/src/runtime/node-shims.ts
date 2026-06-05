@@ -1515,7 +1515,7 @@ const __assertMod = Object.assign(
 );
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  querystring, string_decoder, child_process (stubs) ─────────────
+// ──  querystring, string_decoder, child_process ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __qsMod = {
   stringify: (o, sep, eq) => Object.entries(o || {}).map(([k,v]) => encodeURIComponent(k) + (eq||"=") + encodeURIComponent(String(v))).join(sep||"&"),
@@ -1619,26 +1619,39 @@ const __childProcessMod = (() => {
     }
     return String(chunk);
   }
+  function _queueStdinWrite(child, data) {
+    if (!child.pid) {
+      child._pendingStdin = child._pendingStdin || [];
+      child._pendingStdin.push(data);
+      return Promise.resolve();
+    }
+    if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
+    const prior = child._stdinChain || Promise.resolve();
+    const next = prior.then(() => __supervisor.cpStdinWrite(child.pid, data));
+    child._stdinChain = next.catch(() => {});
+    __pendingIO.push(next.catch(() => {}));
+    return next;
+  }
+  function _queueStdinEnd(child) {
+    child._pendingStdinEnd = true;
+    if (!child.pid) return Promise.resolve();
+    if (!HAS_SUPERVISOR) return Promise.resolve();
+    const prior = child._stdinChain || Promise.resolve();
+    const next = prior.then(() => __supervisor.cpStdinEnd(child.pid));
+    child._stdinChain = next.catch(() => {});
+    __pendingIO.push(next.catch(() => {}));
+    return next;
+  }
   function _makeWritable(child) {
     const w = new __streamMod.Writable({
       write(chunk, enc, cb) {
         const s = _toUtf8(chunk);
-        if (!child.pid) {
-          // Child not yet spawned — buffer until pid available.
-          child._pendingStdin = child._pendingStdin || [];
-          child._pendingStdin.push(s);
-          cb();
-          return;
-        }
-        if (!HAS_SUPERVISOR) { cb(new Error("ERR_CHILD_PROCESS_UNAVAILABLE")); return; }
-        Promise.resolve(__supervisor.cpStdinWrite(child.pid, s))
+        _queueStdinWrite(child, s)
           .then(() => cb())
           .catch((e) => cb(e));
       },
       final(cb) {
-        if (!child.pid) { cb(); return; }
-        if (!HAS_SUPERVISOR) { cb(); return; }
-        Promise.resolve(__supervisor.cpStdinEnd(child.pid))
+        _queueStdinEnd(child)
           .then(() => cb())
           .catch(() => cb()); // best-effort end
       },
@@ -1678,6 +1691,30 @@ const __childProcessMod = (() => {
     child._pendingKill = null;       // {signal} if kill called before pid
     child._exitFired = false;
     child._closeFired = false;
+    child._stdinChain = Promise.resolve();
+    child._pendingStdin = [];
+    child._pendingStdinEnd = false;
+    let _resolveClosePromise;
+    child._closePromise = new Promise((resolve) => { _resolveClosePromise = resolve; });
+    child._resolveClosePromise = _resolveClosePromise;
+    child._closeTracked = false;
+    const _trackCloseInterest = (event) => {
+      if ((event === "close" || event === "exit") && !child._closeTracked) {
+        child._closeTracked = true;
+        __pendingIO.push(child._closePromise.catch(() => {}));
+      }
+    };
+    const _childOn = child.on.bind(child);
+    const _childOnce = child.once.bind(child);
+    child.on = function(event, listener) {
+      _trackCloseInterest(event);
+      return _childOn(event, listener);
+    };
+    child.addListener = child.on;
+    child.once = function(event, listener) {
+      _trackCloseInterest(event);
+      return _childOnce(event, listener);
+    };
     // For non-piped fds, treat them as already-ended so 'close' can
     // fire after exit without waiting for end events that never come.
     child._stdoutEnded = stdio[1] !== "pipe";
@@ -1726,6 +1763,7 @@ const __childProcessMod = (() => {
     if (child._exitFired && child._stdoutEnded && child._stderrEnded && !child._closeFired) {
       child._closeFired = true;
       try { child.emit("close", child.exitCode, child.signalCode); } catch {}
+      try { child._resolveClosePromise({ code: child.exitCode, signal: child.signalCode }); } catch {}
       // Evict from the live-children map after a microtask so any
       // close listeners that re-read child state see consistent values.
       queueMicrotask(() => {
@@ -1848,12 +1886,17 @@ const __childProcessMod = (() => {
         __cpChildren.set(child.pid, child);
         try { child.emit("spawn"); } catch {}
 
-        // Flush any stdin written before pid was known.
+        // Flush any stdin written before pid was known, preserving
+        // write-before-end ordering for common child.stdin.write();
+        // child.stdin.end() patterns.
         if (child._pendingStdin && child._pendingStdin.length > 0) {
-          for (const d of child._pendingStdin) {
-            __pendingIO.push(__supervisor.cpStdinWrite(child.pid, d).catch(() => {}));
+          const pending = child._pendingStdin.splice(0);
+          for (const d of pending) {
+            await __supervisor.cpStdinWrite(child.pid, d).catch(() => {});
           }
-          child._pendingStdin = null;
+        }
+        if (child._pendingStdinEnd) {
+          await __supervisor.cpStdinEnd(child.pid).catch(() => {});
         }
 
         // Flush a queued kill if .kill() was called before pid landed.
@@ -1869,9 +1912,9 @@ const __childProcessMod = (() => {
         // is null and we skip the read-loop entirely.
         const stdoutSeq = { value: 0 };
         const stderrSeq = { value: 0 };
-        if (child.stdout) __pendingIO.push(_runReadLoop(child, 1, child.stdout, stdoutSeq));
-        if (child.stderr) __pendingIO.push(_runReadLoop(child, 2, child.stderr, stderrSeq));
-        __pendingIO.push(_runWaitLoop(child));
+        if (child.stdout) void _runReadLoop(child, 1, child.stdout, stdoutSeq);
+        if (child.stderr) void _runReadLoop(child, 2, child.stderr, stderrSeq);
+        void _runWaitLoop(child);
       } catch (e) {
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
@@ -2137,6 +2180,68 @@ const __consoleMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+function __makeProcessStdin() {
+  const r = new __streamMod.PassThrough();
+  let seeded = false;
+  let encoding = null;
+  r.isTTY = false;
+  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
+    ? Number(env.NIMBUS_CP_CHILD_PID)
+    : 0;
+  async function pumpLiveStdin() {
+    while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
+      const packet = await __supervisor.cpReadStdin(liveChildPid, 1000);
+      if (packet && packet.data) r.write(packet.data);
+      if (packet && packet.ended) {
+        r.end();
+        break;
+      }
+    }
+  }
+  const seed = () => {
+    if (seeded) return;
+    seeded = true;
+    if (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
+      __pendingIO.push(pumpLiveStdin().catch(() => {
+        try { r.end(); } catch {}
+      }));
+      return;
+    }
+    queueMicrotask(() => {
+      const data = typeof stdin === "string" ? stdin : "";
+      if (data.length > 0) r.write(data);
+      r.end();
+    });
+  };
+  const origOn = r.on.bind(r);
+  function wrapDataListener(listener) {
+    return (chunk) => {
+      let out = chunk;
+      if (encoding && chunk instanceof Uint8Array) {
+        try { out = new TextDecoder(encoding).decode(chunk); }
+        catch { out = chunk; }
+      }
+      return listener(out);
+    };
+  }
+  r.on = function(event, listener) {
+    seed();
+    if (event === "data" && typeof listener === "function") {
+      const wrapped = wrapDataListener(listener);
+      listener.__wrapped = wrapped;
+      const ret = origOn(event, wrapped);
+      try { r.resume(); } catch {}
+      return ret;
+    }
+    return origOn(event, listener);
+  };
+  r.addListener = r.on;
+  const origRead = r.read.bind(r);
+  r.read = function(size) { seed(); return origRead(size); };
+  return r;
+}
+
 const __processMod = {
   argv: ["node", ...(argv || [])],
   env: env || {},
@@ -2148,7 +2253,7 @@ const __processMod = {
   pid: 1, ppid: 0, title: "node",
   stdout: { write: (d) => { stdout += String(d); return true; }, isTTY: false },
   stderr: { write: (d) => { stderr += String(d); return true; }, isTTY: false },
-  stdin: { read: () => null, on: () => __processMod.stdin, isTTY: false },
+  stdin: __makeProcessStdin(),
   hrtime: Object.assign(
     (prev) => { const n = Date.now(); const s = Math.floor(n / 1000); const ns = (n % 1000) * 1e6; if (!prev) return [s, ns]; return [s - prev[0], ns - prev[1]]; },
     { bigint: () => BigInt(Date.now()) * 1000000n }

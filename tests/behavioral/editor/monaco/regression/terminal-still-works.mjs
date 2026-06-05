@@ -7,7 +7,7 @@
 // probe ensures the existing 'input' / 'resize' cases STILL work
 // (no regression of the shell input path).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/regression/terminal-still-works');

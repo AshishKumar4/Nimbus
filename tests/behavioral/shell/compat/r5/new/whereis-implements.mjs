@@ -3,7 +3,7 @@
 // Pre-fix: `whereis` → 'whereis: command not found'.
 // Post-fix: print 'NAME: PATH' for findable runtimes; 'NAME:' for missing.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/whereis-implements');

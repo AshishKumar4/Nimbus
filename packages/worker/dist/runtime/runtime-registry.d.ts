@@ -63,6 +63,9 @@ export interface RuntimeRunOpts {
      *  runtimes ignore them safely. */
     skipSpawn?: boolean;
     callerPid?: number;
+    /** Capture stdout/stderr in the result instead of streaming to the
+     *  terminal supervisor. Used by child_process pipe semantics. */
+    captureOutput?: boolean;
 }
 export interface RuntimeSpec {
     /** Shell-command name: 'node' / 'bun' / 'wasm-runner' / 'python'. */

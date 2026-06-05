@@ -7,7 +7,7 @@
 // (`printf '\\xff\\xfe\\xfd' > path`). Then fs-read.
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, Terminal, makeAsserter, sleep, stripAnsi } from '../../_driver.mjs';
+import { mintSession, WS_BASE, Terminal, makeAsserter, sleep, stripAnsi } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/fs-read-binary-refused');

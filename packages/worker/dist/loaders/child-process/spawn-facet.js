@@ -10,20 +10,12 @@
  * the task as `fn(item, env)`.
  */
 export const runSpawnInIsolate = async function runSpawnInIsolate(spec, env) {
-    // Mint or reuse the per-isolate token.
-    const g = globalThis;
-    if (typeof g.__nimbus_g3_token__ !== 'string') {
-        g.__nimbus_g3_token__ = Math.random().toString(36).slice(2, 10) +
-            Math.random().toString(36).slice(2, 6);
-    }
-    const marker = '[g3-spawn-isolate] tok=' + g.__nimbus_g3_token__ + '\n';
     if (!spec || !spec.req) {
-        return { exitCode: 1, marker, stdout: '', stderr: 'spawn-facet: missing spec.req\n' };
+        return { exitCode: 1, stdout: '', stderr: 'spawn-facet: missing spec.req\n' };
     }
     if (spec.kind === 'unknown') {
         return {
             exitCode: 127,
-            marker,
             stdout: '',
             stderr: spec.req.command + ': command not found\n',
         };
@@ -36,7 +28,6 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(spec, env) {
     if (!env || !env.SUPERVISOR || typeof env.SUPERVISOR.cpDispatchInline !== 'function') {
         return {
             exitCode: 1,
-            marker,
             stdout: '',
             stderr: 'spawn-facet: env.SUPERVISOR.cpDispatchInline missing\n',
         };
@@ -45,7 +36,6 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(spec, env) {
         const r = await env.SUPERVISOR.cpDispatchInline(spec.req, spec.kind);
         return {
             exitCode: typeof r.exitCode === 'number' ? r.exitCode : 1,
-            marker,
             stdout: typeof r.stdout === 'string' ? r.stdout : '',
             stderr: typeof r.stderr === 'string' ? r.stderr : '',
         };
@@ -53,7 +43,6 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(spec, env) {
     catch (e) {
         return {
             exitCode: 1,
-            marker,
             stdout: '',
             stderr: 'spawn-facet error: ' + (e && e.message ? e.message : String(e)) + '\n',
         };

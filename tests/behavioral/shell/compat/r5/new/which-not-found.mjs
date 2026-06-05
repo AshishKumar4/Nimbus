@@ -6,7 +6,7 @@
 // builtin. Pre-fix our `which` printed 'X: not found' to stderr but
 // always exited 0 (registered builtins absorbed all paths).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/which-not-found');

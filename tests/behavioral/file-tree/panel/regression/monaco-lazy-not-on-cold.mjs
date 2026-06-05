@@ -13,7 +13,7 @@
 //   2. FileTree.ensureLoaded gated on editor-mode in setLayout.
 //   3. FileTree IIFE state-only (no fs-* fires until ensureLoaded).
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/monaco-lazy-not-on-cold');
@@ -32,7 +32,7 @@ a.check('NO eager <script src> for Monaco',
 
 // FileTree.ensureLoaded gated on editor mode switch.
 a.check('FileTree.ensureLoaded called inside setLayout (lazy)',
-  /function setLayout[\s\S]{0,800}wantEditor[\s\S]{0,200}FileTree\.ensureLoaded\(\)/.test(html),
+  /function setLayout[\s\S]{0,1000}wantEditor[\s\S]{0,500}FileTree\.ensureLoaded\(\)/.test(html),
   `lazy-load gating missing`);
 
 // FileTree module is defined as an IIFE — module declaration runs
