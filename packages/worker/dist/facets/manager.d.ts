@@ -1,0 +1,313 @@
+/**
+ * facets/manager.ts — Lifecycle for "user node script as a child DO".
+ *
+ * `node script.js` from the shell prompt has to run somewhere isolated
+ * — same memory bound as the supervisor (128 MiB) but separate so a
+ * runaway script can't take the supervisor down. The script is also
+ * stateful: `fs.readFileSync` writes inside the script need to flow
+ * back to the VFS, and `http.createServer` registers a port the
+ * preview iframe later proxies to. That makes a stateless Worker
+ * Loader insufficient — we need a child DO with its own SQLite for
+ * port registration and exit reporting.
+ *
+ * The pattern:
+ *   1. LOADER.get(codeHash, makeConfig)            — dynamic worker w/ user script
+ *   2. worker.getDurableObjectClass('NodeProcess') — class from that worker
+ *   3. ctx.facets.get(`proc-${pid}`, {class})       — child DO Facet
+ *   4. facet.run(argsJson)                         — RPC executes the script
+ *   5. ctx.facets.delete(name)                     — cleanup, even on throw
+ *
+ * The codeHash includes `ctx.id.toString()` to scope the LOADER cache
+ * per-supervisor-DO. Without that, two sessions executing identical
+ * code would share an isolate, and the warm slot's baked-in
+ * env.SUPERVISOR stub would point at whichever DO instantiated it
+ * first — every other session's stdout would silently route to the
+ * wrong terminal. (Same cross-session-slot-sharing fix b225db3
+ * applied to install-time facets.)
+ *
+ * `_execViaLoader` is the local-dev fallback: when the runtime doesn't
+ * support `ctx.facets.get`, fall back to `LOADER.load()` +
+ * `getEntrypoint().fetch()` with a plain fetch-handler shape. The
+ * supervisor's environment is the same; only the lifecycle primitive
+ * differs.
+ */
+import { ProcessTable } from '../runtime/process-table.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { PortRegistry } from '../runtime/port-registry.js';
+import { EsbuildService } from '../runtime/esbuild-service.js';
+/** Result returned from a facet execution */
+export interface FacetExecResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    /**
+     * Files written by the script (path → content), to be flushed back to VFS.
+     *
+     * binary-fs wave: cells may be string | Uint8Array. After JSON.parse on
+     * the result envelope (NodeProcess.run returns JSON.stringify; the
+     * LOADER.load fallback uses Response.json) Uint8Array becomes a
+     * {"0":n,"1":n,...} object — _reviveVfsWriteCell reconstitutes the
+     * bytes.
+     */
+    vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
+}
+/**
+ * Greedy-oversample every installed package's main entry. The static
+ * prefetch via require-resolver covers the require() chain literally
+ * present in source; greedy oversampling adds a safety net for dynamic
+ * patterns the regex misses (jest/`bindings`/`import-local` style
+ * computed-path requires). Bounded to package.json + 1 main-entry file
+ * per package — sub-agent §Q3 quantified the worst-case cumulative
+ * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
+ */
+export declare function greedyAddMainEntries(vfs: SqliteVFS, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+    totalBytes: number;
+    fileCount: number;
+}): {
+    added: number;
+};
+/**
+ * X.5-Z3: scan every JS source already in `bundle` for static
+ * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
+ * the matched asset files (.css / .html / .htm / .svg / .txt / .json)
+ * into the bundle. The motivating case is jsdom's
+ * `lib/jsdom/living/css/helpers/computed-style.js:16-19`, which loads
+ * `default-stylesheet.css` at module-eval time:
+ *
+ *   const defaultStyleSheet = fs.readFileSync(
+ *     path.resolve(__dirname, "../../../browser/default-stylesheet.css"),
+ *     { encoding: "utf-8" },
+ *   );
+ *
+ * The fs shim's `readFileSync` (`src/node-shims.ts:202-215`) consults
+ * only `__vfsBundle` + `__vfsWrites`; runtime asset files that the
+ * require-graph walker doesn't reach (it's bounded to .js/.mjs/.cjs)
+ * are absent from the bundle and ENOENT at runtime. This helper closes
+ * that gap as a sibling of `greedyAddMainEntries` (W2.6a) +
+ * `transformEsmInBundle` (W3.5 Fix B).
+ *
+ * Pattern matched: literal-only, conservative.
+ *
+ *   fs.readFileSync(path.resolve(__dirname, "<rel>"), …)
+ *   readFileSync(path.resolve(__dirname, "<rel>"), …)
+ *
+ * `<rel>` is a string literal (single, double, OR backtick — provided
+ * the backtick form has no `${}` interpolation). Template-literal,
+ * variable, and concatenation forms are **deliberately skipped** —
+ * they're an unbounded class. Comment-stripped first to avoid
+ * matching the pattern inside `//` / `/* *​/`.
+ *
+ * Returns the count of asset files added (for diagnostics). Errors
+ * are swallowed: missing assets, unreadable VFS, and non-string
+ * readFile inputs are silent skips.
+ *
+ * Same budget shape as `greedyAddMainEntries` — shares the same
+ * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
+ * `budgetState` counter.
+ */
+export declare function addStaticReadFileAssets(vfs: SqliteVFS, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+    totalBytes: number;
+    fileCount: number;
+}): {
+    added: number;
+};
+/**
+ * X.5-U: scan every JS source already in `bundle` for static
+ * readFileSync of a `__dirname`-relative dotfile or "digest/hash/version/
+ * sha/md5"-shaped sentinel, AND match the SWC/TypeScript-compiled
+ * `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
+ * call shape that X.5-Z3's `addStaticReadFileAssets` regex misses.
+ *
+ * Motivating case: ts-jest@29.x's
+ * `package/dist/legacy/config/config-set.js:105`:
+ *
+ *   var fs_1 = require("fs");
+ *   var path_1 = require("path");
+ *   exports.MY_DIGEST = (0, fs_1.readFileSync)(
+ *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
+ *
+ * The install pipeline writes `.ts-jest-digest` to VFS correctly
+ * (manifest pass at buildManifest enumerates it). But the runtime
+ * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
+ * `__vfsBundle` only, and none of the existing bundle-population
+ * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
+ * (pkg main entries), `addStaticReadFileAssets` (X.5-Z3, restricted to
+ * `.css|html|svg|txt|json` and to direct `path.resolve(__dirname,…)`)
+ * — picks the dotfile up. Result: ENOENT at facet runtime even though
+ * `fs.readdirSync` and `fs.statSync` both see the file via the manifest.
+ *
+ * Bounded heuristic: filename must EITHER start with `.` (dotfile) OR
+ * match `/digest|hash|version|sha|md5/i` (small-metadata-sentinel
+ * pattern). Without this gate, an unconstrained "match any
+ * __dirname-relative readFileSync filename" would pull arbitrary large
+ * runtime-loaded files (compiled WASM, JSON dictionaries, …) on
+ * packages that read them via this exact shape — bundle bloat with no
+ * payoff. The heuristic narrows to the ts-jest class. Trade-off
+ * documented; future packages outside this shape can extend the
+ * predicate.
+ *
+ * Quote chars supported: `'`, `"`, and backticks WITHOUT `${}`
+ * interpolation. Dynamic specifiers (variable, concatenation,
+ * interpolation) are deliberately skipped.
+ *
+ * Same budget shape as `greedyAddMainEntries` /
+ * `addStaticReadFileAssets` — shares the same VFS_BUNDLE_MAX_FILES /
+ * VFS_BUNDLE_MAX_BYTES caps via `budgetState`. Returns the count of
+ * files added (for diagnostics).
+ *
+ * Errors are swallowed: missing assets, unreadable VFS, and
+ * non-string readFile inputs are silent skips — matches Z3 posture.
+ */
+export declare function addStaticReadFileDotfilesAndCompiled(vfs: SqliteVFS, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+    totalBytes: number;
+    fileCount: number;
+}): {
+    added: number;
+};
+/**
+ * Optional hooks wired in by NimbusSession. Kept as callbacks so
+ * FacetManager stays unaware of the session / log-store types.
+ */
+export interface FacetManagerHooks {
+    /**
+     * Fired when a process was terminated OUTSIDE the facet's own try/
+     * finally (timeout via abort, explicit kill, etc.) — the facet never
+     * runs its own `reportExit`, so the session side won't hear about the
+     * exit unless we call it here.
+     */
+    onExternalExit?: (pid: number, code: number, reason: string) => void;
+    /** Fired right after processTable.spawn — lets the session print a notification. */
+    onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
+}
+export declare class FacetManager {
+    private ctx;
+    private env;
+    private processTable;
+    private portRegistry;
+    private vfs;
+    /** Track whether facets API is available (detected on first use). */
+    private _hasFacets;
+    private _facetLogOnce;
+    private hooks;
+    /**
+     * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
+     * over the prefetch bundle. Created on first exec where vfs is set;
+     * shared across subsequent execs (warm wasm).  Optional setter
+     * `setEsbuildService` lets NimbusSession share its existing instance
+     * to avoid double-init.
+     */
+    private esbuild;
+    constructor(ctx: DurableObjectState, env: any, processTable: ProcessTable, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
+    setVfs(vfs: SqliteVFS): void;
+    /**
+     * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
+     * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
+     * for the user-shell `node` runtime; sharing avoids paying init twice.
+     */
+    setEsbuildService(esbuild: EsbuildService): void;
+    /**
+     * Execute JS code in a facet (or fallback dynamic worker).
+     *
+     * Strategy:
+     *   1. Try LOADER.get() + ctx.facets.get() (production: warm reuse, own SQLite)
+     *   2. Fallback: LOADER.load() + getEntrypoint().fetch() (local dev)
+     */
+    exec(code: string, opts: {
+        argv?: string[];
+        env?: Record<string, string>;
+        cwd?: string;
+        filename?: string;
+        dirname?: string;
+        /**
+         * G4 (runtime-pkg wave): caller-supplied display label for the
+         * processTable entry. When set, takes precedence over the
+         * default `node ${filename}`. Used by the .bin handler in
+         * init.ts so `tsc --version` shows up in `ps` as
+         * `tsc --version` (the user's typed line) rather than
+         * `node /home/user/proj/node_modules/typescript/bin/tsc`.
+         *
+         * Also: when `command` is provided AND `skipSpawn` is true,
+         * the caller has already done processTable.spawn (e.g. the
+         * .bin wrapper that needs to allocate a PID before parsing
+         * the shim). exec() reuses that PID instead of spawning a
+         * second one — the G4 double-spawn fix.
+         */
+        command?: string;
+        /** G4: caller already did processTable.spawn; don't double-spawn. */
+        skipSpawn?: boolean;
+        /** G4: when skipSpawn is true, the PID the caller allocated. */
+        callerPid?: number;
+    }): Promise<FacetExecResult>;
+    /**
+     * W5 Lever 5: push a DiagFailure into the OOM ring for every facet
+     * termination with a non-zero exit code. This is the supervisor side
+     * oom-stress probe asserts that every termination has a matching
+     * ring entry.
+     *
+     * Classification: parse the reason/stderr for SQLITE_NOMEM, OOM,
+     * clone-refused, rpc_timeout signatures (oom-classify.ts). Code 124
+     * always maps to rpc_timeout regardless of message.
+     */
+    private _w5RecordTermination;
+    private _execViaFacets;
+    private _execViaLoader;
+    /** Flush files written by the script back to the supervisor's VFS. */
+    private _flushVfsWrites;
+    /** Execution timeout. */
+    private _execWithTimeout;
+    /**
+     * Run npm install in a dedicated facet.
+     * All writes go through SUPERVISOR.writeFile (live VFS),
+     * progress streams via SUPERVISOR.stdout.
+     */
+    /**
+     * Spawn a vite dev server facet.
+     * Returns immediately with the facet stub for HTTP routing.
+     */
+    spawnVite(root: string, basePath?: string): {
+        pid: number;
+        facetStub: any;
+    };
+    /**
+     * Spawn a long-running Node process with the same shimmed require/fs/http
+     * environment used by foreground `node <script>` execution.
+     */
+    spawnNode(code: string, opts?: {
+        argv?: string[];
+        env?: Record<string, string>;
+        cwd?: string;
+        filename?: string;
+        dirname?: string;
+        command?: string;
+        port?: number;
+    }): Promise<{
+        pid: number;
+        facetStub: any;
+    }>;
+    /**
+     * Spawn a long-running facet process.
+     * Returns immediately with the process entry.
+     * The facet stays alive and can handle HTTP requests via its fetch() method.
+     * Used for: vite dev server, node HTTP servers, etc.
+     *
+     * @param workerCode The dynamic worker code (must export a default fetch handler)
+     * @param command Display name for process listing
+     * @returns Process entry with pid and facet stub
+     */
+    spawn(workerCode: string, command: string, cwd: string, opts?: {
+        port?: number;
+    }): {
+        pid: number;
+        facetStub: any;
+    };
+    /** Kill a running process by PID. */
+    kill(pid: number): boolean;
+    get stats(): {
+        total: number;
+        running: number;
+        exited: number;
+        killed: number;
+        nextPid: number;
+    };
+}
+//# sourceMappingURL=manager.d.ts.map

@@ -1,0 +1,1 @@
+{"version":3,"file":"cirrus-npm-cjs.generated.d.ts","sourceRoot":"","sources":["../src/cirrus-npm-cjs.generated.ts"],"names":[],"mappings":"AAAA;;;;;;;;;GASG;AAEH,MAAM,WAAW,kBAAkB;IACjC,UAAU,EAAE,MAAM,CAAC;IACnB,IAAI,EAAE,MAAM,CAAC;CACd;AAED,eAAO,MAAM,uBAAuB,EAAE,MAAM,CAAC,MAAM,EAAE,MAAM,CAI1D,CAAC;AAEF,eAAO,MAAM,sBAAsB,EAAE,MAAM,CAAC,MAAM,EAAE,kBAAkB,CAyBrE,CAAC"}

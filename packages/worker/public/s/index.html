@@ -1,0 +1,2348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nimbus — Cloud Dev Environment</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Header */
+    .header { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; min-height: 32px; }
+    .header h1 { font-size: 13px; font-weight: 600; color: #58a6ff; display: flex; gap: 8px; align-items: center; }
+    .header h1 span { color: #3fb950; font-weight: 400; font-family: ui-monospace, Menlo, monospace; font-size: 11px; cursor: pointer; padding: 1px 6px; border-radius: 3px; background: #161b22; border: 1px solid #30363d; transition: background 0.15s; }
+    .header h1 span:hover { background: #21262d; }
+    .header h1 span.copied { color: #3fb950; background: #0f2416; border-color: #238636; }
+    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #f85149; transition: background 0.3s; }
+    .status-dot.connected { background: #3fb950; }
+    .status-dot.connecting { background: #d29922; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Toolbar */
+    .toolbar { display: flex; align-items: center; gap: 2px; padding: 2px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .toolbar button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 3px 10px; font-size: 11px; cursor: pointer; border-radius: 4px; }
+    .toolbar button:hover { background: #30363d; }
+    .toolbar button.active { background: #388bfd26; border-color: #58a6ff; color: #58a6ff; }
+    .toolbar .sep { width: 1px; height: 16px; background: #30363d; margin: 0 4px; }
+    .toolbar .vite-status { font-size: 11px; color: #8b949e; margin-left: auto; }
+    .toolbar .vite-status.running { color: #3fb950; }
+    /* Process count button. Sits next to the layout-mode buttons. Hidden
+       (display:none) until at least one process has been seen in this
+       session so it doesn't clutter a brand-new session's toolbar. */
+    .toolbar #btnProcs { display: none; gap: 6px; align-items: center; font-family: ui-monospace, Menlo, monospace; }
+    .toolbar #btnProcs.visible { display: inline-flex; }
+    .toolbar #btnProcs.has-running { border-color: #3fb950; color: #3fb950; }
+    .toolbar #btnProcs.active { background: #388bfd26; border-color: #58a6ff; color: #58a6ff; }
+    .toolbar #btnProcs .procs-dot { width: 6px; height: 6px; border-radius: 50%; background: #6e7681; display: inline-block; }
+    .toolbar #btnProcs.has-running .procs-dot { background: #3fb950; box-shadow: 0 0 4px #3fb950; animation: pulse 1.6s ease-in-out infinite; }
+
+    /* Main panel */
+    .main { flex: 1; display: flex; overflow: hidden; }
+
+    /* Terminal panel */
+    .panel-terminal { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    #terminal-container { flex: 1; padding: 4px; overflow: hidden; min-height: 0; }
+
+    /* Process log tabs panel — lives below the xterm inside .panel-terminal.
+       Hidden entirely when no tabs are open so the xterm fills the full panel. */
+    .logs-panel { display: none; flex-direction: column; border-top: 1px solid #30363d; background: #0d1117; flex-shrink: 0; max-height: 45%; min-height: 120px; }
+    .logs-panel.active { display: flex; }
+    .logs-tabbar { display: flex; align-items: stretch; background: #161b22; border-bottom: 1px solid #30363d; overflow-x: auto; scrollbar-width: thin; flex-shrink: 0; }
+    .logs-tabbar::-webkit-scrollbar { height: 4px; }
+    .logs-tabbar::-webkit-scrollbar-thumb { background: #30363d; }
+    .logs-tab { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; font-size: 11px; color: #8b949e; border-right: 1px solid #30363d; cursor: pointer; white-space: nowrap; background: #161b22; font-family: ui-monospace, Menlo, monospace; user-select: none; max-width: 240px; flex-shrink: 0; }
+    .logs-tab:hover { background: #1c2128; color: #c9d1d9; }
+    .logs-tab.active { background: #0d1117; color: #58a6ff; box-shadow: inset 0 -2px 0 #58a6ff; }
+    .logs-tab.exited { color: #6e7681; }
+    .logs-tab.exited.failed { color: #ff7b72; }
+    .logs-tab.exited.active { color: #ff9e80; }
+    .logs-tab .logs-tab-label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+    .logs-tab .logs-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; flex-shrink: 0; box-shadow: 0 0 4px #3fb950; }
+    .logs-tab.exited .logs-tab-dot { background: #6e7681; box-shadow: none; }
+    .logs-tab.exited.failed .logs-tab-dot { background: #ff7b72; box-shadow: none; }
+     .logs-tab .logs-tab-close { color: #6e7681; font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 2px; margin-left: 2px; }
+     .logs-tab .logs-tab-close:hover { color: #f85149; background: #30363d; }
+     /* Primitives wave (P11): per-tab Kill / Restart controls. Kept
+        small + monochrome so they don't compete with the close X for
+        attention. Hover state mirrors the close-X red. */
+     .logs-tab .logs-tab-action { color: #6e7681; font-size: 11px; line-height: 1; padding: 0 4px; border-radius: 2px; margin-left: 2px; cursor: pointer; user-select: none; }
+     .logs-tab .logs-tab-action:hover { color: #c9d1d9; background: #30363d; }
+     .logs-tab .logs-tab-kill:hover { color: #f85149; }
+     .logs-tab.exited .logs-tab-action { display: none; }
+    .logs-panel-body { flex: 1; overflow: auto; background: #0d1117; position: relative; min-height: 0; }
+    .logs-view { display: none; white-space: pre; font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace; font-size: 12px; line-height: 1.5; color: #c9d1d9; padding: 8px 10px; word-break: break-all; min-height: 100%; }
+    .logs-view.active { display: block; }
+    .logs-view .stderr { color: #ff7b72; }
+    .logs-view .binary { color: #8b949e; font-style: italic; }
+    .logs-view .banner { display: block; color: #d29922; background: #221a00; border-left: 2px solid #d29922; padding: 4px 8px; margin: 6px 0; font-family: inherit; }
+    .logs-view .banner.ok { color: #3fb950; background: #0f2416; border-left-color: #3fb950; }
+    .logs-view .banner.failed { color: #ff7b72; background: #2d0d0c; border-left-color: #ff7b72; }
+
+    /* Resize handle */
+    .resize-handle { width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0; }
+    .resize-handle:hover { background: #58a6ff; }
+    /* Vertical resize handle for editor (top) ↔
+       terminal (bottom) inside the editor-stack column. Hidden outside
+       editor mode (rule under .main.editor below). */
+    .vresize-handle {
+      display: none; height: 4px; background: #30363d;
+      cursor: row-resize; flex-shrink: 0;
+    }
+    .vresize-handle:hover { background: #58a6ff; }
+
+    /* Preview panel */
+    .panel-preview { flex: 1; display: flex; flex-direction: column; background: #0d1117; overflow: hidden; min-width: 0; }
+    .panel-preview.hidden { display: none; }
+    .preview-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .preview-bar .url-bar { flex: 1; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; font-size: 11px; border-radius: 4px; font-family: monospace; }
+    .preview-bar button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; padding: 2px 4px; }
+    .preview-bar button:hover { color: #c9d1d9; }
+    #preview-frame { flex: 1; border: none; background: white; width: 100%; }
+
+    /* Footer */
+    .footer { padding: 3px 12px; background: #161b22; border-top: 1px solid #30363d; font-size: 11px; color: #8b949e; flex-shrink: 0; display: flex; justify-content: space-between; gap: 12px; }
+    .footer .stats { display: flex; gap: 10px; flex-wrap: wrap; }
+    .footer .stat-label { color: #484f58; }
+    .footer .stat-value { color: #c9d1d9; }
+    .footer .stat-value.good { color: #3fb950; }
+
+    /* Layout modes */
+    .main.terminal-only .panel-preview,
+    .main.terminal-only .panel-editor,
+    .main.terminal-only .resize-handle { display: none; }
+    .main.terminal-only .panel-terminal { flex: 1; }
+    .main.preview-only .panel-terminal,
+    .main.preview-only .panel-editor,
+    .main.preview-only .resize-handle { display: none; }
+    .main.preview-only .panel-preview { flex: 1; }
+
+    /* Editor layout mode:
+         FILE TREE | editor-stack (editor TOP + terminal BOTTOM) | PREVIEW
+
+       Editor + terminal live INSIDE .panel-left-stack. In 1D modes
+       (terminal-only / split / preview-only) the stack is
+       display:contents (layout-transparent — children flex directly
+       into .main). In editor mode the stack flips to flex column so
+       editor (top) + terminal (bottom) stack vertically. */
+
+    /* Editor panel — hidden by default; shown by mode-specific rules. */
+    .panel-editor {
+      flex: 1; display: none; flex-direction: column;
+      background: #1e1e1e;        /* VSCode dark editor background */
+      overflow: hidden; min-width: 0; min-height: 0;
+    }
+    .panel-editor.active { display: flex; }
+
+    /* Wrapper for the editor-stack column. display:contents in 1D
+       modes (transparent). flex column in editor mode. */
+    .panel-left-stack { display: contents; }
+
+    /* File-tree sidebar. Lives as a FIRST child of
+       .main; visible only in 'editor' mode. ~250px default width,
+       resizable via .tree-resize-handle. */
+    .panel-tree {
+      display: none; flex-direction: column;
+      width: 250px; min-width: 160px; max-width: 600px;
+      background: #181818;        /* slightly darker than editor bg */
+      border-right: 1px solid #30363d;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .tree-resize-handle {
+      display: none;
+      width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0;
+    }
+    .tree-resize-handle:hover { background: #58a6ff; }
+
+    .tree-toolbar {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 6px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      flex-shrink: 0;
+      min-height: 28px;
+    }
+    .tree-toolbar .tree-title {
+      flex: 1;
+      font-size: 11px; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.5px; font-family: ui-monospace, Menlo, monospace;
+      padding-left: 4px;
+    }
+    .tree-toolbar button {
+      background: transparent; border: 1px solid transparent;
+      color: #8b949e; padding: 2px 6px; font-size: 14px;
+      cursor: pointer; border-radius: 3px; line-height: 1;
+    }
+    .tree-toolbar button:hover { background: #30363d; color: #c9d1d9; }
+
+    .tree-search-wrap {
+      padding: 4px 6px; background: #161b22;
+      border-bottom: 1px solid #30363d; flex-shrink: 0;
+    }
+    .tree-search {
+      width: 100%;
+      background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 3px 6px; font-size: 11px; border-radius: 3px;
+      font-family: ui-monospace, Menlo, monospace; outline: none;
+    }
+    .tree-search:focus { border-color: #58a6ff; }
+
+    .tree-body {
+      flex: 1; overflow: auto; padding: 4px 0;
+      font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+      color: #c9d1d9;
+    }
+    .tree-body::-webkit-scrollbar { width: 8px; }
+    .tree-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    .tree-body::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+    /* Tree nodes — each row has its own indent calculated via padding-left.
+       Hover + selected states match VSCode dark. */
+    .tree-node {
+      display: flex; align-items: center; gap: 4px;
+      padding: 2px 8px 2px 4px;
+      cursor: pointer; user-select: none;
+      white-space: nowrap; overflow: hidden;
+      line-height: 20px;
+    }
+    .tree-node:hover { background: #21262d; }
+    .tree-node.selected { background: #1f6feb44; color: #58a6ff; }
+    .tree-node.hidden { display: none; }
+    .tree-node .tree-chevron {
+      width: 12px; flex-shrink: 0; color: #6e7681;
+      font-size: 9px; text-align: center;
+      transition: transform 0.15s;
+    }
+    .tree-node.dir > .tree-chevron { color: #c9d1d9; }
+    .tree-node.dir.expanded > .tree-chevron { transform: rotate(90deg); }
+    .tree-node.file > .tree-chevron { visibility: hidden; }
+    .tree-node .tree-icon { width: 14px; flex-shrink: 0; text-align: center; }
+    .tree-node .tree-label { overflow: hidden; text-overflow: ellipsis; }
+    .tree-node.dirty .tree-label::after { content: ' ●'; color: #d29922; }
+    .tree-children { /* unused; tree is flat with calculated indent */ }
+    .tree-empty {
+      padding: 16px 12px; color: #6e7681; font-style: italic;
+      font-size: 11px; text-align: center;
+    }
+
+    /* Editor layout: file tree | editor-stack | preview */
+    .main.editor .panel-tree { display: flex; }
+    .main.editor .tree-resize-handle { display: block; }
+    .main.editor .panel-left-stack {
+      display: flex; flex: 1; flex-direction: column;
+      min-width: 0; min-height: 0; overflow: hidden;
+    }
+    .main.editor .panel-editor {
+      display: flex; flex: 1 1 60%; min-height: 100px;
+    }
+    .main.editor .panel-terminal {
+      display: flex; flex: 0 0 40%; min-height: 80px;
+    }
+    .main.editor .vresize-handle { display: block; }
+    .main.editor .resize-handle { display: block; }
+    .main.editor .panel-preview { display: flex; flex: 1; min-width: 0; }
+
+    /* VSCode-like editor statusbar (bottom-of-editor bar with
+       line:col, language, encoding). */
+    .editor-statusbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 2px 12px;
+      background: #007acc;        /* VSCode blue */
+      color: #ffffff;
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      flex-shrink: 0;
+      min-height: 20px;
+    }
+    .editor-statusbar .sep { color: rgba(255,255,255,0.5); }
+    .editor-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; font-size: 11px; color: #8b949e; min-height: 24px; }
+    .editor-bar .editor-tab { padding: 2px 8px; background: #21262d; border: 1px solid #30363d; border-radius: 3px; color: #c9d1d9; font-family: ui-monospace, Menlo, monospace; font-size: 11px; display: flex; align-items: center; gap: 6px; }
+    .editor-bar .editor-tab.dirty::after { content: '●'; color: #d29922; font-size: 10px; }
+    .editor-bar .editor-tab-empty { color: #6e7681; font-style: italic; }
+    .editor-bar .editor-hint { margin-left: auto; color: #6e7681; font-family: ui-monospace, Menlo, monospace; }
+    #monaco-container { flex: 1; min-height: 0; min-width: 0; }
+    .editor-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #8b949e; font-family: ui-monospace, Menlo, monospace; font-size: 13px; padding: 24px; text-align: center; }
+    .editor-placeholder .key { background: #21262d; border: 1px solid #30363d; padding: 1px 6px; border-radius: 3px; color: #c9d1d9; font-size: 11px; }
+
+    /* Command palette (Ctrl+P) */
+    .palette-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 1000; display: none; align-items: flex-start; justify-content: center; padding-top: 80px; }
+    .palette-overlay.active { display: flex; }
+    .palette-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px; width: 520px; max-width: 90vw; max-height: 60vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+    .palette-input { background: #0d1117; border: none; border-bottom: 1px solid #30363d; color: #c9d1d9; padding: 10px 14px; font-size: 13px; outline: none; font-family: ui-monospace, Menlo, monospace; border-radius: 6px 6px 0 0; }
+    .palette-list { overflow-y: auto; max-height: 400px; }
+    .palette-item { padding: 6px 14px; color: #c9d1d9; font-family: ui-monospace, Menlo, monospace; font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .palette-item.active { background: #1f6feb44; color: #58a6ff; }
+    .palette-item:hover { background: #21262d; }
+    .palette-empty { padding: 14px; color: #6e7681; font-style: italic; font-size: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>
+      <a href="/" style="color:inherit;text-decoration:none">Nimbus</a>
+      <span id="sessionLabel" title="Session ID (shareable) — click to copy URL"></span>
+    </h1>
+    <div class="status">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Disconnected</span>
+    </div>
+  </div>
+  <div class="toolbar" id="toolbar">
+    <button id="btnTerminal" class="active" title="Terminal">Terminal</button>
+    <button id="btnPreview" title="Preview">Preview</button>
+    <button id="btnSplit" title="Split view">Split</button>
+    <!-- Single canonical editor mode:
+         file tree | editor (top) + terminal (bottom) | preview.
+         Lazy-loads Monaco + the tree on first click. -->
+    <button id="btnEditor" title="Editor (file tree + Monaco + terminal + preview)">Editor</button>
+    <div class="sep"></div>
+    <button id="btnProcs" title="Toggle process logs panel">
+      <span class="procs-dot"></span>
+      <span>Processes</span>
+      <span id="procsCount" style="color:#8b949e">0</span>
+    </button>
+    <button id="btnRefresh" title="Reload preview">&#8635;</button>
+    <span class="vite-status" id="viteStatus"></span>
+  </div>
+  <div class="main" id="mainPanel">
+    <!-- File-tree sidebar. Visible ONLY
+         in editor mode (CSS toggles display:flex on .main.editor).
+         The .tree-resize-handle sits between tree and editor stack;
+         dragging it adjusts .panel-tree's width inline. -->
+    <div class="panel-tree" id="treePanel">
+      <div class="tree-toolbar">
+        <span class="tree-title">Explorer</span>
+        <button id="btnTreeNewFile" title="New File">＋</button>
+        <button id="btnTreeNewDir" title="New Folder">📁</button>
+        <button id="btnTreeRefresh" title="Refresh tree (re-fetch root)">⟳</button>
+      </div>
+      <div class="tree-search-wrap">
+        <input id="treeSearch" class="tree-search" placeholder="Filter files…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="tree-body" id="treeBody"></div>
+    </div>
+    <div class="tree-resize-handle" id="treeResizeHandle"></div>
+    <!-- The .panel-left-stack wrapper is display:contents in 1D modes
+         (terminal-only, split, preview-only) — its children act as
+         direct flex children of .main. In editor mode, CSS flips it to
+         display:flex so editor and terminal stack vertically in the middle
+         column. -->
+    <div class="panel-left-stack" id="leftStack">
+      <div class="panel-editor" id="editorPanel">
+        <div class="editor-bar">
+          <div class="editor-tab editor-tab-empty" id="editorTab">no file</div>
+          <span class="editor-hint">
+            <kbd>Ctrl+P</kbd> open file &nbsp;·&nbsp; <kbd>Ctrl+S</kbd> save
+          </span>
+          <span class="editor-status" id="editorStatus" style="margin-left:8px;color:#6e7681;font-family:ui-monospace,Menlo,monospace;font-size:10px"></span>
+        </div>
+        <div class="editor-placeholder" id="editorPlaceholder">
+          <div>Press <span class="key">Ctrl</span>+<span class="key">P</span> to open a file.</div>
+          <div style="font-size:11px;color:#6e7681">Monaco loads on demand.</div>
+        </div>
+        <div id="monaco-container" style="display:none"></div>
+        <div class="editor-statusbar" id="editorStatusBar">
+          <span id="editorStatusPos">—</span>
+          <span class="sep">·</span>
+          <span id="editorStatusLang">plaintext</span>
+          <span class="sep">·</span>
+          <span id="editorStatusEnc">UTF-8</span>
+        </div>
+      </div>
+      <!-- Vertical resize handle between
+           editor (top) and terminal (bottom) inside the editor-stack
+           column. Visible only in editor mode (.main.editor). -->
+      <div class="vresize-handle" id="editorTerminalResizeHandle"></div>
+      <div class="panel-terminal">
+        <div id="terminal-container"></div>
+        <div class="logs-panel" id="logsPanel">
+          <div class="logs-tabbar" id="logsTabBar"></div>
+          <div class="logs-panel-body" id="logsPanelBody"></div>
+        </div>
+      </div>
+    </div>
+    <div class="resize-handle" id="resizeHandle"></div>
+    <div class="panel-preview" id="previewPanel">
+      <div class="preview-bar">
+        <span style="color:#3fb950;font-size:12px">&#9679;</span>
+        <input class="url-bar" id="urlBar" value="" readonly>
+        <button id="btnReloadPreview" title="Reload">&#8635;</button>
+      </div>
+      <iframe id="preview-frame" src="about:blank"></iframe>
+    </div>
+  </div>
+  <!-- Ctrl+P command palette. Lazy-populated fuzzy file finder; fs-list
+       is sent on first open per editor session. -->
+  <div class="palette-overlay" id="paletteOverlay">
+    <div class="palette-box">
+      <input class="palette-input" id="paletteInput" placeholder="Type a file name…" autocomplete="off" spellcheck="false">
+      <div class="palette-list" id="paletteList"></div>
+    </div>
+  </div>
+  <div class="footer">
+    <div class="stats" id="statsBar">
+      <span><span class="stat-label">FS:</span> <span class="stat-value" id="stFiles">-</span></span>
+      <span><span class="stat-label">Size:</span> <span class="stat-value" id="stSize">-</span></span>
+      <span><span class="stat-label">Cache:</span> <span class="stat-value" id="stCache">-</span></span>
+      <span><span class="stat-label">Hit:</span> <span class="stat-value good" id="stHitRate">-</span></span>
+    </div>
+    <span style="color:#484f58">DO + SQLite demand-paged | esbuild-wasm | vite dev server</span>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+  <script>
+    // ── Session-aware URL helpers ──
+    // This page is served at /s/<id>/ via the asset binding. All DO-bound
+    // paths (/ws, /api/*, /preview/*) live under the same session prefix.
+    // Compute once at load time — location.pathname won't change.
+    const SESSION_PREFIX = (function() {
+      const m = location.pathname.match(/^\/s\/([a-z]{3,14}-[a-z]{3,14}-\d{4})(?:\/|$)/);
+      return m ? '/s/' + m[1] : '';
+    })();
+    const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
+                   '//' + location.host + SESSION_PREFIX + '/ws';
+    const STATS_URL = SESSION_PREFIX + '/api/stats';
+    const VITE_URL = SESSION_PREFIX + '/preview/';
+    const WORKER_URL = SESSION_PREFIX + '/worker/';
+    // The iframe starts pointing at /preview/ which handles its own
+    // "no dev server running" placeholder. When the user spawns a
+    // wrangler dev (via `wrangler dev` in the terminal), stats polling
+    // below flips this to WORKER_URL automatically.
+    const PREVIEW_URL = VITE_URL;
+
+    // Populate the URL bar with the full session preview URL so users can
+    // copy-paste it (e.g. to share just the preview with a teammate).
+    // The value is kept in sync with the iframe by applyPreviewTarget().
+    document.getElementById('urlBar').value = PREVIEW_URL;
+
+    // Update document title to include the session ID — makes tabs easy to
+    // distinguish when a user has multiple Nimbus sessions open.
+    // Also populate the session-label chip in the header; clicking it copies
+    // the full session URL to the clipboard for easy sharing.
+    if (SESSION_PREFIX) {
+      const sessionId = SESSION_PREFIX.slice(3); // strip "/s/"
+      document.title = 'Nimbus — ' + sessionId;
+      const chip = document.getElementById('sessionLabel');
+      if (chip) {
+        chip.textContent = sessionId;
+        chip.addEventListener('click', async () => {
+          const shareUrl = location.origin + SESSION_PREFIX + '/';
+          try {
+            await navigator.clipboard.writeText(shareUrl);
+            const original = chip.textContent;
+            chip.textContent = 'copied!';
+            chip.classList.add('copied');
+            setTimeout(() => { chip.textContent = original; chip.classList.remove('copied'); }, 1200);
+          } catch { /* clipboard API unavailable — silently ignore */ }
+        });
+      }
+    }
+
+    // ── Terminal setup ──
+    const term = new Terminal({
+      cursorBlink: true, cursorStyle: 'bar', fontSize: 13,
+      fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+      theme: {
+        background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff', selectionBackground: '#264f78',
+        black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+        blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
+        brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
+        brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
+      },
+      allowProposedApi: true,
+      // macOS Option key emits Meta-prefixed sequences (\x1b<letter>),
+      // matching Linux Alt behaviour. Without this, Option+B/F/D on
+      // Mac silently inserts unicode `∫ƒ∂` glyphs instead of triggering
+      // word-by-word readline edits. xterm.js default is false; bash /
+      // Terminal.app / iTerm2 default this to true via their own
+      // "Use Option as Meta" preference. We hard-set true so Mac users
+      // get Linux-parity readline keybindings out of the box.
+      macOptionIsMeta: true,
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) {}
+    term.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+
+    // ── State ──
+    const dot = document.getElementById('statusDot');
+    const stText = document.getElementById('statusText');
+    const previewFrame = document.getElementById('preview-frame');
+    const previewPanel = document.getElementById('previewPanel');
+    const mainPanel = document.getElementById('mainPanel');
+    const viteStatus = document.getElementById('viteStatus');
+    let ws = null, rd = 1000, statsTimer = null;
+    // Current layout modes. Editor mode keeps the file tree, Monaco,
+    // terminal, and preview visible together.
+    let layout = 'split';
+
+    // ── Layout controls ──
+    function setLayout(mode) {
+      layout = mode;
+      mainPanel.className = 'main' + (mode !== 'split' ? ' ' + mode : '');
+      document.getElementById('btnTerminal').classList.toggle('active', mode === 'terminal-only');
+      document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
+      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
+      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor');
+      // Editor panel visibility — drives display:flex via .active.
+      const editorPanel = document.getElementById('editorPanel');
+      const wantEditor = (mode === 'editor');
+      editorPanel.classList.toggle('active', wantEditor);
+      // Lazy-init Monaco + the file tree the FIRST time the user
+      // switches to editor mode. Cold session pays neither cost.
+      if (wantEditor) {
+        Editor.ensureLoaded();
+        FileTree.ensureLoaded();
+      }
+      setTimeout(() => {
+        // Re-apply persisted pane dims for this layout.
+        // PaneResizer uses inline flex which is mode-specific (split vs
+        // editor have different pane structures); onLayoutChange picks
+        // the right elements for the active mode.
+        try { if (typeof PaneResizer !== 'undefined') PaneResizer.onLayoutChange(); } catch {}
+        try { fitAddon.fit(); } catch {}
+        // Re-layout Monaco after the panel resizes. automaticLayout:true
+        // already handles this but explicit layout() on mode switch
+        // avoids a one-frame flash where the editor sees its old size.
+        if (window.__nimbusMonacoEditor) {
+          try { window.__nimbusMonacoEditor.layout(); } catch {}
+        }
+      }, 50);
+    }
+    document.getElementById('btnTerminal').onclick = () => setLayout('terminal-only');
+    document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
+    document.getElementById('btnSplit').onclick = () => setLayout('split');
+    document.getElementById('btnEditor').onclick = () => setLayout('editor');
+    document.getElementById('btnRefresh').onclick = () => reloadPreview();
+    document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
+
+    // ── Editor module ──
+    //
+    // Lazy-loads Monaco via cdnjs UMD on first call to ensureLoaded().
+    // Cold session (terminal-only flow) never pays the ~5MB download.
+    //
+    // Owns the open file, dirty state, Ctrl+P palette, Ctrl+S save.
+    // All fs operations route through the live WS via fs-read /
+    // fs-write / fs-list messages → init.ts handler → SqliteVFS.
+    //
+    // Perf-invariant: Monaco is not loaded on cold terminal-only sessions.
+    const Editor = (function() {
+      // CDN choice: cdnjs hosts Monaco's UMD AMD-loader (`loader.min.js`)
+      // which fetches the remaining vs/* chunks on demand. Total cold
+      // download is ~2 MB for the editor + lazy languages. Pinned to
+      // 0.52.0 (latest as of 2025-Q1) — same major as VSCode 1.95+.
+      const MONACO_VERSION = '0.52.0';
+      const MONACO_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/' + MONACO_VERSION + '/min';
+      let loaded = false;
+      let loading = null;
+      // Cached fs-list result from a previous Ctrl+P (5s TTL).
+      let fileListCache = null;
+      let fileListCachedAt = 0;
+      // Pending fs-read / fs-write / fs-list resolves keyed by op id.
+      // The terminal WS multiplexes; we tag each message with a `reqId`
+      // so concurrent reads (e.g. preview tab + palette refresh) don't
+      // race on the same path.
+      const pending = new Map();
+      let nextReqId = 1;
+
+      // Current open file state.
+      let openPath = null;        // POSIX absolute path or null
+      let originalContent = '';   // last-saved content (for dirty check)
+      let editor = null;          // Monaco editor instance
+
+      function tabEl() { return document.getElementById('editorTab'); }
+      function setTabFile(path, dirty) {
+        const el = tabEl();
+        if (!path) {
+          el.textContent = 'no file';
+          el.classList.add('editor-tab-empty');
+          el.classList.remove('dirty');
+          return;
+        }
+        // Show just the basename in the tab for clarity; full path in
+        // the title attribute.
+        const base = path.split('/').pop() || path;
+        el.textContent = base;
+        el.title = path;
+        el.classList.remove('editor-tab-empty');
+        el.classList.toggle('dirty', !!dirty);
+      }
+
+      // Send a fs-* message; await the paired result. Resolves with the
+      // result frame; rejects on error or timeout (15s — generous for
+      // big trees, tight enough that a hung session surfaces fast).
+      // Queue fs-* frames sent before ws.onopen fires. Race window:
+      // connect() runs at page-load and ws is in CONNECTING
+      // state (readyState === 0). If the user clicks Editor BEFORE
+      // ws.onopen fires, setLayout('editor') invokes Editor.ensureLoaded
+      // → eventually fsRequest, which pre-fix rejected synchronously.
+      //
+      // Fix: register the pending request synchronously (reqId assigned,
+      // resolve/reject stored), queue the frame in `outQueue`, return
+      // the promise. When ws.onopen fires (drainFsQueue below),
+      // we ws.send() every queued frame. The response handler
+      // (tryHandleFsResult) is unchanged; it resolves the same pending
+      // entry whenever the server replies.
+      const outQueue = [];
+      function fsRequest(frame, resultType) {
+        const reqId = nextReqId++;
+        frame.reqId = reqId;
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => {
+            if (pending.has(reqId)) {
+              pending.delete(reqId);
+              reject(new Error('fs request timed out'));
+            }
+          }, 15000);
+          pending.set(reqId, { resolve, reject, t, resultType });
+          // Try to send now if the WS is OPEN; otherwise queue.
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify(frame)); }
+            catch (e) {
+              // OPEN but send threw — surface the failure immediately.
+              clearTimeout(t); pending.delete(reqId); reject(e);
+            }
+          } else {
+            outQueue.push(frame);
+          }
+        });
+      }
+      // Drain the outbound queue. Called from ws.onopen. Idempotent
+      // (safe to call multiple times — empty queue is a no-op).
+      // Resilient to reconnects: queue accumulates while ws.readyState
+      // is CONNECTING/CLOSED and flushes on next onopen.
+      function drainFsQueue() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const drained = outQueue.splice(0);
+        for (const frame of drained) {
+          try { ws.send(JSON.stringify(frame)); }
+          catch (e) {
+            // Send failed on a drained frame — reject the pending entry.
+            const slot = pending.get(frame.reqId);
+            if (slot) {
+              pending.delete(frame.reqId);
+              clearTimeout(slot.t);
+              slot.reject(e);
+            }
+          }
+        }
+      }
+      // Hook into the main WS onmessage to deliver fs-*-result frames.
+      // Called by connect() right after parsing each incoming message —
+      // returns true to indicate the message was handled here (and the
+      // shell-side dispatch should skip it).
+      function tryHandleFsResult(msg) {
+        if (!msg || typeof msg.type !== 'string') return false;
+        if (!msg.type.endsWith('-result')) return false;
+        const reqId = msg.reqId;
+        if (typeof reqId !== 'number') return false;
+        const slot = pending.get(reqId);
+        if (!slot) return false;
+        pending.delete(reqId);
+        clearTimeout(slot.t);
+        slot.resolve(msg);
+        return true;
+      }
+
+      // Detect language from extension. Monaco built-ins cover most.
+      function languageFor(path) {
+        const m = /\.([^.]+)$/.exec(path || '');
+        const ext = m ? m[1].toLowerCase() : '';
+        const map = {
+          js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+          ts: 'typescript', tsx: 'typescript', jsx: 'javascript',
+          py: 'python', rb: 'ruby', go: 'go', rs: 'rust',
+          c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp',
+          java: 'java', kt: 'kotlin', swift: 'swift',
+          json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini',
+          md: 'markdown', html: 'html', css: 'css', scss: 'scss',
+          sh: 'shell', bash: 'shell', zsh: 'shell',
+          xml: 'xml', sql: 'sql', dockerfile: 'dockerfile',
+        };
+        return map[ext] || 'plaintext';
+      }
+
+      function ensureLoaded() {
+        if (loaded) return Promise.resolve();
+        if (loading) return loading;
+        loading = new Promise((resolve, reject) => {
+          // Step 1: AMD loader. cdnjs ships the UMD `loader.min.js` that
+          // bootstraps Monaco's internal AMD module graph.
+          const script = document.createElement('script');
+          script.src = MONACO_BASE + '/vs/loader.min.js';
+          script.onload = () => {
+            // Step 2: configure paths + require the editor module.
+            const requireJs = window.require;
+            if (!requireJs || typeof requireJs.config !== 'function') {
+              reject(new Error('Monaco AMD loader failed to register'));
+              return;
+            }
+            requireJs.config({ paths: { 'vs': MONACO_BASE + '/vs' } });
+            requireJs(['vs/editor/editor.main'], () => {
+              try {
+                createEditor();
+                loaded = true;
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            });
+          };
+          script.onerror = () => reject(new Error('Failed to load Monaco AMD loader from ' + script.src));
+          document.head.appendChild(script);
+        });
+        return loading;
+      }
+
+      function createEditor() {
+        const container = document.getElementById('monaco-container');
+        container.style.display = 'block';
+        // Hide the placeholder once Monaco mounts.
+        const ph = document.getElementById('editorPlaceholder');
+        if (ph) ph.style.display = 'none';
+
+        // VS Code-like editor defaults for TS/JS files.
+        editor = window.monaco.editor.create(container, {
+          value: '',
+          language: 'plaintext',
+          theme: 'vs-dark',                                  // VSCode dark theme
+          // Critical for split-pane resize — Monaco re-measures on
+          // ResizeObserver hits without explicit layout() calls.
+          automaticLayout: true,
+          // Visual chrome.
+          minimap: { enabled: true, side: 'right', renderCharacters: true, maxColumn: 120, scale: 1 },
+          lineNumbers: 'on',
+          lineNumbersMinChars: 3,
+          glyphMargin: false,
+          folding: true,
+          renderLineHighlight: 'all',
+          renderWhitespace: 'selection',
+          renderControlCharacters: false,
+          renderFinalNewline: 'on',
+          // Cursor + selection chrome.
+          cursorBlinking: 'smooth',
+          cursorSmoothCaretAnimation: 'on',
+          cursorStyle: 'line',
+          cursorWidth: 2,
+          // Typography. VSCode defaults to 14px Menlo/Monaco/Consolas.
+          fontFamily: "Menlo, Monaco, 'Courier New', 'JetBrains Mono', 'Fira Code', monospace",
+          fontSize: 14,
+          lineHeight: 22,
+          fontLigatures: true,
+          // Whitespace / indent.
+          tabSize: 2,
+          insertSpaces: true,
+          detectIndentation: true,
+          trimAutoWhitespace: true,
+          // Bracket / indent guides — the colorful nested brackets +
+          // dotted vertical indent lines users expect from VSCode.
+          bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
+          guides: {
+            bracketPairs: 'active',
+            bracketPairsHorizontal: 'active',
+            indentation: true,
+            highlightActiveIndentation: true,
+            highlightActiveBracketPair: true,
+          },
+          matchBrackets: 'always',
+          // Editing behavior.
+          autoIndent: 'full',
+          autoClosingBrackets: 'languageDefined',
+          autoClosingQuotes: 'languageDefined',
+          autoSurround: 'languageDefined',
+          formatOnPaste: true,
+          formatOnType: true,
+          // Multi-cursor and selection ergonomics.
+          multiCursorModifier: 'alt',
+          columnSelection: false,
+          // Word wrap (toggle-friendly default).
+          wordWrap: 'on',
+          wordWrapColumn: 120,
+          wrappingIndent: 'indent',
+          // Scrolling.
+          smoothScrolling: true,
+          mouseWheelScrollSensitivity: 1,
+          fastScrollSensitivity: 5,
+          scrollBeyondLastLine: false,
+          scrollbar: {
+            vertical: 'auto',
+            horizontal: 'auto',
+            useShadows: true,
+            verticalScrollbarSize: 14,
+            horizontalScrollbarSize: 14,
+          },
+          // Suggest / IntelliSense (works for built-in languages even
+          // without LSP — Monaco ships JS/TS/JSON/HTML/CSS workers
+          // lazily; we leave the defaults).
+          suggestOnTriggerCharacters: true,
+          acceptSuggestionOnEnter: 'on',
+          quickSuggestions: { other: true, comments: false, strings: false },
+          parameterHints: { enabled: true, cycle: true },
+          // Misc polish.
+          stickyScroll: { enabled: true },
+          links: true,
+          dragAndDrop: true,
+          mouseStyle: 'text',
+          contextmenu: true,
+          copyWithSyntaxHighlighting: false,
+        });
+        window.__nimbusMonacoEditor = editor;
+        // Dirty-state tracking. Also propagate to FileTree so the
+        // tree row shows the dirty dot (matches editor tab).
+        editor.onDidChangeModelContent(() => {
+          if (!openPath) return;
+          const cur = editor.getValue();
+          const dirty = cur !== originalContent;
+          setTabFile(openPath, dirty);
+          if (typeof FileTree !== 'undefined') {
+            try { FileTree.markDirty(openPath, dirty); } catch {}
+          }
+        });
+        // Cursor position → status bar.
+        const statusPos = document.getElementById('editorStatusPos');
+        const statusLang = document.getElementById('editorStatusLang');
+        editor.onDidChangeCursorPosition((e) => {
+          if (statusPos) statusPos.textContent = 'Ln ' + e.position.lineNumber + ', Col ' + e.position.column;
+        });
+        editor.onDidChangeModelLanguage((e) => {
+          if (statusLang) statusLang.textContent = e.newLanguage || 'plaintext';
+        });
+        // Ctrl+S save — Monaco intercepts the keystroke when focused.
+        editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, () => save());
+        // Cmd+P / Ctrl+P inside the editor → palette (palette also has
+        // a global keydown handler but registering at the editor level
+        // is what real VSCode does, so feel matches).
+        editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyP, () => openPalette());
+        // Layout once after creation so the editor sizes correctly.
+        setTimeout(() => editor.layout(), 0);
+      }
+
+      async function openFile(path) {
+        if (!path) return;
+        // Dirty-prompt before switching files. If the current buffer has
+        // unsaved changes, ask the user whether to save or discard.
+        // Skip when switching to the SAME file (no-op) or when there
+        // is no editor yet.
+        if (editor && openPath && openPath !== path) {
+          const cur = editor.getValue();
+          if (cur !== originalContent) {
+            const choice = confirm(
+              'Unsaved changes in ' + openPath + '\n\n' +
+              'OK = save and switch.\n' +
+              'Cancel = discard changes and switch.'
+            );
+            if (choice) {
+              await save();
+            }
+            // Either way, proceed to load the new file (the user
+            // explicitly chose to leave the current buffer).
+          }
+        }
+        await ensureLoaded();
+        let result;
+        try {
+          result = await fsRequest({ type: 'fs-read', path }, 'fs-read-result');
+        } catch (e) {
+          setStatusFlash('open failed: ' + (e?.message || e));
+          return;
+        }
+        if (result.error) {
+          if (result.binary) {
+            setStatusFlash('binary file refused: ' + path);
+          } else {
+            setStatusFlash('open failed: ' + result.error);
+          }
+          return;
+        }
+        const content = result.content || '';
+        openPath = path;
+        originalContent = content;
+        const lang = languageFor(path);
+        // Recreate model so language detection takes effect (Monaco
+        // doesn't auto-relanguage on setValue).
+        const model = window.monaco.editor.createModel(content, lang);
+        const old = editor.getModel();
+        editor.setModel(model);
+        if (old) try { old.dispose(); } catch {}
+        setTabFile(path, false);
+        // Reflect language in the bottom statusbar.
+        const statusLang = document.getElementById('editorStatusLang');
+        if (statusLang) statusLang.textContent = lang;
+        const statusPos = document.getElementById('editorStatusPos');
+        if (statusPos) statusPos.textContent = 'Ln 1, Col 1';
+        // Mirror palette/Ctrl+P selection into the file tree.
+        if (typeof FileTree !== 'undefined') {
+          try { FileTree.setSelected(path); FileTree.markDirty(path, false); } catch {}
+        }
+        editor.focus();
+      }
+
+      async function save() {
+        if (!openPath || !editor) return;
+        const content = editor.getValue();
+        let result;
+        try {
+          result = await fsRequest({ type: 'fs-write', path: openPath, content }, 'fs-write-result');
+        } catch (e) {
+          setStatusFlash('save failed: ' + (e?.message || e));
+          return;
+        }
+        if (!result.ok) {
+          setStatusFlash('save failed: ' + (result.error || 'unknown'));
+          return;
+        }
+        originalContent = content;
+        setTabFile(openPath, false);
+        if (typeof FileTree !== 'undefined') {
+          try { FileTree.markDirty(openPath, false); } catch {}
+        }
+        setStatusFlash('saved');
+      }
+
+      let flashTimer = null;
+      function setStatusFlash(text) {
+        const el = tabEl();
+        const prior = el.textContent;
+        el.textContent = text;
+        if (flashTimer) clearTimeout(flashTimer);
+        flashTimer = setTimeout(() => setTabFile(openPath, false), 1400);
+      }
+
+      // ── Ctrl+P palette ──
+      const overlay = document.getElementById('paletteOverlay');
+      const input = document.getElementById('paletteInput');
+      const list = document.getElementById('paletteList');
+      let paletteFiles = [];
+      let paletteFiltered = [];
+      let paletteActive = 0;
+
+      async function openPalette() {
+        await ensureLoaded();
+        overlay.classList.add('active');
+        input.value = '';
+        input.focus();
+        // Re-fetch list if cache stale.
+        const now = Date.now();
+        if (!fileListCache || (now - fileListCachedAt) > 5000) {
+          list.innerHTML = '<div class="palette-empty">Loading…</div>';
+          try {
+            const r = await fsRequest({ type: 'fs-list', dir: '/home/user', recursive: true }, 'fs-list-result');
+            fileListCache = (r.entries || []).filter(e => e.type !== 'directory').map(e => e.path);
+            fileListCachedAt = Date.now();
+          } catch (e) {
+            list.innerHTML = '<div class="palette-empty">fs-list failed: ' + (e?.message || e) + '</div>';
+            return;
+          }
+        }
+        paletteFiles = fileListCache.slice();
+        renderPalette('');
+      }
+      function closePalette() {
+        overlay.classList.remove('active');
+        if (editor) editor.focus();
+      }
+      function renderPalette(q) {
+        const needle = q.toLowerCase();
+        // Simple substring + suffix-rank filter. Plenty fast for a few
+        // thousand files (5 MB cap on fs-list anyway).
+        paletteFiltered = paletteFiles
+          .filter(p => p.toLowerCase().includes(needle))
+          .slice(0, 80);
+        paletteActive = 0;
+        if (paletteFiltered.length === 0) {
+          list.innerHTML = '<div class="palette-empty">No matches.</div>';
+          return;
+        }
+        list.innerHTML = paletteFiltered.map((p, i) =>
+          '<div class="palette-item' + (i === 0 ? ' active' : '') + '" data-idx="' + i + '">' + p + '</div>'
+        ).join('');
+        // Click to open.
+        list.querySelectorAll('.palette-item').forEach(el => {
+          el.addEventListener('click', () => {
+            const idx = parseInt(el.dataset.idx, 10);
+            const path = paletteFiltered[idx];
+            if (path) {
+              closePalette();
+              openFile(path);
+            }
+          });
+        });
+      }
+      function moveActive(delta) {
+        const next = Math.max(0, Math.min(paletteFiltered.length - 1, paletteActive + delta));
+        if (next === paletteActive) return;
+        paletteActive = next;
+        list.querySelectorAll('.palette-item').forEach((el, i) => {
+          el.classList.toggle('active', i === paletteActive);
+          if (i === paletteActive) el.scrollIntoView({ block: 'nearest' });
+        });
+      }
+      input.addEventListener('input', () => renderPalette(input.value));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(1); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const path = paletteFiltered[paletteActive];
+          if (path) { closePalette(); openFile(path); }
+        }
+      });
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closePalette();
+      });
+
+      // Global Ctrl+P / Cmd+P binding. Fires anywhere on the page so
+      // users can open the palette from the terminal pane too — matches
+      // VSCode UX.
+      document.addEventListener('keydown', (e) => {
+        const isCtrlP = (e.ctrlKey || e.metaKey) && e.key === 'p' && !e.shiftKey && !e.altKey;
+        if (isCtrlP) {
+          e.preventDefault();
+          openPalette();
+          return;
+        }
+        // Ctrl+S anywhere also saves (Monaco's own binding covers
+        // the editor-focus case but a click outside the editor would
+        // otherwise lose the keystroke).
+        const isCtrlS = (e.ctrlKey || e.metaKey) && e.key === 's' && !e.shiftKey && !e.altKey;
+        if (isCtrlS && openPath) {
+          e.preventDefault();
+          save();
+        }
+      });
+
+      // External invalidation of the Cmd+P 5s-TTL palette cache. Called by the fs-watch-event
+      // dispatcher in ws.onmessage so a terminal-side write makes
+      // the next openPalette re-run fs-list instead of serving
+      // stale results.
+      function invalidateFileListCache() {
+        fileListCache = null;
+        fileListCachedAt = 0;
+      }
+
+      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult, drainFsQueue, invalidateFileListCache };
+    })();
+
+    // ── FileTree module ──
+    //
+    // VSCode-style left sidebar showing the user VFS (rooted at
+    // /home/user). Lazy-loads on first editor-mode activation. Tree
+    // is flat in DOM (one .tree-node per row) with padding-left
+    // calculated per depth — gives a clean expand/collapse animation
+    // without nested ULs.
+    //
+    // Behavior:
+    //   - First render: lazy fs-list /home/user (recursive=false)
+    //   - Folder click: toggle expanded; on first expand, lazy
+    //     fs-list that folder
+    //   - File click: Editor.openFile(path) — Editor handles dirty
+    //     prompt + Monaco model swap
+    //   - Search filter: client-side substring on path, hides nodes
+    //   - New file/folder: prompt + fs-write (empty content for
+    //     file; for folder we synthesize an empty .keep file inside
+    //     so fs-list shows it — VFS has no separate mkdir over WS)
+    //   - Refresh: re-fetch root, drop cached children
+    //   - Expanded state persisted via localStorage keyed on session id
+    //
+    // Memory: tree state is a flat Map<path, node>; max 10k entries
+    // before we stop expanding to protect the browser.
+    const FileTree = (function() {
+      const panel = document.getElementById('treePanel');
+      const body = document.getElementById('treeBody');
+      const searchInput = document.getElementById('treeSearch');
+      const btnNewFile = document.getElementById('btnTreeNewFile');
+      const btnNewDir = document.getElementById('btnTreeNewDir');
+      const btnRefresh = document.getElementById('btnTreeRefresh');
+
+      const ROOT = '/home/user';
+      const MAX_NODES = 10_000;
+      const LS_KEY = 'nimbus.tree.expanded.' + (SESSION_PREFIX || 'noid');
+
+      // node: { path, name, type:'file'|'directory', depth, parent, children?:Set<path>, loaded:bool, selected:bool, hidden:bool }
+      const nodes = new Map();
+      // Insertion-ordered list of paths for stable render.
+      const renderOrder = [];
+      let loaded = false;
+      let pending = null;
+      let nextReqId = 70_000;
+      const pendingReqs = new Map();
+      let selectedPath = null;
+
+      function loadExpandedSet() {
+        try {
+          const raw = localStorage.getItem(LS_KEY);
+          if (!raw) return new Set([ROOT]);
+          return new Set(JSON.parse(raw));
+        } catch { return new Set([ROOT]); }
+      }
+      function saveExpandedSet(set) {
+        try { localStorage.setItem(LS_KEY, JSON.stringify(Array.from(set))); } catch {}
+      }
+      const expanded = loadExpandedSet();
+      expanded.add(ROOT);
+
+      // Outbound queue mirrors Editor.fsRequest for the same websocket
+      // connection race.
+      const outQueue = [];
+      function fsRequest(frame, resultType) {
+        const reqId = nextReqId++;
+        frame.reqId = reqId;
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => {
+            if (pendingReqs.has(reqId)) {
+              pendingReqs.delete(reqId);
+              reject(new Error('fs request timed out'));
+            }
+          }, 15000);
+          pendingReqs.set(reqId, { resolve, reject, t });
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify(frame)); }
+            catch (e) {
+              clearTimeout(t); pendingReqs.delete(reqId); reject(e);
+            }
+          } else {
+            outQueue.push(frame);
+          }
+        });
+      }
+      function drainFsQueue() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const drained = outQueue.splice(0);
+        for (const frame of drained) {
+          try { ws.send(JSON.stringify(frame)); }
+          catch (e) {
+            const slot = pendingReqs.get(frame.reqId);
+            if (slot) {
+              pendingReqs.delete(frame.reqId);
+              clearTimeout(slot.t);
+              if (slot.reject) slot.reject(e);
+            }
+          }
+        }
+      }
+      // Hook into main WS onmessage like the Editor module does.
+      function tryHandleFsResult(msg) {
+        if (!msg || typeof msg.type !== 'string') return false;
+        if (!msg.type.endsWith('-result')) return false;
+        const reqId = msg.reqId;
+        if (typeof reqId !== 'number') return false;
+        const slot = pendingReqs.get(reqId);
+        if (!slot) return false;
+        pendingReqs.delete(reqId);
+        clearTimeout(slot.t);
+        slot.resolve(msg);
+        return true;
+      }
+
+      function iconFor(node) {
+        if (node.type === 'directory') return node.expanded ? '📂' : '📁';
+        // Light extension-based icons.
+        const ext = (node.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+        const m = {
+          js:'📜', mjs:'📜', cjs:'📜', ts:'📘', tsx:'📘', jsx:'📜',
+          py:'🐍', rb:'💎', go:'🐹', rs:'🦀',
+          c:'🔧', h:'🔧', cpp:'🔧', hpp:'🔧',
+          json:'⚙️', yaml:'⚙️', yml:'⚙️', toml:'⚙️',
+          md:'📝', html:'🌐', css:'🎨', scss:'🎨',
+          sh:'🐚', bash:'🐚',
+          png:'🖼️', jpg:'🖼️', jpeg:'🖼️', gif:'🖼️', svg:'🖼️',
+          lock:'🔒',
+        };
+        return m[ext] || '📄';
+      }
+
+      function relativeName(path) {
+        const i = path.lastIndexOf('/');
+        return i >= 0 ? path.substring(i + 1) : path;
+      }
+      function parentOf(path) {
+        const i = path.lastIndexOf('/');
+        if (i <= 0) return '';
+        return path.substring(0, i);
+      }
+      function depthOf(path) {
+        // /home/user/foo/bar.txt → 2 (relative to /home/user which is root, depth 0)
+        if (!path.startsWith(ROOT)) return 0;
+        const rest = path.substring(ROOT.length).replace(/^\/+/, '');
+        if (!rest) return 0;
+        return rest.split('/').length;
+      }
+
+      function ensureNode(path, type) {
+        let n = nodes.get(path);
+        if (n) {
+          if (type) n.type = type;
+          return n;
+        }
+        n = {
+          path, name: relativeName(path) || path,
+          type: type || 'file',
+          depth: depthOf(path),
+          loaded: false, expanded: expanded.has(path),
+          dirty: false,
+        };
+        nodes.set(path, n);
+        return n;
+      }
+
+      async function loadFolder(path) {
+        // Show a loading hint if this is the FIRST load AND the WS
+        // hasn't opened yet (queue fix — request is pending until
+        // ws.onopen drains it). Without this hint, users staring at
+        // an empty tree-body would see no feedback. Cleared on
+        // success / error path below.
+        if (path === ROOT && !loaded && (!ws || ws.readyState !== WebSocket.OPEN)) {
+          body.innerHTML = '<div class="tree-empty">Waiting for connection…</div>';
+        }
+        let result;
+        try {
+          result = await fsRequest({ type: 'fs-list', dir: path, recursive: false }, 'fs-list-result');
+        } catch (e) {
+          body.innerHTML = '<div class="tree-empty">fs-list failed: ' + escapeHtml(e?.message || String(e)) + '</div>';
+          return;
+        }
+        if (result.error) {
+          body.innerHTML = '<div class="tree-empty">' + escapeHtml(result.error) + '</div>';
+          return;
+        }
+        const entries = result.entries || [];
+        const folder = ensureNode(path, 'directory');
+        folder.loaded = true;
+        // Insert children — sort: directories first, alphabetical.
+        entries.sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+          return a.path.localeCompare(b.path);
+        });
+        for (const e of entries) {
+          if (nodes.size >= MAX_NODES) break;
+          ensureNode(e.path, e.type);
+        }
+        rerender();
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;',
+        })[c]);
+      }
+
+      // Compute the rendered order: walk tree depth-first, including
+      // only children of expanded folders. Hidden filter applied at
+      // search time.
+      function computeOrder() {
+        const out = [];
+        function walk(parentPath, depth) {
+          // Collect direct children of parentPath in the nodes map.
+          const children = [];
+          for (const n of nodes.values()) {
+            if (parentOf(n.path) === parentPath) children.push(n);
+          }
+          children.sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+          for (const c of children) {
+            out.push(c);
+            if (c.type === 'directory' && expanded.has(c.path)) {
+              walk(c.path, depth + 1);
+            }
+          }
+        }
+        walk(ROOT, 1);
+        return out;
+      }
+
+      function rerender() {
+        const order = computeOrder();
+        const filter = (searchInput.value || '').trim().toLowerCase();
+        body.innerHTML = '';
+        if (order.length === 0) {
+          body.innerHTML = '<div class="tree-empty">Empty</div>';
+          return;
+        }
+        const frag = document.createDocumentFragment();
+        let visibleCount = 0;
+        for (const n of order) {
+          const matchesFilter = !filter || n.path.toLowerCase().includes(filter);
+          if (!matchesFilter) continue;
+          visibleCount++;
+          const div = document.createElement('div');
+          let cls = 'tree-node ' + (n.type === 'directory' ? 'dir' : 'file');
+          if (n.type === 'directory' && expanded.has(n.path)) cls += ' expanded';
+          if (selectedPath === n.path) cls += ' selected';
+          if (n.dirty) cls += ' dirty';
+          div.className = cls;
+          div.dataset.path = n.path;
+          div.style.paddingLeft = (8 + (n.depth - 1) * 14) + 'px';
+          div.innerHTML =
+            '<span class="tree-chevron">▶</span>' +
+            '<span class="tree-icon">' + iconFor(n) + '</span>' +
+            '<span class="tree-label"></span>';
+          div.querySelector('.tree-label').textContent = n.name;
+          div.addEventListener('click', () => handleNodeClick(n));
+          frag.appendChild(div);
+        }
+        body.appendChild(frag);
+        if (visibleCount === 0 && filter) {
+          body.innerHTML = '<div class="tree-empty">No matches for "' + escapeHtml(filter) + '"</div>';
+        }
+      }
+
+      function setSelected(path) {
+        selectedPath = path;
+        rerender();
+      }
+
+      async function handleNodeClick(node) {
+        if (node.type === 'directory') {
+          if (expanded.has(node.path)) {
+            expanded.delete(node.path);
+          } else {
+            expanded.add(node.path);
+            if (!node.loaded) {
+              // Show a tentative state immediately, then async load.
+              rerender();
+              await loadFolder(node.path);
+              saveExpandedSet(expanded);
+              return;
+            }
+          }
+          saveExpandedSet(expanded);
+          rerender();
+        } else {
+          setSelected(node.path);
+          Editor.openFile(node.path);
+        }
+      }
+
+      async function ensureLoaded() {
+        if (loaded) return;
+        if (pending) return pending;
+        panel.classList.add('loading');
+        pending = (async () => {
+          // Ensure root node + load it.
+          ensureNode(ROOT, 'directory');
+          await loadFolder(ROOT);
+          // Auto-expand any persisted-expanded folders that are
+          // already in the tree from the root load.
+          for (const path of expanded) {
+            if (path === ROOT) continue;
+            const n = nodes.get(path);
+            if (n && n.type === 'directory' && !n.loaded) {
+              await loadFolder(path);
+            }
+          }
+          loaded = true;
+        })();
+        try { await pending; } finally { pending = null; panel.classList.remove('loading'); }
+      }
+
+      // Toolbar actions.
+      async function refreshTree() {
+        // Drop all cached children of root + re-fetch.
+        nodes.clear();
+        loaded = false;
+        await ensureLoaded();
+      }
+      async function newFile() {
+        // Place in the currently-selected directory, or the root.
+        let parent = ROOT;
+        if (selectedPath) {
+          const n = nodes.get(selectedPath);
+          if (n) parent = n.type === 'directory' ? n.path : parentOf(n.path);
+        }
+        const name = prompt('New file name (relative to ' + parent + '):');
+        if (!name) return;
+        const path = parent + '/' + name.replace(/^\/+/, '');
+        try {
+          await fsRequest({ type: 'fs-write', path, content: '' }, 'fs-write-result');
+          // Refresh the parent folder.
+          const pn = nodes.get(parent);
+          if (pn) {
+            pn.loaded = false;
+            await loadFolder(parent);
+          }
+          expanded.add(parent);
+          saveExpandedSet(expanded);
+          setSelected(path);
+          Editor.openFile(path);
+        } catch (e) {
+          alert('Create file failed: ' + (e?.message || e));
+        }
+      }
+      async function newDir() {
+        let parent = ROOT;
+        if (selectedPath) {
+          const n = nodes.get(selectedPath);
+          if (n) parent = n.type === 'directory' ? n.path : parentOf(n.path);
+        }
+        const name = prompt('New folder name (relative to ' + parent + '):');
+        if (!name) return;
+        const dirPath = parent + '/' + name.replace(/^\/+/, '');
+        // Synthesize via .keep file — fs-write auto-mkdirs the parent
+        // chain (init.ts handler does this).
+        try {
+          await fsRequest({ type: 'fs-write', path: dirPath + '/.keep', content: '' }, 'fs-write-result');
+          const pn = nodes.get(parent);
+          if (pn) { pn.loaded = false; await loadFolder(parent); }
+          expanded.add(dirPath);
+          saveExpandedSet(expanded);
+          rerender();
+        } catch (e) {
+          alert('Create folder failed: ' + (e?.message || e));
+        }
+      }
+
+      btnNewFile.addEventListener('click', newFile);
+      btnNewDir.addEventListener('click', newDir);
+      btnRefresh.addEventListener('click', refreshTree);
+      searchInput.addEventListener('input', rerender);
+
+      // Tree resize is owned by PaneResizer so all handles share one
+      // persistence layer. Inline width is restored from localStorage.
+
+      // Mark a path dirty in the tree (called by Editor when buffer
+      // diverges from disk).
+      function markDirty(path, isDirty) {
+        const n = nodes.get(path);
+        if (!n) return;
+        if (n.dirty === !!isDirty) return;
+        n.dirty = !!isDirty;
+        rerender();
+      }
+
+      // ── File-watch subscribe + event apply ─────
+      //
+      // Server-side fs-watch protocol (src/session/fs-watch.ts):
+      //
+      //   IN  { type:'fs-watch-subscribe', reqId, paths:['/home/user'] }
+      //   OUT { type:'fs-watch-subscribe-result', reqId, ok, subId? }
+      //   PUSH { type:'fs-watch-event', subId, events:VfsEvent[], dropped? }
+      //   IN  { type:'fs-watch-unsubscribe', reqId, subId? }
+      //
+      // Local lifecycle:
+      //   - subscribeOnce() is called from ws.onopen (after drainFsQueue).
+      //     Re-invocations are no-ops while a subId is live; on WS close
+      //     the server-side listener is reaped (ws.ts cleanup) so the
+      //     next reconnect re-subscribes fresh.
+      //   - applyWatchEvent() coalesces all 'fs-watch-event' frames into
+      //     per-parent refresh actions on a single 100ms window — 5+
+      //     events that share the same parent dir produce ONE re-fetch
+      //     of that folder, not N.
+      //
+      // Coalescing layers (composed):
+      //   Server (50ms debounce, SUB_MAX_QUEUE=200, drop-oldest)
+      //     → batches of up to 200 VfsEvents per frame
+      //   Client (100ms per-parent debounce)
+      //     → one fs-list per unique parent per window
+      //
+      // A `dropped:N` field on the incoming frame means the server
+      // dropped N events to honor its cap; we respond by force-
+      // refreshing the entire root (cheapest correct recovery).
+      let watchSubId = null;
+      const pendingParentRefresh = new Set();
+      let watchRefreshTimer = null;
+      let lastWatchFrameAt = 0;
+      let watchFrameCount = 0;
+      let watchEventCount = 0;
+      const WATCH_COALESCE_MS = 100;
+
+      function subscribeOnce() {
+        if (watchSubId) return; // already subscribed
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // Fire-and-forget — record the subId on the success result.
+        // We use fsRequest's queued-send semantics for the reply
+        // routing (pendingReqs keyed by reqId), but tolerate failures.
+        fsRequest(
+          { type: 'fs-watch-subscribe', paths: [ROOT] },
+          'fs-watch-subscribe-result',
+        ).then((r) => {
+          if (r && r.ok && typeof r.subId === 'string') {
+            watchSubId = r.subId;
+          }
+        }).catch(() => { /* server may not support fs-watch yet */ });
+      }
+
+      function scheduleParentRefreshFlush() {
+        if (watchRefreshTimer) return;
+        watchRefreshTimer = setTimeout(async () => {
+          watchRefreshTimer = null;
+          if (pendingParentRefresh.size === 0) return;
+          const parents = Array.from(pendingParentRefresh);
+          pendingParentRefresh.clear();
+          for (const parent of parents) {
+            const pn = nodes.get(parent);
+            // Only re-fetch dirs we've already loaded (cheap + bounded).
+            // Unloaded dirs are loaded lazily on expand.
+            if (pn && pn.type === 'directory' && pn.loaded) {
+              // Drop cached children then re-load the folder. The
+              // ensureNode at the end of loadFolder keeps the node
+              // entry alive (avoiding flicker on the user's selection).
+              // We drop child nodes from the Map so loadFolder's
+              // re-insert produces a clean view that reflects deletes.
+              const prefix = parent + '/';
+              for (const path of Array.from(nodes.keys())) {
+                if (path !== parent && parentOf(path) === parent) {
+                  nodes.delete(path);
+                }
+                else if (path !== parent && path.startsWith(prefix)) {
+                  // children of children — drop too so a deleted subtree
+                  // disappears in one cycle
+                  nodes.delete(path);
+                }
+              }
+              try { await loadFolder(parent); } catch { /* fail-soft */ }
+            }
+          }
+        }, WATCH_COALESCE_MS);
+      }
+
+      // Dispatch an inbound fs-watch-event frame to
+      // the tree's incremental refresh pipeline. Returns true if the
+      // frame was consumed (caller short-circuits the rest of its
+      // onmessage chain), false otherwise.
+      function applyWatchEvent(msg) {
+        if (!msg || msg.type !== 'fs-watch-event') return false;
+        watchFrameCount++;
+        lastWatchFrameAt = Date.now();
+        // Server-side drop signal → cheapest correct recovery is a
+        // full root re-fetch. Clear the queue + force refresh.
+        if (typeof msg.dropped === 'number' && msg.dropped > 0) {
+          pendingParentRefresh.clear();
+          if (watchRefreshTimer) {
+            clearTimeout(watchRefreshTimer);
+            watchRefreshTimer = null;
+          }
+          // schedule async refresh of root (preserves expanded state)
+          (async () => {
+            const expandedSnapshot = new Set(expanded);
+            const wasLoaded = new Set();
+            for (const n of nodes.values()) {
+              if (n.type === 'directory' && n.loaded) wasLoaded.add(n.path);
+            }
+            nodes.clear();
+            loaded = false;
+            try { await ensureLoaded(); } catch {}
+            // Re-load previously-loaded subdirs that are still expanded.
+            for (const path of wasLoaded) {
+              if (path === ROOT) continue;
+              if (!expandedSnapshot.has(path)) continue;
+              try { await loadFolder(path); } catch {}
+            }
+          })();
+          return true;
+        }
+        const events = Array.isArray(msg.events) ? msg.events : [];
+        if (events.length === 0) return true;
+        watchEventCount += events.length;
+        // Per-parent coalescing — collect unique parent dirs that need
+        // a refresh. SqliteVFS paths are bare ('home/user/x.txt'); we
+        // prepend '/' to match the absolute-path convention used by
+        // the FileTree (ROOT === '/home/user').
+        for (const ev of events) {
+          if (!ev || typeof ev.path !== 'string') continue;
+          const abs = ev.path.startsWith('/') ? ev.path : '/' + ev.path;
+          if (!abs.startsWith(ROOT)) continue; // outside our watched root
+          // For unlinkDir / rename(old), the affected parent is the
+          // *old* path's parent; the new-path's parent gets refresh
+          // via the same path entry below. For other events, just the
+          // event path's parent.
+          pendingParentRefresh.add(parentOf(abs));
+          if (ev.type === 'rename' && typeof ev.oldPath === 'string') {
+            const oldAbs = ev.oldPath.startsWith('/') ? ev.oldPath : '/' + ev.oldPath;
+            if (oldAbs.startsWith(ROOT)) {
+              pendingParentRefresh.add(parentOf(oldAbs));
+            }
+          }
+        }
+        // Invalidate the Cmd+P palette cache so the next openPalette
+        // re-fetches the file list. Editor exposes this; tolerate
+        // either lazy-init order.
+        try {
+          if (typeof Editor !== 'undefined' && typeof Editor.invalidateFileListCache === 'function') {
+            Editor.invalidateFileListCache();
+          }
+        } catch { /* best-effort */ }
+        if (pendingParentRefresh.size > 0) scheduleParentRefreshFlush();
+        return true;
+      }
+
+      // Diagnostic accessor for probes (cleanup-on-disconnect verifies
+      // counts return to 0 on the server side; this is the client-side
+      // mirror — useful for the coalescing probe).
+      function getWatchStats() {
+        return {
+          subId: watchSubId,
+          frameCount: watchFrameCount,
+          eventCount: watchEventCount,
+          lastFrameAt: lastWatchFrameAt,
+          pendingParents: pendingParentRefresh.size,
+        };
+      }
+
+      return {
+        ensureLoaded, tryHandleFsResult, markDirty, setSelected, drainFsQueue,
+        subscribeOnce, applyWatchEvent, getWatchStats,
+      };
+    })();
+
+    // Which preview backend the iframe currently points at. Driven by
+    // /api/stats polling: wrangler.running > vite.running > placeholder.
+    // Tracked separately from iframe.src so user reloads / hash changes
+    // don't confuse the switcher. Starts as null so the first
+    // applyPreviewTarget call always paints (even if nothing is running
+    // yet — that still wants the VITE_URL placeholder loaded).
+    let activePreview = null; // null | 'vite' | 'worker' | 'none'
+
+    function previewUrlFor(kind) {
+      return kind === 'worker' ? WORKER_URL : VITE_URL;
+    }
+
+    function applyPreviewTarget(kind) {
+      // Idempotent: only update iframe + URL bar when the backend kind
+      // actually changes. Avoids tearing down the inner app on every
+      // 5-second stats poll.
+      if (activePreview === kind) return;
+      activePreview = kind;
+      const url = previewUrlFor(kind);
+      // Always use the VITE_URL path when nothing is running — that
+      // endpoint serves the styled "no dev server" placeholder, which
+      // self-refreshes via its own polling loop.
+      previewFrame.src = url;
+      const urlBar = document.getElementById('urlBar');
+      if (urlBar) urlBar.value = url;
+      // If the user had collapsed the preview because nothing was up,
+      // surface it automatically when the first backend comes online.
+      if (kind !== 'none' && layout === 'terminal-only') setLayout('split');
+    }
+
+    function reloadPreview() {
+      // Refreshing without a running backend should re-poll the
+      // placeholder so users see dev-server status update promptly.
+      if (previewFrame.src === 'about:blank' ||
+          (!previewFrame.src.includes('/preview') && !previewFrame.src.includes('/worker'))) {
+        previewFrame.src = previewUrlFor(
+          (activePreview === 'none' || activePreview === null) ? 'vite' : activePreview
+        );
+      } else {
+        try { previewFrame.contentWindow?.location.reload(); }
+        catch { previewFrame.src = previewFrame.src; }
+      }
+    }
+
+    // ── Pane resize manager ──
+    //
+    // Owns the 3 resize handles in editor mode + 1 in split mode:
+    //   H1 tree ↔ editor-stack (col, in editor mode)         — TreeResizeHandle in FileTree IIFE
+    //   H2 editor-stack ↔ preview (col, in editor + split)    — #resizeHandle (mode-aware)
+    //   V1 editor ↔ terminal (row, in editor mode)            — #editorTerminalResizeHandle
+    //
+    // Each handle persists its dimension to localStorage so a reload
+    // restores the user's layout. Keyed per-session.
+    //
+    // Triggers Monaco editor.layout() + xterm fitAddon.fit() after
+    // every drag-end so the wrapped panes re-measure. Mid-drag does
+    // a cheap fit too (xterm) for the "live shrink" feel; Monaco
+    // automaticLayout:true handles itself.
+    const PaneResizer = (function() {
+      const LS_DIMS = 'nimbus.pane.dims.' + (SESSION_PREFIX || 'noid');
+      // Default flex basis percentages — match the CSS defaults above.
+      // Persisted to LS; restored before first setLayout call.
+      let dims = {
+        treeWidth: 250,      // px
+        middlePct: 60,       // % of main width for left-stack/terminal (rest = preview)
+        editorPct: 60,       // % of left-stack height for editor (rest = terminal)
+      };
+
+      function loadDims() {
+        try {
+          const raw = localStorage.getItem(LS_DIMS);
+          if (raw) Object.assign(dims, JSON.parse(raw));
+        } catch {}
+      }
+      function saveDims() {
+        try { localStorage.setItem(LS_DIMS, JSON.stringify(dims)); } catch {}
+      }
+
+      function applyMonacoLayout() {
+        if (window.__nimbusMonacoEditor) {
+          try { window.__nimbusMonacoEditor.layout(); } catch {}
+        }
+      }
+      function applyTerminalFit() {
+        try { fitAddon.fit(); } catch {}
+      }
+      function applyAll() {
+        // Tree width — applied as inline width on .panel-tree.
+        const tree = document.getElementById('treePanel');
+        if (tree) tree.style.width = dims.treeWidth + 'px';
+        // Middle ↔ preview flex.
+        applyMiddlePreviewFlex();
+        // Editor ↔ terminal flex (inside left-stack).
+        applyEditorTerminalFlex();
+        applyTerminalFit();
+        applyMonacoLayout();
+      }
+
+      // Map middlePct → flex basis on the two children that actually
+      // compete for horizontal space in each mode:
+      //   - split mode:    .panel-terminal vs .panel-preview
+      //   - editor mode:   .panel-left-stack vs .panel-preview
+      // In editor mode .panel-left-stack is flex:1 (CSS rule); we
+      // override with explicit basis. Same for .panel-terminal in split.
+      function applyMiddlePreviewFlex() {
+        const stack = document.getElementById('leftStack');
+        const term = mainPanel.querySelector('.panel-terminal');
+        const prev = mainPanel.querySelector('.panel-preview');
+        const middlePct = Math.max(20, Math.min(80, dims.middlePct));
+        if (layout === 'editor') {
+          // stack drives middle width; terminal is INSIDE stack.
+          if (stack) stack.style.flex = middlePct + ' 0 0%';
+          if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
+          if (term) term.style.flex = '';  // unset; vertical handler owns it
+        } else if (layout === 'split') {
+          if (term) term.style.flex = middlePct + ' 0 0%';
+          if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
+          if (stack) stack.style.flex = '';
+        } else {
+          // Other modes (terminal-only / preview-only) don't use either
+          // handle visibly; clear inline so CSS defaults take effect.
+          if (term) term.style.flex = '';
+          if (prev) prev.style.flex = '';
+          if (stack) stack.style.flex = '';
+        }
+      }
+
+      function applyEditorTerminalFlex() {
+        if (layout !== 'editor') return;
+        const editor = document.getElementById('editorPanel');
+        const term = mainPanel.querySelector('.panel-terminal');
+        const editorPct = Math.max(10, Math.min(90, dims.editorPct));
+        if (editor) editor.style.flex = editorPct + ' 0 0%';
+        if (term) term.style.flex = (100 - editorPct) + ' 0 0%';
+      }
+
+      // Drag wiring.
+      let activeHandle = null;
+      let dragStartXY = 0;
+      let dragStartDim = 0;
+      let dragStartTotal = 0;
+
+      function startDrag(kind, e) {
+        activeHandle = kind;
+        e.preventDefault();
+        const rect = mainPanel.getBoundingClientRect();
+        const stack = document.getElementById('leftStack');
+        if (kind === 'tree') {
+          dragStartXY = e.clientX;
+          dragStartDim = dims.treeWidth;
+          dragStartTotal = rect.width;
+          document.body.style.cursor = 'col-resize';
+        } else if (kind === 'middle') {
+          dragStartXY = e.clientX;
+          dragStartDim = dims.middlePct;
+          dragStartTotal = rect.width;
+          document.body.style.cursor = 'col-resize';
+        } else if (kind === 'editor-terminal') {
+          dragStartXY = e.clientY;
+          dragStartDim = dims.editorPct;
+          // The vertical handle moves within the left-stack column.
+          dragStartTotal = stack ? stack.getBoundingClientRect().height : rect.height;
+          document.body.style.cursor = 'row-resize';
+        }
+      }
+
+      function onMove(e) {
+        if (!activeHandle) return;
+        if (activeHandle === 'tree') {
+          const dx = e.clientX - dragStartXY;
+          dims.treeWidth = Math.max(160, Math.min(600, dragStartDim + dx));
+          const tree = document.getElementById('treePanel');
+          if (tree) tree.style.width = dims.treeWidth + 'px';
+          applyTerminalFit();
+          applyMonacoLayout();
+        } else if (activeHandle === 'middle') {
+          const dx = e.clientX - dragStartXY;
+          const pctDelta = (dx / dragStartTotal) * 100;
+          dims.middlePct = Math.max(20, Math.min(80, dragStartDim + pctDelta));
+          applyMiddlePreviewFlex();
+          applyTerminalFit();
+          applyMonacoLayout();
+        } else if (activeHandle === 'editor-terminal') {
+          const dy = e.clientY - dragStartXY;
+          const pctDelta = (dy / dragStartTotal) * 100;
+          dims.editorPct = Math.max(10, Math.min(90, dragStartDim + pctDelta));
+          applyEditorTerminalFlex();
+          applyTerminalFit();
+          applyMonacoLayout();
+        }
+      }
+
+      function endDrag() {
+        if (!activeHandle) return;
+        activeHandle = null;
+        document.body.style.cursor = '';
+        saveDims();
+        applyTerminalFit();
+        applyMonacoLayout();
+      }
+
+      // Wire up the three handles.
+      function bindHandles() {
+        const h1 = document.getElementById('treeResizeHandle');
+        const h2 = document.getElementById('resizeHandle');
+        const v1 = document.getElementById('editorTerminalResizeHandle');
+        if (h1) h1.addEventListener('mousedown', (e) => startDrag('tree', e));
+        if (h2) h2.addEventListener('mousedown', (e) => startDrag('middle', e));
+        if (v1) v1.addEventListener('mousedown', (e) => startDrag('editor-terminal', e));
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', endDrag);
+      }
+
+      function restoreDims() {
+        loadDims();
+        // Apply tree width inline so first paint shows the persisted size.
+        const tree = document.getElementById('treePanel');
+        if (tree) tree.style.width = dims.treeWidth + 'px';
+      }
+
+      // Re-apply dims any time setLayout() switches modes — the inline
+      // flex values are mode-specific (split vs editor have different
+      // pane structures).
+      function onLayoutChange() {
+        applyMiddlePreviewFlex();
+        applyEditorTerminalFlex();
+      }
+
+      bindHandles();
+      return { restoreDims, applyAll, onLayoutChange };
+    })();
+
+    // ── Status ──
+    function setStatus(s) {
+      dot.className = 'status-dot ' + s;
+      stText.textContent = s === 'connected' ? 'Connected' : s === 'connecting' ? 'Connecting...' : 'Disconnected';
+    }
+    function fmtB(b) {
+      if (b >= 1e9) return (b/1e9).toFixed(1)+' GB';
+      if (b >= 1e6) return (b/1e6).toFixed(1)+' MB';
+      if (b >= 1e3) return (b/1e3).toFixed(1)+' KB';
+      return b+' B';
+    }
+    function refreshStats() {
+      fetch(STATS_URL).then(r => r.json()).then(s => {
+        document.getElementById('stFiles').textContent = s.files + ' files, ' + s.directories + ' dirs';
+        document.getElementById('stSize').textContent = fmtB(s.usedBytes);
+        if (s.cache) {
+          document.getElementById('stCache').textContent = s.cache.entries + '/' + s.cache.maxEntries;
+          document.getElementById('stHitRate').textContent = s.cache.hitRate + '%';
+        }
+        // Pick the active preview backend: wrangler takes precedence
+        // over vite when both are running, because users only start
+        // wrangler deliberately (vs. vite which auto-starts on certain
+        // workflows). If neither is running, we still point at the
+        // vite /preview/ URL so its placeholder page renders.
+        let kind = 'none';
+        if (s.wrangler?.running) kind = 'worker';
+        else if (s.vite?.running) kind = 'vite';
+        applyPreviewTarget(kind);
+
+        if (s.wrangler?.running) {
+          viteStatus.textContent = 'worker running (' + (s.wrangler.name || '?') + ')';
+          viteStatus.className = 'vite-status running';
+        } else if (s.vite?.running) {
+          viteStatus.textContent = 'vite running (' + s.vite.root + ')';
+          viteStatus.className = 'vite-status running';
+        } else {
+          viteStatus.textContent = '';
+          viteStatus.className = 'vite-status';
+        }
+      }).catch(() => {});
+    }
+
+    // ── WebSocket ──
+    function connect() {
+      setStatus('connecting');
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => {
+        setStatus('connected'); rd = 1000;
+        ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+        // Drain any fs-* frames that Editor / FileTree queued before WS
+        // opened. Drain order does not matter; the server routes by reqId.
+        try { if (typeof Editor !== 'undefined') Editor.drainFsQueue(); } catch {}
+        try { if (typeof FileTree !== 'undefined') FileTree.drainFsQueue(); } catch {}
+        // Subscribe the FileTree to server-pushed fs-watch-event frames so
+        // terminal-side writes appear without a manual refresh click.
+        try { if (typeof FileTree !== 'undefined') FileTree.subscribeOnce(); } catch {}
+        refreshStats();
+        if (statsTimer) clearInterval(statsTimer);
+        statsTimer = setInterval(() => {
+          refreshStats();
+          // Keep the process count + tab state reconciled even if a
+          // spawn or exit event was dropped during a reconnect or
+          // brief network blip. /api/processes is cheap (in-memory).
+          if (typeof LogTabs !== 'undefined') LogTabs.hydrate();
+        }, 5000);
+        // Initial hydrate — DO is warm, ProcessTable populated.
+        if (typeof LogTabs !== 'undefined') LogTabs.hydrate();
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          // fs-*-result frames route to the editor's pending-request
+          // resolver. Return early so shell dispatch does not see them
+          // as unknown types.
+          if (Editor.tryHandleFsResult(msg)) return;
+          // FileTree consumes fs-list results too.
+          if (FileTree.tryHandleFsResult(msg)) return;
+          // Server-pushed fs-watch-event frames route to FileTree, which
+          // coalesces per-parent refreshes on a 100ms window.
+          if (FileTree.applyWatchEvent(msg)) return;
+          if (msg.type === 'output') {
+            term.write(msg.data);
+            // Snappy preview switch: both vite (/preview/) and wrangler
+            // (/worker/, "Worker built") emit recognisable output lines
+            // when they come online. Triggering an immediate stats
+            // refresh here shaves up to 5s off the otherwise-periodic
+            // polling interval so the iframe flips as soon as the user
+            // sees the dev-server banner in the terminal.
+            if (msg.data.includes('/preview/') ||
+                msg.data.includes('/worker/') ||
+                msg.data.includes('Worker built') ||
+                msg.data.includes('wrangler ready')) {
+              refreshStats();
+            }
+          } else if (msg.type === 'ready') {
+            refreshStats();
+          } else if (msg.type === 'hmr') {
+            // Forward HMR to preview iframe
+            if (previewFrame.contentWindow) {
+              previewFrame.contentWindow.postMessage(msg.data, '*');
+            }
+          } else if (msg.type === 'spawn') {
+            // Auto-open a log tab for EVERY process the supervisor spawns.
+            // Short-lived processes (node foo.js) immediately receive an
+            // exit event and the tab flips to "exited" — kept around for
+            // 10 min so the user can read the final output. Long-running
+            // processes stream live. Gating on longRunning made the tabs
+            // panel invisible for the most common user actions (node
+            // script.js, npm run <non-dev-script>), which defeats the
+            // whole point of the panel.
+            LogTabs.openTab(msg.pid, msg.command);
+          } else if (msg.type === 'exit') {
+            // An exit can arrive for a pid we never saw a spawn for
+            // (e.g. `node -e`, which the supervisor intentionally
+            // suppresses the spawn banner for). Surface those too so
+            // the user sees SOMETHING — we open a tab on-exit, fetch
+            // the command from /api/processes if we haven't already,
+            // and mark it exited. The ring buffer keeps the output
+            // for 10 min.
+            if (!LogTabs.hasTab(msg.pid)) {
+              LogTabs.openTab(msg.pid, msg.command || ('pid ' + msg.pid));
+            }
+            LogTabs.markExit(msg.pid, msg.code, msg.reason);
+          }
+        } catch {}
+      };
+      ws.onclose = () => {
+        setStatus('disconnected');
+        if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+        setTimeout(() => { rd = Math.min(rd*1.5, 10000); connect(); }, rd);
+      };
+      ws.onerror = () => ws.close();
+    }
+
+    term.onData(d => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'input',data:d})); });
+    window.addEventListener('resize', () => {
+      fitAddon.fit();
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+    });
+
+    // ── Process log tabs panel ─────────────────────────────────────────
+    // One tab per PID streaming `/api/logs/<pid>` over a WebSocket.
+    // Auto-opens on EVERY `{type:'spawn'}` from the main WS; manually
+    // closable via the ✕ on each tab, or collapsible via the toolbar
+    // "Processes" button. The ring buffer retains logs for 10 min
+    // post-exit, so a tab left open after a crash keeps showing the
+    // final output until the buffer expires (or the user closes it).
+    const LogTabs = (function() {
+      const panel = document.getElementById('logsPanel');
+      const tabBar = document.getElementById('logsTabBar');
+      const body = document.getElementById('logsPanelBody');
+      const btnProcs = document.getElementById('btnProcs');
+      const procsCount = document.getElementById('procsCount');
+      /** pid -> { tabEl, viewEl, ws, exited, failed, lastPainted, label } */
+      const tabs = new Map();
+      let activePid = null;
+      // User-controlled visibility. `true` = show panel when ≥1 tab open.
+      // `false` = keep panel collapsed even with tabs (toolbar button
+      // dropped down once). Defaults to true; toggled by #btnProcs.
+      let userWantsVisible = true;
+
+      // Minimal ANSI CSI stripper — the log stream passes ANSI through;
+      // we keep stderr coloring via a CSS class rather than trying to
+      // faithfully render xterm sequences inside a <pre>.
+      const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>()][^\s]?/g;
+      function stripAnsi(s) { return s.replace(ANSI_RE, ''); }
+
+      function escapeHtml(s) {
+        return s
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      // Derive a short label from the command: strip argv[0] path prefix,
+      // drop anything after the first flag-looking token, cap at ~28 chars.
+      function labelFor(command) {
+        if (!command) return '';
+        const trimmed = command.trim();
+        const parts = trimmed.split(/\s+/);
+        // Strip env-var prefixes like FOO=bar
+        let i = 0;
+        while (i < parts.length && /^[A-Z_][A-Z0-9_]*=/.test(parts[i])) i++;
+        let display = parts.slice(i, i + 3).join(' ');
+        if (display.length > 32) display = display.slice(0, 29) + '…';
+        return display || trimmed.slice(0, 32);
+      }
+
+      // Refit the xterm + push new cols/rows to the server. Called after
+      // ANY change to the panel's visibility or tab count — because the
+      // terminal's viewport just grew or shrunk and the shell needs the
+      // new size so its line-wrapping stays correct.
+      function refitTerminal() {
+        try { fitAddon.fit(); } catch {}
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      }
+
+      // Single source of truth for "should the panel be visible right
+      // now?". The panel shows iff there's ≥1 tab AND the user hasn't
+      // collapsed it. The toolbar button is visible iff we've ever seen
+      // a process (so brand-new sessions don't see a useless "0 Processes"
+      // chip), and its "active" highlight tracks panel visibility.
+      function applyVisibility() {
+        const haveTabs = tabs.size > 0;
+        const shouldShow = haveTabs && userWantsVisible;
+        const wasShown = panel.classList.contains('active');
+        if (shouldShow) panel.classList.add('active');
+        else panel.classList.remove('active');
+        if (wasShown !== shouldShow) refitTerminal();
+
+        // Running vs total — the dot pulses when ≥1 tab is running.
+        let running = 0;
+        for (const t of tabs.values()) if (!t.exited) running++;
+        procsCount.textContent = running > 0
+          ? (running === tabs.size ? String(running) : running + '/' + tabs.size)
+          : String(tabs.size);
+        btnProcs.classList.toggle('visible', haveTabs);
+        btnProcs.classList.toggle('has-running', running > 0);
+        btnProcs.classList.toggle('active', shouldShow);
+      }
+
+      // Hard cap on child nodes per view — a long-running `vite` session
+      // can produce thousands of chunks per hour; without this, the tab's
+      // DOM grows unboundedly and the browser tab eventually becomes
+      // sluggish. When over the cap we drop the oldest 20% in one go to
+      // amortize layout thrash (vs. one-at-a-time on every render).
+      const MAX_NODES_PER_VIEW = 2000;
+      const TRIM_BATCH = 400;
+
+      function appendToView(tab, el) {
+        // Pre-compute bottom-ness against the actively-rendered view (not
+        // the panel body, which might be scrolled by a different tab).
+        const view = tab.viewEl;
+        const isActive = activePid === tab.pid;
+        const atBottom = isActive &&
+          (body.scrollHeight - body.scrollTop - body.clientHeight) < 24;
+        view.appendChild(el);
+        if (view.childElementCount > MAX_NODES_PER_VIEW) {
+          // Trim oldest. DocumentFragment swap would be faster for huge
+          // drops, but TRIM_BATCH is small and this runs at most once per
+          // append so the measured cost is negligible.
+          for (let i = 0; i < TRIM_BATCH && view.firstChild; i++) {
+            view.removeChild(view.firstChild);
+          }
+        }
+        if (atBottom) body.scrollTop = body.scrollHeight;
+      }
+
+      function renderChunk(tab, chunk) {
+        const span = document.createElement('span');
+        span.textContent = stripAnsi(chunk.data);
+        if (chunk.binary) span.className = 'binary';
+        else if (chunk.stream === 'stderr') span.className = 'stderr';
+        appendToView(tab, span);
+      }
+
+      function renderBanner(tab, text, cls) {
+        const div = document.createElement('span');
+        div.className = 'banner' + (cls ? ' ' + cls : '');
+        div.textContent = text;
+        appendToView(tab, div);
+      }
+
+      function setActive(pid) {
+        activePid = pid;
+        for (const [p, t] of tabs) {
+          t.tabEl.classList.toggle('active', p === pid);
+          t.viewEl.classList.toggle('active', p === pid);
+        }
+        if (pid !== null) body.scrollTop = body.scrollHeight;
+      }
+
+      function closeTab(pid) {
+        const t = tabs.get(pid);
+        if (!t) return;
+        try { t.ws?.close(); } catch {}
+        t.tabEl.remove();
+        t.viewEl.remove();
+        tabs.delete(pid);
+        if (activePid === pid) {
+          // Pick any other open tab, or collapse.
+          const next = tabs.keys().next().value;
+          if (next !== undefined) setActive(next);
+          else activePid = null;
+        }
+        applyVisibility();
+      }
+
+      // Open the log-stream WebSocket for a tab, if it hasn't been
+      // opened already. Audit R3 / PERF-AUDIT.md: since auto-open-
+      // every-spawn landed, every short-lived `node foo.js` opened a
+      // persistent log WS that stayed alive 10 min. Every facet
+      // stdout chunk then fanned out to every idle subscriber on the
+      // DO side, competing with the shell WS for input-gate time and
+      // making typing feel laggy.
+      //
+      // We now defer the WS connection until the user actually clicks
+      // the tab. The tab strip still appears immediately on spawn
+      // (good UX — "I see you, here's your process") but the server
+      // never ships bytes to a reader nobody's reading. The 95% of
+      // short-lived processes that the user never clicks pay zero
+      // network/DO cost beyond the initial {spawn}/{exit} frames on
+      // the main WS.
+      function ensureLogWs(tab) {
+        if (tab.wsOpened) return;
+        tab.wsOpened = true;
+        // Drop the "click this tab to attach" placeholder (if any).
+        // Backlog + live chunks will repopulate the view.
+        tab.viewEl.replaceChildren();
+        const pid = tab.pid;
+        const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
+                      '//' + location.host + SESSION_PREFIX + '/api/logs/' + pid;
+        let logWs;
+        try { logWs = new WebSocket(wsUrl); } catch {
+          renderBanner(tab, '[log stream could not be opened]', 'failed');
+          return;
+        }
+        tab.ws = logWs;
+        logWs.onmessage = (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.type === 'backlog') {
+            for (const c of (msg.chunks || [])) renderChunk(tab, c);
+          } else if (msg.type === 'chunk') {
+            renderChunk(tab, msg);
+          } else if (msg.type === 'exit') {
+            markExit(pid, msg.code, msg.reason);
+          } else if (msg.type === 'notfound') {
+            // Mark exited so the server-side close doesn't emit a second
+            // "[log stream closed]" banner on top of this one.
+            tab.exited = true;
+            tab.failed = true;
+            tab.tabEl.classList.add('exited', 'failed');
+            renderBanner(tab, '[no log buffer for pid ' + pid + ' — process may have been reaped]', 'failed');
+          }
+        };
+        logWs.onclose = () => {
+          // If we haven't seen an exit yet, this is a server-side tear-down
+          // or a network blip. The UI keeps the tab open so the user can
+          // still read the backlog; reconnect would require a manual close
+          // + reopen via the shell.
+          if (!tab.exited) {
+            renderBanner(tab, '[log stream closed]', '');
+          }
+        };
+        logWs.onerror = () => {
+          renderBanner(tab, '[log stream error]', 'failed');
+        };
+      }
+
+      function openTab(pid, command) {
+        if (tabs.has(pid)) { setActive(pid); userWantsVisible = true; applyVisibility(); return; }
+
+        const label = labelFor(command);
+        const tabEl = document.createElement('div');
+        tabEl.className = 'logs-tab';
+        tabEl.title = 'pid ' + pid + ': ' + (command || '(unknown)');
+        tabEl.innerHTML =
+          '<span class="logs-tab-dot"></span>' +
+          '<span class="logs-tab-label"></span>' +
+          '<span class="logs-tab-pid" style="color:#484f58">#' + pid + '</span>' +
+          // Primitives wave (P11): Kill (^C/SIGTERM-equivalent) and
+          // Restart per-tab. Hidden via CSS when the process has
+          // exited. The close X is unchanged — it just removes the
+          // local tab; Kill is what tears down the process.
+          '<span class="logs-tab-action logs-tab-restart" title="Restart process (kill + spawn fresh; vite only)">↻</span>' +
+          '<span class="logs-tab-action logs-tab-kill" title="Kill process">⏹</span>' +
+          '<span class="logs-tab-close" title="Close tab (process keeps running)">✕</span>';
+        tabEl.querySelector('.logs-tab-label').textContent = label;
+        tabEl.addEventListener('click', (e) => {
+          const target = e.target;
+          if (target.classList && (
+            target.classList.contains('logs-tab-close') ||
+            target.classList.contains('logs-tab-action')
+          )) return;
+          // User click: this is the signal that they want to read the
+          // log stream. Open the WS if it isn't already, then activate.
+          const t = tabs.get(pid);
+          if (t) ensureLogWs(t);
+          setActive(pid);
+        });
+        tabEl.querySelector('.logs-tab-close').addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeTab(pid);
+        });
+        const sendAction = async (action) => {
+          // POST /api/<action>/<pid>; surface failures as a banner inside
+          // the tab so the user sees WHY without hunting in network tools.
+          let resp;
+          try {
+            resp = await fetch(SESSION_PREFIX + '/api/' + action + '/' + pid, {
+              method: 'POST', cache: 'no-store',
+            });
+          } catch (err) {
+            const t = tabs.get(pid);
+            if (t) renderBanner(t, '[' + action + ' failed: network] ' + (err && err.message || err), 'failed');
+            return;
+          }
+          const t = tabs.get(pid);
+          if (!t) return;
+          if (!resp.ok) {
+            let msg = '[' + action + ' failed: HTTP ' + resp.status + ']';
+            try {
+              const j = await resp.json();
+              if (j && j.error) msg += ' ' + j.error;
+            } catch {}
+            renderBanner(t, msg, 'failed');
+            return;
+          }
+          renderBanner(t, '[' + action + ' requested]', 'ok');
+        };
+        tabEl.querySelector('.logs-tab-kill').addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendAction('kill');
+        });
+        tabEl.querySelector('.logs-tab-restart').addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendAction('restart');
+        });
+
+        const viewEl = document.createElement('div');
+        viewEl.className = 'logs-view';
+        viewEl.dataset.pid = String(pid);
+
+        tabBar.appendChild(tabEl);
+        body.appendChild(viewEl);
+
+        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label };
+        tabs.set(pid, tab);
+        // Placeholder until the user clicks — so the active tab doesn't
+        // look broken on auto-activate. renderBanner uses the existing
+        // `.banner` styling. Replaced by real content when the WS
+        // delivers a backlog frame (ensureLogWs → onmessage).
+        renderBanner(tab, '[click this tab to attach to the log stream]', '');
+        // Any new tab re-opens the panel if the user had collapsed it —
+        // seeing a new process spawn is a stronger signal than a stale
+        // "I don't want this right now" click. setActive is purely a
+        // UI paint here (no WS opened) so the panel and "Processes N"
+        // chip still react immediately to the spawn event.
+        userWantsVisible = true;
+        setActive(pid);
+        applyVisibility();
+      }
+
+      function markExit(pid, code, reason) {
+        const tab = tabs.get(pid);
+        if (!tab) return;
+        if (tab.exited) return; // idempotent — server + log-WS may both fire
+        tab.exited = true;
+        tab.failed = code !== 0;
+        tab.tabEl.classList.add('exited');
+        if (tab.failed) tab.tabEl.classList.add('failed');
+        // Update the dot color via the class; append the exit banner.
+        const reasonSuffix = reason ? ' (' + reason + ')' : '';
+        renderBanner(
+          tab,
+          '[process exited with code ' + code + reasonSuffix + ' — tab kept; close with ✕]',
+          code === 0 ? 'ok' : 'failed',
+        );
+        // Running-count changed; refresh toolbar badge.
+        applyVisibility();
+      }
+
+      // Restore any processes already in the DO's ring buffer / process
+      // table when the page loads. Covers two cases: (a) full page
+      // refresh mid-session — the DO's process table persists, so we
+      // should re-attach to any running process; (b) main WS reconnect
+      // after a transient network blip — same table, same goal.
+      //
+      // We open tabs for ALL state='running' processes so users see
+      // everything happening. Exited ones stay accessible via `logs
+      // <pid>` in the shell for 10 min, but we don't auto-open them
+      // here because that would clutter the UI after a handful of
+      // short-lived commands.
+      function hydrate() {
+        fetch(SESSION_PREFIX + '/api/processes', { cache: 'no-store' })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (!data?.processes) return;
+            for (const p of data.processes) {
+              if (p.state === 'running' && !tabs.has(p.pid)) {
+                openTab(p.pid, p.command);
+              } else if (p.state !== 'running' && tabs.has(p.pid)) {
+                // Server says exited; reconcile in case our main-WS
+                // exit event got dropped during reconnect.
+                markExit(p.pid, p.exitCode ?? 0, undefined);
+              }
+            }
+            applyVisibility();
+          })
+          .catch(() => {});
+      }
+
+      // Toolbar button: toggle user-facing visibility. If currently
+      // shown, a click hides; if hidden, a click re-shows. Clicking
+      // with no tabs open is a no-op (the button is hidden via CSS in
+      // that state anyway).
+      btnProcs.addEventListener('click', () => {
+        userWantsVisible = !panel.classList.contains('active');
+        applyVisibility();
+      });
+
+      return {
+        openTab, closeTab, markExit, hydrate, applyVisibility,
+        hasTab: (pid) => tabs.has(pid),
+      };
+    })();
+    // LogTabs.hydrate is invoked from ws.onopen above — the DO is warm
+    // and ProcessTable is populated by then, no arbitrary delay needed.
+
+    term.focus();
+    // Restore persisted pane dims before activating layout so the first paint
+    // shows the user's prior arrangement.
+    PaneResizer.restoreDims();
+    setLayout('editor');
+    connect();
+  </script>
+</body>
+</html>
