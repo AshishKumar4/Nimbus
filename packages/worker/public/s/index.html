@@ -29,7 +29,7 @@
     .toolbar .sep { width: 1px; height: 16px; background: #30363d; margin: 0 4px; }
     .toolbar .vite-status { font-size: 11px; color: #8b949e; margin-left: auto; }
     .toolbar .vite-status.running { color: #3fb950; }
-    /* Process count button. Sits next to the layout-mode buttons. Hidden
+    /* Process count button. Sits next to the workspace buttons. Hidden
        (display:none) until at least one process has been seen in this
        session so it doesn't clutter a brand-new session's toolbar. */
     .toolbar #btnProcs { display: none; gap: 6px; align-items: center; font-family: ui-monospace, Menlo, monospace; }
@@ -151,22 +151,6 @@
     .footer .stat-value { color: #c9d1d9; }
     .footer .stat-value.good { color: #3fb950; }
 
-    /* Layout modes */
-    .main.terminal-only .panel-preview,
-    .main.terminal-only .panel-editor,
-    .main.terminal-only .resize-handle { display: none; }
-    .main.terminal-only .panel-terminal { flex: 1; }
-    .main.preview-only .panel-terminal,
-    .main.preview-only .panel-editor,
-    .main.preview-only .resize-handle { display: none; }
-    .main.preview-only .panel-preview { flex: 1; }
-    .main.agent .panel-tree,
-    .main.agent .tree-resize-handle,
-    .main.agent .panel-left-stack,
-    .main.agent .resize-handle,
-    .main.agent .panel-preview { display: none; }
-    .main.agent .panel-agent { display: flex; }
-
     /* Agent chat */
     .panel-agent {
       display: none; flex: 1; min-width: 0; min-height: 0;
@@ -175,8 +159,7 @@
     .agent-shell {
       flex: 1; min-height: 0; display: grid;
       grid-template-rows: auto 1fr auto;
-      max-width: 980px; width: 100%; margin: 0 auto;
-      border-left: 1px solid #30363d; border-right: 1px solid #30363d;
+      width: 100%;
       background: #0d1117;
     }
     .agent-top {
@@ -239,16 +222,14 @@
     .agent-composer button { min-width: 72px; font-weight: 600; }
     .agent-composer button:disabled { opacity: 0.55; cursor: not-allowed; }
 
-    /* Editor layout mode:
+    /* Editor workspace:
          FILE TREE | editor-stack (editor TOP + terminal BOTTOM) | PREVIEW
 
-       Editor + terminal live INSIDE .panel-left-stack. In 1D modes
-       (terminal-only / split / preview-only) the stack is
-       display:contents (layout-transparent — children flex directly
-       into .main). In editor mode the stack flips to flex column so
-       editor (top) + terminal (bottom) stack vertically. */
+       Editor, Agent, and terminal live inside .panel-left-stack. The top
+       surface switches between the editor and chat while the terminal and
+       preview stay visible. */
 
-    /* Editor panel — hidden by default; shown by mode-specific rules. */
+    /* Editor panel — hidden by default; shown by workspace rules. */
     .panel-editor {
       flex: 1; display: none; flex-direction: column;
       background: #1e1e1e;        /* VSCode dark editor background */
@@ -256,12 +237,11 @@
     }
     .panel-editor.active { display: flex; }
 
-    /* Wrapper for the editor-stack column. display:contents in 1D
-       modes (transparent). flex column in editor mode. */
+    /* Wrapper for the center workspace column. */
     .panel-left-stack { display: contents; }
 
     /* File-tree sidebar. Lives as a FIRST child of
-       .main; visible only in 'editor' mode. ~250px default width,
+       .main; visible in the editor workspace. ~250px default width,
        resizable via .tree-resize-handle. */
     .panel-tree {
       display: none; flex-direction: column;
@@ -361,6 +341,11 @@
     .main.editor .panel-terminal {
       display: flex; flex: 0 0 40%; min-height: 80px;
     }
+    .main.editor .panel-agent { display: none; }
+    .main.editor .panel-left-stack.agent-surface .panel-editor { display: none; }
+    .main.editor .panel-left-stack.agent-surface .panel-agent {
+      display: flex; flex: 1 1 60%; min-height: 100px;
+    }
     .main.editor .vresize-handle { display: block; }
     .main.editor .resize-handle { display: block; }
     .main.editor .panel-preview { display: flex; flex: 1; min-width: 0; }
@@ -411,13 +396,8 @@
     </div>
   </div>
   <div class="toolbar" id="toolbar">
-    <button id="btnTerminal" class="active" title="Terminal">Terminal</button>
-    <button id="btnPreview" title="Preview">Preview</button>
-    <button id="btnSplit" title="Split view">Split</button>
-    <!-- Single canonical editor mode:
-         file tree | editor (top) + terminal (bottom) | preview.
-         Lazy-loads Monaco + the tree on first click. -->
-    <button id="btnEditor" title="Editor (file tree + Monaco + terminal + preview)">Editor</button>
+    <!-- Single workspace: file tree | editor/agent + terminal | preview. -->
+    <button id="btnEditor" class="active" title="Editor">Editor</button>
     <button id="btnAgent" title="Agent chat">Agent</button>
     <div class="sep"></div>
     <button id="btnProcs" title="Toggle process logs panel">
@@ -429,9 +409,8 @@
     <span class="vite-status" id="viteStatus"></span>
   </div>
   <div class="main" id="mainPanel">
-    <!-- File-tree sidebar. Visible ONLY
-         in editor mode (CSS toggles display:flex on .main.editor).
-         The .tree-resize-handle sits between tree and editor stack;
+    <!-- File-tree sidebar. Visible in the workspace.
+         The .tree-resize-handle sits between tree and the center stack;
          dragging it adjusts .panel-tree's width inline. -->
     <div class="panel-tree" id="treePanel">
       <div class="tree-toolbar">
@@ -446,30 +425,7 @@
       <div class="tree-body" id="treeBody"></div>
     </div>
     <div class="tree-resize-handle" id="treeResizeHandle"></div>
-    <div class="panel-agent" id="agentPanel">
-      <div class="agent-shell">
-        <div class="agent-top">
-          <div class="agent-title">Nimbus Agent</div>
-          <select id="agentAccount" title="Cloudflare account" style="display:none"></select>
-          <button id="agentConnect" style="display:none">Connect Cloudflare</button>
-          <button id="agentDisconnect" style="display:none">Disconnect</button>
-          <button id="agentClear" title="Clear chat">Clear</button>
-          <div class="agent-status" id="agentStatus">Checking...</div>
-        </div>
-        <div class="agent-messages" id="agentMessages">
-          <div class="agent-empty" id="agentEmpty">Cloudflare connection required.</div>
-        </div>
-        <form class="agent-composer" id="agentForm">
-          <textarea id="agentInput" rows="2" placeholder="Message Nimbus"></textarea>
-          <button id="agentSend" type="submit">Send</button>
-        </form>
-      </div>
-    </div>
-    <!-- The .panel-left-stack wrapper is display:contents in 1D modes
-         (terminal-only, split, preview-only) — its children act as
-         direct flex children of .main. In editor mode, CSS flips it to
-         display:flex so editor and terminal stack vertically in the middle
-         column. -->
+    <!-- The .panel-left-stack wrapper is the middle workspace column. -->
     <div class="panel-left-stack" id="leftStack">
       <div class="panel-editor" id="editorPanel">
         <div class="editor-bar">
@@ -492,9 +448,26 @@
           <span id="editorStatusEnc">UTF-8</span>
         </div>
       </div>
-      <!-- Vertical resize handle between
-           editor (top) and terminal (bottom) inside the editor-stack
-           column. Visible only in editor mode (.main.editor). -->
+      <div class="panel-agent" id="agentPanel">
+        <div class="agent-shell">
+          <div class="agent-top">
+            <div class="agent-title">Nimbus Agent</div>
+            <select id="agentAccount" title="Cloudflare account" style="display:none"></select>
+            <button id="agentConnect" style="display:none">Connect Cloudflare</button>
+            <button id="agentDisconnect" style="display:none">Disconnect</button>
+            <button id="agentClear" title="Clear chat">Clear</button>
+            <div class="agent-status" id="agentStatus">Checking...</div>
+          </div>
+          <div class="agent-messages" id="agentMessages">
+            <div class="agent-empty" id="agentEmpty">Cloudflare connection required.</div>
+          </div>
+          <form class="agent-composer" id="agentForm">
+            <textarea id="agentInput" rows="2" placeholder="Message Nimbus"></textarea>
+            <button id="agentSend" type="submit">Send</button>
+          </form>
+        </div>
+      </div>
+      <!-- Vertical resize handle between the top surface and terminal. -->
       <div class="vresize-handle" id="editorTerminalResizeHandle"></div>
       <div class="panel-terminal">
         <div id="terminal-container"></div>
@@ -628,53 +601,46 @@
     const mainPanel = document.getElementById('mainPanel');
     const viteStatus = document.getElementById('viteStatus');
     let ws = null, rd = 1000, statsTimer = null;
-    // Current layout modes. Editor mode keeps the file tree, Monaco,
-    // terminal, and preview visible together.
-    let layout = 'split';
+    // The app has one workspace layout. Only the top center surface switches.
+    let layout = 'editor';
+    let workSurface = 'editor';
 
     // ── Layout controls ──
     function setLayout(mode) {
-      layout = mode;
-      mainPanel.className = 'main' + (mode !== 'split' ? ' ' + mode : '');
-      document.getElementById('btnTerminal').classList.toggle('active', mode === 'terminal-only');
-      document.getElementById('btnPreview').classList.toggle('active', mode === 'preview-only');
-      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
-      document.getElementById('btnEditor').classList.toggle('active', mode === 'editor');
-      document.getElementById('btnAgent').classList.toggle('active', mode === 'agent');
-      // Editor panel visibility — drives display:flex via .active.
+      workSurface = mode === 'agent' ? 'agent' : 'editor';
+      layout = 'editor';
+      mainPanel.className = 'main editor';
+      const leftStack = document.getElementById('leftStack');
+      leftStack.classList.toggle('agent-surface', workSurface === 'agent');
+      document.getElementById('btnEditor').classList.toggle('active', workSurface === 'editor');
+      document.getElementById('btnAgent').classList.toggle('active', workSurface === 'agent');
+      // Editor panel visibility — drives display:flex via .active unless
+      // the agent surface is currently selected.
       const editorPanel = document.getElementById('editorPanel');
-      const wantEditor = (mode === 'editor');
+      const wantEditor = (workSurface === 'editor');
       editorPanel.classList.toggle('active', wantEditor);
-      // Lazy-init Monaco + the file tree the FIRST time the user
-      // switches to editor mode. Cold session pays neither cost.
+      FileTree.ensureLoaded().catch(() => {});
+      // Lazy-init Monaco the first time the editor surface is selected.
       if (wantEditor) {
-        const editorReady = Editor.ensureLoaded();
-        const treeReady = FileTree.ensureLoaded();
-        Promise.allSettled([editorReady, treeReady])
+        Editor.ensureLoaded()
           .then(() => Editor.openDefaultWelcome())
           .catch(() => {});
       }
-      if (mode === 'agent') {
+      if (workSurface === 'agent') {
         Agent.ensureLoaded().catch(() => {});
       }
       setTimeout(() => {
-        // Re-apply persisted pane dims for this layout.
-        // PaneResizer uses inline flex which is mode-specific (split vs
-        // editor have different pane structures); onLayoutChange picks
-        // the right elements for the active mode.
+        // Re-apply persisted pane dims for this workspace.
         try { if (typeof PaneResizer !== 'undefined') PaneResizer.onLayoutChange(); } catch {}
         try { fitAddon.fit(); } catch {}
         // Re-layout Monaco after the panel resizes. automaticLayout:true
-        // already handles this but explicit layout() on mode switch
+        // already handles this but explicit layout() on surface switch
         // avoids a one-frame flash where the editor sees its old size.
         if (window.__nimbusMonacoEditor) {
           try { window.__nimbusMonacoEditor.layout(); } catch {}
         }
       }, 50);
     }
-    document.getElementById('btnTerminal').onclick = () => setLayout('terminal-only');
-    document.getElementById('btnPreview').onclick = () => setLayout('preview-only');
-    document.getElementById('btnSplit').onclick = () => setLayout('split');
     document.getElementById('btnEditor').onclick = () => setLayout('editor');
     document.getElementById('btnAgent').onclick = () => setLayout('agent');
     document.getElementById('btnRefresh').onclick = () => reloadPreview();
@@ -683,13 +649,13 @@
     // ── Editor module ──
     //
     // Lazy-loads Monaco via cdnjs UMD on first call to ensureLoaded().
-    // Cold session (terminal-only flow) never pays the ~5MB download.
     //
     // Owns the open file, dirty state, Ctrl+P palette, Ctrl+S save.
     // All fs operations route through the live WS via fs-read /
     // fs-write / fs-list messages → init.ts handler → SqliteVFS.
     //
-    // Perf-invariant: Monaco is not loaded on cold terminal-only sessions.
+    // Perf-invariant: Monaco is loaded by runtime appending, not by an eager
+    // <script src> in the served HTML.
     const Editor = (function() {
       // CDN choice: cdnjs hosts Monaco's UMD AMD-loader (`loader.min.js`)
       // which fetches the remaining vs/* chunks on demand. Total cold
@@ -2151,9 +2117,6 @@
       // self-refreshes via its own polling loop.
       previewFrame.src = url;
       setPreviewUrlBar(url);
-      // If the user had collapsed the preview because nothing was up,
-      // surface it automatically when the first backend comes online.
-      if (kind !== 'none' && layout === 'terminal-only') setLayout('split');
     }
 
     function reloadPreview() {
@@ -2176,10 +2139,10 @@
 
     // ── Pane resize manager ──
     //
-    // Owns the 3 resize handles in editor mode + 1 in split mode:
-    //   H1 tree ↔ editor-stack (col, in editor mode)         — TreeResizeHandle in FileTree IIFE
-    //   H2 editor-stack ↔ preview (col, in editor + split)    — #resizeHandle (mode-aware)
-    //   V1 editor ↔ terminal (row, in editor mode)            — #editorTerminalResizeHandle
+    // Owns the three workspace resize handles:
+    //   H1 tree ↔ center stack (col)       — TreeResizeHandle in FileTree IIFE
+    //   H2 center stack ↔ preview (col)    — #resizeHandle
+    //   V1 top surface ↔ terminal (row)    — #editorTerminalResizeHandle
     //
     // Each handle persists its dimension to localStorage so a reload
     // restores the user's layout. Keyed per-session.
@@ -2228,41 +2191,25 @@
         applyMonacoLayout();
       }
 
-      // Map middlePct → flex basis on the two children that actually
-      // compete for horizontal space in each mode:
-      //   - split mode:    .panel-terminal vs .panel-preview
-      //   - editor mode:   .panel-left-stack vs .panel-preview
-      // In editor mode .panel-left-stack is flex:1 (CSS rule); we
-      // override with explicit basis. Same for .panel-terminal in split.
+      // Map middlePct to the center workspace and preview columns.
       function applyMiddlePreviewFlex() {
         const stack = document.getElementById('leftStack');
         const term = mainPanel.querySelector('.panel-terminal');
         const prev = mainPanel.querySelector('.panel-preview');
         const middlePct = Math.max(20, Math.min(80, dims.middlePct));
-        if (layout === 'editor') {
-          // stack drives middle width; terminal is INSIDE stack.
-          if (stack) stack.style.flex = middlePct + ' 0 0%';
-          if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
-          if (term) term.style.flex = '';  // unset; vertical handler owns it
-        } else if (layout === 'split') {
-          if (term) term.style.flex = middlePct + ' 0 0%';
-          if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
-          if (stack) stack.style.flex = '';
-        } else {
-          // Other modes (terminal-only / preview-only) don't use either
-          // handle visibly; clear inline so CSS defaults take effect.
-          if (term) term.style.flex = '';
-          if (prev) prev.style.flex = '';
-          if (stack) stack.style.flex = '';
-        }
+        if (stack) stack.style.flex = middlePct + ' 0 0%';
+        if (prev) prev.style.flex = (100 - middlePct) + ' 0 0%';
+        if (term) term.style.flex = '';
       }
 
       function applyEditorTerminalFlex() {
         if (layout !== 'editor') return;
-        const editor = document.getElementById('editorPanel');
+        const topSurface = workSurface === 'agent'
+          ? document.getElementById('agentPanel')
+          : document.getElementById('editorPanel');
         const term = mainPanel.querySelector('.panel-terminal');
         const editorPct = Math.max(10, Math.min(90, dims.editorPct));
-        if (editor) editor.style.flex = editorPct + ' 0 0%';
+        if (topSurface) topSurface.style.flex = editorPct + ' 0 0%';
         if (term) term.style.flex = (100 - editorPct) + ' 0 0%';
       }
 
@@ -2350,9 +2297,7 @@
         if (tree) tree.style.width = dims.treeWidth + 'px';
       }
 
-      // Re-apply dims any time setLayout() switches modes — the inline
-      // flex values are mode-specific (split vs editor have different
-      // pane structures).
+      // Re-apply dims any time setLayout() switches surfaces.
       function onLayoutChange() {
         applyMiddlePreviewFlex();
         applyEditorTerminalFlex();

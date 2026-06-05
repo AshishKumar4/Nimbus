@@ -39,6 +39,10 @@ const stub = {
     calls.push(['readFileBytes', path]);
     return new Uint8Array([0, 255]);
   },
+  async _rpcStat(path) {
+    calls.push(['stat', path]);
+    return { type: 'file', size: 2, mtime: 1, mode: 0o644 };
+  },
   async _rpcInstallRuntime(spec, options) {
     calls.push(['installRuntime', spec, options]);
     return { spec, exitCode: 0 };
@@ -134,6 +138,11 @@ const read = await rpc('job-123', token, { op: 'readFileBytes', args: ['/home/us
 const readJson = await read.json();
 a.check('remote API encodes readFileBytes bytes',
   readJson.result.__nimbusWireType === 'bytes' && readJson.result.base64 === 'AP8=');
+
+const stat = await rpc('job-123', token, { op: 'stat', args: ['/home/user/blob.bin'] });
+const statJson = await stat.json();
+a.check('remote API dispatches stat',
+  stat.status === 200 && statJson.result?.type === 'file');
 
 const blocked = await rpc('job-123', token, { op: 'installRuntime', args: ['ruby'] });
 const blockedJson = await blocked.json();

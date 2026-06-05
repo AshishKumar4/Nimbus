@@ -48,6 +48,7 @@ const stub = {
   async _rpcReadFile(path) { calls.push(['readFile', path]); return 'file'; },
   async _rpcReadFileBytes(path) { calls.push(['readFileBytes', path]); return new Uint8Array([1, 2]); },
   async _rpcWriteFile(path, content) { calls.push(['writeFile', path, content]); },
+  async _rpcStat(path) { calls.push(['stat', path]); return { type: 'file', size: 4, mtime: 1, mode: 0o644 }; },
   async _rpcReaddir(path) { calls.push(['readdir', path]); return [{ name: 'a.txt', type: 'file' }]; },
   async _rpcExists(path) { calls.push(['exists', path]); return true; },
   async _rpcMkdir(path) { calls.push(['mkdir', path]); },
@@ -111,6 +112,9 @@ const provider = box.tools();
 a.check('tools namespace from profile', provider.name === 'sandbox' && provider.kind === 'sandbox');
 a.check('tools expose Proteus exec', typeof provider.tools.exec.execute === 'function');
 a.check('capabilities do not claim docker', !provider.capabilities.includes('docker'));
+
+const stat = await box.files.stat('/home/user/project/a.txt');
+a.check('files.stat exposes VFS stat', stat?.type === 'file' && stat.size === 4);
 
 const strict = nimbus.sandbox('agent-2', { profile: 'strict' });
 await strict.runtimes.install('python');

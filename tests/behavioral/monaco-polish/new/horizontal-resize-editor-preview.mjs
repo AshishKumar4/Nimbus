@@ -1,8 +1,6 @@
 #!/usr/bin/env bun
-// monaco-polish/new/horizontal-resize-editor-preview — H2 handle
-// (middle column ↔ preview). The existing #resizeHandle was already
-// in split mode; monaco-polish makes it mode-aware so it adjusts
-// .panel-left-stack ↔ .panel-preview in editor mode.
+// monaco-polish/new/horizontal-resize-editor-preview — H2 handle resizes the
+// center workspace column against preview.
 
 import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
 
@@ -22,21 +20,17 @@ a.check("PaneResizer binds startDrag('middle', e) for #resizeHandle",
   /h2\s*=\s*document\.getElementById\(['"]resizeHandle['"]\)[\s\S]{0,300}h2\.addEventListener\(['"]mousedown['"]\s*,\s*\(e\)\s*=>\s*startDrag\(['"]middle['"]\s*,\s*e\)\)/.test(html),
   `middle-handle bind missing`);
 
-// applyMiddlePreviewFlex dispatches by layout: split → terminal+preview,
-// editor → left-stack+preview.
-a.check('applyMiddlePreviewFlex branches by layout',
-  /applyMiddlePreviewFlex[\s\S]{0,1000}layout\s*===\s*['"]editor['"][\s\S]{0,400}layout\s*===\s*['"]split['"]/.test(html),
-  `mode-aware branching missing`);
-
-a.check('Editor-mode branch updates leftStack flex',
-  /layout\s*===\s*['"]editor['"][\s\S]{0,300}leftStack[\s\S]{0,100}style\.flex/.test(html) ||
-  /layout\s*===\s*['"]editor['"][\s\S]{0,300}stack\.style\.flex/.test(html),
+a.check('applyMiddlePreviewFlex updates center stack flex',
+  /function applyMiddlePreviewFlex\(\)[\s\S]{0,500}stack\.style\.flex\s*=/.test(html),
   `leftStack flex mutation missing`);
 
-a.check('Split-mode branch updates panel-terminal flex',
-  /layout\s*===\s*['"]split['"][\s\S]{0,400}panel-terminal[\s\S]{0,100}style\.flex/.test(html) ||
-  /layout\s*===\s*['"]split['"][\s\S]{0,400}term\.style\.flex/.test(html),
-  `panel-terminal flex mutation missing`);
+a.check('applyMiddlePreviewFlex updates preview flex',
+  /function applyMiddlePreviewFlex\(\)[\s\S]{0,500}prev\.style\.flex\s*=/.test(html),
+  `preview flex mutation missing`);
+
+a.check('applyMiddlePreviewFlex no longer branches to legacy split mode',
+  !/layout\s*===\s*['"]split['"]/.test(html),
+  `split branch still present`);
 
 a.check('Middle-handle clamps middlePct to 20-80',
   /Math\.max\(20,\s*Math\.min\(80,/.test(html),

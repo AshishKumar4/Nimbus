@@ -292,8 +292,8 @@ export class NimbusSession extends CloudflareDurableObject {
   /** file-tree-watch (2026-05-15): per-WS fs-watch subscriptions.
    *  Lazily created on first fs-watch-subscribe by src/session/fs-watch.ts;
    *  cleaned up unconditionally in src/session/ws.ts on wsClose / wsError.
-   *  Optional (undefined) until first subscribe so memory stays at 0
-   *  for terminal-only sessions. */
+   *  Optional (undefined) until first subscribe so sessions that never
+   *  open the file tree carry no watch state. */
   _fsWatchSubs?: Map<WebSocket, import('./fs-watch.js').FsWatchSub[]>;
   nimbusWrangler: NimbusWrangler | null = null;
   npmInstaller: NpmInstaller | null = null;

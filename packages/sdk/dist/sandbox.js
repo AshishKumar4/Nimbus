@@ -101,6 +101,7 @@ export class NimbusSandbox {
             _rpcReadFile: (path) => this.remoteRpc('readFile', [path]),
             _rpcReadFileBytes: (path) => this.remoteRpc('readFileBytes', [path]),
             _rpcWriteFile: (path, content) => this.remoteRpc('writeFile', [path, content]),
+            _rpcStat: (path) => this.remoteRpc('stat', [path]),
             _rpcReaddir: (path) => this.remoteRpc('readdir', [path]),
             _rpcExists: (path) => this.remoteRpc('exists', [path]),
             _rpcMkdir: (path) => this.remoteRpc('mkdir', [path]),
@@ -202,6 +203,10 @@ export class NimbusSandbox {
         write: async (path, content) => {
             await this.ready();
             return this.stub()._rpcWriteFile(path, content);
+        },
+        stat: async (path) => {
+            await this.ready();
+            return this.stub()._rpcStat(path);
         },
         list: async (path = this.root) => {
             await this.ready();

@@ -217,13 +217,15 @@ const port = await box.ports.expose(3000);
 
 ## Session Agent
 
-The bundled session shell includes an Agent mode. The route lives inside the
-session Durable Object under `/api/agent/*`; the stable Cloudflare OAuth
-callback is `/api/nimbus/oauth/callback`.
+The bundled session shell includes an Agent surface inside the editor
+workspace. The route lives inside the session Durable Object under
+`/api/agent/*`; the stable Cloudflare OAuth callback is
+`/api/nimbus/oauth/callback`.
 
 The agent can use the same session tools as the SDK: shell exec, files,
 runtime installs, long-running processes, logs, and preview ports. Model calls
-go through Cloudflare AI Gateway's REST API with a Workers AI model.
+use the AI SDK with Cloudflare Workers AI's OpenAI-compatible endpoint and an
+optional AI Gateway name.
 
 Non-secret values can be generated with `@nimbus-sh/config` or written as
 `vars`:

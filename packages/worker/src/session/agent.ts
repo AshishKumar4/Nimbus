@@ -8,6 +8,15 @@
  * Nimbus deployment owner quota.
  */
 
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import {
+  generateText,
+  jsonSchema,
+  stepCountIs,
+  tool as aiTool,
+  type ModelMessage,
+  type ToolSet,
+} from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import {
   ensureProgrammaticReady,
@@ -100,6 +109,8 @@ const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const CF_OAUTH_AUTH_URL = 'https://dash.cloudflare.com/oauth2/auth';
 const CF_OAUTH_TOKEN_URL = 'https://dash.cloudflare.com/oauth2/token';
 const CF_OAUTH_USERINFO_URL = 'https://dash.cloudflare.com/oauth2/userinfo';
+const SYSTEM_PROMPT =
+  'You are the Nimbus session agent. You can inspect and edit the session filesystem, run shell commands, install runtimes, manage processes, and inspect preview ports. Be concise. Use tools when needed. Do not claim a command ran unless a tool result proves it.';
 
 export async function handleAgentRequest(self: Host, request: Request, url: URL): Promise<Response> {
   const path = url.pathname;
@@ -314,46 +325,18 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
   messages.push(userMessage);
   await saveMessages(self, messages);
 
-  const apiMessages = buildModelMessages(messages);
-  const toolEvents: StoredMessage[] = [];
-  let assistantText = '';
-  let finishReason = 'stop';
-
   try {
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const completion = await callChatCompletion(config, credentials, apiMessages);
-      const choice = completion.choices?.[0] ?? null;
-      const message = choice?.message ?? {};
-      const content = message.content;
-      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-
-      if (toolCalls.length === 0) {
-        assistantText = typeof content === 'string' ? content : stringifyContent(content);
-        finishReason = String(choice?.finish_reason || 'stop');
-        break;
-      }
-
-      apiMessages.push({
-        role: 'assistant',
-        content: typeof content === 'string' ? content : '',
-        tool_calls: toolCalls,
-      });
-
-      for (const call of toolCalls) {
-        const toolName = String(call?.function?.name || '');
-        const argsText = String(call?.function?.arguments || '{}');
-        const args = parseToolArgs(argsText);
-        const result = await runTool(self, toolName, args);
-        const contentText = truncate(JSON.stringify(result), MAX_TOOL_RESULT_CHARS);
-        apiMessages.push({
-          role: 'tool',
-          tool_call_id: String(call?.id || toolName || 'tool'),
-          name: toolName,
-          content: contentText,
-        });
-        toolEvents.push(makeMessage('tool', contentText, toolName));
-      }
-    }
+    const result = await runAiSdkTurn(self, config, credentials, messages);
+    const assistantText = result.text || 'Done.';
+    const assistantMessage = makeMessage('assistant', assistantText);
+    const nextMessages = [...messages, ...result.toolEvents, assistantMessage];
+    await saveMessages(self, nextMessages);
+    return json({
+      ok: true,
+      message: assistantMessage,
+      toolEvents: result.toolEvents,
+      messages: trimMessagesForClient(nextMessages),
+    });
   } catch (e: any) {
     return json({
       error: e?.message || String(e),
@@ -361,32 +344,44 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
       messages: trimMessagesForClient(messages),
     }, 502);
   }
-
-  if (!assistantText) {
-    assistantText = finishReason === 'stop'
-      ? 'Done.'
-      : 'I stopped after the tool limit. Send a follow-up to continue.';
-  }
-
-  const assistantMessage = makeMessage('assistant', assistantText);
-  const nextMessages = [...messages, ...toolEvents, assistantMessage];
-  await saveMessages(self, nextMessages);
-  return json({
-    ok: true,
-    message: assistantMessage,
-    toolEvents,
-    messages: trimMessagesForClient(nextMessages),
-  });
 }
 
-function buildModelMessages(messages: StoredMessage[]) {
-  const modelMessages: any[] = [
-    {
-      role: 'system',
-      content:
-        'You are the Nimbus session agent. You can use tools to inspect and edit the session filesystem, run shell commands, install runtimes, manage processes, and inspect preview ports. Be concise. Use tools when needed. Do not claim a command ran unless a tool result proves it.',
-    },
-  ];
+async function runAiSdkTurn(
+  self: Host,
+  config: ReturnType<typeof readConfig>,
+  credentials: AiCredentials,
+  messages: StoredMessage[],
+): Promise<{ text: string; toolEvents: StoredMessage[] }> {
+  const model = createCloudflareModel(config, credentials);
+  const result = await generateText({
+    model,
+    system: SYSTEM_PROMPT,
+    messages: buildModelMessages(messages),
+    tools: createAiSdkTools(self),
+    stopWhen: stepCountIs(MAX_TOOL_ROUNDS),
+    maxRetries: 0,
+  });
+  const toolEvents = collectToolEvents(result);
+  return {
+    text: String(result.text || '').trim() || summarizeToolEvents(toolEvents),
+    toolEvents,
+  };
+}
+
+function createCloudflareModel(config: ReturnType<typeof readConfig>, credentials: AiCredentials) {
+  const headers: Record<string, string> = {};
+  if (config.gatewayId) headers['cf-aig-gateway-id'] = config.gatewayId;
+  const provider = createOpenAICompatible({
+    name: 'nimbusCloudflare',
+    apiKey: credentials.accessToken,
+    baseURL: `${CLOUDFLARE_API}/accounts/${encodeURIComponent(credentials.accountId)}/ai/v1`,
+    headers,
+  });
+  return provider.chatModel(config.model);
+}
+
+function buildModelMessages(messages: StoredMessage[]): ModelMessage[] {
+  const modelMessages: ModelMessage[] = [];
   const recent = messages.slice(-MAX_MODEL_MESSAGES);
   for (const message of recent) {
     if (message.role === 'tool') continue;
@@ -395,74 +390,116 @@ function buildModelMessages(messages: StoredMessage[]) {
   return modelMessages;
 }
 
-async function callChatCompletion(config: ReturnType<typeof readConfig>, credentials: AiCredentials, messages: any[]) {
-  const endpoint = `${CLOUDFLARE_API}/accounts/${encodeURIComponent(credentials.accountId)}/ai/v1/chat/completions`;
-  const headers = new Headers({
-    Authorization: `Bearer ${credentials.accessToken}`,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  });
-  if (config.gatewayId) headers.set('cf-aig-gateway-id', config.gatewayId);
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      tools: agentTools(),
-      tool_choice: 'auto',
+function createAiSdkTools(self: Host): ToolSet {
+  return {
+    exec: aiTool({
+      description: 'Run a shell command in the Nimbus session.',
+      inputSchema: toolSchema({
+        command: stringProp('Command line to execute.'),
+        cwd: stringProp('Working directory. Defaults to /home/user.'),
+        timeoutMs: numberProp('Command timeout in milliseconds.'),
+      }, ['command']),
+      execute: async (args: any) => runTool(self, 'exec', args),
     }),
-  });
-  const payload = await response.json().catch(() => null) as any;
-  if (!response.ok) {
-    const detail = payload?.errors?.[0]?.message || payload?.error || payload?.message || response.statusText;
-    throw new Error(`Cloudflare AI request failed: ${detail}`);
-  }
-  if (payload?.choices) return payload;
-  if (payload?.result?.choices) return payload.result;
-  if (typeof payload?.result?.response === 'string') {
-    return { choices: [{ message: { content: payload.result.response }, finish_reason: 'stop' }] };
-  }
-  return payload;
+    read_file: aiTool({
+      description: 'Read a UTF-8 file from the Nimbus VFS.',
+      inputSchema: toolSchema({
+        path: stringProp('Absolute or /home/user-relative path.'),
+      }, ['path']),
+      execute: async (args: any) => runTool(self, 'read_file', args),
+    }),
+    write_file: aiTool({
+      description: 'Write a UTF-8 file into the Nimbus VFS, creating parent directories.',
+      inputSchema: toolSchema({
+        path: stringProp('Absolute or /home/user-relative path.'),
+        content: stringProp('File content.'),
+      }, ['path', 'content']),
+      execute: async (args: any) => runTool(self, 'write_file', args),
+    }),
+    list_files: aiTool({
+      description: 'List files in a Nimbus VFS directory.',
+      inputSchema: toolSchema({
+        path: stringProp('Directory path. Defaults to /home/user.'),
+      }, []),
+      execute: async (args: any) => runTool(self, 'list_files', args),
+    }),
+    install_runtime: aiTool({
+      description: 'Install or ensure a Nimbus runtime package.',
+      inputSchema: toolSchema({
+        spec: stringProp('Runtime spec such as python, clang, or ruby.'),
+      }, ['spec']),
+      execute: async (args: any) => runTool(self, 'install_runtime', args),
+    }),
+    ensure_runtime: aiTool({
+      description: 'Ensure a Nimbus runtime package is installed.',
+      inputSchema: toolSchema({
+        spec: stringProp('Runtime spec such as python, clang, or ruby.'),
+      }, ['spec']),
+      execute: async (args: any) => runTool(self, 'ensure_runtime', args),
+    }),
+    start_process: aiTool({
+      description: 'Start a long-running command and return process and port metadata.',
+      inputSchema: toolSchema({
+        command: stringProp('Command line to start.'),
+        cwd: stringProp('Working directory. Defaults to /home/user.'),
+      }, ['command']),
+      execute: async (args: any) => runTool(self, 'start_process', args),
+    }),
+    list_processes: aiTool({
+      description: 'List session processes.',
+      inputSchema: toolSchema({}, []),
+      execute: async (args: any) => runTool(self, 'list_processes', args),
+    }),
+    kill_process: aiTool({
+      description: 'Kill a session process by pid.',
+      inputSchema: toolSchema({
+        pid: numberProp('Process id.'),
+      }, ['pid']),
+      execute: async (args: any) => runTool(self, 'kill_process', args),
+    }),
+    process_logs: aiTool({
+      description: 'Read recent process logs.',
+      inputSchema: toolSchema({
+        pid: numberProp('Process id.'),
+        lines: numberProp('Number of log lines. Defaults to 200.'),
+      }, ['pid']),
+      execute: async (args: any) => runTool(self, 'process_logs', args),
+    }),
+    list_ports: aiTool({
+      description: 'List exposed preview ports.',
+      inputSchema: toolSchema({}, []),
+      execute: async (args: any) => runTool(self, 'list_ports', args),
+    }),
+  };
 }
 
-function agentTools() {
-  return [
-    tool('exec', 'Run a shell command in the Nimbus session.', {
-      command: stringProp('Command line to execute.'),
-      cwd: stringProp('Working directory. Defaults to /home/user.'),
-      timeoutMs: numberProp('Command timeout in milliseconds.'),
-    }, ['command']),
-    tool('read_file', 'Read a UTF-8 file from the Nimbus VFS.', {
-      path: stringProp('Absolute or /home/user-relative path.'),
-    }, ['path']),
-    tool('write_file', 'Write a UTF-8 file into the Nimbus VFS, creating parent directories.', {
-      path: stringProp('Absolute or /home/user-relative path.'),
-      content: stringProp('File content.'),
-    }, ['path', 'content']),
-    tool('list_files', 'List files in a Nimbus VFS directory.', {
-      path: stringProp('Directory path. Defaults to /home/user.'),
-    }, []),
-    tool('install_runtime', 'Install or ensure a Nimbus runtime package.', {
-      spec: stringProp('Runtime spec such as python, clang, or ruby.'),
-    }, ['spec']),
-    tool('ensure_runtime', 'Ensure a Nimbus runtime package is installed.', {
-      spec: stringProp('Runtime spec such as python, clang, or ruby.'),
-    }, ['spec']),
-    tool('start_process', 'Start a long-running command and return process and port metadata.', {
-      command: stringProp('Command line to start.'),
-      cwd: stringProp('Working directory. Defaults to /home/user.'),
-    }, ['command']),
-    tool('list_processes', 'List session processes.', {}, []),
-    tool('kill_process', 'Kill a session process by pid.', {
-      pid: numberProp('Process id.'),
-    }, ['pid']),
-    tool('process_logs', 'Read recent process logs.', {
-      pid: numberProp('Process id.'),
-      lines: numberProp('Number of log lines. Defaults to 200.'),
-    }, ['pid']),
-    tool('list_ports', 'List exposed preview ports.', {}, []),
-  ];
+function collectToolEvents(result: { steps?: Array<{ toolResults?: any[] }> }): StoredMessage[] {
+  const events: StoredMessage[] = [];
+  for (const step of result.steps || []) {
+    for (const toolResult of step.toolResults || []) {
+      const toolName = String(toolResult?.toolName || 'tool');
+      const payload = {
+        tool: toolName,
+        input: toolResult?.input,
+        output: toolResult?.output,
+      };
+      events.push(makeMessage('tool', truncate(safeJsonStringify(payload), MAX_TOOL_RESULT_CHARS), toolName));
+    }
+  }
+  return events;
+}
+
+function summarizeToolEvents(events: StoredMessage[]): string {
+  return events.length > 0 ? 'Done.' : '';
+}
+
+function toolSchema(properties: Record<string, unknown>, required: string[]) {
+  return jsonSchema({
+    type: 'object',
+    properties,
+    required,
+    additionalProperties: false,
+  });
 }
 
 async function runTool(self: Host, name: string, args: any): Promise<unknown> {
@@ -700,49 +737,12 @@ function splitWords(value: string): string[] {
   return out;
 }
 
-function tool(name: string, description: string, properties: Record<string, unknown>, required: string[]) {
-  return {
-    type: 'function',
-    function: {
-      name,
-      description,
-      parameters: {
-        type: 'object',
-        properties,
-        required,
-        additionalProperties: false,
-      },
-    },
-  };
-}
-
 function stringProp(description: string) {
   return { type: 'string', description };
 }
 
 function numberProp(description: string) {
   return { type: 'number', description };
-}
-
-function parseToolArgs(argsText: string): any {
-  try {
-    const parsed = JSON.parse(argsText);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function stringifyContent(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) {
-    return value.map((item) => {
-      if (typeof item?.text === 'string') return item.text;
-      return typeof item === 'string' ? item : JSON.stringify(item);
-    }).join('');
-  }
-  return JSON.stringify(value);
 }
 
 function normalizeVfsPath(input: unknown): string {
@@ -778,6 +778,15 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 function truncate(value: string, maxChars: number): string {
   const text = String(value);
   return text.length <= maxChars ? text : text.slice(0, maxChars) + '\n[truncated]';
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    const text = JSON.stringify(value);
+    return typeof text === 'string' ? text : String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 async function readJson(request: Request): Promise<any> {

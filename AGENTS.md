@@ -24,7 +24,7 @@ The repo is a Bun workspace monorepo:
 | `packages/cli/` | `@nimbus-sh/cli`: scaffold/setup/token/session/runtime commands. |
 | `packages/create-nimbus-app/` | `npx create-nimbus-app` wrapper. |
 | `packages/config/` | `@nimbus-sh/config`: typed Nimbus and Wrangler config helpers. |
-| `tests/behavioral/` | Black-box behavioral probes. Current discovery count is 311 probes. |
+| `tests/behavioral/` | Black-box behavioral probes. Current discovery count is 312 probes. |
 
 `apps/hosted-demo/src/index.ts` imports the Worker package through the SDK
 entrypoints, exports the required DO/RPC classes, calls `createNimbusHandler`,
@@ -41,6 +41,8 @@ It supports:
 - `nimbus.sandbox(id, options?)` returning a `NimbusSandbox` with
   `ready`, `exec`, `runCode`, `startProcess`, `files`, `runtimes`,
   `processes`, `ports`, `capabilities`, and `tools()`.
+- `@nimbus-sh/sdk/flue` for mapping a Nimbus sandbox to Flue's sandbox
+  provider contract without making Flue a hard dependency of the core SDK.
 
 `NimbusSession` exposes the backing RPC methods in
 `packages/worker/src/session/nimbus-session.ts`; implementation helpers live in
@@ -58,7 +60,7 @@ Core files:
 | `packages/worker/src/session/nimbus-session.ts` | DO class, lifecycle, VFS/facet/process/port ownership, diagnostics, hibernation. |
 | `packages/worker/src/session/routes.ts` | DO-internal HTTP/WS routes. |
 | `packages/worker/src/session/init.ts` | Session boot, shell commands, npm/git/vite/wrangler/runtime registration. |
-| `packages/worker/src/session/agent.ts` | Session Agent API, Cloudflare OAuth flow, Workers AI chat loop, sandbox tools. |
+| `packages/worker/src/session/agent.ts` | Session Agent API, Cloudflare OAuth flow, AI SDK model calls, sandbox tools. |
 | `packages/worker/src/runtime/node-shims.ts` | Node-compatible fs/path/process/streams/http/child_process shims. |
 | `packages/worker/src/facets/process.ts` | Supervisor-side `child_process` broker. |
 | `packages/worker/src/vfs/sqlite-vfs.ts` | SQLite-backed VFS. |
@@ -111,7 +113,9 @@ entrypoint, or a Nimbus-specific adapter.
 
 ## Session Agent
 
-The browser shell has an Agent mode wired through `packages/worker/public/s/index.html`.
+The browser shell has a single editor workspace wired through
+`packages/worker/public/s/index.html`. The center pane switches between the
+file editor and the Agent surface; the terminal and preview stay visible.
 Session-scoped routes under `/api/agent/*` are handled in
 `packages/worker/src/session/agent.ts`.
 
@@ -120,8 +124,8 @@ Agent capabilities:
 - Cloudflare OAuth start/callback/logout with stable callback
   `/api/nimbus/oauth/callback`
 - account selection from the connected Cloudflare token
-- Workers AI / AI Gateway chat completions through
-  `/accounts/<id>/ai/v1/chat/completions`
+- AI SDK tool calling through Cloudflare Workers AI's OpenAI-compatible
+  endpoint, with optional AI Gateway routing
 - sandbox tools for exec, files, runtime install, processes, logs, and ports
 
 Agent configuration:

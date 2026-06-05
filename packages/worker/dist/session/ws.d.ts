@@ -52,8 +52,8 @@ export interface WsHost {
     /** file-tree-watch (2026-05-15): per-WS fs-watch subscriptions.
      *  Keyed on the live WebSocket; cleaned up unconditionally in
      *  wsClose / wsError. See src/session/fs-watch.ts for the protocol
-     *  + lifecycle. Optional (undefined) until first subscribe so
-     *  memory stays at 0 for terminal-only sessions. */
+     *  + lifecycle. Optional (undefined) until first subscribe so sessions
+     *  that never open the file tree carry no watch state. */
     _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
     processLogs: ProcessLogStore;
     wranglerAliasBannerShown: boolean;

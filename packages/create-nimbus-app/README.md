@@ -27,9 +27,10 @@ The generated Worker embeds the interactive Nimbus UI and enables the
 authenticated remote sandbox API. Add your application auth route before
 minting user tokens from the backend.
 
-The session UI also includes Agent mode. To let users connect their own
-Cloudflare account for Workers AI, create a Cloudflare OAuth client with
-redirect URL `https://<your-nimbus-host>/api/nimbus/oauth/callback`, add
-`NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`,
-`NIMBUS_AGENT_MODEL`, and `NIMBUS_AGENT_GATEWAY_ID` to `wrangler.jsonc`,
-then store `NIMBUS_CF_OAUTH_CLIENT_SECRET` with `wrangler secret put`.
+The session UI also includes an Agent surface inside the editor workspace. To
+let users connect their own Cloudflare account for Workers AI, create a
+Cloudflare OAuth client with redirect URL
+`https://<your-nimbus-host>/api/nimbus/oauth/callback`, add
+`NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`,
+and `NIMBUS_AGENT_GATEWAY_ID` to `wrangler.jsonc`, then store
+`NIMBUS_CF_OAUTH_CLIENT_SECRET` with `wrangler secret put`.

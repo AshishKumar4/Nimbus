@@ -43,6 +43,11 @@
       "types": "./dist/sandbox.d.ts",
       "import": "./dist/sandbox.js"
     },
+    "./flue": {
+      "workspace": "./src/flue.ts",
+      "types": "./dist/flue.d.ts",
+      "import": "./dist/flue.js"
+    },
     "./worker": {
       "workspace": "./src/worker.ts",
       "types": "./dist/worker.d.ts",

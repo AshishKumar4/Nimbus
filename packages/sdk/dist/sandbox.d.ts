@@ -85,6 +85,13 @@ export interface NimbusPort {
     pid: number;
     registeredAt: number;
 }
+export interface NimbusFileStat {
+    type: 'file' | 'directory' | string;
+    size: number;
+    ctime?: number;
+    mtime: number;
+    mode: number;
+}
 export interface NimbusRuntimeSummary {
     name: string;
     version: string;
@@ -158,6 +165,7 @@ export declare class NimbusSandbox {
         read: (path: string) => Promise<string | null>;
         readBytes: (path: string) => Promise<Uint8Array | null>;
         write: (path: string, content: string | Uint8Array) => Promise<void>;
+        stat: (path: string) => Promise<NimbusFileStat | null>;
         list: (path?: string) => Promise<{
             name: string;
             type: string;

@@ -133,6 +133,8 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
         case 'writeFile':
             return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), args[1]);
+        case 'stat':
+            return ctx.stub._rpcStat(stringArg(args[0], 'path'));
         case 'readdir':
             return ctx.stub._rpcReaddir(stringArg(args[0], 'path'));
         case 'exists':

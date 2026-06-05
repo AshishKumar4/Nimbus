@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
-// file-tree/panel/regression/terminal-only-still-works — pre-editor
-// terminal-only mode + keystroke/echo path preserved.
+// file-tree/panel/regression/workspace-terminal-io-still-works — terminal
+// keystroke and echo paths still work inside the editor workspace.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
-const a = makeAsserter('file-tree/panel/regression/terminal-only-still-works');
-console.log(`file-tree/panel/regression/terminal-only-still-works — ${process.env.BASE}`);
+const a = makeAsserter('file-tree/panel/regression/workspace-terminal-io-still-works');
+console.log(`file-tree/panel/regression/workspace-terminal-io-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
 const t = new Terminal(sid);
@@ -23,12 +23,11 @@ a.check('echo multi-byte UTF-8',
   /héllo-世界/.test(stripAnsi(r2.output)),
   `output=${JSON.stringify(stripAnsi(r2.output).slice(-200))}`);
 
-// Paste-style multi-line.
 t.reset();
 t.send('echo a\recho b\recho c\r');
 await t.waitFor((b) => /\bc\b/.test(b) && /\$\s*$/.test(b.trimEnd().slice(-3)), 15_000, 'paste-complete');
 const buf = stripAnsi(t.buf);
-a.check('paste 3-line block — all lines appear',
+a.check('paste 3-line block has all lines',
   /\ba\b/.test(buf) && /\bb\b/.test(buf) && /\bc\b/.test(buf),
   `buf=${JSON.stringify(buf.slice(-200))}`);
 

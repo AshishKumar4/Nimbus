@@ -72,7 +72,8 @@ export default createNimbusHandler({
 });
 ```
 
-The bundled session UI includes Agent mode. Configure it with Worker vars
+The bundled session UI includes an Agent surface in the editor workspace.
+Configure it with Worker vars
 `NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`,
 `NIMBUS_AGENT_MODEL`, `NIMBUS_AGENT_GATEWAY_ID`, and the secrets
 `NIMBUS_CF_OAUTH_CLIENT_SECRET` or `NIMBUS_CLOUDFLARE_API_TOKEN` when you
@@ -158,6 +159,28 @@ Worker verifies the JWT, enforces `sid` pins and `sandbox:use` scope, applies
 the configured runtime policy, and delegates to the same `NimbusSession` RPC
 methods used by `Nimbus.fromEnv()`.
 
+## Flue connector
+
+Use `@nimbus-sh/sdk/flue` when an agent runtime expects Flue's sandbox
+provider contract:
+
+```ts
+import { Nimbus } from '@nimbus-sh/sdk/sandbox';
+import { nimbusFlue } from '@nimbus-sh/sdk/flue';
+
+const box = Nimbus.fromEnv(env, nimbusConfig).sandbox('job-123');
+await box.ready();
+
+const factory = nimbusFlue(box);
+const sessionEnv = await factory.createSessionEnv({
+  id: 'job-123',
+  cwd: '/home/user',
+});
+
+await sessionEnv.writeFile('/home/user/main.py', 'print(2 + 2)\n');
+const result = await sessionEnv.exec('python /home/user/main.py');
+```
+
 ## Sandbox handle API
 
 ```ts
@@ -180,6 +203,7 @@ await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
 await box.files.write('/home/user/app/a.txt', 'hello');
 await box.files.read('/home/user/app/a.txt');
 await box.files.list('/home/user/app');
+await box.files.stat('/home/user/app/a.txt');
 await box.files.delete('/home/user/app/a.txt');
 
 await box.runtimes.available();

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// agent/new/session-agent-panel — the Agent mode is a real session UI
-// backed by session-scoped API routes. This probe drives the browser surface
-// and safe API endpoints; it does not call Workers AI or spend quota.
+// agent/new/session-agent-panel — the Agent surface is embedded inside the
+// editor workspace and backed by session-scoped API routes. This probe drives
+// the browser surface and safe API endpoints; it does not call Workers AI.
 
 import { BASE, makeAsserter, mintSession } from '../../_driver.mjs';
 import { launchBrowser } from '../../_runtime-behavioral-template.mjs';
@@ -36,9 +36,12 @@ try {
   await page.click('#btnAgent');
   await page.waitForFunction(() => {
     const main = document.getElementById('mainPanel');
+    const stack = document.getElementById('leftStack');
     const panel = document.getElementById('agentPanel');
     return !!main && !!panel
-      && main.classList.contains('agent')
+      && !!stack
+      && main.classList.contains('editor')
+      && stack.classList.contains('agent-surface')
       && getComputedStyle(panel).display !== 'none';
   }, { timeout: 30_000 });
   await page.waitForFunction(() => {
@@ -48,6 +51,7 @@ try {
 
   const ui = await page.evaluate(() => ({
     mainClass: document.getElementById('mainPanel')?.className || '',
+    stackClass: document.getElementById('leftStack')?.className || '',
     activeButton: document.getElementById('btnAgent')?.classList.contains('active') || false,
     title: document.querySelector('#agentPanel .agent-title')?.textContent || '',
     status: document.getElementById('agentStatus')?.textContent || '',
@@ -55,10 +59,23 @@ try {
     hasClientApi: typeof window.NimbusAgent === 'object',
     inputDisabled: document.getElementById('agentInput')?.disabled ?? true,
     sendDisabled: document.getElementById('agentSend')?.disabled ?? true,
+    treeDisplay: getComputedStyle(document.getElementById('treePanel')).display,
+    terminalDisplay: getComputedStyle(document.querySelector('.panel-terminal')).display,
+    previewDisplay: getComputedStyle(document.getElementById('previewPanel')).display,
+    editorDisplay: getComputedStyle(document.getElementById('editorPanel')).display,
+    agentDisplay: getComputedStyle(document.getElementById('agentPanel')).display,
   }));
 
   a.check('Agent toolbar button becomes active', ui.activeButton, JSON.stringify(ui));
-  a.check('Agent panel is selected', /\bagent\b/.test(ui.mainClass), JSON.stringify(ui));
+  a.check('Workspace remains the editor layout', /\beditor\b/.test(ui.mainClass), JSON.stringify(ui));
+  a.check('Agent surface is selected inside the center stack', /\bagent-surface\b/.test(ui.stackClass), JSON.stringify(ui));
+  a.check('Agent panel replaces the editor pane only',
+    ui.agentDisplay !== 'none'
+    && ui.editorDisplay === 'none'
+    && ui.treeDisplay !== 'none'
+    && ui.terminalDisplay !== 'none'
+    && ui.previewDisplay !== 'none',
+    JSON.stringify(ui));
   a.check('Agent client module loads', ui.hasClientApi, JSON.stringify(ui));
   a.check('Agent panel names Nimbus Agent', ui.title === 'Nimbus Agent', JSON.stringify(ui));
   a.check('Agent status resolves from Checking', ui.status !== 'Checking...', JSON.stringify(ui));
@@ -119,7 +136,7 @@ try {
       JSON.stringify(ui));
   }
 
-  a.check('No browser runtime errors while opening Agent mode',
+  a.check('No browser runtime errors while opening Agent surface',
     runtimeErrors.length === 0,
     runtimeErrors.slice(0, 5).join('\n'));
 } finally {

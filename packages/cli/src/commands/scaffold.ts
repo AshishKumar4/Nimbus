@@ -301,11 +301,11 @@ Then visit the URL wrangler prints.
 If setup reports Cloudflare R2 error 10042, enable R2 in the Cloudflare
 Dashboard once for this account, then rerun the setup command.
 
-## Agent mode
+## Session Agent
 
-The session UI includes an Agent tab. It can use the same sandbox tools as
-the terminal: shell exec, files, runtime installs, processes, logs, and
-preview ports.
+The session UI includes an Agent surface inside the editor workspace. It can
+use the same sandbox tools as the terminal: shell exec, files, runtime
+installs, processes, logs, and preview ports.
 
 For user-owned Cloudflare Workers AI quota, create a Cloudflare OAuth client
 with this redirect URL:

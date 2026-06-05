@@ -8,6 +8,8 @@ persistent files, runtime installation, process management, and preview ports.
 
 - `@nimbus-sh/sdk/sandbox` provides the sandbox client.
 - `@nimbus-sh/sdk/worker` re-exports the Worker embedder API.
+- `@nimbus-sh/sdk/flue` maps a Nimbus sandbox to Flue's sandbox provider
+  contract.
 - `@nimbus-sh/worker` contains the runtime implementation.
 - `@nimbus-sh/config` provides typed Nimbus and Wrangler config helpers.
 - `@nimbus-sh/cli` provides setup, token, session, scaffold, and runtime-sync
@@ -91,7 +93,7 @@ export default createNimbusHandler({
 - `exec(command, options?)`
 - `runCode(code, options)`
 - `startProcess(command, options?)`
-- `files.read/write/list/delete/exists`
+- `files.read/write/list/delete/exists/stat`
 - `runtimes.install/ensure/list`
 - `processes.list/kill/logs`
 - `ports.expose/unexpose/list`
@@ -123,6 +125,31 @@ Capabilities are reported honestly. For example, Python is reported when it is
 installed or installable by policy, and native binary support is reported as
 WASI/WebAssembly execution rather than Linux ELF execution.
 
+## Flue Connector
+
+Use `@nimbus-sh/sdk/flue` when an agent runtime expects Flue's sandbox
+provider contract:
+
+```ts
+import { Nimbus } from '@nimbus-sh/sdk/sandbox';
+import { nimbusFlue } from '@nimbus-sh/sdk/flue';
+
+const box = Nimbus.fromEnv(env, nimbusConfig).sandbox('job-123');
+await box.ready();
+
+const factory = nimbusFlue(box);
+const sessionEnv = await factory.createSessionEnv({
+  id: 'job-123',
+  cwd: '/home/user',
+});
+
+await sessionEnv.writeFile('/home/user/main.py', 'print(2 + 2)\n');
+const result = await sessionEnv.exec('python /home/user/main.py');
+```
+
+The adapter delegates to the same Nimbus SDK methods as `box.tools()`. It does
+not add native Linux execution, Docker, or a second filesystem.
+
 ## Agentic CLI Compatibility
 
 Nimbus supports the primitives needed by JavaScript and WASM-based agent tools:
@@ -144,6 +171,7 @@ Useful checks:
 bun tests/behavioral/sdk/new/programmatic-sdk.mjs
 bun tests/behavioral/sdk/new/remote-sdk-client.mjs
 bun tests/behavioral/sdk/new/remote-sdk-handler.mjs
+bun tests/behavioral/sdk/new/flue-adapter.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-smoke.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-remote-smoke.mjs
 BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/agent/new/session-agent-panel.mjs

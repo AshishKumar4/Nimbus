@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// monaco-polish/new/editor-is-default-mode — page-load default
-// layout is 'editor' (not 'split').
+// monaco-polish/new/editor-is-default-mode — page-load default is the
+// editor workspace.
 //
 // User: "Make the editor tab the default view"
 
@@ -14,25 +14,26 @@ const sid = await mintSession();
 const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
 const html = await r.text();
 
-// The boot sequence ends with: term.focus(); setLayout('editor'); connect();
-a.check("Initial setLayout call uses 'editor'",
-  /term\.focus\(\);[\s\S]{0,500}setLayout\(['"]editor['"]\)/.test(html),
-  `default-mode is not 'editor'`);
+// The shell has one workspace. The center surface defaults to editor and
+// only switches to agent when the URL explicitly asks for it.
+a.check("Work surface defaults to 'editor'",
+  /let\s+workSurface\s*=\s*['"]editor['"]/.test(html),
+  `workSurface default is not editor`);
 
-// Old default 'split' must NOT be the initial call (it can still be
-// referenced as a mode handler for the toolbar button).
+a.check("Initial mode defaults to 'editor'",
+  /const\s+initialMode\s*=\s*new URLSearchParams\(location\.search\)\.get\(['"]agent['"]\)\s*===\s*['"]1['"][\s\S]{0,120}\?\s*['"]agent['"]\s*:\s*['"]editor['"]/.test(html)
+  && /setLayout\(initialMode\)/.test(html),
+  `initialMode no longer defaults to editor`);
+
 const stripped = html.replace(/<!--[\s\S]*?-->/g, '');
-// Negative form: there should NOT be a stray `setLayout('split');` at
-// the boot trailing position. We accept the toolbar onclick
-// `setLayout('split')` because that's user-driven.
-a.check("Boot does NOT call setLayout('split') at startup",
-  !/term\.focus\(\);[\s\S]{0,500}setLayout\(['"]split['"]\)/.test(stripped),
-  `boot still calls setLayout('split')`);
+a.check('Boot has no legacy workspace mode call',
+  !/term\.focus\(\);[\s\S]{0,500}setLayout\(['"](split|terminal-only|preview-only)['"]\)/.test(stripped),
+  `boot still calls a legacy mode`);
 
-// PaneResizer module wired before initial setLayout (so persisted
-// dims are restored before first paint).
-a.check('PaneResizer.restoreDims called before setLayout',
-  /PaneResizer\.restoreDims\(\);[\s\S]{0,200}setLayout\(['"]editor['"]\)/.test(html),
+// PaneResizer module wired before initial setLayout (so persisted dims
+// are restored before first paint).
+a.check('PaneResizer.restoreDims called before initial setLayout',
+  /PaneResizer\.restoreDims\(\);[\s\S]{0,240}setLayout\(initialMode\)/.test(html),
   `dims restore not wired pre-layout`);
 
 const sum = a.summary();

@@ -110,6 +110,14 @@ export interface NimbusPort {
   registeredAt: number;
 }
 
+export interface NimbusFileStat {
+  type: 'file' | 'directory' | string;
+  size: number;
+  ctime?: number;
+  mtime: number;
+  mode: number;
+}
+
 export interface NimbusRuntimeSummary {
   name: string;
   version: string;
@@ -133,6 +141,7 @@ interface NimbusSessionStub {
   _rpcReadFile(path: string): Promise<string | null>;
   _rpcReadFileBytes(path: string): Promise<Uint8Array | null>;
   _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
+  _rpcStat(path: string): Promise<NimbusFileStat | null>;
   _rpcReaddir(path: string): Promise<{ name: string; type: string }[]>;
   _rpcExists(path: string): Promise<boolean>;
   _rpcMkdir(path: string): Promise<void>;
@@ -277,6 +286,7 @@ export class NimbusSandbox {
       _rpcReadFile: (path) => this.remoteRpc('readFile', [path]),
       _rpcReadFileBytes: (path) => this.remoteRpc('readFileBytes', [path]),
       _rpcWriteFile: (path, content) => this.remoteRpc('writeFile', [path, content]),
+      _rpcStat: (path) => this.remoteRpc('stat', [path]),
       _rpcReaddir: (path) => this.remoteRpc('readdir', [path]),
       _rpcExists: (path) => this.remoteRpc('exists', [path]),
       _rpcMkdir: (path) => this.remoteRpc('mkdir', [path]),
@@ -396,6 +406,10 @@ export class NimbusSandbox {
     write: async (path: string, content: string | Uint8Array): Promise<void> => {
       await this.ready();
       return this.stub()._rpcWriteFile(path, content);
+    },
+    stat: async (path: string): Promise<NimbusFileStat | null> => {
+      await this.ready();
+      return this.stub()._rpcStat(path);
     },
     list: async (path = this.root): Promise<{ name: string; type: string }[]> => {
       await this.ready();

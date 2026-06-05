@@ -2,9 +2,8 @@
 // monaco-polish/new/monaco-still-lazy-script — narrower invariant
 // after the editor-default switch.
 //
-// Pre-polish: "Cold session terminal-only MUST NOT download Monaco."
-// Post-polish: editor IS default, so Monaco WILL be fetched on cold.
-// What survives: NO <script src="...monaco..."> tag in initial HTML.
+// Editor is the default workspace, so Monaco may load at runtime.
+// The invariant is: no <script src="...monaco..."> tag in initial HTML.
 // Monaco loader is appended via document.head at runtime.
 
 import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
