@@ -147,6 +147,16 @@ Agent configuration:
 `@nimbus-sh/config` can generate the non-secret Agent vars. Secrets stay in
 Workers secret storage.
 
+OAuth scopes for the public PKCE flow:
+
+- `user-details.read` / `User Details Read` for profile display.
+- `account-settings.read` / `Account Settings Read` for account selection.
+- `ai.write` / `Workers AI Write` for Workers AI inference.
+- `aig.run` / `AI Gateway Run` only when `NIMBUS_AGENT_GATEWAY_ID` is set.
+
+Do not use `Account API Gateway`; it is an API Shield permission, not
+Cloudflare AI Gateway.
+
 ## Tests
 
 Useful commands:

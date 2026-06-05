@@ -159,10 +159,18 @@ encrypted, `HttpOnly`, `Secure`, `SameSite=Lax` browser cookies scoped to the
 session URL. Nimbus does not persist user OAuth tokens in Durable Object
 storage.
 
-On the scopes step, select the narrow account scopes needed for the Agent:
-`Account Read`, `Workers AI Edit`, and, when routing through AI Gateway,
-`AI Gateway Run` plus `AI Gateway Read`. Cloudflare exposes the current scope
-IDs in the dashboard and through `GET /client/v4/oauth/scopes`.
+On the scopes step, select the narrow scopes needed for the Agent:
+
+| Dashboard scope | Scope ID | Why |
+|---|---|---|
+| `User Details Read` | `user-details.read` | Read the connected user's profile. |
+| `Account Settings Read` | `account-settings.read` | List accounts the user can choose from. |
+| `Workers AI Write` | `ai.write` | Run Workers AI inference. |
+| `AI Gateway Run` | `aig.run` | Required only when `NIMBUS_AGENT_GATEWAY_ID` is set. |
+
+Do not select `Account API Gateway`; that is an API Shield permission, not
+Cloudflare AI Gateway. Cloudflare exposes the current scope IDs in the
+dashboard and through `GET /client/v4/oauth/scopes`.
 
 Add non-secret values to `wrangler.jsonc` or generate them with
 `@nimbus-sh/config`:
