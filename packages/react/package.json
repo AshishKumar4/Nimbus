@@ -1,0 +1,46 @@
+{
+  "name": "@nimbus-sh/react",
+  "version": "0.1.1",
+  "description": "React component for embedding a Nimbus terminal in your app. <NimbusTerminal /> is a typed iframe wrapper with token + tenant props.",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/react"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "@nimbus-sh/sdk": "^0.1.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@nimbus-sh/sdk": "^0.1.2",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
