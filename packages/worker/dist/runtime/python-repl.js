@@ -153,14 +153,13 @@ class PythonReplAdapter {
             concurrency: 1,
             omitSupervisor: true,
             preamble,
+            wasmModules: {
+                'pyodide.asm.wasm': toAB(wasmBytes),
+            },
         });
-        // Stash the wasm bytes for first submit's wasmModules.
-        this.__wasmBytesAB = toAB(wasmBytes);
     }
     async submitFacetFn(args) {
-        const wasmModules = { 'pyodide.asm.wasm': this.__wasmBytesAB };
         return await this.pool.submit(replStepFacetFn, args, {
-            wasmModules,
             timeoutMs: 60_000,
         });
     }
@@ -559,4 +558,9 @@ export async function runPythonRepl(deps) {
     // input on the floor and the REPL hangs.
     const session = new ReplSession(adapter, deps.terminal, deps.shell);
     return await session.run();
+}
+export async function warmPythonRepl(deps) {
+    const adapter = new PythonReplAdapter(deps);
+    await adapter.push('');
+    await adapter.close();
 }

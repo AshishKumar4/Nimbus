@@ -62,6 +62,7 @@ import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
 import {
   makeNimbusVerbHandler,
+  createRuntimeCommandHintResolver,
   rehydrateInstalledRuntimes,
   registerRunnerFactory,
 } from '../runtime/package-manager.js';
@@ -548,6 +549,34 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           vfs: sqliteFs,
           registry: pkgRegistry,
           getHome: nimbusGetHome,
+          warmRuntime: async (target, ctx) => {
+            if (target.name !== 'python') return;
+            ctx.stdout.write('[python] warming runtime...\n');
+            const stdout = { write(_s: string) {} };
+            const stderrText: string[] = [];
+            const stderr = { write: (s: string) => { stderrText.push(String(s)); } };
+            const py = await registry.resolve('python');
+            if (py) {
+              const code = await py({
+                ...ctx,
+                args: ['-c', 'pass'],
+                vfs: (ctx as any).vfs ?? (sqliteFs as any),
+                signal: new AbortController().signal,
+                stdout,
+                stderr,
+              });
+              if (typeof code === 'number' && code !== 0) {
+                throw new Error(stderrText.join('').trim() || `python warm-up exited ${code}`);
+              }
+            }
+            const { warmPythonRepl } = await import('../runtime/python-repl.js');
+            await warmPythonRepl({
+              facetMgr,
+              vfs: sqliteFs,
+              installRoot: target.root,
+            });
+            ctx.stdout.write('[python] ready\n');
+          },
         }),
       );
       // Rehydration runs here even though the shell hasn't been built
@@ -2521,6 +2550,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     }
 
     const upstreamResolve = registry.resolve.bind(registry);
+    const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
     (registry as any).resolve = async function nimbusBinFallbackResolve(name: string): Promise<any> {
       const upstream = await upstreamResolve(name);
       if (upstream) return upstream;
@@ -2537,7 +2567,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // built yet (very early init), fall back to /home/user.
       const cwd = ((self.shell as any)?.cwd || '/home/user').replace(/^\/+/, '');
       const binShimPath = cwd + '/node_modules/.bin/' + name;
-      if (!sqliteFs.exists(binShimPath)) return undefined;
+      if (!sqliteFs.exists(binShimPath)) {
+        let hint: Awaited<ReturnType<typeof runtimeCommandHint>> | null = null;
+        try { hint = await runtimeCommandHint(name); } catch { hint = null; }
+        if (!hint) return undefined;
+        const hintHandler = async (ctx: any): Promise<number> => {
+          ctx.stderr.write(`${name}: command not found\n`);
+          ctx.stderr.write(`hint: install it with: nimbus install ${hint.installSpec}\n`);
+          return 127;
+        };
+        (hintHandler as any).__nimbusRuntimeInstallHint = true;
+        return hintHandler;
+      }
       // Synthesised handler. Each resolve call recomputes (cwd can
       // change between invocations); we never cache under `name`.
       return async (ctx: any): Promise<number> => {

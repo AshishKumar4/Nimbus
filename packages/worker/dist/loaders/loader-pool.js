@@ -109,7 +109,9 @@ export class NimbusLoaderPool {
         // Include preamble in the cache-bucket key so changes to bundled helpers
         // invalidate warm slots. Empty preamble → '0' suffix (stable).
         this.preambleHash = this.preamble ? hashSource(this.preamble) : '0';
-        this.doIdShort = ctx.id.toString().slice(0, 12);
+        this.doIdShort = opts?.cacheScope === 'global'
+            ? 'global'
+            : ctx.id.toString().slice(0, 12);
         // Materialise the wasm-modules table. Sanitise each name into a
         // valid JS identifier for the static import binding; key collisions
         // (e.g. 'esbuild.wasm' and 'esbuild_wasm' both sanitise to

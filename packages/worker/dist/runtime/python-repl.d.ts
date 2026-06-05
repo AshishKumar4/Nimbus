@@ -62,4 +62,5 @@ export interface PythonReplDeps {
  * runs `python` with no args.
  */
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
+export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot'>): Promise<void>;
 //# sourceMappingURL=python-repl.d.ts.map

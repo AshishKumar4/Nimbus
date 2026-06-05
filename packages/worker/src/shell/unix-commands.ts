@@ -39,6 +39,10 @@ type Ctx = {
 
 type CmdFn = (ctx: Ctx) => number | Promise<number>;
 
+function isRuntimeInstallHintHandler(handler: unknown): boolean {
+  return !!handler && !!(handler as any).__nimbusRuntimeInstallHint;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function resolvePath(cwd: string, p: string): string {
@@ -151,16 +155,11 @@ const _CANONICAL_BIN_PATHS: Record<string, string> = {
   nimbus: '/usr/local/bin/nimbus',
 };
 
-/** Resolve a command name to a path via PATH-walk + canonical-bin
- *  fallback. Returns null if not findable. Skip-canonical when the
- *  caller knows the command is a shell builtin (no fallback). */
-function _whichLookup(
+function _pathLookup(
   vfs: SqliteVFS,
   name: string,
   envPath: string,
 ): string | null {
-  // 1. Real on-disk binary in $PATH (npm-installed node_modules/.bin,
-  //    user-placed scripts, etc.).
   const paths = (envPath || '/usr/local/bin:/usr/bin:/bin').split(':');
   for (const dir of paths) {
     if (!dir) continue;
@@ -170,11 +169,35 @@ function _whichLookup(
       return '/' + fp;
     }
   }
-  // 2. Canonical-bin fallback for our facet-direct runtimes.
-  if (_CANONICAL_BIN_PATHS[name]) {
-    return _CANONICAL_BIN_PATHS[name];
+  return null;
+}
+
+async function _registryResolved(registry: any, name: string): Promise<CmdFn | null> {
+  try {
+    const resolved = typeof registry.resolve === 'function'
+      ? await registry.resolve(name)
+      : null;
+    if (resolved && !isRuntimeInstallHintHandler(resolved)) return resolved;
+  } catch {
+    // Registry misses are normal for unknown commands.
   }
   return null;
+}
+
+/** Resolve a command name to a path via PATH-walk + canonical-bin
+ *  fallback. Returns null if not findable. Skip-canonical when the
+ *  caller knows the command is a shell builtin (no fallback). */
+async function _whichLookup(
+  vfs: SqliteVFS,
+  registry: any,
+  name: string,
+  envPath: string,
+): Promise<string | null> {
+  const diskPath = _pathLookup(vfs, name, envPath);
+  if (diskPath) return diskPath;
+  const canonicalPath = _CANONICAL_BIN_PATHS[name];
+  if (!canonicalPath) return null;
+  return await _registryResolved(registry, name) ? canonicalPath : null;
 }
 
 function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {
@@ -204,15 +227,10 @@ function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {
     let anyMissing = false;
     for (const name of names) {
       // Classify: is it a registry-resolvable command (shell builtin)?
-      let isBuiltin = false;
-      try {
-        const resolved = typeof registry.resolve === 'function'
-          ? await registry.resolve(name)
-          : null;
-        isBuiltin = !!resolved;
-      } catch { /* registry unavailable; treat as not-builtin */ }
+      const resolved = await _registryResolved(registry, name);
+      const isBuiltin = !!resolved;
       // 1. PATH-walk + canonical-bin lookup.
-      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
       let found = false;
       if (path) {
         if (!silent) ctx.stdout.write(path + '\n');
@@ -245,15 +263,15 @@ function mkWhich(vfs: SqliteVFS, registry: any): CmdFn {
  * binaries on the virtual VFS; print just the binary path. With no
  * match, print just the name (matches `whereis` behavior on missing).
  */
-function mkWhereis(vfs: SqliteVFS): CmdFn {
-  return (ctx) => {
+function mkWhereis(vfs: SqliteVFS, registry: any): CmdFn {
+  return async (ctx) => {
     const names = ctx.args.filter(a => !a.startsWith('-'));
     if (names.length === 0) {
       ctx.stderr.write('Usage: whereis name [name ...]\n');
       return 1;
     }
     for (const name of names) {
-      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
       if (path) {
         ctx.stdout.write(`${name}: ${path}\n`);
       } else {
@@ -293,22 +311,16 @@ function mkCommand(vfs: SqliteVFS, registry: any): CmdFn {
     if (mode === '-v') {
       // Print path or builtin marker; exit 0 if found.
       const name = args[0];
-      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
       if (path) { ctx.stdout.write(path + '\n'); return 0; }
-      try {
-        const resolved = await registry.resolve(name);
-        if (resolved) { ctx.stdout.write(name + '\n'); return 0; }
-      } catch { /* registry miss */ }
+      if (await _registryResolved(registry, name)) { ctx.stdout.write(name + '\n'); return 0; }
       return 1;
     }
     if (mode === '-V') {
       const name = args[0];
-      const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
       if (path) { ctx.stdout.write(`${name} is ${path}\n`); return 0; }
-      try {
-        const resolved = await registry.resolve(name);
-        if (resolved) { ctx.stdout.write(`${name} is a shell builtin\n`); return 0; }
-      } catch { /* miss */ }
+      if (await _registryResolved(registry, name)) { ctx.stdout.write(`${name} is a shell builtin\n`); return 0; }
       ctx.stderr.write(`command: ${name}: not found\n`);
       return 1;
     }
@@ -356,7 +368,7 @@ function mkType(_vfs: SqliteVFS, registry: any): CmdFn {
     for (const name of ctx.args) {
       try {
         const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
-        if (resolved) {
+        if (resolved && !isRuntimeInstallHintHandler(resolved)) {
           ctx.stdout.write(`${name} is a shell builtin\n`);
         } else {
           ctx.stderr.write(`type: ${name}: not found\n`);
@@ -3038,7 +3050,7 @@ export function registerUnixCommands(
   vfs: SqliteVFS,
 ): void {
   registry.register('which', wrap(mkWhich(vfs, registry)));
-  registry.register('whereis', wrap(mkWhereis(vfs)));
+  registry.register('whereis', wrap(mkWhereis(vfs, registry)));
   registry.register('command', wrap(mkCommand(vfs, registry)));
   registry.register('type', wrap(mkType(vfs, registry)));
   registry.register('env', wrap(mkEnv()));

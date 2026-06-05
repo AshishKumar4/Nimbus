@@ -27,12 +27,31 @@
  */
 import { type RuntimeCatalogEnv, type RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+/** Minimal shell ctx shape we depend on (matches existing handlers). */
+export interface ShellCtx {
+    args: string[];
+    env: Record<string, string>;
+    cwd: string;
+    stdout: {
+        write(s: string): void;
+    };
+    stderr: {
+        write(s: string): void;
+    };
+}
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
     register(name: string, handler: (ctx: any) => Promise<number>): void;
     unregister?(name: string): void;
     resolve?(name: string): any;
 }
+export interface RuntimeWarmTarget {
+    name: string;
+    version: string;
+    root: string;
+    manifest: RuntimeManifest;
+}
+export type RuntimeWarmHook = (target: RuntimeWarmTarget, ctx: ShellCtx) => Promise<void>;
 /** Runner-factory contract. Each registered runner produces a shell-
  *  command handler given the manifest + the installed root dir. The
  *  package manager invokes the factory at install-time + at boot-time
@@ -54,6 +73,17 @@ export interface RuntimeSummary {
     sizeBytes: number;
     license: string;
 }
+export interface RuntimeInstallTarget {
+    runtimeName: string;
+    versionOverride: string | null;
+    requestedName: string;
+}
+export interface RuntimeCommandHint {
+    command: string;
+    runtimeName: string;
+    installSpec: string;
+}
+export declare function createRuntimeCommandHintResolver(env: RuntimeCatalogEnv): (command: string) => Promise<RuntimeCommandHint | null>;
 /** Compute the per-user install root for (name, version). Uses
  *  `process.env.HOME` if present; falls back to `/home/user`. */
 export declare function installRoot(homeDir: string, name: string, version: string): string;
@@ -109,5 +139,6 @@ export declare function makeNimbusVerbHandler(deps: {
     /** Returns `process.env.HOME` for the session. Computed by the
      *  caller (init.ts) from the shell env. */
     getHome(): string;
+    warmRuntime?: RuntimeWarmHook;
 }): (ctx: any) => Promise<number>;
 //# sourceMappingURL=package-manager.d.ts.map

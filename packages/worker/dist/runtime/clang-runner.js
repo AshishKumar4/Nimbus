@@ -19,8 +19,8 @@
  *              tiny .o = ~20 MiB.
  *
  * Sysroot subset extraction happens supervisor-side via a small ustar
- * parser. The full 9.3 MiB sysroot.tar is parsed once per compile;
- * only the files matching the role's prefix-allowlist are forwarded.
+ * parser. The full sysroot.tar is parsed once when the clang runtime
+ * warms for a session; compile/link calls reuse the filtered subsets.
  *
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
@@ -37,6 +37,7 @@ export function makeClangRunnerFactory(deps) {
         const lldVfsPath = findFile('bin/wasm-ld');
         const memfsVfsPath = findFile('share/clang/memfs.wasm');
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
+        let runtimePromise = null;
         return async function clangBinHandler(ctx) {
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
@@ -66,8 +67,6 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: clang/wasm-ld missing from install\n`);
                 return 127;
             }
-            const memfsBytes = vfs.readFile(memfsVfsPath);
-            const sysrootBytes = vfs.readFile(sysrootVfsPath);
             // Parse argv: find input .c + output path.
             const parsed = parseUserArgv(argv);
             if (parsed.error) {
@@ -80,8 +79,6 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: direct wasm-ld invocation not yet wired (v1.2)\n`);
                 return 2;
             }
-            // Parse sysroot.tar ONCE on supervisor side.
-            const sysroot = parseUstar(sysrootBytes);
             // Validate all user-supplied source inputs exist in the user's
             // session VFS. Collect their bytes for memfs population.
             const userSourceFiles = {};
@@ -110,6 +107,24 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: no compilable / linkable inputs\n`);
                 return 1;
             }
+            let runtime;
+            try {
+                if (!runtimePromise) {
+                    runtimePromise = createClangFacetRuntime(facetMgr, {
+                        clangVfsPath,
+                        lldVfsPath,
+                        memfsVfsPath,
+                        sysrootVfsPath,
+                        vfs,
+                    });
+                }
+                runtime = await runtimePromise;
+            }
+            catch (e) {
+                runtimePromise = null;
+                ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${e?.message || e}\n`);
+                return 1;
+            }
             // Walk the user's cwd to gather headers (.h/.hpp/.hxx/.inc/...)
             // and any sibling headers users typically expect to be visible
             // to #include "..." resolution. Real clang/gcc auto-search the
@@ -122,10 +137,8 @@ export function makeClangRunnerFactory(deps) {
             // are vastly under the cap.
             const userIncludeBundle = collectIncludeBundle(vfs, cwd.replace(/^\/+/, ''));
             // ── COMPILE PHASE ────────────────────────────────────────────
-            // Ship: clang.wasm + memfs.wasm + C-include subset of sysroot
-            // + user's source files + user's header bundle.
-            const compileSysroot = filterSysrootForCompile(sysroot);
-            const clangBytes = vfs.readFile(clangVfsPath);
+            // Reuse the warm clang/memfs pool and ship only the C-include
+            // subset plus user source/header files for this invocation.
             // Build -I flag list. We pass each user -I path verbatim AND add
             // an implicit '.' (cwd) for quote-form lookup. wasm-clang's -cc1
             // mode does NOT add cwd to the quote search list by default
@@ -170,12 +183,9 @@ export function makeClangRunnerFactory(deps) {
                 // so sibling sources stay out of memfs (smaller payload, no
                 // surface for unintended cross-TU textual inclusion via -I.).
                 const oneSourceFile = { [src]: userSourceFiles[src] };
-                const compileResult = await dispatchClangFacet(facetMgr, {
-                    primaryName: 'clang',
-                    primaryBytes: clangBytes,
-                    memfsBytes,
+                const compileResult = await dispatchClangFacet(runtime.compile, {
                     sysrootFiles: {
-                        ...compileSysroot,
+                        ...runtime.compile.sysrootFiles,
                         ...oneSourceFile,
                         // User's headers from cwd tree (so quote-form #include
                         // resolves; this is the primary clang-include-fix payload).
@@ -235,9 +245,8 @@ export function makeClangRunnerFactory(deps) {
                 preBuiltBytesMap[lp] = userSourceFiles[lp];
             }
             // ── LINK PHASE ───────────────────────────────────────────────
-            // Ship: lld.wasm + memfs.wasm + lib subset of sysroot + .o's.
-            const linkSysroot = filterSysrootForLink(sysroot);
-            const lldBytes = vfs.readFile(lldVfsPath);
+            // Reuse the warm wasm-ld/memfs pool and ship only the link
+            // sysroot subset plus object/archive inputs for this invocation.
             const stackSize = 1024 * 1024;
             // User-supplied -L paths and -l libraries flow through. The user
             // -L paths point at user-VFS dirs; we currently don't ship user
@@ -270,11 +279,8 @@ export function makeClangRunnerFactory(deps) {
                 '-lclang_rt.builtins-wasm32',
                 '-o', parsed.outputPath,
             ];
-            const linkResult = await dispatchClangFacet(facetMgr, {
-                primaryName: 'wasm-ld',
-                primaryBytes: lldBytes,
-                memfsBytes,
-                sysrootFiles: { ...linkSysroot, ...objBytesMap, ...preBuiltBytesMap },
+            const linkResult = await dispatchClangFacet(runtime.link, {
+                sysrootFiles: { ...runtime.link.sysrootFiles, ...objBytesMap, ...preBuiltBytesMap },
                 argv: linkArgv,
                 outputPaths: [parsed.outputPath],
             });
@@ -600,23 +606,45 @@ function filterSysrootForLink(all) {
     }
     return out;
 }
-async function dispatchClangFacet(facetMgr, args) {
+async function createClangFacetRuntime(facetMgr, args) {
+    if (!args.clangVfsPath || !args.lldVfsPath || !args.memfsVfsPath || !args.sysrootVfsPath) {
+        throw new Error('installed clang manifest is missing required files');
+    }
     const toAB = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    const memfsBytes = args.vfs.readFile(args.memfsVfsPath);
+    const clangBytes = args.vfs.readFile(args.clangVfsPath);
+    const lldBytes = args.vfs.readFile(args.lldVfsPath);
+    const sysroot = parseUstar(args.vfs.readFile(args.sysrootVfsPath));
+    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+    const env = facetMgr.env;
+    const ctx = facetMgr.ctx;
+    const makeTarget = (primaryName, primaryBytes, sysrootFiles) => ({
+        primaryName,
+        sysrootFiles,
+        pool: new NimbusLoaderPool(env, ctx, {
+            tag: `clang-runner-${primaryName}`,
+            concurrency: 1,
+            omitSupervisor: true,
+            cacheScope: 'global',
+            preamble: CLANG_RUNNER_PREAMBLE,
+            wasmModules: {
+                'memfs.wasm': toAB(memfsBytes),
+                'primary.wasm': toAB(primaryBytes),
+            },
+        }),
+    });
+    return {
+        compile: makeTarget('clang', clangBytes, filterSysrootForCompile(sysroot)),
+        link: makeTarget('wasm-ld', lldBytes, filterSysrootForLink(sysroot)),
+    };
+}
+async function dispatchClangFacet(target, args) {
     // Encode sysroot files as base64 for context ferrying. We do this on
     // the supervisor to keep the facet preamble small and CPU-light.
     const filesB64 = {};
     for (const [path, bytes] of Object.entries(args.sysrootFiles)) {
         filesB64[path] = uint8ToBase64(bytes);
     }
-    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-    const env = facetMgr.env;
-    const ctx = facetMgr.ctx;
-    const pool = new NimbusLoaderPool(env, ctx, {
-        tag: `clang-runner-${args.primaryName}`,
-        concurrency: 1,
-        omitSupervisor: true,
-        preamble: CLANG_RUNNER_PREAMBLE,
-    });
     const facetFn = async function clangFacetCall(inArgs) {
         const wasmTable = globalThis.__NIMBUS_WASM || {};
         const memfsMod = wasmTable['memfs.wasm'];
@@ -646,16 +674,12 @@ async function dispatchClangFacet(facetMgr, args) {
         });
     };
     try {
-        const result = await pool.submit(facetFn, {
-            primaryName: args.primaryName,
+        const result = await target.pool.submit(facetFn, {
+            primaryName: target.primaryName,
             argv: args.argv,
             filesB64,
             outputPaths: args.outputPaths,
         }, {
-            wasmModules: {
-                'memfs.wasm': toAB(args.memfsBytes),
-                'primary.wasm': toAB(args.primaryBytes),
-            },
             timeoutMs: 300_000,
         });
         // Decode outputFiles from base64 → Uint8Array.

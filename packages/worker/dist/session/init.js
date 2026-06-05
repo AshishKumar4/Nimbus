@@ -42,7 +42,7 @@ import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUns
 import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer, SubshellNormalizer, BraceExpander, DollarVarShim, BacktickNormalizer } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerGitCommands } from '../git/commands.js';
-import { makeNimbusVerbHandler, rehydrateInstalledRuntimes, registerRunnerFactory, } from '../runtime/package-manager.js';
+import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, rehydrateInstalledRuntimes, registerRunnerFactory, } from '../runtime/package-manager.js';
 import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
 import { makePythonRunnerFactory } from '../runtime/python-runner.js';
 import { makeRubyRunnerFactory } from '../runtime/ruby-runner.js';
@@ -531,6 +531,35 @@ export function initSession(self, ws) {
             vfs: sqliteFs,
             registry: pkgRegistry,
             getHome: nimbusGetHome,
+            warmRuntime: async (target, ctx) => {
+                if (target.name !== 'python')
+                    return;
+                ctx.stdout.write('[python] warming runtime...\n');
+                const stdout = { write(_s) { } };
+                const stderrText = [];
+                const stderr = { write: (s) => { stderrText.push(String(s)); } };
+                const py = await registry.resolve('python');
+                if (py) {
+                    const code = await py({
+                        ...ctx,
+                        args: ['-c', 'pass'],
+                        vfs: ctx.vfs ?? sqliteFs,
+                        signal: new AbortController().signal,
+                        stdout,
+                        stderr,
+                    });
+                    if (typeof code === 'number' && code !== 0) {
+                        throw new Error(stderrText.join('').trim() || `python warm-up exited ${code}`);
+                    }
+                }
+                const { warmPythonRepl } = await import('../runtime/python-repl.js');
+                await warmPythonRepl({
+                    facetMgr,
+                    vfs: sqliteFs,
+                    installRoot: target.root,
+                });
+                ctx.stdout.write('[python] ready\n');
+            },
         }));
         // Rehydration runs here even though the shell hasn't been built
         // yet — that's fine: it accesses VFS + registry which are both
@@ -2466,6 +2495,7 @@ export function initSession(self, ws) {
         return false;
     }
     const upstreamResolve = registry.resolve.bind(registry);
+    const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     registry.resolve = async function nimbusBinFallbackResolve(name) {
         const upstream = await upstreamResolve(name);
         if (upstream)
@@ -2483,8 +2513,24 @@ export function initSession(self, ws) {
         // built yet (very early init), fall back to /home/user.
         const cwd = (self.shell?.cwd || '/home/user').replace(/^\/+/, '');
         const binShimPath = cwd + '/node_modules/.bin/' + name;
-        if (!sqliteFs.exists(binShimPath))
-            return undefined;
+        if (!sqliteFs.exists(binShimPath)) {
+            let hint = null;
+            try {
+                hint = await runtimeCommandHint(name);
+            }
+            catch {
+                hint = null;
+            }
+            if (!hint)
+                return undefined;
+            const hintHandler = async (ctx) => {
+                ctx.stderr.write(`${name}: command not found\n`);
+                ctx.stderr.write(`hint: install it with: nimbus install ${hint.installSpec}\n`);
+                return 127;
+            };
+            hintHandler.__nimbusRuntimeInstallHint = true;
+            return hintHandler;
+        }
         // Synthesised handler. Each resolve call recomputes (cwd can
         // change between invocations); we never cache under `name`.
         return async (ctx) => {

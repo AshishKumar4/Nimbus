@@ -65,6 +65,13 @@ export interface NimbusLoaderPoolOptions {
    */
   omitSupervisor?: boolean;
   /**
+   * Loader cache scope. Defaults to `session`, which bakes the owning DO id
+   * into the loader key so stateful facets cannot leak bindings or globals
+   * across sessions. Use `global` only for stateless compute modules that do
+   * not receive a Supervisor binding and do not retain user state.
+   */
+  cacheScope?: 'session' | 'global';
+  /**
    * Override the `doId` baked into the auto-injected SUPERVISOR binding.
    * Default: `ctx.id.toString()` (the DO that constructs the pool).
    *
@@ -285,7 +292,9 @@ export class NimbusLoaderPool {
     // Include preamble in the cache-bucket key so changes to bundled helpers
     // invalidate warm slots. Empty preamble → '0' suffix (stable).
     this.preambleHash = this.preamble ? hashSource(this.preamble) : '0';
-    this.doIdShort = ctx.id.toString().slice(0, 12);
+    this.doIdShort = opts?.cacheScope === 'global'
+      ? 'global'
+      : ctx.id.toString().slice(0, 12);
 
     // Materialise the wasm-modules table. Sanitise each name into a
     // valid JS identifier for the static import binding; key collisions

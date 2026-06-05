@@ -51,6 +51,13 @@ export interface NimbusLoaderPoolOptions {
      */
     omitSupervisor?: boolean;
     /**
+     * Loader cache scope. Defaults to `session`, which bakes the owning DO id
+     * into the loader key so stateful facets cannot leak bindings or globals
+     * across sessions. Use `global` only for stateless compute modules that do
+     * not receive a Supervisor binding and do not retain user state.
+     */
+    cacheScope?: 'session' | 'global';
+    /**
      * Override the `doId` baked into the auto-injected SUPERVISOR binding.
      * Default: `ctx.id.toString()` (the DO that constructs the pool).
      *

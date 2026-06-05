@@ -19,8 +19,8 @@
  *              tiny .o = ~20 MiB.
  *
  * Sysroot subset extraction happens supervisor-side via a small ustar
- * parser. The full 9.3 MiB sysroot.tar is parsed once per compile;
- * only the files matching the role's prefix-allowlist are forwarded.
+ * parser. The full sysroot.tar is parsed once when the clang runtime
+ * warms for a session; compile/link calls reuse the filtered subsets.
  *
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.

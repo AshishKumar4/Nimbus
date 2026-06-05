@@ -41,6 +41,7 @@ export function makePythonRunnerFactory(deps) {
         const asmWasmVfs = findFile('share/pyodide/pyodide.asm.wasm');
         const asmJsVfs = findFile('share/pyodide/pyodide.asm.js');
         const stdlibVfs = findFile('share/pyodide/python_stdlib.zip');
+        let runtimePromise = null;
         return async function pythonBinHandler(ctx) {
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
@@ -69,9 +70,6 @@ export function makePythonRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: python_stdlib.zip missing\n`);
                 return 127;
             }
-            const asmWasmBytes = vfs.readFile(asmWasmVfs);
-            const asmJsBytes = vfs.readFile(asmJsVfs);
-            const stdlibBytes = vfs.readFile(stdlibVfs);
             // ── Parse argv ───────────────────────────────────────────────
             // Supported in v1:
             //   python -c '<code>'           run inline code, args[i+1..] in sys.argv
@@ -133,10 +131,24 @@ export function makePythonRunnerFactory(deps) {
             if (!userEnv.PYTHONUNBUFFERED)
                 userEnv.PYTHONUNBUFFERED = '1';
             // ── Dispatch the facet ───────────────────────────────────────
-            const result = await dispatchPythonFacet(facetMgr, {
-                asmWasmBytes,
-                asmJsBytes,
-                stdlibBytes,
+            let runtime;
+            try {
+                if (!runtimePromise) {
+                    runtimePromise = createPythonFacetRuntime(facetMgr, {
+                        asmWasmVfs,
+                        asmJsVfs,
+                        stdlibVfs,
+                        vfs,
+                    });
+                }
+                runtime = await runtimePromise;
+            }
+            catch (e) {
+                runtimePromise = null;
+                ctx.stderr.write(`${binName}: python runtime warm-up failed: ${e?.message || e}\n`);
+                return 1;
+            }
+            const result = await dispatchPythonFacet(runtime, {
                 userCode,
                 pyArgv,
                 userEnv,
@@ -234,70 +246,7 @@ function uint8ToBase64(u8) {
     }
     return btoa(s);
 }
-async function dispatchPythonFacet(facetMgr, args) {
-    const toAB = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-    // pyodide.asm.js is INLINED into the preamble (1 MiB text source).
-    // Workerd's CSP allows wasm code-gen AND JS top-level evaluation at
-    // module-load time, but BLOCKS `new Function(src)` at request time.
-    // The asm.js source declares `var _createPyodideModule = ...` at
-    // module-top; spliced into the preamble it becomes a module-scope
-    // binding we expose via `globalThis._createPyodideModule = ...`
-    // right after.
-    //
-    // stdlib.zip stays in the context (base64) — it's data not code,
-    // and the context blob is evaluated at module-load too.
-    let asmJsSrc = new TextDecoder('utf-8').decode(args.asmJsBytes);
-    // ── Source-patch the asm.js's "Cannot determine runtime environment" branch ──
-    //
-    // Even with our globalThis.process / WorkerGlobalScope / self / location
-    // shims in place, the asm.js's pyodide_js_init() IIFE's env-detect (via
-    // bn → vn) somehow lands d.IN_BROWSER_WEB_WORKER = false at request time
-    // on workerd. Our supervisor-side mirror of the same logic returns
-    // IN_BROWSER_WEB_WORKER = true with the same shims; the discrepancy
-    // remains unidentified after P8-P17 of diagnostic instrumentation.
-    //
-    // Pragmatic v1 fix: source-patch the if-chain to ALWAYS take the
-    // IN_BROWSER_WEB_WORKER branch (regardless of `d`). The branch's body
-    // assigns `Fe` to a globalThis.importScripts-based loadScript helper.
-    // We don't actually call Fe (Pyodide only invokes loadScript when
-    // dynamic-loading a wasm sibling; our instantiateWasm override pre-
-    // empts that). So the patch is functionally a no-op other than making
-    // the throw unreachable.
-    //
-    // The patch target string is a literal in the minified asm.js — stable
-    // across rebuilds because it's a unique identifier path.
-    const PATCH_NEEDLE = 'else throw new Error("Cannot determine runtime environment")';
-    const PATCH_REPLACE = '/* nimbus-patch: was: ' + PATCH_NEEDLE + ' */';
-    if (asmJsSrc.includes(PATCH_NEEDLE)) {
-        asmJsSrc = asmJsSrc.replace(PATCH_NEEDLE, PATCH_REPLACE);
-    }
-    // Also patch the if-chain head so we ALWAYS set Fe (force-take the
-    // first branch — IN_BROWSER_MAIN_THREAD's loadScript path uses
-    // `await import(t)` which works in workerd at module-load time).
-    // The previous patch alone is insufficient because if NO branch matches,
-    // Fe stays undefined → calling it would TypeError later.
-    const HEAD_NEEDLE = 'if(d.IN_BROWSER_MAIN_THREAD)';
-    const HEAD_REPLACE = 'if(true||d.IN_BROWSER_MAIN_THREAD)';
-    if (asmJsSrc.includes(HEAD_NEEDLE)) {
-        asmJsSrc = asmJsSrc.replace(HEAD_NEEDLE, HEAD_REPLACE);
-    }
-    const stdlibB64 = uint8ToBase64(args.stdlibBytes);
-    // Build the preamble with stdlib bytes spliced in. The preamble runs
-    // the entire Pyodide bootstrap at child-facet module-init time —
-    // where workerd's CSP permits `new WebAssembly.Module(rawBytes)` (the
-    // convertJsFunctionToWasm code path which is the v1 hang root).
-    // Per-call __pyodideRun just executes runPython on the cached
-    // Pyodide instance.
-    const preamble = buildPyodidePreamble(asmJsSrc, stdlibB64);
-    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-    const env = facetMgr.env;
-    const ctx = facetMgr.ctx;
-    const pool = new NimbusLoaderPool(env, ctx, {
-        tag: 'python-runner',
-        concurrency: 1,
-        omitSupervisor: true,
-        preamble,
-    });
+async function dispatchPythonFacet(runtime, args) {
     // v2 simplification: stdlibB64 and asmWasmMod are now embedded in the
     // preamble (stdlib via base64 splice; wasm via __NIMBUS_WASM table set
     // by the loader-pool). The facet fn only needs the per-call inputs.
@@ -315,15 +264,12 @@ async function dispatchPythonFacet(facetMgr, args) {
         });
     };
     try {
-        const result = await pool.submit(facetFn, {
+        const result = await runtime.pool.submit(facetFn, {
             userCode: args.userCode,
             pyArgv: args.pyArgv,
             userEnv: args.userEnv,
             progName: args.progName,
         }, {
-            wasmModules: {
-                'pyodide.asm.wasm': toAB(args.asmWasmBytes),
-            },
             timeoutMs: 300_000,
         });
         return {
@@ -341,6 +287,40 @@ async function dispatchPythonFacet(facetMgr, args) {
             error: `python-runner dispatch failed: ${e?.message || e}`,
         };
     }
+}
+async function createPythonFacetRuntime(facetMgr, args) {
+    const toAB = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    if (!args.asmWasmVfs || !args.asmJsVfs || !args.stdlibVfs) {
+        throw new Error('installed Pyodide manifest is missing required files');
+    }
+    const asmWasmBytes = args.vfs.readFile(args.asmWasmVfs);
+    const asmJsBytes = args.vfs.readFile(args.asmJsVfs);
+    const stdlibBytes = args.vfs.readFile(args.stdlibVfs);
+    let asmJsSrc = new TextDecoder('utf-8').decode(asmJsBytes);
+    const PATCH_NEEDLE = 'else throw new Error("Cannot determine runtime environment")';
+    const PATCH_REPLACE = '/* nimbus-patch: was: ' + PATCH_NEEDLE + ' */';
+    if (asmJsSrc.includes(PATCH_NEEDLE)) {
+        asmJsSrc = asmJsSrc.replace(PATCH_NEEDLE, PATCH_REPLACE);
+    }
+    const HEAD_NEEDLE = 'if(d.IN_BROWSER_MAIN_THREAD)';
+    const HEAD_REPLACE = 'if(true||d.IN_BROWSER_MAIN_THREAD)';
+    if (asmJsSrc.includes(HEAD_NEEDLE)) {
+        asmJsSrc = asmJsSrc.replace(HEAD_NEEDLE, HEAD_REPLACE);
+    }
+    const preamble = buildPyodidePreamble(asmJsSrc, uint8ToBase64(stdlibBytes));
+    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+    const env = facetMgr.env;
+    const ctx = facetMgr.ctx;
+    const pool = new NimbusLoaderPool(env, ctx, {
+        tag: 'python-runner',
+        concurrency: 1,
+        omitSupervisor: true,
+        preamble,
+        wasmModules: {
+            'pyodide.asm.wasm': toAB(asmWasmBytes),
+        },
+    });
+    return { pool };
 }
 /**
  * Compose the per-call preamble by splicing the pyodide.asm.js source
@@ -805,15 +785,34 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // overwrite sys.argv at request time via a tiny runPython prelude.
   // pyArgv is the user-visible argv (script name first, then args);
   // progName is the executable that prefixes errors.
+  const argv = [args.progName].concat((args.pyArgv || []).slice(0));
+  // If pyArgv already includes the script as [0], use it directly.
+  // Convention from the python-runner caller: pyArgv = [progName,
+  // ...args]. We set sys.argv = pyArgv with [0] = progName.
+  const effectiveArgv = (args.pyArgv && args.pyArgv.length > 0) ? args.pyArgv : argv;
+
+  let userGlobals = null;
   try {
-    const argv = [args.progName].concat((args.pyArgv || []).slice(0));
-    // If pyArgv already includes the script as [0], use it directly.
-    // Convention from the python-runner caller: pyArgv = [progName,
-    // ...args]. We set sys.argv = pyArgv with [0] = progName.
-    const effectiveArgv = (args.pyArgv && args.pyArgv.length > 0) ? args.pyArgv : argv;
+    const dictCtor = pyodide.globals?.get?.('dict');
+    userGlobals = typeof dictCtor === 'function' ? dictCtor() : null;
+    if (userGlobals && typeof userGlobals.set === 'function') {
+      userGlobals.set('__name__', '__main__');
+      userGlobals.set('__package__', null);
+      const argv0 = effectiveArgv[0];
+      if (argv0 && argv0 !== '-c' && argv0 !== '-') {
+        userGlobals.set('__file__', argv0);
+      }
+    }
+    try { dictCtor?.destroy?.(); } catch {}
+  } catch {
+    userGlobals = null;
+  }
+
+  try {
     pyodide.runPython(
       'import sys\\nsys.argv = ' +
-      JSON.stringify(effectiveArgv)
+      JSON.stringify(effectiveArgv),
+      userGlobals ? { globals: userGlobals } : undefined
     );
   } catch { /* best-effort */ }
 
@@ -824,7 +823,10 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   let exitCode = 0;
   if (args.userCode) {
     try {
-      pyodide.runPython(args.userCode);
+      pyodide.runPython(
+        args.userCode,
+        userGlobals ? { globals: userGlobals } : undefined
+      );
       // If runPython returned normally, exit code is 0 unless onExit
       // was invoked (which can happen if user called sys.exit but
       // Pyodide handled it via ExitStatus before throwing).
@@ -855,6 +857,8 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
       }
     }
   }
+
+  try { userGlobals?.destroy?.(); } catch {}
 
   return {
     exitCode: exitCode,

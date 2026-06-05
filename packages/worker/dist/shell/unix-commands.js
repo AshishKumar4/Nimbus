@@ -24,6 +24,9 @@ function getSymlinkRegistry(vfs) {
     }
     return v.__nimbus_symlink_registry;
 }
+function isRuntimeInstallHintHandler(handler) {
+    return !!handler && !!handler.__nimbusRuntimeInstallHint;
+}
 // ── Helpers ─────────────────────────────────────────────────────────────
 function resolvePath(cwd, p) {
     if (p.startsWith('/'))
@@ -134,12 +137,7 @@ const _CANONICAL_BIN_PATHS = {
     // Self
     nimbus: '/usr/local/bin/nimbus',
 };
-/** Resolve a command name to a path via PATH-walk + canonical-bin
- *  fallback. Returns null if not findable. Skip-canonical when the
- *  caller knows the command is a shell builtin (no fallback). */
-function _whichLookup(vfs, name, envPath) {
-    // 1. Real on-disk binary in $PATH (npm-installed node_modules/.bin,
-    //    user-placed scripts, etc.).
+function _pathLookup(vfs, name, envPath) {
     const paths = (envPath || '/usr/local/bin:/usr/bin:/bin').split(':');
     for (const dir of paths) {
         if (!dir)
@@ -150,11 +148,32 @@ function _whichLookup(vfs, name, envPath) {
             return '/' + fp;
         }
     }
-    // 2. Canonical-bin fallback for our facet-direct runtimes.
-    if (_CANONICAL_BIN_PATHS[name]) {
-        return _CANONICAL_BIN_PATHS[name];
+    return null;
+}
+async function _registryResolved(registry, name) {
+    try {
+        const resolved = typeof registry.resolve === 'function'
+            ? await registry.resolve(name)
+            : null;
+        if (resolved && !isRuntimeInstallHintHandler(resolved))
+            return resolved;
+    }
+    catch {
+        // Registry misses are normal for unknown commands.
     }
     return null;
+}
+/** Resolve a command name to a path via PATH-walk + canonical-bin
+ *  fallback. Returns null if not findable. Skip-canonical when the
+ *  caller knows the command is a shell builtin (no fallback). */
+async function _whichLookup(vfs, registry, name, envPath) {
+    const diskPath = _pathLookup(vfs, name, envPath);
+    if (diskPath)
+        return diskPath;
+    const canonicalPath = _CANONICAL_BIN_PATHS[name];
+    if (!canonicalPath)
+        return null;
+    return await _registryResolved(registry, name) ? canonicalPath : null;
 }
 function mkWhich(vfs, registry) {
     return async (ctx) => {
@@ -191,16 +210,10 @@ function mkWhich(vfs, registry) {
         let anyMissing = false;
         for (const name of names) {
             // Classify: is it a registry-resolvable command (shell builtin)?
-            let isBuiltin = false;
-            try {
-                const resolved = typeof registry.resolve === 'function'
-                    ? await registry.resolve(name)
-                    : null;
-                isBuiltin = !!resolved;
-            }
-            catch { /* registry unavailable; treat as not-builtin */ }
+            const resolved = await _registryResolved(registry, name);
+            const isBuiltin = !!resolved;
             // 1. PATH-walk + canonical-bin lookup.
-            const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+            const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
             let found = false;
             if (path) {
                 if (!silent)
@@ -235,15 +248,15 @@ function mkWhich(vfs, registry) {
  * binaries on the virtual VFS; print just the binary path. With no
  * match, print just the name (matches `whereis` behavior on missing).
  */
-function mkWhereis(vfs) {
-    return (ctx) => {
+function mkWhereis(vfs, registry) {
+    return async (ctx) => {
         const names = ctx.args.filter(a => !a.startsWith('-'));
         if (names.length === 0) {
             ctx.stderr.write('Usage: whereis name [name ...]\n');
             return 1;
         }
         for (const name of names) {
-            const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+            const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
             if (path) {
                 ctx.stdout.write(`${name}: ${path}\n`);
             }
@@ -290,36 +303,28 @@ function mkCommand(vfs, registry) {
         if (mode === '-v') {
             // Print path or builtin marker; exit 0 if found.
             const name = args[0];
-            const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+            const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
             if (path) {
                 ctx.stdout.write(path + '\n');
                 return 0;
             }
-            try {
-                const resolved = await registry.resolve(name);
-                if (resolved) {
-                    ctx.stdout.write(name + '\n');
-                    return 0;
-                }
+            if (await _registryResolved(registry, name)) {
+                ctx.stdout.write(name + '\n');
+                return 0;
             }
-            catch { /* registry miss */ }
             return 1;
         }
         if (mode === '-V') {
             const name = args[0];
-            const path = _whichLookup(vfs, name, ctx.env.PATH || '');
+            const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
             if (path) {
                 ctx.stdout.write(`${name} is ${path}\n`);
                 return 0;
             }
-            try {
-                const resolved = await registry.resolve(name);
-                if (resolved) {
-                    ctx.stdout.write(`${name} is a shell builtin\n`);
-                    return 0;
-                }
+            if (await _registryResolved(registry, name)) {
+                ctx.stdout.write(`${name} is a shell builtin\n`);
+                return 0;
             }
-            catch { /* miss */ }
             ctx.stderr.write(`command: ${name}: not found\n`);
             return 1;
         }
@@ -368,7 +373,7 @@ function mkType(_vfs, registry) {
         for (const name of ctx.args) {
             try {
                 const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
-                if (resolved) {
+                if (resolved && !isRuntimeInstallHintHandler(resolved)) {
                     ctx.stdout.write(`${name} is a shell builtin\n`);
                 }
                 else {
@@ -3517,7 +3522,7 @@ function wrap(fn) {
 }
 export function registerUnixCommands(registry, vfs) {
     registry.register('which', wrap(mkWhich(vfs, registry)));
-    registry.register('whereis', wrap(mkWhereis(vfs)));
+    registry.register('whereis', wrap(mkWhereis(vfs, registry)));
     registry.register('command', wrap(mkCommand(vfs, registry)));
     registry.register('type', wrap(mkType(vfs, registry)));
     registry.register('env', wrap(mkEnv()));

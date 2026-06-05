@@ -34,6 +34,98 @@ export function registerRunnerFactory(key, factory) {
 export function getRegisteredRunners() {
     return Object.keys(runnerFactories);
 }
+const RUNTIME_NAME_ALIASES = {
+    python3: 'python',
+    ruby3: 'ruby',
+    'wasm-ld': 'clang',
+};
+function splitRuntimeSpec(spec) {
+    const atIdx = spec.indexOf('@');
+    return {
+        name: atIdx >= 0 ? spec.slice(0, atIdx) : spec,
+        versionOverride: atIdx >= 0 ? spec.slice(atIdx + 1) : null,
+    };
+}
+async function resolveRuntimeInstallTarget(env, catalog, spec) {
+    const parsed = splitRuntimeSpec(spec);
+    const aliased = RUNTIME_NAME_ALIASES[parsed.name] ?? parsed.name;
+    if (catalog.runtimes[aliased]) {
+        return {
+            runtimeName: aliased,
+            versionOverride: parsed.versionOverride,
+            requestedName: parsed.name,
+        };
+    }
+    for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
+        const version = entry.default;
+        const versionEntry = entry.versions[version];
+        if (!versionEntry)
+            continue;
+        try {
+            const manifest = await fetchManifest(env, versionEntry.manifest);
+            if (manifest.entrypoints.some((ep) => ep.binName === parsed.name)) {
+                return {
+                    runtimeName,
+                    versionOverride: parsed.versionOverride,
+                    requestedName: parsed.name,
+                };
+            }
+        }
+        catch {
+            // A bad manifest should not prevent canonical catalog names from
+            // resolving; it only suppresses bin-name aliasing for that runtime.
+        }
+    }
+    return null;
+}
+export function createRuntimeCommandHintResolver(env) {
+    let hintsPromise = null;
+    const loadHints = async () => {
+        const catalog = await fetchCatalog(env);
+        const hints = new Map();
+        const add = (command, runtimeName) => {
+            if (!command || command.includes('/'))
+                return;
+            if (!hints.has(command)) {
+                hints.set(command, { command, runtimeName, installSpec: command });
+            }
+        };
+        for (const runtimeName of Object.keys(catalog.runtimes)) {
+            add(runtimeName, runtimeName);
+        }
+        for (const [alias, runtimeName] of Object.entries(RUNTIME_NAME_ALIASES)) {
+            if (catalog.runtimes[runtimeName])
+                add(alias, runtimeName);
+        }
+        for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
+            const versionEntry = entry.versions[entry.default];
+            if (!versionEntry)
+                continue;
+            try {
+                const manifest = await fetchManifest(env, versionEntry.manifest);
+                for (const ep of manifest.entrypoints)
+                    add(ep.binName, runtimeName);
+            }
+            catch {
+                // Hints are best-effort UX. Install itself still surfaces the
+                // manifest/catalog error through the normal package-manager path.
+            }
+        }
+        return hints;
+    };
+    return async (command) => {
+        if (!command || command.includes('/'))
+            return null;
+        if (!hintsPromise) {
+            hintsPromise = loadHints().catch((e) => {
+                hintsPromise = null;
+                throw e;
+            });
+        }
+        const hints = await hintsPromise;
+        return hints.get(command) ?? null;
+    };
+}
 /** Compute the per-user install root for (name, version). Uses
  *  `process.env.HOME` if present; falls back to `/home/user`. */
 export function installRoot(homeDir, name, version) {
@@ -151,13 +243,13 @@ export async function ensureRuntimesProgrammatic(deps, specs, opts = {}) {
  * `nimbus uninstall …`. Registered under the name `nimbus`.
  */
 export function makeNimbusVerbHandler(deps) {
-    const { env, vfs, registry, getHome } = deps;
+    const { env, vfs, registry, getHome, warmRuntime } = deps;
     return async function nimbus(ctx) {
         const argv = ctx.args || [];
         const verb = argv[0];
         const rest = argv.slice(1);
         if (verb === 'install') {
-            return runInstall(rest, ctx, { env, vfs, registry, getHome });
+            return runInstall(rest, ctx, { env, vfs, registry, getHome, warmRuntime });
         }
         if (verb === 'uninstall') {
             return runUninstall(rest, ctx, { vfs, registry, getHome });
@@ -184,11 +276,7 @@ async function runInstall(args, ctx, deps) {
         ctx.stderr.write('usage: nimbus install <name>[@<version>]\n');
         return 2;
     }
-    // Parse `<name>` or `<name>@<version>`.
     const spec = positional[0];
-    const atIdx = spec.indexOf('@');
-    const name = atIdx >= 0 ? spec.slice(0, atIdx) : spec;
-    const versionOverride = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
     // Fetch catalog.
     let catalog;
     try {
@@ -198,13 +286,16 @@ async function runInstall(args, ctx, deps) {
         ctx.stderr.write(`nimbus install: ${e?.message || e}\n`);
         return 1;
     }
-    const runtimeEntry = catalog.runtimes[name];
-    if (!runtimeEntry) {
-        ctx.stderr.write(`nimbus install: '${name}' is not in catalog\n`);
+    const target = await resolveRuntimeInstallTarget(deps.env, catalog, spec);
+    if (!target) {
+        const parsed = splitRuntimeSpec(spec);
+        ctx.stderr.write(`nimbus install: '${parsed.name}' is not in catalog\n`);
         ctx.stderr.write(`nimbus install: try 'nimbus install --available' to see installable runtimes\n`);
         return 1;
     }
-    const version = versionOverride || runtimeEntry.default;
+    const name = target.runtimeName;
+    const runtimeEntry = catalog.runtimes[name];
+    const version = target.versionOverride || runtimeEntry.default;
     const versionEntry = runtimeEntry.versions[version];
     if (!versionEntry) {
         ctx.stderr.write(`nimbus install: '${name}@${version}' not in catalog\n`);
@@ -219,6 +310,21 @@ async function runInstall(args, ctx, deps) {
         ctx.stdout.write(`[${name}] already installed at ${root} (use --reinstall to refetch)\n`);
         // Still re-register bins in case the registry lost them — idempotent.
         rehydrateInstalledRuntimes(deps.vfs, deps.registry, home);
+        let manifest = null;
+        try {
+            manifest = JSON.parse(deps.vfs.readFileString(`${root}/manifest.json`));
+        }
+        catch {
+            manifest = null;
+        }
+        if (manifest) {
+            await warmRuntimeIfConfigured(ctx, deps, {
+                name,
+                version,
+                root,
+                manifest,
+            });
+        }
         return 0;
     }
     // Fetch manifest from R2.
@@ -310,7 +416,23 @@ async function runInstall(args, ctx, deps) {
         deps.registry.register(ep.binName, handler);
     }
     ctx.stdout.write(`[${name}] installed at ${root} (${(totalBytes / 1024 / 1024).toFixed(1)} MiB)\n`);
+    await warmRuntimeIfConfigured(ctx, deps, {
+        name,
+        version,
+        root,
+        manifest,
+    });
     return 0;
+}
+async function warmRuntimeIfConfigured(ctx, deps, target) {
+    if (!deps.warmRuntime)
+        return;
+    try {
+        await deps.warmRuntime(target, ctx);
+    }
+    catch (e) {
+        ctx.stderr.write(`[${target.name}] warning: runtime warm-up failed: ${e?.message || e}\n`);
+    }
 }
 // ── --list ───────────────────────────────────────────────────────────
 async function runList(ctx, deps) {
