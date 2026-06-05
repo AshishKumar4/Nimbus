@@ -41,6 +41,7 @@ export { detectCloudflareWorkersProject } from '../runtime/project-detect.js';
  * the right boundary. See user-debug-transcript.txt lines 1-5.
  */
 export declare function renderMotdBanner(version: string): string;
+export declare function renderWelcomeMarkdown(version: string): string;
 export declare class NimbusSession extends CloudflareDurableObject {
     sqliteFs: SqliteVFS | null;
     kernel: Kernel | null;

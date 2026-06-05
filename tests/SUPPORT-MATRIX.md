@@ -7,8 +7,8 @@ listed probes against prod for the current live verdict:
 BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
 ```
 
-The current runner discovers 305 probes recursively. It skips helper files
-whose basename starts with `_` and any `run-all.mjs` sub-runner.
+The runner discovers probes recursively. It skips helper files whose basename
+starts with `_` and any `run-all.mjs` sub-runner.
 
 Status legend:
 

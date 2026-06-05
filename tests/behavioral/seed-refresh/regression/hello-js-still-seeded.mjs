@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // seed-refresh/regression/hello-js-still-seeded — the pre-existing
 // `~/hello.js` Node demo MUST remain seeded after we add `hello.c`
-// alongside it. Also asserts welcome.txt still preserves the canonical
+// alongside it. Also asserts welcome.md still preserves the canonical
 // node/npm/vite hint lines (the new content is additive).
 //
 // Category: R (runtime-behavioral).
@@ -48,11 +48,11 @@ function hasOutputLine(stripped, marker) {
     ok ? '' : JSON.stringify(out.slice(-400)));
 }
 
-// 4. welcome.txt still includes the original `node hello.js` line.
+// 4. welcome.md still includes the original `node hello.js` line.
 {
-  const r = await t.run('cat /home/user/welcome.txt', 10_000);
+  const r = await t.run('cat /home/user/welcome.md', 10_000);
   const out = stripAnsi(r.output);
-  a.check('welcome.txt still has `node hello.js` line', /node hello\.js/.test(out),
+  a.check('welcome.md still has `node hello.js` line', /node hello\.js/.test(out),
     out.slice(-400));
 }
 

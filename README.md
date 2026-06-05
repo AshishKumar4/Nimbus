@@ -183,7 +183,7 @@ Open http://localhost:8787 and click **Launch**.
 
 ## What works today
 
-Covered by a behavioral probe suite in `tests/behavioral/`; the current runner discovers 305 probes (run them yourself -- see [Tests](#tests)).
+Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself against a live deployment; see [Tests](#tests).
 
 | Capability | Status |
 |---|:---:|
@@ -271,7 +271,7 @@ Four layers, each owning a single concern: the browser terminal talks to the sup
 
 ## Tests
 
-`tests/behavioral/` contains 305 discoverable black-box probes that drive a real session via `POST /new` + WebSocket. Probes assert real user-visible behavior -- structural-only assertions (regex on a bundle, HTTP 200 alone) are not accepted as pass criteria. See `tests/behavioral/PROBE-QUALITY.md` for the contract.
+`tests/behavioral/` contains a large black-box probe suite that drives a real session via `POST /new` + WebSocket. Probes assert real user-visible behavior -- structural-only assertions (regex on a bundle, HTTP 200 alone) are not accepted as pass criteria. See `tests/behavioral/PROBE-QUALITY.md` for the contract.
 
 Run them all against the live deploy:
 

@@ -101,6 +101,48 @@
     .preview-bar button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; padding: 2px 4px; }
     .preview-bar button:hover { color: #c9d1d9; }
     #preview-frame { flex: 1; border: none; background: white; width: 100%; }
+    #markdown-preview {
+      display: none; flex: 1; min-height: 0; overflow: auto;
+      background: #0d1117; color: #c9d1d9;
+    }
+    #markdown-preview.active { display: block; }
+    .markdown-body {
+      max-width: 860px; margin: 0 auto; padding: 34px 44px 56px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px; line-height: 1.65;
+    }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+      color: #f0f6fc; line-height: 1.25; margin: 24px 0 12px;
+      border-bottom: 1px solid #30363d; padding-bottom: 8px;
+    }
+    .markdown-body h1 { font-size: 30px; margin-top: 0; }
+    .markdown-body h2 { font-size: 22px; }
+    .markdown-body h3 { font-size: 18px; border-bottom: 0; padding-bottom: 0; }
+    .markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body table,
+    .markdown-body pre, .markdown-body blockquote { margin: 0 0 16px; }
+    .markdown-body a { color: #58a6ff; text-decoration: none; }
+    .markdown-body a:hover { text-decoration: underline; }
+    .markdown-body code {
+      background: rgba(110, 118, 129, 0.28); color: #f0f6fc;
+      border-radius: 4px; padding: 0.15em 0.35em;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    .markdown-body pre {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 14px 16px; overflow: auto;
+    }
+    .markdown-body pre code { background: transparent; padding: 0; color: #c9d1d9; }
+    .markdown-body blockquote {
+      border-left: 3px solid #3fb950; color: #8b949e; padding: 4px 0 4px 14px;
+    }
+    .markdown-body table { border-collapse: collapse; width: 100%; display: block; overflow: auto; }
+    .markdown-body th, .markdown-body td {
+      border: 1px solid #30363d; padding: 7px 10px; text-align: left;
+    }
+    .markdown-body th { background: #161b22; color: #f0f6fc; }
+    .markdown-body tr:nth-child(2n) td { background: rgba(22, 27, 34, 0.5); }
+    .markdown-body hr { border: 0; border-top: 1px solid #30363d; margin: 24px 0; }
 
     /* Footer */
     .footer { padding: 3px 12px; background: #161b22; border-top: 1px solid #30363d; font-size: 11px; color: #8b949e; flex-shrink: 0; display: flex; justify-content: space-between; gap: 12px; }
@@ -372,6 +414,9 @@
         <button id="btnReloadPreview" title="Reload">&#8635;</button>
       </div>
       <iframe id="preview-frame" src="about:blank"></iframe>
+      <div id="markdown-preview" aria-label="Markdown preview">
+        <article class="markdown-body" id="markdown-preview-body"></article>
+      </div>
     </div>
   </div>
   <!-- Ctrl+P command palette. Lazy-populated fuzzy file finder; fs-list
@@ -475,6 +520,8 @@
     const stText = document.getElementById('statusText');
     const previewFrame = document.getElementById('preview-frame');
     const previewPanel = document.getElementById('previewPanel');
+    const markdownPreview = document.getElementById('markdown-preview');
+    const markdownPreviewBody = document.getElementById('markdown-preview-body');
     const mainPanel = document.getElementById('mainPanel');
     const viteStatus = document.getElementById('viteStatus');
     let ws = null, rd = 1000, statsTimer = null;
@@ -497,8 +544,11 @@
       // Lazy-init Monaco + the file tree the FIRST time the user
       // switches to editor mode. Cold session pays neither cost.
       if (wantEditor) {
-        Editor.ensureLoaded();
-        FileTree.ensureLoaded();
+        const editorReady = Editor.ensureLoaded();
+        const treeReady = FileTree.ensureLoaded();
+        Promise.allSettled([editorReady, treeReady])
+          .then(() => Editor.openDefaultWelcome())
+          .catch(() => {});
       }
       setTimeout(() => {
         // Re-apply persisted pane dims for this layout.
@@ -550,11 +600,13 @@
       // race on the same path.
       const pending = new Map();
       let nextReqId = 1;
+      const DEFAULT_WELCOME_PATH = '/home/user/welcome.md';
 
       // Current open file state.
       let openPath = null;        // POSIX absolute path or null
       let originalContent = '';   // last-saved content (for dirty check)
       let editor = null;          // Monaco editor instance
+      let markdownUpdateTimer = null;
 
       function tabEl() { return document.getElementById('editorTab'); }
       function setTabFile(path, dirty) {
@@ -666,6 +718,20 @@
           xml: 'xml', sql: 'sql', dockerfile: 'dockerfile',
         };
         return map[ext] || 'plaintext';
+      }
+
+      function isMarkdownPath(path) {
+        return /\.(md|markdown|mdown|mkdn)$/i.test(path || '');
+      }
+
+      function scheduleMarkdownPreviewUpdate(content) {
+        if (!openPath || !isMarkdownPath(openPath)) return;
+        if (markdownUpdateTimer) clearTimeout(markdownUpdateTimer);
+        markdownUpdateTimer = setTimeout(() => {
+          showMarkdownPreview(openPath, content).catch((e) => {
+            setStatusFlash('markdown preview failed: ' + (e?.message || e));
+          });
+        }, 160);
       }
 
       function ensureLoaded() {
@@ -803,6 +869,9 @@
           if (typeof FileTree !== 'undefined') {
             try { FileTree.markDirty(openPath, dirty); } catch {}
           }
+          if (isMarkdownPath(openPath)) {
+            scheduleMarkdownPreviewUpdate(cur);
+          }
         });
         // Cursor position → status bar.
         const statusPos = document.getElementById('editorStatusPos');
@@ -823,7 +892,7 @@
         setTimeout(() => editor.layout(), 0);
       }
 
-      async function openFile(path) {
+      async function openFile(path, options = {}) {
         if (!path) return;
         // Dirty-prompt before switching files. If the current buffer has
         // unsaved changes, ask the user whether to save or discard.
@@ -879,6 +948,13 @@
         // Mirror palette/Ctrl+P selection into the file tree.
         if (typeof FileTree !== 'undefined') {
           try { FileTree.setSelected(path); FileTree.markDirty(path, false); } catch {}
+        }
+        if (isMarkdownPath(path)) {
+          showMarkdownPreview(path, content).catch((e) => {
+            setStatusFlash('markdown preview failed: ' + (e?.message || e));
+          });
+        } else if (!options.keepMarkdownPreview) {
+          showAppPreview();
         }
         editor.focus();
       }
@@ -1027,7 +1103,21 @@
         fileListCachedAt = 0;
       }
 
-      return { ensureLoaded, openFile, save, openPalette, tryHandleFsResult, drainFsQueue, invalidateFileListCache };
+      function openDefaultWelcome() {
+        if (openPath) return Promise.resolve();
+        return openFile(DEFAULT_WELCOME_PATH);
+      }
+
+      function refreshMarkdownPreview() {
+        if (!openPath || !editor || !isMarkdownPath(openPath)) return Promise.resolve();
+        return showMarkdownPreview(openPath, editor.getValue());
+      }
+
+      return {
+        ensureLoaded, openFile, save, openPalette, tryHandleFsResult,
+        drainFsQueue, invalidateFileListCache, openDefaultWelcome,
+        refreshMarkdownPreview,
+      };
     })();
 
     // ── FileTree module ──
@@ -1600,30 +1690,102 @@
     // applyPreviewTarget call always paints (even if nothing is running
     // yet — that still wants the VITE_URL placeholder loaded).
     let activePreview = null; // null | 'vite' | 'worker' | 'none'
+    let previewSurface = 'app'; // 'app' | 'markdown'
+    let markdownRendererPromise = null;
+    let markdownRenderer = null;
 
     function previewUrlFor(kind) {
       return kind === 'worker' ? WORKER_URL : VITE_URL;
+    }
+
+    function setPreviewUrlBar(value) {
+      const urlBar = document.getElementById('urlBar');
+      if (urlBar) urlBar.value = value;
+    }
+
+    function showAppPreview() {
+      previewSurface = 'app';
+      if (markdownPreview) markdownPreview.classList.remove('active');
+      if (previewFrame) previewFrame.style.display = 'block';
+      previewPanel.classList.remove('markdown-mode');
+      const kind = (activePreview === null || activePreview === 'none') ? 'vite' : activePreview;
+      const url = previewUrlFor(kind);
+      if (previewFrame && (previewFrame.src === 'about:blank' || !previewFrame.src.includes(url))) {
+        previewFrame.src = url;
+      }
+      setPreviewUrlBar(url);
+    }
+
+    async function showMarkdownPreview(path, markdown) {
+      previewSurface = 'markdown';
+      previewPanel.classList.add('markdown-mode');
+      if (previewFrame) previewFrame.style.display = 'none';
+      if (markdownPreview) markdownPreview.classList.add('active');
+      setPreviewUrlBar('Markdown Preview · ' + path);
+      const html = await renderMarkdown(markdown || '');
+      if (markdownPreviewBody) markdownPreviewBody.innerHTML = html;
+    }
+
+    async function renderMarkdown(markdown) {
+      try {
+        const renderer = await ensureMarkdownRenderer();
+        const raw = renderer.marked(markdown, { gfm: true, breaks: false });
+        return renderer.purifier.sanitize(raw, { USE_PROFILES: { html: true } });
+      } catch (e) {
+        return '<pre><code>' + escapeHtml(markdown) + '</code></pre>';
+      }
+    }
+
+    function ensureMarkdownRenderer() {
+      if (markdownRenderer) return Promise.resolve(markdownRenderer);
+      if (markdownRendererPromise) return markdownRendererPromise;
+      markdownRendererPromise = Promise.all([
+        import('https://cdn.jsdelivr.net/npm/marked@12.0.2/+esm'),
+        import('https://cdn.jsdelivr.net/npm/dompurify@3.1.7/+esm'),
+      ]).then(([markedModule, purifyModule]) => {
+        const marked = markedModule.marked || markedModule.parse || markedModule.default;
+        const createDOMPurify = purifyModule.default || purifyModule.DOMPurify || purifyModule;
+        const purifier = typeof createDOMPurify === 'function'
+          ? createDOMPurify(window)
+          : createDOMPurify;
+        if (typeof marked !== 'function' || !purifier || typeof purifier.sanitize !== 'function') {
+          throw new Error('markdown renderer unavailable');
+        }
+        markdownRenderer = { marked, purifier };
+        return markdownRenderer;
+      });
+      return markdownRendererPromise;
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = String(s);
+      return div.innerHTML;
     }
 
     function applyPreviewTarget(kind) {
       // Idempotent: only update iframe + URL bar when the backend kind
       // actually changes. Avoids tearing down the inner app on every
       // 5-second stats poll.
-      if (activePreview === kind) return;
+      if (activePreview === kind && previewSurface === 'app') return;
       activePreview = kind;
+      if (previewSurface !== 'app') return;
       const url = previewUrlFor(kind);
       // Always use the VITE_URL path when nothing is running — that
       // endpoint serves the styled "no dev server" placeholder, which
       // self-refreshes via its own polling loop.
       previewFrame.src = url;
-      const urlBar = document.getElementById('urlBar');
-      if (urlBar) urlBar.value = url;
+      setPreviewUrlBar(url);
       // If the user had collapsed the preview because nothing was up,
       // surface it automatically when the first backend comes online.
       if (kind !== 'none' && layout === 'terminal-only') setLayout('split');
     }
 
     function reloadPreview() {
+      if (previewSurface === 'markdown') {
+        Editor.refreshMarkdownPreview().catch(() => {});
+        return;
+      }
       // Refreshing without a running backend should re-poll the
       // placeholder so users see dev-server status update promptly.
       if (previewFrame.src === 'about:blank' ||

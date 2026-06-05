@@ -119,6 +119,53 @@ export function renderMotdBanner(version) {
         bot +
         '\x1b[0m\r\n');
 }
+export function renderWelcomeMarkdown(version) {
+    return `# Welcome to Nimbus v${version}
+
+Cloud-native development environment on Cloudflare Workers.
+
+## Start Here
+
+| Task | Command |
+| --- | --- |
+| Run JavaScript | \`node hello.js\` |
+| Install npm packages | \`npm install <pkg>\` |
+| Start the starter app | \`cd app && npm install && npm run dev\` |
+| Run a Cloudflare Worker locally | \`nimbus-wrangler dev\` |
+
+## Install More Runtimes
+
+Nimbus installs language runtimes on demand:
+
+\`\`\`bash
+nimbus install clang       # then: clang hello.c -o hello && ./hello
+nimbus install python      # then: python -c 'print("hi")'
+nimbus install ruby        # then: ruby -e 'puts "hi"'
+\`\`\`
+
+\`python3\`, \`ruby3\`, and \`wasm-ld\` are command aliases. If an
+installable command is missing, Nimbus prints the matching install command.
+
+## Interactive REPLs
+
+| Runtime | REPL |
+| --- | --- |
+| Python | \`python\` or \`python3\` - Pyodide CPython 3.13 |
+| Ruby | \`ruby\` or \`ruby3\` - ruby.wasm 3.3 |
+| Node | \`node\` - workerd Node compatibility runtime |
+
+## System Commands
+
+\`\`\`bash
+nimbus install --list       # show installed runtimes
+nimbus install --available  # show catalog
+df                          # filesystem + cache stats
+\`\`\`
+
+The editor opens this file in Markdown preview mode by default. Use
+\`Ctrl+P\` to open files and \`Ctrl+S\` to save edits.
+`;
+}
 export class NimbusSession extends CloudflareDurableObject {
     // this.ctx and this.env are provided by the DurableObject base class
     sqliteFs = null;
@@ -1020,29 +1067,8 @@ export class NimbusSession extends CloudflareDurableObject {
                 '  return 0;\n' +
                 '}\n');
         }
-        if (!fs.exists('home/user/welcome.txt')) {
-            fs.writeFile('home/user/welcome.txt', `Welcome to Nimbus v${NIMBUS_VERSION}!\n\n` +
-                'Cloud-native dev environment on Cloudflare Workers.\n\n' +
-                'JavaScript / TypeScript:\n' +
-                '  node hello.js              — run in isolated dynamic worker\n' +
-                '  npm install <pkg>          — install npm packages\n' +
-                '  vite                       — start dev server with HMR\n' +
-                '  nimbus-wrangler dev        — run Cloudflare Worker locally\n' +
-                '\n' +
-                'More languages (install on demand):\n' +
-                "  nimbus install clang       — then: clang hello.c -o hello && ./hello\n" +
-                "  nimbus install python      — then: python -c 'print(\"hi\")'\n" +
-                "  nimbus install ruby        — then: ruby -e 'puts \"hi\"'\n" +
-                '\n' +
-                'Interactive REPLs (after install):\n' +
-                '  python                     — Pyodide CPython 3.13\n' +
-                '  ruby                       — ruby.wasm 3.3\n' +
-                '  node                       — bare REPL\n' +
-                '\n' +
-                'System:\n' +
-                '  nimbus install --list      — show installed runtimes\n' +
-                '  nimbus install --available — show catalog\n' +
-                '  df                         — filesystem + cache stats\n');
+        if (!fs.exists('home/user/welcome.md')) {
+            fs.writeFile('home/user/welcome.md', renderWelcomeMarkdown(NIMBUS_VERSION));
         }
         // ── Starter app (Vite + React + TS + Tailwind + Router) ──
         // Idempotent: guarded by shouldSeedProject() which checks both a
