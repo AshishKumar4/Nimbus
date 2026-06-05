@@ -27,15 +27,15 @@
     },
     "packages/cli": {
       "name": "@nimbus-sh/cli",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "bin": {
         "cli": "dist/bin.js",
         "nimbus": "dist/bin.js",
         "create-nimbus-app": "dist/scaffold-bin.js",
       },
       "dependencies": {
-        "@nimbus-sh/sdk": "^0.1.3",
-        "@nimbus-sh/worker": "^0.1.3",
+        "@nimbus-sh/sdk": "^0.1.4",
+        "@nimbus-sh/worker": "^0.1.4",
       },
       "devDependencies": {
         "@types/node": "^22.0.0",
@@ -44,49 +44,49 @@
     },
     "packages/config": {
       "name": "@nimbus-sh/config",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "devDependencies": {
         "typescript": "^5.7.0",
       },
     },
     "packages/create-nimbus-app": {
       "name": "create-nimbus-app",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "bin": {
         "create-nimbus-app": "bin.js",
       },
       "dependencies": {
-        "@nimbus-sh/cli": "^0.1.6",
+        "@nimbus-sh/cli": "^0.1.7",
       },
     },
     "packages/react": {
       "name": "@nimbus-sh/react",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "devDependencies": {
-        "@nimbus-sh/sdk": "^0.1.3",
+        "@nimbus-sh/sdk": "^0.1.4",
         "@types/react": "^19.0.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/sdk": "^0.1.3",
+        "@nimbus-sh/sdk": "^0.1.4",
         "react": ">=18.0.0",
       },
     },
     "packages/sdk": {
       "name": "@nimbus-sh/sdk",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
-        "@nimbus-sh/worker": "^0.1.3",
+        "@nimbus-sh/worker": "^0.1.4",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/worker": "^0.1.3",
+        "@nimbus-sh/worker": "^0.1.4",
       },
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "dependencies": {
         "@lifo-sh/core": "^0.5.5",
         "clean-git-ref": "^2.0.1",
