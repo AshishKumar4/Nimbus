@@ -1,0 +1,70 @@
+{
+  "name": "@nimbus-sh/sdk",
+  "version": "0.1.2",
+  "description": "Nimbus SDK — Worker embedder, programmatic sandboxes, token mint, and client helpers.",
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./token": {
+      "workspace": "./src/token.ts",
+      "types": "./dist/token.d.ts",
+      "import": "./dist/token.js"
+    },
+    "./session": {
+      "workspace": "./src/session.ts",
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
+    "./sandbox": {
+      "workspace": "./src/sandbox.ts",
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
+    },
+    "./worker": {
+      "workspace": "./src/worker.ts",
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./errors": {
+      "workspace": "./src/errors.ts",
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@nimbus-sh/worker": "^0.1.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250327.0",
+    "@nimbus-sh/worker": "^0.1.2",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
