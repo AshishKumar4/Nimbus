@@ -16,7 +16,7 @@
  *   W7_MAGIC, W7_TRAILER.
  *
  * Tar size: 3.84 KiB
- * W7 size:  7.77 KiB
+ * W7 size:  7.78 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const TAR_STREAM_PREAMBLE_SIZE: number;

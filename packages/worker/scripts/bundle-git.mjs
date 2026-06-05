@@ -47,6 +47,7 @@ async function main() {
       format: 'esm',
       target: 'esnext',
       platform: 'browser',
+      absWorkingDir: root,
       conditions: ['worker', 'browser', 'import'],
       // Map bare node built-ins → node: prefixed (works with nodejs_compat).
       alias: {

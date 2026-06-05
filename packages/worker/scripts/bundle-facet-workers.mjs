@@ -47,6 +47,7 @@ async function bundleAsPreamble(entryPath, label) {
     format: 'esm',
     target: 'esnext',
     platform: 'neutral',
+    absWorkingDir: root,
     write: false,
     logLevel: 'warning',
     legalComments: 'none',

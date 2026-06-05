@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/worker",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Nimbus runtime package for Cloudflare Workers, re-exported publicly through @nimbus-sh/sdk/worker.",
   "keywords": [
     "cloudflare",

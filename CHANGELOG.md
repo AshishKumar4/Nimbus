@@ -3,6 +3,30 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## 2026-06-05
+
+### Open-source Alpha
+
+- Added root and package-level MIT license files.
+- Added third-party notices for runtime and package dependencies.
+- Added contribution, security, code-of-conduct, issue-template, and
+  pull-request-template docs.
+- Updated public README positioning for the free self-hostable alpha and the
+  hosted demo limits.
+- Switched the public workspace lockfile to `bun.lock` and removed the old
+  npm lockfile.
+- Removed wall-clock timestamps from generated worker bundles.
+
+### Packages
+
+- Published:
+  - `@nimbus-sh/worker@0.1.3`
+  - `@nimbus-sh/config@0.1.2`
+  - `@nimbus-sh/sdk@0.1.3`
+  - `@nimbus-sh/react@0.1.2`
+  - `@nimbus-sh/cli@0.1.6`
+  - `create-nimbus-app@0.1.5`
+
 ## 2026-06-04
 
 ### Sandbox SDK
