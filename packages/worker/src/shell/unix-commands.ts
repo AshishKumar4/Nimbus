@@ -12,21 +12,8 @@
  */
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { SymlinkRegistry } from '../vfs/symlink-registry.js';
+import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { enc } from '../_shared/bytes.js';
-
-/**
- * SHELL-FOLLOWUPS-4 (2026-05-11): per-vfs symlink registry singleton.
- * Cached on the VFS instance via a side property so `ln -s` + `readlink`
- * + `ls -la` share the same registry within a session.
- */
-function getSymlinkRegistry(vfs: SqliteVFS): SymlinkRegistry {
-  const v = vfs as any;
-  if (!v.__nimbus_symlink_registry) {
-    v.__nimbus_symlink_registry = new SymlinkRegistry(vfs);
-  }
-  return v.__nimbus_symlink_registry;
-}
 
 type Ctx = {
   args: string[];
@@ -135,8 +122,13 @@ const _CANONICAL_BIN_PATHS: Record<string, string> = {
   git: '/usr/bin/git',
   python: '/usr/bin/python3',
   python3: '/usr/bin/python3',
+  pip: '/usr/bin/pip',
+  pip3: '/usr/bin/pip3',
   ruby: '/usr/bin/ruby',
   ruby3: '/usr/bin/ruby',
+  gem: '/usr/bin/gem',
+  bundle: '/usr/bin/bundle',
+  bundler: '/usr/bin/bundler',
   sh: '/usr/bin/sh',
   bash: '/usr/bin/bash',
   // Framework CLIs

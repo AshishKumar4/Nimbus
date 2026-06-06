@@ -26,6 +26,7 @@
  */
 
 import type { SqliteVFS } from './sqlite-vfs.js';
+import { normalizeVfsPath } from './path.js';
 
 const REGISTRY_PATH = '.nimbus-symlinks.json';
 
@@ -64,9 +65,9 @@ export class SymlinkRegistry {
     } catch { /* fail-soft */ }
   }
 
-  /** Normalize a path: strip leading slashes (VFS internal convention). */
+  /** Normalize a path to the VFS internal key convention. */
   private norm(p: string): string {
-    return p.replace(/^\/+/, '').replace(/\/+$/, '');
+    return normalizeVfsPath(p);
   }
 
   /** Create or replace a symlink. Target is stored verbatim (can be
@@ -116,13 +117,7 @@ export class SymlinkRegistry {
       } else {
         // Relative target: resolve from symlink's parent dir.
         const parent = cur.includes('/') ? cur.substring(0, cur.lastIndexOf('/')) : '';
-        const parts = (parent + '/' + target).split('/');
-        const out: string[] = [];
-        for (const s of parts) {
-          if (s === '..') out.pop();
-          else if (s !== '.' && s !== '') out.push(s);
-        }
-        cur = out.join('/');
+        cur = normalizeVfsPath(`${parent}/${target}`);
       }
     }
     // ELOOP
@@ -137,4 +132,17 @@ export class SymlinkRegistry {
     }
     return out;
   }
+}
+
+/**
+ * Return the session-wide registry for a VFS instance. The registry has an
+ * in-memory cache, so all runtime surfaces that share one SqliteVFS must also
+ * share the registry instance to avoid stale symlink reads.
+ */
+export function getSymlinkRegistry(vfs: SqliteVFS): SymlinkRegistry {
+  const owner = vfs as any;
+  if (!owner.__nimbus_symlink_registry) {
+    owner.__nimbus_symlink_registry = new SymlinkRegistry(vfs);
+  }
+  return owner.__nimbus_symlink_registry;
 }

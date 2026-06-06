@@ -18,7 +18,7 @@ await t.waitForPrompt(30_000);
 const fileName = 'refreshes-del-' + Math.random().toString(36).slice(2, 8) + '.txt';
 await t.run(`touch /home/user/${fileName}`, 10_000);
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
 const received = [];
 let opened = false;
 let subResult = null;

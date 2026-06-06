@@ -36,9 +36,34 @@ export function getRegisteredRunners() {
 }
 const RUNTIME_NAME_ALIASES = {
     python3: 'python',
+    pip: 'python',
+    pip3: 'python',
     ruby3: 'ruby',
+    gem: 'ruby',
+    bundle: 'ruby',
+    bundler: 'ruby',
     'wasm-ld': 'clang',
 };
+function runtimeEntrypoints(manifest) {
+    const out = [...manifest.entrypoints];
+    const seen = new Set(out.map((ep) => ep.binName));
+    const add = (binName, runner, kind) => {
+        if (seen.has(binName))
+            return;
+        out.push({ binName, runner, kind, args: [] });
+        seen.add(binName);
+    };
+    if (manifest.name === 'python') {
+        add('pip', 'python-runner', 'pip');
+        add('pip3', 'python-runner', 'pip');
+    }
+    if (manifest.name === 'ruby') {
+        add('gem', 'ruby-runner', 'gem');
+        add('bundle', 'ruby-runner', 'bundle');
+        add('bundler', 'ruby-runner', 'bundle');
+    }
+    return out;
+}
 function splitRuntimeSpec(spec) {
     const atIdx = spec.indexOf('@');
     return {
@@ -63,7 +88,7 @@ async function resolveRuntimeInstallTarget(env, catalog, spec) {
             continue;
         try {
             const manifest = await fetchManifest(env, versionEntry.manifest);
-            if (manifest.entrypoints.some((ep) => ep.binName === parsed.name)) {
+            if (runtimeEntrypoints(manifest).some((ep) => ep.binName === parsed.name)) {
                 return {
                     runtimeName,
                     versionOverride: parsed.versionOverride,
@@ -103,7 +128,7 @@ export function createRuntimeCommandHintResolver(env) {
                 continue;
             try {
                 const manifest = await fetchManifest(env, versionEntry.manifest);
-                for (const ep of manifest.entrypoints)
+                for (const ep of runtimeEntrypoints(manifest))
                     add(ep.binName, runtimeName);
             }
             catch {
@@ -175,7 +200,7 @@ export function listInstalledManifests(vfs, homeDir) {
 export function rehydrateInstalledRuntimes(vfs, registry, homeDir) {
     const bins = [];
     for (const { root, manifest } of listInstalledManifests(vfs, homeDir)) {
-        for (const ep of manifest.entrypoints) {
+        for (const ep of runtimeEntrypoints(manifest)) {
             const factory = runnerFactories[ep.runner];
             if (!factory)
                 continue; // runner not registered yet — skip
@@ -191,7 +216,7 @@ export function listInstalledRuntimes(vfs, homeDir) {
         name: manifest.name,
         version: manifest.version,
         root,
-        bins: manifest.entrypoints.map((e) => e.binName),
+        bins: runtimeEntrypoints(manifest).map((e) => e.binName),
         sizeBytes: manifest.files.reduce((a, f) => a + f.size, 0),
         license: manifest.license,
     }));
@@ -406,7 +431,7 @@ async function runInstall(args, ctx, deps) {
     });
     await Promise.all(workers);
     // Register entrypoints.
-    for (const ep of manifest.entrypoints) {
+    for (const ep of runtimeEntrypoints(manifest)) {
         const factory = runnerFactories[ep.runner];
         if (!factory) {
             ctx.stderr.write(`[${name}] warning: runner '${ep.runner}' not registered; bin '${ep.binName}' will not be invokable\n`);
@@ -445,7 +470,7 @@ async function runList(ctx, deps) {
     ctx.stdout.write(`installed runtimes (${installed.length}):\n`);
     for (const { root, manifest } of installed) {
         const totalBytes = manifest.files.reduce((a, f) => a + f.size, 0);
-        const bins = manifest.entrypoints.map((e) => e.binName).join(', ');
+        const bins = runtimeEntrypoints(manifest).map((e) => e.binName).join(', ');
         ctx.stdout.write(`  ${manifest.name}@${manifest.version}  ${(totalBytes / 1024 / 1024).toFixed(1)} MiB  bins=[${bins}]  ${root}\n`);
     }
     return 0;
@@ -496,7 +521,7 @@ async function runUninstall(args, ctx, deps) {
     }
     for (const m of matches) {
         // Unregister bins.
-        for (const ep of m.manifest.entrypoints) {
+        for (const ep of runtimeEntrypoints(m.manifest)) {
             // We don't have a guaranteed `unregister`; bins shadowing is OK
             // because boot-rehydration only re-registers what's still on disk.
             if (typeof deps.registry.unregister === 'function') {

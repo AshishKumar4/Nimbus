@@ -51,6 +51,7 @@
 
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
+import { flushVfsDiff, snapshotVfs, type VfsLike } from './vfs-snapshot.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -138,27 +139,6 @@ export const WASM_RUNNER_HELP =
   '    WebAssembly.instantiate(bytes) at request time (CSP-blocked).';
 
 /**
- * Minimal VFS shape we depend on. Avoids importing the full
- * SqliteVFS type tree from the supervisor module graph — this file
- * is part of `src/runtime/`, importing supervisor-specific types
- * would create a cycle.
- *
- * filesystem WASI: extended for WASI file-IO. The snapshot path uses readdir +
- * isDirectory + stat to traverse the user's session subtree; the
- * flush path uses writeFile + mkdir + unlink + rmdir.
- */
-interface VfsLike {
-  exists(path: string): boolean;
-  isDirectory(path: string): boolean;
-  readFile(path: string): Uint8Array;
-  writeFile(path: string, content: Uint8Array | string): void;
-  readdir(path: string): { name: string; type: string }[];
-  mkdir(path: string, opts?: { recursive?: boolean }): void;
-  unlink(path: string): void;
-  rmdir(path: string): void;
-}
-
-/**
  * Cheap supervisor-side WASI-detect: scan the wasm import section
  * header bytes for the literal `wasi_snapshot_preview1` module name.
  * No full parser — we just walk the import section and check the
@@ -214,143 +194,6 @@ interface ProcessLogStoreLike {
   append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
   getExit(pid: number): unknown;
   markExit(pid: number, code: number): void;
-}
-
-/**
- * Convert a Uint8Array to a base64 string. Used to encode VFS file
- * contents into the JSON-serializable `context` field of the loader
- * pool. Workerd's btoa is the standard one; we use it directly rather
- * than depending on Node's Buffer (which works in workerd via the
- * nodejs_compat polyfill but adds an import dependency).
- */
-function bytesToB64(bytes: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s);
-}
-function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-/**
- * Snapshot a VFS subtree rooted at `vfsRoot` into a JSON-serializable
- * `WasiFsSnapshot`. Used by the WASI runner to ship the user's session
- * filesystem into the facet isolate.
- *
- * Bounded by:
- *   - 32 MiB total bytes. Bigger sessions need a streaming or incremental
- *     filesystem transport instead of a single snapshot.
- *   - 5000 file count.
- *
- * Returns null + a diagnostic if bounds are exceeded so the caller
- * can surface a clear error to the user.
- */
-function snapshotVfs(
-  vfs: VfsLike,
-  vfsRoot: string,
-): { snapshot: import('./wasi-instance.js').WasiFsSnapshot; bytes: number; files: number } | { error: string } {
-  const MAX_BYTES = 32 * 1024 * 1024;
-  const MAX_FILES = 5000;
-  const root = vfsRoot.replace(/^\/+/, '').replace(/\/+$/, '');
-  const files: Record<string, string> = {};
-  const dirs: string[] = [];
-  let totalBytes = 0;
-  let fileCount = 0;
-  const stack: string[] = [root];
-  if (!vfs.exists(root)) {
-    return { snapshot: { root, preopens: [], files: {}, dirs: [root] }, bytes: 0, files: 0 };
-  }
-  dirs.push(root);
-  // Directory prefixes to skip during snapshot. The user's `~/.nimbus`
-  // install root holds nimbus-managed runtime bundles (clang.wasm,
-  // lld.wasm, sysroot.tar, Pyodide, …) that easily exceed the
-  // 32 MiB per-snapshot cap and don't belong in the WASI sandbox
-  // anyway. node_modules is similar — large, irrelevant to user
-  // wasm execution.
-  const skipSubdirs = new Set(['.nimbus', 'node_modules', '.cache', '.npm']);
-  while (stack.length > 0) {
-    const dir = stack.pop()!;
-    let entries: { name: string; type: string }[];
-    try { entries = vfs.readdir(dir); } catch { continue; }
-    for (const e of entries) {
-      const childPath = dir + '/' + e.name;
-      if (e.type === 'directory') {
-        // Skip well-known large/irrelevant subdirs.
-        if (skipSubdirs.has(e.name)) continue;
-        dirs.push(childPath);
-        stack.push(childPath);
-        continue;
-      }
-      let bytes: Uint8Array;
-      try { bytes = vfs.readFile(childPath); } catch { continue; }
-      totalBytes += bytes.length;
-      fileCount++;
-      if (totalBytes > MAX_BYTES) {
-        return { error: `WASI snapshot exceeded 32 MiB cap (current dir: ${dir})` };
-      }
-      if (fileCount > MAX_FILES) {
-        return { error: `WASI snapshot exceeded 5000 file cap` };
-      }
-      files[childPath] = bytesToB64(bytes);
-    }
-  }
-  return {
-    snapshot: { root, preopens: [], files, dirs },
-    bytes: totalBytes,
-    files: fileCount,
-  };
-}
-
-/**
- * Apply a WasiFsDiff produced by the facet back into the supervisor's
- * SqliteFS. Each operation is independent; failures on one path don't
- * abort the rest (we log to stderr and continue).
- */
-function flushVfsDiff(vfs: VfsLike, diff: import('./wasi-instance.js').WasiFsDiff): { written: number; deleted: number; mkdirs: number; rmdirs: number; timesTouched: number; symlinks: number } {
-  let written = 0, deleted = 0, mkdirs = 0, rmdirs = 0;
-  let timesTouched = 0, symlinks = 0;
-  for (const path of diff.dirsCreated) {
-    try { vfs.mkdir(path, { recursive: true }); mkdirs++; } catch {}
-  }
-  for (const [path, b64] of Object.entries(diff.filesWritten)) {
-    try {
-      const bytes = b64ToBytes(b64);
-      // ensure parent dirs exist
-      const lastSlash = path.lastIndexOf('/');
-      if (lastSlash > 0) {
-        const parent = path.substring(0, lastSlash);
-        try { vfs.mkdir(parent, { recursive: true }); } catch {}
-      }
-      vfs.writeFile(path, bytes);
-      written++;
-    } catch {}
-  }
-  for (const path of diff.filesDeleted) {
-    try { vfs.unlink(path); deleted++; } catch {}
-  }
-  for (const path of diff.dirsDeleted) {
-    try { vfs.rmdir(path); rmdirs++; } catch {}
-  }
-  // WASI socket and polling support B1+B3: count timesChanged / symlinks for diagnostics. The
-  // current SqliteVFS doesn't expose utime() or symlink() on its public
-  // surface, so we don't persist these across calls — they live only
-  // within the call (mtimes are read back correctly via stat→filestat_get
-  // before the snapshot returns). This is a documented v1 limitation.
-  if (diff.timesChanged) {
-    timesTouched = Object.keys(diff.timesChanged).length;
-    // Future hook: when SqliteVFS gains a utime() method, call it here:
-    //   for (const [path, t] of Object.entries(diff.timesChanged)) {
-    //     try { vfs.utime(path, Number(t.atime) / 1e9, Number(t.mtime) / 1e9); } catch {}
-    //   }
-  }
-  if (diff.symlinksCreated) {
-    symlinks = Object.keys(diff.symlinksCreated).length;
-    // Future hook: when SqliteVFS gains a symlink() method, call it here.
-  }
-  return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks };
 }
 
 /**

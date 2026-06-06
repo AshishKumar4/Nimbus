@@ -27,6 +27,7 @@
  * de-quarantines it as the primary content-bundle source.
  */
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, DEFAULT_CJS_CONDITIONS, } from '../_shared/exports-resolver.js';
+import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
@@ -80,17 +81,7 @@ const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)
 const MAX_FILES = 4000;
 const MAX_BYTES = 24 * 1024 * 1024; // 24 MiB raw — facet-manager re-caps on JSON-encoded size.
 function strip(p) { return p.replace(/^\/+/, ''); }
-function normalizePath(p) {
-    const segments = p.split('/');
-    const out = [];
-    for (const seg of segments) {
-        if (seg === '..' && out.length > 0)
-            out.pop();
-        else if (seg !== '.' && seg !== '')
-            out.push(seg);
-    }
-    return out.join('/');
-}
+const normalizePath = normalizeVfsPath;
 /**
  * Extension-list probe; mirrors node-shims.ts:__resolveFile so prefetch
  * picks the same on-disk file the runtime require will pick.

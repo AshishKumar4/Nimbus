@@ -67,6 +67,17 @@ import { packageNameFromSpecifier } from './barrel-detect.js';
 export type NamedImportMap = Map<string, Set<string>>;
 
 /**
+ * Stable signature for a barrel bundle's source import set. Stored in
+ * pkg_esm_bundles.input_hash so a synthetic bundle generated for
+ * `{ Home }` is never reused after the project starts importing
+ * `{ Home, AlertTriangle }`.
+ */
+export function namedImportSignature(pkgName: string, names: ReadonlySet<string> | null | undefined): string | null {
+  if (!names || names.size === 0) return null;
+  return `barrel:${pkgName}:${Array.from(names).sort().join(',')}`;
+}
+
+/**
  * Static-import scanner. Walks the user's source tree under projDir
  * and extracts named-import sets. Returns a map keyed by package name.
  *

@@ -81,6 +81,7 @@ import { waitForLowAllocPressure } from '../observability/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import {
   scanNamedImports,
+  namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
@@ -1434,6 +1435,7 @@ export class NpmInstaller {
       specifier: string;
       entryPath: string;
       synthetic?: boolean;
+      inputHash?: string;
       // For synthetic entries: the per-file paths the entry imports.
       // Used to build a SCOPED slice (skips the package's full
       // directory walk) so icon-libraries with thousands of files
@@ -1445,7 +1447,6 @@ export class NpmInstaller {
     const namedImports: NamedImportMap = scanNamedImports(this.vfs, projDir);
     for (const specifier of toBuild) {
       const existing = this.cache.getEsmBundle(specifier);
-      if (existing && existing.bundleHash === BUNDLER_VERSION) continue;
 
       const entryPath = this.resolvePackageEntryPath(specifier, nmDir);
       if (!entryPath) continue;
@@ -1465,6 +1466,7 @@ export class NpmInstaller {
       if (isBarrel && specifier === pkgName) {
         // Top-level barrel import. Synthesize.
         const names = namedImports.get(pkgName);
+        const inputHash = namedImportSignature(pkgName, names);
         if (!names || names.size === 0) {
           // No statically-resolvable imports. We refuse to bundle the
           // whole barrel (would OOM) AND we refuse to CDN-fallback
@@ -1476,6 +1478,13 @@ export class NpmInstaller {
             `  skipped pre-bundle for ${specifier}: barrel (${fileCount} files) ` +
             `with no static named imports detected. Add explicit imports to enable bundling.`,
           );
+          continue;
+        }
+        if (
+          existing &&
+          existing.bundleHash === BUNDLER_VERSION &&
+          existing.inputHash === inputHash
+        ) {
           continue;
         }
         const synth = buildSyntheticEntry(this.vfs, nmDir, pkgName, names);
@@ -1494,10 +1503,17 @@ export class NpmInstaller {
           `  synthesized entry for ${specifier} (barrel: ${fileCount} files; ` +
           `${names.size} static imports → tree-shaken bundle)`,
         );
-        pending.push({ specifier, entryPath, synthetic: true, syntheticReferencedFiles: synth.referencedFiles });
+        pending.push({
+          specifier,
+          entryPath,
+          synthetic: true,
+          syntheticReferencedFiles: synth.referencedFiles,
+          inputHash: inputHash ?? '',
+        });
         continue;
       }
 
+      if (existing && existing.bundleHash === BUNDLER_VERSION && existing.inputHash === '') continue;
       pending.push({ specifier, entryPath });
     }
     if (pending.length === 0) return;
@@ -1825,7 +1841,7 @@ export class NpmInstaller {
             bundleHash: BUNDLER_VERSION,
             esmCode: result.esmCode,
             builtAt: Date.now(),
-            inputHash: '',
+            inputHash: next.inputHash ?? '',
           });
           okCount++;
         } catch (e: any) {

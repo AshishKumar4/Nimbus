@@ -33,7 +33,7 @@ export declare class SymlinkRegistry {
     private load;
     /** Write the cache back to the registry file. */
     private flush;
-    /** Normalize a path: strip leading slashes (VFS internal convention). */
+    /** Normalize a path to the VFS internal key convention. */
     private norm;
     /** Create or replace a symlink. Target is stored verbatim (can be
      *  absolute or relative — interpretation happens at resolve time). */
@@ -61,4 +61,10 @@ export declare class SymlinkRegistry {
         target: string;
     }[];
 }
+/**
+ * Return the session-wide registry for a VFS instance. The registry has an
+ * in-memory cache, so all runtime surfaces that share one SqliteVFS must also
+ * share the registry instance to avoid stale symlink reads.
+ */
+export declare function getSymlinkRegistry(vfs: SqliteVFS): SymlinkRegistry;
 //# sourceMappingURL=symlink-registry.d.ts.map

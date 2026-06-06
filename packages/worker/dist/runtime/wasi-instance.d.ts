@@ -112,13 +112,16 @@ export declare const WASI_INSTANCE_PREAMBLE_SRC = "\n// \u2500\u2500 BEGIN: wasi
  * invocation. Files are base64-encoded so the JSON-serializable
  * loader-pool `context` field can carry them.
  *
- * WASI socket and polling support B1+B3: added optional `times` and `symlinks` fields. Backward-
- * compatible — pre-B1 callers omit these and get default "now" timestamps
- * + empty symlink table.
+ * WASI socket and polling support B1+B3: added optional `times` and `symlinks` fields.
+ * `roots` is additive and lets language runtimes snapshot a cwd plus targeted
+ * persistent runtime state without widening every command to the whole home
+ * directory. Backward-compatible — callers that omit it use `root` only.
  */
 export interface WasiFsSnapshot {
     /** Canonical VFS root (no leading slash). E.g. `home/user/wasi-files`. */
     root: string;
+    /** Canonical VFS roots covered by this snapshot. Defaults to `[root]`. */
+    roots?: string[];
     /** Preopen list (order matters; preopens are assigned to fd 3, 4, …). */
     preopens: Array<{
         wasiPath: string;

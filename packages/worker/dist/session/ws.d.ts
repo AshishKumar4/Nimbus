@@ -75,7 +75,8 @@ export interface WsHost {
 /**
  * Classify a closing/erroring WebSocket by its serialized attachment.
  * Shell sockets carry `{kind:'shell'}` (set at the /ws upgrade site);
- * HMR sockets carry `{kind:'cirrus-hmr', clientId}` (set at :1240).
+ * watcher sockets carry `{kind:'fs-watch'}`; HMR sockets carry
+ * `{kind:'cirrus-hmr', clientId}` (set at :1240).
  * Any other (undefined/unknown) attachment falls back to 'shell' to
  * preserve pre-F1 behaviour for legacy accept sites.
  */

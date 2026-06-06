@@ -472,6 +472,19 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReaddir(path) { return _rpc._rpcReaddir(this, path); }
     async _rpcExists(path) { return _rpc._rpcExists(this, path); }
     async _rpcMkdir(path) { return _rpc._rpcMkdir(this, path); }
+    async _rpcRmdir(path) { return _rpc._rpcRmdir(this, path); }
+    async _rpcRename(from, to) { return _rpc._rpcRename(this, from, to); }
+    async _rpcReadlink(path) { return _rpc._rpcReadlink(this, path); }
+    async _rpcSymlink(target, path) { return _rpc._rpcSymlink(this, target, path); }
+    async _rpcFsRevision(path) { return _rpc._rpcFsRevision(this, path); }
+    async _rpcFsOpen(path, flags) { return _rpc._rpcFsOpen(this, path, flags); }
+    async _rpcFsRead(handleId, offset, length) {
+        return _rpc._rpcFsRead(this, handleId, offset, length);
+    }
+    async _rpcFsWrite(handleId, offset, bytes) {
+        return _rpc._rpcFsWrite(this, handleId, offset, bytes);
+    }
+    async _rpcFsClose(handleId) { return _rpc._rpcFsClose(this, handleId); }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcUnlink(path) { return _rpc._rpcUnlink(this, path); }
     async _rpcWriteBatch(payload) { return _rpc._rpcWriteBatch(this, payload); }

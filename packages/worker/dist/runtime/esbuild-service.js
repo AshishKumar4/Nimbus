@@ -40,8 +40,12 @@ import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
  *        esbuild's entry-point external check rejected the externals when
  *        passed at the top level. v5 cache entries are wrong (contain
  *        embedded react copies) and must be invalidated.
+ *   v7 — barrel-package bundles include a named-import signature in
+ *        pkg_esm_bundles.input_hash. Prevents reusing a lucide-react
+ *        bundle synthesized for one icon set after user source imports
+ *        additional icons.
  */
-export const BUNDLER_VERSION = 'v6';
+export const BUNDLER_VERSION = 'v7';
 // ── Shared-runtime externals ────────────────────────────────────────────
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
@@ -276,6 +280,12 @@ function hasEsmImports(src) {
     // `import(` and excluded by negative lookahead.
     const re = /^[ \t]*import\b(?!\s*\()/m;
     return re.test(stripped);
+}
+function hasEsmExports(src) {
+    if (!src || src.indexOf('export') === -1)
+        return false;
+    const stripped = stripCommentsAndStrings(src);
+    return /^[ \t]*export\b/m.test(stripped);
 }
 /**
  * Strip `//` and `/* * /` comments and string / template literals from
@@ -929,13 +939,16 @@ export class EsbuildService {
      * fix this without rewriting upstream.
      *
      * Fix: when caller asks for format 'cjs' AND the source has a
-     * top-level await, wrap the source in an async IIFE:
+     * top-level await, wrap the source in an async IIFE and return its
+     * Promise to the facet runner:
      *
-     *     ;(async () => {
+     *     return (async () => {
      *       <original-source>
      *     })();
      *
-     * Inside the IIFE, await is legal.
+     * Inside the IIFE, await is legal. Returning the Promise is required:
+     * the facet runner awaits promise-returning entry functions so
+     * sequential TLA execution cannot race process teardown or VFS flushes.
      *
      * ESM-imports-in-CJS note (nuxt-esm-in-cjs wave):
      * ─────────────────────────────────────────────────
@@ -956,7 +969,7 @@ export class EsbuildService {
      *   2. Extract top-level imports from the pass-1 output and rewrite
      *      them as `const X = require(...)` shims (see
      *      `convertEsmImportsToRequire` for the contract / shape).
-     *   3. Wrap the remaining body in the async IIFE.
+     *   3. Wrap the remaining body in a returned async IIFE.
      *   4. Return the assembled string as the transform result.
      *
      * The require-shim emits the standard `__esModule` interop check
@@ -974,11 +987,12 @@ export class EsbuildService {
         await this.ensureInit();
         const format = options?.format || 'esm';
         const loader = options?.loader || 'ts';
-        // ── CJS + TLA + ESM imports: two-pass with import rewrite ──
-        // This precedes the simple TLA-only IIFE wrap. We test ESM imports
-        // first because the IIFE wrap is incompatible with them; if both
-        // conditions hold we MUST go through the rewrite path.
-        if (format === 'cjs' && hasTopLevelAwait(code) && hasEsmImports(code)) {
+        // ── CJS + TLA + ESM module syntax: two-pass with module rewrite ──
+        // This precedes the simple TLA-only IIFE wrap. We test ESM module
+        // syntax first because the IIFE wrap is incompatible with import
+        // and export statements; if both conditions hold we MUST go through
+        // the rewrite path.
+        if (format === 'cjs' && hasTopLevelAwait(code) && (hasEsmImports(code) || hasEsmExports(code))) {
             // Pass 1: emit ESM so esbuild accepts TLA + imports without complaint.
             // We use the same loader/target so TS/JSX is handled here too.
             const pass1 = await this._esbuild.transform(code, {
@@ -1005,9 +1019,9 @@ export class EsbuildService {
             });
             const { requires, body } = convertEsmImportsToRequire(pass1.code);
             const assembled = requires + '\n' +
-                ';(async () => {\n' +
+                'return (async () => {\n' +
                 body +
-                '\n})().catch((e) => { console.error(e && e.stack || e); });\n';
+                '\n})();\n';
             return {
                 code: assembled,
                 map: '',
@@ -1021,9 +1035,9 @@ export class EsbuildService {
         let sourceToTransform = code;
         if (format === 'cjs' && hasTopLevelAwait(code)) {
             sourceToTransform =
-                ';(async () => {\n' +
+                'return (async () => {\n' +
                     code +
-                    '\n})().catch((e) => { console.error(e && e.stack || e); });\n';
+                    '\n})();\n';
         }
         const result = await this._esbuild.transform(sourceToTransform, {
             loader,

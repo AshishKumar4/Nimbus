@@ -11,6 +11,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateText, isLoopFinished, jsonSchema, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
+import { resolveVfsPath } from '../vfs/path.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const AUTH_COOKIE = 'nimbus_agent_oauth';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
@@ -748,19 +749,19 @@ async function runTool(self, name, args) {
         }
         if (name === 'read_file') {
             await ensureProgrammaticReady(self);
-            const path = normalizeVfsPath(args.path || '/home/user');
+            const path = normalizeAgentVfsPath(args.path || '/home/user');
             return { path: '/' + path, content: self.sqliteFs.readFileString(path) };
         }
         if (name === 'write_file') {
             await ensureProgrammaticReady(self);
-            const path = normalizeVfsPath(args.path || '/home/user/file.txt');
+            const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
             ensureParentDirs(self.sqliteFs, path);
             self.sqliteFs.writeFile(path, String(args.content ?? ''));
             return { ok: true, path: '/' + path, bytes: String(args.content ?? '').length };
         }
         if (name === 'list_files') {
             await ensureProgrammaticReady(self);
-            const path = normalizeVfsPath(args.path || '/home/user');
+            const path = normalizeAgentVfsPath(args.path || '/home/user');
             const base = trimTrailingSlash(path);
             const entries = self.sqliteFs.readdir(path).map((entry) => ({
                 name: entry.name,
@@ -1101,21 +1102,9 @@ function stringProp(description) {
 function numberProp(description) {
     return { type: 'number', description };
 }
-function normalizeVfsPath(input) {
+function normalizeAgentVfsPath(input) {
     const raw = String(input || '/home/user').trim() || '/home/user';
-    const absolute = raw.startsWith('/') ? raw : '/home/user/' + raw;
-    const parts = absolute.split('/');
-    const out = [];
-    for (const part of parts) {
-        if (!part || part === '.')
-            continue;
-        if (part === '..') {
-            out.pop();
-            continue;
-        }
-        out.push(part);
-    }
-    return out.join('/') || 'home/user';
+    return resolveVfsPath(raw, '/home/user') || 'home/user';
 }
 function ensureParentDirs(vfs, path) {
     const parts = path.split('/');

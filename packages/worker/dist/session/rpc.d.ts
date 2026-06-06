@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
 type RpcHost = any;
 export declare function _rpcReadFile(self: RpcHost, path: string): Promise<string | null>;
 /**
@@ -61,6 +62,15 @@ export declare function _rpcReaddir(self: RpcHost, path: string): Promise<{
 }[]>;
 export declare function _rpcExists(self: RpcHost, path: string): Promise<boolean>;
 export declare function _rpcMkdir(self: RpcHost, path: string): Promise<void>;
+export declare function _rpcRmdir(self: RpcHost, path: string): Promise<void>;
+export declare function _rpcRename(self: RpcHost, from: string, to: string): Promise<void>;
+export declare function _rpcReadlink(self: RpcHost, path: string): Promise<string | null>;
+export declare function _rpcSymlink(self: RpcHost, target: string, path: string): Promise<void>;
+export declare function _rpcFsRevision(self: RpcHost, path?: string): Promise<number>;
+export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags): Promise<any>;
+export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
+export declare function _rpcFsWrite(self: RpcHost, handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
+export declare function _rpcFsClose(self: RpcHost, handleId: number): Promise<void>;
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
  * we can legally write to hibernatable WS sockets owned by this

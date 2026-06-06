@@ -16,6 +16,8 @@
  *   exists(path) → boolean
  *   mkdir(path) → void
  *   unlink(path) → void
+ *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
+ *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -74,7 +76,16 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }[]>;
     exists(path: string): Promise<boolean>;
     mkdir(path: string): Promise<void>;
+    rmdir(path: string): Promise<void>;
+    rename(from: string, to: string): Promise<void>;
     unlink(path: string): Promise<void>;
+    readlink(path: string): Promise<string | null>;
+    symlink(target: string, path: string): Promise<void>;
+    fsRevision(path?: string): Promise<number>;
+    fsOpen(path: string, flags: any): Promise<any>;
+    fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
+    fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
+    fsClose(handleId: number): Promise<void>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
      * Used by facets that buffer writes locally (git clone/fetch/pull).

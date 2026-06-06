@@ -16,6 +16,8 @@
  *   exists(path) → boolean
  *   mkdir(path) → void
  *   unlink(path) → void
+ *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
+ *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -125,8 +127,35 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async mkdir(path) {
         return this._getStub()._rpcMkdir(path);
     }
+    async rmdir(path) {
+        return this._getStub()._rpcRmdir(path);
+    }
+    async rename(from, to) {
+        return this._getStub()._rpcRename(from, to);
+    }
     async unlink(path) {
         return this._getStub()._rpcUnlink(path);
+    }
+    async readlink(path) {
+        return this._getStub()._rpcReadlink(path);
+    }
+    async symlink(target, path) {
+        return this._getStub()._rpcSymlink(target, path);
+    }
+    async fsRevision(path) {
+        return this._getStub()._rpcFsRevision(path);
+    }
+    async fsOpen(path, flags) {
+        return this._getStub()._rpcFsOpen(path, flags);
+    }
+    async fsRead(handleId, offset, length) {
+        return this._getStub()._rpcFsRead(handleId, offset, length);
+    }
+    async fsWrite(handleId, offset, bytes) {
+        return this._getStub()._rpcFsWrite(handleId, offset, bytes);
+    }
+    async fsClose(handleId) {
+        return this._getStub()._rpcFsClose(handleId);
     }
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.

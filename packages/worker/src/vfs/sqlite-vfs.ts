@@ -148,6 +148,7 @@ export class SqliteVFS {
   private _totalFiles = 0;
   private _totalDirs = 0;
   private _usedBytes = 0;
+  private _revision = 0;
 
   // ── Deferred write queue (do86 pattern) ───────────────────────────────
   private pendingWrites = new Map<string, { path: string; chunkId: number; data: Uint8Array }>();
@@ -903,6 +904,10 @@ export class SqliteVFS {
     return inode !== undefined && !inode.isDir;
   }
 
+  revision(): number {
+    return this._revision;
+  }
+
   mkdir(path: string, options?: { recursive?: boolean }): void {
     if (this.exists(path)) return;
 
@@ -931,6 +936,7 @@ export class SqliteVFS {
     this.inodes.set(path, inode);
     this._addToChildrenIndex(pp, path);
     this._totalDirs++; // B3
+    this._revision++;
     this.events.emit('addDir', path);
   }
 
@@ -1017,6 +1023,7 @@ export class SqliteVFS {
       }
     }
 
+    this._revision++;
     this.events.emit(isNew ? 'add' : 'change', path);
   }
 
@@ -1144,6 +1151,7 @@ export class SqliteVFS {
       else { this._totalFiles--; this._usedBytes -= inode.size; }
     }
     this.inodes.delete(path);
+    this._revision++;
     this.events.emit('unlink', path);
   }
 
@@ -1165,6 +1173,7 @@ export class SqliteVFS {
     }
     this.inodes.delete(np);
     this.children.delete(np); // Remove empty children set
+    this._revision++;
     this.events.emit('unlinkDir', np);
   }
 
@@ -1250,6 +1259,7 @@ export class SqliteVFS {
       }
     }
 
+    this._revision++;
     this.events.emit('rename', newPath, oldPath);
   }
 
@@ -1662,6 +1672,7 @@ export class SqliteVFS {
     this._sqlWrites += inodeCount + chunkCount;
     this._batchWrites++;
     this._batchWriteRows += inodeCount + chunkCount;
+    if (inodeCount > 0 || chunkCount > 0 || payload.deletePaths?.length) this._revision++;
 
     return { inodes: inodeCount, chunks: chunkCount };
   }

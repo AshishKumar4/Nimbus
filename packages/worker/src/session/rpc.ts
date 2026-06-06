@@ -22,16 +22,18 @@
  * is acceptable per plan §IX recommendation 1.
  */
 
-import { enc } from '../_shared/bytes.js';
+import { enc, dec } from '../_shared/bytes.js';
 import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
 // would require enumerating ~25 fields/methods AND the protected ctx,
@@ -40,11 +42,17 @@ import { classifyError } from '../observability/oom-classify.js';
 // boundary; runtime impact is zero (TS-only).
 type RpcHost = any;
 
+function runtimeFs(self: RpcHost): SqliteRuntimeFsBridge {
+  self.ensureSqliteFs();
+  if (!self.runtimeFsBridge) {
+    self.runtimeFsBridge = new SqliteRuntimeFsBridge(self.sqliteFs!);
+  }
+  return self.runtimeFsBridge;
+}
+
 export async function _rpcReadFile(self: RpcHost, path: string): Promise<string | null> {
-    self.ensureSqliteFs();
-    try {
-      return self.sqliteFs!.readFileString(path.replace(/^\/+/, ''));
-    } catch { return null; }
+    const bytes = await runtimeFs(self).readFile(path);
+    return bytes ? dec.decode(bytes) : null;
 }
 
   /**
@@ -53,10 +61,7 @@ export async function _rpcReadFile(self: RpcHost, path: string): Promise<string 
    * round-tripping through readFile (string) would corrupt bytes.
    */
 export async function _rpcReadFileBytes(self: RpcHost, path: string): Promise<Uint8Array | null> {
-    self.ensureSqliteFs();
-    try {
-      return self.sqliteFs!.readFile(path.replace(/^\/+/, ''));
-    } catch { return null; }
+    return runtimeFs(self).readFile(path);
 }
 
   /**
@@ -133,44 +138,80 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
 }
 
 export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void> {
-    self.ensureSqliteFs();
-    const p = path.replace(/^\/+/, '');
-    const parts = p.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      const dir = parts.slice(0, i).join('/');
-      if (dir && !self.sqliteFs!.exists(dir)) self.sqliteFs!.mkdir(dir, { recursive: true });
-    }
     // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
     // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
     // structured-clone preserves Uint8Array across the boundary; structured-
     // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
-    self.sqliteFs!.writeFile(p, content);
+    await runtimeFs(self).writeFile(path, content);
 }
 
 export async function _rpcStat(self: RpcHost, path: string): Promise<any> {
-    self.ensureSqliteFs();
-    try {
-      return self.sqliteFs!.stat(path.replace(/^\/+/, ''));
-    } catch { return null; }
+    return runtimeFs(self).stat(path);
 }
 
 export async function _rpcReaddir(self: RpcHost, path: string): Promise<{ name: string; type: string }[]> {
-    self.ensureSqliteFs();
-    try {
-      return self.sqliteFs!.readdir(path.replace(/^\/+/, ''));
-    } catch { return []; }
+    return runtimeFs(self).readdir(path);
 }
 
 export async function _rpcExists(self: RpcHost, path: string): Promise<boolean> {
-    self.ensureSqliteFs();
-    return self.sqliteFs!.exists(path.replace(/^\/+/, ''));
+    return (await runtimeFs(self).stat(path)) !== null;
 }
 
 export async function _rpcMkdir(self: RpcHost, path: string): Promise<void> {
-    self.ensureSqliteFs();
-    self.sqliteFs!.mkdir(path.replace(/^\/+/, ''), { recursive: true });
+    await runtimeFs(self).mkdir(path, { recursive: true });
+}
+
+export async function _rpcRmdir(self: RpcHost, path: string): Promise<void> {
+    await runtimeFs(self).rmdir(path);
+}
+
+export async function _rpcRename(self: RpcHost, from: string, to: string): Promise<void> {
+    await runtimeFs(self).rename(from, to);
+}
+
+export async function _rpcReadlink(self: RpcHost, path: string): Promise<string | null> {
+    return runtimeFs(self).readlink(path);
+}
+
+export async function _rpcSymlink(self: RpcHost, target: string, path: string): Promise<void> {
+    await runtimeFs(self).symlink(target, path);
+}
+
+export async function _rpcFsRevision(self: RpcHost, path?: string): Promise<number> {
+    void path;
+    return runtimeFs(self).revision();
+}
+
+export async function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags): Promise<any> {
+    return runtimeFs(self).open(path, flags || {});
+}
+
+export async function _rpcFsRead(
+  self: RpcHost,
+  handleId: number,
+  offset: number | null,
+  length: number,
+): Promise<Uint8Array> {
+    return runtimeFs(self).read(handleId, offset, length);
+}
+
+export async function _rpcFsWrite(
+  self: RpcHost,
+  handleId: number,
+  offset: number | null,
+  bytes: Uint8Array | ArrayBuffer | number[],
+): Promise<number> {
+    let data: Uint8Array;
+    if (bytes instanceof Uint8Array) data = bytes;
+    else if (bytes instanceof ArrayBuffer) data = new Uint8Array(bytes);
+    else data = new Uint8Array(bytes || []);
+    return runtimeFs(self).write(handleId, offset, data);
+}
+
+export async function _rpcFsClose(self: RpcHost, handleId: number): Promise<void> {
+    await runtimeFs(self).close(handleId);
 }
 
   /**
@@ -184,8 +225,7 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
 }
 
 export async function _rpcUnlink(self: RpcHost, path: string): Promise<void> {
-    self.ensureSqliteFs();
-    try { self.sqliteFs!.unlink(path.replace(/^\/+/, '')); } catch {}
+    try { await runtimeFs(self).unlink(path); } catch {}
 }
 
   /**

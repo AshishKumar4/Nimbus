@@ -8,10 +8,9 @@
  *   - exit code via sys.exit(N) or unhandled exception → 1
  *   - argv passed through to sys.argv
  *
- * Out of v1 (queued for v2/v3):
+ * Current limits:
  *   - REPL mode (`python` with no args)
- *   - File I/O beyond reading the entry script
- *   - `pip install` / `loadPackage` / native-extension packages
+ *   - Native Linux wheels, runtime-loaded extension modules, and extension builds
  *   - Sync HTTP (urllib3 / requests blocked without JSPI)
  *
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
@@ -45,5 +44,5 @@ export declare function makePythonRunnerFactory(deps: {
  * assignment are allowed), then the asm.js's `var _createPyodideModule`
  * is hoisted onto globalThis.
  */
-export declare function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): string;
+export declare function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string, lockfileContents?: string): string;
 //# sourceMappingURL=python-runner.d.ts.map

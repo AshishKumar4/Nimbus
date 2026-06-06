@@ -30,6 +30,7 @@ import type { RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import { resolveVfsPath } from '../vfs/path.js';
 
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps: {
@@ -413,13 +414,6 @@ function parseUserArgv(argv: string[]): ParsedArgv {
     inputPaths, inputPath: inputPaths[0], includePaths, libraryPaths, libraries,
     outputPath, compileOnly, exitCode: 0,
   };
-}
-
-function resolveVfsPath(rel: string, cwd: string): string {
-  const cwdN = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (rel.startsWith('/')) return rel.replace(/^\/+/, '');
-  if (rel === '.') return cwdN;
-  return `${cwdN}/${rel}`;
 }
 
 /**

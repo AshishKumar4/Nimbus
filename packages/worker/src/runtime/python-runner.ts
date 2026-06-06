@@ -8,10 +8,9 @@
  *   - exit code via sys.exit(N) or unhandled exception → 1
  *   - argv passed through to sys.argv
  *
- * Out of v1 (queued for v2/v3):
+ * Current limits:
  *   - REPL mode (`python` with no args)
- *   - File I/O beyond reading the entry script
- *   - `pip install` / `loadPackage` / native-extension packages
+ *   - Native Linux wheels, runtime-loaded extension modules, and extension builds
  *   - Sync HTTP (urllib3 / requests blocked without JSPI)
  *
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
@@ -31,6 +30,38 @@ import type { RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
+import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { createLiveStaticServerCode, parsePort } from './static-server.js';
+import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+
+const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
+const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
+const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
+const IGNORED_PIP_INSTALL_FLAGS = new Set([
+  '--upgrade',
+  '-U',
+  '--force-reinstall',
+  '--no-cache-dir',
+  '--user',
+  '--disable-pip-version-check',
+  '--prefer-binary',
+  '--only-binary=:all:',
+]);
+const PIP_INSTALL_FLAGS_WITH_VALUE = new Set([
+  '-i',
+  '--index-url',
+  '--extra-index-url',
+  '-f',
+  '--find-links',
+  '--trusted-host',
+  '--timeout',
+  '--retries',
+  '--platform',
+  '--python-version',
+  '--implementation',
+  '--abi',
+]);
 
 /**
  * Build the python-runner factory. Called once at session init; the
@@ -44,7 +75,7 @@ export function makePythonRunnerFactory(deps: {
     (ctx: any) => Promise<number> {
   const { facetMgr, vfs } = deps;
 
-  return function pythonRunnerFactory(manifest, installRoot, binName, _binKind) {
+  return function pythonRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
       const entry = manifest.files.find((f) => f.path === rel);
       return entry ? `${installRoot}/${entry.path}` : null;
@@ -52,22 +83,41 @@ export function makePythonRunnerFactory(deps: {
     const asmWasmVfs = findFile('share/pyodide/pyodide.asm.wasm');
     const asmJsVfs   = findFile('share/pyodide/pyodide.asm.js');
     const stdlibVfs  = findFile('share/pyodide/python_stdlib.zip');
+    const lockfileVfs = findFile('share/pyodide/pyodide-lock.json');
     let runtimePromise: Promise<PythonFacetRuntime> | null = null;
+    let fsSnapshotCache: { cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
 
     return async function pythonBinHandler(ctx: any): Promise<number> {
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
+      const pipInvocation = binKind === 'pip' || binName === 'pip' || binName === 'pip3'
+        ? buildPipInvocation(argv, binName, cwd, vfs)
+        : buildPythonModulePipInvocation(argv, cwd, vfs);
+      if (pipInvocation.error) {
+        ctx.stderr.write(`${binName}: ${pipInvocation.error}\n`);
+        return pipInvocation.exitCode;
+      }
 
       // ── --version / --help fast paths (no wasm boot) ─────────────
-      if (argv.includes('--version') || argv.includes('-V')) {
+      if (pipInvocation.mode !== 'pip' && hasLeadingCliFlag(argv, PYTHON_VERSION_FLAGS)) {
         ctx.stdout.write(`Python 3.13.2 (Pyodide 0.29.4, Nimbus runtime)\n`);
         return 0;
       }
-      if (argv.includes('--help') || argv.includes('-h')) {
+      if (pipInvocation.mode !== 'pip' && hasLeadingCliFlag(argv, PYTHON_HELP_FLAGS)) {
         ctx.stdout.write(`usage: ${binName} [option] ... [-c cmd | -m mod | file | -] [arg] ...\n`);
         ctx.stdout.write(`Nimbus Pyodide 0.29.4 / Python 3.13 runtime.\n`);
-        ctx.stdout.write(`Supported v1: -c <code>, <file.py>, stdin via -\n`);
-        ctx.stdout.write(`Not supported: REPL (no args), pip, native extensions\n`);
+        ctx.stdout.write(`Supported: -c <code>, -m <module>, <file.py>, stdin via -, VFS-backed imports and file IO\n`);
+        ctx.stdout.write(`Package support is limited to pure Python wheels and packages with pure fallbacks; native Linux wheels and runtime-loaded extension modules are not executable in Nimbus.\n`);
+        return 0;
+      }
+
+      const staticServer = parsePythonHttpServer(argv, cwd);
+      if (staticServer) {
+        const code = createLiveStaticServerCode(staticServer.root);
+        const command = `${binName} -m http.server ${staticServer.port}`;
+        const spawned = facetMgr.spawn(code, command, staticServer.root, { port: staticServer.port });
+        ctx.stdout.write(`Serving HTTP on 0.0.0.0 port ${staticServer.port} from /${staticServer.root}\n`);
+        ctx.stdout.write(`[nimbus] started: pid=${spawned.pid} cmd="${command}" port=${staticServer.port}\n`);
         return 0;
       }
 
@@ -91,7 +141,15 @@ export function makePythonRunnerFactory(deps: {
       //   python <file.py> [args...]   run script, args in sys.argv
       //   python                       (no args) → not supported; REPL is v2
       //   python -                     read code from stdin (advanced)
-      const parsed = parsePythonArgv(argv);
+      const parsed = pipInvocation.mode === 'pip'
+        ? {
+            mode: 'inline' as const,
+            inlineCode: pipInvocation.code,
+            scriptPath: '',
+            scriptArgs: [],
+            exitCode: 0,
+          }
+        : parsePythonArgv(argv);
       if (parsed.error) {
         ctx.stderr.write(`${binName}: ${parsed.error}\n`);
         return parsed.exitCode;
@@ -141,6 +199,20 @@ export function makePythonRunnerFactory(deps: {
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
       if (!userEnv.HOME) userEnv.HOME = '/home/pyodide';
       if (!userEnv.PYTHONUNBUFFERED) userEnv.PYTHONUNBUFFERED = '1';
+      if (userEnv.HOME === '/home/pyodide') userEnv.HOME = '/home/user';
+
+      const revision = typeof (vfs as any).revision === 'function' ? (vfs as any).revision() : Date.now();
+      let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
+        ? fsSnapshotCache.result
+        : null;
+      if (!fsSnapshot) {
+        fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [PYTHON_SITE_PACKAGES_ROOT] });
+        fsSnapshotCache = { cwd, revision, result: fsSnapshot };
+      }
+      if ('error' in fsSnapshot) {
+        ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
+        return 1;
+      }
 
       // ── Dispatch the facet ───────────────────────────────────────
       let runtime: PythonFacetRuntime;
@@ -150,6 +222,7 @@ export function makePythonRunnerFactory(deps: {
             asmWasmVfs,
             asmJsVfs,
             stdlibVfs,
+            lockfileVfs,
             vfs,
           });
         }
@@ -165,10 +238,15 @@ export function makePythonRunnerFactory(deps: {
         pyArgv,
         userEnv,
         progName,
+        cwd,
+        fsSnapshot: fsSnapshot.snapshot,
+        asyncRun: pipInvocation.mode === 'pip',
+        pyodidePackages: pipInvocation.mode === 'pip' && /^import micropip/m.test(pipInvocation.code) ? ['micropip'] : [],
       });
 
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
+      if (result.fsDiff) flushVfsDiff(vfs, result.fsDiff);
       if (result.error) {
         ctx.stderr.write(`${binName}: ${result.error}\n`);
         return 1;
@@ -176,6 +254,379 @@ export function makePythonRunnerFactory(deps: {
       return result.exitCode;
     };
   };
+}
+
+interface PipInvocation {
+  mode: 'pip' | 'none';
+  code: string;
+  error?: string;
+  exitCode: number;
+}
+
+function buildPythonModulePipInvocation(argv: string[], cwd: string, vfs: SqliteVFS): PipInvocation {
+  if (argv[0] !== '-m' || argv[1] !== 'pip') {
+    return { mode: 'none', code: '', exitCode: 0 };
+  }
+  return buildPipInvocation(argv.slice(2), 'pip', cwd, vfs);
+}
+
+function buildPipInvocation(argv: string[], binName: string, cwd: string, vfs: SqliteVFS): PipInvocation {
+  const wantsVersion = argv.includes('--version') || argv.includes('-V');
+  const wantsHelp = argv.length === 0 || argv.includes('--help') || argv.includes('-h');
+  if (wantsVersion) {
+    return {
+      mode: 'pip',
+      code: [
+        'print("pip 24.3.1 (Nimbus Pyodide package bridge, Pyodide 0.29.4)")',
+      ].join('\n'),
+      exitCode: 0,
+    };
+  }
+  if (wantsHelp) {
+    return {
+      mode: 'pip',
+      code: [
+        `print(${JSON.stringify(`Usage: ${binName} install <package> [package...]`)})`,
+        'print("Nimbus pip installs pure Python wheels and packages with pure fallbacks.")',
+        'print("Native Linux wheels and runtime-loaded extension modules are not executable in Nimbus.")',
+      ].join('\n'),
+      exitCode: 0,
+    };
+  }
+  const command = argv[0];
+  if (command !== 'install') {
+    return {
+      mode: 'none',
+      code: '',
+      error: `pip subcommand '${command || '(none)'}' is not supported yet; supported: install, --version, --help`,
+      exitCode: 2,
+    };
+  }
+  const plan = buildPipInstallPlan(argv.slice(1), cwd, vfs);
+  if (plan.error) {
+    return { mode: 'none', code: '', error: plan.error, exitCode: plan.exitCode };
+  }
+  return {
+    mode: 'pip',
+    code: [
+      'import micropip',
+      'import os',
+      'import sys',
+      `packages = ${JSON.stringify(plan.packages)}`,
+      `display_packages = ${JSON.stringify(plan.displayPackages)}`,
+      `install_deps = ${plan.deps ? 'True' : 'False'}`,
+      'def _nimbus_disable_unsupported_extensions():',
+      '    disabled = []',
+      '    roots = []',
+      '    for p in sys.path:',
+      '        if isinstance(p, str) and p and "site-packages" in p and os.path.isdir(p) and p not in roots:',
+      '            roots.append(p)',
+      '    for root in roots:',
+      '        for dirpath, _dirnames, filenames in os.walk(root):',
+      '            for name in filenames:',
+      '                if not name.endswith((".so", ".pyd", ".dylib")):',
+      '                    continue',
+      '                path = os.path.join(dirpath, name)',
+      '                try:',
+      '                    os.remove(path)',
+      '                    disabled.append(path)',
+      '                except Exception:',
+      '                    pass',
+      '    return disabled',
+      'await micropip.install(packages, keep_going=False, deps=install_deps)',
+      'disabled_extensions = _nimbus_disable_unsupported_extensions()',
+      'if disabled_extensions:',
+      '    names = ", ".join(os.path.basename(p) for p in disabled_extensions[:8])',
+      '    if len(disabled_extensions) > 8:',
+      '        names += " ..."',
+      '    print("Nimbus pip: disabled unsupported Python extension module(s): " + names)',
+      'print("Successfully installed " + " ".join(display_packages))',
+    ].join('\n'),
+    exitCode: 0,
+  };
+}
+
+interface PipInstallPlan {
+  packages: string[];
+  displayPackages: string[];
+  deps: boolean;
+  error?: string;
+  exitCode: number;
+}
+
+function buildPipInstallPlan(argv: string[], cwd: string, vfs: SqliteVFS): PipInstallPlan {
+  const packages: string[] = [];
+  const displayPackages: string[] = [];
+  let deps = true;
+
+  const addSpec = (rawSpec: string, baseDir: string): string | null => {
+    const normalized = normalizePipInstallSpec(rawSpec, baseDir, vfs);
+    if ('error' in normalized) return normalized.error;
+    packages.push(normalized.installSpec);
+    displayPackages.push(normalized.displaySpec);
+    return null;
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '-r' || arg === '--requirement') {
+      const reqPath = argv[i + 1];
+      if (!reqPath) return { packages, displayPackages, deps, error: `${arg}: missing requirements file`, exitCode: 2 };
+      const err = addRequirementsFile(reqPath, cwd, vfs, packages, displayPackages, new Set(), 0);
+      if (err) return { packages, displayPackages, deps, error: err, exitCode: 1 };
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--requirement=')) {
+      const reqPath = arg.slice('--requirement='.length);
+      const err = addRequirementsFile(reqPath, cwd, vfs, packages, displayPackages, new Set(), 0);
+      if (err) return { packages, displayPackages, deps, error: err, exitCode: 1 };
+      continue;
+    }
+    if (arg === '--no-deps') {
+      deps = false;
+      continue;
+    }
+    if (isIgnoredPipInstallFlag(arg)) {
+      continue;
+    }
+    if (pipFlagTakesValue(arg)) {
+      if (!argv[i + 1]) return { packages, displayPackages, deps, error: `${arg}: missing value`, exitCode: 2 };
+      i++;
+      continue;
+    }
+    if (arg.startsWith('-')) {
+      return { packages, displayPackages, deps, error: `pip install option '${arg}' is not supported in Nimbus yet`, exitCode: 2 };
+    }
+    const err = addSpec(arg, cwd);
+    if (err) return { packages, displayPackages, deps, error: err, exitCode: 1 };
+  }
+
+  if (packages.length === 0) {
+    return { packages, displayPackages, deps, error: 'pip install: missing package name', exitCode: 2 };
+  }
+  return { packages, displayPackages, deps, exitCode: 0 };
+}
+
+function addRequirementsFile(
+  reqPath: string,
+  baseDir: string,
+  vfs: SqliteVFS,
+  packages: string[],
+  displayPackages: string[],
+  seen: Set<string>,
+  depth: number,
+): string | null {
+  if (depth > 8) return 'requirements nesting exceeded 8 files';
+  const abs = resolveVfsPath(reqPath, baseDir);
+  if (seen.has(abs)) return null;
+  seen.add(abs);
+  if (!vfs.exists(abs)) return `requirements file not found: ${reqPath}`;
+
+  let text = '';
+  try {
+    text = new TextDecoder('utf-8').decode(vfs.readFile(abs));
+  } catch (e: any) {
+    return `cannot read requirements file ${reqPath}: ${e?.message || e}`;
+  }
+
+  const nextBaseDir = parentVfsPath(abs);
+  for (const line of logicalRequirementLines(text)) {
+    const trimmed = trimRequirementComment(line);
+    if (!trimmed) continue;
+    const tokens = splitRequirementArgs(trimmed);
+    if (tokens.length === 0) continue;
+    const head = tokens[0];
+    if (head === '-r' || head === '--requirement') {
+      if (!tokens[1]) return `${reqPath}: ${head}: missing requirements file`;
+      const err = addRequirementsFile(tokens[1], nextBaseDir, vfs, packages, displayPackages, seen, depth + 1);
+      if (err) return err;
+      continue;
+    }
+    if (head.startsWith('--requirement=')) {
+      const err = addRequirementsFile(head.slice('--requirement='.length), nextBaseDir, vfs, packages, displayPackages, seen, depth + 1);
+      if (err) return err;
+      continue;
+    }
+    if (head === '-c' || head === '--constraint' || head.startsWith('--constraint=')) {
+      return `${reqPath}: constraints are not supported by Nimbus pip yet`;
+    }
+    if (head.startsWith('--hash=')) continue;
+    if (head.startsWith('-')) continue;
+
+    const normalized = normalizePipInstallSpec(head, nextBaseDir, vfs);
+    if ('error' in normalized) return normalized.error;
+    packages.push(normalized.installSpec);
+    displayPackages.push(normalized.displaySpec);
+  }
+  return null;
+}
+
+function logicalRequirementLines(text: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  for (const rawLine of text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')) {
+    const line = rawLine.trimEnd();
+    if (line.endsWith('\\')) {
+      current += line.slice(0, -1) + ' ';
+      continue;
+    }
+    out.push(current + line);
+    current = '';
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function trimRequirementComment(line: string): string {
+  let quote = '';
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      if (ch === '\\') i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#') {
+      const prev = i === 0 ? ' ' : line[i - 1];
+      if (i === 0 || prev === ' ' || prev === '\t') return line.slice(0, i).trim();
+    }
+  }
+  return line.trim();
+}
+
+function splitRequirementArgs(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote = '';
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = '';
+      } else if (ch === '\\' && i + 1 < line.length) {
+        cur += line[++i];
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t') {
+      if (cur) {
+        out.push(cur);
+        cur = '';
+      }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function normalizePipInstallSpec(
+  rawSpec: string,
+  baseDir: string,
+  vfs: SqliteVFS,
+): { installSpec: string; displaySpec: string } | { error: string } {
+  if (!rawSpec) return { error: 'empty requirement' };
+  let spec = rawSpec;
+  if (spec.startsWith('file://')) spec = spec.slice('file://'.length);
+
+  const looksLikePath = spec.startsWith('/') || spec.startsWith('./') || spec.startsWith('../') || spec.endsWith('.whl');
+  if (!looksLikePath) return { installSpec: spec, displaySpec: spec };
+
+  const abs = resolveVfsPath(spec, baseDir);
+  if (!vfs.exists(abs)) return { error: `local wheel not found: ${rawSpec}` };
+  const fileName = abs.slice(abs.lastIndexOf('/') + 1);
+  if (!fileName.endsWith('.whl')) {
+    return { error: `local installs currently require a .whl file: ${rawSpec}` };
+  }
+  const wheelError = validatePyodideWheelFileName(fileName);
+  if (wheelError) return { error: wheelError };
+  return {
+    installSpec: `emfs:/${abs}`,
+    displaySpec: fileName.slice(0, -'.whl'.length),
+  };
+}
+
+function validatePyodideWheelFileName(fileName: string): string | null {
+  const stem = fileName.endsWith('.whl') ? fileName.slice(0, -4) : fileName;
+  const parts = stem.split('-');
+  if (parts.length < 5) return `invalid wheel filename: ${fileName}`;
+  const pythonTag = parts[parts.length - 3].toLowerCase();
+  const abiTag = parts[parts.length - 2].toLowerCase();
+  const platformTag = parts[parts.length - 1].toLowerCase();
+
+  if (platformTag === 'any' && abiTag === 'none') return null;
+  if (
+    platformTag.includes('manylinux') ||
+    platformTag.includes('musllinux') ||
+    platformTag.includes('linux') ||
+    platformTag.includes('macosx') ||
+    platformTag.includes('win')
+  ) {
+    return `native Linux wheel '${fileName}' cannot run in Nimbus; install a pure wheel or a package with a pure Python fallback`;
+  }
+  if (platformTag.includes('emscripten') || platformTag.includes('wasm32')) {
+    return `Pyodide/Emscripten extension wheel '${fileName}' needs precompiled runtime-module support; install a pure wheel or a package with a pure Python fallback`;
+  }
+  if (pythonTag.startsWith('py') && platformTag === 'any') return null;
+  return `wheel '${fileName}' targets unsupported platform '${platformTag}'; Nimbus pip supports pure Python wheels and packages with pure Python fallbacks`;
+}
+
+function isIgnoredPipInstallFlag(arg: string): boolean {
+  return IGNORED_PIP_INSTALL_FLAGS.has(arg);
+}
+
+function pipFlagTakesValue(arg: string): boolean {
+  if (arg.includes('=')) return false;
+  return PIP_INSTALL_FLAGS_WITH_VALUE.has(arg);
+}
+
+function hasLeadingCliFlag(argv: string[], flags: Set<string>): boolean {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (flags.has(arg)) return true;
+    if (arg === '--') return false;
+    if (arg === '-c' || arg === '-m' || arg === '-') return false;
+    if (!arg.startsWith('-')) return false;
+  }
+  return false;
+}
+
+function parsePythonHttpServer(argv: string[], cwd: string): { port: number; root: string } | null {
+  if (argv[0] !== '-m' || argv[1] !== 'http.server') return null;
+  let port = 8000;
+  let directory = cwd;
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--directory') {
+      directory = argv[i + 1] || directory;
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--directory=')) {
+      directory = arg.slice('--directory='.length) || directory;
+      continue;
+    }
+    if (arg === '--bind' || arg === '-b') {
+      i++;
+      continue;
+    }
+    if (!arg.startsWith('-') && /^\d+$/.test(arg)) {
+      port = parsePort(arg, port);
+    }
+  }
+  return { port, root: resolveVfsPath(directory, cwd) };
 }
 
 // ── argv parser ──────────────────────────────────────────────────────
@@ -251,13 +702,6 @@ function parsePythonArgv(argv: string[]): ParsedPyArgv {
     error: "REPL not supported in v1. Use 'python -c \"code\"' or 'python script.py'." };
 }
 
-function resolveVfsPath(rel: string, cwd: string): string {
-  const cwdN = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (rel.startsWith('/')) return rel.replace(/^\/+/, '');
-  if (rel === '.') return cwdN;
-  return `${cwdN}/${rel}`;
-}
-
 function uint8ToBase64(u8: Uint8Array): string {
   const CHUNK = 0x8000;
   let s = '';
@@ -277,6 +721,10 @@ interface PythonFacetArgs {
   pyArgv: string[];
   userEnv: Record<string, string>;
   progName: string;
+  cwd: string;
+  fsSnapshot: WasiFsSnapshot;
+  asyncRun?: boolean;
+  pyodidePackages?: string[];
 }
 
 interface PythonFacetRuntime {
@@ -288,6 +736,7 @@ interface PythonFacetResult {
   stdout: string;
   stderr: string;
   error?: string;
+  fsDiff?: WasiFsDiff;
 }
 
 async function dispatchPythonFacet(
@@ -303,12 +752,17 @@ async function dispatchPythonFacet(
       pyArgv: string[];
       userEnv: Record<string, string>;
       progName: string;
+      cwd: string;
+      fsSnapshot: WasiFsSnapshot;
+      asyncRun?: boolean;
+      pyodidePackages?: string[];
     },
   ): Promise<{
     exitCode: number;
     stdout: string;
     stderr: string;
     error?: string;
+    fsDiff?: WasiFsDiff;
   }> {
     const fn = (globalThis as any).__pyodideRun;
     if (typeof fn !== 'function') {
@@ -320,6 +774,10 @@ async function dispatchPythonFacet(
       pyArgv: inArgs.pyArgv,
       userEnv: inArgs.userEnv,
       progName: inArgs.progName,
+      cwd: inArgs.cwd,
+      fsSnapshot: inArgs.fsSnapshot,
+      asyncRun: !!inArgs.asyncRun,
+      pyodidePackages: inArgs.pyodidePackages || [],
     });
   };
 
@@ -329,6 +787,10 @@ async function dispatchPythonFacet(
       pyArgv: args.pyArgv,
       userEnv: args.userEnv,
       progName: args.progName,
+      cwd: args.cwd,
+      fsSnapshot: args.fsSnapshot,
+      asyncRun: !!args.asyncRun,
+      pyodidePackages: args.pyodidePackages || [],
     }, {
       timeoutMs: 300_000,
     });
@@ -337,6 +799,7 @@ async function dispatchPythonFacet(
       stdout: result.stdout || '',
       stderr: result.stderr || '',
       error: result.error,
+      fsDiff: result.fsDiff,
     };
   } catch (e: any) {
     return {
@@ -354,6 +817,7 @@ async function createPythonFacetRuntime(
     asmWasmVfs: string | null;
     asmJsVfs: string | null;
     stdlibVfs: string | null;
+    lockfileVfs: string | null;
     vfs: SqliteVFS;
   },
 ): Promise<PythonFacetRuntime> {
@@ -367,6 +831,9 @@ async function createPythonFacetRuntime(
   const asmWasmBytes = args.vfs.readFile(args.asmWasmVfs);
   const asmJsBytes = args.vfs.readFile(args.asmJsVfs);
   const stdlibBytes = args.vfs.readFile(args.stdlibVfs);
+  const lockfileText = args.lockfileVfs && args.vfs.exists(args.lockfileVfs)
+    ? new TextDecoder('utf-8').decode(args.vfs.readFile(args.lockfileVfs))
+    : '{"packages":{}}';
 
   let asmJsSrc = new TextDecoder('utf-8').decode(asmJsBytes);
   const PATCH_NEEDLE = 'else throw new Error("Cannot determine runtime environment")';
@@ -380,7 +847,7 @@ async function createPythonFacetRuntime(
     asmJsSrc = asmJsSrc.replace(HEAD_NEEDLE, HEAD_REPLACE);
   }
 
-  const preamble = buildPyodidePreamble(asmJsSrc, uint8ToBase64(stdlibBytes));
+  const preamble = buildPyodidePreamble(asmJsSrc, uint8ToBase64(stdlibBytes), lockfileText);
   const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
   const env = (facetMgr as any).env;
   const ctx = (facetMgr as any).ctx;
@@ -408,7 +875,7 @@ async function createPythonFacetRuntime(
 // reuse the canonical preamble verbatim. Additive change only —
 // internal callers are unchanged. The `export` keyword is the sole
 // modification to python-runner.ts in the REPL-W1 wave.
-export function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): string {
+export function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string, lockfileContents = '{"packages":{}}'): string {
   return [
     '// ── Pre-asm.js environment shims ───────────────────────────────',
     '// Pyodide.asm.js detects its environment via heuristics. In',
@@ -495,7 +962,7 @@ export function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): strin
     'globalThis.WorkerGlobalScope = __nimbusOrigWGS;',
     '// ── END: pyodide.asm.js inline ──────────────────────────────────',
     '',
-    buildPreambleTail(stdlibB64),
+    buildPreambleTail(stdlibB64, lockfileContents),
   ].join('\n');
 }
 
@@ -569,7 +1036,7 @@ export function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string): strin
 //   │ - runPython(userCode) → stdout/stderr/exitCode              │
 //   └─────────────────────────────────────────────────────────────┘
 //
-function buildPreambleTail(stdlibB64: string): string {
+function buildPreambleTail(stdlibB64: string, lockfileContents: string): string {
   return `
 // ── BEGIN: python-runner preamble tail (Pyodide 0.29.4, Nimbus v2) ──
 
@@ -577,6 +1044,8 @@ function buildPreambleTail(stdlibB64: string): string {
 // base64 text — decoded once at module-init. Same content as
 // share/pyodide/python_stdlib.zip in the runtime cache.
 const __NIMBUS_STDLIB_B64 = ${JSON.stringify(stdlibB64)};
+const __NIMBUS_LOCKFILE_CONTENTS = ${JSON.stringify(lockfileContents)};
+const __NIMBUS_PERSISTENT_SITE_PACKAGES = '/home/user/.nimbus-python/site-packages';
 
 // Decode base64 → Uint8Array. Run at module-init time (synchronous).
 const __nimbusStdlibBytes = (function decode(b64) {
@@ -615,6 +1084,109 @@ try {
 // slice from these buffers to isolate output per invocation.
 globalThis.__nimbusPyStdout = globalThis.__nimbusPyStdout || [];
 globalThis.__nimbusPyStderr = globalThis.__nimbusPyStderr || [];
+
+if (!globalThis.__nimbusPythonFetchStripsIntegrity && typeof globalThis.fetch === 'function') {
+  const __nimbusOrigFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = function nimbusPythonFetch(input, init) {
+    if (init && typeof init === 'object' && init.integrity) {
+      const clean = Object.assign({}, init);
+      delete clean.integrity;
+      return __nimbusOrigFetch(input, clean);
+    }
+    return __nimbusOrigFetch(input, init);
+  };
+  globalThis.__nimbusPythonFetchStripsIntegrity = true;
+}
+
+function __nimbusB64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function __nimbusBytesToB64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function __nimbusNormPath(path) {
+  const clean = String(path || '').replace(/^\\/+/, '').replace(/\\/+$/, '');
+  return clean ? '/' + clean : '/';
+}
+
+function __nimbusInstallFsSnapshot(M, snapshot) {
+  if (!snapshot || !snapshot.root) return;
+  const currentFiles = new Set(Object.keys(snapshot.files || {}));
+  const previous = globalThis.__nimbusMountedPyFiles || new Set();
+  for (const prev of Array.from(previous)) {
+    if (currentFiles.has(prev)) continue;
+    try {
+      const abs = __nimbusNormPath(prev);
+      if (M.FS.analyzePath(abs).exists) M.FS.unlink(abs);
+    } catch {}
+  }
+  const dirs = Array.from(new Set(snapshot.dirs || [])).sort((a, b) => a.length - b.length);
+  for (const dir of dirs) {
+    try { M.FS.mkdirTree(__nimbusNormPath(dir)); } catch {}
+  }
+  for (const [path, b64] of Object.entries(snapshot.files || {})) {
+    const abs = __nimbusNormPath(path);
+    try {
+      const parent = abs.slice(0, abs.lastIndexOf('/')) || '/';
+      M.FS.mkdirTree(parent);
+      M.FS.writeFile(abs, __nimbusB64ToBytes(b64));
+    } catch (e) {
+      globalThis.__nimbusPyStderr.push('[python-runner] VFS mount failed for ' + path + ': ' + (e && e.message) + '\\n');
+    }
+  }
+  globalThis.__nimbusMountedPyFiles = currentFiles;
+}
+
+function __nimbusWalkPyFs(M, absDir, out) {
+  let entries;
+  try { entries = M.FS.readdir(absDir); } catch { return; }
+  for (const name of entries) {
+    if (name === '.' || name === '..') continue;
+    if (name === '.nimbus' || name === 'node_modules' || name === '.cache' || name === '.npm') continue;
+    const abs = absDir === '/' ? '/' + name : absDir + '/' + name;
+    const rel = abs.replace(/^\\/+/, '');
+    let stat;
+    try { stat = M.FS.stat(abs); } catch { continue; }
+    if (M.FS.isDir(stat.mode)) {
+      out.dirs.push(rel);
+      __nimbusWalkPyFs(M, abs, out);
+      continue;
+    }
+    if (M.FS.isFile(stat.mode)) {
+      try { out.files[rel] = __nimbusBytesToB64(M.FS.readFile(abs)); } catch {}
+    }
+  }
+}
+
+function __nimbusSnapshotPyDiff(M, before) {
+  if (!before || !before.root) return null;
+  const roots = Array.from(new Set(((before.roots && before.roots.length) ? before.roots : [before.root]).filter(Boolean)));
+  const after = { dirs: roots.slice(), files: {} };
+  for (const root of roots) {
+    __nimbusWalkPyFs(M, __nimbusNormPath(root), after);
+  }
+  const beforeDirs = new Set(before.dirs || []);
+  const afterDirs = new Set(after.dirs || []);
+  const dirsCreated = after.dirs.filter((path) => !beforeDirs.has(path));
+  const dirsDeleted = (before.dirs || []).filter((path) => !afterDirs.has(path)).sort((a, b) => b.length - a.length);
+  const filesWritten = {};
+  const filesDeleted = [];
+  const beforeFiles = before.files || {};
+  for (const [path, b64] of Object.entries(after.files)) {
+    if (beforeFiles[path] !== b64) filesWritten[path] = b64;
+  }
+  for (const path of Object.keys(beforeFiles)) {
+    if (!(path in after.files)) filesDeleted.push(path);
+  }
+  return { filesWritten, filesDeleted, dirsCreated, dirsDeleted };
+}
 
 // Bootstrap gate release fn — populated by gateRuntimeInit preRun hook
 // during _createPyodideModule's synchronous preRun pass.
@@ -655,19 +1227,23 @@ globalThis.__pyodideBootstrap = (async function nimbusBootstrap() {
       return { ok: false, error: '__NIMBUS_WASM missing pyodide.asm.wasm' };
     }
 
+    const pyodidePackageBaseUrl = 'https://cdn.jsdelivr.net/pyodide/v0.29.4/full/';
+
     // Initial Pyodide config — note: args, env, progName come from the
     // per-call args at request time. We use sensible defaults here so
     // the bootstrap can complete; per-call __pyodideRun overrides via
     // M.ENV / pyodide.runPython arguments.
     const config = {
       indexURL: '/pyodide/',
+      cdnUrl: pyodidePackageBaseUrl,
+      packageBaseUrl: pyodidePackageBaseUrl,
       fullStdLib: false,
       jsglobals: globalThis,
       args: [],
       env: { HOME: '/home/pyodide', PYTHONINSPECT: '1' },
       packages: [],
-      lockFileContents: '{"packages":{}}',
-      packageCacheDir: undefined,
+      lockFileContents: __NIMBUS_LOCKFILE_CONTENTS,
+      packageCacheDir: pyodidePackageBaseUrl,
       enableRunUntilComplete: true,
       checkAPIVersion: false,
       _sysExecutable: 'python',
@@ -688,7 +1264,11 @@ globalThis.__pyodideBootstrap = (async function nimbusBootstrap() {
       onExit: function(code) { globalThis.__nimbusExitCode = code | 0; },
       thisProgram: config._sysExecutable,
       arguments: config.args,
-      API: { config: config, runtimeEnv: { IN_NODE: false, IN_BROWSER: false, IN_SHELL: false } },
+      API: {
+        config: config,
+        runtimeEnv: { IN_NODE: false, IN_BROWSER: false, IN_SHELL: false },
+        lockFilePromise: Promise.resolve(__NIMBUS_LOCKFILE_CONTENTS),
+      },
       locateFile: function(path) { return '/pyodide/' + path; },
       instantiateWasm: function(imports, successCallback) {
         // Attach sentinel namespace synchronously — Pyodide expects
@@ -835,6 +1415,18 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   if (args.userEnv) {
     try { Object.assign(pyodideMod.ENV, args.userEnv); } catch {}
   }
+  try {
+    __nimbusInstallFsSnapshot(pyodideMod, args.fsSnapshot);
+    try {
+      pyodideMod.FS.mkdirTree(__NIMBUS_PERSISTENT_SITE_PACKAGES);
+      pyodideMod.API.sitePackages = __NIMBUS_PERSISTENT_SITE_PACKAGES;
+    } catch {}
+    const cwd = __nimbusNormPath(args.cwd || (args.userEnv && args.userEnv.HOME) || '/home/user');
+    try { pyodideMod.FS.mkdirTree(cwd); } catch {}
+    try { pyodideMod.FS.chdir(cwd); } catch {}
+  } catch (e) {
+    globalThis.__nimbusPyStderr.push('[python-runner] VFS mount failed: ' + (e && e.message) + '\\n');
+  }
 
   // finalizeBootstrap returns the public Pyodide JS API (the one with
   // .runPython, .globals, .registerJsModule). It registers Python-side
@@ -888,8 +1480,16 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
 
   try {
     pyodide.runPython(
-      'import sys\\nsys.argv = ' +
-      JSON.stringify(effectiveArgv),
+      'import os, sys\\n' +
+	      'sys.argv = ' + JSON.stringify(effectiveArgv) + '\\n' +
+	      'cwd = ' + JSON.stringify(args.cwd || '/home/user') + '\\n' +
+	      'site_packages = ' + JSON.stringify('/home/user/.nimbus-python/site-packages') + '\\n' +
+	      'try:\\n    os.chdir(cwd)\\nexcept Exception:\\n    pass\\n' +
+	      'try:\\n    os.makedirs(site_packages, exist_ok=True)\\nexcept Exception:\\n    pass\\n' +
+	      'if site_packages not in sys.path:\\n    sys.path.insert(0, site_packages)\\n' +
+	      'try:\\n    import site as _nimbus_site; _nimbus_site.addsitedir(site_packages)\\nexcept Exception:\\n    pass\\n' +
+	      'try:\\n    import sysconfig as _nimbus_sysconfig\\n    for _scheme in getattr(_nimbus_sysconfig, "_INSTALL_SCHEMES", {}).values():\\n        _scheme["purelib"] = site_packages\\n        _scheme["platlib"] = site_packages\\nexcept Exception:\\n    pass\\n' +
+	      'if "" not in sys.path:\\n    sys.path.insert(0, "")\\n',
       userGlobals ? { globals: userGlobals } : undefined
     );
   } catch { /* best-effort */ }
@@ -901,10 +1501,22 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   let exitCode = 0;
   if (args.userCode) {
     try {
-      pyodide.runPython(
-        args.userCode,
-        userGlobals ? { globals: userGlobals } : undefined
-      );
+      if (Array.isArray(args.pyodidePackages) && args.pyodidePackages.length > 0) {
+        for (const pkg of args.pyodidePackages) {
+          await pyodide.loadPackage(pkg);
+        }
+      }
+      if (args.asyncRun && typeof pyodide.runPythonAsync === 'function') {
+        await pyodide.runPythonAsync(
+          args.userCode,
+          userGlobals ? { globals: userGlobals } : undefined
+        );
+      } else {
+        pyodide.runPython(
+          args.userCode,
+          userGlobals ? { globals: userGlobals } : undefined
+        );
+      }
       // If runPython returned normally, exit code is 0 unless onExit
       // was invoked (which can happen if user called sys.exit but
       // Pyodide handled it via ExitStatus before throwing).
@@ -942,6 +1554,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
     exitCode: exitCode,
     stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
     stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+    fsDiff: __nimbusSnapshotPyDiff(pyodideMod, args.fsSnapshot),
   };
 };
 

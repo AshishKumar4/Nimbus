@@ -1,6 +1,6 @@
 # AGENTS.md - Nimbus Project Context
 
-Last refreshed: 2026-06-05
+Last refreshed: 2026-06-06
 
 Treat live code as the source of truth. Older notes, historical comments, and
 generated artifacts may lag; verify against the actual implementation before
@@ -24,7 +24,7 @@ The repo is a Bun workspace monorepo:
 | `packages/cli/` | `@nimbus-sh/cli`: scaffold/setup/token/session/runtime commands. |
 | `packages/create-nimbus-app/` | `npx create-nimbus-app` wrapper. |
 | `packages/config/` | `@nimbus-sh/config`: typed Nimbus and Wrangler config helpers. |
-| `tests/behavioral/` | Black-box behavioral probes. Current discovery count is 312 probes. |
+| `tests/behavioral/` | Black-box behavioral probes. |
 
 `apps/hosted-demo/src/index.ts` imports the Worker package through the SDK
 entrypoints, exports the required DO/RPC classes, calls `createNimbusHandler`,
@@ -62,12 +62,26 @@ Core files:
 | `packages/worker/src/session/init.ts` | Session boot, shell commands, npm/git/vite/wrangler/runtime registration. |
 | `packages/worker/src/session/agent.ts` | Session Agent API, Cloudflare OAuth flow, AI SDK model calls, sandbox tools. |
 | `packages/worker/src/runtime/node-shims.ts` | Node-compatible fs/path/process/streams/http/child_process shims. |
+| `packages/worker/src/runtime/os-contracts.ts` | Shared Runtime OS contracts for filesystem/process/ports/package ABI/diagnostics. |
+| `packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts` | Runtime filesystem bridge over `SqliteVFS`. |
 | `packages/worker/src/facets/process.ts` | Supervisor-side `child_process` broker. |
 | `packages/worker/src/vfs/sqlite-vfs.ts` | SQLite-backed VFS. |
 | `packages/worker/src/npm/installer.ts` | npm install pipeline. |
 | `packages/worker/src/runtime/package-manager.ts` | `nimbus install` runtime package manager. |
 
 Constants live in `packages/worker/src/constants.ts`.
+
+Node dynamic Workers keep sync `fs` calls on a startup snapshot and local write
+cache for speed. The snapshot includes the entry dependency graph plus a bounded
+current-working-tree project snapshot, excluding `node_modules`, `.git`, and
+`.nimbus`. Async `fs` calls use the supervisor bridge for live SQLite VFS reads
+and common mutations (`writeFile`, `appendFile`, `mkdir`, `unlink`, `rename`,
+`rmdir`, `symlink`, `readlink`), while merging live directory entries so
+child-process writes are visible inside long-running Node processes.
+
+The Runtime OS target and honest support matrix are tracked in
+`docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
+that support matrix unless a behavioral probe proves a larger capability.
 
 ## Runtimes
 
@@ -84,7 +98,7 @@ Current runtime substrate:
 
 | Runtime | Bins | Notes |
 |---|---|---|
-| `python` | `python`, `python3` | Pyodide / CPython 3.13. |
+| `python` | `python`, `python3`, `pip`, `pip3` | Pyodide / CPython 3.13. `pip` supports pure wheels and packages with pure fallbacks; runtime-loaded extension modules need a Nimbus startup-module path. |
 | `ruby` | `ruby`, `ruby3` | ruby.wasm / Ruby 3.3. |
 | `clang` | `clang`, `wasm-ld` | LLVM 8 to wasm32-wasi. |
 | `node`, `bun` | `node`, `bun`, `npm`, `npx` | Cloudflare workerd `nodejs_compat` and Nimbus shims, not upstream native binaries. |
@@ -100,6 +114,7 @@ surfaces are:
 - `child_process.spawn`, `exec`, `execFile`, streams, and long-running process logs
 - outbound HTTPS via fetch-compatible APIs
 - HTTP-like preview/port routing for local agent servers
+- sync Node `fs` reads of ordinary project files from the current working tree
 
 Behavioral probes cover these primitives under:
 
@@ -184,6 +199,9 @@ Agent-specific probes:
 - `tests/behavioral/preview/new/tabbed-preview-auto-focus-port.mjs`
 - `tests/behavioral/preview/new/vite-preview-dedupes-port-tab.mjs`
 - `tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs`
+- `tests/behavioral/agentic-cli/new/node-live-vfs-async-fs.mjs`
+- `tests/behavioral/agentic-cli/new/node-live-vfs-symlink.mjs`
+- `tests/behavioral/agentic-cli/new/node-sync-cwd-project-snapshot.mjs`
 
 ## Build And Deploy
 

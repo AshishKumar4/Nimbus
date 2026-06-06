@@ -563,6 +563,19 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcReaddir(path: string): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path); }
   async _rpcExists(path: string): Promise<boolean> { return _rpc._rpcExists(this as any, path); }
   async _rpcMkdir(path: string): Promise<void> { return _rpc._rpcMkdir(this as any, path); }
+  async _rpcRmdir(path: string): Promise<void> { return _rpc._rpcRmdir(this as any, path); }
+  async _rpcRename(from: string, to: string): Promise<void> { return _rpc._rpcRename(this as any, from, to); }
+  async _rpcReadlink(path: string): Promise<string | null> { return _rpc._rpcReadlink(this as any, path); }
+  async _rpcSymlink(target: string, path: string): Promise<void> { return _rpc._rpcSymlink(this as any, target, path); }
+  async _rpcFsRevision(path?: string): Promise<number> { return _rpc._rpcFsRevision(this as any, path); }
+  async _rpcFsOpen(path: string, flags: any): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags); }
+  async _rpcFsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
+    return _rpc._rpcFsRead(this as any, handleId, offset, length);
+  }
+  async _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
+    return _rpc._rpcFsWrite(this as any, handleId, offset, bytes);
+  }
+  async _rpcFsClose(handleId: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId); }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }

@@ -49,33 +49,9 @@
  *     workerd CSP rejects that path.
  */
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
+import { type VfsLike } from './vfs-snapshot.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
-/**
- * Minimal VFS shape we depend on. Avoids importing the full
- * SqliteVFS type tree from the supervisor module graph — this file
- * is part of `src/runtime/`, importing supervisor-specific types
- * would create a cycle.
- *
- * filesystem WASI: extended for WASI file-IO. The snapshot path uses readdir +
- * isDirectory + stat to traverse the user's session subtree; the
- * flush path uses writeFile + mkdir + unlink + rmdir.
- */
-interface VfsLike {
-    exists(path: string): boolean;
-    isDirectory(path: string): boolean;
-    readFile(path: string): Uint8Array;
-    writeFile(path: string, content: Uint8Array | string): void;
-    readdir(path: string): {
-        name: string;
-        type: string;
-    }[];
-    mkdir(path: string, opts?: {
-        recursive?: boolean;
-    }): void;
-    unlink(path: string): void;
-    rmdir(path: string): void;
-}
 /**
  * Minimal processTable shape — the parts wasm-runner needs to
  * register a PID + mark exit so `ps` and `logs <pid>` see the

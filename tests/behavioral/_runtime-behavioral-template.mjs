@@ -12,9 +12,8 @@
 // See `tests/behavioral/PROBE-QUALITY.md` for the full contract.
 //
 // ─────────────────────────────────────────────────────────────────────
-// Driver: puppeteer-core targeting the system Chrome at
-//   /root/.cache/puppeteer/chrome/linux-148.0.7778.97/chrome-linux64/chrome
-// (a real Google Chrome for Testing 148, NOT a JSDOM emulation).
+// Driver: puppeteer-core targeting a real local Chrome binary, NOT a JSDOM
+// emulation.
 //
 // The probe:
 //   1. mintSession() → POST /new → sid
@@ -34,17 +33,26 @@
 //     runtime-broken.
 
 import puppeteer from 'puppeteer-core';
+import { existsSync } from 'node:fs';
 import { mintSession, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
 
-/** System Chrome path. The puppeteer-core install in this monorepo
- *  is bundle-only (no Chromium download); the binary is provisioned
- *  separately by the host/dockerfile. Resolve from env so non-default
- *  installs work. */
-export const CHROME_BIN =
-  process.env.NIMBUS_CHROME_BIN ||
-  '/root/.cache/puppeteer/chrome/linux-148.0.7778.97/chrome-linux64/chrome';
+/** System Chrome path. The puppeteer-core install in this monorepo is
+ * bundle-only; the binary is provisioned separately by the host. */
+export const CHROME_BIN = (() => {
+  const candidates = [
+    process.env.NIMBUS_CHROME_BIN,
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    '/usr/bin/google-chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/root/.cache/puppeteer/chrome/linux-148.0.7778.97/chrome-linux64/chrome',
+  ].filter(Boolean);
+  const found = candidates.find((path) => existsSync(path));
+  return found || candidates[0];
+})();
 
 /**
  * Launch a headless Chrome with the args needed for our environment

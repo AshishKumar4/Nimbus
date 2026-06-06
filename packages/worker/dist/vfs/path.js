@@ -7,10 +7,10 @@
  * before pop) that the others lacked — that safer behavior is the one
  * preserved here.
  *
- * Facet-isolate code-string copies (e.g. inside
- * generateGitNetworkFacetCode in git-network-facet.ts, and inside
- * node-shims.ts) cannot import this module and must keep their inline
- * implementations; those copies are documented as justified.
+ * Facet-isolate code-string copies (for example git-network-facet,
+ * pre-bundle-facet, and node-shims generated/runtime strings) cannot import
+ * this module and must keep their inline implementations; those copies are
+ * documented as justified.
  *
  * Semantics:
  *   - Strip empty segments (collapses `//` runs)
@@ -34,6 +34,18 @@ export function normalizeVfsPath(p) {
             out.push(seg);
     }
     return out.join('/');
+}
+/** Resolve a user path against a VFS cwd and return a canonical VFS key. */
+export function resolveVfsPath(path, cwd) {
+    return path.startsWith('/')
+        ? normalizeVfsPath(path)
+        : normalizeVfsPath(`${cwd}/${path}`);
+}
+/** Return the canonical VFS parent key, or an empty string for root-level paths. */
+export function parentVfsPath(path) {
+    const clean = normalizeVfsPath(path);
+    const idx = clean.lastIndexOf('/');
+    return idx > 0 ? clean.slice(0, idx) : '';
 }
 /** Strip leading slashes only — does not touch internal segments. */
 export function stripLeadingSlashes(p) {

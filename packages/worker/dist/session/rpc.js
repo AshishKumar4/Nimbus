@@ -21,22 +21,25 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { enc } from '../_shared/bytes.js';
+import { enc, dec } from '../_shared/bytes.js';
 import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
-export async function _rpcReadFile(self, path) {
+function runtimeFs(self) {
     self.ensureSqliteFs();
-    try {
-        return self.sqliteFs.readFileString(path.replace(/^\/+/, ''));
+    if (!self.runtimeFsBridge) {
+        self.runtimeFsBridge = new SqliteRuntimeFsBridge(self.sqliteFs);
     }
-    catch {
-        return null;
-    }
+    return self.runtimeFsBridge;
+}
+export async function _rpcReadFile(self, path) {
+    const bytes = await runtimeFs(self).readFile(path);
+    return bytes ? dec.decode(bytes) : null;
 }
 /**
  * Read a file as raw bytes (Uint8Array). Used by git network facet for
@@ -44,13 +47,7 @@ export async function _rpcReadFile(self, path) {
  * round-tripping through readFile (string) would corrupt bytes.
  */
 export async function _rpcReadFileBytes(self, path) {
-    self.ensureSqliteFs();
-    try {
-        return self.sqliteFs.readFile(path.replace(/^\/+/, ''));
-    }
-    catch {
-        return null;
-    }
+    return runtimeFs(self).readFile(path);
 }
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
@@ -111,47 +108,60 @@ export async function _rpcInnerDoFetch(self, req) {
     }
 }
 export async function _rpcWriteFile(self, path, content) {
-    self.ensureSqliteFs();
-    const p = path.replace(/^\/+/, '');
-    const parts = p.split('/');
-    for (let i = 1; i < parts.length; i++) {
-        const dir = parts.slice(0, i).join('/');
-        if (dir && !self.sqliteFs.exists(dir))
-            self.sqliteFs.mkdir(dir, { recursive: true });
-    }
     // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
     // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
     // structured-clone preserves Uint8Array across the boundary; structured-
     // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
-    self.sqliteFs.writeFile(p, content);
+    await runtimeFs(self).writeFile(path, content);
 }
 export async function _rpcStat(self, path) {
-    self.ensureSqliteFs();
-    try {
-        return self.sqliteFs.stat(path.replace(/^\/+/, ''));
-    }
-    catch {
-        return null;
-    }
+    return runtimeFs(self).stat(path);
 }
 export async function _rpcReaddir(self, path) {
-    self.ensureSqliteFs();
-    try {
-        return self.sqliteFs.readdir(path.replace(/^\/+/, ''));
-    }
-    catch {
-        return [];
-    }
+    return runtimeFs(self).readdir(path);
 }
 export async function _rpcExists(self, path) {
-    self.ensureSqliteFs();
-    return self.sqliteFs.exists(path.replace(/^\/+/, ''));
+    return (await runtimeFs(self).stat(path)) !== null;
 }
 export async function _rpcMkdir(self, path) {
-    self.ensureSqliteFs();
-    self.sqliteFs.mkdir(path.replace(/^\/+/, ''), { recursive: true });
+    await runtimeFs(self).mkdir(path, { recursive: true });
+}
+export async function _rpcRmdir(self, path) {
+    await runtimeFs(self).rmdir(path);
+}
+export async function _rpcRename(self, from, to) {
+    await runtimeFs(self).rename(from, to);
+}
+export async function _rpcReadlink(self, path) {
+    return runtimeFs(self).readlink(path);
+}
+export async function _rpcSymlink(self, target, path) {
+    await runtimeFs(self).symlink(target, path);
+}
+export async function _rpcFsRevision(self, path) {
+    void path;
+    return runtimeFs(self).revision();
+}
+export async function _rpcFsOpen(self, path, flags) {
+    return runtimeFs(self).open(path, flags || {});
+}
+export async function _rpcFsRead(self, handleId, offset, length) {
+    return runtimeFs(self).read(handleId, offset, length);
+}
+export async function _rpcFsWrite(self, handleId, offset, bytes) {
+    let data;
+    if (bytes instanceof Uint8Array)
+        data = bytes;
+    else if (bytes instanceof ArrayBuffer)
+        data = new Uint8Array(bytes);
+    else
+        data = new Uint8Array(bytes || []);
+    return runtimeFs(self).write(handleId, offset, data);
+}
+export async function _rpcFsClose(self, handleId) {
+    await runtimeFs(self).close(handleId);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -164,9 +174,8 @@ export async function _rpcHmrRelay(self, clientId, msg) {
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 export async function _rpcUnlink(self, path) {
-    self.ensureSqliteFs();
     try {
-        self.sqliteFs.unlink(path.replace(/^\/+/, ''));
+        await runtimeFs(self).unlink(path);
     }
     catch { }
 }

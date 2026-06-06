@@ -217,6 +217,15 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }[]>;
     _rpcExists(path: string): Promise<boolean>;
     _rpcMkdir(path: string): Promise<void>;
+    _rpcRmdir(path: string): Promise<void>;
+    _rpcRename(from: string, to: string): Promise<void>;
+    _rpcReadlink(path: string): Promise<string | null>;
+    _rpcSymlink(target: string, path: string): Promise<void>;
+    _rpcFsRevision(path?: string): Promise<number>;
+    _rpcFsOpen(path: string, flags: any): Promise<any>;
+    _rpcFsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
+    _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
+    _rpcFsClose(handleId: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcUnlink(path: string): Promise<void>;
     _rpcWriteBatch(payload: any): Promise<{

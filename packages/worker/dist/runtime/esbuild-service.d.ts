@@ -39,8 +39,12 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
  *        esbuild's entry-point external check rejected the externals when
  *        passed at the top level. v5 cache entries are wrong (contain
  *        embedded react copies) and must be invalidated.
+ *   v7 — barrel-package bundles include a named-import signature in
+ *        pkg_esm_bundles.input_hash. Prevents reusing a lucide-react
+ *        bundle synthesized for one icon set after user source imports
+ *        additional icons.
  */
-export declare const BUNDLER_VERSION = "v6";
+export declare const BUNDLER_VERSION = "v7";
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
  * `specifier` so that React / React-DOM / Scheduler share a single instance
@@ -118,13 +122,16 @@ export declare class EsbuildService {
      * fix this without rewriting upstream.
      *
      * Fix: when caller asks for format 'cjs' AND the source has a
-     * top-level await, wrap the source in an async IIFE:
+     * top-level await, wrap the source in an async IIFE and return its
+     * Promise to the facet runner:
      *
-     *     ;(async () => {
+     *     return (async () => {
      *       <original-source>
      *     })();
      *
-     * Inside the IIFE, await is legal.
+     * Inside the IIFE, await is legal. Returning the Promise is required:
+     * the facet runner awaits promise-returning entry functions so
+     * sequential TLA execution cannot race process teardown or VFS flushes.
      *
      * ESM-imports-in-CJS note (nuxt-esm-in-cjs wave):
      * ─────────────────────────────────────────────────
@@ -145,7 +152,7 @@ export declare class EsbuildService {
      *   2. Extract top-level imports from the pass-1 output and rewrite
      *      them as `const X = require(...)` shims (see
      *      `convertEsmImportsToRequire` for the contract / shape).
-     *   3. Wrap the remaining body in the async IIFE.
+     *   3. Wrap the remaining body in a returned async IIFE.
      *   4. Return the assembled string as the transform result.
      *
      * The require-shim emits the standard `__esModule` interop check

@@ -11,9 +11,7 @@
  *
  * Out of v1:
  *   - REPL mode (`ruby` with no args)
- *   - require_relative for non-bundled files (basic require for
- *     stdlib works since stdlib is wasi-vfs-packed inside the wasm)
- *   - gems, bundler
+ *   - native extension gems
  *   - js-runtime bindings (gem "js") — those imports are stubbed
  *     and will raise NotImplementedError if Ruby code tries to use
  *     them
@@ -35,6 +33,10 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { createLiveStaticServerCode, parsePort } from './static-server.js';
+import { resolveVfsPath } from '../vfs/path.js';
+import { defaultGemHome, installRubyBundle, installRubyGems, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
 /**
  * Build the ruby-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each
@@ -42,28 +44,43 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
  */
 export function makeRubyRunnerFactory(deps) {
     const { facetMgr, vfs } = deps;
-    return function rubyRunnerFactory(manifest, installRoot, binName, _binKind) {
+    return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
             return entry ? `${installRoot}/${entry.path}` : null;
         };
         const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
+        let fsSnapshotCache = null;
         return async function rubyBinHandler(ctx) {
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
+            const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
+            if (packageCommand.handled)
+                return packageCommand.exitCode;
+            const toolInvocation = buildRubyToolInvocation(binKind, binName, argv);
+            if (toolInvocation.error) {
+                ctx.stderr.write(`${binName}: ${toolInvocation.error}\n`);
+                return toolInvocation.exitCode;
+            }
             // --version / --help fast paths (no wasm boot).
-            if (argv.includes('--version') || argv.includes('-v')) {
-                // 3.3.x — ruby.wasm 2.9.3-2.9.4 ships Ruby 3.3.4 per upstream
-                // release notes. The string format matches `ruby --version`
-                // shape (parsed by tooling like rbenv).
-                ctx.stdout.write(`ruby 3.3.4 (2024-04-23 revision wasm) [wasm32-wasi]\n`);
+            if (toolInvocation.mode !== 'tool' && (argv.includes('--version') || argv.includes('-v'))) {
+                ctx.stdout.write(`ruby 3.3.3 (ruby.wasm, Nimbus runtime) [wasm32-wasi]\n`);
                 return 0;
             }
-            if (argv.includes('--help') || argv.includes('-h')) {
+            if (toolInvocation.mode !== 'tool' && (argv.includes('--help') || argv.includes('-h'))) {
                 ctx.stdout.write(`Usage: ${binName} [switches] [--] [programfile] [arguments]\n`);
-                ctx.stdout.write(`Nimbus Ruby 3.3.4 runtime (ruby.wasm 2.9.3-2.9.4).\n`);
-                ctx.stdout.write(`Supported v1: -e <code>, <file.rb>, -r <lib>\n`);
-                ctx.stdout.write(`Not supported: REPL (no args), gem, bundler, js-runtime\n`);
+                ctx.stdout.write(`Nimbus Ruby runtime (ruby.wasm).\n`);
+                ctx.stdout.write(`Supported: -e <code>, <file.rb>, -r <lib>, VFS-backed require_relative and file IO\n`);
+                ctx.stdout.write(`Ruby socket/native gem install support is not available in this ruby.wasm build.\n`);
+                return 0;
+            }
+            const staticServer = parseRubyHttpd(argv, cwd);
+            if (staticServer) {
+                const code = createLiveStaticServerCode(staticServer.root);
+                const command = `${binName} -run -e httpd ${staticServer.root} -p ${staticServer.port}`;
+                const spawned = facetMgr.spawn(code, command, staticServer.root, { port: staticServer.port });
+                ctx.stdout.write(`Serving HTTP on 0.0.0.0 port ${staticServer.port} from /${staticServer.root}\n`);
+                ctx.stdout.write(`[nimbus] started: pid=${spawned.pid} cmd="${command}" port=${staticServer.port}\n`);
                 return 0;
             }
             // Resolve install bytes.
@@ -73,7 +90,16 @@ export function makeRubyRunnerFactory(deps) {
             }
             const wasmBytes = vfs.readFile(wasmVfs);
             // Parse argv.
-            const parsed = parseRubyArgv(argv);
+            const parsed = toolInvocation.mode === 'tool'
+                ? {
+                    mode: 'inline',
+                    inlineCode: toolInvocation.code,
+                    scriptPath: '',
+                    scriptArgs: [],
+                    requires: [],
+                    exitCode: 0,
+                }
+                : parseRubyArgv(argv);
             if (parsed.error) {
                 ctx.stderr.write(`${binName}: ${parsed.error}\n`);
                 return parsed.exitCode;
@@ -100,7 +126,7 @@ export function makeRubyRunnerFactory(deps) {
                     ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${e?.message || e}\n`);
                     return 1;
                 }
-                progName = parsed.scriptPath;
+                progName = '/' + absPath;
                 rbArgv = [parsed.scriptPath, ...parsed.scriptArgs];
             }
             // -r flags add prelude `require '<lib>'` lines (stdlib only).
@@ -111,13 +137,30 @@ export function makeRubyRunnerFactory(deps) {
             const userEnv = { ...(ctx.env || {}) };
             if (!userEnv.HOME)
                 userEnv.HOME = '/home/ruby';
+            if (userEnv.HOME === '/home/ruby')
+                userEnv.HOME = '/home/user';
             if (!userEnv.LANG)
                 userEnv.LANG = 'C.UTF-8';
+            userEnv.GEM_HOME ||= '/' + defaultGemHome();
+            userEnv.GEM_PATH ||= userEnv.GEM_HOME;
+            userEnv.NIMBUS_GEM_LIBS = installedGemLibRoots(vfs, defaultGemHome()).join(':');
             // Ruby looks for charset hints via these vars; set sensible
             // defaults so puts of non-ASCII strings doesn't trip on the
             // wasi default of "ASCII-8BIT".
             if (!userEnv.LC_ALL)
                 userEnv.LC_ALL = 'C.UTF-8';
+            const revision = typeof vfs.revision === 'function' ? vfs.revision() : Date.now();
+            let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
+                ? fsSnapshotCache.result
+                : null;
+            if (!fsSnapshot) {
+                fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [defaultGemHome()] });
+                fsSnapshotCache = { cwd, revision, result: fsSnapshot };
+            }
+            if ('error' in fsSnapshot) {
+                ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
+                return 1;
+            }
             // Dispatch the facet.
             const result = await dispatchRubyFacet(facetMgr, {
                 wasmBytes,
@@ -125,11 +168,15 @@ export function makeRubyRunnerFactory(deps) {
                 rbArgv,
                 userEnv,
                 progName,
+                cwd,
+                fsSnapshot: fsSnapshot.snapshot,
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
             if (result.stderr)
                 ctx.stderr.write(result.stderr);
+            if (result.fsDiff)
+                flushVfsDiff(vfs, result.fsDiff);
             if (result.error) {
                 ctx.stderr.write(`${binName}: ${result.error}\n`);
                 return 1;
@@ -137,6 +184,211 @@ export function makeRubyRunnerFactory(deps) {
             return result.exitCode;
         };
     };
+}
+async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx) {
+    const isGem = binKind === 'gem' || binName === 'gem';
+    const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
+    if (isGem && argv[0] === 'install') {
+        const parsed = parseGemInstallArgs(argv.slice(1));
+        if (parsed.error) {
+            ctx.stderr.write(`gem install: ${parsed.error}\n`);
+            return { handled: true, exitCode: 2 };
+        }
+        try {
+            const report = await installRubyGems(vfs, parsed.requests, { gemHome: defaultGemHome(), includeDependencies: true });
+            for (const name of report.installed)
+                ctx.stdout.write(`Successfully installed ${name}\n`);
+            for (const name of report.alreadyInstalled)
+                ctx.stdout.write(`${name} is already installed\n`);
+            ctx.stdout.write(`${report.installed.length + report.alreadyInstalled.length} gem(s) processed\n`);
+            return { handled: true, exitCode: 0 };
+        }
+        catch (e) {
+            ctx.stderr.write(`gem install: ${e?.message || e}\n`);
+            return { handled: true, exitCode: 1 };
+        }
+    }
+    if (isBundle && argv[0] === 'install') {
+        try {
+            const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: defaultGemHome() });
+            for (const name of report.installed)
+                ctx.stdout.write(`Successfully installed ${name}\n`);
+            for (const name of report.alreadyInstalled)
+                ctx.stdout.write(`${name} is already installed\n`);
+            ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${report.installed.length + report.alreadyInstalled.length} gem(s) now installed.\n`);
+            ctx.stdout.write(`Bundled lockfile written to /${lockfilePath}\n`);
+            return { handled: true, exitCode: 0 };
+        }
+        catch (e) {
+            ctx.stderr.write(`bundle install: ${e?.message || e}\n`);
+            return { handled: true, exitCode: 1 };
+        }
+    }
+    return { handled: false, exitCode: 0 };
+}
+function parseGemInstallArgs(argv) {
+    const names = [];
+    let versionRequirement = null;
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '-v' || arg === '--version') {
+            const version = argv[i + 1];
+            if (!version)
+                return { requests: [], error: `${arg}: missing version` };
+            versionRequirement = version;
+            i++;
+            continue;
+        }
+        if (arg.startsWith('--version=')) {
+            versionRequirement = arg.slice('--version='.length);
+            continue;
+        }
+        if (arg === '--no-document' || arg === '--no-doc' || arg === '--user-install') {
+            continue;
+        }
+        if (arg.startsWith('-')) {
+            return { requests: [], error: `option '${arg}' is not supported in Nimbus yet` };
+        }
+        names.push(arg);
+    }
+    const requirements = versionRequirement ? parseRubyGemRequirements(versionRequirement) : [];
+    const requests = names.map((name) => ({ name, requirements }));
+    if (requests.length === 0)
+        return { requests, error: 'missing gem name' };
+    return { requests };
+}
+function buildRubyToolInvocation(binKind, binName, argv) {
+    const isGem = binKind === 'gem' || binName === 'gem';
+    const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
+    if (!isGem && !isBundle)
+        return { mode: 'none', code: '', exitCode: 0 };
+    if (isGem) {
+        if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+            return {
+                mode: 'tool',
+                code: [
+                    'puts "Usage: gem --version"',
+                    'puts "       gem env"',
+                    'puts "       gem install <name>  # installs pure Ruby gems through Nimbus RubyGems"',
+                ].join('\n'),
+                exitCode: 0,
+            };
+        }
+        if (argv.includes('--version') || argv[0] === '-v') {
+            return { mode: 'tool', code: 'require "rubygems"; puts Gem::VERSION', exitCode: 0 };
+        }
+        if (argv[0] === 'env') {
+            return {
+                mode: 'tool',
+                code: [
+                    'require "rubygems"',
+                    'puts "RubyGems #{Gem::VERSION}"',
+                    'puts "Ruby #{RUBY_VERSION} (#{RUBY_PLATFORM})"',
+                    'puts "GEM_HOME=#{ENV["GEM_HOME"] || File.join(ENV["HOME"], ".gem")}"',
+                    'puts "GEM_PATH=#{ENV["GEM_PATH"] || ENV["GEM_HOME"]}"',
+                ].join('\n'),
+                exitCode: 0,
+            };
+        }
+        if (argv[0] === 'install') {
+            return {
+                mode: 'none',
+                code: '',
+                error: 'gem install command was not handled by Nimbus RubyGems',
+                exitCode: 1,
+            };
+        }
+        return {
+            mode: 'none',
+            code: '',
+            error: `gem subcommand '${argv[0]}' is not supported yet`,
+            exitCode: 2,
+        };
+    }
+    if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+        return {
+            mode: 'tool',
+            code: [
+                'puts "Usage: bundle --version"',
+                'puts "       bundle install  # installs compatible pure Ruby gems through Nimbus RubyGems"',
+            ].join('\n'),
+            exitCode: 0,
+        };
+    }
+    if (argv.includes('--version') || argv[0] === '-v') {
+        return {
+            mode: 'tool',
+            code: [
+                'begin',
+                '  require "bundler"',
+                '  puts "Bundler #{Bundler::VERSION}"',
+                'rescue LoadError',
+                '  warn "Bundler is not bundled in this ruby.wasm runtime"',
+                '  exit 127',
+                'end',
+            ].join('\n'),
+            exitCode: 0,
+        };
+    }
+    if (argv[0] === 'install') {
+        return {
+            mode: 'none',
+            code: '',
+            error: 'bundle install command was not handled by Nimbus RubyGems',
+            exitCode: 1,
+        };
+    }
+    return {
+        mode: 'none',
+        code: '',
+        error: `bundle subcommand '${argv[0]}' is not supported yet`,
+        exitCode: 2,
+    };
+}
+function parseRubyHttpd(argv, cwd) {
+    let requiresUn = false;
+    let hasHttpdEval = false;
+    let afterEval = -1;
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '-run' || arg === '-r' && argv[i + 1] === 'un') {
+            requiresUn = true;
+            if (arg === '-r')
+                i++;
+            continue;
+        }
+        if (arg === '-e' && argv[i + 1] === 'httpd') {
+            hasHttpdEval = true;
+            afterEval = i + 2;
+            i++;
+            continue;
+        }
+        if (arg === '-ehttpd') {
+            hasHttpdEval = true;
+            afterEval = i + 1;
+            continue;
+        }
+    }
+    if (!requiresUn || !hasHttpdEval)
+        return null;
+    let port = 8080;
+    let directory = '.';
+    for (let i = Math.max(afterEval, 0); i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '-p' || arg === '--port') {
+            port = parsePort(argv[i + 1], port);
+            i++;
+            continue;
+        }
+        if (arg.startsWith('--port=')) {
+            port = parsePort(arg.slice('--port='.length), port);
+            continue;
+        }
+        if (!arg.startsWith('-') && directory === '.') {
+            directory = arg;
+        }
+    }
+    return { port, root: resolveVfsPath(directory, cwd) };
 }
 function parseRubyArgv(argv) {
     // Ruby's CLI is rich; v1 handles -e, -r, and positional script.
@@ -213,14 +465,6 @@ function parseRubyArgv(argv) {
     return { mode: 'inline', inlineCode: '', scriptPath: '', scriptArgs: [],
         requires, exitCode: 2, error: "REPL not supported in v1. Use 'ruby -e \"code\"' or 'ruby script.rb'." };
 }
-function resolveVfsPath(rel, cwd) {
-    const cwdN = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
-    if (rel.startsWith('/'))
-        return rel.replace(/^\/+/, '');
-    if (rel === '.')
-        return cwdN;
-    return `${cwdN}/${rel}`;
-}
 async function dispatchRubyFacet(facetMgr, args) {
     const toAB = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
     // The Ruby preamble runs the entire bootstrap at child-facet module-
@@ -252,6 +496,8 @@ async function dispatchRubyFacet(facetMgr, args) {
             rbArgv: inArgs.rbArgv,
             userEnv: inArgs.userEnv,
             progName: inArgs.progName,
+            cwd: inArgs.cwd,
+            fsSnapshot: inArgs.fsSnapshot,
         });
     };
     try {
@@ -260,6 +506,8 @@ async function dispatchRubyFacet(facetMgr, args) {
             rbArgv: args.rbArgv,
             userEnv: args.userEnv,
             progName: args.progName,
+            cwd: args.cwd,
+            fsSnapshot: args.fsSnapshot,
         }, {
             wasmModules: {
                 'ruby+stdlib.wasm': toAB(args.wasmBytes),
@@ -271,6 +519,7 @@ async function dispatchRubyFacet(facetMgr, args) {
             stdout: result.stdout || '',
             stderr: result.stderr || '',
             error: result.error,
+            fsDiff: result.fsDiff,
         };
     }
     catch (e) {
@@ -329,6 +578,25 @@ export const RUBY_RUNNER_PREAMBLE_TAIL = `
 // slices from these to isolate output per invocation.
 globalThis.__nimbusRubyStdout = globalThis.__nimbusRubyStdout || [];
 globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
+
+function __nimbusInstallRubyFsSnapshot(snapshot) {
+  const dirs = new Set(['tmp', 'home']);
+  const files = {};
+  for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
+  for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
+    files[String(path).replace(/^\\/+/, '')] = b64;
+  }
+  __wasiInitFS({
+    root: '',
+    preopens: [
+      { wasiPath: '/',     vfsPath: '' },
+      { wasiPath: '/tmp',  vfsPath: 'tmp' },
+      { wasiPath: '/home', vfsPath: 'home' },
+    ],
+    files,
+    dirs: Array.from(dirs).filter(Boolean),
+  });
+}
 
 // ── Canonical-ABI resource Slab ────────────────────────────────────
 // Pyodide-style minimal resource manager. Ruby's rb-abi-guest.js uses
@@ -558,6 +826,12 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     };
   }
 
+  try {
+    __nimbusInstallRubyFsSnapshot(args.fsSnapshot);
+  } catch (e) {
+    globalThis.__nimbusRubyStderr.push('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');
+  }
+
   // First call into __rubyRun: complete Ruby VM init (ruby-init +
   // ruby-init-loadpath) now that we're in request-handler context
   // where crypto.getRandomValues is permitted. Subsequent calls skip.
@@ -577,19 +851,40 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     }
   }
 
+  function rubyStringLiteral(value) {
+    const s = String(value ?? '');
+    let out = "'";
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === "\\\\") out += "\\\\\\\\";
+      else if (ch === "'") out += "\\\\'";
+      else out += ch;
+    }
+    return out + "'";
+  }
+
+  function rubyArrayLiteral(values) {
+    return '[' + (values || []).map((v) => rubyStringLiteral(v)).join(', ') + ']';
+  }
+
+  function rubyHashLiteral(obj) {
+    return '{' + Object.entries(obj || {})
+      .map(([k, v]) => rubyStringLiteral(k) + ' => ' + rubyStringLiteral(v))
+      .join(', ') + '}';
+  }
+
   // Wrapper code: set $0/$PROGRAM_NAME/ARGV/ENV, run user code,
-  // capture SystemExit. We embed the user code as a Ruby string
-  // literal via JSON.stringify (Ruby's double-quote strings accept
-  // \\n \\t etc which JSON also emits — safe round-trip).
+  // capture SystemExit. User-controlled strings are emitted as Ruby
+  // single-quoted literals so Ruby interpolation inside source text is
+  // preserved for the user's eval, not consumed by this wrapper.
   //
   // The wrapper sets __NIMBUS_RUBY_EXIT to the desired exit code so
   // we can read it via a second rb-eval-string-protect call. Failing
   // SystemExit (raise) ends up with __NIMBUS_RUBY_EXIT = 1 + stderr
   // message.
-  const userCodeRb = JSON.stringify(args.userCode);
-  const argvRb = JSON.stringify(args.rbArgv.slice(1));  // exclude argv[0]
-  const envRb = JSON.stringify(args.userEnv || {});
-  const progNameRb = JSON.stringify(args.progName);
+  const userCodeRb = rubyStringLiteral(args.userCode);
+  const argvRb = rubyArrayLiteral(args.rbArgv.slice(1));  // exclude argv[0]
+  const progNameRb = rubyStringLiteral(args.progName);
 
   // STAGED execution: we split the prelude (stdout sync + ARGV/ENV/$0
   // setup) from the user-code eval. The prelude has no failure modes
@@ -599,10 +894,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   // Build env list as string-keyed Ruby hash via the rocket-syntax.
   // Ruby treats colon-style hash literals as Symbol-keyed; we need
   // String keys so ENV[k] = v works without TypeError.
-  const envEntries = Object.entries(args.userEnv || {})
-    .map(([k, v]) => JSON.stringify(k) + ' => ' + JSON.stringify(v))
-    .join(', ');
-  const envHashRb = '{' + envEntries + '}';
+  const envHashRb = rubyHashLiteral(args.userEnv || {});
+  const cwdRb = rubyStringLiteral(args.cwd || '/home/user');
 
   const preludeRb = [
     // Reset exit state FIRST so partial prelude failures still
@@ -616,6 +909,13 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     '$PROGRAM_NAME = ' + progNameRb,
     'ARGV.replace(' + argvRb + ')',
     envHashRb + '.each_pair { |k, v| ENV[k] = v }',
+    'ENV["HOME"] ||= "/home/user"',
+    'ENV["GEM_HOME"] ||= File.join(ENV["HOME"], ".gem")',
+    'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
+    'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
+    'begin; Dir.chdir(' + cwdRb + '); rescue Exception; end',
+    'begin; $LOAD_PATH.unshift(Dir.pwd) unless $LOAD_PATH.include?(Dir.pwd); rescue Exception; end',
+    'begin; (ENV["NIMBUS_GEM_LIBS"] || "").split(":").reverse_each { |p| $LOAD_PATH.unshift(p) if p && p != "" && !$LOAD_PATH.include?(p) }; rescue Exception; end',
   ].join('; ');
 
   const userWrapper = [
@@ -729,6 +1029,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     exitCode: exitCode,
     stdout: stdoutOut,
     stderr: stderrOut,
+    fsDiff: (typeof __wasiSnapshotFS === 'function' ? __wasiSnapshotFS() : null),
   };
 };
 

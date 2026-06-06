@@ -85,6 +85,65 @@ function _reviveVfsWriteCell(v) {
 }
 // ── Code generators ─────────────────────────────────────────────────────
 const SHIMS = generateShimsCode();
+const ENTRYPOINT_PROMISE_TRACKER = `
+function __makeEntrypointPromiseTracker() {
+  const __tracked = new Set();
+  const __origThen = Promise.prototype.then;
+  const __origCatch = Promise.prototype.catch;
+  const __origFinally = Promise.prototype.finally;
+  let __active = false;
+  const __track = (p) => {
+    if (!p || typeof p.then !== "function") return p;
+    __tracked.add(p);
+    try {
+      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });
+    } catch {
+      __tracked.delete(p);
+    }
+    return p;
+  };
+  return {
+    start() {
+      __active = true;
+      try {
+        Promise.prototype.then = function(...args) {
+          const __next = __origThen.apply(this, args);
+          if (__active) __track(__next);
+          return __next;
+        };
+        Promise.prototype.catch = function(...args) {
+          const __next = __origCatch.apply(this, args);
+          if (__active) __track(__next);
+          return __next;
+        };
+        Promise.prototype.finally = function(...args) {
+          const __next = __origFinally.apply(this, args);
+          if (__active) __track(__next);
+          return __next;
+        };
+      } catch {
+        __active = false;
+      }
+    },
+    stop() {
+      __active = false;
+      try {
+        Promise.prototype.then = __origThen;
+        Promise.prototype.catch = __origCatch;
+        Promise.prototype.finally = __origFinally;
+      } catch {}
+    },
+    track: __track,
+    async drain() {
+      while (__tracked.size > 0) {
+        const __slice = Array.from(__tracked);
+        await Promise.allSettled(__slice);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    },
+  };
+}
+`;
 /**
  * Static `import * as __real_X from 'node:X'` block.  Prepended to both
  * facet-code templates (NodeProcess + LOADER.load fallback) so the
@@ -334,6 +393,14 @@ export class NodeProcess extends DurableObject {
       __rpcDropBytes += bytes | 0;
       if (e) { __rpcLastError = (e && e.message) || String(e); }
     };
+    let __rpcWriteChain = Promise.resolve();
+    const __queueRpcWrite = (method, s) => {
+      const __task = __rpcWriteChain
+        .then(() => __supervisor[method](s))
+        .catch((e) => __onRpcDrop(s.length, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
@@ -342,16 +409,18 @@ export class NodeProcess extends DurableObject {
 
 ${SHIMS}
 
+${ENTRYPOINT_PROMISE_TRACKER}
+
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); };
+      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
+      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
       // Hook process.stdout/stderr.write for live streaming (libraries use this directly)
-      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
-      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
+      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __queueRpcWrite("stdout", s); return true; };
+      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __queueRpcWrite("stderr", s); return true; };
     }
 
     // ── console-facet (2026-05-12): expose the shimmed console on
@@ -465,12 +534,22 @@ ${SHIMS}
     // makes the check true exactly when the file is the entry.
     __require.main = mod;
     try {
-      __compiledFn(
-        mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
-        __consoleMod, __processMod, __BufferMod,
-        globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
-        globalThis, argv || []
-      );
+      const __entryPromises = __makeEntrypointPromiseTracker();
+      let __entryResult;
+      __entryPromises.start();
+      try {
+        __entryResult = __compiledFn(
+          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
+          __consoleMod, __processMod, __BufferMod,
+          globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
+          globalThis, argv || []
+        );
+      } finally {
+        __entryPromises.stop();
+      }
+      __entryPromises.track(__entryResult);
+      if (__entryResult && typeof __entryResult.then === "function") await __entryResult;
+      await __entryPromises.drain();
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
@@ -642,6 +721,14 @@ export default {
       __rpcDropBytes += bytes | 0;
       if (e) { __rpcLastError = (e && e.message) || String(e); }
     };
+    let __rpcWriteChain = Promise.resolve();
+    const __queueRpcWrite = (method, s) => {
+      const __task = __rpcWriteChain
+        .then(() => __supervisor[method](s))
+        .catch((e) => __onRpcDrop(s.length, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
@@ -650,15 +737,17 @@ export default {
 
 ${SHIMS}
 
+${ENTRYPOINT_PROMISE_TRACKER}
+
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); };
+      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
+      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
-      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
+      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __queueRpcWrite("stdout", s); return true; };
+      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __queueRpcWrite("stderr", s); return true; };
     }
 
     // console-facet (2026-05-12): mirror the shimmed console onto
@@ -671,12 +760,22 @@ ${SHIMS}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
-      __compiledFn(
-        mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
-        __consoleMod, __processMod, __BufferMod,
-        globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
-        globalThis, argv || []
-      );
+      const __entryPromises = __makeEntrypointPromiseTracker();
+      let __entryResult;
+      __entryPromises.start();
+      try {
+        __entryResult = __compiledFn(
+          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
+          __consoleMod, __processMod, __BufferMod,
+          globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
+          globalThis, argv || []
+        );
+      } finally {
+        __entryPromises.stop();
+      }
+      __entryPromises.track(__entryResult);
+      if (__entryResult && typeof __entryResult.then === "function") await __entryResult;
+      await __entryPromises.drain();
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
@@ -846,6 +945,14 @@ async function __nimbusEnsureStarted(workerEnv) {
       __rpcDropBytes += bytes | 0;
       if (e) __rpcLastError = (e && e.message) || String(e);
     };
+    let __rpcWriteChain = Promise.resolve();
+    const __queueRpcWrite = (method, s) => {
+      const __task = __rpcWriteChain
+        .then(() => __supervisor[method](s))
+        .catch((e) => __onRpcDrop(s.length, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
@@ -855,13 +962,13 @@ async function __nimbusEnsureStarted(workerEnv) {
 ${SHIMS}
 
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); };
+      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
+      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __pendingIO.push(__supervisor.stdout(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
-      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __pendingIO.push(__supervisor.stderr(s).catch((e) => __onRpcDrop(s.length, e))); return true; };
+      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __queueRpcWrite("stdout", s); return true; };
+      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __queueRpcWrite("stderr", s); return true; };
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -869,12 +976,13 @@ ${SHIMS}
     const mod = { exports: {} };
     __require.main = mod;
     try {
-      __compiledFn(
+      const __entryResult = __compiledFn(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
         __consoleMod, __processMod, __BufferMod,
         globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
         globalThis, argv || []
       );
+      if (__entryResult && typeof __entryResult.then === "function") await __entryResult;
     } catch (e) {
       if (e instanceof __ProcessExit) {
         exitCode = e.code;
@@ -1719,6 +1827,59 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState) {
     }
     return { added };
 }
+function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
+    const root = (cwd || '/home/user').replace(/^\/+/, '').replace(/\/+$/, '') || 'home/user';
+    const MAX_PROJECT_FILES = 512;
+    const SKIP_DIRS = new Set(['node_modules', '.git', '.nimbus']);
+    let added = 0;
+    let visited = 0;
+    const queue = [root];
+    while (queue.length > 0 && visited < MAX_PROJECT_FILES) {
+        const dir = queue.shift();
+        let entries;
+        try {
+            entries = vfs.readdir(dir);
+        }
+        catch {
+            continue;
+        }
+        for (const e of entries) {
+            if (visited >= MAX_PROJECT_FILES)
+                break;
+            visited++;
+            if (e.name === '.' || e.name === '..')
+                continue;
+            if (e.type === 'directory' && SKIP_DIRS.has(e.name))
+                continue;
+            const child = dir + '/' + e.name;
+            if (e.type === 'directory') {
+                queue.push(child);
+                continue;
+            }
+            if (bundle[child] !== undefined)
+                continue;
+            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+                return { added };
+            if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+                return { added };
+            let content;
+            try {
+                content = _readBundleCell(vfs, child);
+            }
+            catch {
+                continue;
+            }
+            const cellLen = _bundleCellLength(content);
+            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
+                return { added };
+            bundle[child] = content;
+            budgetState.totalBytes += cellLen;
+            budgetState.fileCount++;
+            added++;
+        }
+    }
+    return { added };
+}
 /**
  * shell compatibility (2026-05-11): scan entry code (and any already-bundled
  * .js/.mjs/.cjs sources) for ABSOLUTE-PATH string literals that look
@@ -2077,6 +2238,15 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild) {
     //      No-op when entry isn't inside node_modules.
     const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState);
     void binSiblingAdd;
+    totalBytes = budgetState.totalBytes;
+    fileCount = budgetState.fileCount;
+    // 2.34 project-data snapshot: sync Node fs cannot await the
+    // supervisor. Include a bounded snapshot of the current working tree
+    // for common relative project-file reads while skipping dependency
+    // and Nimbus cache directories. Async fs still uses live supervisor
+    // reads and child-process staleness fallback.
+    const cwdProjectAdd = addCwdProjectFiles(vfs, cwd, bundle, budgetState);
+    void cwdProjectAdd;
     totalBytes = budgetState.totalBytes;
     fileCount = budgetState.fileCount;
     // 2.35 shell compatibility: absolute-path readFileSync scanner.

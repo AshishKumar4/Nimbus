@@ -17,8 +17,10 @@
  *   - child_process: ChildProcess objects (execution requires supervisor RPC)
  *   - assert, util, url, querystring, string_decoder, readline, tty, timers
  *
- * VFS access: reads from __vfsBundle (pre-bundled by FacetManager),
- * writes to __vfsWrites (flushed back to VFS on completion).
+ * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
+ * async reads and common async mutations can use the supervisor bridge for
+ * live SQLite VFS coherence. Sync writes stay in __vfsWrites and flush on
+ * completion.
  */
 /**
  * Generate the shared shim block that goes inside both the DO-facet and
@@ -26,7 +28,7 @@
  *
  * At runtime the following variables must exist in scope:
  *   - __vfsBundle: Record<string, string>  (path→utf8 content)
- *   - __vfsWrites: Record<string, string>  (written files, returned in result)
+ *   - __vfsWrites: Record<string, string | Uint8Array> (sync writes / failed async writes)
  *   - __vfsDirs:   Record<string, boolean> (dirs created)
  *   - __vfsBaseUrl: string                 (supervisor URL for lazy VFS reads)
  *   - cwd: string
@@ -228,6 +230,244 @@ const __fsMod = (() => {
     // Also check writes
     if (__vfsWrites && k in __vfsWrites) return __vfsWrites[k];
     return undefined;
+  }
+
+  function _fsErr(code, syscall, p) {
+    const err = new Error(code + ": " + syscall + " '" + p + "'");
+    err.code = code;
+    err.errno = code === "ENOENT" ? -2 : -1;
+    err.syscall = syscall;
+    err.path = String(p);
+    return err;
+  }
+
+  function _supervisor() {
+    try { return typeof __supervisor !== "undefined" ? __supervisor : null; }
+    catch { return null; }
+  }
+
+  function _rememberBundle(absPath, content) {
+    if (__vfsBundle && content !== undefined && content !== null) {
+      __vfsBundle[_strip(absPath)] = content;
+    }
+    return content;
+  }
+
+  function _writtenCell(absPath) {
+    const k = _strip(absPath);
+    if (__vfsWrites && k in __vfsWrites) return __vfsWrites[k];
+    if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
+    return undefined;
+  }
+
+  function _markVfsStale() {
+    globalThis.__nimbusVfsMayBeStale = true;
+  }
+
+  function _statObject(meta) {
+    const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
+    const isDir = type === "directory";
+    const isSymlink = type === "symlink";
+    const size = Number(meta?.size || 0);
+    const mtime = new Date(Number(meta?.mtime || Date.now()));
+    const mode = Number(meta?.mode || (isDir ? 0o755 : 0o644));
+    return {
+      isFile: () => !isDir && !isSymlink,
+      isDirectory: () => isDir,
+      isSymbolicLink: () => isSymlink,
+      size,
+      mtime,
+      mode,
+    };
+  }
+
+  function _direntObject(name, type) {
+    const isDir = type === "directory" || type === "dir";
+    const isSymlink = type === "symlink";
+    return {
+      name,
+      isFile: () => !isDir && !isSymlink,
+      isDirectory: () => isDir,
+      isSymbolicLink: () => isSymlink,
+    };
+  }
+
+  async function _liveReadFile(p, opts) {
+    const absPath = _resolve(p);
+    const encoding = typeof opts === "string" ? opts : opts?.encoding;
+    const supervisor = _supervisor();
+    if (!supervisor) throw _fsErr("ENOENT", "open", p);
+
+    if (typeof supervisor.readFileBytes === "function") {
+      const bytes = await supervisor.readFileBytes(absPath);
+      if (bytes !== null && bytes !== undefined) {
+        _rememberBundle(absPath, bytes);
+        return encoding ? _asString(bytes) : __BufferMod.from(bytes);
+      }
+    }
+
+    if (typeof supervisor.readFile === "function") {
+      const text = await supervisor.readFile(absPath);
+      if (text !== null && text !== undefined) {
+        _rememberBundle(absPath, text);
+        return encoding ? _asString(text) : __BufferMod.from(text);
+      }
+    }
+
+    throw _fsErr("ENOENT", "open", p);
+  }
+
+  async function _readFileAsync(p, opts) {
+    try { return readFileSync(p, opts); }
+    catch (e) {
+      if (e?.code !== "ENOENT") throw e;
+      return _liveReadFile(p, opts);
+    }
+  }
+
+  async function _statAsync(p) {
+    const absPath = _resolve(p);
+    try {
+      const local = statSync(p);
+      if (!(local.isFile && local.isFile() && local.size === 0 && _bundleLookup(absPath) === undefined)) {
+        return local;
+      }
+    } catch (e) {
+      if (e?.code !== "ENOENT") throw e;
+      const supervisor = _supervisor();
+      if (!supervisor || typeof supervisor.stat !== "function") throw e;
+      const meta = await supervisor.stat(absPath);
+      if (!meta) throw e;
+      return _statObject(meta);
+    }
+
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.stat === "function") {
+      const meta = await supervisor.stat(absPath);
+      if (meta) return _statObject(meta);
+    }
+    return statSync(p);
+  }
+
+  async function _readdirAsync(p, opts) {
+    const absPath = _resolve(p);
+    let local;
+    let localError;
+    try { local = readdirSync(p, opts); } catch (e) { localError = e; }
+    const mayBeStale = !!globalThis.__nimbusVfsMayBeStale;
+    if (Array.isArray(local) && !mayBeStale && !opts?.withFileTypes) return local;
+
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.readdir === "function") {
+      const entries = await supervisor.readdir(absPath);
+      if (Array.isArray(entries)) {
+        if (opts?.withFileTypes) {
+          const byName = new Map();
+          if (Array.isArray(local)) {
+            for (const entry of local) {
+              byName.set(entry.name, _direntObject(entry.name, entry.isDirectory && entry.isDirectory() ? "directory" : "file"));
+            }
+          }
+          for (const entry of entries) byName.set(entry.name, _direntObject(entry.name, entry.type));
+          return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+        }
+        const names = new Set(Array.isArray(local) ? local : []);
+        for (const entry of entries) names.add(entry.name);
+        return Array.from(names).sort();
+      }
+    }
+    if (Array.isArray(local)) return local;
+    throw localError || _fsErr("ENOENT", "scandir", p);
+  }
+
+  async function _existsAsync(p) {
+    if (existsSync(p)) return true;
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor.exists !== "function") return false;
+    return !!(await supervisor.exists(_resolve(p)));
+  }
+
+  async function _readlinkAsync(p) {
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.readlink === "function") {
+      const target = await supervisor.readlink(_resolve(p));
+      if (target !== null && target !== undefined) return target;
+    }
+    throw _fsErr("EINVAL", "readlink", p);
+  }
+
+  async function _symlinkAsync(target, path) {
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.symlink === "function") {
+      await supervisor.symlink(String(target), _resolve(path));
+      _markVfsStale();
+      return;
+    }
+    throw _fsErr("ENOSYS", "symlink", path);
+  }
+
+  async function _writeFileAsync(p, data, opts) {
+    const absPath = _resolve(p);
+    writeFileSync(p, data, opts);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.writeFile === "function") {
+      const cell = _writtenCell(absPath);
+      if (cell !== undefined) {
+        await supervisor.writeFile(absPath, cell);
+        if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
+        _markVfsStale();
+      }
+    }
+  }
+
+  async function _appendFileAsync(p, data, opts) {
+    const absPath = _resolve(p);
+    appendFileSync(p, data, opts);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.writeFile === "function") {
+      const cell = _writtenCell(absPath);
+      if (cell !== undefined) {
+        await supervisor.writeFile(absPath, cell);
+        if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
+        _markVfsStale();
+      }
+    }
+  }
+
+  async function _mkdirAsync(p, opts) {
+    mkdirSync(p, opts);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.mkdir === "function") {
+      await supervisor.mkdir(_resolve(p));
+      _markVfsStale();
+    }
+  }
+
+  async function _unlinkAsync(p) {
+    unlinkSync(p);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.unlink === "function") {
+      await supervisor.unlink(_resolve(p));
+      _markVfsStale();
+    }
+  }
+
+  async function _rmdirAsync(p) {
+    rmdirSync(p);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.rmdir === "function") {
+      await supervisor.rmdir(_resolve(p));
+      _markVfsStale();
+    }
+  }
+
+  async function _renameAsync(oldP, newP) {
+    renameSync(oldP, newP);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.rename === "function") {
+      await supervisor.rename(_resolve(oldP), _resolve(newP));
+      _markVfsStale();
+    }
   }
 
   // ── readFileSync ──
@@ -492,7 +732,8 @@ const __fsMod = (() => {
   }
 
   // ── realpathSync (X.5-T per X5Z5-plan §4.3 + X526b-retro §3.1) ──
-  // VFS has no symlinks; identity-resolve to the absolute path. The
+  // Sync realpath stays local and identity-resolves. Async symlink
+  // operations use the live supervisor bridge below.
   // .native static is required by TypeScript's getNodeSystem at
   function realpathSync(p, opts) { return _resolve(String(p)); }
   realpathSync.native = realpathSync;
@@ -500,26 +741,30 @@ const __fsMod = (() => {
   // ── Async variants (thin wrappers returning via callback) ──
   function readFile(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    try { const r = readFileSync(p, opts); if (cb) cb(null, r); } catch (e) { if (cb) cb(e); }
+    _readFileAsync(p, opts).then((r) => { if (cb) cb(null, r); }).catch((e) => { if (cb) cb(e); });
   }
   function writeFile(p, d, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    try { writeFileSync(p, d, opts); if (cb) cb(null); } catch (e) { if (cb) cb(e); }
+    _writeFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
-  function stat(p, cb) { try { cb(null, statSync(p)); } catch (e) { cb(e); } }
+  function stat(p, cb) { _statAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
   function readdir(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    try { cb(null, readdirSync(p, opts)); } catch (e) { cb(e); }
+    _readdirAsync(p, opts).then((d) => cb(null, d)).catch((e) => cb(e));
   }
-  function exists(p, cb) { cb(existsSync(p)); }
+  function exists(p, cb) { _existsAsync(p).then((ok) => cb(ok)).catch(() => cb(false)); }
   function mkdir(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    try { mkdirSync(p, opts); if (cb) cb(null); } catch (e) { if (cb) cb(e); }
+    _mkdirAsync(p, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
-  function unlink(p, cb) { try { unlinkSync(p); if (cb) cb(null); } catch (e) { if (cb) cb(e); } }
+  function unlink(p, cb) { _unlinkAsync(p).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function rename(oldP, newP, cb) { _renameAsync(oldP, newP).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function access(p, mode, cb) {
     if (typeof mode === "function") { cb = mode; mode = undefined; }
-    if (existsSync(p)) cb(null); else { const e = new Error("ENOENT"); e.code = "ENOENT"; cb(e); }
+    _existsAsync(p).then((ok) => {
+      if (ok) cb(null);
+      else cb(_fsErr("ENOENT", "access", p));
+    }).catch((e) => cb(e));
   }
 
   // ── FileHandle (W3) — returned from fs.promises.open ──
@@ -530,11 +775,8 @@ const __fsMod = (() => {
     constructor(path, flags) { this._path = path; this._flags = flags || 'r'; this._closed = false; this.fd = 0; }
     async read(buffer, offset, length, position) {
       const absPath = _resolve(this._path);
-      const data = _bundleLookup(absPath);
-      if (data === undefined) {
-        const e = new Error("ENOENT: no such file, read '" + this._path + "'");
-        e.code = "ENOENT"; throw e;
-      }
+      let data = _bundleLookup(absPath);
+      if (data === undefined) data = await _liveReadFile(this._path);
       // _bundleLookup may return string OR Uint8Array (binary-fs wave).
       const buf = _isBytes(data) ? data : _enc.encode(data);
       const start = position || 0;
@@ -552,24 +794,24 @@ const __fsMod = (() => {
         const o = offset || 0;
         const l = length === undefined ? buffer.length - o : length;
         const sub = buffer.substr(o, l);
-        appendFileSync(this._path, sub);
+        await _appendFileAsync(this._path, sub);
         chunkBytesWritten = _enc.encode(sub).length;
       } else {
         const o = offset || 0;
         const l = length === undefined ? buffer.length - o : length;
         const sub = buffer.subarray(o, o + l);
-        appendFileSync(this._path, sub);
+        await _appendFileAsync(this._path, sub);
         chunkBytesWritten = sub.byteLength;
       }
       return { bytesWritten: chunkBytesWritten, buffer };
     }
-    async readFile(opts) { return readFileSync(this._path, opts); }
-    async writeFile(data, opts) { writeFileSync(this._path, data, opts); }
-    async appendFile(data, opts) { appendFileSync(this._path, data, opts); }
-    async stat() { return statSync(this._path); }
+    async readFile(opts) { return _readFileAsync(this._path, opts); }
+    async writeFile(data, opts) { await _writeFileAsync(this._path, data, opts); }
+    async appendFile(data, opts) { await _appendFileAsync(this._path, data, opts); }
+    async stat() { return _statAsync(this._path); }
     async truncate(len) {
       const cur = readFileSync(this._path, "utf8");
-      writeFileSync(this._path, cur.slice(0, len || 0));
+      await _writeFileAsync(this._path, cur.slice(0, len || 0));
     }
     async chmod() {} async chown() {} async utimes() {} async sync() {} async datasync() {}
     async close() { this._closed = true; }
@@ -591,7 +833,7 @@ const __fsMod = (() => {
     access: (p, m) => new Promise((res, rej) => access(p, m, (e) => e ? rej(e) : res())),
 
     // W3 additions:
-    appendFile: async (p, d, o) => { appendFileSync(p, d, o); },
+    appendFile: async (p, d, o) => { await _appendFileAsync(p, d, o); },
     lstat: (p) => new Promise((res, rej) => stat(p, (e, s) => e ? rej(e) : res(s))),
     rm: async (p, opts) => {
       const o = opts || {};
@@ -602,7 +844,7 @@ const __fsMod = (() => {
         if (__vfsWrites) for (const wk of Object.keys(__vfsWrites)) if (wk === k || wk.startsWith(prefix)) delete __vfsWrites[wk];
         if (__vfsDirs) for (const dk of Object.keys(__vfsDirs)) if (dk === k || dk.startsWith(prefix)) delete __vfsDirs[dk];
       } else {
-        try { unlinkSync(p); } catch (e) { if (!o.force) throw e; }
+        try { await _unlinkAsync(p); } catch (e) { if (!o.force) throw e; }
       }
     },
     cp: async (src, dest, opts) => {
@@ -611,7 +853,7 @@ const __fsMod = (() => {
       const srcK = _strip(srcAbs);
       const destK = _strip(_resolve(dest));
       const content = _bundleLookup(srcAbs);
-      if (content !== undefined) { writeFileSync(dest, content); return; }
+      if (content !== undefined) { await _writeFileAsync(dest, content); return; }
       if (!o.recursive) {
         const err = new Error("EISDIR: cp without recursive on directory: " + src);
         err.code = "EISDIR"; throw err;
@@ -629,18 +871,19 @@ const __fsMod = (() => {
         if (__vfsBundle) __vfsBundle[newK] = v;
       }
     },
-    copyFile: async (src, dest) => { copyFileSync(src, dest); },
-    rename: async (oldP, newP) => { renameSync(oldP, newP); },
-    rmdir: async (p) => { rmdirSync(p); },
+    copyFile: async (src, dest) => { await _writeFileAsync(dest, await _readFileAsync(src)); },
+    rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
+    rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
     truncate: async (p, len) => {
       const cur = (() => { try { return readFileSync(p, "utf8"); } catch { return ""; } })();
-      writeFileSync(p, cur.slice(0, len || 0));
+      await _writeFileAsync(p, cur.slice(0, len || 0));
     },
     chmod: async () => {}, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
     utimes: async () => {}, lutimes: async () => {},
-    symlink: async () => {}, link: async () => {},
-    readlink: async (p) => String(p),
+    symlink: async (target, path) => { await _symlinkAsync(target, path); },
+    link: async () => { throw _fsErr("ENOSYS", "link", ""); },
+    readlink: async (p) => _readlinkAsync(p),
     mkdtemp: async (prefix) => {
       const name = String(prefix) + Math.random().toString(36).slice(2, 10);
       mkdirSync(name, { recursive: true });
@@ -696,7 +939,7 @@ const __fsMod = (() => {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync,
-    readFile, writeFile, stat, readdir, exists, mkdir, unlink, access,
+    readFile, writeFile, stat, readdir, exists, mkdir, unlink, rename, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({
@@ -1759,6 +2002,7 @@ const __childProcessMod = (() => {
   function _maybeFireClose(child) {
     if (child._exitFired && child._stdoutEnded && child._stderrEnded && !child._closeFired) {
       child._closeFired = true;
+      globalThis.__nimbusVfsMayBeStale = true;
       try { child.emit("close", child.exitCode, child.signalCode); } catch {}
       try { child._resolveClosePromise({ code: child.exitCode, signal: child.signalCode }); } catch {}
       // Evict from the live-children map after a microtask so any

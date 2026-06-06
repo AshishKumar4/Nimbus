@@ -106,6 +106,15 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket', { status: 426 });
       }
+      const wsKind = url.searchParams.get('kind') || url.searchParams.get('mode');
+      if (wsKind === 'fs-watch') {
+        self.ensureSqliteFs();
+        const pair = new WebSocketPair();
+        const [client, server] = Object.values(pair);
+        self.ctx.acceptWebSocket(server);
+        try { (server as any).serializeAttachment?.({ kind: 'fs-watch' }); } catch {}
+        return new Response(null, { status: 101, webSocket: client });
+      }
       // [B'.5] Three-way decision on a /ws upgrade:
       //   1. Warm rejoin: a wsClose/wsError fired earlier and left
       //      kernel/shell/terminal alive in-memory. Re-attach the

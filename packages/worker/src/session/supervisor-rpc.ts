@@ -16,6 +16,8 @@
  *   exists(path) → boolean
  *   mkdir(path) → void
  *   unlink(path) → void
+ *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
+ *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -158,8 +160,44 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._getStub()._rpcMkdir(path);
   }
 
+  async rmdir(path: string): Promise<void> {
+    return this._getStub()._rpcRmdir(path);
+  }
+
+  async rename(from: string, to: string): Promise<void> {
+    return this._getStub()._rpcRename(from, to);
+  }
+
   async unlink(path: string): Promise<void> {
     return this._getStub()._rpcUnlink(path);
+  }
+
+  async readlink(path: string): Promise<string | null> {
+    return this._getStub()._rpcReadlink(path);
+  }
+
+  async symlink(target: string, path: string): Promise<void> {
+    return this._getStub()._rpcSymlink(target, path);
+  }
+
+  async fsRevision(path?: string): Promise<number> {
+    return this._getStub()._rpcFsRevision(path);
+  }
+
+  async fsOpen(path: string, flags: any): Promise<any> {
+    return this._getStub()._rpcFsOpen(path, flags);
+  }
+
+  async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
+    return this._getStub()._rpcFsRead(handleId, offset, length);
+  }
+
+  async fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
+    return this._getStub()._rpcFsWrite(handleId, offset, bytes);
+  }
+
+  async fsClose(handleId: number): Promise<void> {
+    return this._getStub()._rpcFsClose(handleId);
   }
 
   /**
@@ -513,4 +551,3 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._getStub()._rpcCpDispatchInline(req, kind);
   }
 }
-

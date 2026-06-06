@@ -17,8 +17,10 @@
  *   - child_process: ChildProcess objects (execution requires supervisor RPC)
  *   - assert, util, url, querystring, string_decoder, readline, tty, timers
  *
- * VFS access: reads from __vfsBundle (pre-bundled by FacetManager),
- * writes to __vfsWrites (flushed back to VFS on completion).
+ * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
+ * async reads and common async mutations can use the supervisor bridge for
+ * live SQLite VFS coherence. Sync writes stay in __vfsWrites and flush on
+ * completion.
  */
 export declare function generateShimsCode(): string;
 //# sourceMappingURL=node-shims.d.ts.map

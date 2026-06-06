@@ -213,6 +213,8 @@ export declare class ViteDevServer {
     handleRequest(request: Request, pathname: string): Promise<Response>;
     private _handleRequestInner;
     private serveIndexHtml;
+    private getBarrelModuleCacheInfo;
+    private cachedModuleMatchesBarrelInput;
     private serveModule;
     /**
      * Cold path of serveModule: package resolution → on-demand facet

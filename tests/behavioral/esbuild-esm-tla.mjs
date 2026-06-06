@@ -57,11 +57,37 @@ const tail = fullOut.split(/\r?\n/).slice(-20).join('\n');
 console.log('--- tail ---');
 console.log(tail);
 
+const plainSource = `console.log("PLAIN_TLA_A");
+await Promise.resolve();
+console.log("PLAIN_TLA_B");
+await new Promise((resolve) => setTimeout(resolve, 10));
+console.log("PLAIN_TLA_C");
+`;
+await t.run(heredocCommand('/home/user/esm-tla-probe/plain.mjs', plainSource), 15_000);
+console.log('[esbuild-esm-tla] node plain.mjs');
+const plainRun = await t.run('node plain.mjs', 60_000);
+const plainOut = stripAnsi(plainRun.output);
+const plainTail = plainOut.split(/\r?\n/).slice(-20).join('\n');
+console.log('--- plain tail ---');
+console.log(plainTail);
+
 await t.close();
 
 const errorRe = /Unexpected\s+"[^"]+"|Top-level await|pre-compile failed/i;
 const hasTransformError = errorRe.test(fullOut);
 const hasOkLine = /ESM_TLA_OK start=42/.test(fullOut);
+const expectedOrder = [
+  'ESM_TLA_OK start=42',
+  'fileURLToPath typeof=function',
+  'path.join typeof=function',
+];
+const orderPositions = expectedOrder.map((line) => fullOut.indexOf(line));
+const preservesOrder = orderPositions.every((pos) => pos >= 0) &&
+  orderPositions.every((pos, i) => i === 0 || orderPositions[i - 1] < pos);
+const plainExpectedOrder = ['PLAIN_TLA_A', 'PLAIN_TLA_B', 'PLAIN_TLA_C'];
+const plainOrderPositions = plainExpectedOrder.map((line) => plainOut.indexOf(line));
+const preservesPlainOrder = plainOrderPositions.every((pos) => pos >= 0) &&
+  plainOrderPositions.every((pos, i) => i === 0 || plainOrderPositions[i - 1] < pos);
 
 const findings = {
   probe: 'esbuild-esm-tla',
@@ -69,7 +95,12 @@ const findings = {
   sid, base: BASE,
   hasTransformError,
   hasOkLine,
+  preservesOrder,
+  orderPositions,
+  preservesPlainOrder,
+  plainOrderPositions,
   tail: tail.slice(-500),
+  plainTail: plainTail.slice(-500),
 };
 console.log(JSON.stringify(findings, null, 2));
 
@@ -78,6 +109,10 @@ const checks = [
     hasTransformError ? `match: ${(fullOut.match(errorRe) || [])[0]}` : ''],
   ['Trigger script executed (ESM_TLA_OK observed)', hasOkLine,
     !hasOkLine ? `tail: ${tail.slice(-360)}` : ''],
+  ['Top-level await output order is preserved', preservesOrder,
+    !preservesOrder ? `positions: ${orderPositions.join(', ')}` : ''],
+  ['Plain .mjs top-level await output order is preserved', preservesPlainOrder,
+    !preservesPlainOrder ? `positions: ${plainOrderPositions.join(', ')}` : ''],
 ];
 
 let pass = 0;

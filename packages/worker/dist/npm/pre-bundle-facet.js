@@ -315,7 +315,8 @@ export const prebundleOne = async function prebundleOne(spec, _env) {
     const stripLeadingSlash = (p) => p.replace(/^\/+/, '');
     const normalizePath = (p) => {
         // Resolve any `..` segments to keep tryResolve's exists() lookups
-        // canonical; mirrors src/vfs-path.ts behaviour without importing.
+        // canonical. This helper runs inside the serialized facet function,
+        // so it mirrors src/vfs/path.ts instead of importing it.
         const parts = p.split('/');
         const out = [];
         for (const seg of parts) {

@@ -8,7 +8,7 @@
 // Total event COUNT should still reflect every write (100 events
 // across the frames).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -17,7 +17,7 @@ console.log(`file-tree-watch/fs-watch-coalesces — ${BASE}`);
 
 const sid = await mintSession();
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
 const received = [];
 let opened = false;
 let subResult = null;
@@ -34,18 +34,35 @@ subWs.send(JSON.stringify({ type: 'fs-watch-subscribe', reqId: 93_000, paths: ['
 { const t0 = Date.now(); while (!subResult && Date.now() - t0 < 5_000) await sleep(25); }
 a.check('subscribed ok', subResult && subResult.ok === true, `subResult=${JSON.stringify(subResult)}`);
 
-const t = new Terminal(sid);
-await t.connect();
-await t.waitForPrompt(30_000);
+const driverWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const driverResponses = new Map();
+let driverOpened = false;
+driverWs.on('open', () => { driverOpened = true; });
+driverWs.on('message', (data) => {
+  try {
+    const m = JSON.parse(data.toString('utf8'));
+    if (typeof m.reqId === 'number' && m.type === 'fs-write-result') {
+      driverResponses.set(m.reqId, m);
+    }
+  } catch {}
+});
+{ const t0 = Date.now(); while (!driverOpened && Date.now() - t0 < 10_000) await sleep(25); }
+a.check('driver WS opened', driverOpened, '');
 
 const before = received.length;
-// 100 rapid writes via a single bash loop — single command, single
-// process — so all writes hit the bus within a few ms.
 const tag = 'coal-' + Math.random().toString(36).slice(2, 7);
-await t.run(
-  `for i in $(seq 1 100); do echo "" > /home/user/${tag}-$i.txt; done`,
-  60_000,
-);
+for (let i = 1; i <= 100; i++) {
+  driverWs.send(JSON.stringify({
+    type: 'fs-write',
+    reqId: 94_000 + i,
+    path: `/home/user/${tag}-${i}.txt`,
+    content: '',
+  }));
+}
+{ const t0 = Date.now(); while (driverResponses.size < 100 && Date.now() - t0 < 10_000) await sleep(25); }
+a.check('100 fs-write protocol calls completed',
+  driverResponses.size === 100,
+  `responses=${driverResponses.size}`);
 
 // Wait up to 2 s for the trailing frame to land.
 await sleep(2000);
@@ -67,7 +84,7 @@ a.check('our 100 writes produced ≥ 100 events across the frames',
   ourEvents.length >= 100,
   `ourEvents=${ourEvents.length} (expected ≥ 100)`);
 
-await t.close();
 try { subWs.close(); } catch {}
+try { driverWs.close(); } catch {}
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

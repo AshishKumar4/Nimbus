@@ -92,7 +92,8 @@ function snapshotShellState(self) {
 /**
  * Classify a closing/erroring WebSocket by its serialized attachment.
  * Shell sockets carry `{kind:'shell'}` (set at the /ws upgrade site);
- * HMR sockets carry `{kind:'cirrus-hmr', clientId}` (set at :1240).
+ * watcher sockets carry `{kind:'fs-watch'}`; HMR sockets carry
+ * `{kind:'cirrus-hmr', clientId}` (set at :1240).
  * Any other (undefined/unknown) attachment falls back to 'shell' to
  * preserve pre-F1 behaviour for legacy accept sites.
  */
@@ -163,6 +164,9 @@ export async function wsMessage(self, ws, message) {
             }
             return;
         }
+        if (attach?.kind === 'fs-watch') {
+            return;
+        }
         if (self.terminal)
             self.terminal.handleMessage(msg);
         // ── B'.1 snapshot ───────────────────────────────────────────────
@@ -197,6 +201,9 @@ export async function wsClose(self, ws, _code, _reason, _wasClean) {
     // Don't touch shell/terminal — and don't bother flushing here either
     // because process-logs ws close doesn't imply session lifecycle.
     if (att.kind === 'process-logs') {
+        return;
+    }
+    if (att.kind === 'fs-watch') {
         return;
     }
     if (att.kind === 'cirrus-hmr') {
@@ -299,6 +306,9 @@ export async function wsError(self, ws, _error) {
     catch { /* best-effort */ }
     // W9: process-logs error — same drop-and-return policy as close.
     if (att.kind === 'process-logs') {
+        return;
+    }
+    if (att.kind === 'fs-watch') {
         return;
     }
     if (att.kind === 'cirrus-hmr') {

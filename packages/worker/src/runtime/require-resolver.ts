@@ -33,6 +33,7 @@ import {
   resolveExports as sharedResolveExports,
   DEFAULT_CJS_CONDITIONS,
 } from '../_shared/exports-resolver.js';
+import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 
 // Match literal-string require/require.resolve with single, double, or
@@ -91,15 +92,7 @@ const MAX_BYTES = 24 * 1024 * 1024; // 24 MiB raw — facet-manager re-caps on J
 
 function strip(p: string): string { return p.replace(/^\/+/, ''); }
 
-function normalizePath(p: string): string {
-  const segments = p.split('/');
-  const out: string[] = [];
-  for (const seg of segments) {
-    if (seg === '..' && out.length > 0) out.pop();
-    else if (seg !== '.' && seg !== '') out.push(seg);
-  }
-  return out.join('/');
-}
+const normalizePath = normalizeVfsPath;
 
 /**
  * Extension-list probe; mirrors node-shims.ts:__resolveFile so prefetch

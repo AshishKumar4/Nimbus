@@ -25,6 +25,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
+import { resolveVfsPath } from '../vfs/path.js';
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps) {
     const { facetMgr, vfs } = deps;
@@ -398,14 +399,6 @@ function parseUserArgv(argv) {
         inputPaths, inputPath: inputPaths[0], includePaths, libraryPaths, libraries,
         outputPath, compileOnly, exitCode: 0,
     };
-}
-function resolveVfsPath(rel, cwd) {
-    const cwdN = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
-    if (rel.startsWith('/'))
-        return rel.replace(/^\/+/, '');
-    if (rel === '.')
-        return cwdN;
-    return `${cwdN}/${rel}`;
 }
 /**
  * Recognise headers / inline-include files. The compile facet ships

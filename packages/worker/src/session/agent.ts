@@ -30,6 +30,7 @@ import {
   rpcProcessLogs,
   rpcStartProcess,
 } from './programmatic.js';
+import { resolveVfsPath } from '../vfs/path.js';
 
 interface AgentStorage {
   get(key: string): Promise<unknown>;
@@ -890,19 +891,19 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
     }
     if (name === 'read_file') {
       await ensureProgrammaticReady(self);
-      const path = normalizeVfsPath(args.path || '/home/user');
+      const path = normalizeAgentVfsPath(args.path || '/home/user');
       return { path: '/' + path, content: self.sqliteFs!.readFileString(path) };
     }
     if (name === 'write_file') {
       await ensureProgrammaticReady(self);
-      const path = normalizeVfsPath(args.path || '/home/user/file.txt');
+      const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
       ensureParentDirs(self.sqliteFs!, path);
       self.sqliteFs!.writeFile(path, String(args.content ?? ''));
       return { ok: true, path: '/' + path, bytes: String(args.content ?? '').length };
     }
     if (name === 'list_files') {
       await ensureProgrammaticReady(self);
-      const path = normalizeVfsPath(args.path || '/home/user');
+      const path = normalizeAgentVfsPath(args.path || '/home/user');
       const base = trimTrailingSlash(path);
       const entries = self.sqliteFs!.readdir(path).map((entry: any) => ({
         name: entry.name,
@@ -1264,20 +1265,9 @@ function numberProp(description: string) {
   return { type: 'number', description };
 }
 
-function normalizeVfsPath(input: unknown): string {
+function normalizeAgentVfsPath(input: unknown): string {
   const raw = String(input || '/home/user').trim() || '/home/user';
-  const absolute = raw.startsWith('/') ? raw : '/home/user/' + raw;
-  const parts = absolute.split('/');
-  const out: string[] = [];
-  for (const part of parts) {
-    if (!part || part === '.') continue;
-    if (part === '..') {
-      out.pop();
-      continue;
-    }
-    out.push(part);
-  }
-  return out.join('/') || 'home/user';
+  return resolveVfsPath(raw, '/home/user') || 'home/user';
 }
 
 function ensureParentDirs(vfs: any, path: string): void {

@@ -82,6 +82,7 @@ export declare class SqliteVFS {
     private _totalFiles;
     private _totalDirs;
     private _usedBytes;
+    private _revision;
     private pendingWrites;
     /**
      * Sum of `data.length` across pendingWrites entries. Maintained
@@ -238,6 +239,7 @@ export declare class SqliteVFS {
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
+    revision(): number;
     mkdir(path: string, options?: {
         recursive?: boolean;
     }): void;

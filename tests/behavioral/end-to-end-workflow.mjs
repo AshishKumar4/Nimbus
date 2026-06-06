@@ -44,17 +44,10 @@ await t.waitForPrompt(60_000);
 
 // Step 2: npm install.
 {
-  t.reset();
-  t.cmd('npm install');
-  const elapsed = await t.waitFor(
-    (b) => /added \d+ packages|installed \d+ packages|Done!\s+\d+ packages|npm ERR!/i.test(b),
-    180_000,
-    'npm install completion',
-  );
-  const installed = /added \d+ packages|installed \d+ packages|Done!/i.test(t.buf);
-  a.check(`npm install completed (added/installed marker; ${(elapsed/1000).toFixed(1)}s)`,
-    installed, t.buf.slice(-300));
-  await t.waitForNewPrompt(15_000).catch(() => { /* prompt may already be there */ });
+  const r = await t.run('npm install', 180_000);
+  const installed = /added \d+ packages|installed \d+ packages|Done!/i.test(r.output);
+  a.check(`npm install completed (added/installed marker; ${(r.elapsed/1000).toFixed(1)}s)`,
+    installed, r.output.slice(-300));
 }
 
 // Step 3: npm run dev — long-running.

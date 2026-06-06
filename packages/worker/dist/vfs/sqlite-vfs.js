@@ -88,6 +88,7 @@ export class SqliteVFS {
     _totalFiles = 0;
     _totalDirs = 0;
     _usedBytes = 0;
+    _revision = 0;
     // ── Deferred write queue (do86 pattern) ───────────────────────────────
     pendingWrites = new Map();
     /**
@@ -783,6 +784,9 @@ export class SqliteVFS {
         const inode = this.inodes.get(path);
         return inode !== undefined && !inode.isDir;
     }
+    revision() {
+        return this._revision;
+    }
     mkdir(path, options) {
         if (this.exists(path))
             return;
@@ -808,6 +812,7 @@ export class SqliteVFS {
         this.inodes.set(path, inode);
         this._addToChildrenIndex(pp, path);
         this._totalDirs++; // B3
+        this._revision++;
         this.events.emit('addDir', path);
     }
     writeFile(path, content) {
@@ -890,6 +895,7 @@ export class SqliteVFS {
                 this.deferWrite(path, i, chunk);
             }
         }
+        this._revision++;
         this.events.emit(isNew ? 'add' : 'change', path);
     }
     readFile(path) {
@@ -1013,6 +1019,7 @@ export class SqliteVFS {
             }
         }
         this.inodes.delete(path);
+        this._revision++;
         this.events.emit('unlink', path);
     }
     rmdir(path) {
@@ -1037,6 +1044,7 @@ export class SqliteVFS {
         }
         this.inodes.delete(np);
         this.children.delete(np); // Remove empty children set
+        this._revision++;
         this.events.emit('unlinkDir', np);
     }
     rename(oldPath, newPath) {
@@ -1117,6 +1125,7 @@ export class SqliteVFS {
                 this._addToChildrenIndex(ncpp, ncp);
             }
         }
+        this._revision++;
         this.events.emit('rename', newPath, oldPath);
     }
     copyFile(src, dest) {
@@ -1509,6 +1518,8 @@ export class SqliteVFS {
         this._sqlWrites += inodeCount + chunkCount;
         this._batchWrites++;
         this._batchWriteRows += inodeCount + chunkCount;
+        if (inodeCount > 0 || chunkCount > 0 || payload.deletePaths?.length)
+            this._revision++;
         return { inodes: inodeCount, chunks: chunkCount };
     }
     /**

@@ -30,6 +30,7 @@ import { NpmCache } from '../npm/cache.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import {
   scanNamedImports,
+  namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
@@ -89,6 +90,13 @@ export interface ViteDevServerOptions {
    */
   pid?: number;
   processLogs?: { append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void };
+}
+
+interface BarrelModuleCacheInfo {
+  pkgName: string;
+  fileCount: number;
+  names: ReadonlySet<string> | null;
+  inputHash: string | null;
 }
 
 // ── HMR client code ─────────────────────────────────────────────────────
@@ -1304,7 +1312,7 @@ export class ViteDevServer {
   private port: number;
   private basePath: string;
   private running = false;
-  private moduleCache = new Map<string, { code: string; timestamp: number }>();
+  private moduleCache = new Map<string, { code: string; timestamp: number; inputHash?: string }>();
   private unsubVfs: (() => void) | null = null;
   /** True if index.html has an importmap (browser handles bare specifiers) */
   private hasImportmap = false;
@@ -1806,16 +1814,44 @@ export class ViteDevServer {
 
   // ── Module serving (/@modules/<pkg>) ──────────────────────────────────
 
+  private getBarrelModuleCacheInfo(specifier: string): BarrelModuleCacheInfo | null {
+    const pkgName = packageNameFromSpecifier(specifier);
+    if (specifier !== pkgName) return null;
+
+    const pkgDir = this.root + '/node_modules/' + pkgName;
+    const fileCount = countPackageFiles(this.vfs, pkgDir);
+    if (fileCount <= BARREL_PKG_FILE_THRESHOLD) return null;
+
+    const names = scanNamedImports(this.vfs, this.root).get(pkgName) ?? null;
+    return {
+      pkgName,
+      fileCount,
+      names,
+      inputHash: namedImportSignature(pkgName, names),
+    };
+  }
+
+  private cachedModuleMatchesBarrelInput(
+    inputHash: string | undefined,
+    barrelInfo: BarrelModuleCacheInfo | null,
+  ): boolean {
+    if (!barrelInfo) return true;
+    return !!barrelInfo.inputHash && inputHash === barrelInfo.inputHash;
+  }
+
   private async serveModule(specifier: string, headers: Record<string, string>): Promise<Response> {
     const JS_CT = 'application/javascript; charset=utf-8';
     const cacheKey = `@modules/${specifier}`;
+    const barrelInfo = this.getBarrelModuleCacheInfo(specifier);
 
     // 1. In-memory cache (hot path — already bundled)
     const memCached = this.moduleCache.get(cacheKey);
-    if (memCached) {
+    if (memCached && this.cachedModuleMatchesBarrelInput(memCached.inputHash, barrelInfo)) {
       return new Response(memCached.code, {
         headers: { ...headers, 'Content-Type': JS_CT },
       });
+    } else if (memCached) {
+      this.moduleCache.delete(cacheKey);
     }
 
     // 2. SQLite pre-bundle cache (warm path — from npm install pre-bundling)
@@ -1829,14 +1865,18 @@ export class ViteDevServer {
       // Only use cached bundles built with the current bundler version.
       // Stale bundles (from older bundler versions) are treated as missing
       // and re-bundled on the cold path.
-      if (esmBundle && esmBundle.bundleHash === BUNDLER_VERSION) {
+      if (
+        esmBundle &&
+        esmBundle.bundleHash === BUNDLER_VERSION &&
+        this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo)
+      ) {
         let code = esmBundle.esmCode;
         // Rewrite __require("external") calls to ESM imports so externalized
         // packages (react, scheduler) actually work in the browser.
         code = rewriteExternalRequires(code, this.basePath);
         code = rewriteAllImports(code, this.aliases, this.basePath);
         code = synthesizeCjsNamedExports(code);
-        this.moduleCache.set(cacheKey, { code, timestamp: Date.now() });
+        this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
         return new Response(code, {
           headers: { ...headers, 'Content-Type': JS_CT },
         });
@@ -1858,7 +1898,7 @@ export class ViteDevServer {
       this.onDemandQueue = new Promise<void>((res) => { releaseSlot = res; });
       try {
         await prev;
-        return await this.serveModuleCold(specifier, headers);
+        return await this.serveModuleCold(specifier, headers, barrelInfo);
       } finally {
         releaseSlot();
       }
@@ -1883,6 +1923,7 @@ export class ViteDevServer {
   private async serveModuleCold(
     specifier: string,
     headers: Record<string, string>,
+    knownBarrelInfo: BarrelModuleCacheInfo | null = null,
   ): Promise<Response> {
     const JS_CT = 'application/javascript; charset=utf-8';
     const cacheKey = `@modules/${specifier}`;
@@ -1909,8 +1950,9 @@ export class ViteDevServer {
     if (resolved) {
       const pkgName = packageNameFromSpecifier(specifier);
       const pkgDir = this.root + '/node_modules/' + pkgName;
-      const fileCount = countPackageFiles(this.vfs, pkgDir);
-      const isBarrel = fileCount > BARREL_PKG_FILE_THRESHOLD && specifier === pkgName;
+      const barrelInfo = knownBarrelInfo ?? this.getBarrelModuleCacheInfo(specifier);
+      const fileCount = barrelInfo?.fileCount ?? countPackageFiles(this.vfs, pkgDir);
+      const isBarrel = !!barrelInfo && specifier === pkgName;
       let bundled: string | null = null;
       const externals = getSharedRuntimeExternals(specifier);
       const onDemandPool = await this.ensureOnDemandPool().catch(() => null);
@@ -1924,8 +1966,7 @@ export class ViteDevServer {
       let synthetic = false;
       let syntheticReferencedFiles: string[] | null = null;
       if (isBarrel) {
-        const namedImports = scanNamedImports(this.vfs, this.root);
-        const names = namedImports.get(pkgName);
+        const names = barrelInfo.names;
         if (!names || names.size === 0) {
           // No statically-resolvable imports. We refuse to CDN-fallback
           // (100% edge contract) AND we refuse to bundle the whole
@@ -2128,12 +2169,12 @@ export class ViteDevServer {
               bundleHash: BUNDLER_VERSION,
               esmCode: code,
               builtAt: Date.now(),
-              inputHash: '',
+              inputHash: barrelInfo?.inputHash ?? '',
             });
           } catch { /* non-fatal */ }
         }
 
-        this.moduleCache.set(cacheKey, { code, timestamp: Date.now() });
+        this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
         return new Response(code, {
           headers: { ...headers, 'Content-Type': JS_CT },
         });
