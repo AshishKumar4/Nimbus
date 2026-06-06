@@ -27,15 +27,15 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
     catch (e) {
         return remoteJson({ ok: false, error: `Invalid JSON body: ${e?.message || e}`, code: 'E_BAD_JSON' }, 400);
     }
-    const tenantSegment = await resolveRemoteTenantSegment(request, env, remote, match.sandboxId);
-    if (tenantSegment instanceof Response)
-        return tenantSegment;
+    const remoteAuth = await resolveRemoteAuth(request, env, remote, match.sandboxId);
+    if (remoteAuth instanceof Response)
+        return remoteAuth;
     const profileName = body.profile ?? 'default';
     const profile = sdk?.config?.sandboxes?.[profileName]
         ?? sdk?.config?.sandboxes?.default
         ?? {};
     const root = body.root ?? profile.root ?? '/home/user';
-    const doName = `${tenantSegment}:${match.sandboxId}`;
+    const doName = `${remoteAuth.tenantSegment}:${match.sandboxId}`;
     const id = env.NIMBUS_SESSION.idFromName(doName);
     const stub = env.NIMBUS_SESSION.get(id);
     const ctx = {
@@ -45,6 +45,7 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
         profileName,
         profile,
         root,
+        verified: remoteAuth.verified,
     };
     try {
         const result = await dispatchRemoteRpc(ctx);
@@ -81,11 +82,15 @@ function matchRemoteRpc(pathname, basePath) {
         return null;
     }
 }
-async function resolveRemoteTenantSegment(request, env, remote, sandboxId) {
+async function resolveRemoteAuth(request, env, remote, sandboxId) {
     const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
     if (!hasSecret) {
-        if (remote.allowLegacy)
-            return LEGACY_PUBLIC_DO_SEGMENT;
+        if (remote.allowLegacy) {
+            return {
+                tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
+                verified: null,
+            };
+        }
         return remoteJson({
             ok: false,
             error: 'Remote Nimbus sandbox API requires JWT_SECRET',
@@ -96,7 +101,10 @@ async function resolveRemoteTenantSegment(request, env, remote, sandboxId) {
         const verified = await verifyRequestToken(request, env);
         requireScopes(verified, remote.requiredScopes);
         requireSessionPin(verified, sandboxId);
-        return verified.doInstanceName;
+        return {
+            tenantSegment: verified.doInstanceName,
+            verified,
+        };
     }
     catch (e) {
         if (e instanceof NimbusAuthError || e instanceof NimbusTokenMalformedError) {
@@ -168,9 +176,20 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcExposePort(numberArg(args[0], 'port'));
         case 'unexposePort':
             return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
+        case 'destroy':
+            requireAnyScope(ctx, ['session:destroy', 'session:admin']);
+            return ctx.stub._rpcDestroy(objectArg(args[0]));
         default:
             throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
     }
+}
+function requireAnyScope(ctx, scopes) {
+    const explicit = ctx.verified?.claims.scopes;
+    if (explicit === undefined)
+        return;
+    if (scopes.some((scope) => explicit.includes(scope)))
+        return;
+    throw apiError(`Nimbus token missing required scope: ${scopes.join(' or ')}`, 'E_SCOPE_MISSING', 403);
 }
 function execOptions(ctx, value) {
     const options = objectArg(value);

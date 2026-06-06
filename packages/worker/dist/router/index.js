@@ -33,7 +33,7 @@
  */
 import { generateSessionId, isValidSessionId, } from '../_shared/session-id.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
-import { verifyRequestToken, authErrorResponse, NimbusAuthError, NimbusTokenMalformedError, } from '../auth/index.js';
+import { verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, NimbusAuthError, NimbusTokenMalformedError, } from '../auth/index.js';
 import { setCtxExports } from '../session/ctx-exports.js';
 import { handleNimbusRemoteApi, } from './remote-api.js';
 import { parseAgentOAuthStateParam } from '../session/agent.js';
@@ -115,6 +115,11 @@ export function createNimbusHandler(options = {}) {
                 if (request.method !== 'POST' && request.method !== 'GET') {
                     return new Response('Method not allowed', { status: 405 });
                 }
+                const auth = await resolveNimbusRouteAuth(request, env, explicitMode, {
+                    requiredScopes: ['session:create'],
+                });
+                if (auth instanceof Response)
+                    return auth;
                 const sessionId = generateSessionId();
                 return new Response(null, {
                     status: 302,
@@ -136,10 +141,16 @@ export function createNimbusHandler(options = {}) {
                         },
                     });
                 }
-                // Resolve tenant segment per auth mode.
-                const tenantSegment = await resolveTenantSegment(request, env, explicitMode);
-                if (tenantSegment instanceof Response)
-                    return tenantSegment;
+                // Resolve tenant segment per auth mode and enforce session attach
+                // semantics. In enforced mode a sid-pinned token can only attach
+                // to the exact session it was minted for.
+                const auth = await resolveNimbusRouteAuth(request, env, explicitMode, {
+                    requiredScopes: ['session:attach'],
+                    sessionId: route.sessionId,
+                });
+                if (auth instanceof Response)
+                    return auth;
+                const tenantSegment = auth.tenantSegment;
                 // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
                 if (route.innerPath === '/' || route.innerPath === '') {
                     if (env.ASSETS) {
@@ -195,25 +206,17 @@ function isLegacyRootPath(pathname) {
     }
     return false;
 }
-/**
- * Decide which tenant segment to use for DO naming. Returns either the
- * segment string or a short-circuit Response (auth failure).
- *
- * Mode `'auto'`:
- *   - If JWT_SECRET is set AND legacy env var not "1" → enforce verify.
- *   - Otherwise → legacy public.
- *
- * Mode `'enforce'`: always verify; 401 on missing/invalid token.
- *
- * Mode `'legacy'`: always legacy public.
- */
-async function resolveTenantSegment(request, env, explicitMode) {
+async function resolveNimbusRouteAuth(request, env, explicitMode, options = {}) {
     const envLegacyFlag = (env?.NIMBUS_LEGACY_PUBLIC === '1' || env?.NIMBUS_LEGACY_PUBLIC === true);
     const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
     const mode = explicitMode
         ?? (hasSecret && !envLegacyFlag ? 'enforce' : 'legacy');
-    if (mode === 'legacy')
-        return LEGACY_PUBLIC_DO_SEGMENT;
+    if (mode === 'legacy') {
+        return {
+            tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
+            verified: null,
+        };
+    }
     if (!hasSecret) {
         // Enforce mode but no secret — config error. 500, no info leak.
         console.error('[nimbus] auth.mode="enforce" but JWT_SECRET is missing');
@@ -221,7 +224,16 @@ async function resolveTenantSegment(request, env, explicitMode) {
     }
     try {
         const verified = await verifyRequestToken(request, env);
-        return verified.doInstanceName;
+        if (options.requiredScopes?.length) {
+            requireScopes(verified, options.requiredScopes);
+        }
+        if (options.sessionId) {
+            requireSessionPin(verified, options.sessionId);
+        }
+        return {
+            tenantSegment: verified.doInstanceName,
+            verified,
+        };
     }
     catch (e) {
         if (e instanceof NimbusAuthError) {

@@ -46,6 +46,17 @@ const fetchImpl = async (url, init) => {
       code: 'E_RUNTIME_ON_DEMAND_DISABLED',
     }, { status: 403 });
   }
+  if (body.op === 'destroy') {
+    return Response.json({
+      ok: true,
+      result: {
+        ok: true,
+        killed: 0,
+        destroyedAt: 1,
+        reason: body.args[0]?.reason ?? null,
+      },
+    });
+  }
   return Response.json({ ok: true, result: { ok: true, preinstalled: [] } });
 };
 
@@ -73,6 +84,7 @@ await box.files.write('/home/user/blob.bin', new Uint8Array([0, 255]));
 const bytes = await box.files.readBytes('/home/user/blob.bin');
 const stat = await box.files.stat('/home/user/blob.bin');
 const result = await box.exec('node -e "console.log(4)"');
+const destroyed = await box.destroy({ reason: 'remote-test-cleanup' });
 
 a.check('remote URL is versioned and sandbox-scoped',
   calls[0].url === 'https://nimbus.example.com/api/nimbus/v1/sandboxes/job-123/rpc',
@@ -93,6 +105,9 @@ a.check('exec result is decoded unchanged',
   result.success === true && result.stdout === '4\n');
 a.check('exec cwd defaults to profile root',
   calls.find((c) => c.body.op === 'exec')?.body.args[1]?.cwd === '/home/user/project');
+a.check('destroy calls remote lifecycle operation',
+  destroyed.ok === true
+  && calls.find((c) => c.body.op === 'destroy')?.body.args[0]?.reason === 'remote-test-cleanup');
 
 let blocked = false;
 try {

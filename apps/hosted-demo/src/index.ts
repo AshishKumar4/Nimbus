@@ -29,9 +29,31 @@ import {
   NimbusDOStub,
   CirrusHmrRPC,
   createNimbusHandler,
-  issueNimbusToken,
 } from '@nimbus-sh/sdk/worker';
-import { Nimbus } from '@nimbus-sh/sdk';
+import { Nimbus, type NimbusConfig } from '@nimbus-sh/sdk';
+import {
+  completeDemoLogin,
+  demoAuthRequiredResponse,
+  loadDemoAuth,
+  logoutDemo,
+  shouldHandleDemoOAuthCallback,
+  startDemoLogin,
+  type DemoAuth,
+} from './demo-auth.js';
+import { createDemoAgentAuthCookie } from './demo-agent-auth.js';
+import { cleanupExpiredDemoSessions } from './demo-cleanup.js';
+import { issueDemoSandboxToken, withInternalNimbusAuth } from './demo-nimbus.js';
+import {
+  createDemoSession,
+  loadOwnedDemoSession,
+  markDemoSessionDestroyed,
+  markDemoSessionDestroyFailed,
+  renderExpiredSession,
+  renderForbiddenSession,
+  renderLaunchPage,
+  sessionIdFromPath,
+  touchDemoSession,
+} from './demo-sessions.js';
 
 // Re-export the DO class + every RPC class so wrangler discovers them
 // for `durable_objects.bindings[].class_name` and `enable_ctx_exports`
@@ -55,79 +77,212 @@ const sandboxConfig = {
       runtimes: { onDemand: true },
     },
   },
-};
+} satisfies NimbusConfig;
 
-const handler = createNimbusHandler({
-  auth: { mode: 'legacy' },
+const nimbus = createNimbusHandler({
+  auth: { mode: 'enforce' },
   sdk: {
     remote: true,
     config: sandboxConfig,
   },
-  routes: async (request, env, ctx) => {
-    const url = new URL(request.url);
-    if (url.pathname === '/api/sdk-smoke') {
-      const nimbus = Nimbus.fromEnv(
-        env,
-        {
-          ...sandboxConfig,
-          endpoint: url.origin,
-        },
-      );
-      const box = nimbus.sandbox(`sdk-smoke-${Date.now()}`, {
-        tenant: 'hosted-demo',
-        subject: 'sdk-smoke',
-      });
-      const result = await box.exec('node -e "console.log(2 + 2)"');
-      return Response.json({
-        ok: result.success && result.stdout.trim() === '4',
-        result,
-      }, { headers: { 'Cache-Control': 'no-store' } });
-    }
-
-    if (url.pathname === '/api/sdk-remote-smoke') {
-      const sandboxId = `sdk-remote-smoke-${Date.now()}`;
-      const token = await issueNimbusToken(
-        env,
-        {
-          tn: 'hosted-demo',
-          sub: 'sdk-remote-smoke',
-          scopes: ['sandbox:use'],
-          sid: sandboxId,
-        },
-        { ttlMs: 5 * 60 * 1000 },
-      );
-      const box = Nimbus.connect({
-        endpoint: url.origin,
-        token,
-        fetch: (input, init) => {
-          const loopbackRequest = input instanceof Request
-            ? new Request(input, init)
-            : new Request(input, init);
-          return handler.fetch(loopbackRequest, env, ctx);
-        },
-        config: {
-          ...sandboxConfig,
-          endpoint: url.origin,
-        },
-      }).sandbox(sandboxId);
-
-      await box.files.write('/home/user/remote-bytes.bin', new Uint8Array([0, 1, 2, 255]));
-      const bytes = await box.files.readBytes('/home/user/remote-bytes.bin');
-      const result = await box.exec('node -e "console.log(3 + 4)"');
-
-      return Response.json({
-        ok: result.success
-          && result.stdout.trim() === '7'
-          && bytes instanceof Uint8Array
-          && bytes.length === 4
-          && bytes[3] === 255,
-        result,
-        bytes: Array.from(bytes ?? []),
-      }, { headers: { 'Cache-Control': 'no-store' } });
-    }
-
-    return null;
-  },
 });
 
-export default handler;
+export default {
+  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+    return handleHostedDemoRequest(request, env, ctx);
+  },
+
+  async scheduled(_controller: ScheduledController, env: any, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      cleanupExpiredDemoSessions(env, sandboxConfig)
+        .then((result) => console.log('[nimbus/demo-cleanup]', JSON.stringify(result)))
+        .catch((e) => console.error('[nimbus/demo-cleanup] failed:', e?.stack || e)),
+    );
+  },
+};
+
+async function handleHostedDemoRequest(
+  request: Request,
+  env: any,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (url.pathname === '/login') return startDemoLogin(request, env);
+  if (url.pathname === '/logout') return logoutDemo(request);
+  if (url.pathname === '/api/demo/oauth/callback') return completeDemoLogin(request, env);
+  if (url.pathname === '/api/nimbus/oauth/callback' && await shouldHandleDemoOAuthCallback(request, env)) {
+    return completeDemoLogin(request, env);
+  }
+  if (url.pathname === '/api/demo/auth/me') return handleDemoAuthMe(request, env);
+  if (url.pathname === '/new') return handleNew(request, env);
+  if (url.pathname === '/api/sdk-smoke') return handleSdkSmoke(request, env);
+  if (url.pathname === '/api/sdk-remote-smoke') return handleSdkRemoteSmoke(request, env, ctx);
+
+  const sessionId = sessionIdFromPath(url.pathname);
+  if (sessionId) return handleSessionRequest(request, env, ctx, sessionId);
+
+  return nimbus.fetch(request, env, ctx);
+}
+
+async function handleNew(request: Request, env: any): Promise<Response> {
+  const auth = await loadDemoAuth(request, env);
+  const url = new URL(request.url);
+  if (request.method === 'GET') {
+    if (url.searchParams.get('launch') === '1') {
+      if (!auth) return demoAuthRequiredResponse(request, '/new?launch=1');
+      const session = await createDemoSession(env, auth);
+      return launchRedirectResponse(env, auth, session.sessionId);
+    }
+    return renderLaunchPage(auth);
+  }
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', {
+      status: 405,
+      headers: { Allow: 'GET, POST', 'Cache-Control': 'no-store' },
+    });
+  }
+  if (!auth) return demoAuthRequiredResponse(request, '/new');
+  const session = await createDemoSession(env, auth);
+  return launchRedirectResponse(env, auth, session.sessionId);
+}
+
+async function launchRedirectResponse(env: any, auth: DemoAuth, sessionId: string): Promise<Response> {
+  const headers = new Headers({
+    Location: `/s/${encodeURIComponent(sessionId)}/`,
+    'Cache-Control': 'no-store',
+  });
+  const agentCookie = await createDemoAgentAuthCookie(env, auth, sessionId);
+  if (agentCookie) headers.append('Set-Cookie', agentCookie);
+  return new Response(null, { status: 303, headers });
+}
+
+async function handleDemoAuthMe(request: Request, env: any): Promise<Response> {
+  if (request.method !== 'GET') {
+    return new Response('Method not allowed', {
+      status: 405,
+      headers: { Allow: 'GET', 'Cache-Control': 'no-store' },
+    });
+  }
+  const auth = await loadDemoAuth(request, env);
+  return Response.json({
+    authenticated: !!auth,
+    user: auth
+      ? {
+        id: auth.userId,
+        displayName: auth.displayName,
+      }
+      : null,
+  }, {
+    status: auth ? 200 : 401,
+    headers: { 'Cache-Control': 'no-store' },
+  });
+}
+
+async function handleSessionRequest(
+  request: Request,
+  env: any,
+  ctx: ExecutionContext,
+  sessionId: string,
+): Promise<Response> {
+  const auth = await loadDemoAuth(request, env);
+  if (!auth) return demoAuthRequiredResponse(request, `/s/${sessionId}/`);
+
+  const session = await loadOwnedDemoSession(env, sessionId, auth);
+  if (!session) return renderForbiddenSession();
+  if (session.status !== 'active' || session.expiresAt <= Date.now()) {
+    return renderExpiredSession(sessionId);
+  }
+
+  ctx.waitUntil(touchDemoSession(env, session));
+  const authorized = await withInternalNimbusAuth(request, env, auth, sessionId);
+  return nimbus.fetch(authorized, env, ctx);
+}
+
+async function handleSdkSmoke(request: Request, env: any): Promise<Response> {
+  const auth = await requireDemoAuth(request, env);
+  if (auth instanceof Response) return auth;
+  const session = await createDemoSession(env, auth, `sdk-smoke-${Date.now()}`);
+  const box = Nimbus.fromEnv(
+    env,
+    {
+      ...sandboxConfig,
+      endpoint: new URL(request.url).origin,
+    },
+  ).sandbox(session.sessionId, {
+    tenant: 'demo',
+    subject: auth.userId,
+  });
+
+  try {
+    const result = await box.exec('node -e "console.log(2 + 2)"');
+    await box.destroy({ reason: 'sdk-smoke-complete' });
+    await markDemoSessionDestroyed(env, session.sessionId, 'sdk-smoke-complete');
+    return Response.json({
+      ok: result.success && result.stdout.trim() === '4',
+      result,
+    }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e: any) {
+    try { await box.destroy({ reason: 'sdk-smoke-error' }); } catch {}
+    await markDemoSessionDestroyFailed(env, session.sessionId, e?.message || String(e));
+    throw e;
+  }
+}
+
+async function handleSdkRemoteSmoke(
+  request: Request,
+  env: any,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const auth = await requireDemoAuth(request, env);
+  if (auth instanceof Response) return auth;
+  const url = new URL(request.url);
+  const session = await createDemoSession(env, auth, `sdk-remote-smoke-${Date.now()}`);
+  const token = await issueDemoSandboxToken(env, auth, session.sessionId, ['sandbox:use']);
+  const remoteBox = Nimbus.connect({
+    endpoint: url.origin,
+    token,
+    fetch: (input, init) => {
+      const loopbackRequest = input instanceof Request
+        ? new Request(input, init)
+        : new Request(input, init);
+      return nimbus.fetch(loopbackRequest, env, ctx);
+    },
+    config: {
+      ...sandboxConfig,
+      endpoint: url.origin,
+    },
+  }).sandbox(session.sessionId);
+  const localBox = Nimbus.fromEnv(env, sandboxConfig).sandbox(session.sessionId, {
+    tenant: 'demo',
+    subject: auth.userId,
+  });
+
+  try {
+    await remoteBox.files.write('/home/user/remote-bytes.bin', new Uint8Array([0, 1, 2, 255]));
+    const bytes = await remoteBox.files.readBytes('/home/user/remote-bytes.bin');
+    const result = await remoteBox.exec('node -e "console.log(3 + 4)"');
+    await localBox.destroy({ reason: 'sdk-remote-smoke-complete' });
+    await markDemoSessionDestroyed(env, session.sessionId, 'sdk-remote-smoke-complete');
+
+    return Response.json({
+      ok: result.success
+        && result.stdout.trim() === '7'
+        && bytes instanceof Uint8Array
+        && bytes.length === 4
+        && bytes[3] === 255,
+      result,
+      bytes: Array.from(bytes ?? []),
+    }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e: any) {
+    try { await localBox.destroy({ reason: 'sdk-remote-smoke-error' }); } catch {}
+    await markDemoSessionDestroyFailed(env, session.sessionId, e?.message || String(e));
+    throw e;
+  }
+}
+
+async function requireDemoAuth(request: Request, env: any): Promise<DemoAuth | Response> {
+  const auth = await loadDemoAuth(request, env);
+  if (auth) return auth;
+  return demoAuthRequiredResponse(request, new URL(request.url).pathname);
+}

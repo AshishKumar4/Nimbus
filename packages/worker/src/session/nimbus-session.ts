@@ -643,6 +643,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcExposePort(port: number) { return _programmatic.rpcExposePort(this as any, port); }
   async _rpcUnexposePort(port: number) { return _programmatic.rpcUnexposePort(this as any, port); }
   async _rpcDeleteFile(path: string, options?: { recursive?: boolean }) { return _programmatic.rpcDeleteFile(this as any, path, options); }
+  async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 
   // Legacy VFS (direct method calls)
   vfsReadFile(path: string): ArrayBuffer | null { return _rpc.vfsReadFile(this as any, path); }

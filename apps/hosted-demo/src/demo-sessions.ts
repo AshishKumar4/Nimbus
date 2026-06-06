@@ -1,0 +1,258 @@
+import { generateSessionId, isValidSessionId } from '@nimbus-sh/sdk/worker';
+import type { DemoAuth } from './demo-auth.js';
+
+export interface DemoSession {
+  sessionId: string;
+  userId: string;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+  status: 'active' | 'destroying' | 'destroyed' | 'failed';
+  destroyedAt: number | null;
+  destroyReason: string | null;
+}
+
+export interface DemoUserInput {
+  userId: string;
+  cfSubjectHash: string;
+  displayName: string | null;
+  now: number;
+}
+
+export async function upsertDemoUser(env: any, input: DemoUserInput): Promise<void> {
+  const db = demoDb(env);
+  await db.prepare(`
+    INSERT INTO demo_users (user_id, cf_subject_hash, display_name, created_at, last_login_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      display_name = excluded.display_name,
+      last_login_at = excluded.last_login_at
+  `).bind(
+    input.userId,
+    input.cfSubjectHash,
+    input.displayName,
+    input.now,
+    input.now,
+  ).run();
+}
+
+export async function createDemoSession(env: any, auth: DemoAuth, requestedId?: string): Promise<DemoSession> {
+  const now = Date.now();
+  const expiresAt = now + idleTtlMs(env);
+  const db = demoDb(env);
+  const attempts = requestedId ? [requestedId] : Array.from({ length: 8 }, () => generateSessionId());
+
+  for (const sessionId of attempts) {
+    if (!isValidSessionId(sessionId)) continue;
+    try {
+      await db.prepare(`
+        INSERT INTO demo_sessions (session_id, user_id, created_at, last_seen_at, expires_at, status)
+        VALUES (?, ?, ?, ?, ?, 'active')
+      `).bind(sessionId, auth.userId, now, now, expiresAt).run();
+      return {
+        sessionId,
+        userId: auth.userId,
+        createdAt: now,
+        lastSeenAt: now,
+        expiresAt,
+        status: 'active',
+        destroyedAt: null,
+        destroyReason: null,
+      };
+    } catch (e) {
+      if (requestedId) throw e;
+    }
+  }
+
+  throw new Error('Could not allocate a unique Nimbus demo session id');
+}
+
+export async function loadOwnedDemoSession(
+  env: any,
+  sessionId: string,
+  auth: DemoAuth,
+): Promise<DemoSession | null> {
+  if (!isValidSessionId(sessionId)) return null;
+  const row = await demoDb(env).prepare(`
+    SELECT session_id, user_id, created_at, last_seen_at, expires_at, status, destroyed_at, destroy_reason
+    FROM demo_sessions
+    WHERE session_id = ?
+    LIMIT 1
+  `).bind(sessionId).first() as any;
+  if (!row || row.user_id !== auth.userId) return null;
+  return rowToDemoSession(row);
+}
+
+export async function touchDemoSession(env: any, session: DemoSession): Promise<void> {
+  const now = Date.now();
+  if (now - session.lastSeenAt < touchDebounceMs(env)) return;
+  await demoDb(env).prepare(`
+    UPDATE demo_sessions
+    SET last_seen_at = ?, expires_at = ?
+    WHERE session_id = ? AND user_id = ? AND status = 'active'
+  `).bind(now, now + idleTtlMs(env), session.sessionId, session.userId).run();
+}
+
+export async function listExpiredDemoSessions(
+  env: any,
+): Promise<Array<{ sessionId: string; userId: string }>> {
+  const limit = cleanupBatchSize(env);
+  const now = Date.now();
+  const result = await demoDb(env).prepare(`
+    SELECT session_id, user_id
+    FROM demo_sessions
+    WHERE status IN ('active', 'failed')
+      AND expires_at <= ?
+    ORDER BY expires_at ASC
+    LIMIT ?
+  `).bind(now, limit).all() as any;
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  return rows
+    .map((row: any) => ({ sessionId: String(row.session_id || ''), userId: String(row.user_id || '') }))
+    .filter((row: { sessionId: string; userId: string }) => isValidSessionId(row.sessionId) && !!row.userId);
+}
+
+export async function claimDemoSessionForDestroy(
+  env: any,
+  sessionId: string,
+  userId: string,
+  reason: string,
+): Promise<boolean> {
+  const result = await demoDb(env).prepare(`
+    UPDATE demo_sessions
+    SET status = 'destroying', destroy_reason = ?, destroyed_at = NULL
+    WHERE session_id = ?
+      AND user_id = ?
+      AND status IN ('active', 'failed')
+      AND expires_at <= ?
+  `).bind(reason, sessionId, userId, Date.now()).run() as any;
+  return Number(result?.meta?.changes ?? 0) > 0;
+}
+
+export async function markDemoSessionDestroyed(
+  env: any,
+  sessionId: string,
+  reason: string,
+): Promise<void> {
+  await demoDb(env).prepare(`
+    UPDATE demo_sessions
+    SET status = 'destroyed', destroyed_at = ?, destroy_reason = ?
+    WHERE session_id = ?
+  `).bind(Date.now(), reason, sessionId).run();
+}
+
+export async function markDemoSessionDestroyFailed(
+  env: any,
+  sessionId: string,
+  reason: string,
+): Promise<void> {
+  await demoDb(env).prepare(`
+    UPDATE demo_sessions
+    SET status = 'failed', destroy_reason = ?
+    WHERE session_id = ?
+  `).bind(reason.slice(0, 500), sessionId).run();
+}
+
+export function sessionIdFromPath(pathname: string): string | null {
+  const match = pathname.match(/^\/s\/([^/]+)(?:\/|$)/);
+  if (!match) return null;
+  try {
+    const id = decodeURIComponent(match[1]);
+    return isValidSessionId(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function renderLaunchPage(auth: DemoAuth | null): Response {
+  const login = auth
+    ? `<form action="/new" method="POST"><button>Launch</button></form><a href="/logout">Sign out</a>`
+    : `<a href="/login?return_to=/new">Sign in with Cloudflare</a>`;
+  return html(200, `
+    <main>
+      <h1>Nimbus</h1>
+      <p>Cloudflare login is required before creating a hosted demo sandbox.</p>
+      ${login}
+    </main>
+  `);
+}
+
+export function renderExpiredSession(sessionId: string): Response {
+  return html(410, `
+    <main>
+      <h1>Session expired</h1>
+      <p>This Nimbus demo sandbox was idle past its retention window.</p>
+      <form action="/new" method="POST"><button>Launch a new sandbox</button></form>
+    </main>
+  `, { 'X-Nimbus-Expired-Session': sessionId });
+}
+
+export function renderForbiddenSession(): Response {
+  return html(404, `
+    <main>
+      <h1>Session not found</h1>
+      <p>This sandbox is unavailable for the signed-in user.</p>
+    </main>
+  `);
+}
+
+function rowToDemoSession(row: any): DemoSession {
+  return {
+    sessionId: String(row.session_id),
+    userId: String(row.user_id),
+    createdAt: Number(row.created_at),
+    lastSeenAt: Number(row.last_seen_at),
+    expiresAt: Number(row.expires_at),
+    status: String(row.status) as DemoSession['status'],
+    destroyedAt: row.destroyed_at == null ? null : Number(row.destroyed_at),
+    destroyReason: row.destroy_reason == null ? null : String(row.destroy_reason),
+  };
+}
+
+function demoDb(env: any): any {
+  if (!env?.DEMO_DB) {
+    throw new Error('DEMO_DB D1 binding is required for the hosted demo auth pilot');
+  }
+  return env.DEMO_DB;
+}
+
+function idleTtlMs(env: any): number {
+  return Math.max(1, envNumber(env, 'DEMO_SESSION_IDLE_TTL_DAYS', 3)) * 24 * 60 * 60 * 1000;
+}
+
+function touchDebounceMs(env: any): number {
+  return Math.max(0, envNumber(env, 'DEMO_TOUCH_DEBOUNCE_SECONDS', 600)) * 1000;
+}
+
+function cleanupBatchSize(env: any): number {
+  return Math.max(1, Math.min(500, Math.floor(envNumber(env, 'DEMO_CLEANUP_BATCH_SIZE', 100))));
+}
+
+function envNumber(env: Record<string, unknown>, key: string, fallback: number): number {
+  const n = Number(env?.[key]);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function html(status: number, body: string, extraHeaders: Record<string, string> = {}): Response {
+  return new Response(`<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nimbus</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080b0b;color:#d8e3dd;font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  main{width:min(420px,calc(100vw - 48px));display:grid;gap:14px}
+  h1{margin:0;font-size:22px}
+  p{margin:0;color:#91a39a;line-height:1.5}
+  form{margin:0}
+  button,a{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 14px;border:1px solid #2d3a35;border-radius:6px;background:#111816;color:#9eeac6;text-decoration:none;font:inherit}
+  button{cursor:pointer}
+</style>
+${body}`, {
+    status,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      ...extraHeaders,
+    },
+  });
+}

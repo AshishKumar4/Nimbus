@@ -47,6 +47,10 @@ const stub = {
     calls.push(['installRuntime', spec, options]);
     return { spec, exitCode: 0 };
   },
+  async _rpcDestroy(options) {
+    calls.push(['destroy', options]);
+    return { ok: true, killed: 0, destroyedAt: 1, reason: options?.reason ?? null };
+  },
 };
 
 const env = {
@@ -148,6 +152,25 @@ const blocked = await rpc('job-123', token, { op: 'installRuntime', args: ['ruby
 const blockedJson = await blocked.json();
 a.check('remote API enforces server-side runtime policy',
   blocked.status === 403 && blockedJson.code === 'E_RUNTIME_ON_DEMAND_DISABLED');
+
+const destroyMissingScope = await rpc('job-123', token, { op: 'destroy', args: [{ reason: 'test' }] });
+const destroyMissingScopeJson = await destroyMissingScope.json();
+a.check('remote API requires destructive scope for destroy',
+  destroyMissingScope.status === 403 && destroyMissingScopeJson.code === 'E_SCOPE_MISSING');
+
+const destroyToken = await issueNimbusToken(env, {
+  tn: 'acme',
+  sub: 'alice',
+  scopes: ['sandbox:use', 'session:destroy'],
+  sid: 'job-123',
+});
+const destroy = await rpc('job-123', destroyToken, { op: 'destroy', args: [{ reason: 'test-cleanup' }] });
+const destroyJson = await destroy.json();
+a.check('remote API dispatches destroy with destructive scope',
+  destroy.status === 200
+  && destroyJson.ok === true
+  && destroyJson.result?.reason === 'test-cleanup'
+  && calls.find((c) => c[0] === 'destroy')?.[1]?.reason === 'test-cleanup');
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

@@ -10,21 +10,18 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateText, isLoopFinished, jsonSchema, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
+import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '../_shared/crypto.js';
+import { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CLOUDFLARE_API, readNimbusCookie, readNimbusAgentCookieSecret, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
-const AUTH_COOKIE = 'nimbus_agent_oauth';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
+const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_STORED_MESSAGES = 80;
 const MAX_TOOL_RESULT_CHARS = 8000;
 const DEFAULT_MODEL = '@cf/moonshotai/kimi-k2.6';
 const DEFAULT_GATEWAY_ID = 'default';
-const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
-const CF_OAUTH_AUTH_URL = 'https://dash.cloudflare.com/oauth2/auth';
-const CF_OAUTH_TOKEN_URL = 'https://dash.cloudflare.com/oauth2/token';
-const CF_OAUTH_USERINFO_URL = 'https://dash.cloudflare.com/oauth2/userinfo';
 const SYSTEM_PROMPT = 'You are the Nimbus session agent. You can inspect and edit the session filesystem, run shell commands, install runtimes, manage processes, and inspect preview ports. Be concise. Use tools when needed. Do not claim a command ran unless a tool result proves it.';
 export async function handleAgentRequest(self, request, url) {
     const path = url.pathname;
@@ -66,7 +63,7 @@ export function parseAgentOAuthStateParam(state) {
         return null;
     if (!isSessionId(payload.sessionId))
         return null;
-    if (!isTenantSegment(payload.tenantSegment))
+    if (!isNimbusTenantSegment(payload.tenantSegment))
         return null;
     if (!isNonce(payload.nonce))
         return null;
@@ -80,11 +77,12 @@ async function agentStatus(self, request, url) {
     let accounts = [];
     if (auth?.accessToken) {
         [user, accounts] = await Promise.all([
-            fetchUserInfo(auth.accessToken).catch((e) => ({ error: String(e?.message || e) })),
-            fetchAccounts(auth.accessToken).catch(() => []),
+            fetchNimbusCloudflareUserInfo(auth.accessToken).catch((e) => ({ error: String(e?.message || e) })),
+            fetchNimbusCloudflareAccounts(auth.accessToken).catch(() => []),
         ]);
     }
-    const ownerConfigured = !!(config.ownerAccountId && config.ownerToken);
+    const ownerTokenPresent = !!(config.ownerAccountId && config.ownerToken);
+    const ownerConfigured = !config.requireUserOAuth && ownerTokenPresent;
     const oauthConfigured = !!config.oauthClientId;
     const connected = !!auth?.accessToken || ownerConfigured;
     const headers = new Headers();
@@ -107,6 +105,7 @@ async function agentStatus(self, request, url) {
         ownerToken: {
             configured: ownerConfigured,
             accountId: ownerConfigured ? config.ownerAccountId : null,
+            disabledByUserOAuthRequired: config.requireUserOAuth && ownerTokenPresent,
         },
         connected,
         capabilities: [
@@ -130,7 +129,7 @@ async function oauthStart(self, request, url) {
     const basePath = request.headers.get(BASE_PATH_HEADER) || '';
     const sessionId = basePath.startsWith('/s/') ? basePath.slice(3) : '';
     const tenantSegment = request.headers.get(TENANT_HEADER) || 'legacy:public:_';
-    if (!isSessionId(sessionId) || !isTenantSegment(tenantSegment)) {
+    if (!isSessionId(sessionId) || !isNimbusTenantSegment(tenantSegment)) {
         return json({ error: 'invalid session route', code: 'E_AGENT_SESSION' }, 400);
     }
     const nonce = randomBase64Url(24);
@@ -147,7 +146,7 @@ async function oauthStart(self, request, url) {
         createdAt: now,
         expiresAt: now + OAUTH_STATE_TTL_MS,
     };
-    const authUrl = new URL(CF_OAUTH_AUTH_URL);
+    const authUrl = new URL(NIMBUS_CF_OAUTH_AUTH_URL);
     authUrl.searchParams.set('client_id', config.oauthClientId);
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('redirect_uri', redirectUri);
@@ -191,7 +190,7 @@ async function oauthCallback(self, request, url) {
         const accessToken = String(token.access_token || '');
         if (!accessToken)
             throw new Error('Cloudflare did not return an access token');
-        const accounts = await fetchAccounts(accessToken).catch(() => []);
+        const accounts = await fetchNimbusCloudflareAccounts(accessToken).catch(() => []);
         const auth = {
             mode: 'oauth',
             accessToken,
@@ -217,13 +216,13 @@ async function oauthCallback(self, request, url) {
 async function selectAccount(self, request) {
     const body = await readJson(request);
     const accountId = String(body?.accountId || '');
-    if (!isAccountId(accountId))
+    if (!isNimbusCloudflareAccountId(accountId))
         return json({ error: 'invalid account id' }, 400);
     const authResult = await loadFreshAuth(self, request);
     const auth = authResult.auth;
     if (!auth)
         return json({ error: 'not connected' }, 409);
-    const accounts = await fetchAccounts(auth.accessToken).catch(() => []);
+    const accounts = await fetchNimbusCloudflareAccounts(auth.accessToken).catch(() => []);
     if (!accounts.some((a) => a.id === accountId)) {
         return json({ error: 'account is not available for this OAuth token' }, 400);
     }
@@ -431,7 +430,7 @@ function createCloudflareModel(config, credentials) {
     const provider = createOpenAICompatible({
         name: 'nimbusCloudflare',
         apiKey: credentials.accessToken,
-        baseURL: `${CLOUDFLARE_API}/accounts/${encodeURIComponent(credentials.accountId)}/ai/v1`,
+        baseURL: `${NIMBUS_CLOUDFLARE_API}/accounts/${encodeURIComponent(credentials.accountId)}/ai/v1`,
         headers,
     });
     return provider.chatModel(config.model);
@@ -818,7 +817,7 @@ async function loadAiCredentials(self, request, url) {
             },
         };
     }
-    if (config.ownerToken && config.ownerAccountId) {
+    if (!config.requireUserOAuth && config.ownerToken && config.ownerAccountId) {
         return {
             authResult,
             credentials: {
@@ -859,7 +858,7 @@ async function loadFreshAuth(self, request) {
 }
 async function exchangeCode(self, code, codeVerifier, redirectUri) {
     const config = readConfig(self, new URL(redirectUri));
-    return tokenRequest(config, {
+    return requestNimbusCloudflareOAuthToken(config, {
         grant_type: 'authorization_code',
         code,
         redirect_uri: redirectUri,
@@ -868,101 +867,41 @@ async function exchangeCode(self, code, codeVerifier, redirectUri) {
 }
 async function refreshToken(self, refreshTokenValue) {
     const config = readConfig(self, null);
-    return tokenRequest(config, {
+    return requestNimbusCloudflareOAuthToken(config, {
         grant_type: 'refresh_token',
         refresh_token: refreshTokenValue,
     });
 }
-async function tokenRequest(config, fields) {
-    if (!config.oauthClientId)
-        throw new Error('OAuth client id is not configured');
-    const body = new URLSearchParams({
-        client_id: config.oauthClientId,
-        ...fields,
-    });
-    const headers = new Headers({
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-    });
-    if (config.oauthClientSecret) {
-        headers.set('Authorization', 'Basic ' + base64(`${config.oauthClientId}:${config.oauthClientSecret}`));
-    }
-    const response = await fetch(CF_OAUTH_TOKEN_URL, {
-        method: 'POST',
-        headers,
-        body,
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-        const detail = payload?.error_description || payload?.error || response.statusText;
-        throw new Error(`Cloudflare token exchange failed: ${detail}`);
-    }
-    return payload;
-}
-async function fetchUserInfo(accessToken) {
-    const response = await fetch(CF_OAUTH_USERINFO_URL, {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-    });
-    if (!response.ok)
-        throw new Error('userinfo request failed');
-    return response.json();
-}
-async function fetchAccounts(accessToken) {
-    const response = await fetch(`${CLOUDFLARE_API}/accounts`, {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok)
-        throw new Error('accounts request failed');
-    const accounts = Array.isArray(payload?.result) ? payload.result : [];
-    return accounts
-        .map((account) => ({ id: String(account.id || ''), name: String(account.name || account.id || '') }))
-        .filter((account) => isAccountId(account.id));
-}
 async function loadAuth(self, request) {
-    const value = readCookie(request, AUTH_COOKIE);
-    if (!value)
-        return null;
-    const auth = await unsealCookie(self, value).catch(() => null);
-    if (!auth || auth.mode !== 'oauth' || !auth.accessToken)
-        return null;
-    const route = routeContext(request);
-    if (auth.sessionId !== route.sessionId ||
-        auth.tenantSegment !== route.tenantSegment) {
-        return null;
-    }
-    return auth;
+    return loadNimbusAgentOAuthFromRequest(request, cookieSecret(self));
 }
 async function loadStateCookie(self, request) {
-    const value = readCookie(request, STATE_COOKIE);
+    const value = readNimbusCookie(request, STATE_COOKIE);
     if (!value)
         return null;
-    const state = await unsealCookie(self, value).catch(() => null);
+    const state = await unsealCookie(self, value, STATE_COOKIE_PURPOSE).catch(() => null);
     if (!state || state.v !== 1 || !isNonce(state.nonce))
         return null;
-    if (!isSessionId(state.sessionId) || !isTenantSegment(state.tenantSegment))
+    if (!isSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment))
         return null;
     if (!state.codeVerifier || !state.redirectUri)
         return null;
     return state;
 }
 async function sealStateCookie(self, state) {
-    return serializeCookie(STATE_COOKIE, await sealCookie(self, state), {
+    return serializeNimbusCookie(STATE_COOKIE, await sealCookie(self, state, STATE_COOKIE_PURPOSE), {
         path: '/',
         maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
     });
 }
 async function sealAuthCookie(self, request, auth) {
-    return serializeCookie(AUTH_COOKIE, await sealCookie(self, auth), {
-        path: authCookiePath(request),
-        maxAge: AUTH_COOKIE_TTL_SECONDS,
-    });
+    return createNimbusAgentOAuthCookie(auth, cookieSecret(self), request);
 }
 function clearStateCookie() {
-    return serializeCookie(STATE_COOKIE, '', { path: '/', maxAge: 0 });
+    return serializeNimbusCookie(STATE_COOKIE, '', { path: '/', maxAge: 0 });
 }
 function clearAuthCookie(request) {
-    return serializeCookie(AUTH_COOKIE, '', { path: authCookiePath(request), maxAge: 0 });
+    return clearNimbusAgentOAuthCookie(request);
 }
 function applyAuthCookieResult(headers, result) {
     if (!result)
@@ -975,69 +914,14 @@ function applyAuthCookieResult(headers, result) {
 function appendCookie(headers, cookie) {
     headers.append('Set-Cookie', cookie);
 }
-async function sealCookie(self, value) {
-    const key = await cookieCryptoKey(self);
-    const iv = new Uint8Array(12);
-    crypto.getRandomValues(iv);
-    const plaintext = new TextEncoder().encode(JSON.stringify(value));
-    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
-    const packed = new Uint8Array(iv.length + ciphertext.length);
-    packed.set(iv, 0);
-    packed.set(ciphertext, iv.length);
-    return 'v1.' + base64Url(packed);
+async function sealCookie(self, value, purpose) {
+    return sealJson(value, cookieSecret(self), { purpose });
 }
-async function unsealCookie(self, value) {
-    if (!value.startsWith('v1.'))
-        return null;
-    const packed = base64UrlDecode(value.slice(3));
-    if (packed.length <= 12)
-        return null;
-    const iv = packed.slice(0, 12);
-    const ciphertext = packed.slice(12);
-    const key = await cookieCryptoKey(self);
-    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
-    return JSON.parse(new TextDecoder().decode(plaintext));
+async function unsealCookie(self, value, purpose) {
+    return unsealJson(value, cookieSecret(self), { purpose });
 }
-async function cookieCryptoKey(self) {
-    const env = self.env;
-    const secret = envString(env, 'NIMBUS_AGENT_COOKIE_SECRET') || envString(env, 'JWT_SECRET');
-    if (!secret || secret.length < 32) {
-        throw new Error('Set NIMBUS_AGENT_COOKIE_SECRET or JWT_SECRET to a 32+ character value before enabling Cloudflare OAuth');
-    }
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
-    return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
-}
-function serializeCookie(name, value, opts) {
-    return [
-        `${name}=${value}`,
-        `Path=${opts.path}`,
-        `Max-Age=${Math.max(0, Math.floor(opts.maxAge))}`,
-        'HttpOnly',
-        'Secure',
-        'SameSite=Lax',
-    ].join('; ');
-}
-function readCookie(request, name) {
-    const header = request.headers.get('Cookie') || request.headers.get('cookie') || '';
-    const target = name + '=';
-    for (const part of header.split(';')) {
-        const item = part.trim();
-        if (item.startsWith(target))
-            return item.slice(target.length);
-    }
-    return null;
-}
-function authCookiePath(request) {
-    const base = request.headers.get(BASE_PATH_HEADER) || '';
-    return base.startsWith('/s/') ? base : '/s';
-}
-function routeContext(request) {
-    const base = request.headers.get(BASE_PATH_HEADER) || '';
-    const sessionId = base.startsWith('/s/') ? base.slice(3).split('/')[0] : '';
-    return {
-        sessionId,
-        tenantSegment: request.headers.get(TENANT_HEADER) || 'legacy:public:_',
-    };
+function cookieSecret(self) {
+    return readNimbusAgentCookieSecret(self.env);
 }
 async function loadMessages(self) {
     const messages = await self.ctx.storage.get(MESSAGES_KEY);
@@ -1070,6 +954,7 @@ function readConfig(self, url) {
         redirectUri,
         ownerAccountId: envString(env, 'NIMBUS_CLOUDFLARE_ACCOUNT_ID'),
         ownerToken: envString(env, 'NIMBUS_CLOUDFLARE_API_TOKEN'),
+        requireUserOAuth: envBool(env, 'NIMBUS_AGENT_REQUIRE_USER_OAUTH'),
         model: envString(env, 'NIMBUS_AGENT_MODEL') || DEFAULT_MODEL,
         gatewayId: envString(env, 'NIMBUS_AGENT_GATEWAY_ID') || DEFAULT_GATEWAY_ID,
     };
@@ -1077,6 +962,10 @@ function readConfig(self, url) {
 function envString(env, key) {
     const value = env?.[key];
     return typeof value === 'string' ? value.trim() : '';
+}
+function envBool(env, key) {
+    const value = envString(env, key).toLowerCase();
+    return value === '1' || value === 'true' || value === 'yes';
 }
 function splitWords(value) {
     const out = [];
@@ -1180,48 +1069,15 @@ setTimeout(function(){ try { window.close(); } catch {} }, 700);
     });
 }
 function encodeState(payload) {
-    return base64Url(new TextEncoder().encode(JSON.stringify(payload)));
+    return encodeJsonBase64Url(payload);
 }
 function decodeState(state) {
     try {
-        const bytes = base64UrlDecode(state);
-        return JSON.parse(new TextDecoder().decode(bytes));
+        return decodeJsonBase64Url(state);
     }
     catch {
         return null;
     }
-}
-async function pkceChallenge(verifier) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-    return base64Url(new Uint8Array(digest));
-}
-function randomBase64Url(byteLength) {
-    const bytes = new Uint8Array(byteLength);
-    crypto.getRandomValues(bytes);
-    return base64Url(bytes);
-}
-function base64Url(bytes) {
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++)
-        binary += String.fromCharCode(bytes[i]);
-    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-}
-function base64UrlDecode(value) {
-    let normalized = value.replaceAll('-', '+').replaceAll('_', '/');
-    while (normalized.length % 4 !== 0)
-        normalized += '=';
-    const binary = atob(normalized);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++)
-        bytes[i] = binary.charCodeAt(i);
-    return bytes;
-}
-function base64(value) {
-    const bytes = new TextEncoder().encode(value);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++)
-        binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
 }
 function trimTrailingSlash(value) {
     let end = value.length;
@@ -1242,20 +1098,6 @@ function isSessionId(value) {
     }
     return true;
 }
-function isTenantSegment(value) {
-    if (value.length < 3 || value.length > 256)
-        return false;
-    for (let i = 0; i < value.length; i++) {
-        const ch = value.charCodeAt(i);
-        const ok = (ch >= 48 && ch <= 57) ||
-            (ch >= 65 && ch <= 90) ||
-            (ch >= 97 && ch <= 122) ||
-            ch === 45 || ch === 46 || ch === 58 || ch === 95;
-        if (!ok)
-            return false;
-    }
-    return true;
-}
 function isNonce(value) {
     if (value.length < 16 || value.length > 128)
         return false;
@@ -1265,19 +1107,6 @@ function isNonce(value) {
             (ch >= 65 && ch <= 90) ||
             (ch >= 97 && ch <= 122) ||
             ch === 45 || ch === 95;
-        if (!ok)
-            return false;
-    }
-    return true;
-}
-function isAccountId(value) {
-    if (value.length < 16 || value.length > 64)
-        return false;
-    for (let i = 0; i < value.length; i++) {
-        const ch = value.charCodeAt(i);
-        const ok = (ch >= 48 && ch <= 57) ||
-            (ch >= 65 && ch <= 70) ||
-            (ch >= 97 && ch <= 102);
         if (!ok)
             return false;
     }

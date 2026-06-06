@@ -15,6 +15,15 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
     timeoutMs?: number;
     stdin?: string;
 }
+export interface ProgrammaticDestroyOptions {
+    reason?: string;
+}
+export interface ProgrammaticDestroyResult {
+    ok: true;
+    killed: number;
+    destroyedAt: number;
+    reason: string | null;
+}
 export interface ProgrammaticExecResult {
     command: string;
     exitCode: number;
@@ -101,5 +110,6 @@ export declare function rpcUnexposePort(self: Host, port: number): Promise<{
 export declare function rpcDeleteFile(self: Host, path: string, options?: {
     recursive?: boolean;
 }): Promise<void>;
+export declare function rpcDestroy(self: Host, options?: ProgrammaticDestroyOptions): Promise<ProgrammaticDestroyResult>;
 export {};
 //# sourceMappingURL=programmatic.d.ts.map

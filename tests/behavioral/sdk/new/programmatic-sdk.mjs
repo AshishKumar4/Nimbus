@@ -62,6 +62,7 @@ const stub = {
   async _rpcListPorts() { calls.push(['listPorts']); return [{ port: 3000, pid: 7, registeredAt: 1 }]; },
   async _rpcExposePort(port) { calls.push(['exposePort', port]); return { port, listening: true, pid: 7, registeredAt: 1 }; },
   async _rpcUnexposePort(port) { calls.push(['unexposePort', port]); return { port, ok: true }; },
+  async _rpcDestroy(options) { calls.push(['destroy', options]); return { ok: true, killed: 0, destroyedAt: 1, reason: options?.reason ?? null }; },
 };
 
 const ns = new FakeNamespace(stub);
@@ -115,6 +116,12 @@ a.check('capabilities do not claim docker', !provider.capabilities.includes('doc
 
 const stat = await box.files.stat('/home/user/project/a.txt');
 a.check('files.stat exposes VFS stat', stat?.type === 'file' && stat.size === 4);
+
+const destroyed = await box.destroy({ reason: 'test-cleanup' });
+a.check('destroy calls lifecycle RPC',
+  destroyed.ok === true
+  && destroyed.reason === 'test-cleanup'
+  && calls.find((c) => c[0] === 'destroy')?.[1]?.reason === 'test-cleanup');
 
 const strict = nimbus.sandbox('agent-2', { profile: 'strict' });
 await strict.runtimes.install('python');

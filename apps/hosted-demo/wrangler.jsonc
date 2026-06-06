@@ -96,10 +96,16 @@
     // empty/absent disables. The diag code remains in
     // packages/worker/src/vfs/sqlite-vfs.ts
     // (cheap, hot-path-clean) for future investigations.
-    "NIMBUS_DIAG_INSTALL_PIPELINE": "",
-    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
-    "NIMBUS_AGENT_GATEWAY_ID": "default"
-  },
+	    "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+	    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+	    "NIMBUS_AGENT_GATEWAY_ID": "default",
+	    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
+	    "DEMO_SESSION_IDLE_TTL_DAYS": "3",
+	    "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
+	    "DEMO_AUTH_COOKIE_DAYS": "30",
+	    "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
+	    "DEMO_CLEANUP_BATCH_SIZE": "100"
+	  },
   "assets": {
     // The static shell assets live in @nimbus-sh/worker even though
     // application code imports the embedder API from @nimbus-sh/sdk/worker.
@@ -111,8 +117,8 @@
     // right Durable Object (or serve the xterm UI shell for `/s/<id>/`). The
     // landing page at `/` is still served directly from ./public/index.html
     // without a Worker invocation (fast path).
-    "run_worker_first": ["/api/*", "/s/*", "/new"]
-  },
+	    "run_worker_first": ["/api/*", "/s/*", "/new", "/login", "/logout"]
+	  },
   "alias": {
     // Hosted demo runs from a Bun workspace app. These dependencies are
     // installed under the @nimbus-sh/worker workspace package, not hoisted
@@ -132,17 +138,27 @@
     "simple-get": "./node_modules/@nimbus-sh/worker/node_modules/simple-get",
     "minimisted": "./node_modules/@nimbus-sh/worker/node_modules/minimisted"
   },
-  "durable_objects": {
-    "bindings": [
-      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
-    ]
-  },
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["NimbusSession"] }
-  ],
-  "worker_loaders": [
-    { "binding": "LOADER" }
-  ],
+	  "durable_objects": {
+	    "bindings": [
+	      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+	    ]
+	  },
+	  "d1_databases": [
+	    {
+	      "binding": "DEMO_DB",
+	      "database_name": "nimbus-demo",
+	      "database_id": "8e2ecc37-d975-49d8-96b7-885d45734a53"
+	    }
+	  ],
+	  "migrations": [
+	    { "tag": "v1", "new_sqlite_classes": ["NimbusSession"] }
+	  ],
+	  "worker_loaders": [
+	    { "binding": "LOADER" }
+	  ],
+	  "triggers": {
+	    "crons": ["17 * * * *"]
+	  },
   // R2-backed cross-tenant npm cache.
   //
   // Two buckets:
@@ -216,19 +232,35 @@
       "name": "nimbus",
       "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
-      "vars": {
-        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
-        "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
-        "NIMBUS_AGENT_GATEWAY_ID": "default"
-      },
-      "durable_objects": {
-        "bindings": [
-          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
-        ]
-      },
-      "worker_loaders": [
-        { "binding": "LOADER" }
-      ],
+	      "vars": {
+	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+	        "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+	        "NIMBUS_AGENT_GATEWAY_ID": "default",
+	        "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
+	        "DEMO_SESSION_IDLE_TTL_DAYS": "3",
+	        "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
+	        "DEMO_AUTH_COOKIE_DAYS": "30",
+	        "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
+	        "DEMO_CLEANUP_BATCH_SIZE": "100"
+	      },
+	      "durable_objects": {
+	        "bindings": [
+	          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+	        ]
+	      },
+	      "d1_databases": [
+	        {
+	          "binding": "DEMO_DB",
+	          "database_name": "nimbus-demo",
+	          "database_id": "8e2ecc37-d975-49d8-96b7-885d45734a53"
+	        }
+	      ],
+	      "worker_loaders": [
+	        { "binding": "LOADER" }
+	      ],
+	      "triggers": {
+	        "crons": ["17 * * * *"]
+	      },
       "r2_buckets": [
         {
           "binding": "NPM_TARBALL_CACHE",

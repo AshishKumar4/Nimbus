@@ -64,6 +64,15 @@ export interface NimbusExecResult {
     duration: number;
     timestamp: number;
 }
+export interface NimbusDestroyOptions {
+    reason?: string;
+}
+export interface NimbusDestroyResult {
+    ok: true;
+    killed: number;
+    destroyedAt: number;
+    reason: string | null;
+}
 export interface NimbusStartResult extends NimbusExecResult {
     pid: number | null;
     process: NimbusProcess | null;
@@ -161,6 +170,7 @@ export declare class NimbusSandbox {
         language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
         install?: 'never' | 'ifMissing';
     }): Promise<NimbusExecResult>;
+    destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
     files: {
         read: (path: string) => Promise<string | null>;
         readBytes: (path: string) => Promise<Uint8Array | null>;

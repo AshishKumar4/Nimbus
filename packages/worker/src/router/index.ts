@@ -45,10 +45,13 @@ import {
 } from '../_shared/session-router.js';
 import {
   verifyRequestToken,
+  requireScopes,
+  requireSessionPin,
   authErrorResponse,
   NimbusAuthError,
   NimbusTokenMalformedError,
   type NimbusAuthEnv,
+  type VerifiedNimbusToken,
 } from '../auth/index.js';
 import { setCtxExports } from '../session/ctx-exports.js';
 import {
@@ -253,6 +256,11 @@ export function createNimbusHandler(
         if (request.method !== 'POST' && request.method !== 'GET') {
           return new Response('Method not allowed', { status: 405 });
         }
+        const auth = await resolveNimbusRouteAuth(request, env, explicitMode, {
+          requiredScopes: ['session:create'],
+        });
+        if (auth instanceof Response) return auth;
+
         const sessionId = generateSessionId();
         return new Response(null, {
           status: 302,
@@ -276,13 +284,20 @@ export function createNimbusHandler(
           });
         }
 
-        // Resolve tenant segment per auth mode.
-        const tenantSegment = await resolveTenantSegment(
+        // Resolve tenant segment per auth mode and enforce session attach
+        // semantics. In enforced mode a sid-pinned token can only attach
+        // to the exact session it was minted for.
+        const auth = await resolveNimbusRouteAuth(
           request,
           env,
           explicitMode,
+          {
+            requiredScopes: ['session:attach'],
+            sessionId: route.sessionId,
+          },
         );
-        if (tenantSegment instanceof Response) return tenantSegment;
+        if (auth instanceof Response) return auth;
+        const tenantSegment = auth.tenantSegment;
 
         // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
         if (route.innerPath === '/' || route.innerPath === '') {
@@ -361,17 +376,31 @@ function isLegacyRootPath(pathname: string): boolean {
  *
  * Mode `'legacy'`: always legacy public.
  */
-async function resolveTenantSegment(
+interface ResolvedNimbusRouteAuth {
+  tenantSegment: string;
+  verified: VerifiedNimbusToken | null;
+}
+
+async function resolveNimbusRouteAuth(
   request: Request,
   env: any,
   explicitMode: AuthMode | undefined,
-): Promise<string | Response> {
+  options: {
+    requiredScopes?: readonly string[];
+    sessionId?: string;
+  } = {},
+): Promise<ResolvedNimbusRouteAuth | Response> {
   const envLegacyFlag = (env?.NIMBUS_LEGACY_PUBLIC === '1' || env?.NIMBUS_LEGACY_PUBLIC === true);
   const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
   const mode: AuthMode = explicitMode
     ?? (hasSecret && !envLegacyFlag ? 'enforce' : 'legacy');
 
-  if (mode === 'legacy') return LEGACY_PUBLIC_DO_SEGMENT;
+  if (mode === 'legacy') {
+    return {
+      tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
+      verified: null,
+    };
+  }
 
   if (!hasSecret) {
     // Enforce mode but no secret — config error. 500, no info leak.
@@ -384,7 +413,16 @@ async function resolveTenantSegment(
 
   try {
     const verified = await verifyRequestToken(request, env as NimbusAuthEnv);
-    return verified!.doInstanceName;
+    if (options.requiredScopes?.length) {
+      requireScopes(verified!, options.requiredScopes);
+    }
+    if (options.sessionId) {
+      requireSessionPin(verified!, options.sessionId);
+    }
+    return {
+      tenantSegment: verified!.doInstanceName,
+      verified,
+    };
   } catch (e) {
     if (e instanceof NimbusAuthError) {
       return authErrorResponse(e);

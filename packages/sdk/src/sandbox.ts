@@ -86,6 +86,17 @@ export interface NimbusExecResult {
   timestamp: number;
 }
 
+export interface NimbusDestroyOptions {
+  reason?: string;
+}
+
+export interface NimbusDestroyResult {
+  ok: true;
+  killed: number;
+  destroyedAt: number;
+  reason: string | null;
+}
+
 export interface NimbusStartResult extends NimbusExecResult {
   pid: number | null;
   process: NimbusProcess | null;
@@ -155,6 +166,7 @@ interface NimbusSessionStub {
   _rpcListPorts(): Promise<NimbusPort[]>;
   _rpcExposePort(port: number): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null }>;
   _rpcUnexposePort(port: number): Promise<{ port: number; ok: boolean }>;
+  _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
 }
 
 type NimbusSessionNamespace = DurableObjectNamespace<any>;
@@ -300,6 +312,7 @@ export class NimbusSandbox {
       _rpcListPorts: () => this.remoteRpc('listPorts', []),
       _rpcExposePort: (port) => this.remoteRpc('exposePort', [port]),
       _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port]),
+      _rpcDestroy: (options) => this.remoteRpc('destroy', [options]),
     };
   }
 
@@ -392,6 +405,11 @@ export class NimbusSandbox {
       language,
       install: options.install ?? 'never',
     });
+  }
+
+  async destroy(options: NimbusDestroyOptions = {}): Promise<NimbusDestroyResult> {
+    this.readyPromise = null;
+    return this.stub()._rpcDestroy(options);
   }
 
   files = {

@@ -74,14 +74,14 @@
     },
     "packages/sdk": {
       "name": "@nimbus-sh/sdk",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
-        "@nimbus-sh/worker": "^0.1.4",
+        "@nimbus-sh/worker": "^0.1.6",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/worker": "^0.1.4",
+        "@nimbus-sh/worker": "^0.1.6",
       },
     },
     "packages/worker": {

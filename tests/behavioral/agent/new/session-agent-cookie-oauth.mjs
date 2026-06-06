@@ -90,9 +90,9 @@ function request(path, init = {}) {
   a.check('OAuth auth token storage key is absent from source',
     !source.includes('nimbus:agent:auth'),
     'source still contains nimbus:agent:auth');
-  a.check('OAuth state storage key is absent from source',
-    !source.includes('oauth-state'),
-    'source still contains oauth-state');
+  a.check('OAuth state is not persisted through DO storage calls',
+    !/storage\.(?:get|put|delete)\([^)]*oauth/i.test(source),
+    'source still has OAuth-shaped DO storage access');
 }
 
 const sum = a.summary();

@@ -115,6 +115,7 @@ export class NimbusSandbox {
             _rpcListPorts: () => this.remoteRpc('listPorts', []),
             _rpcExposePort: (port) => this.remoteRpc('exposePort', [port]),
             _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port]),
+            _rpcDestroy: (options) => this.remoteRpc('destroy', [options]),
         };
     }
     async remoteRpc(op, args) {
@@ -190,6 +191,10 @@ export class NimbusSandbox {
             language,
             install: options.install ?? 'never',
         });
+    }
+    async destroy(options = {}) {
+        this.readyPromise = null;
+        return this.stub()._rpcDestroy(options);
     }
     files = {
         read: async (path) => {

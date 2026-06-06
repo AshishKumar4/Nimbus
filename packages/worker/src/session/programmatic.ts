@@ -12,7 +12,9 @@ import {
   listAvailableRuntimes,
   listInstalledRuntimes,
 } from '../runtime/package-manager.js';
-import type { ProcessEntry } from '../runtime/process-table.js';
+import { ProcessTable, type ProcessEntry } from '../runtime/process-table.js';
+import { ProcessLogStore } from '../runtime/process-logs.js';
+import { PortRegistry } from '../runtime/port-registry.js';
 
 type Host = any;
 
@@ -25,6 +27,17 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
   env?: Record<string, string>;
   timeoutMs?: number;
   stdin?: string;
+}
+
+export interface ProgrammaticDestroyOptions {
+  reason?: string;
+}
+
+export interface ProgrammaticDestroyResult {
+  ok: true;
+  killed: number;
+  destroyedAt: number;
+  reason: string | null;
 }
 
 export interface ProgrammaticExecResult {
@@ -383,6 +396,93 @@ export async function rpcDeleteFile(
     return;
   }
   self.sqliteFs!.unlink(p);
+}
+
+export async function rpcDestroy(
+  self: Host,
+  options: ProgrammaticDestroyOptions = {},
+): Promise<ProgrammaticDestroyResult> {
+  const reason = typeof options.reason === 'string' && options.reason.trim()
+    ? options.reason.trim().slice(0, 200)
+    : null;
+  const destroyedAt = Date.now();
+  let killed = 0;
+
+  const running: ProcessEntry[] = Array.isArray(self.processTable?.getAll?.())
+    ? self.processTable.getAll().filter((p: ProcessEntry) => p.state === 'running')
+    : [];
+
+  for (const entry of running) {
+    const pid = Number(entry.pid);
+    try {
+      if (self._viteShimPid === pid) {
+        if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
+        self.cirrusReal = null;
+        if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
+        self.viteDevServer = null;
+        try { await self.ctx.storage.delete('vite-config'); } catch {}
+        self._viteShimPid = null;
+        self._viteShimPort = null;
+      } else if (self.facetManager?.kill?.(pid)) {
+        // facetManager.kill already marks process state and unregisters ports.
+      } else {
+        try { self.processTable?.kill?.(pid); } catch {}
+      }
+      try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
+      try {
+        if (!self.processLogs?.getExit?.(pid)) {
+          self.processLogs?.markExit?.(pid, 137, reason ?? 'destroyed');
+        }
+      } catch {}
+      killed++;
+    } catch {
+      try { self.processTable?.kill?.(pid); } catch {}
+      try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
+    }
+  }
+
+  try { self.processLogs?.flush?.(); } catch {}
+  try { self.sqliteFs?.flushAll?.(); } catch {}
+  try { await self.ctx.storage.deleteAll(); } catch (e: any) {
+    throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${e?.message || e}`);
+  }
+
+  resetInMemorySessionState(self);
+  return { ok: true, killed, destroyedAt, reason };
+}
+
+function resetInMemorySessionState(self: Host): void {
+  try { self._cirrusHmrWsClients?.clear?.(); } catch {}
+  try { self.terminal?.write?.('\r\n[nimbus] session destroyed\r\n'); } catch {}
+  try { self.terminal?.close?.(); } catch {}
+
+  self.sqliteFs = null;
+  self.kernel = null;
+  self.shell = null;
+  self.terminal = null;
+  self.facetManager = null;
+  self.facetProcessManager = null;
+  self.esbuildService = null;
+  self.viteDevServer = null;
+  self.cirrusReal = null;
+  self._cirrusHmrWsClients = null;
+  self.nimbusWrangler = null;
+  self.npmInstaller = null;
+  self.fetchProxyEntrypoint = null;
+  self.runtimeFsBridge = null;
+  self._cpRegistry = null;
+  self._viteShimPid = null;
+  self._viteShimPort = null;
+  self.sessionBasePath = '';
+  self.sessionBasePathHydrated = false;
+  self.wranglerAliasBannerShown = false;
+  self._b4Phase = 'drained';
+
+  self.processTable = new ProcessTable();
+  self.portRegistry = new PortRegistry();
+  self.processLogs = new ProcessLogStore();
+  self._w9PersistWired = false;
+  try { self._w9WireProcessLogPersist?.(); } catch {}
 }
 
 function rmrf(vfs: any, path: string): void {

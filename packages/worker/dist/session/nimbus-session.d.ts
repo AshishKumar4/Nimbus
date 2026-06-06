@@ -338,6 +338,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
     }): Promise<void>;
+    _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions): Promise<_programmatic.ProgrammaticDestroyResult>;
     vfsReadFile(path: string): ArrayBuffer | null;
     vfsReadFileString(path: string): string | null;
     vfsStat(path: string): {

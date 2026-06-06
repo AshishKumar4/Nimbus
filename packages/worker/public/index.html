@@ -178,6 +178,75 @@
     }
     .cta-sub .sep { color: var(--muted-2); margin: 0 6px; }
 
+    /* Launch modal */
+    .launch-modal[hidden] { display: none; }
+    .launch-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.68);
+      backdrop-filter: blur(8px);
+    }
+    .launch-dialog {
+      width: min(420px, 100%);
+      position: relative;
+      padding: 24px;
+      background: #0f1011;
+      border: 1px solid var(--border-2);
+      border-radius: 8px;
+      box-shadow: 0 28px 90px -20px rgba(0, 0, 0, 0.82);
+      text-align: left;
+    }
+    .launch-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 32px;
+      height: 32px;
+      display: inline-grid;
+      place-items: center;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .launch-close:hover,
+    .launch-close:focus-visible {
+      color: var(--fg);
+      border-color: var(--border-2);
+      outline: none;
+    }
+    .launch-dialog h2 {
+      font-size: 20px;
+      line-height: 1.25;
+      margin: 0 40px 10px 0;
+    }
+    .launch-dialog p {
+      color: var(--fg-dim);
+      font-size: 14px;
+      line-height: 1.6;
+      margin-bottom: 18px;
+    }
+    .launch-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .launch-actions form { display: inline; }
+    .launch-status {
+      min-height: 18px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 12px;
+    }
+
     /* Snippet */
     .snippet {
       margin: 56px auto 0; max-width: 620px;
@@ -556,7 +625,7 @@
       </ul>
 
       <div class="cta">
-        <form action="/new" method="POST">
+        <form action="/new" method="POST" id="hero-launch-form">
           <button type="submit" class="btn btn-primary" autofocus>
             <span>Launch</span>
             <span class="arrow" aria-hidden="true">&rarr;</span>
@@ -568,6 +637,18 @@
         </a>
       </div>
       <p class="cta-sub">Fresh 10&nbsp;GB sandbox<span class="sep" aria-hidden="true">·</span>URL is shareable<span class="sep" aria-hidden="true">·</span>Boots in ~1s</p>
+
+      <div class="launch-modal" id="launch-modal" hidden>
+        <div class="launch-dialog" role="dialog" aria-modal="true" aria-labelledby="launch-title" aria-describedby="launch-copy">
+          <button class="launch-close" type="button" id="launch-close" aria-label="Close">X</button>
+          <h2 id="launch-title">Launch Nimbus</h2>
+          <p id="launch-copy">Sign in with Cloudflare to create a hosted demo sandbox.</p>
+          <div class="launch-actions">
+            <a class="btn btn-primary" id="launch-login" href="/login?return_to=%2Fnew%3Flaunch%3D1">Login / Register with Cloudflare</a>
+          </div>
+          <div class="launch-status" id="launch-status" aria-live="polite"></div>
+        </div>
+      </div>
 
       <!-- Snippet -->
       <figure class="snippet">
@@ -681,6 +762,59 @@
   </footer>
 
   <script>
+    // ─────────────────────────── Launch auth modal ───────────────────────────
+    (function() {
+      var form = document.getElementById('hero-launch-form');
+      var modal = document.getElementById('launch-modal');
+      var close = document.getElementById('launch-close');
+      var login = document.getElementById('launch-login');
+      var status = document.getElementById('launch-status');
+      if (!form || !modal) return;
+      var checking = false;
+
+      function setModal(open) {
+        modal.hidden = !open;
+        document.body.style.overflow = open ? 'hidden' : '';
+        if (open && login && !login.hidden) login.focus();
+      }
+
+      async function readAuthState() {
+        try {
+          var res = await fetch('/api/demo/auth/me', {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+          });
+          if (res.ok) return 'authenticated';
+          if (res.status === 401) return 'login';
+          return 'fallback';
+        } catch (_) {
+          return 'fallback';
+        }
+      }
+
+      form.addEventListener('submit', async function(ev) {
+        ev.preventDefault();
+        if (checking) return;
+        checking = true;
+        if (status) status.textContent = '';
+        var authState = await readAuthState();
+        checking = false;
+        if (authState === 'authenticated' || authState === 'fallback') {
+          form.submit();
+          return;
+        }
+        if (status) status.textContent = 'Cloudflare login is required for hosted demo sandboxes.';
+        setModal(true);
+      });
+      if (close) close.addEventListener('click', function() { setModal(false); });
+      modal.addEventListener('click', function(ev) {
+        if (ev.target === modal) setModal(false);
+      });
+      document.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Escape' && !modal.hidden) setModal(false);
+      });
+    })();
+
     // ─────────────────────────── Typewriter demo ───────────────────────────
     // Cycles through a canned shell session. Single-threaded, no external
     // deps, under 50 lines. Respects prefers-reduced-motion by skipping the
