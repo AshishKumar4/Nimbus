@@ -259,6 +259,187 @@
     .term-info { color: var(--accent-2); }
     .term-dim { color: var(--muted); }
 
+    /* ─────────────────────────────── SDK ─────────────────────────────── */
+    .sdk {
+      padding: 28px 0 92px;
+      border-top: 1px solid var(--border);
+    }
+    .sdk-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+      gap: 34px;
+      align-items: center;
+    }
+    .section-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      color: var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .section-kicker::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 4px rgba(100, 255, 218, 0.65);
+    }
+    .sdk h2 {
+      max-width: 460px;
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+    .sdk-copy > p {
+      max-width: 470px;
+      color: var(--fg-dim);
+      font-size: 15px;
+      line-height: 1.65;
+      margin-bottom: 26px;
+    }
+    .sdk-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .sdk-panel {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--code-bg);
+      box-shadow: 0 30px 80px -18px rgba(0, 0, 0, 0.62);
+    }
+    .sdk-panel-bar {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 14px;
+      background: #161b22;
+      border-bottom: 1px solid var(--border);
+    }
+    .sdk-dots {
+      display: flex;
+      gap: 7px;
+    }
+    .sdk-dots span {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+    .sdk-dots .r { background: #ff5f57; }
+    .sdk-dots .y { background: #febc2e; }
+    .sdk-dots .g { background: #28c940; }
+    .sdk-panel-title {
+      min-width: 0;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 12px;
+      text-align: center;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sdk-file-pill {
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--fg-dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 11px;
+      background: rgba(88, 166, 255, 0.08);
+    }
+    .sdk-install {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 12px;
+    }
+    .sdk-install span {
+      color: var(--muted-2);
+    }
+    .sdk-install code { color: var(--fg-dim); }
+    .sdk-code-wrap {
+      overflow-x: auto;
+      scrollbar-color: #303846 #0b0f14;
+      scrollbar-width: thin;
+    }
+    .sdk-code-wrap::-webkit-scrollbar {
+      height: 8px;
+    }
+    .sdk-code-wrap::-webkit-scrollbar-track {
+      background: #0b0f14;
+    }
+    .sdk-code-wrap::-webkit-scrollbar-thumb {
+      background: #303846;
+      border: 2px solid #0b0f14;
+      border-radius: 999px;
+    }
+    .sdk-code {
+      margin: 0;
+      padding: 18px 0 18px 0;
+      min-width: 580px;
+      list-style: none;
+      counter-reset: sdk-line;
+      color: var(--fg-dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 13px;
+      line-height: 1.68;
+    }
+    .sdk-code li {
+      counter-increment: sdk-line;
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 14px;
+      padding: 0 20px 0 0;
+      white-space: pre;
+    }
+    .sdk-code li code {
+      min-width: 0;
+    }
+    .sdk-code li::before {
+      content: counter(sdk-line);
+      color: var(--muted-2);
+      text-align: right;
+      user-select: none;
+    }
+    .code-dim { color: var(--muted-2); }
+    .code-key { color: #ffb86c; }
+    .code-fn { color: var(--accent-2); }
+    .code-str { color: #a5d6ff; }
+    .code-var { color: var(--accent); }
+    .code-prop { color: #d2a8ff; }
+    .sdk-output {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 13px 16px;
+      border-top: 1px solid var(--border);
+      background: #0b0f14;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 12px;
+    }
+    .sdk-output strong {
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .sdk-output span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
     /* ─────────────────────────── Feature grid ─────────────────────────── */
     .features { padding: 32px 0 96px; border-top: 1px solid var(--border); }
     .features h2 {
@@ -318,6 +499,14 @@
       .badges li { font-size: 11px; padding: 4px 10px; }
       .btn { height: 42px; padding: 0 18px; font-size: 13.5px; }
       .terminal-body { font-size: 12px; padding: 16px 18px; }
+      .sdk { padding: 24px 0 72px; }
+      .sdk-layout { grid-template-columns: 1fr; gap: 28px; }
+      .sdk h2 { font-size: 25px; }
+      .sdk-code { font-size: 12px; min-width: 560px; }
+      .sdk-panel-bar { grid-template-columns: auto minmax(0, 1fr) auto; }
+      .sdk-file-pill { padding: 3px 6px; }
+      .sdk-install { align-items: flex-start; flex-direction: column; gap: 4px; }
+      .sdk-output { flex-direction: column; gap: 6px; }
     }
 
     /* Reduced motion */
@@ -333,6 +522,7 @@
       <span>nimbus</span>
     </a>
     <nav>
+      <a href="#sdk">SDK</a>
       <a href="#features">Features</a>
       <a class="btn-nav" href="https://github.com/AshishKumar4/Nimbus" target="_blank" rel="noopener">
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -400,6 +590,56 @@
           <span class="tc-title">nimbus — ~/app</span>
         </div>
         <pre class="terminal-body" id="demo-body"></pre>
+      </div>
+    </section>
+
+    <!-- SDK -->
+    <section class="sdk" id="sdk">
+      <div class="sdk-layout">
+        <div class="sdk-copy">
+          <span class="section-kicker">Programmatic SDK</span>
+          <h2>Run sandboxes from your own code.</h2>
+          <p>Create a persistent Nimbus workspace, write a file, start a server, and hand the preview URL back to your user.</p>
+          <div class="sdk-actions">
+            <a class="btn btn-primary" href="https://github.com/AshishKumar4/Nimbus#embed-nimbus-in-your-workers-project" target="_blank" rel="noopener">Read SDK docs</a>
+            <a class="btn btn-ghost" href="https://www.npmjs.com/package/@nimbus-sh/sdk" target="_blank" rel="noopener">npm package</a>
+          </div>
+        </div>
+
+        <figure class="sdk-panel" aria-label="Nimbus SDK TypeScript example">
+          <div class="sdk-panel-bar">
+            <div class="sdk-dots" aria-hidden="true"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+            <figcaption class="sdk-panel-title">sdk-demo.ts</figcaption>
+            <span class="sdk-file-pill">TypeScript</span>
+          </div>
+          <div class="sdk-install">
+            <span>install</span>
+            <code>npm install @nimbus-sh/sdk</code>
+          </div>
+          <div class="sdk-code-wrap">
+            <ol class="sdk-code">
+              <li><code><span class="code-key">import</span> { Nimbus } <span class="code-key">from</span> <span class="code-str">'@nimbus-sh/sdk'</span>;</code></li>
+              <li><code></code></li>
+              <li><code><span class="code-key">export default</span> {</code></li>
+              <li><code>  <span class="code-key">async</span> <span class="code-fn">fetch</span>(req: Request, env: Env) {</code></li>
+              <li><code>    <span class="code-key">const</span> <span class="code-var">endpoint</span> = <span class="code-key">new</span> URL(req.url).origin;</code></li>
+              <li><code>    <span class="code-key">const</span> <span class="code-var">nimbus</span> = Nimbus.<span class="code-fn">fromEnv</span>(env, { endpoint });</code></li>
+              <li><code>    <span class="code-key">const</span> <span class="code-var">box</span> = <span class="code-var">nimbus</span>.<span class="code-fn">sandbox</span>(<span class="code-str">'demo-app'</span>);</code></li>
+              <li><code></code></li>
+              <li><code>    <span class="code-key">await</span> <span class="code-var">box</span>.<span class="code-prop">files</span>.<span class="code-fn">write</span>(<span class="code-str">'/home/user/app.js'</span>, serverSource);</code></li>
+              <li><code>    <span class="code-key">await</span> <span class="code-var">box</span>.<span class="code-fn">startProcess</span>(<span class="code-str">'PORT=3000 node app.js'</span>);</code></li>
+              <li><code>    <span class="code-key">const</span> <span class="code-var">preview</span> = <span class="code-key">await</span> <span class="code-var">box</span>.<span class="code-prop">ports</span>.<span class="code-fn">expose</span>(3000);</code></li>
+              <li><code></code></li>
+              <li><code>    <span class="code-key">return</span> Response.<span class="code-fn">json</span>({ previewUrl: preview.url });</code></li>
+              <li><code>  },</code></li>
+              <li><code>};</code></li>
+            </ol>
+          </div>
+          <div class="sdk-output" aria-label="SDK result">
+            <span><strong>preview</strong> /s/demo-app/port/3000/</span>
+            <span><strong>runtime</strong> node</span>
+          </div>
+        </figure>
       </div>
     </section>
 
