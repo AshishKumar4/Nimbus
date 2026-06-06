@@ -9,7 +9,7 @@
     "predeploy": "bun run --cwd ../../packages/worker bundle",
     "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
     "deploy": "wrangler deploy",
-    "deploy:production": "wrangler deploy -e production"
+    "deploy:production": "bun run --cwd ../../packages/worker bundle && wrangler deploy -e production"
   },
   "dependencies": {
     "@nimbus-sh/sdk": "workspace:^",

@@ -470,6 +470,7 @@ export function initSession(self, ws) {
                         vfs: sqliteFs,
                         terminal: self.terminal,
                         installRoot,
+                        manifest,
                         // REPL-R7-1: thread the shell so ReplSession can drain
                         // shell.pasteQueue on attach (multi-line WS frames like
                         // `python\nexit(7)` would otherwise drop the tail input).
@@ -557,6 +558,7 @@ export function initSession(self, ws) {
                     facetMgr,
                     vfs: sqliteFs,
                     installRoot: target.root,
+                    manifest: target.manifest,
                 });
                 ctx.stdout.write('[python] ready\n');
             },

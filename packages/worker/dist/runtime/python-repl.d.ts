@@ -29,6 +29,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
+import type { RuntimeManifest } from './runtime-catalog.js';
 /** Inputs needed to bootstrap a Pyodide REPL session. */
 export interface PythonReplDeps {
     facetMgr: FacetManager;
@@ -36,6 +37,7 @@ export interface PythonReplDeps {
     terminal: WebSocketTerminal;
     /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/python/0.29.4'. */
     installRoot: string;
+    manifest: RuntimeManifest;
     /**
      * REPL-R7-1 (2026-05-12): optional lifo-sh Shell reference.
      *
@@ -62,5 +64,5 @@ export interface PythonReplDeps {
  * runs `python` with no args.
  */
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
-export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot'>): Promise<void>;
+export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest'>): Promise<void>;
 //# sourceMappingURL=python-repl.d.ts.map

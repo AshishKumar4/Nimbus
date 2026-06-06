@@ -2786,6 +2786,20 @@ export class FacetManager {
      * @returns Process entry with pid and facet stub
      */
     spawn(workerCode, command, cwd, opts = {}) {
+        return this.spawnWorker(workerCode, command, cwd, {
+            port: opts.port,
+            compatibilityFlags: ['nodejs_compat'],
+        });
+    }
+    /**
+     * Spawn a long-running dynamic Worker and register its routeable port.
+     *
+     * This is the shared primitive for any runtime that exposes
+     * handleHttpRequest(Request): Node facets, Vite adapters, Python virtual
+     * sockets, and future WASI socket servers should use
+     * this path instead of each owning process-table and PortRegistry plumbing.
+     */
+    spawnWorker(workerCode, command, cwd, opts = {}) {
         this.processTable.reap();
         const entry = this.processTable.spawn(command, [], cwd);
         // child-process isolation gap #2: stamp the explicit longRunning flag on the
@@ -2806,16 +2820,36 @@ export class FacetManager {
             : undefined;
         const worker = this.env.LOADER.load({
             compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: ['nodejs_compat'],
+            compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
             mainModule: 'worker.js',
-            modules: { 'worker.js': workerCode },
+            modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
             ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
         });
         const facetStub = worker.getEntrypoint();
+        this.portRegistry.bindFacetStub(entry.pid, facetStub);
         if (opts.port && opts.port > 0 && opts.port < 65536) {
             this.portRegistry.register(opts.port, entry.pid, facetStub);
         }
         return { pid: entry.pid, facetStub };
+    }
+    registerPort(pid, port, facetStub) {
+        if (port > 0 && port < 65536) {
+            this.portRegistry.register(port, pid, facetStub);
+        }
+    }
+    attachReservedPorts(pid, facetStub) {
+        return this.portRegistry.attachFacetStubByPid(pid, facetStub);
+    }
+    finishProcess(pid, exitCode, reason = 'exited') {
+        this.portRegistry.unregisterByPid(pid);
+        this.processTable.exit(pid, exitCode);
+        if (exitCode !== 0) {
+            this._w5RecordTermination(pid, exitCode, 'facet', reason);
+            try {
+                this.hooks.onExternalExit?.(pid, exitCode, reason);
+            }
+            catch { }
+        }
     }
     /** Kill a running process by PID. */
     kill(pid) {

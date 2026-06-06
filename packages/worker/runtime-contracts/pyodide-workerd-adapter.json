@@ -1,0 +1,18 @@
+{
+  "id": "pyodide-0.29.4-workerd-adapter-v1",
+  "pyodideVersion": "0.29.4",
+  "artifactPath": "share/pyodide/pyodide.asm.js",
+  "sentinel": "/* Nimbus Pyodide workerd adapter: pyodide-0.29.4-workerd-adapter-v1 */",
+  "patches": [
+    {
+      "name": "workerd-runtime-environment-fallback",
+      "find": "else throw new Error(\"Cannot determine runtime environment\")",
+      "replace": "else {/* Nimbus workerd adapter: browser-like runtime fallback */}"
+    },
+    {
+      "name": "workerd-main-thread-loader",
+      "find": "if(d.IN_BROWSER_MAIN_THREAD)",
+      "replace": "if(true||d.IN_BROWSER_MAIN_THREAD)"
+    }
+  ]
+}

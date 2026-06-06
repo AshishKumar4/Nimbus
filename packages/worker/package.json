@@ -46,6 +46,7 @@
     "dist",
     "public",
     "scripts",
+    "runtime-contracts",
     "README.md",
     "LICENSE",
     "NOTICE.md"

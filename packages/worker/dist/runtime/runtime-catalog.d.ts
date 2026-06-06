@@ -10,7 +10,7 @@
  *
  *   catalog/v1.json                          ← top-level catalog
  *   manifests/<name>-<version>.json          ← per-version manifest
- *   blobs/<name>-<version>/<file>            ← content-addressed blobs
+ *   blobs/<name>-<version>/<sha256>/<file>   ← content-addressed blobs
  *
  * Catalog schema (RuntimeCatalog):
  *   { version: 1, runtimes: { <name>: { default, versions: { <ver>: { manifest, size_bytes, license } } } } }
@@ -18,7 +18,8 @@
  * Manifest schema (RuntimeManifest):
  *   { name, version, license, wasi_namespace, memfs_companion,
  *     files: [{ path, content, sha256, size, mode? }],
- *     entrypoints: [{ binName, runner, args[], kind? }] }
+ *     entrypoints: [{ binName, runner, args[], kind? }],
+ *     runtime_artifacts?: [{ path, kind, id, source_sha256?, sha256 }] }
  *
  * R2 and Cache API failures throw; the shell verb formats the diagnostic for
  * the user.
@@ -70,6 +71,13 @@ export interface ManifestEntrypoint {
     /** Optional secondary classification (e.g. "linker" for wasm-ld). */
     kind?: string;
 }
+export interface RuntimeArtifactMetadata {
+    path: string;
+    kind: string;
+    id: string;
+    source_sha256?: string;
+    sha256: string;
+}
 export interface RuntimeManifest {
     name: string;
     version: string;
@@ -82,6 +90,7 @@ export interface RuntimeManifest {
     memfs_companion: string | null;
     files: ManifestFile[];
     entrypoints: ManifestEntrypoint[];
+    runtime_artifacts?: RuntimeArtifactMetadata[];
 }
 /** Fetch the top-level catalog. Throws if neither L2 nor R2 has it. */
 export declare function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCatalog>;
@@ -89,8 +98,11 @@ export declare function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCat
 export declare function fetchManifest(env: RuntimeCatalogEnv, manifestKey: string): Promise<RuntimeManifest>;
 /**
  * Fetch a content-addressed blob by R2 key. Bytes are eternally
- * cacheable because the key encodes the version. Verifies sha256 if
- * `expectedSha256` is provided.
+ * cacheable when the manifest key includes the content digest. Older
+ * manifests used version-only keys, so L2 can contain stale bytes after
+ * a corrected runtime sync. A cached sha mismatch is therefore treated
+ * as a stale cache entry and refetched from R2; an R2 mismatch remains
+ * a hard integrity failure.
  */
 export declare function fetchBlob(env: RuntimeCatalogEnv, blobKey: string, expectedSha256?: string): Promise<Uint8Array>;
 export {};

@@ -40,10 +40,19 @@ export interface PortEntry {
 
 export class PortRegistry {
   private ports = new Map<number, PortEntry>();
+  private facetStubsByPid = new Map<number, any>();
+
+  /** Remember the routeable facet stub for a running process. */
+  bindFacetStub(pid: number, facetStub: any): void {
+    if (!facetStub) return;
+    this.facetStubsByPid.set(pid, facetStub);
+    this.attachFacetStubByPid(pid, facetStub);
+  }
 
   /** Register a facet as listening on a port. */
   register(port: number, pid: number, facetStub: any): void {
-    this.ports.set(port, { port, pid, facetStub, registeredAt: Date.now() });
+    const routeableStub = facetStub || this.facetStubsByPid.get(pid) || null;
+    this.ports.set(port, { port, pid, facetStub: routeableStub, registeredAt: Date.now() });
   }
 
   /** Unregister a port. */
@@ -60,12 +69,24 @@ export class PortRegistry {
         count++;
       }
     }
+    this.facetStubsByPid.delete(pid);
     return count;
   }
 
   /** Look up a port entry. */
   get(port: number): PortEntry | undefined {
     return this.ports.get(port);
+  }
+
+  /** Attach a routeable facet stub to ports previously reserved by a PID. */
+  attachFacetStubByPid(pid: number, facetStub: any): number[] {
+    const ports: number[] = [];
+    for (const entry of this.ports.values()) {
+      if (entry.pid !== pid || entry.facetStub) continue;
+      entry.facetStub = facetStub;
+      ports.push(entry.port);
+    }
+    return ports;
   }
 
   /** Check if a port is registered. */

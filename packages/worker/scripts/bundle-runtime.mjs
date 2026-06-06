@@ -8,7 +8,7 @@
  *   node scripts/bundle-runtime.mjs python 0.29.4 [--bucket nimbus-runtime-cache]
  *
  * Per `2026-05-10-true-os/plan.md` §2.4:
- *   - Blobs are content-addressed under `blobs/<name>-<version>/<file>`.
+ *   - Blobs are content-addressed under `blobs/<name>-<version>/<sha256>/<file>`.
  *   - Per-version manifest at `manifests/<name>-<version>.json` lists
  *     the files (path-in-VFS, content R2 key, sha256, size, mode).
  *   - Top-level `catalog/v1.json` lists known runtimes.
@@ -31,7 +31,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -42,6 +42,9 @@ if (!ACCOUNT) {
   process.exit(1);
 }
 const WRANGLER = './node_modules/.bin/wrangler';
+const PYODIDE_WORKERD_ADAPTER = JSON.parse(
+  readFileSync(new URL('../runtime-contracts/pyodide-workerd-adapter.json', import.meta.url), 'utf8'),
+);
 
 const rawArgs = process.argv.slice(2);
 const positionalArgs = [];
@@ -152,10 +155,11 @@ const SPECS = {
       // user-VFS layout matches binji-clang's convention (bin/ for
       // exec entry, share/<name>/ for runtime-private blobs).
       { src: 'pyodide.asm.wasm', vfs: 'share/pyodide/pyodide.asm.wasm' },
-      // The Emscripten JS half. python-runner injects this verbatim
-      // as a LOADER module-source entry so workerd compiles it at
-      // module-load time (CSP-blocked at request time).
-      { src: 'pyodide.asm.js',   vfs: 'share/pyodide/pyodide.asm.js' },
+      // The Emscripten JS half. Runtime sync adapts it once for
+      // workerd and records that contract in manifest metadata; the
+      // Python runner consumes the resulting artifact without patching
+      // it during session boot.
+      { src: 'pyodide.asm.js',   vfs: 'share/pyodide/pyodide.asm.js', transform: 'pyodide-workerd-adapter' },
       // Python 3.13 stdlib. Pyodide writes this into its Emscripten
       // MEMFS at /lib/python313.zip and CPython imports from there
       // via the ZipImporter on sys.path.
@@ -255,6 +259,7 @@ if (!spec) {
 }
 
 const workDir = join(tmpdir(), `bundle-runtime-${RUNTIME}-${VERSION}`);
+rmSync(workDir, { recursive: true, force: true });
 mkdirSync(workDir, { recursive: true });
 
 console.log(`[bundle-runtime] ${RUNTIME} ${VERSION}`);
@@ -308,9 +313,16 @@ for (const f of spec.files) {
       execSync(`curl -sS -L -o "${local}" "${url}"`, { stdio: 'inherit' });
     }
   }
-  const bytes = readFileSync(local);
+  const sourceBytes = readFileSync(local);
+  const transformed = applyRuntimeTransform(f, sourceBytes);
+  if (transformed.bytes !== sourceBytes) {
+    writeFileSync(local, transformed.bytes);
+    console.log(`[bundle-runtime] transform ${f.src}: ${transformed.metadata.id}`);
+  }
+  const bytes = transformed.bytes;
   const sha256 = createHash('sha256').update(bytes).digest('hex');
-  downloaded.push({ ...f, local, bytes, sha256, size: bytes.length });
+  const r2Key = runtimeBlobKey(f.src, sha256);
+  downloaded.push({ ...f, local, bytes, sha256, size: bytes.length, r2Key, transformMetadata: transformed.metadata });
   console.log(`[bundle-runtime]   ${f.vfs} (← ${f.src}) → ${(bytes.length / 1024 / 1024).toFixed(2)} MiB sha256=${sha256.slice(0, 16)}…`);
 }
 
@@ -323,22 +335,21 @@ if (!spec.ingest_only) {
   const licenseSha256 = createHash('sha256').update(licenseBytes).digest('hex');
   downloaded.push({
     src: 'LICENSE', vfs: 'LICENSE', local: licenseLocal, bytes: licenseBytes,
-    sha256: licenseSha256, size: licenseBytes.length,
+    sha256: licenseSha256, size: licenseBytes.length, r2Key: runtimeBlobKey('LICENSE', licenseSha256),
   });
   console.log(`[bundle-runtime]   LICENSE → ${licenseBytes.length} bytes sha256=${licenseSha256.slice(0, 16)}…`);
 }
 
 // ── 2. Upload each file as a content-addressed blob (deduped) ──────
-// Content path: blobs/<name>-<version>/<src-name>. Multiple manifest
-// entries pointing at the same src share one R2 upload.
-const uploadedSrc = new Set();
+// Content path: blobs/<name>-<version>/<sha256>/<src-name>. Multiple
+// manifest entries pointing at identical content share one R2 upload.
+const uploadedBlobKeys = new Set();
 for (const f of downloaded) {
-  if (uploadedSrc.has(f.src)) continue;
-  uploadedSrc.add(f.src);
-  const r2Key = `blobs/${RUNTIME}-${VERSION}/${f.src}`;
-  console.log(`[bundle-runtime] put r2://${BUCKET}/${r2Key}`);
+  if (uploadedBlobKeys.has(f.r2Key)) continue;
+  uploadedBlobKeys.add(f.r2Key);
+  console.log(`[bundle-runtime] put r2://${BUCKET}/${f.r2Key}`);
   execSync(
-    `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${r2Key} --file "${f.local}" --remote`,
+    `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${f.r2Key} --file "${f.local}" --remote`,
     { stdio: 'inherit' },
   );
 }
@@ -356,6 +367,16 @@ if (spec.ingest_only) {
   console.log(`[bundle-runtime] catalog:  UNCHANGED (swap wave will flip default)`);
 } else {
   // ── 3. Write the per-version manifest ────────────────────────────
+  const runtimeArtifacts = downloaded
+    .filter((f) => f.transformMetadata)
+    .map((f) => ({
+      path: f.vfs,
+      kind: f.transformMetadata.kind,
+      id: f.transformMetadata.id,
+      source_sha256: f.transformMetadata.source_sha256,
+      sha256: f.sha256,
+    }));
+
   const manifest = {
     name: RUNTIME,
     version: VERSION,
@@ -364,7 +385,7 @@ if (spec.ingest_only) {
     memfs_companion: spec.memfs_companion || null,
     files: downloaded.map((f) => ({
       path: f.vfs,
-      content: `blobs/${RUNTIME}-${VERSION}/${f.src}`,
+      content: f.r2Key,
       sha256: f.sha256,
       size: f.size,
       ...(f.mode ? { mode: f.mode } : {}),
@@ -377,6 +398,7 @@ if (spec.ingest_only) {
         args: [],
         ...(f.kind ? { kind: f.kind } : {}),
       })),
+    ...(runtimeArtifacts.length ? { runtime_artifacts: runtimeArtifacts } : {}),
   };
 
   const manifestLocal = join(workDir, 'manifest.json');
@@ -403,16 +425,14 @@ if (spec.ingest_only) {
   }
 
   if (!catalog.runtimes[RUNTIME]) catalog.runtimes[RUNTIME] = { default: VERSION, versions: {} };
-  // Catalog size_bytes counts unique blob content (not duplicated
-  // manifest entries pointing at the same src). Preserved from
-  // Pyodide P1 (05c4ce6), where `python` and `python3` share one
-  // BIN_MARKER blob.
+  // Catalog size_bytes counts unique blob content, not duplicate
+  // manifest entries.
   const catalogSize = (() => {
     const seen = new Set();
     let total = 0;
     for (const f of downloaded) {
-      if (seen.has(f.src)) continue;
-      seen.add(f.src);
+      if (seen.has(f.r2Key)) continue;
+      seen.add(f.r2Key);
       total += f.size;
     }
     return total;
@@ -438,6 +458,61 @@ if (spec.ingest_only) {
   console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
   console.log(`[bundle-runtime] manifest:  r2://${BUCKET}/${manifestR2Key}`);
   console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key}`);
+}
+
+// ── Runtime transforms ───────────────────────────────────────────────
+
+function runtimeBlobKey(src, sha256) {
+  return `blobs/${RUNTIME}-${VERSION}/${sha256}/${src}`;
+}
+
+function applyRuntimeTransform(fileSpec, sourceBytes) {
+  if (!fileSpec.transform) return { bytes: sourceBytes, metadata: null };
+  if (fileSpec.transform !== 'pyodide-workerd-adapter') {
+    throw new Error(`unknown transform '${fileSpec.transform}' for ${fileSpec.src}`);
+  }
+  const sourceSha256 = createHash('sha256').update(sourceBytes).digest('hex');
+  const sourceText = sourceBytes.toString('utf8');
+  const transformedText = applyPyodideWorkerdAdapter(sourceText, fileSpec.src);
+  const bytes = Buffer.from(transformedText, 'utf8');
+  return {
+    bytes,
+    metadata: {
+      kind: 'workerd-adapter',
+      id: PYODIDE_WORKERD_ADAPTER.id,
+      source_sha256: sourceSha256,
+    },
+  };
+}
+
+function applyPyodideWorkerdAdapter(sourceText, label) {
+  if (sourceText.startsWith(PYODIDE_WORKERD_ADAPTER.sentinel)) {
+    throw new Error(`${label} already contains ${PYODIDE_WORKERD_ADAPTER.id}; expected pristine upstream source`);
+  }
+  let out = sourceText;
+  for (const patch of PYODIDE_WORKERD_ADAPTER.patches) {
+    const matches = countOccurrences(out, patch.find);
+    if (matches !== 1) {
+      throw new Error(
+        `${label}: adapter ${PYODIDE_WORKERD_ADAPTER.id} expected exactly one ` +
+        `'${patch.name}' target, found ${matches}`,
+      );
+    }
+    out = out.replace(patch.find, patch.replace);
+  }
+  return `${PYODIDE_WORKERD_ADAPTER.sentinel}\n${out}`;
+}
+
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0;
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const idx = haystack.indexOf(needle, offset);
+    if (idx < 0) return count;
+    count++;
+    offset = idx + needle.length;
+  }
 }
 
 // ── Repackage step (sysroot-prep wave) ──────────────────────────────

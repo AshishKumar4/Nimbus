@@ -10,7 +10,7 @@
  *
  *   catalog/v1.json                          ← top-level catalog
  *   manifests/<name>-<version>.json          ← per-version manifest
- *   blobs/<name>-<version>/<file>            ← content-addressed blobs
+ *   blobs/<name>-<version>/<sha256>/<file>   ← content-addressed blobs
  *
  * Catalog schema (RuntimeCatalog):
  *   { version: 1, runtimes: { <name>: { default, versions: { <ver>: { manifest, size_bytes, license } } } } }
@@ -18,7 +18,8 @@
  * Manifest schema (RuntimeManifest):
  *   { name, version, license, wasi_namespace, memfs_companion,
  *     files: [{ path, content, sha256, size, mode? }],
- *     entrypoints: [{ binName, runner, args[], kind? }] }
+ *     entrypoints: [{ binName, runner, args[], kind? }],
+ *     runtime_artifacts?: [{ path, kind, id, source_sha256?, sha256 }] }
  *
  * R2 and Cache API failures throw; the shell verb formats the diagnostic for
  * the user.
@@ -77,16 +78,19 @@ export async function fetchManifest(env, manifestKey) {
 }
 /**
  * Fetch a content-addressed blob by R2 key. Bytes are eternally
- * cacheable because the key encodes the version. Verifies sha256 if
- * `expectedSha256` is provided.
+ * cacheable when the manifest key includes the content digest. Older
+ * manifests used version-only keys, so L2 can contain stale bytes after
+ * a corrected runtime sync. A cached sha mismatch is therefore treated
+ * as a stale cache entry and refetched from R2; an R2 mismatch remains
+ * a hard integrity failure.
  */
 export async function fetchBlob(env, blobKey, expectedSha256) {
     // L2 hot path.
     const cached = await l2GetBytes(blobL2Key(blobKey));
     if (cached) {
-        if (expectedSha256)
-            await assertSha256(cached, expectedSha256, blobKey);
-        return cached;
+        if (!expectedSha256 || await bytesMatchSha256(cached, expectedSha256)) {
+            return cached;
+        }
     }
     // R2 path.
     const r2 = env.NIMBUS_RUNTIME_CACHE;
@@ -101,17 +105,24 @@ export async function fetchBlob(env, blobKey, expectedSha256) {
     const bytes = new Uint8Array(ab);
     if (expectedSha256)
         await assertSha256(bytes, expectedSha256, blobKey);
-    // Eternal-immutable write-back (content-addressed; never changes).
+    // Eternal-immutable write-back. Integrity has already been verified
+    // against the manifest before writing to L2.
     await l2PutBytes(blobL2Key(blobKey), bytes);
     return bytes;
 }
 // ── sha256 verifier ──────────────────────────────────────────────────
 async function assertSha256(bytes, expected, label) {
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    const hex = bytesToHex(new Uint8Array(digest));
+    const hex = await sha256Hex(bytes);
     if (hex !== expected.toLowerCase()) {
         throw new Error(`sha256 mismatch for ${label}: expected ${expected} got ${hex}`);
     }
+}
+async function bytesMatchSha256(bytes, expected) {
+    return await sha256Hex(bytes) === expected.toLowerCase();
+}
+async function sha256Hex(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return bytesToHex(new Uint8Array(digest));
 }
 function bytesToHex(b) {
     let s = '';

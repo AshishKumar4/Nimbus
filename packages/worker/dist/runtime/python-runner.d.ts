@@ -16,9 +16,9 @@
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
  * runner. The Pyodide wasm bytes ship via the LOADER `modules` map
  * (CSP allows wasm code-gen at module-load time, not at request
- * time). The Pyodide.asm.js + stdlib zip ride via the loader-pool
- * `context` field (JSON-stringified into the inner worker.js at
- * module-load).
+ * time). The workerd-adapted Pyodide.asm.js artifact and stdlib zip ride via
+ * the loader-pool `context` field (JSON-stringified into the inner worker.js
+ * at module-load).
  *
  * Per wasm-csp/findings.md §4b: Pyodide.asm.wasm (10.1 MB on disk)
  * compiles in 314 ms via LOADER on PROD. With our v1 deployment of
@@ -38,8 +38,8 @@ export declare function makePythonRunnerFactory(deps: {
     vfs: SqliteVFS;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => (ctx: any) => Promise<number>;
 /**
- * Compose the per-call preamble by splicing the pyodide.asm.js source
- * verbatim ahead of the __pyodideRun helper. Workerd compiles this
+ * Compose the per-call preamble by splicing the workerd-adapted
+ * pyodide.asm.js source ahead of the __pyodideRun helper. Workerd compiles this
  * blob as JS at module-load time (where `var` declarations + globals
  * assignment are allowed), then the asm.js's `var _createPyodideModule`
  * is hoisted onto globalThis.

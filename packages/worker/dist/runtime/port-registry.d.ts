@@ -38,6 +38,9 @@ export interface PortEntry {
 }
 export declare class PortRegistry {
     private ports;
+    private facetStubsByPid;
+    /** Remember the routeable facet stub for a running process. */
+    bindFacetStub(pid: number, facetStub: any): void;
     /** Register a facet as listening on a port. */
     register(port: number, pid: number, facetStub: any): void;
     /** Unregister a port. */
@@ -46,6 +49,8 @@ export declare class PortRegistry {
     unregisterByPid(pid: number): number;
     /** Look up a port entry. */
     get(port: number): PortEntry | undefined;
+    /** Attach a routeable facet stub to ports previously reserved by a PID. */
+    attachFacetStubByPid(pid: number, facetStub: any): number[];
     /** Check if a port is registered. */
     has(port: number): boolean;
     /** Get all registered ports. */

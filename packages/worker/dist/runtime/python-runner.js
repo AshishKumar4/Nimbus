@@ -16,9 +16,9 @@
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
  * runner. The Pyodide wasm bytes ship via the LOADER `modules` map
  * (CSP allows wasm code-gen at module-load time, not at request
- * time). The Pyodide.asm.js + stdlib zip ride via the loader-pool
- * `context` field (JSON-stringified into the inner worker.js at
- * module-load).
+ * time). The workerd-adapted Pyodide.asm.js artifact and stdlib zip ride via
+ * the loader-pool `context` field (JSON-stringified into the inner worker.js
+ * at module-load).
  *
  * Per wasm-csp/findings.md §4b: Pyodide.asm.wasm (10.1 MB on disk)
  * compiles in 314 ms via LOADER on PROD. With our v1 deployment of
@@ -28,6 +28,9 @@
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { createLiveStaticServerCode, parsePort } from './static-server.js';
 import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.js';
+import { PYTHON_SOCKET_SHIM } from './python-socket-shim.js';
+import { readPyodideRuntimeFiles } from './pyodide-runtime-assets.js';
 const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -199,6 +202,32 @@ export function makePythonRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
                 return 1;
             }
+            if (shouldRunPythonAsSocketProcess(argv, parsed, pipInvocation.mode === 'pip')) {
+                const result = await spawnPythonSocketProcess(facetMgr, {
+                    asmWasmVfs,
+                    asmJsVfs,
+                    stdlibVfs,
+                    lockfileVfs,
+                    manifest,
+                    vfs,
+                }, {
+                    userCode,
+                    pyArgv,
+                    userEnv,
+                    progName,
+                    cwd,
+                    fsSnapshot: fsSnapshot.snapshot,
+                    asyncRun: true,
+                    pyodidePackages: [],
+                }, formatPythonCommand(binName, argv));
+                if (result.stdout)
+                    ctx.stdout.write(result.stdout);
+                if (result.stderr)
+                    ctx.stderr.write(result.stderr);
+                if (result.fsDiff)
+                    flushVfsDiff(vfs, result.fsDiff);
+                return result.exitCode;
+            }
             // ── Dispatch the facet ───────────────────────────────────────
             let runtime;
             try {
@@ -208,6 +237,7 @@ export function makePythonRunnerFactory(deps) {
                         asmJsVfs,
                         stdlibVfs,
                         lockfileVfs,
+                        manifest,
                         vfs,
                     });
                 }
@@ -289,10 +319,17 @@ function buildPipInvocation(argv, binName, cwd, vfs) {
         code: [
             'import micropip',
             'import os',
+            'import shutil',
             'import sys',
             `packages = ${JSON.stringify(plan.packages)}`,
             `display_packages = ${JSON.stringify(plan.displayPackages)}`,
             `install_deps = ${plan.deps ? 'True' : 'False'}`,
+            `target_site_packages = "/home/user/.nimbus-python/site-packages"`,
+            'os.makedirs(target_site_packages, exist_ok=True)',
+            'if target_site_packages not in sys.path:',
+            '    sys.path.insert(0, target_site_packages)',
+            'source_site_packages = next((p for p in sys.path if isinstance(p, str) and p.startswith("/lib/python") and p.endswith("/site-packages") and os.path.isdir(p)), None)',
+            'before_entries = set(os.listdir(source_site_packages)) if source_site_packages else set()',
             'def _nimbus_disable_unsupported_extensions():',
             '    disabled = []',
             '    roots = []',
@@ -312,6 +349,18 @@ function buildPipInvocation(argv, binName, cwd, vfs) {
             '                    pass',
             '    return disabled',
             'await micropip.install(packages, keep_going=False, deps=install_deps)',
+            'if source_site_packages:',
+            '    for name in sorted(set(os.listdir(source_site_packages)) - before_entries):',
+            '        src = os.path.join(source_site_packages, name)',
+            '        dst = os.path.join(target_site_packages, name)',
+            '        if os.path.isdir(dst):',
+            '            shutil.rmtree(dst)',
+            '        elif os.path.exists(dst):',
+            '            os.remove(dst)',
+            '        if os.path.isdir(src):',
+            '            shutil.copytree(src, dst)',
+            '        else:',
+            '            shutil.copy2(src, dst)',
             'disabled_extensions = _nimbus_disable_unsupported_extensions()',
             'if disabled_extensions:',
             '    names = ", ".join(os.path.basename(p) for p in disabled_extensions[:8])',
@@ -667,13 +716,12 @@ function parsePythonArgv(argv) {
     return { mode: 'inline', inlineCode: '', scriptPath: '', scriptArgs: [], exitCode: 2,
         error: "REPL not supported in v1. Use 'python -c \"code\"' or 'python script.py'." };
 }
-function uint8ToBase64(u8) {
-    const CHUNK = 0x8000;
-    let s = '';
-    for (let i = 0; i < u8.length; i += CHUNK) {
-        s += String.fromCharCode.apply(null, Array.from(u8.subarray(i, Math.min(i + CHUNK, u8.length))));
-    }
-    return btoa(s);
+function buildPythonRuntimeAssets(args) {
+    const files = readPyodideRuntimeFiles(args);
+    return {
+        asmWasmBytes: files.asmWasmBytes,
+        preamble: buildPyodidePreamble(files.asmJsSrc, files.stdlibB64, files.lockfileText),
+    };
 }
 async function dispatchPythonFacet(runtime, args) {
     // v2 simplification: stdlibB64 and asmWasmMod are now embedded in the
@@ -726,29 +774,202 @@ async function dispatchPythonFacet(runtime, args) {
         };
     }
 }
+function shouldRunPythonAsSocketProcess(argv, parsed, pipMode) {
+    if (pipMode)
+        return false;
+    if (parsed.mode === 'script')
+        return true;
+    if (argv[0] === '-m' && argv[1] && argv[1] !== 'pip')
+        return true;
+    return false;
+}
+function formatPythonCommand(binName, argv) {
+    return [binName, ...argv].map((part) => {
+        if (/^[A-Za-z0-9_./:=@+-]+$/.test(part))
+            return part;
+        return JSON.stringify(part);
+    }).join(' ');
+}
+async function spawnPythonSocketProcess(facetMgr, assetPaths, args, command) {
+    const toAB = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    const assets = buildPythonRuntimeAssets(assetPaths);
+    const workerCode = buildPythonSocketProcessWorker(assets.preamble);
+    const spawned = facetMgr.spawnWorker(workerCode, command, args.cwd, {
+        compatibilityFlags: ['nodejs_compat'],
+        modules: {
+            'pyodide.asm.wasm': { wasm: toAB(assets.asmWasmBytes) },
+        },
+    });
+    const bootResponse = await spawned.facetStub.fetch(new Request('http://nimbus.internal/__nimbus_start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            userCode: args.userCode,
+            pyArgv: args.pyArgv,
+            userEnv: args.userEnv,
+            progName: args.progName,
+            cwd: args.cwd,
+            fsSnapshot: args.fsSnapshot,
+        }),
+    }));
+    const boot = await bootResponse.json().catch(() => null);
+    if (!bootResponse.ok || !boot) {
+        facetMgr.finishProcess(spawned.pid, 1, 'python process boot failed');
+        return {
+            exitCode: 1,
+            stdout: '',
+            stderr: `python process boot failed: HTTP ${bootResponse.status}\n`,
+        };
+    }
+    if (boot.state === 'listening' && boot.port > 0) {
+        facetMgr.registerPort(spawned.pid, Number(boot.port), spawned.facetStub);
+        return {
+            exitCode: 0,
+            stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${boot.port}]\x1b[0m\n`,
+            stderr: boot.stderr || '',
+            spawnedPid: spawned.pid,
+            port: Number(boot.port),
+        };
+    }
+    const reservedPorts = facetMgr.attachReservedPorts(spawned.pid, spawned.facetStub);
+    if (reservedPorts.length > 0) {
+        return {
+            exitCode: 0,
+            stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${reservedPorts[0]}]\x1b[0m\n`,
+            stderr: boot.stderr || '',
+            spawnedPid: spawned.pid,
+            port: reservedPorts[0],
+        };
+    }
+    if (boot.state === 'exited') {
+        const result = boot.result || {};
+        facetMgr.finishProcess(spawned.pid, Number(result.exitCode || 0), result.stderr || 'python process exited');
+        return {
+            exitCode: Number(result.exitCode || 0),
+            stdout: result.stdout || '',
+            stderr: result.stderr || result.error || '',
+            fsDiff: result.fsDiff,
+        };
+    }
+    return {
+        exitCode: 0,
+        stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`,
+        stderr: boot.stderr || '',
+        spawnedPid: spawned.pid,
+    };
+}
+function buildPythonSocketProcessWorker(preamble) {
+    return [
+        'import { WorkerEntrypoint } from "cloudflare:workers";',
+        "import __NIMBUS_WASM_pyodide_asm_wasm from './pyodide.asm.wasm';",
+        'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
+        "globalThis.__NIMBUS_WASM['pyodide.asm.wasm'] = __NIMBUS_WASM_pyodide_asm_wasm;",
+        '',
+        VIRTUAL_SOCKET_KERNEL_SRC,
+        '',
+        'globalThis.__nimbusVirtualPortRegistrationPromises = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
+        'globalThis.__nimbusVirtualSocketDidListen = function __nimbusVirtualSocketDidListen(port) {',
+        '  const supervisor = globalThis.__nimbusPythonSupervisor;',
+        '  if (!supervisor || typeof supervisor.registerPort !== "function") return;',
+        '  try {',
+        '    const p = supervisor.registerPort(Number(port)).catch((e) => {',
+        '      const msg = e && e.message ? e.message : String(e);',
+        '      (globalThis.__nimbusPyStderr || (globalThis.__nimbusPyStderr = [])).push("[python-runner] port registration failed: " + msg + "\\n");',
+        '    });',
+        '    globalThis.__nimbusVirtualPortRegistrationPromises.push(p);',
+        '  } catch (e) {',
+        '    const msg = e && e.message ? e.message : String(e);',
+        '    (globalThis.__nimbusPyStderr || (globalThis.__nimbusPyStderr = [])).push("[python-runner] port registration failed: " + msg + "\\n");',
+        '  }',
+        '};',
+        '',
+        preamble,
+        '',
+        'globalThis.__nimbusPythonSocketserverQueue = globalThis.__nimbusPythonSocketserverQueue || Promise.resolve();',
+        'function __nimbusRunPythonSocketserverCall(fnName, port) {',
+        '  const run = async () => {',
+        '    const pyodide = globalThis.__nimbusPyodideInstance;',
+        '    if (!pyodide || typeof pyodide.runPythonAsync !== "function") return false;',
+        '    const n = Number(port);',
+        '    if (!Number.isInteger(n) || n <= 0 || n >= 65536) return false;',
+        '    try {',
+        '      await pyodide.runPythonAsync(fnName + "(" + n + ")");',
+        '      return true;',
+        '    } catch (e) {',
+        '      const msg = e && e.message ? e.message : String(e);',
+        '      (globalThis.__nimbusPyStderr || (globalThis.__nimbusPyStderr = [])).push("[python-runner] socketserver call failed: " + msg + "\\n");',
+        '      return false;',
+        '    }',
+        '  };',
+        '  const task = globalThis.__nimbusPythonSocketserverQueue.then(run, run);',
+        '  globalThis.__nimbusPythonSocketserverQueue = task.then(() => {}, () => {});',
+        '  return task;',
+        '}',
+        'globalThis.__nimbusVirtualSocketEnsureListener = function __nimbusVirtualSocketEnsureListener(port) {',
+        '  return __nimbusRunPythonSocketserverCall("_nimbus_ensure_socketserver_listener", port);',
+        '};',
+        'globalThis.__nimbusVirtualSocketRequestQueued = function __nimbusVirtualSocketRequestQueued(port) {',
+        '  return __nimbusRunPythonSocketserverCall("_nimbus_handle_socketserver_request", port);',
+        '};',
+        '',
+        'async function __nimbusStartPythonProcess(args) {',
+        '  if (!globalThis.__nimbusPythonProcessPromise) {',
+        '    const stdoutStart = (globalThis.__nimbusPyStdout || []).length;',
+        '    const stderrStart = (globalThis.__nimbusPyStderr || []).length;',
+        '    globalThis.__nimbusPythonProcessOutputStart = { stdoutStart, stderrStart };',
+        '    globalThis.__nimbusPythonProcessPromise = (async () => {',
+        '      const result = await globalThis.__pyodideRun({',
+        '        userCode: args.userCode,',
+        '        pyArgv: args.pyArgv || [],',
+        '        userEnv: args.userEnv || {},',
+        '        progName: args.progName || "python",',
+        '        cwd: args.cwd || "/home/user",',
+        '        fsSnapshot: args.fsSnapshot,',
+        '        asyncRun: true,',
+        '        pyodidePackages: [],',
+        '      });',
+        '      globalThis.__nimbusPythonProcessResult = result;',
+        '      return result;',
+        '    })();',
+        '  }',
+        '  const started = globalThis.__nimbusPythonProcessOutputStart || { stdoutStart: 0, stderrStart: 0 };',
+        '  const listen = globalThis.__nimbusVirtualSockets.waitForListen(10_000).then((port) => ({ state: port ? "listening" : "pending", port }));',
+        '  const exit = globalThis.__nimbusPythonProcessPromise.then((result) => ({ state: "exited", result }));',
+        '  const first = await Promise.race([listen, exit]);',
+        '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
+        '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
+        '  const stdout = (globalThis.__nimbusPyStdout || []).slice(started.stdoutStart).join("");',
+        '  const stderr = (globalThis.__nimbusPyStderr || []).slice(started.stderrStart).join("");',
+        '  if (first.state === "listening") return { state: "listening", port: first.port, stdout, stderr };',
+        '  if (first.state === "exited") return { state: "exited", result: first.result, stdout, stderr };',
+        '  const currentPort = globalThis.__nimbusVirtualSockets.firstListeningPort();',
+        '  if (currentPort) return { state: "listening", port: currentPort, stdout, stderr };',
+        '  return { state: "running", stdout, stderr };',
+        '}',
+        '',
+        'export default class NimbusPythonProcess extends WorkerEntrypoint {',
+        '  async fetch(request) {',
+        '    globalThis.__nimbusPythonSupervisor = this.env?.SUPERVISOR;',
+        '    const url = new URL(request.url);',
+        '    if (url.pathname === "/__nimbus_start") {',
+        '      const args = await request.json();',
+        '      const boot = await __nimbusStartPythonProcess(args);',
+        '      return Response.json(boot);',
+        '    }',
+        '    return this.handleHttpRequest(request);',
+        '  }',
+        '  async handleHttpRequest(request) {',
+        '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
+        '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
+        '    if (!port) return new Response("Nimbus Python process has no listening virtual socket", { status: 502 });',
+        '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
+        '  }',
+        '}',
+    ].join('\n');
+}
 async function createPythonFacetRuntime(facetMgr, args) {
     const toAB = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-    if (!args.asmWasmVfs || !args.asmJsVfs || !args.stdlibVfs) {
-        throw new Error('installed Pyodide manifest is missing required files');
-    }
-    const asmWasmBytes = args.vfs.readFile(args.asmWasmVfs);
-    const asmJsBytes = args.vfs.readFile(args.asmJsVfs);
-    const stdlibBytes = args.vfs.readFile(args.stdlibVfs);
-    const lockfileText = args.lockfileVfs && args.vfs.exists(args.lockfileVfs)
-        ? new TextDecoder('utf-8').decode(args.vfs.readFile(args.lockfileVfs))
-        : '{"packages":{}}';
-    let asmJsSrc = new TextDecoder('utf-8').decode(asmJsBytes);
-    const PATCH_NEEDLE = 'else throw new Error("Cannot determine runtime environment")';
-    const PATCH_REPLACE = '/* nimbus-patch: was: ' + PATCH_NEEDLE + ' */';
-    if (asmJsSrc.includes(PATCH_NEEDLE)) {
-        asmJsSrc = asmJsSrc.replace(PATCH_NEEDLE, PATCH_REPLACE);
-    }
-    const HEAD_NEEDLE = 'if(d.IN_BROWSER_MAIN_THREAD)';
-    const HEAD_REPLACE = 'if(true||d.IN_BROWSER_MAIN_THREAD)';
-    if (asmJsSrc.includes(HEAD_NEEDLE)) {
-        asmJsSrc = asmJsSrc.replace(HEAD_NEEDLE, HEAD_REPLACE);
-    }
-    const preamble = buildPyodidePreamble(asmJsSrc, uint8ToBase64(stdlibBytes), lockfileText);
+    const assets = buildPythonRuntimeAssets(args);
     const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
     const env = facetMgr.env;
     const ctx = facetMgr.ctx;
@@ -756,16 +977,16 @@ async function createPythonFacetRuntime(facetMgr, args) {
         tag: 'python-runner',
         concurrency: 1,
         omitSupervisor: true,
-        preamble,
+        preamble: assets.preamble,
         wasmModules: {
-            'pyodide.asm.wasm': toAB(asmWasmBytes),
+            'pyodide.asm.wasm': toAB(assets.asmWasmBytes),
         },
     });
     return { pool };
 }
 /**
- * Compose the per-call preamble by splicing the pyodide.asm.js source
- * verbatim ahead of the __pyodideRun helper. Workerd compiles this
+ * Compose the per-call preamble by splicing the workerd-adapted
+ * pyodide.asm.js source ahead of the __pyodideRun helper. Workerd compiles this
  * blob as JS at module-load time (where `var` declarations + globals
  * assignment are allowed), then the asm.js's `var _createPyodideModule`
  * is hoisted onto globalThis.
@@ -942,6 +1163,7 @@ function buildPreambleTail(stdlibB64, lockfileContents) {
 const __NIMBUS_STDLIB_B64 = ${JSON.stringify(stdlibB64)};
 const __NIMBUS_LOCKFILE_CONTENTS = ${JSON.stringify(lockfileContents)};
 const __NIMBUS_PERSISTENT_SITE_PACKAGES = '/home/user/.nimbus-python/site-packages';
+const __NIMBUS_PYTHON_SOCKET_SHIM = ${JSON.stringify(PYTHON_SOCKET_SHIM)};
 
 // Decode base64 → Uint8Array. Run at module-init time (synchronous).
 const __nimbusStdlibBytes = (function decode(b64) {
@@ -1005,6 +1227,31 @@ function __nimbusBytesToB64(bytes) {
   let s = '';
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
   return btoa(s);
+}
+
+function __nimbusInstallPythonSocketModules(pyodide) {
+  if (!globalThis.__nimbusVirtualSockets || !pyodide || globalThis.__nimbusPythonSocketsInstalled) return;
+  const kernel = globalThis.__nimbusVirtualSockets;
+  try {
+    pyodide.registerJsModule('nimbus_sockets', {
+      listen: (port) => kernel.listen(port),
+      close_listener: (port) => kernel.closeListener(port),
+      accept: async (port) => await kernel.accept(port),
+      accept_now: (port) => kernel.acceptNow(port),
+      recv: (id, maxBytes) => kernel.recv(id, maxBytes),
+      send: (id, bytes) => kernel.send(id, bytes),
+      close: (id) => kernel.close(id),
+      pending: (port) => kernel.pending(port),
+      sleep: async (ms) => await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0))),
+      wait_readable: async (ports, timeoutSeconds) => await kernel.waitReadable(Array.from(ports || []), timeoutSeconds),
+    });
+  } catch {}
+  try {
+    pyodide.runPython(__NIMBUS_PYTHON_SOCKET_SHIM);
+    globalThis.__nimbusPythonSocketsInstalled = true;
+  } catch (e) {
+    globalThis.__nimbusPyStderr.push('[python-runner] virtual socket shim install failed: ' + (e && e.message) + '\\n');
+  }
 }
 
 function __nimbusNormPath(path) {
@@ -1373,6 +1620,8 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   } catch {
     userGlobals = null;
   }
+
+  __nimbusInstallPythonSocketModules(pyodide);
 
   try {
     pyodide.runPython(

@@ -179,6 +179,11 @@ export interface FacetManagerHooks {
     /** Fired right after processTable.spawn — lets the session print a notification. */
     onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
 }
+export interface LongRunningWorkerSpawnOptions {
+    port?: number;
+    modules?: Record<string, any>;
+    compatibilityFlags?: string[];
+}
 export declare class FacetManager {
     private ctx;
     private env;
@@ -304,6 +309,21 @@ export declare class FacetManager {
         pid: number;
         facetStub: any;
     };
+    /**
+     * Spawn a long-running dynamic Worker and register its routeable port.
+     *
+     * This is the shared primitive for any runtime that exposes
+     * handleHttpRequest(Request): Node facets, Vite adapters, Python virtual
+     * sockets, and future WASI socket servers should use
+     * this path instead of each owning process-table and PortRegistry plumbing.
+     */
+    spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): {
+        pid: number;
+        facetStub: any;
+    };
+    registerPort(pid: number, port: number, facetStub: any): void;
+    attachReservedPorts(pid: number, facetStub: any): number[];
+    finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
     kill(pid: number): boolean;
     get stats(): {

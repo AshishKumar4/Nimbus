@@ -2398,6 +2398,12 @@ export interface FacetManagerHooks {
   onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
 }
 
+export interface LongRunningWorkerSpawnOptions {
+  port?: number;
+  modules?: Record<string, any>;
+  compatibilityFlags?: string[];
+}
+
 export class FacetManager {
   private ctx: DurableObjectState;
   private env: any;
@@ -2949,6 +2955,26 @@ export class FacetManager {
     cwd: string,
     opts: { port?: number } = {},
   ): { pid: number; facetStub: any } {
+    return this.spawnWorker(workerCode, command, cwd, {
+      port: opts.port,
+      compatibilityFlags: ['nodejs_compat'],
+    });
+  }
+
+  /**
+   * Spawn a long-running dynamic Worker and register its routeable port.
+   *
+   * This is the shared primitive for any runtime that exposes
+   * handleHttpRequest(Request): Node facets, Vite adapters, Python virtual
+   * sockets, and future WASI socket servers should use
+   * this path instead of each owning process-table and PortRegistry plumbing.
+   */
+  spawnWorker(
+    workerCode: string,
+    command: string,
+    cwd: string,
+    opts: LongRunningWorkerSpawnOptions = {},
+  ): { pid: number; facetStub: any } {
     this.processTable.reap();
     const entry = this.processTable.spawn(command, [], cwd);
     // child-process isolation gap #2: stamp the explicit longRunning flag on the
@@ -2968,17 +2994,37 @@ export class FacetManager {
 
     const worker = this.env.LOADER.load({
       compatibilityDate: CF_COMPAT_DATE,
-      compatibilityFlags: ['nodejs_compat'],
+      compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
       mainModule: 'worker.js',
-      modules: { 'worker.js': workerCode },
+      modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
       ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
     });
 
     const facetStub = worker.getEntrypoint();
+    this.portRegistry.bindFacetStub(entry.pid, facetStub);
     if (opts.port && opts.port > 0 && opts.port < 65536) {
       this.portRegistry.register(opts.port, entry.pid, facetStub);
     }
     return { pid: entry.pid, facetStub };
+  }
+
+  registerPort(pid: number, port: number, facetStub: any): void {
+    if (port > 0 && port < 65536) {
+      this.portRegistry.register(port, pid, facetStub);
+    }
+  }
+
+  attachReservedPorts(pid: number, facetStub: any): number[] {
+    return this.portRegistry.attachFacetStubByPid(pid, facetStub);
+  }
+
+  finishProcess(pid: number, exitCode: number, reason = 'exited'): void {
+    this.portRegistry.unregisterByPid(pid);
+    this.processTable.exit(pid, exitCode);
+    if (exitCode !== 0) {
+      this._w5RecordTermination(pid, exitCode, 'facet', reason);
+      try { this.hooks.onExternalExit?.(pid, exitCode, reason); } catch {}
+    }
   }
 
   /** Kill a running process by PID. */

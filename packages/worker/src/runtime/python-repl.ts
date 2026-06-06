@@ -31,8 +31,10 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
+import type { RuntimeManifest } from './runtime-catalog.js';
 import { ReplSession } from './repl-session.js';
 import { buildPyodidePreamble } from './python-runner.js';
+import { readPyodideRuntimeFiles } from './pyodide-runtime-assets.js';
 
 /** Inputs needed to bootstrap a Pyodide REPL session. */
 export interface PythonReplDeps {
@@ -41,6 +43,7 @@ export interface PythonReplDeps {
   terminal: WebSocketTerminal;
   /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/python/0.29.4'. */
   installRoot: string;
+  manifest: RuntimeManifest;
   /**
    * REPL-R7-1 (2026-05-12): optional lifo-sh Shell reference.
    *
@@ -159,26 +162,15 @@ class PythonReplAdapter implements ReplAdapter {
     if (!vfs.exists(stdlibPath)) {
       throw new Error(`python_stdlib.zip missing at ${stdlibPath}`);
     }
-    const wasmBytes = vfs.readFile(wasmPath);
-    const jsBytes = vfs.readFile(jsPath);
-    const stdlibBytes = vfs.readFile(stdlibPath);
-
-    // Apply the same asm.js source-patches python-runner.ts:317-331 does.
-    let asmJsSrc = new TextDecoder('utf-8').decode(jsBytes);
-    const PATCH_NEEDLE = 'else throw new Error("Cannot determine runtime environment")';
-    const PATCH_REPLACE = '/* nimbus-patch: was: ' + PATCH_NEEDLE + ' */';
-    if (asmJsSrc.includes(PATCH_NEEDLE)) {
-      asmJsSrc = asmJsSrc.replace(PATCH_NEEDLE, PATCH_REPLACE);
-    }
-    const HEAD_NEEDLE = 'if(d.IN_BROWSER_MAIN_THREAD)';
-    const HEAD_REPLACE = 'if(true||d.IN_BROWSER_MAIN_THREAD)';
-    if (asmJsSrc.includes(HEAD_NEEDLE)) {
-      asmJsSrc = asmJsSrc.replace(HEAD_NEEDLE, HEAD_REPLACE);
-    }
-
-    // Encode stdlib bytes to base64 for splice into preamble.
-    const stdlibB64 = uint8ToBase64(stdlibBytes);
-    const preamble = buildPyodidePreamble(asmJsSrc, stdlibB64);
+    const files = readPyodideRuntimeFiles({
+      asmWasmVfs: wasmPath,
+      asmJsVfs: jsPath,
+      stdlibVfs: stdlibPath,
+      lockfileVfs: `${installRoot}/share/pyodide/pyodide-lock.json`,
+      manifest: this.deps.manifest,
+      vfs,
+    });
+    const preamble = buildPyodidePreamble(files.asmJsSrc, files.stdlibB64, files.lockfileText);
 
     // Create the pool. Tag MUST differ from 'python-runner' so REPL
     // sessions don't collide with one-shot dispatches in the loader
@@ -192,7 +184,7 @@ class PythonReplAdapter implements ReplAdapter {
       omitSupervisor: true,
       preamble,
       wasmModules: {
-        'pyodide.asm.wasm': toAB(wasmBytes),
+        'pyodide.asm.wasm': toAB(files.asmWasmBytes),
       },
     });
   }
@@ -579,20 +571,6 @@ function toAB(u8: Uint8Array): ArrayBuffer {
   return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
 }
 
-/** Encode Uint8Array → base64 in chunks to avoid stack overflow on
- *  ~2 MiB stdlib payload. Mirrors python-runner.ts's helper. */
-function uint8ToBase64(u8: Uint8Array): string {
-  const CHUNK = 0x8000;
-  let s = '';
-  for (let i = 0; i < u8.length; i += CHUNK) {
-    s += String.fromCharCode.apply(
-      null,
-      Array.from(u8.subarray(i, Math.min(i + CHUNK, u8.length))) as any,
-    );
-  }
-  return btoa(s);
-}
-
 /**
  * Top-level wrapper: builds a Python REPL adapter, drives a
  * ReplSession to completion, returns the exit code.
@@ -610,7 +588,7 @@ export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
 }
 
 export async function warmPythonRepl(
-  deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot'>,
+  deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest'>,
 ): Promise<void> {
   const adapter = new PythonReplAdapter(deps as PythonReplDeps);
   await adapter.push('');

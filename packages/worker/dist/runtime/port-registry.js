@@ -27,9 +27,18 @@
  */
 export class PortRegistry {
     ports = new Map();
+    facetStubsByPid = new Map();
+    /** Remember the routeable facet stub for a running process. */
+    bindFacetStub(pid, facetStub) {
+        if (!facetStub)
+            return;
+        this.facetStubsByPid.set(pid, facetStub);
+        this.attachFacetStubByPid(pid, facetStub);
+    }
     /** Register a facet as listening on a port. */
     register(port, pid, facetStub) {
-        this.ports.set(port, { port, pid, facetStub, registeredAt: Date.now() });
+        const routeableStub = facetStub || this.facetStubsByPid.get(pid) || null;
+        this.ports.set(port, { port, pid, facetStub: routeableStub, registeredAt: Date.now() });
     }
     /** Unregister a port. */
     unregister(port) {
@@ -44,11 +53,23 @@ export class PortRegistry {
                 count++;
             }
         }
+        this.facetStubsByPid.delete(pid);
         return count;
     }
     /** Look up a port entry. */
     get(port) {
         return this.ports.get(port);
+    }
+    /** Attach a routeable facet stub to ports previously reserved by a PID. */
+    attachFacetStubByPid(pid, facetStub) {
+        const ports = [];
+        for (const entry of this.ports.values()) {
+            if (entry.pid !== pid || entry.facetStub)
+                continue;
+            entry.facetStub = facetStub;
+            ports.push(entry.port);
+        }
+        return ports;
     }
     /** Check if a port is registered. */
     has(port) {
