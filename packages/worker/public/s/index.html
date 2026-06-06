@@ -97,7 +97,6 @@
     .panel-preview { flex: 1; display: flex; flex-direction: column; background: #0d1117; overflow: hidden; min-width: 0; }
     .panel-preview.hidden { display: none; }
     .preview-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; min-width: 0; }
-    .preview-live-dot { color: #3fb950; font-size: 12px; flex: 0 0 auto; }
     .preview-tabs {
       display: flex; align-items: center; gap: 3px; min-width: 110px; max-width: 45%;
       overflow-x: auto; scrollbar-width: none; flex: 0 1 auto;
@@ -628,7 +627,6 @@
     <div class="resize-handle" id="resizeHandle"></div>
     <div class="panel-preview" id="previewPanel">
       <div class="preview-bar">
-        <span class="preview-live-dot">&#9679;</span>
         <div class="preview-tabs" id="previewTabs" aria-label="Preview tabs"></div>
         <input class="url-bar" id="urlBar" value="" readonly>
         <button id="btnReloadPreview" title="Reload">&#8635;</button>

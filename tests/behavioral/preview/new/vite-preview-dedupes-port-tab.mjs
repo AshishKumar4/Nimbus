@@ -63,9 +63,12 @@ try {
     const active = document.querySelector('#previewTabs .preview-tab.active')?.textContent || '';
     const url = document.getElementById('urlBar')?.value || '';
     const frame = document.getElementById('preview-frame');
+    const activeRunningDot = document.querySelectorAll('#previewTabs .preview-tab.active.running').length;
     return active.includes('Preview')
       && /\/preview\/$/.test(url)
       && tabs.filter((tab) => tab.includes(':3000')).length === 0
+      && document.querySelectorAll('.preview-live-dot').length === 0
+      && activeRunningDot === 1
       && /nimbus-vite-dedupe/.test(frame?.contentDocument?.body?.innerText || '');
   }, { timeout: 45_000 });
 
@@ -75,6 +78,8 @@ try {
     tabs: Array.from(document.querySelectorAll('#previewTabs .preview-tab')).map((tab) => tab.textContent || ''),
     url: document.getElementById('urlBar')?.value || '',
     iframeText: document.getElementById('preview-frame')?.contentDocument?.body?.innerText || '',
+    liveDotCount: document.querySelectorAll('.preview-live-dot').length,
+    activeRunningDotCount: document.querySelectorAll('#previewTabs .preview-tab.active.running').length,
   }));
   a.check('Vite port is represented only by the Preview tab',
     state.stats?.vite?.running
@@ -82,6 +87,8 @@ try {
     && state.activeTab.includes('Preview')
     && /\/preview\/$/.test(state.url)
     && state.tabs.filter((tab) => tab.includes(':3000')).length === 0
+    && state.liveDotCount === 0
+    && state.activeRunningDotCount === 1
     && /nimbus-vite-dedupe/.test(state.iframeText),
     JSON.stringify(state));
 
