@@ -1997,15 +1997,44 @@
       function renderMessages(list = messages) {
         renderSeq++;
         const seq = renderSeq;
+        const displayList = normalizeTranscriptForRender(list);
         messagesEl.replaceChildren();
-        if (!list || list.length === 0) {
+        if (!displayList || displayList.length === 0) {
           messagesEl.appendChild(emptyEl);
           return;
         }
-        for (const msg of list) {
+        for (const msg of displayList) {
           messagesEl.appendChild(renderMessage(msg, seq));
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function normalizeTranscriptForRender(list) {
+        if (!Array.isArray(list)) return [];
+        const out = [];
+        let pendingTools = [];
+        const flushPendingTools = () => {
+          for (const tool of pendingTools) {
+            out.push({ id: tool.toolCallId, role: 'assistant', content: '', createdAt: Date.now(), parts: [tool] });
+          }
+          pendingTools = [];
+        };
+        for (const msg of list) {
+          if (msg?.role === 'tool') {
+            pendingTools.push(legacyToolPart(msg));
+            continue;
+          }
+          if (msg?.role === 'assistant' && pendingTools.length > 0) {
+            const next = { ...msg, parts: [...pendingTools, ...normalizeTurnParts(msg)] };
+            pendingTools = [];
+            out.push(next);
+            continue;
+          }
+          flushPendingTools();
+          out.push(msg);
+        }
+        flushPendingTools();
+        return out;
       }
 
       function renderMessage(msg, seq) {
@@ -2023,29 +2052,31 @@
         meta.className = 'agent-meta';
         meta.textContent = roleLabel(msg.role, msg.name) + (msg.createdAt ? ' · ' + formatTime(msg.createdAt) : '');
 
-        const text = String(msg.content || '');
-        const hasLiveTools = Array.isArray(msg.tools) && msg.tools.length > 0;
-        const hasReasoning = !!msg.reasoning;
         const isStreaming = !!msg.streaming;
 
         if (msg.role === 'assistant') content.appendChild(meta);
 
-        if (hasReasoning) content.appendChild(renderReasoning(msg.reasoning));
-        if (hasLiveTools) content.appendChild(renderToolList(msg.tools));
-
-        if (text || msg.error) {
+        if (msg.role === 'assistant') {
+          const parts = normalizeTurnParts(msg);
+          if (msg.error) {
+            const bubble = document.createElement('div');
+            bubble.className = 'agent-bubble';
+            bubble.textContent = msg.error;
+            content.appendChild(bubble);
+          } else if (parts.length > 0) {
+            renderTurnParts(content, parts, { streaming: isStreaming, seq });
+          } else if (isStreaming) {
+            content.appendChild(renderThinking('Thinking'));
+          }
+        } else if (msg.content || msg.error) {
           const bubble = document.createElement('div');
           bubble.className = 'agent-bubble';
           if (msg.error) {
             bubble.textContent = msg.error;
-          } else if (msg.role === 'assistant') {
-            renderMarkdownInto(bubble, text, { cursor: isStreaming, seq });
           } else {
-            bubble.textContent = text;
+            bubble.textContent = String(msg.content || '');
           }
           content.appendChild(bubble);
-        } else if (isStreaming) {
-          content.appendChild(renderThinking(hasLiveTools ? 'Waiting for tool results' : 'Thinking'));
         }
 
         if (msg.role === 'user') {
@@ -2057,8 +2088,52 @@
         return row;
       }
 
+      function normalizeTurnParts(msg) {
+        if (Array.isArray(msg.parts)) return msg.parts.filter((part) => part && typeof part === 'object');
+        const parts = [];
+        if (msg.reasoning) parts.push({ type: 'reasoning', text: String(msg.reasoning) });
+        if (Array.isArray(msg.tools)) {
+          for (const tool of msg.tools) parts.push({ type: 'tool', ...tool });
+        }
+        if (msg.content) parts.push({ type: 'text', text: String(msg.content) });
+        return parts;
+      }
+
+      function renderTurnParts(content, parts, opts = {}) {
+        const lastTextIndex = findLastTextPartIndex(parts);
+        parts.forEach((part, index) => {
+          if (part.type === 'reasoning') {
+            if (part.text) content.appendChild(renderReasoning(part.text));
+          } else if (part.type === 'tool') {
+            content.appendChild(renderToolCard(part));
+          } else if (part.type === 'text' && part.text) {
+            const bubble = document.createElement('div');
+            bubble.className = 'agent-bubble';
+            renderMarkdownInto(bubble, part.text, {
+              cursor: !!opts.streaming && index === lastTextIndex,
+              seq: opts.seq,
+            });
+            content.appendChild(bubble);
+          }
+        });
+        if (opts.streaming && (parts.length === 0 || shouldShowPostPartThinking(parts))) {
+          content.appendChild(renderThinking('Thinking'));
+        }
+      }
+
+      function findLastTextPartIndex(parts) {
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (parts[i]?.type === 'text' && parts[i].text) return i;
+        }
+        return -1;
+      }
+
+      function shouldShowPostPartThinking(parts) {
+        const last = parts[parts.length - 1];
+        return !!last && last.type === 'tool' && last.status !== 'running';
+      }
+
       function renderStoredToolMessage(msg) {
-        const payload = parseToolPayload(msg);
         const row = document.createElement('div');
         row.className = 'agent-msg assistant';
         const avatar = document.createElement('div');
@@ -2066,16 +2141,23 @@
         avatar.textContent = 'T';
         const content = document.createElement('div');
         content.className = 'agent-content';
-        content.appendChild(renderToolList([{
+        content.appendChild(renderToolCard(legacyToolPart(msg)));
+        row.append(avatar, content);
+        return row;
+      }
+
+      function legacyToolPart(msg) {
+        const payload = parseToolPayload(msg);
+        const output = payload.output ?? msg.content;
+        return {
+          type: 'tool',
           toolCallId: msg.id,
           toolName: payload.tool || msg.name || 'tool',
           input: payload.input,
-          output: payload.output ?? msg.content,
-          status: payload.output?.error ? 'error' : 'done',
+          output,
+          status: isToolOutputFailure(output) ? 'error' : 'done',
           durationMs: payload.durationMs,
-        }]));
-        row.append(avatar, content);
-        return row;
+        };
       }
 
       function parseToolPayload(msg) {
@@ -2107,13 +2189,6 @@
         pre.textContent = text;
         details.append(summary, pre);
         return details;
-      }
-
-      function renderToolList(tools) {
-        const wrap = document.createElement('div');
-        wrap.className = 'agent-tools';
-        for (const tool of tools) wrap.appendChild(renderToolCard(tool));
-        return wrap;
       }
 
       function renderToolCard(tool) {
@@ -2166,6 +2241,17 @@
       function prettyValue(value) {
         if (typeof value === 'string') return value;
         try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+      }
+
+      function isToolOutputFailure(output) {
+        if (!output || typeof output !== 'object') return false;
+        if (typeof output.error === 'string' && output.error.trim()) return true;
+        if (output.success === false) return true;
+        if (typeof output.exitCode === 'number' && output.exitCode !== 0) return true;
+        if (output.exit && typeof output.exit === 'object' && typeof output.exit.code === 'number') {
+          return output.exit.code !== 0;
+        }
+        return false;
       }
 
       function renderMarkdownInto(el, text, opts = {}) {
@@ -2296,8 +2382,7 @@
           content: '',
           createdAt: Date.now(),
           streaming: true,
-          reasoning: '',
-          tools: [],
+          parts: [],
         };
         let liveList = [...messages, optimistic, pending];
         renderMessages(liveList);
@@ -2363,9 +2448,11 @@
           liveAssistant.id = event.messageId || liveAssistant.id;
           liveAssistant.createdAt = event.createdAt || liveAssistant.createdAt;
         } else if (event.type === 'text-delta') {
-          liveAssistant.content += String(event.delta || '');
+          const delta = String(event.delta || '');
+          liveAssistant.content += delta;
+          appendLiveTextPart(liveAssistant, 'text', delta);
         } else if (event.type === 'reasoning-delta') {
-          liveAssistant.reasoning = (liveAssistant.reasoning || '') + String(event.delta || '');
+          appendLiveTextPart(liveAssistant, 'reasoning', String(event.delta || ''));
         } else if (event.type === 'tool-call') {
           upsertLiveTool(liveAssistant, {
             toolCallId: event.toolCallId,
@@ -2380,7 +2467,7 @@
             toolName: event.toolName,
             input: event.input,
           });
-          tool.status = event.type === 'tool-error' ? 'error' : 'done';
+          tool.status = event.type === 'tool-error' ? 'error' : (event.status || 'done');
           tool.output = event.type === 'tool-error' ? { error: event.error } : event.output;
           tool.error = event.type === 'tool-error' ? event.error : '';
           if (tool.startedAt) tool.durationMs = Date.now() - tool.startedAt;
@@ -2392,7 +2479,7 @@
             return;
           }
           if (event.message) {
-            messages = [...messages, ...(Array.isArray(event.toolEvents) ? event.toolEvents : []), event.message];
+            messages = [...messages, event.message];
           }
         } else if (event.type === 'error') {
           liveAssistant.streaming = false;
@@ -2403,12 +2490,23 @@
         repaint();
       }
 
+      function appendLiveTextPart(liveAssistant, type, delta) {
+        if (!delta) return;
+        if (!Array.isArray(liveAssistant.parts)) liveAssistant.parts = [];
+        const last = liveAssistant.parts[liveAssistant.parts.length - 1];
+        if (last && last.type === type) {
+          last.text = String(last.text || '') + delta;
+        } else {
+          liveAssistant.parts.push({ type, text: delta });
+        }
+      }
+
       function upsertLiveTool(liveAssistant, patch) {
-        if (!Array.isArray(liveAssistant.tools)) liveAssistant.tools = [];
-        let tool = liveAssistant.tools.find((item) => item.toolCallId === patch.toolCallId);
+        if (!Array.isArray(liveAssistant.parts)) liveAssistant.parts = [];
+        let tool = liveAssistant.parts.find((item) => item.type === 'tool' && item.toolCallId === patch.toolCallId);
         if (!tool) {
-          tool = { status: 'running' };
-          liveAssistant.tools.push(tool);
+          tool = { type: 'tool', status: 'running' };
+          liveAssistant.parts.push(tool);
         }
         Object.assign(tool, patch);
         return tool;
