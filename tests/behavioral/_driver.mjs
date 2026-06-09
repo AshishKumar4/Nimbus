@@ -58,13 +58,14 @@ export async function fetchPreview(sid, opts = {}) {
   return { status: r.status, html: text, elapsed: Date.now() - t0, url };
 }
 
-/** GET /s/<sid>/port/<n>/ — returns {status, body}. */
-export async function fetchPort(sid, port, path = '') {
+/** Fetch /s/<sid>/port/<n>/ — returns {status, body}. */
+export async function fetchPort(sid, port, path = '', init = {}) {
   const url = `${BASE}/s/${sid}/port/${port}/${path}`;
   const t0 = Date.now();
-  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
+  const extraHeaders = init.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {};
+  const r = await fetch(url, { ...init, redirect: 'manual', headers: requestHeaders(extraHeaders) });
   const text = await r.text().catch(() => '');
-  return { status: r.status, body: text, elapsed: Date.now() - t0, url };
+  return { status: r.status, body: text, headers: r.headers, elapsed: Date.now() - t0, url };
 }
 
 /**

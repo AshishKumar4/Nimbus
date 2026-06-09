@@ -61,6 +61,11 @@ function __nimbusHeaderValue(headers, name) {
   return null;
 }
 
+function __nimbusResponseCanHaveBody(method, status) {
+  if (String(method || "").toUpperCase() === "HEAD") return false;
+  return status !== 204 && status !== 205 && status !== 304;
+}
+
 function __nimbusParseChunked(body) {
   const dec = new TextDecoder();
   const chunks = [];
@@ -104,8 +109,9 @@ async function __nimbusRequestBytes(request) {
 }
 
 class __NimbusVirtualConnection {
-  constructor(id, requestBytes) {
+  constructor(id, requestMethod, requestBytes) {
     this.id = id;
+    this.requestMethod = requestMethod;
     this.requestBytes = requestBytes;
     this.requestOffset = 0;
     this.output = [];
@@ -157,17 +163,20 @@ class __NimbusVirtualConnection {
     const body = bytes.subarray(headerEnd);
     const contentLength = __nimbusHeaderValue(headerPairs, "Content-Length");
     const transferEncoding = __nimbusHeaderValue(headerPairs, "Transfer-Encoding");
-    let responseBody = body;
-    if (transferEncoding && /chunked/i.test(transferEncoding)) {
-      const parsed = __nimbusParseChunked(body);
-      if (!parsed) return null;
-      responseBody = parsed;
-    } else if (contentLength != null) {
-      const expected = parseInt(contentLength, 10);
-      if (Number.isFinite(expected) && body.byteLength < expected) return null;
-      if (Number.isFinite(expected)) responseBody = body.subarray(0, expected);
-    } else if (!this.closed) {
-      return null;
+    const hasBody = __nimbusResponseCanHaveBody(this.requestMethod, status);
+    let responseBody = hasBody ? body : null;
+    if (hasBody) {
+      if (transferEncoding && /chunked/i.test(transferEncoding)) {
+        const parsed = __nimbusParseChunked(body);
+        if (!parsed) return null;
+        responseBody = parsed;
+      } else if (contentLength != null) {
+        const expected = parseInt(contentLength, 10);
+        if (Number.isFinite(expected) && body.byteLength < expected) return null;
+        if (Number.isFinite(expected)) responseBody = body.subarray(0, expected);
+      } else if (!this.closed) {
+        return null;
+      }
     }
     const headers = new Headers();
     for (const [k, v] of headerPairs) {
@@ -343,7 +352,7 @@ class __NimbusVirtualSocketKernel {
     }
     if (!listener) return new Response("Nimbus virtual socket: no listener on port " + port, { status: 502 });
     const id = this.nextConnectionId++;
-    const conn = new __NimbusVirtualConnection(id, await __nimbusRequestBytes(request));
+    const conn = new __NimbusVirtualConnection(id, request.method, await __nimbusRequestBytes(request));
     this.connections.set(id, conn);
     listener.push(conn);
     try {

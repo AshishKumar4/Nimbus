@@ -51,6 +51,13 @@ try {
       `status=${r.status} body=${JSON.stringify(r.body.slice(0, 300))}`);
   }
 
+  {
+    const r = await fetchPort(sid, 8125, '/hello-ruby', { method: 'HEAD' });
+    a.check('WEBrick preview responds to HEAD without waiting for a body',
+      r.status === 200 && r.body === '',
+      `status=${r.status} body=${JSON.stringify(r.body)} contentLength=${r.headers.get('content-length')} elapsed=${r.elapsed}ms`);
+  }
+
   if (pid > 0) await t.run(`kill ${pid}`, 10_000).catch(() => {});
 } finally {
   await t.close();
