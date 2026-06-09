@@ -117,12 +117,22 @@ type ExecutionIo = {
   stdin?: CommandInputStream;
   stdout?: CommandOutputStream;
   stderr?: CommandOutputStream;
+  /**
+   * Per-execution sink for shell-level direct-terminal writes (the
+   * `/dev/tty` target and the late-bound command-stdout fallback). Scoping
+   * this through `io` keeps a nested `Shell.execute` capture isolated: the
+   * parent command's closures resolve to the parent's terminal writer, never
+   * to a field a nested execute reassigns.
+   */
+  writeToTerminal?: (text: string) => void;
   terminalStdin?: TerminalInputStream;
   terminalFds?: TerminalFdState;
   scriptMode?: boolean;
   signal?: AbortSignal;
   registerProcess?: boolean;
   positionals?: PositionalFrame;
+  /** Host-supplied fields merged into each command's CommandContext. */
+  commandContext?: Record<string, unknown>;
 };
 
 export type TerminalFdState = {
@@ -146,10 +156,6 @@ export interface InterpreterConfig {
   processRegistry: ProcessRegistry;
   writeToTerminal: (text: string) => void;
   aliases?: Map<string, string>;
-  /** Override default stdout for programmatic capture */
-  defaultStdout?: CommandOutputStream;
-  /** Override default stderr for programmatic capture */
-  defaultStderr?: CommandOutputStream;
   /** Returns the current abort signal for foreground commands */
   getAbortSignal?: () => AbortSignal;
   options: ShellOptions;
@@ -207,21 +213,25 @@ export class Interpreter {
       stdin?: CommandInputStream;
       stdout?: CommandOutputStream;
       stderr?: CommandOutputStream;
+      writeToTerminal?: (text: string) => void;
       terminalFds?: TerminalFdState;
       scriptMode?: boolean;
+      commandContext?: Record<string, unknown>;
     },
   ): Promise<number> {
+    const io = this.createTerminalIo(
+      terminalStdin,
+      options?.terminalFds,
+      options?.scriptMode === true,
+      options?.stdin,
+    );
+    if (options?.stdout) io.stdout = options.stdout;
+    if (options?.stderr) io.stderr = options.stderr;
+    if (options?.writeToTerminal) io.writeToTerminal = options.writeToTerminal;
+    if (options?.commandContext) io.commandContext = options.commandContext;
     try {
       const tokens = lex(input);
       const script = parse(tokens);
-      const io = this.createTerminalIo(
-        terminalStdin,
-        options?.terminalFds,
-        options?.scriptMode === true,
-        options?.stdin,
-      );
-      if (options?.stdout) io.stdout = options.stdout;
-      if (options?.stderr) io.stderr = options.stderr;
       const exitCode = await this.executeScriptWithIo(script, io);
       return await this.runExitTrap(exitCode, io, options?.runExitTrap === true);
     } catch (e) {
@@ -233,7 +243,7 @@ export class Interpreter {
         return e.exitCode;
       }
       if (e instanceof Error) {
-        this.config.writeToTerminal(`${e.message}\n`);
+        this.writeTerminal(io, `${e.message}\n`);
       }
       this.lastExitCode = 2;
       return 2;
@@ -276,7 +286,7 @@ export class Interpreter {
       const jobId = this.config.jobTable.add(commandText, waitable, abortController);
       this.config.env['!'] = String(pid);
 
-      this.config.writeToTerminal(`[${jobId}] ${pid} (background)\n`);
+      this.writeTerminal(io, `[${jobId}] ${pid} (background)\n`);
 
       // Don't auto-reap - let Shell collect zombies before next prompt
       // This matches Linux behavior where zombies persist until reaped
@@ -481,12 +491,8 @@ export class Interpreter {
 
   private async executeDoubleBracket(node: DoubleBracketNode, io: ExecutionIo): Promise<number> {
     return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
-      const stdout = redirIo.stdout ?? this.config.defaultStdout ?? {
-        write: (text: string) => this.config.writeToTerminal(text),
-      };
-      const stderr = redirIo.stderr ?? this.config.defaultStderr ?? {
-        write: (text: string) => this.config.writeToTerminal(text),
-      };
+      const stdout = redirIo.stdout ?? this.terminalSink(redirIo);
+      const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
       const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
       const builtinIo = this.createIoFromFds(redirIo, fds);
       const exitCode = await evaluateDoubleBracketWords(
@@ -533,7 +539,7 @@ export class Interpreter {
         if (abortCode !== null) return abortCode;
 
         if (!this.assignEnv(node.variable, val)) {
-          this.config.writeToTerminal(`${node.variable}: readonly variable\n`);
+          this.writeTerminal(redirIo, `${node.variable}: readonly variable\n`);
           return 1;
         }
         try {
@@ -708,7 +714,7 @@ export class Interpreter {
       for (const assign of cmd.assignments) {
         const value = await expandWord(assign.value, expandCtx);
         if (!this.assignEnv(assign.name, value)) {
-          this.config.writeToTerminal(`${assign.name}: readonly variable\n`);
+          this.writeTerminal(io, `${assign.name}: readonly variable\n`);
           if (io.scriptMode === true) throw new ErrexitSignal(1);
           return 1;
         }
@@ -738,29 +744,20 @@ export class Interpreter {
     for (const assign of cmd.assignments) {
       const value = await expandWord(assign.value, expandCtx);
       if (this.config.readonlyNames.has(assign.name)) {
-        const redirStderr = io.stderr ?? this.config.defaultStderr;
-        if (redirStderr) {
-          redirStderr.write(`${assign.name}: readonly variable\n`);
-        } else {
-          this.config.writeToTerminal(`${assign.name}: readonly variable\n`);
-        }
+        (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`);
         return 1;
       }
       savedEnv[assign.name] = this.config.env[assign.name];
       this.assignEnv(assign.name, value);
     }
 
-    // Set up stdout/stderr (default to config overrides, then terminal)
-    let stdout: CommandOutputStream = io.stdout ?? this.config.defaultStdout ?? {
-      write: (text: string) => this.config.writeToTerminal(text),
-    };
-    let stderr: CommandOutputStream = io.stderr ?? this.config.defaultStderr ?? {
-      write: (text: string) => this.config.writeToTerminal(text),
-    };
+    // Set up stdout/stderr (per-execution io target, then the terminal sink)
+    let stdout: CommandOutputStream = io.stdout ?? this.terminalSink(io);
+    let stderr: CommandOutputStream = io.stderr ?? this.terminalSink(io);
     let stdin: CommandInputStream | undefined = io.stdin;
     const fds = this.createCommandFds(stdout, stderr, stdin, io);
     try {
-      await this.applyRedirections(cmd.redirections, fds, expandCtx, io.terminalStdin);
+      await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
     } catch (error) {
       const redirStderr = fds.outputFds.get(2) ?? stderr;
       redirStderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -838,6 +835,7 @@ export class Interpreter {
 
               const terminalStdin = io.terminalStdin;
               const ctx: CommandContext = {
+                ...io.commandContext,
                 args,
                 env: { ...this.config.env },
                 cwd: this.config.getCwd(),
@@ -1023,13 +1021,25 @@ export class Interpreter {
     if (io.stdin) next.stdin = io.stdin;
     if (io.stdout) next.stdout = io.stdout;
     if (io.stderr) next.stderr = io.stderr;
+    if (io.writeToTerminal) next.writeToTerminal = io.writeToTerminal;
     if (io.terminalStdin) next.terminalStdin = io.terminalStdin;
     if (io.terminalFds) next.terminalFds = io.terminalFds;
     if (io.scriptMode) next.scriptMode = true;
     if (io.signal) next.signal = io.signal;
     if (io.registerProcess === false) next.registerProcess = false;
     if (io.positionals) next.positionals = io.positionals;
+    if (io.commandContext) next.commandContext = io.commandContext;
     return next;
+  }
+
+  /** Per-execution direct-terminal write, isolated from a nested capture. */
+  private writeTerminal(io: ExecutionIo, text: string): void {
+    (io.writeToTerminal ?? this.config.writeToTerminal)(text);
+  }
+
+  /** Late-bound fallback sink for command stdout/stderr with no fd target. */
+  private terminalSink(io: ExecutionIo): CommandOutputStream {
+    return { write: (text: string) => this.writeTerminal(io, text) };
   }
 
   private forkPositionals(io: ExecutionIo): PositionalFrame {
@@ -1109,12 +1119,12 @@ export class Interpreter {
     setMembership(
       terminalOutputFds,
       1,
-      io.terminalFds?.stdout ?? (!this.config.defaultStdout && !io.stdout),
+      io.terminalFds?.stdout ?? !io.stdout,
     );
     setMembership(
       terminalOutputFds,
       2,
-      io.terminalFds?.stderr ?? (!this.config.defaultStderr && !io.stderr),
+      io.terminalFds?.stderr ?? !io.stderr,
     );
     const terminalInputFds = new Set<number>(this.persistentTerminalInputFds);
     setMembership(
@@ -1147,14 +1157,10 @@ export class Interpreter {
     }
 
     const expandCtx = this.createExpandContext(io);
-    const stdout = io.stdout ?? this.config.defaultStdout ?? {
-      write: (text: string) => this.config.writeToTerminal(text),
-    };
-    const stderr = io.stderr ?? this.config.defaultStderr ?? {
-      write: (text: string) => this.config.writeToTerminal(text),
-    };
+    const stdout = io.stdout ?? this.terminalSink(io);
+    const stderr = io.stderr ?? this.terminalSink(io);
     const fds = this.createCommandFds(stdout, stderr, io.stdin, io);
-    await this.applyRedirections(redirections, fds, expandCtx, io.terminalStdin);
+    await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
 
     return execute(this.createIoFromFds(io, fds));
   }
@@ -1163,6 +1169,7 @@ export class Interpreter {
     redirections: RedirectionNode[],
     fds: FdState,
     expandCtx: ExpandContext,
+    io: ExecutionIo,
     terminalStdin?: TerminalInputStream,
   ): Promise<void> {
     for (const redir of redirections) {
@@ -1178,10 +1185,10 @@ export class Interpreter {
       const target = await expandWord(redir.target, expandCtx);
       switch (redir.operator) {
         case 'write':
-          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(target, 'write', terminalStdin));
+          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'write', terminalStdin));
           break;
         case 'append':
-          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(target, 'append', terminalStdin));
+          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', terminalStdin));
           break;
         case 'read':
           this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(target, terminalStdin));
@@ -1189,11 +1196,11 @@ export class Interpreter {
         case 'readWrite': {
           const fd = redir.fd ?? 0;
           this.setInputFd(fds, fd, this.openInputTarget(target, terminalStdin));
-          this.setOutputFd(fds, fd, this.openOutputTarget(target, 'append', terminalStdin));
+          this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', terminalStdin));
           break;
         }
         case 'writeAll': {
-          const writer = this.openOutputTarget(target, 'write', terminalStdin);
+          const writer = this.openOutputTarget(io, target, 'write', terminalStdin);
           this.setOutputFd(fds, 1, writer);
           this.setOutputFd(fds, 2, writer);
           break;
@@ -1265,6 +1272,7 @@ export class Interpreter {
   }
 
   private openOutputTarget(
+    io: ExecutionIo,
     target: string,
     mode: 'write' | 'append',
     terminalStdin?: TerminalInputStream,
@@ -1272,7 +1280,7 @@ export class Interpreter {
     if (target === '/dev/null') return { stream: this.createNullWriter(), terminal: false };
     if (target === '/dev/tty') {
       if (!terminalStdin) throw new Error('/dev/tty: no controlling terminal');
-      return { stream: { write: (text: string) => this.config.writeToTerminal(text) }, terminal: true };
+      return { stream: this.terminalSink(io), terminal: true };
     }
     const targetPath = resolve(this.config.getCwd(), target);
     if (mode === 'write') {

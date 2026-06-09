@@ -18,6 +18,14 @@ export interface ExecuteOptions {
     shellOptions?: Partial<ShellOptions>;
     scriptMode?: boolean;
     terminalFds?: TerminalFdState;
+    /**
+     * Host-supplied fields merged into the `CommandContext` of every command in
+     * this execution. The shell substrate treats them as opaque; Nimbus runtime
+     * commands read `__nimbusBinSpawn`/bundle hints off the context. Used to hand
+     * a long-running registry command (vite/wrangler/serve) the wrapper pid the
+     * caller already allocated instead of letting it spawn a second one.
+     */
+    commandContext?: Record<string, unknown>;
 }
 export declare class Shell {
     private terminal;

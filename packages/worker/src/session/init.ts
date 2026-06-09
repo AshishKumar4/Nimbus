@@ -1438,12 +1438,27 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // for the life of this dev-server instance; subsequent log lines
       // emitted by ViteDevServer flow into the pid's stderr ring,
       // visible in the Process tab.
-      const viteProcEntry = self.processes.spawn(
+      //
+      // Long-running handoff (bin-spawn contract): when invoked from a
+      // wrapper that already allocated a pid (`npm run dev` via
+      // shellExecuteTracked, or the npm-bin resolver), ADOPT that pid instead
+      // of spawning a second one. One pid, one start banner, no false exit —
+      // the wrapper stays `running` in /api/processes with this port.
+      const binSpawn = ctx.__nimbusBinSpawn as
+        | { skipSpawn?: boolean; callerPid?: number }
+        | undefined;
+      const adoptedEntry =
+        binSpawn?.skipSpawn && binSpawn.callerPid != null
+          ? self.processes.get(binSpawn.callerPid)
+          : undefined;
+      const handedOff = adoptedEntry != null;
+      const viteProcEntry = adoptedEntry ?? self.processes.spawn(
         'vite (' + vfsRoot + ')',
         expandedArgs,
         vfsRoot,
         { longRunning: true },
       );
+      if (handedOff) self.processes.setLongRunning(viteProcEntry.pid);
 
       self.viteDevServer = new ViteDevServer({
         vfs: self.sqliteFs!,
@@ -1488,18 +1503,21 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
       // Spawn / long-running event for the Process tab UI. Mirrors the
       // shellExecuteTracked banner so the user sees the same shape no
-      // matter how vite was invoked.
-      if (self.terminal) {
-        self.terminal.write(
-          `\x1b[2m[shell started (long-running): pid=${viteProcEntry.pid} cmd="vite ${expandedArgs.join(' ')}"]\x1b[0m\r\n`,
-        );
+      // matter how vite was invoked. Suppressed on handoff — the wrapper
+      // already emitted the single start banner and spawn event for this pid.
+      if (!handedOff) {
+        if (self.terminal) {
+          self.terminal.write(
+            `\x1b[2m[shell started (long-running): pid=${viteProcEntry.pid} cmd="vite ${expandedArgs.join(' ')}"]\x1b[0m\r\n`,
+          );
+        }
+        notifyTerminalEvent(self.terminal, {
+          type: 'spawn',
+          pid: viteProcEntry.pid,
+          command: 'vite ' + expandedArgs.join(' '),
+          longRunning: true,
+        });
       }
-      notifyTerminalEvent(self.terminal, {
-        type: 'spawn',
-        pid: viteProcEntry.pid,
-        command: 'vite ' + expandedArgs.join(' '),
-        longRunning: true,
-      });
 
       // Banner — reports the resolved port and PID so the user can
       // verify the multi-target routing.
@@ -1911,6 +1929,20 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           env: cmdCtx.env,
           onStdout: tee('stdout', cmdCtx.stdout),
           onStderr: tee('stderr', cmdCtx.stderr),
+          // Single spawn path for long-running handoff: a registry command
+          // (vite/wrangler/serve) ADOPTS this wrapper pid via the bin-spawn
+          // contract instead of allocating a second one, and suppresses its
+          // own `[started (long-running)]` notice.
+          commandContext: opts.longRunning
+            ? {
+                __nimbusBinSpawn: {
+                  skipSpawn: true,
+                  callerPid: pid,
+                  command: cmd,
+                  forceLongRunning: true,
+                },
+              }
+            : undefined,
         });
         exitCode = result.exitCode;
       } catch (e: any) {
@@ -1919,22 +1951,30 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         tee('stderr', cmdCtx.stderr)('shellExecuteTracked error: ' + msg + '\n');
         exitCode = 1;
       } finally {
-        try { self.processes.exit(pid, exitCode); } catch {}
-        try {
-          if (!self.processes.getExit(pid)) {
-            self.processes.markExit(pid, exitCode);
-          }
-        } catch {}
+        // When a long-running script handed off to a live server (the registry
+        // command adopted this pid and returned 0), the process stays running;
+        // emitting an immediate exit would print a false `[shell exited]` and
+        // flip the process to terminated in /api/processes. Mirror the npm-bin
+        // resolver's `handedOffToLongRunningFacet` contract.
+        const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
+        if (!handedOffToLongRunningFacet) {
+          try { self.processes.exit(pid, exitCode); } catch {}
+          try {
+            if (!self.processes.getExit(pid)) {
+              self.processes.markExit(pid, exitCode);
+            }
+          } catch {}
 
-        // Structured exit for the tabs UI. Always fires (the UI doesn't
-        // know which tabs are open, and client-side dedupe is trivial).
-        // Include the command so the UI can backfill a tab for pids it
-        // never saw a spawn event for (e.g. evals routed past onSpawn).
-        notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: exitCode, command: cmd });
+          // Structured exit for the tabs UI. Always fires (the UI doesn't
+          // know which tabs are open, and client-side dedupe is trivial).
+          // Include the command so the UI can backfill a tab for pids it
+          // never saw a spawn event for (e.g. evals routed past onSpawn).
+          notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: exitCode, command: cmd });
 
-        // Keep shell execution diagnostics on the same session helper used by
-        // the rest of the process subsystem.
-        try { self._emitShellExecDone(pid, cmd, exitCode, Date.now() - startedAt); } catch {}
+          // Keep shell execution diagnostics on the same session helper used by
+          // the rest of the process subsystem.
+          try { self._emitShellExecDone(pid, cmd, exitCode, Date.now() - startedAt); } catch {}
+        }
       }
       return exitCode;
     };

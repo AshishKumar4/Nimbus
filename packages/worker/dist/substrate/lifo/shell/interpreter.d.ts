@@ -55,12 +55,22 @@ type ExecutionIo = {
     stdin?: CommandInputStream;
     stdout?: CommandOutputStream;
     stderr?: CommandOutputStream;
+    /**
+     * Per-execution sink for shell-level direct-terminal writes (the
+     * `/dev/tty` target and the late-bound command-stdout fallback). Scoping
+     * this through `io` keeps a nested `Shell.execute` capture isolated: the
+     * parent command's closures resolve to the parent's terminal writer, never
+     * to a field a nested execute reassigns.
+     */
+    writeToTerminal?: (text: string) => void;
     terminalStdin?: TerminalInputStream;
     terminalFds?: TerminalFdState;
     scriptMode?: boolean;
     signal?: AbortSignal;
     registerProcess?: boolean;
     positionals?: PositionalFrame;
+    /** Host-supplied fields merged into each command's CommandContext. */
+    commandContext?: Record<string, unknown>;
 };
 export type TerminalFdState = {
     stdin?: boolean;
@@ -81,10 +91,6 @@ export interface InterpreterConfig {
     processRegistry: ProcessRegistry;
     writeToTerminal: (text: string) => void;
     aliases?: Map<string, string>;
-    /** Override default stdout for programmatic capture */
-    defaultStdout?: CommandOutputStream;
-    /** Override default stderr for programmatic capture */
-    defaultStderr?: CommandOutputStream;
     /** Returns the current abort signal for foreground commands */
     getAbortSignal?: () => AbortSignal;
     options: ShellOptions;
@@ -110,8 +116,10 @@ export declare class Interpreter {
         stdin?: CommandInputStream;
         stdout?: CommandOutputStream;
         stderr?: CommandOutputStream;
+        writeToTerminal?: (text: string) => void;
         terminalFds?: TerminalFdState;
         scriptMode?: boolean;
+        commandContext?: Record<string, unknown>;
     }): Promise<number>;
     private executeList;
     private getListCommandText;
@@ -138,6 +146,10 @@ export declare class Interpreter {
     private runExitTrap;
     private createTerminalIo;
     private createCommandIo;
+    /** Per-execution direct-terminal write, isolated from a nested capture. */
+    private writeTerminal;
+    /** Late-bound fallback sink for command stdout/stderr with no fd target. */
+    private terminalSink;
     private forkPositionals;
     private createExpandContext;
     private createIoFromFds;

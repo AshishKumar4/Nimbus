@@ -165,9 +165,6 @@ export class Shell {
             },
         };
         // Save current state
-        const prevDefaultStdout = this.interpreterConfig.defaultStdout;
-        const prevDefaultStderr = this.interpreterConfig.defaultStderr;
-        const prevWriteToTerminal = this.interpreterConfig.writeToTerminal;
         const prevCwd = options?.cwd ? this.cwd : undefined;
         const prevAbortController = this.abortController;
         const savedShellState = options?.isolateShellState ? this.snapshotShellState() : null;
@@ -184,10 +181,11 @@ export class Shell {
                 options.signal.addEventListener('abort', abortFromCaller, { once: true });
         }
         this.abortController = abortController;
-        // Redirect output
-        this.interpreterConfig.defaultStdout = stdoutStream;
-        this.interpreterConfig.defaultStderr = stderrStream;
-        this.interpreterConfig.writeToTerminal = (text) => {
+        // Per-execution capture sink for shell-level direct-terminal writes
+        // (`/dev/tty`, command-stdout fallback). Threaded through `executeLine`
+        // options so a nested `execute` never mutates shared interpreter config the
+        // parent command's late-bound closures read.
+        const writeToTerminal = (text) => {
             stderrBuf += text;
             options?.onStderr?.(text);
         };
@@ -212,8 +210,12 @@ export class Shell {
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {
                 runExitTrap: options?.runExitTrap === true,
                 stdin: stdinStream,
+                stdout: stdoutStream,
+                stderr: stderrStream,
+                writeToTerminal,
                 terminalFds: options?.terminalFds,
                 scriptMode: options?.scriptMode === true,
+                commandContext: options?.commandContext,
             });
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
         }
@@ -226,9 +228,6 @@ export class Shell {
         finally {
             this._executeDepth--;
             // Restore state
-            this.interpreterConfig.defaultStdout = prevDefaultStdout;
-            this.interpreterConfig.defaultStderr = prevDefaultStderr;
-            this.interpreterConfig.writeToTerminal = prevWriteToTerminal;
             if (options?.signal) {
                 options.signal.removeEventListener('abort', abortFromCaller);
             }

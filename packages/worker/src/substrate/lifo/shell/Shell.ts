@@ -36,6 +36,14 @@ export interface ExecuteOptions {
   shellOptions?: Partial<ShellOptions>;
   scriptMode?: boolean;
   terminalFds?: TerminalFdState;
+  /**
+   * Host-supplied fields merged into the `CommandContext` of every command in
+   * this execution. The shell substrate treats them as opaque; Nimbus runtime
+   * commands read `__nimbusBinSpawn`/bundle hints off the context. Used to hand
+   * a long-running registry command (vite/wrangler/serve) the wrapper pid the
+   * caller already allocated instead of letting it spawn a second one.
+   */
+  commandContext?: Record<string, unknown>;
 }
 
 export class Shell {
@@ -229,9 +237,6 @@ export class Shell {
     };
 
     // Save current state
-    const prevDefaultStdout = this.interpreterConfig.defaultStdout;
-    const prevDefaultStderr = this.interpreterConfig.defaultStderr;
-    const prevWriteToTerminal = this.interpreterConfig.writeToTerminal;
     const prevCwd = options?.cwd ? this.cwd : undefined;
     const prevAbortController = this.abortController;
     const savedShellState = options?.isolateShellState ? this.snapshotShellState() : null;
@@ -247,10 +252,11 @@ export class Shell {
     }
     this.abortController = abortController;
 
-    // Redirect output
-    this.interpreterConfig.defaultStdout = stdoutStream;
-    this.interpreterConfig.defaultStderr = stderrStream;
-    this.interpreterConfig.writeToTerminal = (text: string) => {
+    // Per-execution capture sink for shell-level direct-terminal writes
+    // (`/dev/tty`, command-stdout fallback). Threaded through `executeLine`
+    // options so a nested `execute` never mutates shared interpreter config the
+    // parent command's late-bound closures read.
+    const writeToTerminal = (text: string) => {
       stderrBuf += text;
       options?.onStderr?.(text);
     };
@@ -281,8 +287,12 @@ export class Shell {
         {
           runExitTrap: options?.runExitTrap === true,
           stdin: stdinStream,
+          stdout: stdoutStream,
+          stderr: stderrStream,
+          writeToTerminal,
           terminalFds: options?.terminalFds,
           scriptMode: options?.scriptMode === true,
+          commandContext: options?.commandContext,
         },
       );
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
@@ -294,9 +304,6 @@ export class Shell {
     } finally {
       this._executeDepth--;
       // Restore state
-      this.interpreterConfig.defaultStdout = prevDefaultStdout;
-      this.interpreterConfig.defaultStderr = prevDefaultStderr;
-      this.interpreterConfig.writeToTerminal = prevWriteToTerminal;
       if (options?.signal) {
         options.signal.removeEventListener('abort', abortFromCaller);
       }
