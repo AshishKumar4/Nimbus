@@ -100,6 +100,8 @@
 	    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
 	    "NIMBUS_AGENT_GATEWAY_ID": "default",
 	    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
+	    "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",
+	    "NIMBUS_CF_OAUTH_SCOPES": "user-details.read account-settings.read ai.write aig.run",
 	    "DEMO_SESSION_IDLE_TTL_DAYS": "3",
 	    "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
 	    "DEMO_AUTH_COOKIE_DAYS": "30",
@@ -232,11 +234,16 @@
       "name": "nimbus",
       "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
+      "routes": [
+        { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true }
+      ],
 	      "vars": {
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
 	        "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
 	        "NIMBUS_AGENT_GATEWAY_ID": "default",
 	        "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
+	        "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",
+	        "NIMBUS_CF_OAUTH_SCOPES": "user-details.read account-settings.read ai.write aig.run",
 	        "DEMO_SESSION_IDLE_TTL_DAYS": "3",
 	        "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
 	        "DEMO_AUTH_COOKIE_DAYS": "30",
