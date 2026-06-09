@@ -26,7 +26,7 @@
 //     a few seconds of meaningful activity.
 
 import WebSocket from 'ws';
-import { wsHeaders } from '../_driver.mjs';
+import { mintSession, wsHeaders } from '../_driver.mjs';
 
 const BASE = process.env.BASE;
 if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -42,8 +42,7 @@ function check(name, ok, detail = '') {
 }
 
 // ── mint session + connect terminal ──
-const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual' });
-const sid = r.headers.get('location').match(/\/s\/([^/]+)/)[1];
+const sid = await mintSession();
 console.log(`behavioral/preview/process-logs-stream — BASE=${BASE} sid=${sid}`);
 
 const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());

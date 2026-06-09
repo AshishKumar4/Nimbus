@@ -22,7 +22,7 @@
 // /preview/. Per-bug evidence saved by the parent task.
 
 import WebSocket from 'ws';
-import { wsHeaders } from '../_driver.mjs';
+import { mintSession, wsHeaders } from '../_driver.mjs';
 
 const BASE = process.env.BASE;
 if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -40,9 +40,7 @@ function check(name, ok, detail = '') {
 }
 
 // ── mint a session ──
-const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual' });
-const loc = r.headers.get('location');
-const sid = loc.match(/\/s\/([^/]+)/)[1];
+const sid = await mintSession();
 console.log(`behavioral/preview/subpath-imports — BASE=${BASE} sid=${sid}`);
 
 // ── connect a terminal ──

@@ -6,7 +6,7 @@
 // data.sessionId === the embedded session id). This drives a real parent
 // page with an <iframe src="/s/<id>/"> exactly like an embedder does.
 
-import { BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
+import { BASE, attachPathFor, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
 import { applyProbeCookies, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -43,7 +43,10 @@ try {
     frame.src = attachPath;
     frame.style.cssText = 'width:1024px;height:640px;border:0;';
     document.body.appendChild(frame);
-  }, `${BASE}/s/${sid}/`);
+    // In enforce mode the attach path carries the single-use bootstrap
+    // token, so this iframe performs the real embedder exchange: cookie
+    // set in the iframe partition, then redirect to the clean URL.
+  }, `${BASE}${attachPathFor(sid)}`);
 
   // Bounded poll: the shell posts nimbus:ready on its first WebSocket
   // ready message, so this also covers shell boot + WS attach.

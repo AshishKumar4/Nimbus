@@ -40,6 +40,8 @@ export function wsHeaders() {
   return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
+const sessionAttachPaths = new Map();
+
 /** POST /new → 302 → sid. The only session-creation surface. */
 export async function mintSession() {
   const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual', headers: requestHeaders() });
@@ -47,7 +49,17 @@ export async function mintSession() {
   if (!loc) throw new Error(`POST /new returned no Location (status ${r.status})`);
   const m = loc.match(/\/s\/([^/]+)/);
   if (!m) throw new Error(`unexpected Location: ${loc}`);
+  sessionAttachPaths.set(m[1], loc);
   return m[1];
+}
+
+/**
+ * The attach path returned by `/new` for this session. In enforce mode
+ * it carries the single-use bootstrap token that exchanges into the
+ * session cookie on first navigation; otherwise the clean session path.
+ */
+export function attachPathFor(sid) {
+  return sessionAttachPaths.get(sid) || `/s/${sid}/`;
 }
 
 export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {

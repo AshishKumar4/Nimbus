@@ -34,7 +34,7 @@
 
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
-import { mintSession, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE, AUTH_TOKEN } from './_driver.mjs';
+import { mintSession, attachPathFor, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE, AUTH_TOKEN } from './_driver.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
 
@@ -109,9 +109,27 @@ export async function applyProbeCookies(page, base = BASE) {
  * that no runtime error fired during interactions. Returns an object
  * with helpers for the standard probe shape.
  */
+const exchangedSessions = new Set();
+
+/**
+ * In token mode the browser holds no auth, and header injection does
+ * not cover the shell's WebSocket upgrade. Perform the real attach
+ * exchange once per session: a top-level navigation to the bootstrap
+ * attach URL sets the session cookie, which then authenticates HTML,
+ * API, and WebSocket requests for every page in this browser.
+ */
+export async function exchangeAttachCookie(page, sid) {
+  if (!AUTH_TOKEN || !sid || exchangedSessions.has(sid)) return;
+  const attachPath = attachPathFor(sid);
+  if (!attachPath.includes('nimbus_token=')) return;
+  exchangedSessions.add(sid);
+  await page.goto(`${BASE}${attachPath}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+}
+
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
   await applyProbeCookies(page);
+  await exchangeAttachCookie(page, sid);
   const consoleMessages = [];
   const pageErrors = [];
 
