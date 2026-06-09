@@ -670,6 +670,7 @@
       const candidate = parts[0] === 's' ? parts[1] : '';
       return isNimbusSessionId(candidate) ? '/s/' + candidate : '';
     })();
+    const SESSION_ID = SESSION_PREFIX.startsWith('/s/') ? SESSION_PREFIX.slice(3) : '';
     function isNimbusSessionId(value) {
       if (!value) return false;
       const parts = String(value).split('-');
@@ -698,6 +699,32 @@
     // wrangler dev (via `wrangler dev` in the terminal), stats polling
     // below flips this to WORKER_URL automatically.
     const PREVIEW_URL = VITE_URL;
+    let nimbusReadyPosted = false;
+    let nimbusDisconnectErrorTimer = null;
+    function postNimbusEvent(type, payload) {
+      if (window.parent === window) return;
+      try { window.parent.postMessage(Object.assign({ type }, payload || {}), '*'); } catch {}
+    }
+    function postNimbusReady() {
+      if (nimbusReadyPosted) return;
+      nimbusReadyPosted = true;
+      postNimbusEvent('nimbus:ready', { sessionId: SESSION_ID });
+    }
+    function clearNimbusDisconnectError() {
+      if (!nimbusDisconnectErrorTimer) return;
+      clearTimeout(nimbusDisconnectErrorTimer);
+      nimbusDisconnectErrorTimer = null;
+    }
+    function scheduleNimbusDisconnectError() {
+      if (nimbusDisconnectErrorTimer) return;
+      nimbusDisconnectErrorTimer = setTimeout(() => {
+        nimbusDisconnectErrorTimer = null;
+        postNimbusEvent('nimbus:error', {
+          code: 'E_WS_CLOSED',
+          message: 'Nimbus shell WebSocket remained disconnected for 30 seconds.',
+        });
+      }, 30_000);
+    }
 
     // Populate the URL bar with the full session preview URL so users can
     // copy-paste it (e.g. to share just the preview with a teammate).
@@ -3063,6 +3090,7 @@
       setStatus('connecting');
       ws = new WebSocket(WS_URL);
       ws.onopen = () => {
+        clearNimbusDisconnectError();
         setStatus('connected'); rd = 1000;
         ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
         // Drain any fs-* frames that Editor / FileTree queued before WS
@@ -3111,6 +3139,7 @@
               refreshStats();
             }
           } else if (msg.type === 'ready') {
+            postNimbusReady();
             refreshStats();
           } else if (msg.type === 'hmr') {
             // Forward HMR to preview iframe
@@ -3144,6 +3173,7 @@
       };
       ws.onclose = () => {
         setStatus('disconnected');
+        scheduleNimbusDisconnectError();
         if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
         setTimeout(() => { rd = Math.min(rd*1.5, 10000); connect(); }, rd);
       };
