@@ -1,6 +1,6 @@
 import { LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
 import { z } from 'zod/v4';
-import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, NimbusTokenMalformedError, isNimbusIdComponent, } from '../auth/index.js';
+import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 const RemoteRpcBodySchema = z.object({
@@ -120,7 +120,7 @@ async function resolveRemoteAuth(request, env, remote, sandboxId) {
         };
     }
     catch (e) {
-        if (e instanceof NimbusAuthError || e instanceof NimbusTokenMalformedError) {
+        if (e instanceof NimbusAuthError) {
             return remoteJson({ ok: false, error: e.message, code: e.code }, e.httpStatus);
         }
         console.error('[nimbus] remote API auth error:', e);

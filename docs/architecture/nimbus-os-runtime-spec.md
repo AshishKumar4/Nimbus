@@ -423,17 +423,33 @@ Required behavior:
   remote deployment has the necessary permissions.
 - Remote operation schemas are centralized or mechanically checked so SDK and
   server cannot drift.
-- Enforced-auth iframe embeds work from `/new` and `/s/<id>` without losing the
-  token after the first HTML request. The current core `/new?nimbus_token=...`
-  path validates the token, then redirects without wiring the existing cookie
-  helper, so this is not done yet.
+- Enforced-auth embeds keep authorization across HTML, WebSocket, and API
+  requests through the attach exchange: a `?nimbus_token=` on the session shell
+  URL (embedder iframe token or `/new` bootstrap token) is exchanged for a
+  freshly minted sid-pinned `session:attach` cookie (`HttpOnly`,
+  `SameSite=None`, `Secure` + `Partitioned`) and the browser is redirected to
+  the clean `/s/<id>/` URL. `POST /new` with a verified Bearer token redirects
+  to an attach URL carrying a short-lived (90 s), single-use,
+  `session:bootstrap`-scoped token whose `jti` is consumed set-if-absent in the
+  session DO's storage; replays return 401. Long-lived tokens travel only in
+  `Authorization` headers, never in URLs. Implemented in
+  `packages/worker/src/router/index.ts` and `packages/worker/src/auth/`;
+  covered by `tests/behavioral/auth/new/router-session-scope-and-pin.mjs`.
+  Known limit: the exchange stores one sid-pinned `nimbus_token` cookie per
+  browser partition, so two concurrently embedded sessions on one page evict
+  each other's cookie; concurrent multi-session embeds in enforce mode need a
+  per-session cookie design (follow-up).
 - The public shell emits `nimbus:ready` and `nimbus:error` messages that the
-  React package actually receives. The shell now emits both; a live probe that
-  asserts React-side reception is still required.
+  React package actually receives. The shell emits both, and
+  `tests/behavioral/embed/new/react-embed-ready-event.mjs` asserts
+  embedder-side reception of `nimbus:ready` in a real browser; it must stay
+  green in live runs.
 - Browser session-id parsing accepts the same IDs the server accepts.
 - CLI session commands support `NIMBUS_TOKEN` and `--token` for enforced
-  deployments. Current session commands only target unauthenticated endpoints or
-  deployments where another auth layer is present.
+  deployments: the token travels only as `Authorization: Bearer` to
+  `POST /new`, and the CLI prints the server-returned bootstrap attach URL
+  verbatim. The no-token path is unchanged for unauthenticated/self-host
+  deployments.
 - `ports.expose()` has an explicit auth model: authenticated URL, signed
   short-lived URL, or SDK fetch helper. The current SDK returns a plain
   `/s/<id>/port/<port>/` path, which is only directly usable when the caller
@@ -1093,10 +1109,19 @@ Add black-box probes for:
   - unmodified opencode smoke beyond the current native-boundary probes
   - Proteus CLI smoke or exact unsupported boundary
 - SDK and product:
-  - enforced-auth iframe `/new` and `/s/<id>` preserve authorization across
-    HTML, WebSocket, and API requests
-  - React `onReady` and `onError` fire from real shell events
-  - CLI session commands work with `NIMBUS_TOKEN` and `--token`
+  - enforced-auth attach exchange against a live enforced deployment: the
+    bootstrap attach URL sets the session cookie, replays return 401, and
+    HTML, WebSocket, and API requests stay authorized via the cookie alone
+    (in-process router coverage exists in
+    `tests/behavioral/auth/new/router-session-scope-and-pin.mjs`; the hosted
+    demo fronts sessions with its own login policy, so the live probe targets
+    the enforced probe deployment in `apps/probe`)
+  - React `onReady` fires from real shell events: covered by
+    `tests/behavioral/embed/new/react-embed-ready-event.mjs`; a live
+    `onError` reception probe is still required
+  - CLI `nimbus session new` with `NIMBUS_TOKEN`/`--token` against a live
+    enforced deployment (the header/URL contract is covered in
+    `tests/unit/cli-session-new.mjs`)
   - remote preview URLs have documented authenticated or signed access behavior
 - Package/runtime integrity:
   - partial runtime install with `manifest.json` but missing blobs is repaired

@@ -44,12 +44,19 @@ import {
   LEGACY_PUBLIC_DO_SEGMENT,
 } from '../_shared/session-router.js';
 import {
+  issueNimbusToken,
+  verifyNimbusToken,
   verifyRequestToken,
   requireScopes,
   requireSessionPin,
   authErrorResponse,
+  setNimbusTokenCookie,
+  NIMBUS_TOKEN_QUERY,
   NimbusAuthError,
-  NimbusTokenMalformedError,
+  NimbusBootstrapConsumedError,
+  NimbusTokenClaimsError,
+  DEFAULT_TOKEN_TTL_MS,
+  ATTACH_BOOTSTRAP_TTL_MS,
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
 } from '../auth/index.js';
@@ -262,10 +269,25 @@ export function createNimbusHandler(
         if (auth instanceof Response) return auth;
 
         const sessionId = generateSessionId();
+        // Authenticated creates get an attach URL carrying a short-lived,
+        // single-use, sid-pinned bootstrap token. The caller's long-lived
+        // token never appears in a URL; the bootstrap is exchanged for the
+        // session cookie on first visit (see the attach exchange below).
+        let location = `${SESSION_ROUTE_PREFIX}/${sessionId}/`;
+        if (auth.verified) {
+          const bootstrap = await issueNimbusToken(env as NimbusAuthEnv, {
+            tn: auth.verified.claims.tn,
+            ...(auth.verified.claims.sub !== undefined && { sub: auth.verified.claims.sub }),
+            scopes: ['session:bootstrap'],
+            sid: sessionId,
+            jti: crypto.randomUUID(),
+          }, { ttlMs: ATTACH_BOOTSTRAP_TTL_MS });
+          location += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: bootstrap })}`;
+        }
         return new Response(null, {
           status: 302,
           headers: {
-            Location: `${SESSION_ROUTE_PREFIX}/${sessionId}/`,
+            Location: location,
             'Cache-Control': 'no-store',
           },
         });
@@ -282,6 +304,21 @@ export function createNimbusHandler(
               'Cache-Control': 'no-store',
             },
           });
+        }
+
+        // Attach exchange: a token arriving via `?nimbus_token=` on the
+        // session shell URL is exchanged for the session cookie, then the
+        // browser is redirected to the clean `/s/<id>/` URL. This is the
+        // only place query tokens produce cookies; WebSocket upgrades and
+        // API requests never do.
+        if (
+          route.innerPath === '/'
+          && request.method === 'GET'
+          && request.headers.get('Upgrade') !== 'websocket'
+          && url.searchParams.get(NIMBUS_TOKEN_QUERY)
+          && resolveAuthMode(env, explicitMode) === 'enforce'
+        ) {
+          return handleAttachExchange(url, route.sessionId, env);
         }
 
         // Resolve tenant segment per auth mode and enforce session attach
@@ -381,6 +418,14 @@ interface ResolvedNimbusRouteAuth {
   verified: VerifiedNimbusToken | null;
 }
 
+/** Resolve the effective auth mode. Single source of truth for the
+ *  `'auto'` heuristic (JWT_SECRET present + legacy flag unset → enforce). */
+function resolveAuthMode(env: any, explicitMode: AuthMode | undefined): AuthMode {
+  const envLegacyFlag = (env?.NIMBUS_LEGACY_PUBLIC === '1' || env?.NIMBUS_LEGACY_PUBLIC === true);
+  const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
+  return explicitMode ?? (hasSecret && !envLegacyFlag ? 'enforce' : 'legacy');
+}
+
 async function resolveNimbusRouteAuth(
   request: Request,
   env: any,
@@ -390,10 +435,8 @@ async function resolveNimbusRouteAuth(
     sessionId?: string;
   } = {},
 ): Promise<ResolvedNimbusRouteAuth | Response> {
-  const envLegacyFlag = (env?.NIMBUS_LEGACY_PUBLIC === '1' || env?.NIMBUS_LEGACY_PUBLIC === true);
   const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
-  const mode: AuthMode = explicitMode
-    ?? (hasSecret && !envLegacyFlag ? 'enforce' : 'legacy');
+  const mode = resolveAuthMode(env, explicitMode);
 
   if (mode === 'legacy') {
     return {
@@ -427,13 +470,89 @@ async function resolveNimbusRouteAuth(
     if (e instanceof NimbusAuthError) {
       return authErrorResponse(e);
     }
-    if (e instanceof NimbusTokenMalformedError) {
-      return authErrorResponse(e);
-    }
     console.error('[nimbus] unexpected auth error:', e);
     return new Response(
       JSON.stringify({ error: 'Internal auth error', code: 'E_AUTH_UNKNOWN' }),
       { status: 500, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
     );
   }
+}
+
+/**
+ * Exchange a `?nimbus_token=` query token on the session shell URL for the
+ * session cookie, then 302 to the clean `/s/<id>/` URL.
+ *
+ * Accepts two token kinds:
+ *   - Server-minted bootstrap tokens (`jti` present, `session:bootstrap`
+ *     scope) from `POST /new`. The `jti` is consumed set-if-absent in the
+ *     session DO's storage — a replayed attach URL gets a 401.
+ *   - Embedder iframe tokens (no `jti`, `session:attach` scope) from
+ *     `<NimbusTerminal>` / `sessionAttachUrl`.
+ *
+ * Either way the cookie holds a FRESHLY minted sid-pinned `session:attach`
+ * token — the presented token (and whatever extra scopes it carried) is
+ * never persisted browser-side. Bootstrap exchanges get the default session
+ * cookie lifetime; embedder tokens keep their own remaining lifetime.
+ */
+async function handleAttachExchange(
+  url: URL,
+  sessionId: string,
+  env: any,
+): Promise<Response> {
+  const token = url.searchParams.get(NIMBUS_TOKEN_QUERY)!;
+  try {
+    const verified = await verifyNimbusToken(env as NimbusAuthEnv, token);
+    requireSessionPin(verified, sessionId);
+    let cookieTtlMs: number;
+    if (verified.claims.jti !== undefined) {
+      requireScopes(verified, ['session:bootstrap']);
+      // Server-minted bootstraps are always sid-pinned. A jti without a
+      // sid would consume independently in every session DO it is tried
+      // against, so reject it outright instead of trusting the mint site.
+      if (verified.claims.sid === undefined) {
+        throw new NimbusTokenClaimsError('bootstrap token missing sid');
+      }
+      const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
+      if (!fresh) throw new NimbusBootstrapConsumedError();
+      cookieTtlMs = DEFAULT_TOKEN_TTL_MS;
+    } else {
+      requireScopes(verified, ['session:attach']);
+      cookieTtlMs = Math.max(1000, verified.claims.exp * 1000 - Date.now());
+    }
+    const cookieToken = await issueNimbusToken(env as NimbusAuthEnv, {
+      tn: verified.claims.tn,
+      ...(verified.claims.sub !== undefined && { sub: verified.claims.sub }),
+      scopes: ['session:attach'],
+      sid: sessionId,
+    }, { ttlMs: cookieTtlMs });
+    const cookieExpSec = Math.floor(Date.now() / 1000) + Math.floor(cookieTtlMs / 1000);
+
+    const clean = new URL(url);
+    clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
+    clean.pathname = `${SESSION_ROUTE_PREFIX}/${sessionId}/`;
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: clean.pathname + clean.search,
+        'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch (e) {
+    if (!(e instanceof NimbusAuthError)) {
+      console.error('[nimbus] attach exchange error:', e);
+    }
+    return authErrorResponse(e);
+  }
+}
+
+/** Consume a bootstrap `jti` in the session DO — set-if-absent. False = replay. */
+function consumeAttachBootstrap(
+  env: any,
+  tenantSegment: string,
+  sessionId: string,
+  jti: string,
+): Promise<boolean> {
+  const id = env.NIMBUS_SESSION.idFromName(`${tenantSegment}:${sessionId}`);
+  return env.NIMBUS_SESSION.get(id)._rpcConsumeAttachBootstrap(jti);
 }

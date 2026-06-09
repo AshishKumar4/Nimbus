@@ -208,6 +208,13 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * URL prefix COULD change across deploys (e.g. if we ever rename `/s/`).
      */
     hydrateSessionBasePath(request: Request): Promise<void>;
+    /**
+     * Consume a single-use attach bootstrap token id (`jti`) — set-if-absent.
+     * Returns false when the jti was already consumed (replayed attach URL).
+     * Atomic per DO semantics: input gates stay closed across the storage
+     * get/put, so two concurrent exchanges cannot both observe "absent".
+     */
+    _rpcConsumeAttachBootstrap(jti: string): Promise<boolean>;
     _rpcReadFile(path: string): Promise<string | null>;
     _rpcReadFileBytes(path: string): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;

@@ -7,7 +7,6 @@ import {
   requireSessionPin,
   verifyRequestToken,
   NimbusAuthError,
-  NimbusTokenMalformedError,
   isNimbusIdComponent,
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
@@ -265,7 +264,7 @@ async function resolveRemoteAuth(
       verified,
     };
   } catch (e) {
-    if (e instanceof NimbusAuthError || e instanceof NimbusTokenMalformedError) {
+    if (e instanceof NimbusAuthError) {
       return remoteJson({ ok: false, error: e.message, code: e.code }, e.httpStatus);
     }
     console.error('[nimbus] remote API auth error:', e);

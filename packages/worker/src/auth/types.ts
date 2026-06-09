@@ -29,11 +29,14 @@
  *     user).
  *   - `scopes` is an optional array of capability strings the token
  *     grants. v1 honors `"session:create"`, `"session:attach"`,
- *     `"session:admin"`. Absent = all permitted (backward compat for
- *     legacy tokens).
+ *     `"session:bootstrap"`, `"session:admin"`. Absent = all permitted
+ *     (backward compat for legacy tokens).
  *   - `sid` is an optional session-pin: when present, the token may only
  *     attach to that single session. When absent, the token may attach
  *     to any session for `(tn, sub)`.
+ *   - `jti` marks a single-use attach bootstrap token. Server-minted at
+ *     `POST /new`; consumed (set-if-absent) in the session DO's storage
+ *     on the attach exchange. Replay → 401.
  *   - `iat` / `exp` are UNIX seconds (NumericDate per RFC 7519).
  */
 export interface NimbusTokenClaims {
@@ -47,6 +50,8 @@ export interface NimbusTokenClaims {
   scopes?: string[];
   /** Session-pin: token only valid for this session. Optional. */
   sid?: string;
+  /** Single-use id for attach bootstrap tokens. `[A-Za-z0-9._-]{1,128}`. */
+  jti?: string;
   /** Issued-at (UNIX seconds). */
   iat: number;
   /** Expiry (UNIX seconds). */
@@ -58,6 +63,13 @@ export const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 /** Maximum permitted token TTL. 30 days. Prevents accidental long-lived secrets. */
 export const MAX_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * TTL for the single-use attach bootstrap token minted by `POST /new`.
+ * Long enough for a CLI/SDK caller to open the printed URL in a browser;
+ * short enough that a leaked URL (shell history, proxy log) goes stale fast.
+ */
+export const ATTACH_BOOTSTRAP_TTL_MS = 90 * 1000;
 
 /**
  * Result of a successful `verifyNimbusToken` call. Verified claims plus a
@@ -173,6 +185,14 @@ export class NimbusScopeError extends NimbusAuthError {
     super(`Missing required scope: ${requiredScope}`, 'E_SCOPE_MISSING', 403);
     this.name = 'NimbusScopeError';
     this.requiredScope = requiredScope;
+  }
+}
+
+/** Thrown when a single-use attach bootstrap token is presented again. */
+export class NimbusBootstrapConsumedError extends NimbusAuthError {
+  constructor() {
+    super('Attach bootstrap token already used', 'E_BOOTSTRAP_CONSUMED');
+    this.name = 'NimbusBootstrapConsumedError';
   }
 }
 

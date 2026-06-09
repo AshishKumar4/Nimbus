@@ -12,12 +12,11 @@
  * The query/cookie fallbacks exist because `<iframe>` URLs are the
  * canonical embed shape for `<NimbusTerminal>` and browsers don't let
  * cross-origin iframes carry custom request headers on the initial
- * navigation request. The cookie path is used for post-load nav inside
- * the iframe (e.g. browser back/forward).
- *
- * NOTE: when the request comes from inside an `<iframe src="...?nimbus_token=...">`,
- * we set the cookie on the response so subsequent in-iframe navigations
- * don't need to re-pass the query param. See `setNimbusTokenCookie`.
+ * navigation request. The router's attach exchange consumes the query
+ * token on the first session-shell GET: it sets a sid-pinned attach
+ * cookie via `setNimbusTokenCookie` and redirects to the clean
+ * `/s/<id>/` URL, so every subsequent HTML/WS/API request inside the
+ * iframe authenticates via the cookie alone.
  */
 import { type NimbusAuthEnv } from './token.js';
 import { type VerifiedNimbusToken } from './types.js';
@@ -61,22 +60,25 @@ export declare function requireScopes(verified: VerifiedNimbusToken, required: r
  */
 export declare function requireSessionPin(verified: VerifiedNimbusToken, attemptedSessionId: string): void;
 /**
- * Build a Set-Cookie header value persisting the token in-iframe so
+ * Build a Set-Cookie header value persisting the session attach token so
  * subsequent navigations don't need the `?nimbus_token=` query.
  *
  * Cookie attributes:
- *   - HttpOnly: NO — JS in the iframe shell needs to forward the token
- *     to its WebSocket via subprotocol. Keep this in mind for XSS posture
- *     (Nimbus's xterm shell never executes embedder JS, mitigating risk).
+ *   - HttpOnly: YES — the shell's WebSocket and API requests are
+ *     same-origin and carry the cookie automatically; no JS ever needs
+ *     to read it.
  *   - Secure: YES (production).
  *   - SameSite=None: required because the iframe is cross-origin from
  *     the embedder's app. Pairs with Secure.
+ *   - Partitioned: CHIPS — Chrome blocks unpartitioned third-party
+ *     cookies, and the Nimbus iframe is third-party from the embedder's
+ *     page. Set + read happen under the same top-level site, so a
+ *     partitioned jar is exactly right. Requires Secure, so omitted on
+ *     plain-HTTP local dev.
  *   - Path: scoped to `/s/` so non-session paths don't see the cookie.
  *   - Max-Age: matches the token's remaining lifetime.
  */
-export declare function setNimbusTokenCookie(token: string, expSec: number, opts?: {
-    secure?: boolean;
-}): string;
+export declare function setNimbusTokenCookie(token: string, expSec: number): string;
 /**
  * Map a NimbusAuthError to a `Response` suitable for the embedder's
  * `fetch` handler to return. JSON body with `{ error, code }`.

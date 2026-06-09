@@ -12,5 +12,5 @@
  */
 export { issueNimbusToken, verifyNimbusToken, type NimbusAuthEnv, } from './token.js';
 export { extractBearerToken, verifyRequestToken, requireScopes, requireSessionPin, setNimbusTokenCookie, authErrorResponse, NIMBUS_TOKEN_COOKIE, NIMBUS_TOKEN_QUERY, } from './middleware.js';
-export { NimbusAuthError, NimbusAuthConfigError, NimbusTokenMalformedError, NimbusTokenSignatureError, NimbusTokenClaimsError, NimbusTokenExpiredError, NimbusTokenTtlError, NimbusScopeError, NimbusSessionPinError, DEFAULT_TOKEN_TTL_MS, MAX_TOKEN_TTL_MS, ID_COMPONENT_RE, isNimbusIdComponent, type NimbusTokenClaims, type VerifiedNimbusToken, type IssueTokenOptions, } from './types.js';
+export { NimbusAuthError, NimbusAuthConfigError, NimbusTokenMalformedError, NimbusTokenSignatureError, NimbusTokenClaimsError, NimbusTokenExpiredError, NimbusTokenTtlError, NimbusScopeError, NimbusSessionPinError, NimbusBootstrapConsumedError, DEFAULT_TOKEN_TTL_MS, MAX_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, ID_COMPONENT_RE, isNimbusIdComponent, type NimbusTokenClaims, type VerifiedNimbusToken, type IssueTokenOptions, } from './types.js';
 //# sourceMappingURL=index.d.ts.map

@@ -92,6 +92,7 @@ export async function issueNimbusToken(
     sub?: string;
     scopes?: string[];
     sid?: string;
+    jti?: string;
   },
   opts: IssueTokenOptions = {},
 ): Promise<string> {
@@ -115,6 +116,11 @@ export async function issueNimbusToken(
       `sid must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(input.sid)})`,
     );
   }
+  if (input.jti !== undefined && !ID_COMPONENT_RE.test(input.jti)) {
+    throw new NimbusTokenClaimsError(
+      `jti must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(input.jti)})`,
+    );
+  }
   const ttlMs = opts.ttlMs ?? DEFAULT_TOKEN_TTL_MS;
   if (ttlMs <= 0) {
     throw new NimbusTokenTtlError(ttlMs, MAX_TOKEN_TTL_MS);
@@ -132,6 +138,7 @@ export async function issueNimbusToken(
     ...(input.sub !== undefined && { sub: input.sub }),
     ...(input.scopes !== undefined && { scopes: input.scopes }),
     ...(input.sid !== undefined && { sid: input.sid }),
+    ...(input.jti !== undefined && { jti: input.jti }),
     iat,
     exp,
   };
@@ -219,6 +226,9 @@ export async function verifyNimbusToken(
   }
   if (claims.sid !== undefined && (typeof claims.sid !== 'string' || !ID_COMPONENT_RE.test(claims.sid))) {
     throw new NimbusTokenClaimsError(`sid shape invalid`);
+  }
+  if (claims.jti !== undefined && (typeof claims.jti !== 'string' || !ID_COMPONENT_RE.test(claims.jti))) {
+    throw new NimbusTokenClaimsError(`jti shape invalid`);
   }
   if (typeof claims.iat !== 'number' || typeof claims.exp !== 'number') {
     throw new NimbusTokenClaimsError(`iat and exp must be numbers (NumericDate)`);

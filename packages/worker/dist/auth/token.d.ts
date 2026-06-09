@@ -70,6 +70,7 @@ export declare function issueNimbusToken(env: NimbusAuthEnv, input: {
     sub?: string;
     scopes?: string[];
     sid?: string;
+    jti?: string;
 }, opts?: IssueTokenOptions): Promise<string>;
 /**
  * Verify a Nimbus JWT and return the parsed claims + canonical DO name.

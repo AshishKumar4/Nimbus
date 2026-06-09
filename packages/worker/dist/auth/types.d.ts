@@ -28,11 +28,14 @@
  *     user).
  *   - `scopes` is an optional array of capability strings the token
  *     grants. v1 honors `"session:create"`, `"session:attach"`,
- *     `"session:admin"`. Absent = all permitted (backward compat for
- *     legacy tokens).
+ *     `"session:bootstrap"`, `"session:admin"`. Absent = all permitted
+ *     (backward compat for legacy tokens).
  *   - `sid` is an optional session-pin: when present, the token may only
  *     attach to that single session. When absent, the token may attach
  *     to any session for `(tn, sub)`.
+ *   - `jti` marks a single-use attach bootstrap token. Server-minted at
+ *     `POST /new`; consumed (set-if-absent) in the session DO's storage
+ *     on the attach exchange. Replay → 401.
  *   - `iat` / `exp` are UNIX seconds (NumericDate per RFC 7519).
  */
 export interface NimbusTokenClaims {
@@ -46,6 +49,8 @@ export interface NimbusTokenClaims {
     scopes?: string[];
     /** Session-pin: token only valid for this session. Optional. */
     sid?: string;
+    /** Single-use id for attach bootstrap tokens. `[A-Za-z0-9._-]{1,128}`. */
+    jti?: string;
     /** Issued-at (UNIX seconds). */
     iat: number;
     /** Expiry (UNIX seconds). */
@@ -55,6 +60,12 @@ export interface NimbusTokenClaims {
 export declare const DEFAULT_TOKEN_TTL_MS: number;
 /** Maximum permitted token TTL. 30 days. Prevents accidental long-lived secrets. */
 export declare const MAX_TOKEN_TTL_MS: number;
+/**
+ * TTL for the single-use attach bootstrap token minted by `POST /new`.
+ * Long enough for a CLI/SDK caller to open the printed URL in a browser;
+ * short enough that a leaked URL (shell history, proxy log) goes stale fast.
+ */
+export declare const ATTACH_BOOTSTRAP_TTL_MS: number;
 /**
  * Result of a successful `verifyNimbusToken` call. Verified claims plus a
  * canonical DO instance-naming string derived from `(tn, sub || '_')`.
@@ -129,6 +140,10 @@ export declare class NimbusTokenTtlError extends NimbusAuthError {
 export declare class NimbusScopeError extends NimbusAuthError {
     readonly requiredScope: string;
     constructor(requiredScope: string);
+}
+/** Thrown when a single-use attach bootstrap token is presented again. */
+export declare class NimbusBootstrapConsumedError extends NimbusAuthError {
+    constructor();
 }
 /** Thrown when sid-pin doesn't match the actual session being attached. */
 export declare class NimbusSessionPinError extends NimbusAuthError {

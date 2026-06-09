@@ -12,4 +12,4 @@
  */
 export { issueNimbusToken, verifyNimbusToken, } from './token.js';
 export { extractBearerToken, verifyRequestToken, requireScopes, requireSessionPin, setNimbusTokenCookie, authErrorResponse, NIMBUS_TOKEN_COOKIE, NIMBUS_TOKEN_QUERY, } from './middleware.js';
-export { NimbusAuthError, NimbusAuthConfigError, NimbusTokenMalformedError, NimbusTokenSignatureError, NimbusTokenClaimsError, NimbusTokenExpiredError, NimbusTokenTtlError, NimbusScopeError, NimbusSessionPinError, DEFAULT_TOKEN_TTL_MS, MAX_TOKEN_TTL_MS, ID_COMPONENT_RE, isNimbusIdComponent, } from './types.js';
+export { NimbusAuthError, NimbusAuthConfigError, NimbusTokenMalformedError, NimbusTokenSignatureError, NimbusTokenClaimsError, NimbusTokenExpiredError, NimbusTokenTtlError, NimbusScopeError, NimbusSessionPinError, NimbusBootstrapConsumedError, DEFAULT_TOKEN_TTL_MS, MAX_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, ID_COMPONENT_RE, isNimbusIdComponent, } from './types.js';

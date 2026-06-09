@@ -33,6 +33,7 @@ import { setCtxExports } from './ctx-exports.js';
 import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '../constants.js';
 import { seedProject } from '../vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
+import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX } from './keys.js';
 import { dec } from '../_shared/bytes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
@@ -471,6 +472,19 @@ export class NimbusSession extends CloudflareDurableObject {
             }
             catch { }
         }
+    }
+    /**
+     * Consume a single-use attach bootstrap token id (`jti`) — set-if-absent.
+     * Returns false when the jti was already consumed (replayed attach URL).
+     * Atomic per DO semantics: input gates stay closed across the storage
+     * get/put, so two concurrent exchanges cannot both observe "absent".
+     */
+    async _rpcConsumeAttachBootstrap(jti) {
+        const key = `${ATTACH_BOOTSTRAP_JTI_KEY_PREFIX}${jti}`;
+        if (await this.ctx.storage.get(key) !== undefined)
+            return false;
+        await this.ctx.storage.put(key, Date.now());
+        return true;
     }
     // ── Supervisor RPC + W8 cp* + legacy VFS extracted to
     // ── ./nimbus-session-rpc.ts (S8). See plan §B.3.4.

@@ -53,4 +53,9 @@ export declare const VITE_CONFIG_KEY = "vite-config";
  *  leave the alarm stuck.
  */
 export declare const W1_NEXT_ALARM_REASONS_KEY = "w1_next_alarm_reasons";
+/** Prefix for consumed single-use attach bootstrap token ids (`jti`).
+ *  Written set-if-absent by `_rpcConsumeAttachBootstrap` on the attach
+ *  exchange; an existing row means the bootstrap URL was replayed.
+ *  Bounded: at most one row per `POST /new` bootstrap actually attached. */
+export declare const ATTACH_BOOTSTRAP_JTI_KEY_PREFIX = "attach-bootstrap-jti:";
 //# sourceMappingURL=keys.d.ts.map
