@@ -23,6 +23,9 @@ comments).
 | Push to `main` | `main-with-retry` | Retry-on-banner enabled (matches local-dev semantics); informational only |
 | Manual `workflow_dispatch` | `pr-strict` | On-demand replay; same strict mode as PR |
 
+Both jobs first run the in-process unit suite (`tests/unit/*.mjs`), then
+mint a probe token and run the behavioral suite.
+
 A PR push cancels in-flight runs for the same ref (concurrency
 `cancel-in-progress`). Latest commit always wins.
 
