@@ -28,7 +28,7 @@
 
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest, type RuntimeCatalogEnv, type RuntimeCatalog, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, type RuntimePackageAbi } from './os-contracts.js';
+import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, type RuntimePackageAbi } from './os-contracts.js';
 
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
 export interface ShellCtx {
@@ -109,11 +109,11 @@ export function runtimeAbiForManifest(manifest: RuntimeManifest): RuntimePackage
   if (manifest.entrypoints.some((entrypoint) => entrypoint.runner === 'clang-runner')) {
     return NIMBUS_ABI_TARGET;
   }
-  return 'native-unsupported';
+  return NATIVE_UNSUPPORTED_ABI;
 }
 
 function runtimeAbiForCatalogName(name: string): RuntimePackageAbi {
-  return NIMBUS_RUNTIME_ABIS[name] ?? 'native-unsupported';
+  return NIMBUS_RUNTIME_ABIS[name] ?? NATIVE_UNSUPPORTED_ABI;
 }
 
 export interface RuntimeInstallTarget {

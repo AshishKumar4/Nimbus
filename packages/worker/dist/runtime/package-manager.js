@@ -26,7 +26,7 @@
  * Errors throw and bubble up to the user as a single diagnostic line.
  */
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest } from './runtime-catalog.js';
-import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS } from './os-contracts.js';
+import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI } from './os-contracts.js';
 /** Map of runner-key → factory. Populated by init.ts before install. */
 const runnerFactories = {};
 export function registerRunnerFactory(key, factory) {
@@ -44,10 +44,10 @@ export function runtimeAbiForManifest(manifest) {
     if (manifest.entrypoints.some((entrypoint) => entrypoint.runner === 'clang-runner')) {
         return NIMBUS_ABI_TARGET;
     }
-    return 'native-unsupported';
+    return NATIVE_UNSUPPORTED_ABI;
 }
 function runtimeAbiForCatalogName(name) {
-    return NIMBUS_RUNTIME_ABIS[name] ?? 'native-unsupported';
+    return NIMBUS_RUNTIME_ABIS[name] ?? NATIVE_UNSUPPORTED_ABI;
 }
 /**
  * Commands a runtime provides beyond its manifest entrypoints. The
