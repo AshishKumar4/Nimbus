@@ -1,21 +1,18 @@
 /**
- * ProcessTable — maps PIDs to facet names, tracks lifecycle.
+ * ProcessTable — PID allocation and process lifecycle state.
  *
- * Each `node script.js` invocation gets a PID, which maps to a
- * facet name like "node-proc-1". The supervisor uses this to
- * route signals (kill) and track running processes.
+ * Each `node script.js` invocation gets a PID. The supervisor uses this
+ * to route signals (kill) and track running processes. Owned by
+ * SessionProcessSupervisor; callers go through that facade.
  */
 export class ProcessTable {
     nextPid = 1;
     processes = new Map();
-    facetToPid = new Map();
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd) {
         const pid = this.nextPid++;
-        const facetName = `node-proc-${pid}`;
         const entry = {
             pid,
-            facetName,
             command,
             argv,
             cwd,
@@ -25,23 +22,8 @@ export class ProcessTable {
             endTime: null,
         };
         this.processes.set(pid, entry);
-        this.facetToPid.set(facetName, pid);
         return entry;
     }
-    /**
-     * Mark a process as exited.
-     *
-     * STABILITY-AUDIT.md M-S1: state-idempotent. Once a process reaches
-     * a terminal state (`killed` or `exited`), subsequent exit() calls
-     * are no-ops — the first terminal state wins.
-     *
-     * Without this guard, a `kill <pid>` (which sets state='killed',
-     * exitCode=137) followed by the facet's own crash-catch in
-     * facet-manager.ts:842-864 (which calls processTable.exit(pid, 1))
-     * clobbers the kill signal with an exited/1 reading. `ps` then
-     * disagrees with the ring-buffer footer that still says
-     * "[process killed: killed]".
-     */
     /** child-process isolation: mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid) {
         const entry = this.processes.get(pid);
@@ -54,6 +36,19 @@ export class ProcessTable {
         if (entry)
             entry.attachedTty = true;
     }
+    /**
+     * Mark a process as exited.
+     *
+     * STABILITY-AUDIT.md M-S1: state-idempotent. Once a process reaches
+     * a terminal state (`killed` or `exited`), subsequent exit() calls
+     * are no-ops — the first terminal state wins.
+     *
+     * Without this guard, a `kill <pid>` (which sets state='killed',
+     * exitCode=137) followed by the facet's own crash-catch (which calls
+     * exit(pid, 1)) clobbers the kill signal with an exited/1 reading.
+     * `ps` then disagrees with the ring-buffer footer that still says
+     * "[process killed: killed]".
+     */
     exit(pid, exitCode) {
         const entry = this.processes.get(pid);
         if (!entry)
@@ -77,10 +72,6 @@ export class ProcessTable {
     get(pid) {
         return this.processes.get(pid);
     }
-    getByFacet(facetName) {
-        const pid = this.facetToPid.get(facetName);
-        return pid !== undefined ? this.processes.get(pid) : undefined;
-    }
     getRunning() {
         return [...this.processes.values()].filter(p => p.state === 'running');
     }
@@ -93,7 +84,6 @@ export class ProcessTable {
         let reaped = 0;
         for (const [pid, entry] of this.processes) {
             if (entry.state !== 'running' && entry.endTime && now - entry.endTime > maxAge) {
-                this.facetToPid.delete(entry.facetName);
                 this.processes.delete(pid);
                 reaped++;
             }

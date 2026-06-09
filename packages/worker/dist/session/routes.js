@@ -34,7 +34,6 @@ import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState
 import { isWarmRejoin, joinExistingSession } from './init-phases.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
-import { ProcessLogStore } from '../runtime/process-logs.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { getLoadedCodesStats } from './bindings.js';
@@ -225,15 +224,13 @@ export async function handleFetch(self, request) {
     const logsPid = matchLogsPath(url.pathname);
     if (logsPid !== null) {
         return handleLogsWebSocketRequest(request, logsPid, {
-            processLogs: self.processLogs,
-            processTable: self.processTable,
-            processInput: self.processInput,
+            processes: self.processes,
             // W9: pass ctx so the upgrade uses ctx.acceptWebSocket (hibernatable).
             ctx: self.ctx,
         });
     }
     if (url.pathname === '/api/processes') {
-        return handleProcessesListRequest(self.processTable, self.processLogs);
+        return handleProcessesListRequest(self.processes);
     }
     if (url.pathname.startsWith('/api/agent/')) {
         return handleAgentRequest(self, request, url);
@@ -269,7 +266,7 @@ export async function handleFetch(self, request) {
             if (!Number.isFinite(pid) || pid <= 0) {
                 return json(400, { error: 'invalid pid', pid });
             }
-            const entry = self.processTable.get(pid);
+            const entry = self.processes.get(pid);
             if (!entry) {
                 return json(404, { error: 'no such process', pid });
             }
@@ -292,17 +289,13 @@ export async function handleFetch(self, request) {
                             catch { }
                         }
                     }
-                    catch { /* keep going to teardown processTable / portRegistry */ }
+                    catch { /* keep going to teardown process + port state */ }
                     try {
                         self.portRegistry.unregisterByPid(pid);
                     }
                     catch { }
                     try {
-                        self.processTable.kill(pid);
-                    }
-                    catch { }
-                    try {
-                        self.processInput.close(pid);
+                        self.processes.kill(pid);
                     }
                     catch { }
                     self._viteShimPid = null;
@@ -312,10 +305,6 @@ export async function handleFetch(self, request) {
                     const ok = self.facetManager.kill(pid);
                     if (!ok)
                         return json(404, { error: 'facetManager.kill returned false', pid });
-                    try {
-                        self.processInput.close(pid);
-                    }
-                    catch { }
                 }
                 else {
                     // No facetManager and not a vite shim — best-effort
@@ -325,11 +314,7 @@ export async function handleFetch(self, request) {
                     }
                     catch { }
                     try {
-                        self.processTable.kill(pid);
-                    }
-                    catch { }
-                    try {
-                        self.processInput.close(pid);
+                        self.processes.kill(pid);
                     }
                     catch { }
                 }
@@ -530,7 +515,7 @@ export async function handleFetch(self, request) {
                 autoResponseError: self._w9WsConfig?.autoResponseError ?? null,
                 hibernationEventTimeoutMs: self._w9WsConfig?.timeoutSetMs ?? null,
                 timeoutError: self._w9WsConfig?.timeoutError ?? null,
-                ...self.processLogs.hibStats(),
+                ...self.processes.logHibStats(),
             },
             // ── W12: replica observability ──────────────────────────────
             // `replica.state` is one of 'enabled' / 'enabled-via-configure' /
@@ -622,7 +607,7 @@ export async function handleFetch(self, request) {
     // hibernation code path. Real DO hibernation only happens in prod;
     // wrangler dev keeps state across requests. So we simulate the
     // "fresh isolate per dispatch" rule by clearing the in-memory
-    // ProcessLogStore — the next read MUST hydrate from SQL.
+    // log store — the next read MUST hydrate from SQL.
     //
     // 404 when NIMBUS_DEBUG isn't set, so prod isn't a free vector.
     if (url.pathname.startsWith('/api/_test/')) {
@@ -634,33 +619,32 @@ export async function handleFetch(self, request) {
             // then nuke the in-memory ring. The next read on any pid will
             // re-hydrate via the adapter.
             try {
-                self.processLogs.flush();
+                self.processes.flushLogs();
             }
             catch { }
-            const fresh = new ProcessLogStore();
+            self.processes.resetLogStore();
             // Re-wire persist on the new store (mirrors constructor path).
             self._w9PersistWired = false;
-            self.processLogs = fresh;
             self._w9WireProcessLogPersist();
             return Response.json({ cleared: true, ts: Date.now() });
         }
         if (url.pathname === '/api/_test/spawn-emitter' && request.method === 'POST') {
-            // Spawns a synthetic emitter directly into ProcessLogStore +
-            // ProcessTable without going through FacetManager. Lets the e2e
+            // Spawns a synthetic emitter directly into the process
+            // supervisor without going through FacetManager. Lets the e2e
             // probe drive the W9 code path without a real long-running
             // facet (which the test environment may not support).
             try {
                 const body = await parseJsonBody(request, TestSpawnEmitterBodySchema);
                 const lines = Math.max(1, Math.min(1000, body.lines || 50));
                 const text = body.lineText;
-                const entry = self.processTable.spawn(`_test:${text}`, ['_test'], '/');
+                const entry = self.processes.spawn(`_test:${text}`, ['_test'], '/');
                 const pid = entry.pid;
                 for (let i = 0; i < lines; i++) {
-                    self.processLogs.append(pid, 'stdout', `${text} ${i}\n`);
+                    self.processes.appendOutput(pid, 'stdout', `${text} ${i}\n`);
                 }
                 // Force-flush so SQL reflects state before the next request.
                 try {
-                    self.processLogs.flush();
+                    self.processes.flushLogs();
                 }
                 catch { }
                 return Response.json({ pid, lines });
@@ -675,7 +659,7 @@ export async function handleFetch(self, request) {
             if (!Number.isFinite(pid) || pid <= 0) {
                 return Response.json({ error: 'bad pid' }, { status: 400 });
             }
-            const chunks = self.processLogs.tail(pid, linesQ ? { lines: linesQ } : {});
+            const chunks = self.processes.tailLogs(pid, linesQ ? { lines: linesQ } : {});
             const allText = chunks.map((c) => c.data).join('');
             const lines = allText.split('\n').filter((l) => l !== '');
             return Response.json({ pid, lines, chunkCount: chunks.length });
@@ -741,8 +725,8 @@ export async function handleFetch(self, request) {
     if (url.pathname === '/api/stats') {
         self.ensureSqliteFs();
         const vfsStats = self.sqliteFs.getStats();
-        const processStats = self.processTable.stats;
-        const logStoreStats = self.processLogs.stats;
+        const processStats = self.processes.stats;
+        const logStoreStats = self.processes.logStats;
         // Preview UI polls vite.running to decide between /preview/ and
         // the "no dev server" placeholder. We report running:true if
         // EITHER the Cirrus in-process ViteDevServer OR the opt-in
@@ -824,8 +808,7 @@ export async function handleFetch(self, request) {
             // surface still see a real process in `ps` and stream
             // diagnostics into the Process tab.
             const apiVitePort = (typeof body.port === 'number' && body.port > 0) ? body.port : 5173;
-            const apiViteEntry = self.processTable.spawn('vite (api/start-vite, ' + root + ')', [], root);
-            self.processTable.setLongRunning(apiViteEntry.pid);
+            const apiViteEntry = self.processes.spawn('vite (api/start-vite, ' + root + ')', [], root, { longRunning: true });
             self.viteDevServer = new ViteDevServer({
                 vfs: self.sqliteFs, esbuild: self.esbuildService, root,
                 aliases: body.aliases, define: body.define,
@@ -842,7 +825,7 @@ export async function handleFetch(self, request) {
                 ctx: self.ctx,
                 port: apiVitePort,
                 pid: apiViteEntry.pid,
-                processLogs: self.processLogs,
+                processes: self.processes,
             });
             self.viteDevServer.start();
             try {
@@ -983,8 +966,7 @@ export async function handleFetch(self, request) {
                     // PID is registered against the previously-known port (or
                     // the default 5173 when the saved config predates P5).
                     const rehydratedPort = (config.port && Number.isFinite(config.port)) ? config.port : 5173;
-                    const rehydratedEntry = self.processTable.spawn('vite (rehydrated, ' + config.root + ')', [], config.root);
-                    self.processTable.setLongRunning(rehydratedEntry.pid);
+                    const rehydratedEntry = self.processes.spawn('vite (rehydrated, ' + config.root + ')', [], config.root, { longRunning: true });
                     self.viteDevServer = new ViteDevServer({
                         vfs: self.sqliteFs, esbuild: self.esbuildService, root: config.root,
                         aliases: config.aliases, define: config.define,
@@ -996,7 +978,7 @@ export async function handleFetch(self, request) {
                         ctx: self.ctx,
                         port: rehydratedPort,
                         pid: rehydratedEntry.pid,
-                        processLogs: self.processLogs,
+                        processes: self.processes,
                     });
                     self.viteDevServer.start();
                     // Re-register the port so /preview/?port=N keeps working

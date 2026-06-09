@@ -10,9 +10,7 @@ import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
-import { ProcessTable } from '../runtime/process-table.js';
-import { ProcessLogStore } from '../runtime/process-logs.js';
-import { ProcessInputStore } from '../runtime/process-input.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -86,10 +84,13 @@ export declare class NimbusSession extends CloudflareDurableObject {
     npmInstaller: NpmInstaller | null;
     /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
     fetchProxyEntrypoint: any;
-    processTable: ProcessTable;
+    /**
+     * The session's single process owner: PID authority, controlling-
+     * terminal input, output rings, and exit records, behind one facade.
+     * Every sibling module routes process operations through this field.
+     */
+    processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
-    processLogs: ProcessLogStore;
-    processInput: ProcessInputStore;
     /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
      *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
      *  prevented hibernation per CF DO docs). The alarm itself lives in
@@ -118,7 +119,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _w9PersistWired: boolean;
     /**
      * Debounced flush state. Append marks the timer; the timer fires
-     * after W9_FLUSH_DEBOUNCE_MS and calls `processLogs.flush()`. We
+     * after W9_FLUSH_DEBOUNCE_MS and calls `processes.flushLogs()`. We
      * also flush eagerly when `dirtyChunks * pidCount` crosses a threshold
      * — but the debounce handles the steady-state case.
      *
@@ -186,7 +187,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * re-arms `ctx.storage.setAlarm` at the earliest remaining deadline.
      * Today's reasons: 'w9-flush' (process-log SQL drain) and
      * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
-     * orphan-pid predicate so we close over `processTable` here.
+     * orphan-pid predicate so we close over the process supervisor here.
      */
     alarm(): Promise<void>;
     /** W9: increment + persist isolate-gen counter once per fresh isolate. */

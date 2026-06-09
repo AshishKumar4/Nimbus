@@ -5,7 +5,7 @@
  * an HTTP server should plug into the supervisor's port registry the
  * same way, so:
  *
- *   - `ps` shows it (via `processTable.spawn` + `setLongRunning`)
+ *   - `ps` shows it (via the process supervisor's long-running spawn)
  *   - `/preview/?port=N` routes to it
  *   - `/preview/` routes to the default-target one
  *   - `vite stop` / `kill <pid>` tears it down

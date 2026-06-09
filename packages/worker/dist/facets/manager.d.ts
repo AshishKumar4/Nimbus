@@ -15,7 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import { ProcessTable } from '../runtime/process-table.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -161,7 +161,7 @@ export interface FacetManagerHooks {
      * exit unless we call it here.
      */
     onExternalExit?: (pid: number, code: number, reason: string) => void;
-    /** Fired right after processTable.spawn — lets the session print a notification. */
+    /** Fired right after the supervisor's spawn — lets the session print a notification. */
     onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
 }
 export interface LongRunningWorkerSpawnOptions {
@@ -172,7 +172,7 @@ export interface LongRunningWorkerSpawnOptions {
 export declare class FacetManager {
     private ctx;
     private env;
-    private processTable;
+    private processes;
     private portRegistry;
     private vfs;
     private hooks;
@@ -186,7 +186,7 @@ export declare class FacetManager {
      * to avoid double-init.
      */
     private esbuild;
-    constructor(ctx: DurableObjectState, env: unknown, processTable: ProcessTable, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
+    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
@@ -207,20 +207,20 @@ export declare class FacetManager {
         stdin?: string;
         /**
          * G4 (runtime-pkg wave): caller-supplied display label for the
-         * processTable entry. When set, takes precedence over the
+         * process entry. When set, takes precedence over the
          * default `node ${filename}`. Used by the .bin handler in
          * init.ts so `tsc --version` shows up in `ps` as
          * `tsc --version` (the user's typed line) rather than
          * `node /home/user/proj/node_modules/typescript/bin/tsc`.
          *
          * Also: when `command` is provided AND `skipSpawn` is true,
-         * the caller has already done processTable.spawn (e.g. the
+         * the caller has already spawned the process entry (e.g. the
          * .bin wrapper that needs to allocate a PID before parsing
          * the shim). exec() reuses that PID instead of spawning a
          * second one — the G4 double-spawn fix.
          */
         command?: string;
-        /** G4: caller already did processTable.spawn; don't double-spawn. */
+        /** G4: caller already spawned the process entry; don't double-spawn. */
         skipSpawn?: boolean;
         /** G4: when skipSpawn is true, the PID the caller allocated. */
         callerPid?: number;

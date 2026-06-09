@@ -33,9 +33,7 @@
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
 import { type FsWatchSub } from './fs-watch.js';
-import type { ProcessLogStore } from '../runtime/process-logs.js';
-import type { ProcessInputStore } from '../runtime/process-input.js';
-import type { ProcessTable } from '../runtime/process-table.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -57,9 +55,7 @@ export interface WsHost {
      *  + lifecycle. Optional (undefined) until first subscribe so sessions
      *  that never open the file tree carry no watch state. */
     _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
-    processLogs: ProcessLogStore;
-    processInput: ProcessInputStore;
-    processTable: ProcessTable;
+    processes: SessionProcessSupervisor;
     wranglerAliasBannerShown: boolean;
     _w9PersistWired: boolean;
     _w9FlushTimer: any;

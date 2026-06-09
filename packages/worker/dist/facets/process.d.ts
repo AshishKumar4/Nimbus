@@ -33,6 +33,7 @@
  *     in-flight reportExit RPC a chance to land (and be no-op'd by the
  *     idempotent guard).
  */
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this
@@ -162,33 +163,13 @@ export interface ShellExecutorLike {
     execute(commandLine: string, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
 }
 /**
- * The minimum shape we need from the ProcessLogStore.
- */
-export interface LogStoreLike {
-    append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
-    markExit(pid: number, code: number): void;
-    getExit(pid: number): number | undefined;
-}
-export interface ProcessTableLike {
-    spawn(command: string, argv: string[], cwd: string): {
-        pid: number;
-        facetName?: string;
-    };
-    exit(pid: number, code: number): void;
-    kill(pid: number): boolean;
-    get(pid: number): unknown;
-    reap(maxAge?: number): number;
-    setLongRunning?(pid: number): void;
-}
-/**
  * Constructor deps bundle. Keeping it as a single object simplifies
  * tests AND makes the production wiring in nimbus-session.ts read
  * declaratively.
  */
 export interface FacetProcessManagerDeps {
     facetMgr: FacetManagerLike;
-    processTable: ProcessTableLike;
-    processLogs: LogStoreLike;
+    processes: SessionProcessSupervisor;
     vfs: {
         exists(p: string): boolean;
         readFileString(p: string): string;

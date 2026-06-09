@@ -4,7 +4,7 @@
  * D1-D7:
  *   - `python --version` / `python -c '<code>'` / `python script.py`
  *   - stdlib subset (full python_stdlib.zip ships)
- *   - stdout/stderr → processLogs (Process tab integration)
+ *   - stdout/stderr → the process supervisor's log ring (Process tab integration)
  *   - exit code via sys.exit(N) or unhandled exception → 1
  *   - argv passed through to sys.argv
  *

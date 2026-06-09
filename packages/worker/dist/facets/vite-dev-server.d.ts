@@ -61,14 +61,14 @@ export interface ViteDevServerOptions {
     /**
      * process diagnostics support: when set, every diagnostic the dev server
      * would otherwise drop into Worker logs (console.warn / console.error)
-     * is ALSO appended to the supervisor's per-PID ProcessLogStore at
-     * this PID, on the 'stderr' stream. The Process tab in the frontend
-     * reads from this store, so the user finally sees a real log of
-     * what the dev server is doing — no more "silent after banner."
+     * is ALSO appended to the session process supervisor's per-PID log
+     * ring at this PID, on the 'stderr' stream. The Process tab in the
+     * frontend reads from this store, so the user finally sees a real log
+     * of what the dev server is doing — no more "silent after banner."
      */
     pid?: number;
-    processLogs?: {
-        append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void;
+    processes?: {
+        appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void;
     };
 }
 /**
@@ -176,7 +176,7 @@ export declare class ViteDevServer {
      * back to console.warn / console.error only (legacy behaviour).
      */
     private logPid;
-    private logStore;
+    private logSink;
     constructor(opts: ViteDevServerOptions);
     /**
      * Lazily construct the NimbusLoaderPool used for on-demand bundling

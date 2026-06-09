@@ -6,9 +6,8 @@
  * duplicating the interactive terminal boot path.
  */
 import { type MinShellRegistry } from '../runtime/package-manager.js';
-import { ProcessTable } from '../runtime/process-table.js';
-import { ProcessLogStore, type ProcessLogReadOptions } from '../runtime/process-logs.js';
-import { ProcessInputStore } from '../runtime/process-input.js';
+import type { ProcessLogReadOptions } from '../runtime/process-logs.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -51,10 +50,8 @@ export interface ProgrammaticHost {
     ctx: ProgrammaticContext;
     shell: ProgrammaticShell | null;
     sqliteFs: SqliteVFS | null;
-    processTable: ProcessTable;
+    processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
-    processLogs: ProcessLogStore;
-    processInput: ProcessInputStore;
     facetManager: ProgrammaticFacetManager | null;
     viteDevServer: ProgrammaticViteServer | null;
     cirrusReal: ProgrammaticCirrusServer | null;

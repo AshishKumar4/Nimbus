@@ -16,7 +16,8 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 
-import { ProcessTable, type ProcessEntry } from '../runtime/process-table.js';
+import type { ProcessEntry } from '../runtime/process-table.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { generateShimsCode } from '../runtime/node-shims.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -2221,7 +2222,7 @@ export interface FacetManagerHooks {
    * exit unless we call it here.
    */
   onExternalExit?: (pid: number, code: number, reason: string) => void;
-  /** Fired right after processTable.spawn — lets the session print a notification. */
+  /** Fired right after the supervisor's spawn — lets the session print a notification. */
   onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
 }
 
@@ -2236,7 +2237,7 @@ const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 export class FacetManager {
   private ctx: DurableObjectState;
   private env: FacetManagerEnv;
-  private processTable: ProcessTable;
+  private processes: SessionProcessSupervisor;
   private portRegistry: PortRegistry;
   private vfs: SqliteVFS | null = null;
   private hooks: FacetManagerHooks;
@@ -2254,13 +2255,13 @@ export class FacetManager {
   constructor(
     ctx: DurableObjectState,
     env: unknown,
-    processTable: ProcessTable,
+    processes: SessionProcessSupervisor,
     portRegistry: PortRegistry,
     hooks: FacetManagerHooks = {},
   ) {
     this.ctx = ctx;
     this.env = parseFacetManagerEnv(env);
-    this.processTable = processTable;
+    this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
   }
@@ -2294,7 +2295,7 @@ export class FacetManager {
 
   noteProcessReportedExit(pid: number, exitCode: number): void {
     this.portRegistry.unregisterByPid(pid);
-    this.processTable.exit(pid, exitCode);
+    this.processes.exit(pid, exitCode);
     const tracked = this.processRpcResources.get(pid);
     if (tracked?.releaseOnReportExit) this.releaseProcessRpcResources(pid);
   }
@@ -2311,20 +2312,20 @@ export class FacetManager {
       stdin?: string;
       /**
        * G4 (runtime-pkg wave): caller-supplied display label for the
-       * processTable entry. When set, takes precedence over the
+       * process entry. When set, takes precedence over the
        * default `node ${filename}`. Used by the .bin handler in
        * init.ts so `tsc --version` shows up in `ps` as
        * `tsc --version` (the user's typed line) rather than
        * `node /home/user/proj/node_modules/typescript/bin/tsc`.
        *
        * Also: when `command` is provided AND `skipSpawn` is true,
-       * the caller has already done processTable.spawn (e.g. the
+       * the caller has already spawned the process entry (e.g. the
        * .bin wrapper that needs to allocate a PID before parsing
        * the shim). exec() reuses that PID instead of spawning a
        * second one — the G4 double-spawn fix.
        */
       command?: string;
-      /** G4: caller already did processTable.spawn; don't double-spawn. */
+      /** G4: caller already spawned the process entry; don't double-spawn. */
       skipSpawn?: boolean;
       /** G4: when skipSpawn is true, the PID the caller allocated. */
       callerPid?: number;
@@ -2339,7 +2340,7 @@ export class FacetManager {
         ? `node ${opts.filename}` : 'node -e ...');
     let entry: ProcessEntry;
     if (opts.skipSpawn && opts.callerPid != null) {
-      // The caller already allocated the PID via processTable.spawn
+      // The caller already allocated the PID via the supervisor
       // (with their own user-facing label). Look up the full entry
       // from the table — _execWithTimeout etc. need the canonical
       // ProcessEntry shape. Do NOT reap() either: reaping would
@@ -2347,14 +2348,14 @@ export class FacetManager {
       // is recent (< 60s) but reap() ALSO drops 'running' entries
       // older than the threshold; in any case we don't want side
       // effects when the caller is delegating PID ownership.
-      const found = this.processTable.get(opts.callerPid);
+      const found = this.processes.get(opts.callerPid);
       if (!found) {
-        throw new Error(`facetMgr.exec skipSpawn: callerPid=${opts.callerPid} not in processTable`);
+        throw new Error(`facetMgr.exec skipSpawn: callerPid=${opts.callerPid} not in process table`);
       }
       entry = found;
     } else {
-      this.processTable.reap();
-      entry = this.processTable.spawn(command, opts.argv || [], opts.cwd || '/home/user');
+      this.processes.reap();
+      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user');
       // Short foreground `node -e ...` helpers are quiet by design — only
       // notify for user-facing `node <file>` invocations, which covers the
       // real user intent (running scripts, wrangler, etc.).
@@ -2389,7 +2390,7 @@ export class FacetManager {
         entry,
         () => abortController.abort(),
       );
-      this.processTable.exit(entry.pid, result.exitCode);
+      this.processes.exit(entry.pid, result.exitCode);
       if (result.exitCode !== 0) {
         this._w5RecordTermination(
           entry.pid, result.exitCode, 'runtime-worker',
@@ -2407,7 +2408,7 @@ export class FacetManager {
       const timedOut = this.timedOutProcessIds.has(entry.pid);
       const exitCode = timedOut ? 124 : 1;
       const reason = timedOut ? 'timeout' : `runtime worker error: ${errorMessage(err)}`;
-      this.processTable.exit(entry.pid, exitCode);
+      this.processes.exit(entry.pid, exitCode);
       // W5 Lever 5: ring entry on every catch-path exit.
       this._w5RecordTermination(
         entry.pid, exitCode,
@@ -2622,21 +2623,21 @@ export class FacetManager {
       bundleProfile?: FacetBundleProfile;
     } = {},
   ): Promise<{ pid: number; facetStub: any }> {
-    this.processTable.reap();
+    this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
     const cwd = opts.cwd || '/home/user';
     let entry: ProcessEntry;
     if (opts.skipSpawn && opts.callerPid != null) {
-      const found = this.processTable.get(opts.callerPid);
+      const found = this.processes.get(opts.callerPid);
       if (!found) {
-        throw new Error(`facetMgr.spawnNode skipSpawn: callerPid=${opts.callerPid} not in processTable`);
+        throw new Error(`facetMgr.spawnNode skipSpawn: callerPid=${opts.callerPid} not in process table`);
       }
       entry = found;
     } else {
-      entry = this.processTable.spawn(command, opts.argv || [], cwd);
+      entry = this.processes.spawn(command, opts.argv || [], cwd);
     }
-    this.processTable.setLongRunning(entry.pid);
-    if (opts.attachedTty) this.processTable.setAttachedTty(entry.pid);
+    this.processes.setLongRunning(entry.pid);
+    if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
     if (!opts.skipSpawn) {
       try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}
     }
@@ -2708,7 +2709,7 @@ export class FacetManager {
           startPromise
             .catch((e: unknown) => {
               const reason = 'long-running node process failed: ' + errorMessage(e);
-              try { this.processTable.exit(entry.pid, 1); } catch {}
+              try { this.processes.exit(entry.pid, 1); } catch {}
               try { this._w5RecordTermination(entry.pid, 1, 'facet', reason); } catch {}
               try { this.hooks.onExternalExit?.(entry.pid, 1, reason); } catch {}
             })
@@ -2728,7 +2729,7 @@ export class FacetManager {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
-      this.processTable.exit(entry.pid, 1);
+      this.processes.exit(entry.pid, 1);
       const reason = 'long-running node boot failed: ' + errorMessage(e);
       this._w5RecordTermination(
         entry.pid,
@@ -2783,13 +2784,13 @@ export class FacetManager {
     cwd: string,
     opts: LongRunningWorkerSpawnOptions = {},
   ): Promise<{ pid: number; facetStub: any }> {
-    this.processTable.reap();
-    const entry = this.processTable.spawn(command, [], cwd);
+    this.processes.reap();
+    const entry = this.processes.spawn(command, [], cwd);
     // child-process isolation gap #2: stamp the explicit longRunning flag on the
     // process_table entry so /api/processes returns longRunning=true
     // independent of the LONG_RUNNING_CMD_RE heuristic. Vite, wrangler,
     // node servers, --watch, etc. all flow through this primitive.
-    this.processTable.setLongRunning(entry.pid);
+    this.processes.setLongRunning(entry.pid);
     // Long-running facets (vite, nimbus-wrangler, node servers) always
     // get a spawn notification — they're visible and users want to know
     // the PID for later `logs`/`kill`.
@@ -2837,7 +2838,7 @@ export class FacetManager {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
-      this.processTable.exit(entry.pid, 1);
+      this.processes.exit(entry.pid, 1);
       const reason = 'long-running worker boot failed: ' + errorMessage(e);
       this._w5RecordTermination(
         entry.pid,
@@ -2876,7 +2877,7 @@ export class FacetManager {
 
   finishProcess(pid: number, exitCode: number, reason = 'exited'): void {
     this.portRegistry.unregisterByPid(pid);
-    this.processTable.exit(pid, exitCode);
+    this.processes.exit(pid, exitCode);
     this.releaseProcessRpcResources(pid);
     if (exitCode !== 0) {
       this._w5RecordTermination(pid, exitCode, 'facet', reason);
@@ -2886,18 +2887,18 @@ export class FacetManager {
 
   /** Kill a running process by PID. */
   kill(pid: number): boolean {
-    const entry = this.processTable.get(pid);
+    const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
     try { (this.ctx as any).facets?.abort(`proc-${entry.pid}`, new Error('SIGKILL')); } catch {}
     try { (this.ctx as any).facets?.delete(`proc-${entry.pid}`); } catch {}
     this.portRegistry.unregisterByPid(pid);
     this.releaseProcessRpcResources(pid);
-    const result = this.processTable.kill(pid);
+    const result = this.processes.kill(pid);
     if (result) {
       try { this.hooks.onExternalExit?.(pid, 137, 'killed'); } catch {}
     }
     return result;
   }
 
-  get stats() { return this.processTable.stats; }
+  get stats() { return this.processes.stats; }
 }

@@ -1,4 +1,5 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { resolveNpmBin, resolveNpmBinFromPath } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
 import { normalizeVfsPath } from '../vfs/path.js';
@@ -24,23 +25,6 @@ type RegistryLike = {
   resolve(name: string): Promise<unknown> | unknown;
 };
 
-type ProcessTableLike = {
-  spawn(command: string, argv: string[], cwd: string): { pid: number };
-  setLongRunning?(pid: number): void;
-  setAttachedTty?(pid: number): void;
-  exit(pid: number, code: number): void;
-};
-
-type ProcessInputLike = {
-  open(pid: number): void;
-};
-
-type ProcessLogsLike = {
-  append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
-  markExit(pid: number, code: number): void;
-  getExit(pid: number): unknown;
-};
-
 type RuntimeCommandHint = { installSpec: string } | null;
 
 const NpmBinPackageMetadataSchema = z.object({
@@ -61,9 +45,7 @@ export function installNpmBinFallbackResolver(
   deps: {
     vfs: SqliteVFS;
     getCwd(): string;
-    processTable: ProcessTableLike;
-    processInput?: ProcessInputLike | null;
-    processLogs: ProcessLogsLike;
+    processes: SessionProcessSupervisor;
     terminal?: Output | null;
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
@@ -117,14 +99,13 @@ export function installNpmBinFallbackResolver(
       const runRuntime = runtimeCmd as NodeCommandHandler;
 
       const shellLine = `${name} ${argv.join(' ')}`.trim();
-      const entry = deps.processTable.spawn(shellLine, [name, ...argv], invocationCwd);
+      const entry = deps.processes.spawn(
+        shellLine, [name, ...argv], invocationCwd,
+        { longRunning, attachedTty },
+      );
       const pid = entry.pid;
       const startedAt = Date.now();
-      if (longRunning) {
-        deps.processTable.setLongRunning?.(pid);
-        deps.processInput?.open(pid);
-      }
-      if (attachedTty) deps.processTable.setAttachedTty?.(pid);
+      if (longRunning) deps.processes.openInput(pid);
 
       const label = longRunning ? 'started (long-running)' : 'started';
       deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
@@ -132,7 +113,7 @@ export function installNpmBinFallbackResolver(
 
       const writeThrough = (stream: 'stdout' | 'stderr', target: Output) => (data: string) => {
         const text = String(data);
-        try { deps.processLogs.append(pid, stream, text); } catch {}
+        try { deps.processes.appendOutput(pid, stream, text); } catch {}
         try { target.write(text); } catch {}
       };
 
@@ -158,9 +139,9 @@ export function installNpmBinFallbackResolver(
       } finally {
         const handedOffToLongRunningFacet = longRunning && exitCode === 0;
         if (!handedOffToLongRunningFacet) {
-          try { deps.processTable.exit(pid, exitCode); } catch {}
+          try { deps.processes.exit(pid, exitCode); } catch {}
           try {
-            if (!deps.processLogs.getExit(pid)) deps.processLogs.markExit(pid, exitCode);
+            if (!deps.processes.getExit(pid)) deps.processes.markExit(pid, exitCode);
           } catch {}
           deps.notifyTerminalEvent({ type: 'exit', pid, code: exitCode, command: shellLine });
           deps.emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt);

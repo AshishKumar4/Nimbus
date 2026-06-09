@@ -36,6 +36,7 @@
 
 import { resolveVfsPath } from '../vfs/path.js';
 import { parseShellInvocation, type ShellName } from '../shell/shell-invocation.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -175,32 +176,13 @@ export interface ShellExecutorLike {
 }
 
 /**
- * The minimum shape we need from the ProcessLogStore.
- */
-export interface LogStoreLike {
-  append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
-  markExit(pid: number, code: number): void;
-  getExit(pid: number): number | undefined;
-}
-
-export interface ProcessTableLike {
-  spawn(command: string, argv: string[], cwd: string): { pid: number; facetName?: string };
-  exit(pid: number, code: number): void;
-  kill(pid: number): boolean;
-  get(pid: number): unknown;
-  reap(maxAge?: number): number;
-  setLongRunning?(pid: number): void;
-}
-
-/**
  * Constructor deps bundle. Keeping it as a single object simplifies
  * tests AND makes the production wiring in nimbus-session.ts read
  * declaratively.
  */
 export interface FacetProcessManagerDeps {
   facetMgr: FacetManagerLike;
-  processTable: ProcessTableLike;
-  processLogs: LogStoreLike;
+  processes: SessionProcessSupervisor;
   vfs: { exists(p: string): boolean; readFileString(p: string): string; isDirectory(p: string): boolean };
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
@@ -348,9 +330,9 @@ export class FacetProcessManager {
     };
 
     const commandLine = `${req.command} ${req.args.join(' ')}`.trim();
-    const processEntry = this.deps.processTable.spawn(commandLine, req.args, req.cwd);
+    const processEntry = this.deps.processes.spawn(commandLine, req.args, req.cwd);
     const pid = processEntry.pid;
-    const facetName = processEntry.facetName || `cp-proc-${pid}`;
+    const facetName = `cp-proc-${pid}`;
     const child: ChildEntry = {
       pid,
       command: req.command,
@@ -767,9 +749,10 @@ export class FacetProcessManager {
     child.outputSeq[fd]++;
     const chunk: OutputChunk = { seq: child.outputSeq[fd], data };
     child.outputs[fd].push(chunk);
-    // Tee to ProcessLogStore for `logs <pid>` parity with facet processes.
+    // Tee to the process supervisor's log ring for `logs <pid>` parity
+    // with facet processes.
     try {
-      this.deps.processLogs.append(child.pid, fd === 1 ? 'stdout' : 'stderr', data);
+      this.deps.processes.appendOutput(child.pid, fd === 1 ? 'stdout' : 'stderr', data);
     } catch { /* ignore */ }
     // Resolve waiters whose fd matches and whose sinceSeq is now satisfied.
     for (let i = child.outputWaiters.length - 1; i >= 0; i--) {
@@ -914,9 +897,9 @@ export class FacetProcessManager {
     child.signal = signal;
     child.endedAt = Date.now();
 
-    // Tell the ProcessTable + LogStore so `ps` and `logs <pid>` line up.
-    try { this.deps.processTable.exit(child.pid, exitCode); } catch {}
-    try { this.deps.processLogs.markExit(child.pid, exitCode); } catch {}
+    // Tell the process supervisor so `ps` and `logs <pid>` line up.
+    try { this.deps.processes.exit(child.pid, exitCode); } catch {}
+    try { this.deps.processes.markExit(child.pid, exitCode); } catch {}
 
     // Wake exit waiters.
     for (const w of child.exitWaiters.splice(0)) {

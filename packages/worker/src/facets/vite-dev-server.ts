@@ -85,13 +85,13 @@ export interface ViteDevServerOptions {
   /**
    * process diagnostics support: when set, every diagnostic the dev server
    * would otherwise drop into Worker logs (console.warn / console.error)
-   * is ALSO appended to the supervisor's per-PID ProcessLogStore at
-   * this PID, on the 'stderr' stream. The Process tab in the frontend
-   * reads from this store, so the user finally sees a real log of
-   * what the dev server is doing — no more "silent after banner."
+   * is ALSO appended to the session process supervisor's per-PID log
+   * ring at this PID, on the 'stderr' stream. The Process tab in the
+   * frontend reads from this store, so the user finally sees a real log
+   * of what the dev server is doing — no more "silent after banner."
    */
   pid?: number;
-  processLogs?: { append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void };
+  processes?: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void };
 }
 
 interface BarrelModuleCacheInfo {
@@ -1316,14 +1316,14 @@ export class ViteDevServer {
    * back to console.warn / console.error only (legacy behaviour).
    */
   private logPid: number | null = null;
-  private logStore: { append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void } | null = null;
+  private logSink: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void } | null = null;
 
   constructor(opts: ViteDevServerOptions) {
     this.vfs = opts.vfs;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
     this.logPid = (opts.pid != null) ? opts.pid : null;
-    this.logStore = opts.processLogs || null;
+    this.logSink = opts.processes || null;
     // Normalize root: resolve ./, collapse //, strip leading/trailing slashes
     this.root = opts.root
       .replace(/\/\.\//g, '/')     // /./ → /
@@ -1511,10 +1511,10 @@ export class ViteDevServer {
       const fn = level === 'error' ? console.error : console.warn;
       try { fn(msg); } catch {}
     }
-    if (this.logPid != null && this.logStore) {
+    if (this.logPid != null && this.logSink) {
       const text = msg.endsWith('\n') ? msg : msg + '\n';
       const stream = level === 'info' ? 'stdout' : 'stderr';
-      try { this.logStore.append(this.logPid, stream, text); } catch {}
+      try { this.logSink.appendOutput(this.logPid, stream, text); } catch {}
     }
   }
 

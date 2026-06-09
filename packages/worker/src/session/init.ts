@@ -803,8 +803,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         },
         env: self.env,
         ctx: self.ctx,
-        processTable: self.processTable,
-        processLogs: self.processLogs,
+        processes: self.processes,
       }),
       bypassesScriptRead: true,
     };
@@ -1163,10 +1162,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         // process metadata support: same long-running treatment as the
         // dev path, just on the dist/ directory.
         const previewPort = viteConfig.port || 4173; // vite preview default
-        const previewProcEntry = self.processTable.spawn(
+        const previewProcEntry = self.processes.spawn(
           'vite preview (' + distRoot + ')', [], distRoot,
+          { longRunning: true },
         );
-        self.processTable.setLongRunning(previewProcEntry.pid);
         self.viteDevServer = new ViteDevServer({
           vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: distRoot,
           onHmrMessage: () => {},
@@ -1176,7 +1175,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           ctx: self.ctx,
           port: previewPort,
           pid: previewProcEntry.pid,
-          processLogs: self.processLogs,
+          processes: self.processes,
         });
         self.viteDevServer.start();
         try {
@@ -1209,7 +1208,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         // against re-marking already-terminal entries.
         if (self._viteShimPid != null) {
           try { self.portRegistry.unregisterByPid(self._viteShimPid); } catch {}
-          try { self.processTable.exit(self._viteShimPid, 0); } catch {}
+          try { self.processes.exit(self._viteShimPid, 0); } catch {}
           notifyTerminalEvent(self.terminal, {
             type: 'exit', pid: self._viteShimPid, code: 0, command: 'vite',
           });
@@ -1377,8 +1376,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           extraSyntheticFiles,
         });
         // Reserve a PID so `ps`/logs show it like any other facet.
-        const entry = self.processTable.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot);
-        self.processTable.setLongRunning(entry.pid);
+        const entry = self.processes.spawn(
+          'vite (real, ' + vfsRoot + ')', [], vfsRoot,
+          { longRunning: true },
+        );
         try {
           // [sdk-phase-1] start() is now async because it ASSETS-fetches
           // the large Vite/plugin-react bundles on first invocation
@@ -1435,14 +1436,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // Allocate PID FIRST so we can plumb it into ViteDevServer's
       // process-log wiring at construction time. The PID stays valid
       // for the life of this dev-server instance; subsequent log lines
-      // emitted by ViteDevServer flow into processLogs[pid].stderr,
+      // emitted by ViteDevServer flow into the pid's stderr ring,
       // visible in the Process tab.
-      const viteProcEntry = self.processTable.spawn(
+      const viteProcEntry = self.processes.spawn(
         'vite (' + vfsRoot + ')',
         expandedArgs,
         vfsRoot,
+        { longRunning: true },
       );
-      self.processTable.setLongRunning(viteProcEntry.pid);
 
       self.viteDevServer = new ViteDevServer({
         vfs: self.sqliteFs!,
@@ -1463,7 +1464,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         // supervisor's per-PID log store so the Process tab is no
         // longer silent after the banner.
         pid: viteProcEntry.pid,
-        processLogs: self.processLogs,
+        processes: self.processes,
       });
       self.viteDevServer.start();
       try {
@@ -1878,7 +1879,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       cmdCtx: any,
       opts: { longRunning?: boolean } = {},
     ): Promise<number> => {
-      const entry = self.processTable.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
+      const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
       const pid = entry.pid;
       const startedAt = Date.now();
 
@@ -1899,7 +1900,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // Wrap the caller-supplied streams so every chunk is both displayed
       // AND captured in the ring buffer keyed by this PID.
       const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => (d: string) => {
-        try { self.processLogs.append(pid, stream, String(d)); } catch {}
+        try { self.processes.appendOutput(pid, stream, String(d)); } catch {}
         try { target.write(d); } catch {}
       };
 
@@ -1918,10 +1919,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         tee('stderr', cmdCtx.stderr)('shellExecuteTracked error: ' + msg + '\n');
         exitCode = 1;
       } finally {
-        try { self.processTable.exit(pid, exitCode); } catch {}
+        try { self.processes.exit(pid, exitCode); } catch {}
         try {
-          if (!self.processLogs.getExit(pid)) {
-            self.processLogs.markExit(pid, exitCode);
+          if (!self.processes.getExit(pid)) {
+            self.processes.markExit(pid, exitCode);
           }
         } catch {}
 
@@ -1941,9 +1942,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     installNpmBinFallbackResolver(registry, {
       vfs: sqliteFs,
       getCwd: () => (self.shell as any)?.cwd || '/home/user',
-      processTable: self.processTable,
-      processInput: self.processInput,
-      processLogs: self.processLogs,
+      processes: self.processes,
       terminal: self.terminal,
       notifyTerminalEvent: (event) => notifyTerminalEvent(self.terminal, event),
       runtimeCommandHint,
@@ -2381,7 +2380,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // ── Register process commands (enhanced with facet process tracking) ──
     registry.register('ps', async (ctx: any) => {
       ctx.stdout.write('  PID  STATUS              COMMAND\n');
-      for (const proc of self.processTable.getAll()) {
+      for (const proc of self.processes.getAll()) {
         // Prefer log-store exit info over ProcessTable's: the store has
         // the authoritative code and survives reap. For `running`, rely
         // on ProcessTable (store has no "running" concept).
@@ -2403,7 +2402,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       if (self.viteDevServer?.isRunning) {
         ctx.stdout.write('  \x1b[33m---\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (' + self.viteBasePath + '/)\n');
       }
-      if (self.processTable.getAll().length === 0 && !self.viteDevServer?.isRunning) {
+      if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
         ctx.stdout.write('  (no processes)\n');
       }
       return 0;
@@ -2442,7 +2441,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
       const pid = parseInt(pidArg, 10);
 
-      if (!self.processLogs.has(pid)) {
+      if (!self.processes.hasLogs(pid)) {
         ctx.stderr.write(`no logs for pid ${pid}\n`);
         return 1;
       }
@@ -2466,7 +2465,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // (by the 4 KB splitter inside ProcessLogStore) gets rejoined and
       // stripped cleanly instead of leaking `1m` / `[31m` fragments.
       const tailOpts = bytes !== undefined ? { bytes } : { lines };
-      const chunks = self.processLogs.tail(pid, tailOpts);
+      const chunks = self.processes.tailLogs(pid, tailOpts);
       let group: LogChunk[] = [];
       const flushGroup = () => {
         if (group.length === 0) return;
@@ -2490,7 +2489,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
       if (!follow) {
         // Footer only when process has exited already.
-        const exit = self.processLogs.getExit(pid);
+        const exit = self.processes.getExit(pid);
         if (exit) {
           ctx.stdout.write(
             `\r\n\x1b[2m[process exited with code ${exit.code}${
@@ -2502,11 +2501,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
 
       // Follow mode: subscribe to live appends, poll for exit.
-      const entry = self.processTable.get(pid);
+      const entry = self.processes.get(pid);
       const alreadyExited =
-        !entry || entry.state !== 'running' || self.processLogs.getExit(pid);
+        !entry || entry.state !== 'running' || self.processes.getExit(pid);
       if (alreadyExited) {
-        const exit = self.processLogs.getExit(pid);
+        const exit = self.processes.getExit(pid);
         if (exit) {
           ctx.stdout.write(
             `\r\n\x1b[2m[process exited with code ${exit.code}${
@@ -2526,10 +2525,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           unsubExit();
           resolve(code);
         };
-        const unsub = self.processLogs.subscribe(pid, (c) => {
+        const unsub = self.processes.subscribeLogs(pid, (c) => {
           ctx.stdout.write(renderChunk(c));
         });
-        const unsubExit = self.processLogs.subscribeExit(pid, (exit) => {
+        const unsubExit = self.processes.subscribeExit(pid, (exit) => {
           ctx.stdout.write(
             `\r\n\x1b[2m[process exited with code ${exit.code}${
               exit.reason ? ` (${exit.reason})` : ''
@@ -2541,7 +2540,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         // check above and these subscribe calls. Re-check now that the
         // exit subscriber is wired — if exit already set, the subscribe
         // callback never fires, so synthesize the footer ourselves.
-        const exitNow = self.processLogs.getExit(pid);
+        const exitNow = self.processes.getExit(pid);
         if (exitNow) {
           ctx.stdout.write(
             `\r\n\x1b[2m[process exited with code ${exitNow.code}${
@@ -2560,7 +2559,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     });
 
     registry.register('jobs', async (ctx: any) => {
-      const running = self.processTable.getRunning();
+      const running = self.processes.getRunning();
       if (running.length === 0 && !self.viteDevServer?.isRunning) {
         ctx.stdout.write('No background jobs.\n');
         return 0;
@@ -2607,7 +2606,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           ctx.stderr.write('kill: while stopping vite shim: ' + (e?.message || e) + '\n');
         }
         try { self.portRegistry.unregisterByPid(pid); } catch {}
-        try { self.processTable.kill(pid); } catch {}
+        try { self.processes.kill(pid); } catch {}
         notifyTerminalEvent(self.terminal, {
           type: 'exit', pid, code: 137, command: 'vite',
         });

@@ -12,8 +12,8 @@
  *   - wireHibernationOnConstruct(ctx) — runs configureWsHibernation in
  *     the DO ctor; graceful-degrades on throw.
  *   - wireProcessLogPersist(host, ctx) — installs the SQL-backed
- *     PersistAdapter on host.processLogs; patches append/markExit to
- *     schedule debounced flushes.
+ *     PersistAdapter on the process supervisor's log store; its
+ *     activity hook schedules debounced flushes.
  *   - ensureHibSchema(host, ctx) — idempotent CREATE TABLE for
  *     w9_proc_logs + w9_proc_exits.
  *   - scheduleHibFlush(host, ctx) — debounced setTimeout + best-effort
@@ -29,13 +29,14 @@
  * (DEFECT-D1 found at S3; documented in session-refactor-build-progress.md).
  *
  * Per plan §VI.7 F.2 invariant: `_w9PersistWired` must be reset
- * between `processLogs` replacement and re-wire on
- * `/api/_test/hib/simulate`. The class-side handler is responsible for
- * setting `host._w9PersistWired = false` BEFORE calling
+ * between log-store replacement (`processes.resetLogStore()`) and
+ * re-wire on `/api/_test/hib/simulate`. The class-side handler is
+ * responsible for setting `host._w9PersistWired = false` BEFORE calling
  * wireProcessLogPersist again.
  */
 
-import type { LogChunk, PersistAdapter, ProcessExitInfo, ProcessLogStore } from '../runtime/process-logs.js';
+import type { LogChunk, PersistAdapter, ProcessExitInfo } from '../runtime/process-logs.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from './ws-hibernation-config.js';
 import { W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS, W1_NEXT_ALARM_REASONS_KEY } from './keys.js';
 
@@ -43,13 +44,13 @@ export type { WsHibernationConfigResult };
 
 /**
  * Minimal host shape. `_w9*` fields drop `private` on the class so
- * this interface can declare them. `processLogs` is a public class
- * field (always was) so no relaxation needed there.
+ * this interface can declare them. `processes` is a public class
+ * field so no relaxation needed there.
  *
  * `ctx` is NOT in this interface — passed as a separate arg.
  */
 export interface HibHost {
-  processLogs: ProcessLogStore;
+  processes: SessionProcessSupervisor;
   _w9IsolateGen: number;
   _w9IsolateGenPersisted: boolean;
   _w9SchemaInit: boolean;
@@ -77,7 +78,8 @@ export function wireHibernationOnConstruct(ctx: any): WsHibernationConfigResult 
 }
 
 /**
- * W9: install the SQL-backed PersistAdapter on host.processLogs.
+ * W9: install the SQL-backed PersistAdapter on the process supervisor's
+ * log store.
  *
  * NOTE: any future alarm-driven subsystem MUST coordinate via a single
  * `alarm()` dispatcher (e.g., a `nextAlarmReason` storage key checked
@@ -86,7 +88,7 @@ export function wireHibernationOnConstruct(ctx: any): WsHibernationConfigResult 
  * handler.
  *
  * Idempotent: gated by host._w9PersistWired. Caller MUST reset that
- * flag to false before re-invoking after a host.processLogs replacement
+ * flag to false before re-invoking after a log-store replacement
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export function wireProcessLogPersist(host: HibHost, ctx: any): void {
@@ -181,26 +183,14 @@ export function wireProcessLogPersist(host: HibHost, ctx: any): void {
       }
     },
   };
-  host.processLogs.setPersist(adapter);
-
-  // Wrap append/markExit on the store to schedule a debounced flush.
-  // We patch via method override rather than monkey-patching because
-  // the store doesn't (and shouldn't) know about timers — flush
-  // scheduling is the host's responsibility.
-  const origAppend = host.processLogs.append.bind(host.processLogs);
-  const origMarkExit = host.processLogs.markExit.bind(host.processLogs);
-  host.processLogs.append = (pid, stream, data) => {
-    origAppend(pid, stream, data);
-    scheduleHibFlush(host, ctx);
-  };
-  host.processLogs.markExit = (pid, code, reason) => {
-    origMarkExit(pid, code, reason);
-    // Exit-on-process-end is a strong "flush soon" signal — if the
-    // process crashed we want the dump persisted before the actor
-    // can hibernate. Schedule but don't bypass debounce, so a fast
-    // exit-after-spawn doesn't double-fire.
-    scheduleHibFlush(host, ctx);
-  };
+  // The supervisor fires the activity hook after every appendOutput /
+  // markExit. Exit-on-process-end is a strong "flush soon" signal — if
+  // the process crashed we want the dump persisted before the actor can
+  // hibernate. Schedule but don't bypass debounce, so a fast
+  // exit-after-spawn doesn't double-fire. The store doesn't (and
+  // shouldn't) know about timers — flush scheduling is the host's
+  // responsibility.
+  host.processes.setLogPersist(adapter, () => scheduleHibFlush(host, ctx));
 }
 
 /** W9: idempotent SQL schema bootstrap. */
@@ -298,7 +288,7 @@ export function scheduleHibFlush(host: HibHost, ctx: any): void {
   host._w9FlushTimer = setTimeout(() => {
     host._w9FlushTimer = null;
     try {
-      host.processLogs.flush();
+      host.processes.flushLogs();
     } catch (e: any) {
       console.warn('[nimbus/W9] flush threw:', e?.message);
     }
@@ -317,12 +307,12 @@ export function scheduleHibFlush(host: HibHost, ctx: any): void {
  *
  * For each pending reason whose deadline has passed, run its handler.
  * Reasons supported today:
- *   - `'w9-flush'` → processLogs.flush()
- *   - `'log-janitor'` → processLogs.dropOlderThan(orphanCheck); re-arm
+ *   - `'w9-flush'` → processes.flushLogs()
+ *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
  *     for next 60s cycle.
  *
  * `janitorOrphanCheck` is the orphan-pid predicate provided by the
- * caller (typically `(pid) => !host.processTable.get(pid)`). Decoupled
+ * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
  * so HibHost doesn't need to import ProcessTable.
  *
  * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
@@ -343,11 +333,11 @@ export async function dispatchAlarm(
       | Record<string, number>
       | undefined;
     // Legacy path: pre-W1 deploys had no map. dispatchAlarm was called
-    // with no map and unconditionally ran processLogs.flush(). Preserve
+    // with no map and unconditionally ran the log flush. Preserve
     // that on a missing map (one-time post-deploy, then the map is
     // populated by the next scheduleHibFlush / scheduleAlarm call).
     if (!existing || Object.keys(existing).length === 0) {
-      try { host.processLogs.flush(); } catch (e: any) {
+      try { host.processes.flushLogs(); } catch (e: any) {
         console.warn('[nimbus/W9] legacy flush threw:', e?.message);
       }
       return;
@@ -364,9 +354,9 @@ export async function dispatchAlarm(
       delete map[reason];
       try {
         if (reason === 'w9-flush') {
-          host.processLogs.flush();
+          host.processes.flushLogs();
         } else if (reason === 'log-janitor') {
-          host.processLogs.dropOlderThan(undefined, janitorOrphanCheck);
+          host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);
           // Self-renew: schedule next sweep 60s out.
           map['log-janitor'] = now + 60_000;
         }
@@ -409,13 +399,13 @@ export async function maybeBumpIsolateGen(host: HibHost, ctx: any): Promise<void
 
 /**
  * W9: synchronous flush of the process-log ring on session close.
- * Wraps `processLogs.flush()` in a try/catch so a flush failure
+ * Wraps `processes.flushLogs()` in a try/catch so a flush failure
  * doesn't take down the close handler. Cheap when there's nothing
  * dirty (idempotent inside the store).
  */
 export function flushOnClose(host: HibHost): void {
   try {
-    host.processLogs.flush();
+    host.processes.flushLogs();
   } catch (e: any) {
     console.warn('[nimbus/W9] flush-on-close failed:', e?.message);
   }

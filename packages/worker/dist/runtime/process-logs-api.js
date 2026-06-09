@@ -52,7 +52,7 @@ export function notifyTerminalEvent(terminal, event) {
  *     client disconnects abruptly.
  */
 export function handleLogsWebSocketRequest(request, pid, deps) {
-    const { processLogs, processTable, ctx } = deps;
+    const { processes, ctx } = deps;
     if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket', { status: 426 });
     }
@@ -76,17 +76,16 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     // process table has ever heard of it. The log store lags slightly
     // behind the process table — facet stdout/stderr arrives via async
     // RPC, so a process terminal opened the instant the {spawn} event
-    // fires will usually see `processLogs.has(pid)===false` even though the pid is
+    // fires will usually see `hasLogs(pid)===false` even though the pid is
     // perfectly valid and about to start producing output.
     //
-    // Subscribing in that window is safe: `subscribe` creates state via
-    // _getOrCreate, so when the first chunk arrives we fan it out to
-    // this client too. The only downside is a client that opens a log
-    // WS for a typo'd pid gets an empty live stream instead of an
-    // immediate error — acceptable tradeoff for removing the racy
-    // "no log buffer for pid N" banner users saw on EVERY short-lived
-    // process.
-    const pidKnown = processLogs.has(pid) || !!processTable.get(pid);
+    // Subscribing in that window is safe: `subscribeLogs` creates state,
+    // so when the first chunk arrives we fan it out to this client too.
+    // The only downside is a client that opens a log WS for a typo'd pid
+    // gets an empty live stream instead of an immediate error —
+    // acceptable tradeoff for removing the racy "no log buffer for pid N"
+    // banner users saw on EVERY short-lived process.
+    const pidKnown = processes.hasLogs(pid) || !!processes.get(pid);
     if (!pidKnown) {
         try {
             server.send(JSON.stringify({ type: 'notfound', pid }));
@@ -100,7 +99,7 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     }
     // 1. Backlog — one frame, so the client has a snapshot before any
     //    live chunks arrive. Bounded by the ring's 64 KB cap.
-    const chunks = processLogs.all(pid).map((c) => ({
+    const chunks = processes.allLogs(pid).map((c) => ({
         stream: c.stream,
         data: c.data,
         ts: c.ts,
@@ -112,7 +111,7 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     catch { /* socket died during handshake — fall through, cleanup below */ }
     // 2. If the process already exited, tell the client now. Idempotent
     //    with the subscribeExit callback below (client tolerates duplicates).
-    const existingExit = processLogs.getExit(pid);
+    const existingExit = processes.getExit(pid);
     if (existingExit) {
         try {
             server.send(JSON.stringify({
@@ -140,7 +139,7 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
         unsubChunk = null;
         unsubExit = null;
     };
-    unsubChunk = processLogs.subscribe(pid, (c) => {
+    unsubChunk = processes.subscribeLogs(pid, (c) => {
         try {
             server.send(JSON.stringify({
                 type: 'chunk',
@@ -155,7 +154,7 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
             cleanup();
         }
     });
-    unsubExit = processLogs.subscribeExit(pid, (e) => {
+    unsubExit = processes.subscribeExit(pid, (e) => {
         try {
             server.send(JSON.stringify({
                 type: 'exit',
@@ -169,29 +168,27 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     server.addEventListener('close', cleanup);
     server.addEventListener('error', cleanup);
     server.addEventListener('message', async (event) => {
-        const entry = processTable.get(pid);
+        const entry = processes.get(pid);
         if (!entry || entry.state !== 'running')
             return;
         const msg = parseProcessLogClientFrame(String(event.data ?? ''));
         if (!msg)
             return;
-        if (deps.processInput) {
-            let ok = false;
-            try {
-                const result = await applyProcessClientFrame({ processInput: deps.processInput }, pid, msg);
-                ok = result.ok;
-            }
-            catch { }
-            try {
-                server.send(JSON.stringify({
-                    type: 'stdin-ack',
-                    pid,
-                    ok,
-                    action: msg.type,
-                }));
-            }
-            catch { }
+        let ok = false;
+        try {
+            const result = await applyProcessClientFrame(processes, pid, msg);
+            ok = result.ok;
         }
+        catch { }
+        try {
+            server.send(JSON.stringify({
+                type: 'stdin-ack',
+                pid,
+                ok,
+                action: msg.type,
+            }));
+        }
+        catch { }
     });
     return new Response(null, { status: 101, webSocket: client });
 }
@@ -210,11 +207,11 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
  * (they just show an extra tab the user can close).
  */
 const LONG_RUNNING_CMD_RE = /^(vite|wrangler|next|nuxt|astro|remix|dev|serve|start|watch|npm\s+run\s+dev)\b/;
-export function handleProcessesListRequest(processTable, processLogs) {
-    const processes = [];
-    for (const p of processTable.getAll()) {
-        const snap = processLogs.snapshot(p.pid);
-        processes.push({
+export function handleProcessesListRequest(processes) {
+    const listed = [];
+    for (const p of processes.getAll()) {
+        const snap = processes.logSnapshot(p.pid);
+        listed.push({
             pid: p.pid,
             command: p.command,
             state: p.state,
@@ -231,12 +228,12 @@ export function handleProcessesListRequest(processTable, processLogs) {
     }
     // Reaped processes with lingering log buffers (exited >60s ago, not
     // yet past the 10 min retention) are intentionally NOT listed here —
-    // the ProcessTable has already purged them and ProcessLogStore has no
+    // the process table has already purged them and the log store has no
     // key-iteration API. Users can still access those logs via the `logs
-    // <pid>` shell command, which reads directly from ProcessLogStore.
+    // <pid>` shell command.
     // Audit C3: same-origin only. The session shell at /s/<id>/ polls
     // this from its own origin; no cross-origin reader is intended.
-    return Response.json({ processes }, {
+    return Response.json({ processes: listed }, {
         headers: { 'Cache-Control': 'no-store' },
     });
 }

@@ -4,7 +4,7 @@
  * Mirror of python-runner.ts patterns adapted to Ruby's wasi-vfs +
  * canonical-abi binding. v1 scope:
  *   - `ruby --version` / `ruby -e '<code>'` / `ruby <file.rb>`
- *   - stdout/stderr → processLogs (Process tab integration)
+ *   - stdout/stderr → the process supervisor's log ring (Process tab integration)
  *   - exit code via `exit N` / unhandled exception → 1
  *   - argv passed through to ARGV; $PROGRAM_NAME / $0 set
  *   - stdlib loaded from the packed wasi-vfs inside the wasm

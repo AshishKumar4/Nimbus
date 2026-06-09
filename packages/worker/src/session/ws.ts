@@ -46,9 +46,7 @@ import {
 import { parseProcessLogClientFrame } from '../runtime/process-io-protocol.js';
 import { applyProcessClientFrame } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import type { ProcessLogStore } from '../runtime/process-logs.js';
-import type { ProcessInputStore } from '../runtime/process-input.js';
-import type { ProcessTable } from '../runtime/process-table.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -71,9 +69,7 @@ export interface WsHost {
    *  + lifecycle. Optional (undefined) until first subscribe so sessions
    *  that never open the file tree carry no watch state. */
   _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
-  processLogs: ProcessLogStore;
-  processInput: ProcessInputStore;
-  processTable: ProcessTable;
+  processes: SessionProcessSupervisor;
   wranglerAliasBannerShown: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
@@ -276,7 +272,7 @@ async function routeProcessLogClientMessage(
 ): Promise<void> {
   const pid = attach.pid;
   if (!pid) return;
-  const entry = self.processTable.get(pid);
+  const entry = self.processes.get(pid);
   if (!entry || entry.state !== 'running') return;
 
   let frame: ReturnType<typeof parseProcessLogClientFrame>;
@@ -288,7 +284,7 @@ async function routeProcessLogClientMessage(
   }
 
   if (!frame) return;
-  const result = await applyProcessClientFrame(self, pid, frame);
+  const result = await applyProcessClientFrame(self.processes, pid, frame);
   sendProcessInputAck(ws, pid, result.ok, result.type);
 }
 

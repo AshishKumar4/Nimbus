@@ -10,9 +10,7 @@ import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
-import { ProcessTable } from '../runtime/process-table.js';
-import { ProcessLogStore } from '../runtime/process-logs.js';
-import { ProcessInputStore } from '../runtime/process-input.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
@@ -238,12 +236,13 @@ export class NimbusSession extends CloudflareDurableObject {
     npmInstaller = null;
     /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
     fetchProxyEntrypoint = null;
-    processTable;
+    /**
+     * The session's single process owner: PID authority, controlling-
+     * terminal input, output rings, and exit records, behind one facade.
+     * Every sibling module routes process operations through this field.
+     */
+    processes = new SessionProcessSupervisor();
     portRegistry;
-    // S4: visibility relaxed (was `private`) so ./nimbus-session-hib.ts's
-    // HibHost interface can declare it. Per plan §IX.1.
-    processLogs = new ProcessLogStore();
-    processInput = new ProcessInputStore();
     /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
      *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
      *  prevented hibernation per CF DO docs). The alarm itself lives in
@@ -276,7 +275,7 @@ export class NimbusSession extends CloudflareDurableObject {
     _w9PersistWired = false;
     /**
      * Debounced flush state. Append marks the timer; the timer fires
-     * after W9_FLUSH_DEBOUNCE_MS and calls `processLogs.flush()`. We
+     * after W9_FLUSH_DEBOUNCE_MS and calls `processes.flushLogs()`. We
      * also flush eagerly when `dirtyChunks * pidCount` crosses a threshold
      * — but the debounce handles the steady-state case.
      *
@@ -363,7 +362,6 @@ export class NimbusSession extends CloudflareDurableObject {
         const ctxExports = ctx?.exports;
         if (ctxExports)
             setCtxExports(ctxExports);
-        this.processTable = new ProcessTable();
         this.portRegistry = new PortRegistry();
         // W1: log-janitor moved to alarm-driven scheduling (was a
         // self-renewing setTimeout chain at rpc.ts:_ensureLogJanitor;
@@ -427,7 +425,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * re-arms `ctx.storage.setAlarm` at the earliest remaining deadline.
      * Today's reasons: 'w9-flush' (process-log SQL drain) and
      * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
-     * orphan-pid predicate so we close over `processTable` here.
+     * orphan-pid predicate so we close over the process supervisor here.
      */
     async alarm() {
         return _w9DoDispatchAlarm(this, this.ctx, _rpc._logJanitorOrphanCheck(this));
@@ -707,12 +705,12 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     ensureFacetManager() {
         if (!this.facetManager) {
-            this.facetManager = new FacetManager(this.ctx, this.env, this.processTable, this.portRegistry, {
+            this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
                 onSpawn: (pid, command, longRunning) => {
                     if (longRunning) {
                         try {
-                            this.processInput.open(pid);
+                            this.processes.openInput(pid);
                         }
                         catch { }
                     }
@@ -893,8 +891,7 @@ export class NimbusSession extends CloudflareDurableObject {
         }
         this.facetProcessManager = new FacetProcessManager({
             facetMgr: facetMgrAdapter,
-            processTable: this.processTable,
-            processLogs: this.processLogs,
+            processes: this.processes,
             vfs: this.sqliteFs,
             commandRegistry: cmdRegistryAdapter,
             shellExecutor: {

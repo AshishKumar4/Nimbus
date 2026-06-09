@@ -12,8 +12,8 @@
  *   - wireHibernationOnConstruct(ctx) — runs configureWsHibernation in
  *     the DO ctor; graceful-degrades on throw.
  *   - wireProcessLogPersist(host, ctx) — installs the SQL-backed
- *     PersistAdapter on host.processLogs; patches append/markExit to
- *     schedule debounced flushes.
+ *     PersistAdapter on the process supervisor's log store; its
+ *     activity hook schedules debounced flushes.
  *   - ensureHibSchema(host, ctx) — idempotent CREATE TABLE for
  *     w9_proc_logs + w9_proc_exits.
  *   - scheduleHibFlush(host, ctx) — debounced setTimeout + best-effort
@@ -29,23 +29,23 @@
  * (DEFECT-D1 found at S3; documented in session-refactor-build-progress.md).
  *
  * Per plan §VI.7 F.2 invariant: `_w9PersistWired` must be reset
- * between `processLogs` replacement and re-wire on
- * `/api/_test/hib/simulate`. The class-side handler is responsible for
- * setting `host._w9PersistWired = false` BEFORE calling
+ * between log-store replacement (`processes.resetLogStore()`) and
+ * re-wire on `/api/_test/hib/simulate`. The class-side handler is
+ * responsible for setting `host._w9PersistWired = false` BEFORE calling
  * wireProcessLogPersist again.
  */
-import type { ProcessLogStore } from '../runtime/process-logs.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { type WsHibernationConfigResult } from './ws-hibernation-config.js';
 export type { WsHibernationConfigResult };
 /**
  * Minimal host shape. `_w9*` fields drop `private` on the class so
- * this interface can declare them. `processLogs` is a public class
- * field (always was) so no relaxation needed there.
+ * this interface can declare them. `processes` is a public class
+ * field so no relaxation needed there.
  *
  * `ctx` is NOT in this interface — passed as a separate arg.
  */
 export interface HibHost {
-    processLogs: ProcessLogStore;
+    processes: SessionProcessSupervisor;
     _w9IsolateGen: number;
     _w9IsolateGenPersisted: boolean;
     _w9SchemaInit: boolean;
@@ -59,7 +59,8 @@ export interface HibHost {
  */
 export declare function wireHibernationOnConstruct(ctx: any): WsHibernationConfigResult;
 /**
- * W9: install the SQL-backed PersistAdapter on host.processLogs.
+ * W9: install the SQL-backed PersistAdapter on the process supervisor's
+ * log store.
  *
  * NOTE: any future alarm-driven subsystem MUST coordinate via a single
  * `alarm()` dispatcher (e.g., a `nextAlarmReason` storage key checked
@@ -68,7 +69,7 @@ export declare function wireHibernationOnConstruct(ctx: any): WsHibernationConfi
  * handler.
  *
  * Idempotent: gated by host._w9PersistWired. Caller MUST reset that
- * flag to false before re-invoking after a host.processLogs replacement
+ * flag to false before re-invoking after a log-store replacement
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export declare function wireProcessLogPersist(host: HibHost, ctx: any): void;
@@ -117,12 +118,12 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  *
  * For each pending reason whose deadline has passed, run its handler.
  * Reasons supported today:
- *   - `'w9-flush'` → processLogs.flush()
- *   - `'log-janitor'` → processLogs.dropOlderThan(orphanCheck); re-arm
+ *   - `'w9-flush'` → processes.flushLogs()
+ *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
  *     for next 60s cycle.
  *
  * `janitorOrphanCheck` is the orphan-pid predicate provided by the
- * caller (typically `(pid) => !host.processTable.get(pid)`). Decoupled
+ * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
  * so HibHost doesn't need to import ProcessTable.
  *
  * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
@@ -137,7 +138,7 @@ export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanChec
 export declare function maybeBumpIsolateGen(host: HibHost, ctx: any): Promise<void>;
 /**
  * W9: synchronous flush of the process-log ring on session close.
- * Wraps `processLogs.flush()` in a try/catch so a flush failure
+ * Wraps `processes.flushLogs()` in a try/catch so a flush failure
  * doesn't take down the close handler. Cheap when there's nothing
  * dirty (idempotent inside the store).
  */

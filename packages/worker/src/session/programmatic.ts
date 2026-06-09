@@ -13,9 +13,9 @@ import {
   listInstalledRuntimes,
   type MinShellRegistry,
 } from '../runtime/package-manager.js';
-import { ProcessTable, type ProcessEntry } from '../runtime/process-table.js';
-import { ProcessLogStore, type LogChunk, type ProcessLogReadOptions } from '../runtime/process-logs.js';
-import { ProcessInputStore } from '../runtime/process-input.js';
+import type { ProcessEntry } from '../runtime/process-table.js';
+import type { LogChunk, ProcessLogReadOptions } from '../runtime/process-logs.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry, type PortEntry } from '../runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -70,10 +70,8 @@ export interface ProgrammaticHost {
   ctx: ProgrammaticContext;
   shell: ProgrammaticShell | null;
   sqliteFs: SqliteVFS | null;
-  processTable: ProcessTable;
+  processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
-  processLogs: ProcessLogStore;
-  processInput: ProcessInputStore;
   facetManager: ProgrammaticFacetManager | null;
   viteDevServer: ProgrammaticViteServer | null;
   cirrusReal: ProgrammaticCirrusServer | null;
@@ -260,7 +258,7 @@ export async function rpcExec(
   const stderr: string[] = [];
   const started = Date.now();
   const beforePids = new Set<number>(
-    self.processTable.getAll().map((p: ProcessEntry) => p.pid),
+    self.processes.getAll().map((p: ProcessEntry) => p.pid),
   );
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -314,13 +312,13 @@ function collectNewProcessOutput(
   self: ProgrammaticHost,
   beforePids: Set<number>,
 ): { stdout: string; stderr: string } {
-  const created = self.processTable.getAll()
+  const created = self.processes.getAll()
     .filter((p: ProcessEntry) => !beforePids.has(p.pid))
     .sort((a: ProcessEntry, b: ProcessEntry) => a.startTime - b.startTime);
   const stdout: string[] = [];
   const stderr: string[] = [];
   for (const entry of created) {
-    const chunks: LogChunk[] = self.processLogs.all(Number(entry.pid));
+    const chunks: LogChunk[] = self.processes.allLogs(Number(entry.pid));
     for (const chunk of chunks) {
       if (chunk.stream === 'stderr') stderr.push(String(chunk.data));
       else stdout.push(String(chunk.data));
@@ -336,15 +334,15 @@ export async function rpcStartProcess(
 ): Promise<ProgrammaticStartResult> {
   await ensureProgrammaticReady(self, options);
   const before = new Set<number>(
-    self.processTable.getAll().map((p: ProcessEntry) => p.pid),
+    self.processes.getAll().map((p: ProcessEntry) => p.pid),
   );
   const result = await rpcExec(self, command, options);
-  const created = self.processTable.getAll()
+  const created = self.processes.getAll()
     .filter((p: ProcessEntry) => !before.has(p.pid))
     .sort((a: ProcessEntry, b: ProcessEntry) => b.startTime - a.startTime);
   const running = created.find((p: ProcessEntry) => p.state === 'running') ?? null;
   const pid = running?.pid ?? created[0]?.pid ?? null;
-  const process = pid != null ? serializeProcess(self.processTable.get(pid)) : null;
+  const process = pid != null ? serializeProcess(self.processes.get(pid)) : null;
   const ports = pid != null
     ? self.portRegistry.getAll().filter((p) => p.pid === pid).map(serializePort)
     : [];
@@ -406,7 +404,7 @@ export async function rpcListRuntimes(self: ProgrammaticHost) {
 
 export async function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]> {
   await ensureProgrammaticReady(self);
-  return self.processTable.getAll().map((p: ProcessEntry) => serializeProcess(p)!);
+  return self.processes.getAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
 export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {
@@ -426,16 +424,13 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promi
       }
     } catch {}
     try { self.portRegistry.unregisterByPid(n); } catch {}
-    ok = self.processTable.kill(n);
-    try { self.processInput.close(n); } catch {}
+    ok = self.processes.kill(n);
     self._viteShimPid = null;
     self._viteShimPort = null;
   } else if (self.facetManager) {
     ok = self.facetManager.kill(n);
-    if (ok) try { self.processInput.close(n); } catch {}
   } else {
-    ok = self.processTable.kill(n);
-    if (ok) try { self.processInput.close(n); } catch {}
+    ok = self.processes.kill(n);
   }
   return { ok, pid: n };
 }
@@ -443,13 +438,13 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promi
 export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string): Promise<{ ok: boolean; pid: number }> {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
-  return writeProcessInput(self, n, String(data ?? ''));
+  return writeProcessInput(self.processes, n, String(data ?? ''));
 }
 
 export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
-  return endProcessInput(self, n);
+  return endProcessInput(self.processes, n);
 }
 
 export async function rpcResizeProcess(
@@ -458,7 +453,7 @@ export async function rpcResizeProcess(
   size: { columns: number; rows: number },
 ): Promise<{ ok: boolean; pid: number }> {
   await ensureProgrammaticReady(self);
-  return resizeProcess(self, Number(pid), Number(size.columns), Number(size.rows));
+  return resizeProcess(self.processes, Number(pid), Number(size.columns), Number(size.rows));
 }
 
 export async function rpcSignalProcess(
@@ -467,7 +462,7 @@ export async function rpcSignalProcess(
   signal: string,
 ): Promise<{ ok: boolean; pid: number }> {
   await ensureProgrammaticReady(self);
-  return signalProcess(self, Number(pid), String(signal));
+  return signalProcess(self.processes, Number(pid), String(signal));
 }
 
 export async function rpcProcessLogs(
@@ -481,14 +476,14 @@ export async function rpcProcessLogs(
     cursor: parsed.cursor,
     ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
   };
-  const chunks = self.processLogs.read(Number(pid), readOptions);
+  const chunks = self.processes.readLogs(Number(pid), readOptions);
   return {
     pid: Number(pid),
     chunks: chunks.chunks,
     text: chunks.chunks.map((c) => c.data).join(''),
     cursor: chunks.cursor,
     truncated: chunks.truncated,
-    exit: self.processLogs.getExit(Number(pid)),
+    exit: self.processes.getExit(Number(pid)),
   };
 }
 
@@ -544,9 +539,8 @@ export async function rpcDestroy(
   const destroyedAt = Date.now();
   let killed = 0;
 
-  const running: ProcessEntry[] = Array.isArray(self.processTable?.getAll?.())
-    ? self.processTable.getAll().filter((p: ProcessEntry) => p.state === 'running')
-    : [];
+  const running: ProcessEntry[] = self.processes.getAll()
+    .filter((p: ProcessEntry) => p.state === 'running');
 
   for (const entry of running) {
     const pid = Number(entry.pid);
@@ -562,22 +556,22 @@ export async function rpcDestroy(
       } else if (self.facetManager?.kill?.(pid)) {
         // facetManager.kill already marks process state and unregisters ports.
       } else {
-        try { self.processTable?.kill?.(pid); } catch {}
+        try { self.processes.kill(pid); } catch {}
       }
       try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
       try {
-        if (!self.processLogs?.getExit?.(pid)) {
-          self.processLogs?.markExit?.(pid, 137, reason ?? 'destroyed');
+        if (!self.processes.getExit(pid)) {
+          self.processes.markExit(pid, 137, reason ?? 'destroyed');
         }
       } catch {}
       killed++;
     } catch {
-      try { self.processTable?.kill?.(pid); } catch {}
+      try { self.processes.kill(pid); } catch {}
       try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
     }
   }
 
-  try { self.processLogs?.flush?.(); } catch {}
+  try { self.processes.flushLogs(); } catch {}
   try { self.sqliteFs?.flushAll?.(); } catch {}
   await quiesceInMemorySessionState(self);
   try { await self.ctx.storage.deleteAll(); } catch (e: unknown) {
@@ -598,9 +592,7 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
   self.terminal = null;
   await closeAcceptedWebSockets(self);
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
-  self.processInput = new ProcessInputStore();
-  self.processLogs = new ProcessLogStore();
-  self.processTable = new ProcessTable();
+  self.processes = new SessionProcessSupervisor();
   self.portRegistry = new PortRegistry();
   self._w9PersistWired = false;
 }
@@ -650,10 +642,8 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.wranglerAliasBannerShown = false;
   self._b4Phase = 'drained';
 
-  self.processTable = new ProcessTable();
+  self.processes = new SessionProcessSupervisor();
   self.portRegistry = new PortRegistry();
-  self.processLogs = new ProcessLogStore();
-  self.processInput = new ProcessInputStore();
   self._w9PersistWired = false;
   self._w9SchemaInit = false;
   self._w9IsolateGen = 0;

@@ -1211,13 +1211,13 @@ export class ViteDevServer {
      * back to console.warn / console.error only (legacy behaviour).
      */
     logPid = null;
-    logStore = null;
+    logSink = null;
     constructor(opts) {
         this.vfs = opts.vfs;
         this.esbuild = opts.esbuild;
         this.injectBasename = opts.injectBasename !== false;
         this.logPid = (opts.pid != null) ? opts.pid : null;
-        this.logStore = opts.processLogs || null;
+        this.logSink = opts.processes || null;
         // Normalize root: resolve ./, collapse //, strip leading/trailing slashes
         this.root = opts.root
             .replace(/\/\.\//g, '/') // /./ → /
@@ -1406,11 +1406,11 @@ export class ViteDevServer {
             }
             catch { }
         }
-        if (this.logPid != null && this.logStore) {
+        if (this.logPid != null && this.logSink) {
             const text = msg.endsWith('\n') ? msg : msg + '\n';
             const stream = level === 'info' ? 'stdout' : 'stderr';
             try {
-                this.logStore.append(this.logPid, stream, text);
+                this.logSink.appendOutput(this.logPid, stream, text);
             }
             catch { }
         }

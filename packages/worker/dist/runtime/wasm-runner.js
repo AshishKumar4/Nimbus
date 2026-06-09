@@ -18,7 +18,7 @@
  *
  * Each invocation:
  *   1. Reads bytes from VFS (or any caller-supplied source).
- *   2. Allocates a PID via processTable (Process tab integration).
+ *   2. Allocates a PID via the process supervisor (Process tab integration).
  *   3. NimbusLoaderPool.submit() with wasmModules: { 'user.wasm': bytes }
  *      — pool merges per-call wasm with constructor-time entries,
  *      generates a worker.js that imports './user.wasm', and ships
@@ -139,9 +139,9 @@ function hasWasiImports(bytes) {
 /**
  * Build a `run` function suitable for RuntimeSpec.run(). Parameterised
  * over the VFS, env (for env.LOADER), ctx (for the pool's doId-scoped
- * cache key), and processTable + processLogs (for `ps` / `logs <pid>` /
- * Process tab integration). Returns a fn that matches the runtime-
- * registry's contract.
+ * cache key), and the session process supervisor (for `ps` /
+ * `logs <pid>` / Process tab integration). Returns a fn that matches
+ * the runtime-registry's contract.
  */
 export function makeWasmRunner(deps) {
     return async function runWasm(_facetMgr, _code, opts) {
@@ -405,15 +405,15 @@ export function makeWasmRunner(deps) {
         };
         // PID + log integration. The runtime-registry's contract is
         // runtime-agnostic at the PID layer; node + bun get this for
-        // free via runFresh → facetMgr.exec which calls
-        // processTable.spawn. wasm-runner uses NimbusLoaderPool directly
+        // free via runFresh → facetMgr.exec which spawns through the
+        // process supervisor. wasm-runner uses NimbusLoaderPool directly
         // (compute-only, no SUPERVISOR binding needed) so we have to
         // allocate the PID + log entries by hand.
         const cmdLabel = 'wasm-runner ' +
             (opts.filename || '').replace(/^\/+/, '/') +
             ' ' +
             argv.join(' ');
-        const procEntry = deps.processTable.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user');
+        const procEntry = deps.processes.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user');
         const pid = procEntry.pid;
         // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
         // runtime-registry's RuntimeRunOpts carries env on the way in; we
@@ -529,23 +529,23 @@ export function makeWasmRunner(deps) {
         // does in init.ts:1559+ (Fix 5 contract).
         if (stdout) {
             try {
-                deps.processLogs.append(pid, 'stdout', stdout);
+                deps.processes.appendOutput(pid, 'stdout', stdout);
             }
             catch { }
         }
         if (stderr) {
             try {
-                deps.processLogs.append(pid, 'stderr', stderr);
+                deps.processes.appendOutput(pid, 'stderr', stderr);
             }
             catch { }
         }
         try {
-            deps.processTable.exit(pid, exitCode);
+            deps.processes.exit(pid, exitCode);
         }
         catch { }
         try {
-            if (!deps.processLogs.getExit(pid)) {
-                deps.processLogs.markExit(pid, exitCode);
+            if (!deps.processes.getExit(pid)) {
+                deps.processes.markExit(pid, exitCode);
             }
         }
         catch { }

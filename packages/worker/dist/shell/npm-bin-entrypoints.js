@@ -58,22 +58,18 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             const runRuntime = runtimeCmd;
             const shellLine = `${name} ${argv.join(' ')}`.trim();
-            const entry = deps.processTable.spawn(shellLine, [name, ...argv], invocationCwd);
+            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty });
             const pid = entry.pid;
             const startedAt = Date.now();
-            if (longRunning) {
-                deps.processTable.setLongRunning?.(pid);
-                deps.processInput?.open(pid);
-            }
-            if (attachedTty)
-                deps.processTable.setAttachedTty?.(pid);
+            if (longRunning)
+                deps.processes.openInput(pid);
             const label = longRunning ? 'started (long-running)' : 'started';
             deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
             deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning });
             const writeThrough = (stream, target) => (data) => {
                 const text = String(data);
                 try {
-                    deps.processLogs.append(pid, stream, text);
+                    deps.processes.appendOutput(pid, stream, text);
                 }
                 catch { }
                 try {
@@ -106,12 +102,12 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 const handedOffToLongRunningFacet = longRunning && exitCode === 0;
                 if (!handedOffToLongRunningFacet) {
                     try {
-                        deps.processTable.exit(pid, exitCode);
+                        deps.processes.exit(pid, exitCode);
                     }
                     catch { }
                     try {
-                        if (!deps.processLogs.getExit(pid))
-                            deps.processLogs.markExit(pid, exitCode);
+                        if (!deps.processes.getExit(pid))
+                            deps.processes.markExit(pid, exitCode);
                     }
                     catch { }
                     deps.notifyTerminalEvent({ type: 'exit', pid, code: exitCode, command: shellLine });

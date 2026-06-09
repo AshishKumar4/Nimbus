@@ -1,25 +1,10 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 type Output = {
     write(data: string): void;
 };
 type RegistryLike = {
     resolve(name: string): Promise<unknown> | unknown;
-};
-type ProcessTableLike = {
-    spawn(command: string, argv: string[], cwd: string): {
-        pid: number;
-    };
-    setLongRunning?(pid: number): void;
-    setAttachedTty?(pid: number): void;
-    exit(pid: number, code: number): void;
-};
-type ProcessInputLike = {
-    open(pid: number): void;
-};
-type ProcessLogsLike = {
-    append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
-    markExit(pid: number, code: number): void;
-    getExit(pid: number): unknown;
 };
 type RuntimeCommandHint = {
     installSpec: string;
@@ -27,9 +12,7 @@ type RuntimeCommandHint = {
 export declare function installNpmBinFallbackResolver(registry: RegistryLike, deps: {
     vfs: SqliteVFS;
     getCwd(): string;
-    processTable: ProcessTableLike;
-    processInput?: ProcessInputLike | null;
-    processLogs: ProcessLogsLike;
+    processes: SessionProcessSupervisor;
     terminal?: Output | null;
     notifyTerminalEvent(event: {
         type: 'spawn' | 'exit';

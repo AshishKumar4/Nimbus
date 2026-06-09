@@ -6,9 +6,7 @@
  * duplicating the interactive terminal boot path.
  */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, listInstalledRuntimes, } from '../runtime/package-manager.js';
-import { ProcessTable } from '../runtime/process-table.js';
-import { ProcessLogStore } from '../runtime/process-logs.js';
-import { ProcessInputStore } from '../runtime/process-input.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
@@ -106,7 +104,7 @@ export async function rpcExec(self, command, options = {}) {
     const stdout = [];
     const stderr = [];
     const started = Date.now();
-    const beforePids = new Set(self.processTable.getAll().map((p) => p.pid));
+    const beforePids = new Set(self.processes.getAll().map((p) => p.pid));
     const controller = new AbortController();
     let timeout = null;
     let timedOut = false;
@@ -155,13 +153,13 @@ export async function rpcExec(self, command, options = {}) {
     };
 }
 function collectNewProcessOutput(self, beforePids) {
-    const created = self.processTable.getAll()
+    const created = self.processes.getAll()
         .filter((p) => !beforePids.has(p.pid))
         .sort((a, b) => a.startTime - b.startTime);
     const stdout = [];
     const stderr = [];
     for (const entry of created) {
-        const chunks = self.processLogs.all(Number(entry.pid));
+        const chunks = self.processes.allLogs(Number(entry.pid));
         for (const chunk of chunks) {
             if (chunk.stream === 'stderr')
                 stderr.push(String(chunk.data));
@@ -173,14 +171,14 @@ function collectNewProcessOutput(self, beforePids) {
 }
 export async function rpcStartProcess(self, command, options = {}) {
     await ensureProgrammaticReady(self, options);
-    const before = new Set(self.processTable.getAll().map((p) => p.pid));
+    const before = new Set(self.processes.getAll().map((p) => p.pid));
     const result = await rpcExec(self, command, options);
-    const created = self.processTable.getAll()
+    const created = self.processes.getAll()
         .filter((p) => !before.has(p.pid))
         .sort((a, b) => b.startTime - a.startTime);
     const running = created.find((p) => p.state === 'running') ?? null;
     const pid = running?.pid ?? created[0]?.pid ?? null;
-    const process = pid != null ? serializeProcess(self.processTable.get(pid)) : null;
+    const process = pid != null ? serializeProcess(self.processes.get(pid)) : null;
     const ports = pid != null
         ? self.portRegistry.getAll().filter((p) => p.pid === pid).map(serializePort)
         : [];
@@ -222,7 +220,7 @@ export async function rpcListRuntimes(self) {
 }
 export async function rpcListProcesses(self) {
     await ensureProgrammaticReady(self);
-    return self.processTable.getAll().map((p) => serializeProcess(p));
+    return self.processes.getAll().map((p) => serializeProcess(p));
 }
 export async function rpcKillProcess(self, pid) {
     await ensureProgrammaticReady(self);
@@ -248,49 +246,35 @@ export async function rpcKillProcess(self, pid) {
             self.portRegistry.unregisterByPid(n);
         }
         catch { }
-        ok = self.processTable.kill(n);
-        try {
-            self.processInput.close(n);
-        }
-        catch { }
+        ok = self.processes.kill(n);
         self._viteShimPid = null;
         self._viteShimPort = null;
     }
     else if (self.facetManager) {
         ok = self.facetManager.kill(n);
-        if (ok)
-            try {
-                self.processInput.close(n);
-            }
-            catch { }
     }
     else {
-        ok = self.processTable.kill(n);
-        if (ok)
-            try {
-                self.processInput.close(n);
-            }
-            catch { }
+        ok = self.processes.kill(n);
     }
     return { ok, pid: n };
 }
 export async function rpcWriteProcessInput(self, pid, data) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
-    return writeProcessInput(self, n, String(data ?? ''));
+    return writeProcessInput(self.processes, n, String(data ?? ''));
 }
 export async function rpcEndProcessInput(self, pid) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
-    return endProcessInput(self, n);
+    return endProcessInput(self.processes, n);
 }
 export async function rpcResizeProcess(self, pid, size) {
     await ensureProgrammaticReady(self);
-    return resizeProcess(self, Number(pid), Number(size.columns), Number(size.rows));
+    return resizeProcess(self.processes, Number(pid), Number(size.columns), Number(size.rows));
 }
 export async function rpcSignalProcess(self, pid, signal) {
     await ensureProgrammaticReady(self);
-    return signalProcess(self, Number(pid), String(signal));
+    return signalProcess(self.processes, Number(pid), String(signal));
 }
 export async function rpcProcessLogs(self, pid, options = {}) {
     await ensureProgrammaticReady(self);
@@ -299,14 +283,14 @@ export async function rpcProcessLogs(self, pid, options = {}) {
         cursor: parsed.cursor,
         ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
     };
-    const chunks = self.processLogs.read(Number(pid), readOptions);
+    const chunks = self.processes.readLogs(Number(pid), readOptions);
     return {
         pid: Number(pid),
         chunks: chunks.chunks,
         text: chunks.chunks.map((c) => c.data).join(''),
         cursor: chunks.cursor,
         truncated: chunks.truncated,
-        exit: self.processLogs.getExit(Number(pid)),
+        exit: self.processes.getExit(Number(pid)),
     };
 }
 export async function rpcListPorts(self) {
@@ -350,9 +334,8 @@ export async function rpcDestroy(self, options = {}) {
         : null;
     const destroyedAt = Date.now();
     let killed = 0;
-    const running = Array.isArray(self.processTable?.getAll?.())
-        ? self.processTable.getAll().filter((p) => p.state === 'running')
-        : [];
+    const running = self.processes.getAll()
+        .filter((p) => p.state === 'running');
     for (const entry of running) {
         const pid = Number(entry.pid);
         try {
@@ -375,7 +358,7 @@ export async function rpcDestroy(self, options = {}) {
             }
             else {
                 try {
-                    self.processTable?.kill?.(pid);
+                    self.processes.kill(pid);
                 }
                 catch { }
             }
@@ -384,8 +367,8 @@ export async function rpcDestroy(self, options = {}) {
             }
             catch { }
             try {
-                if (!self.processLogs?.getExit?.(pid)) {
-                    self.processLogs?.markExit?.(pid, 137, reason ?? 'destroyed');
+                if (!self.processes.getExit(pid)) {
+                    self.processes.markExit(pid, 137, reason ?? 'destroyed');
                 }
             }
             catch { }
@@ -393,7 +376,7 @@ export async function rpcDestroy(self, options = {}) {
         }
         catch {
             try {
-                self.processTable?.kill?.(pid);
+                self.processes.kill(pid);
             }
             catch { }
             try {
@@ -403,7 +386,7 @@ export async function rpcDestroy(self, options = {}) {
         }
     }
     try {
-        self.processLogs?.flush?.();
+        self.processes.flushLogs();
     }
     catch { }
     try {
@@ -439,9 +422,7 @@ async function quiesceInMemorySessionState(self) {
         self._cirrusHmrWsClients?.clear?.();
     }
     catch { }
-    self.processInput = new ProcessInputStore();
-    self.processLogs = new ProcessLogStore();
-    self.processTable = new ProcessTable();
+    self.processes = new SessionProcessSupervisor();
     self.portRegistry = new PortRegistry();
     self._w9PersistWired = false;
 }
@@ -511,10 +492,8 @@ function resetInMemorySessionState(self) {
     self.sessionBasePathHydrated = false;
     self.wranglerAliasBannerShown = false;
     self._b4Phase = 'drained';
-    self.processTable = new ProcessTable();
+    self.processes = new SessionProcessSupervisor();
     self.portRegistry = new PortRegistry();
-    self.processLogs = new ProcessLogStore();
-    self.processInput = new ProcessInputStore();
     self._w9PersistWired = false;
     self._w9SchemaInit = false;
     self._w9IsolateGen = 0;

@@ -421,7 +421,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
     // was threaded) to avoid polluting a sentinel slot with output from
     // un-traceable facets.
     try {
-      if (pid > 0) self.processLogs.append(pid, 'stdout', data);
+      if (pid > 0) self.processes.appendOutput(pid, 'stdout', data);
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) self.terminal.write(data);
     } catch (e: any) {
       // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
@@ -436,7 +436,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
 
 export async function _rpcStderr(self: RpcHost, pid: number, data: string): Promise<void> {
     try {
-      if (pid > 0) self.processLogs.append(pid, 'stderr', data);
+      if (pid > 0) self.processes.appendOutput(pid, 'stderr', data);
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) self.terminal.write(`\x1b[31m${data}\x1b[0m`);
@@ -449,7 +449,7 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: string): Prom
 
 function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
   if (pid <= 0) return true;
-  return self.processTable.get(pid)?.attachedTty !== true;
+  return self.processes.get(pid)?.attachedTty !== true;
 }
 
   /**
@@ -462,21 +462,21 @@ function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
    */
 export async function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string): Promise<void> {
     if (pid <= 0) return; // Ignore the pid-0 sentinel.
-    try { self.processInput?.close?.(pid); } catch {}
-    if (tail) self.processLogs.append(pid, 'stderr', tail);
+    try { self.processes.closeInput(pid); } catch {}
+    if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
     // (e.g. from an external kill path) don't dump twice.
-    if (self.processLogs.getExit(pid)) return;
-    self.processLogs.markExit(pid, code);
+    if (self.processes.getExit(pid)) return;
+    self.processes.markExit(pid, code);
     try { self.facetManager?.noteProcessReportedExit?.(pid, code); } catch {
-      try { self.processTable?.exit?.(pid, code); } catch {}
+      try { self.processes.exit(pid, code); } catch {}
     }
     // Structured exit notification for the tabs UI. Idempotent on the
     // client — subscribeExit fires once, and the shell-exec finalizer
     // also emits, so we dedupe on pid there. Include the command (when
     // available via ProcessTable) so the UI can surface a tab for pids
     // whose spawn event was suppressed (e.g. `node -e` short evals).
-    const cmdFromTable = self.processTable.get(pid)?.command;
+    const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
 
     // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
@@ -499,14 +499,14 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
     // NOTE: _emitShellExecDone (below) carries an identical gate;
     // both paths must agree because either may fire first depending
     // on facet vs. shell-finalizer ordering.
-    if (code !== 0 && self.processLogs.size(pid) > 0) {
+    if (code !== 0 && self.processes.logSize(pid) > 0) {
       self._emitExitDump(pid, code);
     }
 
     // Fix 5: verbose exit trace gated on NIMBUS_DEBUG=1. Facets already
     // get a spawn banner via FacetManager.onSpawn; this closes the loop.
     if (self.nimbusDebug && self.terminal) {
-      const entry = self.processTable.get(pid);
+      const entry = self.processes.get(pid);
       const cmd = entry?.command || `pid ${pid}`;
       const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
       self.terminal.write(
@@ -529,9 +529,9 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
    */
 export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
     if (!self.terminal) return;
-    const entry = self.processTable.get(pid);
+    const entry = self.processes.get(pid);
     const cmd = entry?.command || `pid ${pid}`;
-    const chunks = self.processLogs.tail(pid, { lines: 30 });
+    const chunks = self.processes.tailLogs(pid, { lines: 30 });
     const sep = '─'.repeat(60);
     const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m'; // yellow-dim for clean-silent
     self.terminal.write(
@@ -566,11 +566,11 @@ export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
    *   - Default: print only for non-zero OR long-running scripts (the
    *     cmd-start banner makes them expect an exit marker).
    *
-   * Called with the already-marked pid (processTable.exit + processLogs.markExit
+   * Called with the already-marked pid (processes.exit + processes.markExit
    * ran in shellExecuteTracked's finally).
    */
 export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code: number, durationMs: number): void {
-    const bufSize = self.processLogs.size(pid);
+    const bufSize = self.processes.logSize(pid);
     // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
     //
     // Pre-fix policy was "dump regardless of code when buffer non-empty"
@@ -614,15 +614,15 @@ export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code
    * has useful context, then runs the same dump machinery.
    */
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
-    if (self.processLogs.getExit(pid)) return;
-    try { self.processInput?.close?.(pid); } catch {}
+    if (self.processes.getExit(pid)) return;
+    try { self.processes.closeInput(pid); } catch {}
     if (reason) {
-      self.processLogs.append(pid, 'stderr', `[process killed: ${reason}]\n`);
+      self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
-    self.processLogs.markExit(pid, code, reason);
-    const cmdFromTable = self.processTable.get(pid)?.command;
+    self.processes.markExit(pid, code, reason);
+    const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
-    if (self.terminal && self.processLogs.size(pid) > 0) {
+    if (self.terminal && self.processes.logSize(pid) > 0) {
       self._emitExitDump(pid, code);
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero
@@ -657,7 +657,7 @@ export function _reportExternalExit(self: RpcHost, pid: number, code: number, re
    *
    * Schedules an alarm for `Date.now() + 60_000` with reason
    * `'log-janitor'`. When it fires, `dispatchAlarm` (in
-   * ./hibernation.ts) runs `processLogs.dropOlderThan(orphanCheck)` and
+   * ./hibernation.ts) runs `processes.dropLogsOlderThan(orphanCheck)` and
    * re-schedules the next 60s alarm — fully replacing the setTimeout
    * chain we used to run.
    *
@@ -696,7 +696,7 @@ export function _ensureLogJanitor(self: RpcHost, ctx: any): void {
  * facets that hang and get GC'd fall into this category.
  */
 export function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => boolean {
-  return (pid: number) => !self.processTable.get(pid);
+  return (pid: number) => !self.processes.get(pid);
 }
 
 export async function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>> {
@@ -751,16 +751,16 @@ export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: 
 }
 
 export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: string): Promise<{ ok: boolean }> {
-    if (self.processInput?.has?.(childPid)) {
-      return self.processInput.write(childPid, data);
+    if (self.processes.hasInput(childPid)) {
+      return self.processes.writeInput(childPid, data);
     }
     const fpm = self._ensureFacetProcessManager();
     return fpm.stdinWrite(childPid, data);
 }
 
 export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void> {
-    if (self.processInput?.has?.(childPid)) {
-      self.processInput.end(childPid);
+    if (self.processes.hasInput(childPid)) {
+      self.processes.endInput(childPid);
       return;
     }
     const fpm = self._ensureFacetProcessManager();
@@ -768,8 +768,8 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<v
 }
 
 export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number) {
-    if (self.processInput?.has?.(childPid)) {
-      return self.processInput.read(childPid, waitMs);
+    if (self.processes.hasInput(childPid)) {
+      return self.processes.readInput(childPid, waitMs);
     }
     const fpm = self._ensureFacetProcessManager();
     return fpm.cpReadStdin(childPid, waitMs);

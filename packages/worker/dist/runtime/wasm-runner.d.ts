@@ -18,7 +18,7 @@
  *
  * Each invocation:
  *   1. Reads bytes from VFS (or any caller-supplied source).
- *   2. Allocates a PID via processTable (Process tab integration).
+ *   2. Allocates a PID via the process supervisor (Process tab integration).
  *   3. NimbusLoaderPool.submit() with wasmModules: { 'user.wasm': bytes }
  *      — pool merges per-call wasm with constructor-time entries,
  *      generates a worker.js that imports './user.wasm', and ships
@@ -49,40 +49,22 @@
  *     workerd CSP rejects that path.
  */
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { type VfsLike } from './vfs-snapshot.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
 export declare function formatWasmRunnerWasiInfo(): string;
 /**
- * Minimal processTable shape — the parts wasm-runner needs to
- * register a PID + mark exit so `ps` and `logs <pid>` see the
- * invocation. Mirrors the surface the .bin handler uses; kept
- * narrow to avoid the cycle through facets/manager.ts.
- */
-interface ProcessTableLike {
-    spawn(command: string, argv: string[], cwd: string): {
-        pid: number;
-    };
-    exit(pid: number, code: number): void;
-}
-interface ProcessLogStoreLike {
-    append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
-    getExit(pid: number): unknown;
-    markExit(pid: number, code: number): void;
-}
-/**
  * Build a `run` function suitable for RuntimeSpec.run(). Parameterised
  * over the VFS, env (for env.LOADER), ctx (for the pool's doId-scoped
- * cache key), and processTable + processLogs (for `ps` / `logs <pid>` /
- * Process tab integration). Returns a fn that matches the runtime-
- * registry's contract.
+ * cache key), and the session process supervisor (for `ps` /
+ * `logs <pid>` / Process tab integration). Returns a fn that matches
+ * the runtime-registry's contract.
  */
 export declare function makeWasmRunner(deps: {
     vfs: VfsLike;
     env: any;
     ctx: DurableObjectState;
-    processTable: ProcessTableLike;
-    processLogs: ProcessLogStoreLike;
+    processes: SessionProcessSupervisor;
 }): (_facetMgr: unknown, _code: string, opts: RuntimeRunOpts) => Promise<RuntimeRunResult>;
-export {};
 //# sourceMappingURL=wasm-runner.d.ts.map

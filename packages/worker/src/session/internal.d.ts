@@ -39,10 +39,8 @@
  */
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { ProcessTable } from '../runtime/process-table.js';
+import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
-import type { ProcessLogStore } from '../runtime/process-logs.js';
-import type { ProcessInputStore } from '../runtime/process-input.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
@@ -93,11 +91,9 @@ export interface SessionInternal {
   npmInstaller: NpmInstaller | null;
   /** Singleton fetch proxy entrypoint for npm installs. */
   fetchProxyEntrypoint: any;
-  /** Process bookkeeping (always present from ctor). */
-  processTable: ProcessTable;
+  /** Process supervisor facade (always present from ctor). */
+  processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
-  processLogs: ProcessLogStore;
-  processInput: ProcessInputStore;
 
   // ── W9 hibernation persistence state ────────────────────────────────
   _w9WsConfig: WsHibernationConfigResult | null;

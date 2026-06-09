@@ -217,7 +217,7 @@ async function routeProcessLogClientMessage(self, ws, attach, message) {
     const pid = attach.pid;
     if (!pid)
         return;
-    const entry = self.processTable.get(pid);
+    const entry = self.processes.get(pid);
     if (!entry || entry.state !== 'running')
         return;
     let frame;
@@ -230,7 +230,7 @@ async function routeProcessLogClientMessage(self, ws, attach, message) {
     }
     if (!frame)
         return;
-    const result = await applyProcessClientFrame(self, pid, frame);
+    const result = await applyProcessClientFrame(self.processes, pid, frame);
     sendProcessInputAck(ws, pid, result.ok, result.type);
 }
 function sendProcessInputAck(ws, pid, ok, action) {

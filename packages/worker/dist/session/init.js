@@ -775,8 +775,7 @@ export function initSession(self, ws) {
             },
             env: self.env,
             ctx: self.ctx,
-            processTable: self.processTable,
-            processLogs: self.processLogs,
+            processes: self.processes,
         }),
         bypassesScriptRead: true,
     };
@@ -1124,8 +1123,7 @@ export function initSession(self, ws) {
             // process metadata support: same long-running treatment as the
             // dev path, just on the dist/ directory.
             const previewPort = viteConfig.port || 4173; // vite preview default
-            const previewProcEntry = self.processTable.spawn('vite preview (' + distRoot + ')', [], distRoot);
-            self.processTable.setLongRunning(previewProcEntry.pid);
+            const previewProcEntry = self.processes.spawn('vite preview (' + distRoot + ')', [], distRoot, { longRunning: true });
             self.viteDevServer = new ViteDevServer({
                 vfs: self.sqliteFs, esbuild: self.esbuildService, root: distRoot,
                 onHmrMessage: () => { },
@@ -1135,7 +1133,7 @@ export function initSession(self, ws) {
                 ctx: self.ctx,
                 port: previewPort,
                 pid: previewProcEntry.pid,
-                processLogs: self.processLogs,
+                processes: self.processes,
             });
             self.viteDevServer.start();
             try {
@@ -1178,7 +1176,7 @@ export function initSession(self, ws) {
                 }
                 catch { }
                 try {
-                    self.processTable.exit(self._viteShimPid, 0);
+                    self.processes.exit(self._viteShimPid, 0);
                 }
                 catch { }
                 notifyTerminalEvent(self.terminal, {
@@ -1345,8 +1343,7 @@ export function initSession(self, ws) {
                 extraSyntheticFiles,
             });
             // Reserve a PID so `ps`/logs show it like any other facet.
-            const entry = self.processTable.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot);
-            self.processTable.setLongRunning(entry.pid);
+            const entry = self.processes.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot, { longRunning: true });
             try {
                 // [sdk-phase-1] start() is now async because it ASSETS-fetches
                 // the large Vite/plugin-react bundles on first invocation
@@ -1402,10 +1399,9 @@ export function initSession(self, ws) {
         // Allocate PID FIRST so we can plumb it into ViteDevServer's
         // process-log wiring at construction time. The PID stays valid
         // for the life of this dev-server instance; subsequent log lines
-        // emitted by ViteDevServer flow into processLogs[pid].stderr,
+        // emitted by ViteDevServer flow into the pid's stderr ring,
         // visible in the Process tab.
-        const viteProcEntry = self.processTable.spawn('vite (' + vfsRoot + ')', expandedArgs, vfsRoot);
-        self.processTable.setLongRunning(viteProcEntry.pid);
+        const viteProcEntry = self.processes.spawn('vite (' + vfsRoot + ')', expandedArgs, vfsRoot, { longRunning: true });
         self.viteDevServer = new ViteDevServer({
             vfs: self.sqliteFs,
             esbuild: self.esbuildService,
@@ -1429,7 +1425,7 @@ export function initSession(self, ws) {
             // supervisor's per-PID log store so the Process tab is no
             // longer silent after the banner.
             pid: viteProcEntry.pid,
-            processLogs: self.processLogs,
+            processes: self.processes,
         });
         self.viteDevServer.start();
         try {
@@ -1797,7 +1793,7 @@ export function initSession(self, ws) {
     // Shell scripts that execute through the local shell still need the same
     // process-table and log-store contract as facet-backed processes.
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
-        const entry = self.processTable.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
+        const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
         const pid = entry.pid;
         const startedAt = Date.now();
         // Spawn banner — matches facet-manager.ts onSpawn format.
@@ -1815,7 +1811,7 @@ export function initSession(self, ws) {
         // AND captured in the ring buffer keyed by this PID.
         const tee = (stream, target) => (d) => {
             try {
-                self.processLogs.append(pid, stream, String(d));
+                self.processes.appendOutput(pid, stream, String(d));
             }
             catch { }
             try {
@@ -1841,12 +1837,12 @@ export function initSession(self, ws) {
         }
         finally {
             try {
-                self.processTable.exit(pid, exitCode);
+                self.processes.exit(pid, exitCode);
             }
             catch { }
             try {
-                if (!self.processLogs.getExit(pid)) {
-                    self.processLogs.markExit(pid, exitCode);
+                if (!self.processes.getExit(pid)) {
+                    self.processes.markExit(pid, exitCode);
                 }
             }
             catch { }
@@ -1868,9 +1864,7 @@ export function initSession(self, ws) {
     installNpmBinFallbackResolver(registry, {
         vfs: sqliteFs,
         getCwd: () => self.shell?.cwd || '/home/user',
-        processTable: self.processTable,
-        processInput: self.processInput,
-        processLogs: self.processLogs,
+        processes: self.processes,
         terminal: self.terminal,
         notifyTerminalEvent: (event) => notifyTerminalEvent(self.terminal, event),
         runtimeCommandHint,
@@ -2291,7 +2285,7 @@ export function initSession(self, ws) {
     // ── Register process commands (enhanced with facet process tracking) ──
     registry.register('ps', async (ctx) => {
         ctx.stdout.write('  PID  STATUS              COMMAND\n');
-        for (const proc of self.processTable.getAll()) {
+        for (const proc of self.processes.getAll()) {
             // Prefer log-store exit info over ProcessTable's: the store has
             // the authoritative code and survives reap. For `running`, rely
             // on ProcessTable (store has no "running" concept).
@@ -2315,7 +2309,7 @@ export function initSession(self, ws) {
         if (self.viteDevServer?.isRunning) {
             ctx.stdout.write('  \x1b[33m---\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (' + self.viteBasePath + '/)\n');
         }
-        if (self.processTable.getAll().length === 0 && !self.viteDevServer?.isRunning) {
+        if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
             ctx.stdout.write('  (no processes)\n');
         }
         return 0;
@@ -2353,7 +2347,7 @@ export function initSession(self, ws) {
             return 1;
         }
         const pid = parseInt(pidArg, 10);
-        if (!self.processLogs.has(pid)) {
+        if (!self.processes.hasLogs(pid)) {
             ctx.stderr.write(`no logs for pid ${pid}\n`);
             return 1;
         }
@@ -2376,7 +2370,7 @@ export function initSession(self, ws) {
         // (by the 4 KB splitter inside ProcessLogStore) gets rejoined and
         // stripped cleanly instead of leaking `1m` / `[31m` fragments.
         const tailOpts = bytes !== undefined ? { bytes } : { lines };
-        const chunks = self.processLogs.tail(pid, tailOpts);
+        const chunks = self.processes.tailLogs(pid, tailOpts);
         let group = [];
         const flushGroup = () => {
             if (group.length === 0)
@@ -2402,17 +2396,17 @@ export function initSession(self, ws) {
         flushGroup();
         if (!follow) {
             // Footer only when process has exited already.
-            const exit = self.processLogs.getExit(pid);
+            const exit = self.processes.getExit(pid);
             if (exit) {
                 ctx.stdout.write(`\r\n\x1b[2m[process exited with code ${exit.code}${exit.reason ? ` (${exit.reason})` : ''}]\x1b[0m\r\n`);
             }
             return 0;
         }
         // Follow mode: subscribe to live appends, poll for exit.
-        const entry = self.processTable.get(pid);
-        const alreadyExited = !entry || entry.state !== 'running' || self.processLogs.getExit(pid);
+        const entry = self.processes.get(pid);
+        const alreadyExited = !entry || entry.state !== 'running' || self.processes.getExit(pid);
         if (alreadyExited) {
-            const exit = self.processLogs.getExit(pid);
+            const exit = self.processes.getExit(pid);
             if (exit) {
                 ctx.stdout.write(`\r\n\x1b[2m[process exited with code ${exit.code}${exit.reason ? ` (${exit.reason})` : ''}]\x1b[0m\r\n`);
             }
@@ -2428,10 +2422,10 @@ export function initSession(self, ws) {
                 unsubExit();
                 resolve(code);
             };
-            const unsub = self.processLogs.subscribe(pid, (c) => {
+            const unsub = self.processes.subscribeLogs(pid, (c) => {
                 ctx.stdout.write(renderChunk(c));
             });
-            const unsubExit = self.processLogs.subscribeExit(pid, (exit) => {
+            const unsubExit = self.processes.subscribeExit(pid, (exit) => {
                 ctx.stdout.write(`\r\n\x1b[2m[process exited with code ${exit.code}${exit.reason ? ` (${exit.reason})` : ''}]\x1b[0m\r\n`);
                 finish(0);
             });
@@ -2439,7 +2433,7 @@ export function initSession(self, ws) {
             // check above and these subscribe calls. Re-check now that the
             // exit subscriber is wired — if exit already set, the subscribe
             // callback never fires, so synthesize the footer ourselves.
-            const exitNow = self.processLogs.getExit(pid);
+            const exitNow = self.processes.getExit(pid);
             if (exitNow) {
                 ctx.stdout.write(`\r\n\x1b[2m[process exited with code ${exitNow.code}${exitNow.reason ? ` (${exitNow.reason})` : ''}]\x1b[0m\r\n`);
                 finish(0);
@@ -2453,7 +2447,7 @@ export function initSession(self, ws) {
         });
     });
     registry.register('jobs', async (ctx) => {
-        const running = self.processTable.getRunning();
+        const running = self.processes.getRunning();
         if (running.length === 0 && !self.viteDevServer?.isRunning) {
             ctx.stdout.write('No background jobs.\n');
             return 0;
@@ -2512,7 +2506,7 @@ export function initSession(self, ws) {
             }
             catch { }
             try {
-                self.processTable.kill(pid);
+                self.processes.kill(pid);
             }
             catch { }
             notifyTerminalEvent(self.terminal, {

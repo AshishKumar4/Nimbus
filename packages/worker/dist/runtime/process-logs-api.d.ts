@@ -14,21 +14,16 @@
  * The ring buffer keeps state for 10 min post-exit so a tab that's still
  * open after a crash continues to show the final output.
  */
-import type { ProcessLogStore } from './process-logs.js';
-import type { ProcessTable } from './process-table.js';
-import type { ProcessInputStore } from './process-input.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 /**
- * Parameters for `handleLogsWebSocketRequest`. We accept the process
- * table so the handler can distinguish "brand-new pid, not yet written
- * to" from "pid never existed". The former is common — a client that
- * opens a process terminal immediately on the `{type:'spawn'}` frame
- * races with the first `_rpcStdout` RPC call and would otherwise get
- * `notfound`.
+ * Parameters for `handleLogsWebSocketRequest`. The process supervisor
+ * lets the handler distinguish "brand-new pid, not yet written to" from
+ * "pid never existed". The former is common — a client that opens a
+ * process terminal immediately on the `{type:'spawn'}` frame races with
+ * the first `_rpcStdout` RPC call and would otherwise get `notfound`.
  */
 export interface LogsWebSocketDeps {
-    processLogs: ProcessLogStore;
-    processTable: ProcessTable;
-    processInput?: ProcessInputStore | null;
+    processes: SessionProcessSupervisor;
     /**
      * Durable Object state used for hibernatable process-terminal sockets.
      * Process log sockets must use `ctx.acceptWebSocket` so hibernation,
@@ -73,7 +68,7 @@ export declare function notifyTerminalEvent(terminal: TerminalLike | null, event
  *     client disconnects abruptly.
  */
 export declare function handleLogsWebSocketRequest(request: Request, pid: number, deps: LogsWebSocketDeps): Response;
-export declare function handleProcessesListRequest(processTable: ProcessTable, processLogs: ProcessLogStore): Response;
+export declare function handleProcessesListRequest(processes: SessionProcessSupervisor): Response;
 /**
  * Utility: does this pathname match `/api/logs/<pid>`? Returns the pid
  * or null. Kept alongside the handler so the routing regex lives in

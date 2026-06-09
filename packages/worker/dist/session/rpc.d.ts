@@ -174,7 +174,7 @@ export declare function _emitExitDump(self: RpcHost, pid: number, code: number):
  *   - Default: print only for non-zero OR long-running scripts (the
  *     cmd-start banner makes them expect an exit marker).
  *
- * Called with the already-marked pid (processTable.exit + processLogs.markExit
+ * Called with the already-marked pid (processes.exit + processes.markExit
  * ran in shellExecuteTracked's finally).
  */
 export declare function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code: number, durationMs: number): void;
@@ -190,7 +190,7 @@ export declare function _reportExternalExit(self: RpcHost, pid: number, code: nu
  *
  * Schedules an alarm for `Date.now() + 60_000` with reason
  * `'log-janitor'`. When it fires, `dispatchAlarm` (in
- * ./hibernation.ts) runs `processLogs.dropOlderThan(orphanCheck)` and
+ * ./hibernation.ts) runs `processes.dropLogsOlderThan(orphanCheck)` and
  * re-schedules the next 60s alarm — fully replacing the setTimeout
  * chain we used to run.
  *

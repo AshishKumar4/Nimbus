@@ -90,7 +90,7 @@ export interface RunFreshOpts {
     command?: string;
     /**
      * G4 (runtime-pkg wave): caller has already allocated a
-     * processTable PID for this invocation; runFresh / facetMgr.exec
+     * process supervisor PID for this invocation; runFresh / facetMgr.exec
      * should reuse it instead of spawning a duplicate. Used by the
      * .bin handler in src/session/init.ts to keep `ps` showing ONE
      * row per bin invocation instead of two (the wrapper + the inner

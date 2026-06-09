@@ -141,9 +141,9 @@ export class FacetProcessManager {
             NIMBUS_CP_DEPTH: String(depthIn + 1),
         };
         const commandLine = `${req.command} ${req.args.join(' ')}`.trim();
-        const processEntry = this.deps.processTable.spawn(commandLine, req.args, req.cwd);
+        const processEntry = this.deps.processes.spawn(commandLine, req.args, req.cwd);
         const pid = processEntry.pid;
-        const facetName = processEntry.facetName || `cp-proc-${pid}`;
+        const facetName = `cp-proc-${pid}`;
         const child = {
             pid,
             command: req.command,
@@ -518,9 +518,10 @@ export class FacetProcessManager {
         child.outputSeq[fd]++;
         const chunk = { seq: child.outputSeq[fd], data };
         child.outputs[fd].push(chunk);
-        // Tee to ProcessLogStore for `logs <pid>` parity with facet processes.
+        // Tee to the process supervisor's log ring for `logs <pid>` parity
+        // with facet processes.
         try {
-            this.deps.processLogs.append(child.pid, fd === 1 ? 'stdout' : 'stderr', data);
+            this.deps.processes.appendOutput(child.pid, fd === 1 ? 'stdout' : 'stderr', data);
         }
         catch { /* ignore */ }
         // Resolve waiters whose fd matches and whose sinceSeq is now satisfied.
@@ -656,13 +657,13 @@ export class FacetProcessManager {
         child.exitCode = exitCode;
         child.signal = signal;
         child.endedAt = Date.now();
-        // Tell the ProcessTable + LogStore so `ps` and `logs <pid>` line up.
+        // Tell the process supervisor so `ps` and `logs <pid>` line up.
         try {
-            this.deps.processTable.exit(child.pid, exitCode);
+            this.deps.processes.exit(child.pid, exitCode);
         }
         catch { }
         try {
-            this.deps.processLogs.markExit(child.pid, exitCode);
+            this.deps.processes.markExit(child.pid, exitCode);
         }
         catch { }
         // Wake exit waiters.

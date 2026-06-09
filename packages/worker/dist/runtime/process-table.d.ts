@@ -1,14 +1,13 @@
 /**
- * ProcessTable — maps PIDs to facet names, tracks lifecycle.
+ * ProcessTable — PID allocation and process lifecycle state.
  *
- * Each `node script.js` invocation gets a PID, which maps to a
- * facet name like "node-proc-1". The supervisor uses this to
- * route signals (kill) and track running processes.
+ * Each `node script.js` invocation gets a PID. The supervisor uses this
+ * to route signals (kill) and track running processes. Owned by
+ * SessionProcessSupervisor; callers go through that facade.
  */
 export type ProcessState = 'running' | 'exited' | 'killed';
 export interface ProcessEntry {
     pid: number;
-    facetName: string;
     command: string;
     argv: string[];
     cwd: string;
@@ -28,9 +27,12 @@ export interface ProcessEntry {
 export declare class ProcessTable {
     private nextPid;
     private processes;
-    private facetToPid;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string): ProcessEntry;
+    /** child-process isolation: mark an existing entry as long-running. Idempotent. */
+    setLongRunning(pid: number): void;
+    /** Mark an existing entry as an attached terminal process. Idempotent. */
+    setAttachedTty(pid: number): void;
     /**
      * Mark a process as exited.
      *
@@ -39,21 +41,15 @@ export declare class ProcessTable {
      * are no-ops — the first terminal state wins.
      *
      * Without this guard, a `kill <pid>` (which sets state='killed',
-     * exitCode=137) followed by the facet's own crash-catch in
-     * facet-manager.ts:842-864 (which calls processTable.exit(pid, 1))
-     * clobbers the kill signal with an exited/1 reading. `ps` then
-     * disagrees with the ring-buffer footer that still says
+     * exitCode=137) followed by the facet's own crash-catch (which calls
+     * exit(pid, 1)) clobbers the kill signal with an exited/1 reading.
+     * `ps` then disagrees with the ring-buffer footer that still says
      * "[process killed: killed]".
      */
-    /** child-process isolation: mark an existing entry as long-running. Idempotent. */
-    setLongRunning(pid: number): void;
-    /** Mark an existing entry as an attached terminal process. Idempotent. */
-    setAttachedTty(pid: number): void;
     exit(pid: number, exitCode: number): void;
     /** Mark a process as killed. */
     kill(pid: number): boolean;
     get(pid: number): ProcessEntry | undefined;
-    getByFacet(facetName: string): ProcessEntry | undefined;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
     /** Clean up exited processes older than maxAge ms. */

@@ -18,7 +18,7 @@
  *
  * Each invocation:
  *   1. Reads bytes from VFS (or any caller-supplied source).
- *   2. Allocates a PID via processTable (Process tab integration).
+ *   2. Allocates a PID via the process supervisor (Process tab integration).
  *   3. NimbusLoaderPool.submit() with wasmModules: { 'user.wasm': bytes }
  *      — pool merges per-call wasm with constructor-time entries,
  *      generates a worker.js that imports './user.wasm', and ships
@@ -50,6 +50,7 @@
  */
 
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs, type VfsLike } from './vfs-snapshot.js';
@@ -193,35 +194,17 @@ function hasWasiImports(bytes: Uint8Array): boolean {
 }
 
 /**
- * Minimal processTable shape — the parts wasm-runner needs to
- * register a PID + mark exit so `ps` and `logs <pid>` see the
- * invocation. Mirrors the surface the .bin handler uses; kept
- * narrow to avoid the cycle through facets/manager.ts.
- */
-interface ProcessTableLike {
-  spawn(command: string, argv: string[], cwd: string): { pid: number };
-  exit(pid: number, code: number): void;
-}
-
-interface ProcessLogStoreLike {
-  append(pid: number, stream: 'stdout' | 'stderr', data: string): void;
-  getExit(pid: number): unknown;
-  markExit(pid: number, code: number): void;
-}
-
-/**
  * Build a `run` function suitable for RuntimeSpec.run(). Parameterised
  * over the VFS, env (for env.LOADER), ctx (for the pool's doId-scoped
- * cache key), and processTable + processLogs (for `ps` / `logs <pid>` /
- * Process tab integration). Returns a fn that matches the runtime-
- * registry's contract.
+ * cache key), and the session process supervisor (for `ps` /
+ * `logs <pid>` / Process tab integration). Returns a fn that matches
+ * the runtime-registry's contract.
  */
 export function makeWasmRunner(deps: {
   vfs: VfsLike;
   env: any;
   ctx: DurableObjectState;
-  processTable: ProcessTableLike;
-  processLogs: ProcessLogStoreLike;
+  processes: SessionProcessSupervisor;
 }) {
   return async function runWasm(
     _facetMgr: unknown,
@@ -538,8 +521,8 @@ export function makeWasmRunner(deps: {
 
     // PID + log integration. The runtime-registry's contract is
     // runtime-agnostic at the PID layer; node + bun get this for
-    // free via runFresh → facetMgr.exec which calls
-    // processTable.spawn. wasm-runner uses NimbusLoaderPool directly
+    // free via runFresh → facetMgr.exec which spawns through the
+    // process supervisor. wasm-runner uses NimbusLoaderPool directly
     // (compute-only, no SUPERVISOR binding needed) so we have to
     // allocate the PID + log entries by hand.
     const cmdLabel =
@@ -547,7 +530,7 @@ export function makeWasmRunner(deps: {
       (opts.filename || '').replace(/^\/+/, '/') +
       ' ' +
       argv.join(' ');
-    const procEntry = deps.processTable.spawn(
+    const procEntry = deps.processes.spawn(
       cmdLabel.trim(),
       ['wasm-runner', ...argv],
       opts.cwd || '/home/user',
@@ -679,15 +662,15 @@ export function makeWasmRunner(deps: {
     // append-then-markExit ordering matches what shellExecuteTracked
     // does in init.ts:1559+ (Fix 5 contract).
     if (stdout) {
-      try { deps.processLogs.append(pid, 'stdout', stdout); } catch {}
+      try { deps.processes.appendOutput(pid, 'stdout', stdout); } catch {}
     }
     if (stderr) {
-      try { deps.processLogs.append(pid, 'stderr', stderr); } catch {}
+      try { deps.processes.appendOutput(pid, 'stderr', stderr); } catch {}
     }
-    try { deps.processTable.exit(pid, exitCode); } catch {}
+    try { deps.processes.exit(pid, exitCode); } catch {}
     try {
-      if (!deps.processLogs.getExit(pid)) {
-        deps.processLogs.markExit(pid, exitCode);
+      if (!deps.processes.getExit(pid)) {
+        deps.processes.markExit(pid, exitCode);
       }
     } catch {}
 
