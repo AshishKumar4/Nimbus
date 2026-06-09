@@ -616,6 +616,11 @@ export interface MinimalPackument {
   main?: string;
 }
 
+export interface PackageBinManifest {
+  name: string;
+  bin?: Record<string, string>;
+}
+
 // Known native-shard name globs. Matched as `prefix-` (so the parent
 // package name without a platform suffix never matches).
 const NATIVE_SHARD_PREFIXES: ReadonlyArray<string> = [
@@ -667,6 +672,36 @@ export function isOptionalNativeBinding(p: MinimalPackument): boolean {
     }
   }
   return false;
+}
+
+export function nativeExecutableReject(pkg: PackageBinManifest): RejectEntry | undefined {
+  for (const target of Object.values(pkg.bin ?? {})) {
+    const ext = fileExtension(target);
+    if (ext === '.exe' || ext === '.node') {
+      return {
+        from: pkg.name,
+        reason:
+          `Package ${pkg.name} exposes native executable bin '${target}'. ` +
+          'Nimbus cannot execute Linux/Windows/macOS native binaries; publish a JavaScript, WASM, or wasm32-wasi-nimbus artifact.',
+        transitive: 'fail',
+      };
+    }
+  }
+  return undefined;
+}
+
+function fileExtension(path: string): string {
+  const text = String(path || '');
+  const query = text.indexOf('?');
+  const fragment = text.indexOf('#');
+  const end = query < 0
+    ? (fragment < 0 ? text.length : fragment)
+    : (fragment < 0 ? query : Math.min(query, fragment));
+  const clean = text.slice(0, end);
+  const slash = clean.lastIndexOf('/');
+  const name = slash >= 0 ? clean.slice(slash + 1) : clean;
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot).toLowerCase() : '';
 }
 
 /**

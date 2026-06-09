@@ -32,6 +32,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '../observability/diag-counters.j
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss, r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail, } from '../observability/diag-counters.js';
+import { useRpcResource } from '../_shared/rpc-dispose.js';
 /**
  * Drain the per-call event list captured by R2CacheClient during this
  * SupervisorRPC call.
@@ -96,16 +97,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
         this._stubCache = this.env.NIMBUS_SESSION.get(id);
         return this._stubCache;
     }
+    _call(promise) {
+        return useRpcResource(promise, (value) => value);
+    }
     // ── Filesystem RPC ────────────────────────────────────────────────────
     async readFile(path) {
-        return this._getStub()._rpcReadFile(path);
+        return this._call(this._getStub()._rpcReadFile(path));
     }
     /**
      * Read a file as raw bytes. Used by the git network facet for binary
      * object/pack files where the text readFile would corrupt content.
      */
     async readFileBytes(path) {
-        return this._getStub()._rpcReadFileBytes(path);
+        return this._call(this._getStub()._rpcReadFileBytes(path));
     }
     async writeFile(path, content) {
         // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
@@ -113,49 +117,52 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
         // and corrupting binary content. RPC structured-clone handles
         // Uint8Array transparently; downstream _rpcWriteFile also accepts
-        return this._getStub()._rpcWriteFile(path, content);
+        return this._call(this._getStub()._rpcWriteFile(path, content));
     }
     async stat(path) {
-        return this._getStub()._rpcStat(path);
+        return this._call(this._getStub()._rpcStat(path));
+    }
+    async utimes(path, atimeMs, mtimeMs) {
+        return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs));
     }
     async readdir(path) {
-        return this._getStub()._rpcReaddir(path);
+        return this._call(this._getStub()._rpcReaddir(path));
     }
     async exists(path) {
-        return this._getStub()._rpcExists(path);
+        return this._call(this._getStub()._rpcExists(path));
     }
     async mkdir(path) {
-        return this._getStub()._rpcMkdir(path);
+        return this._call(this._getStub()._rpcMkdir(path));
     }
     async rmdir(path) {
-        return this._getStub()._rpcRmdir(path);
+        return this._call(this._getStub()._rpcRmdir(path));
     }
     async rename(from, to) {
-        return this._getStub()._rpcRename(from, to);
+        return this._call(this._getStub()._rpcRename(from, to));
     }
     async unlink(path) {
-        return this._getStub()._rpcUnlink(path);
+        return this._call(this._getStub()._rpcUnlink(path));
     }
     async readlink(path) {
-        return this._getStub()._rpcReadlink(path);
+        return this._call(this._getStub()._rpcReadlink(path));
     }
     async symlink(target, path) {
-        return this._getStub()._rpcSymlink(target, path);
+        return this._call(this._getStub()._rpcSymlink(target, path));
     }
     async fsRevision(path) {
-        return this._getStub()._rpcFsRevision(path);
+        return this._call(this._getStub()._rpcFsRevision(path));
     }
     async fsOpen(path, flags) {
-        return this._getStub()._rpcFsOpen(path, flags);
+        return this._call(this._getStub()._rpcFsOpen(path, flags));
     }
     async fsRead(handleId, offset, length) {
-        return this._getStub()._rpcFsRead(handleId, offset, length);
+        return this._call(this._getStub()._rpcFsRead(handleId, offset, length));
     }
     async fsWrite(handleId, offset, bytes) {
-        return this._getStub()._rpcFsWrite(handleId, offset, bytes);
+        return this._call(this._getStub()._rpcFsWrite(handleId, offset, bytes));
     }
     async fsClose(handleId) {
-        return this._getStub()._rpcFsClose(handleId);
+        return this._call(this._getStub()._rpcFsClose(handleId));
     }
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
@@ -178,7 +185,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         setLastRpcFrame('writeBatch', payloadBytes);
         rpcPayloadStart(payloadBytes);
         try {
-            return await this._getStub()._rpcWriteBatch(payload);
+            return await this._call(this._getStub()._rpcWriteBatch(payload));
         }
         finally {
             rpcPayloadEnd(payloadBytes);
@@ -210,7 +217,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         setLastRpcFrame('writeBatchStream', -1);
         rpcPayloadStart(STREAM_RESIDENT_BYTES);
         try {
-            return await this._getStub()._rpcWriteBatchStream(stream);
+            return await this._call(this._getStub()._rpcWriteBatchStream(stream));
         }
         finally {
             rpcPayloadEnd(STREAM_RESIDENT_BYTES);
@@ -238,7 +245,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const payloadBytes = (Array.isArray(entries) ? entries.length : 0) * REGISTRY_ENTRY_BYTES;
         rpcPayloadStart(payloadBytes);
         try {
-            return await this._getStub()._rpcPutRegistryEntries(entries);
+            return await this._call(this._getStub()._rpcPutRegistryEntries(entries));
         }
         finally {
             rpcPayloadEnd(payloadBytes);
@@ -388,10 +395,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     // ── Process I/O ───────────────────────────────────────────────────────
     async stdout(data) {
-        return this._getStub()._rpcStdout(this.ctx.props?.pid || 0, data);
+        return this._call(this._getStub()._rpcStdout(this.ctx.props?.pid || 0, data));
     }
     async stderr(data) {
-        return this._getStub()._rpcStderr(this.ctx.props?.pid || 0, data);
+        return this._call(this._getStub()._rpcStderr(this.ctx.props?.pid || 0, data));
     }
     /**
      * Report process exit to the supervisor. Called from the facet's own
@@ -404,22 +411,22 @@ export class SupervisorRPC extends WorkerEntrypoint {
      */
     async reportExit(code, tail) {
         const pid = this.ctx.props?.pid || 0;
-        return this._getStub()._rpcReportExit(pid, code, tail || '');
+        return this._call(this._getStub()._rpcReportExit(pid, code, tail || ''));
     }
     // ── Prefetch ──────────────────────────────────────────────────────────
     async prefetch(cwd, entryCode) {
-        return this._getStub()._rpcPrefetch(cwd, entryCode);
+        return this._call(this._getStub()._rpcPrefetch(cwd, entryCode));
     }
     // ── Port registration ─────────────────────────────────────────────────
     async registerPort(port) {
-        return this._getStub()._rpcRegisterPort(this.ctx.props?.pid || 0, port);
+        return this._call(this._getStub()._rpcRegisterPort(this.ctx.props?.pid || 0, port));
     }
     async unregisterPort(port) {
-        return this._getStub()._rpcUnregisterPort(port);
+        return this._call(this._getStub()._rpcUnregisterPort(port));
     }
     // ── Esbuild transform ─────────────────────────────────────────────────
     async transform(code, loader) {
-        return this._getStub()._rpcTransform(code, loader);
+        return this._call(this._getStub()._rpcTransform(code, loader));
     }
     // ── child_process [W8 Phase 1] ────────────────────────────────────────
     //
@@ -428,28 +435,28 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // route through the shared FacetProcessManager.
     //
     async cpSpawn(req) {
-        return this._getStub()._rpcCpSpawn(req);
+        return this._call(this._getStub()._rpcCpSpawn(req));
     }
     async cpStdinWrite(childPid, data) {
-        return this._getStub()._rpcCpStdinWrite(childPid, data);
+        return this._call(this._getStub()._rpcCpStdinWrite(childPid, data));
     }
     async cpStdinEnd(childPid) {
-        return this._getStub()._rpcCpStdinEnd(childPid);
+        return this._call(this._getStub()._rpcCpStdinEnd(childPid));
     }
     async cpReadStdin(childPid, waitMs) {
-        return this._getStub()._rpcCpReadStdin(childPid, waitMs);
+        return this._call(this._getStub()._rpcCpReadStdin(childPid, waitMs));
     }
     async cpReadOutput(childPid, fd, sinceSeq, waitMs) {
-        return this._getStub()._rpcCpReadOutput(childPid, fd, sinceSeq, waitMs);
+        return this._call(this._getStub()._rpcCpReadOutput(childPid, fd, sinceSeq, waitMs));
     }
     async cpDrainOutput(childPid) {
-        return this._getStub()._rpcCpDrainOutput(childPid);
+        return this._call(this._getStub()._rpcCpDrainOutput(childPid));
     }
     async cpKill(childPid, signal) {
-        return this._getStub()._rpcCpKill(childPid, signal);
+        return this._call(this._getStub()._rpcCpKill(childPid, signal));
     }
     async cpWait(childPid, waitMs) {
-        return this._getStub()._rpcCpWait(childPid, waitMs);
+        return this._call(this._getStub()._rpcCpWait(childPid, waitMs));
     }
     /**
      * child-process isolation gap #1: dispatch a single cp.spawn request inline using
@@ -460,6 +467,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * supervisor while keeping the dispatch envelope in a fresh isolate.
      */
     async cpDispatchInline(req, kind) {
-        return this._getStub()._rpcCpDispatchInline(req, kind);
+        return this._call(this._getStub()._rpcCpDispatchInline(req, kind));
     }
 }

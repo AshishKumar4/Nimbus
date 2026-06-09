@@ -26,6 +26,7 @@ import { getCtxExports } from '../session/ctx-exports.js';
 import { CF_COMPAT_DATE } from '../constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 
@@ -116,26 +117,6 @@ export async function execGitNetwork(
     });
     const entrypoint = worker.getEntrypoint();
 
-    // Every one of (worker, entrypoint, response, supervisorBinding) may be
-    // a cross-isolate RPC stub. Without explicit disposal they accumulate
-    // in the supervisor's live-reference set until the enclosing DO request
-    // returns — and during an npm install that request lives for tens of
-    // seconds, during which git clone + 200 packument resolves can each
-    // contribute stubs. When enough pile up, workerd's isolate-shutdown
-    // queue trips `queueState != ACTIVE` (see WORKERD-CRASH.md).
-    //
-    // Helper: best-effort Symbol.dispose. ES2023 added the symbol; the
-    // tsconfig target is ES2022, so we reach for it via any-cast. Non-RPC
-    // objects have no dispose handler and the call is a no-op.
-    const disposerKey = (Symbol as any).dispose;
-    const dispose = (obj: unknown) => {
-      if (!obj || !disposerKey) return;
-      const fn = (obj as any)[disposerKey];
-      if (typeof fn === 'function') {
-        try { fn.call(obj); } catch { /* best-effort */ }
-      }
-    };
-
     const timeoutMs = opts.timeout ?? 300_000;
     const timeout = new Promise<never>((_, rej) =>
       setTimeout(() => rej(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)), timeoutMs),
@@ -151,7 +132,7 @@ export async function execGitNetwork(
       try {
         return await r.json();
       } finally {
-        dispose(r);
+        disposeRpcResource(r);
       }
     });
 
@@ -167,9 +148,9 @@ export async function execGitNetwork(
       // in theory it doesn't leak across isolates, but disposing is cheap
       // and symmetric with how the facet's env.SUPERVISOR is handled on
       // the other side.
-      dispose(entrypoint);
-      dispose(worker);
-      dispose(supervisorBinding);
+      disposeRpcResource(entrypoint);
+      disposeRpcResource(worker);
+      disposeRpcResource(supervisorBinding);
     }
     return {
       success: !!result?.success,
@@ -201,6 +182,18 @@ function generateGitNetworkFacetCode(): string {
 const CHUNK_SIZE = 65536; // must match sqlite-vfs.ts
 const WAVE_FILES = 500;   // flush every N buffered files
 const WAVE_BYTES = 4 * 1024 * 1024; // or every 4MB
+
+function disposeRpcResult(value) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
+  const dispose = value[Symbol.dispose];
+  if (typeof dispose === 'function') { try { dispose.call(value); } catch {} }
+}
+
+async function useRpcResult(promise, use) {
+  const value = await promise;
+  try { return await use(value); }
+  finally { disposeRpcResult(value); }
+}
 
 function normalizePath(p) {
   const parts = String(p || '').split('/');
@@ -394,7 +387,7 @@ function createBufferedFs(supervisor, stats) {
     // RPC since 2026-05-09 (commit 89a64ef9).
     // @ts-ignore — preamble symbol injected at module-prepend time.
     const stream = encodeWriteBatchStream(payload);
-    await supervisor.writeBatchStream(stream);
+    await useRpcResult(supervisor.writeBatchStream(stream), () => undefined);
     stats.filesWritten += wavefilesWritten;
     stats.bytesWritten += wavebytesWritten;
   }
@@ -420,7 +413,7 @@ function createBufferedFs(supervisor, stats) {
         }
         // Fall through to supervisor — use byte-preserving RPC for binary safety
         // (git object files, packfiles must NOT round-trip through TextDecoder)
-        const content = await supervisor.readFileBytes(p);
+        const content = await useRpcResult(supervisor.readFileBytes(p), (result) => result);
         if (content === null || content === undefined) throw enoent(filepath);
         const data = content instanceof Uint8Array ? content : new Uint8Array(content);
         if (opts && opts.encoding === 'utf8') return new TextDecoder().decode(data);
@@ -524,7 +517,7 @@ function createBufferedFs(supervisor, stats) {
         // Start with supervisor's view
         let names = [];
         try {
-          const entries = await supervisor.readdir(p);
+          const entries = await useRpcResult(supervisor.readdir(p), (result) => result);
           names = Array.isArray(entries) ? entries.map(e => e.name) : [];
         } catch { names = []; }
         const set = new Set(names);
@@ -579,7 +572,7 @@ function createBufferedFs(supervisor, stats) {
         if (dirBuffer.has(p)) return dirStatObj();
         if (deleteBuffer.has(p)) throw enoent(filepath);
         if (!p) return dirStatObj();
-        const st = await supervisor.stat(p);
+        const st = await useRpcResult(supervisor.stat(p), (result) => result);
         if (!st) throw enoent(filepath);
         return convertSupervisorStat(st);
       },
@@ -616,7 +609,7 @@ export default {
     }
 
     const log = (msg) => {
-      try { supervisor.stdout(msg).catch(() => {}); } catch {}
+      try { useRpcResult(supervisor.stdout(msg), () => undefined).catch(() => {}); } catch {}
     };
 
     const stats = { filesWritten: 0, bytesWritten: 0 };

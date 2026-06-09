@@ -1,0 +1,84 @@
+// Content-addressable blob storage using FNV-1a hashing.
+// No external dependencies.
+// ---------------------------------------------------------------------------
+// FNV-1a 64-bit hash
+// ---------------------------------------------------------------------------
+// FNV-1a 64-bit offset basis: 0xcbf29ce484222325
+const FNV_OFFSET_HIGH = 0xcbf29ce4;
+const FNV_OFFSET_LOW = 0x84222325;
+// FNV-1a 64-bit prime: 0x00000100000001b3
+const FNV_PRIME_LOW = 0x000001b3;
+const FNV_PRIME_HIGH_BYTE = 0x01; // the 0x100 component that lands in the high word
+/**
+ * Compute a 64-bit FNV-1a hash of the given bytes and return it as a
+ * 16-character lowercase hex string.
+ *
+ * We split the 64-bit state into two 32-bit halves (high, low) and apply
+ * the FNV-1a algorithm byte-by-byte: xor then multiply by the prime.
+ */
+export function hashBytes(data) {
+    let high = FNV_OFFSET_HIGH;
+    let low = FNV_OFFSET_LOW;
+    for (let i = 0; i < data.length; i++) {
+        // XOR the byte into the low 32 bits of the hash state
+        low ^= data[i];
+        // Multiply the 64-bit state by the 64-bit prime 0x00000100_000001b3.
+        //
+        // The prime has two non-zero components:
+        //   - 0x000001b3 in the low word
+        //   - 0x100 that shifts the old low word into the high word
+        //
+        // Full product (only lower 64 bits kept):
+        //   new_low  = (low * 0x1b3) & 0xFFFFFFFF
+        //   new_high = (high * 0x1b3) + (low * 0x100) + carry_from_low_multiply
+        // Split low into 16-bit halves for precise integer multiplication.
+        const a = low & 0xFFFF;
+        const b = (low >>> 16) & 0xFFFF;
+        const aTimesPrime = a * FNV_PRIME_LOW;
+        const bTimesPrime = b * FNV_PRIME_LOW;
+        const newLowLo = aTimesPrime & 0xFFFF;
+        const mid = (aTimesPrime >>> 16) + (bTimesPrime & 0xFFFF);
+        const newLowHi = mid & 0xFFFF;
+        const carry = (mid >>> 16) + (bTimesPrime >>> 16);
+        const newLow = ((newLowHi << 16) | newLowLo) >>> 0;
+        // high word contribution:
+        //   high * prime_low   (only lower 32 bits matter)
+        // + low  * 0x100       (the prime's high component shifts low into high)
+        // + carry              (from the low multiplication above)
+        const newHigh = ((Math.imul(high, FNV_PRIME_LOW) + Math.imul(low, FNV_PRIME_HIGH_BYTE << 8) + carry) |
+            0) >>>
+            0;
+        low = newLow;
+        high = newHigh;
+    }
+    const highHex = high.toString(16).padStart(8, '0');
+    const lowHex = low.toString(16).padStart(8, '0');
+    return highHex + lowHex;
+}
+// ---------------------------------------------------------------------------
+// MemoryBlobStore
+// ---------------------------------------------------------------------------
+export class MemoryBlobStore {
+    blobs = new Map();
+    async get(hash) {
+        const data = this.blobs.get(hash);
+        if (!data)
+            return null;
+        // Return a copy so callers cannot mutate internal state.
+        return new Uint8Array(data);
+    }
+    async put(data) {
+        const hash = hashBytes(data);
+        if (!this.blobs.has(hash)) {
+            // Store a copy so the caller cannot mutate what we hold.
+            this.blobs.set(hash, new Uint8Array(data));
+        }
+        return hash;
+    }
+    async delete(hash) {
+        this.blobs.delete(hash);
+    }
+    async has(hash) {
+        return this.blobs.has(hash);
+    }
+}

@@ -48,6 +48,12 @@ export class ProcessTable {
         if (entry)
             entry.longRunning = true;
     }
+    /** Mark an existing entry as an attached terminal process. Idempotent. */
+    setAttachedTty(pid) {
+        const entry = this.processes.get(pid);
+        if (entry)
+            entry.attachedTty = true;
+    }
     exit(pid, exitCode) {
         const entry = this.processes.get(pid);
         if (!entry)

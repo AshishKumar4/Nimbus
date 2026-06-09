@@ -34,6 +34,18 @@ const TEXT_TYPES = {
   ".ico": "image/x-icon",
 };
 
+function disposeRpcResult(value) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+  const dispose = value[Symbol.dispose];
+  if (typeof dispose === "function") { try { dispose.call(value); } catch {} }
+}
+
+async function useRpcResult(promise, use) {
+  const value = await promise;
+  try { return await use(value); }
+  finally { disposeRpcResult(value); }
+}
+
 function cleanPath(pathname) {
   const parts = [];
   for (const raw of pathname.split("/")) {
@@ -60,13 +72,13 @@ function htmlEscape(s) {
 
 async function resolveFile(supervisor, rel) {
   const base = joinRoot(rel);
-  const stat = await supervisor.stat(base);
+  const stat = await useRpcResult(supervisor.stat(base), (result) => result);
   const isDirectory = stat && (stat.type === "directory" || stat.isDir || stat.isDirectory);
   if (stat && !isDirectory) return { path: base, stat };
   if (isDirectory) {
     for (const index of ["index.html", "index.htm"]) {
       const candidate = base.replace(/\\/+$/, "") + "/" + index;
-      const s = await supervisor.stat(candidate);
+      const s = await useRpcResult(supervisor.stat(candidate), (result) => result);
       if (s && !(s.type === "directory" || s.isDir || s.isDirectory)) return { path: candidate, stat: s };
     }
     return { directory: base };
@@ -75,7 +87,7 @@ async function resolveFile(supervisor, rel) {
 }
 
 async function renderDirectory(supervisor, path, rel, url) {
-  const entries = await supervisor.readdir(path);
+  const entries = await useRpcResult(supervisor.readdir(path), (result) => result);
   const rows = entries
     .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "directory" ? -1 : 1))
     .map((entry) => {
@@ -107,7 +119,7 @@ export default class NimbusStaticServer extends WorkerEntrypoint {
     const resolved = await resolveFile(supervisor, rel);
     if (!resolved) return new Response("Not found", { status: 404 });
     if (resolved.directory) return renderDirectory(supervisor, resolved.directory, rel, url);
-    const bytes = await supervisor.readFileBytes(resolved.path);
+    const bytes = await useRpcResult(supervisor.readFileBytes(resolved.path), (result) => result);
     if (!bytes) return new Response("Not found", { status: 404 });
     return new Response(bytes, {
       headers: {

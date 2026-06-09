@@ -21,6 +21,7 @@
  * for Wrangler to bundle the WorkerEntrypoint exports.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { z } from 'zod/v4';
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`
  * and we serve the file from VFS under `<vfsRoot>/<assetsDir>/<pathname>`.
@@ -50,6 +51,17 @@ export declare class NimbusAssetsRPC extends WorkerEntrypoint {
      */
     fetch(request: Request): Promise<Response>;
 }
+declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
+    key: z.ZodString;
+    name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    depth: z.ZodOptional<z.ZodNumber>;
+    code: z.ZodOptional<z.ZodUnknown>;
+    supervisor: z.ZodOptional<z.ZodObject<{
+        doId: z.ZodString;
+        pid: z.ZodNumber;
+    }, z.core.$strip>>;
+}, z.core.$loose>;
+type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
  * Diagnostic surface for /api/_diag/memory. Returns a snapshot of
  * the Map state — entry count, configured cap, eviction counter
@@ -102,6 +114,14 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint {
 }
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
 export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint {
+    _props(): NimbusLoadedEntrypointProps;
+    _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown>;
+    _codeWithSupervisor(props: NimbusLoadedEntrypointProps, includeSupervisor: boolean): Promise<unknown>;
+    _resolveEntrypoint(options: {
+        includeSupervisor: boolean;
+    }): Promise<any>;
+    startProcess(args: any): Promise<any>;
+    handleHttpRequest(request: Request): Promise<Response>;
     /**
      * Forward fetch() to the outer worker's entrypoint. All three outer
      * hops (load → getEntrypoint → fetch) run in the same outer request
@@ -160,4 +180,5 @@ export declare class NimbusDOStub extends WorkerEntrypoint {
      */
     fetch(request: Request): Promise<Response>;
 }
+export {};
 //# sourceMappingURL=bindings.d.ts.map

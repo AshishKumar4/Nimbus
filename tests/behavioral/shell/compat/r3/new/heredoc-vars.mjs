@@ -5,11 +5,10 @@
 // literal `val=$X`. Bash semantics expand $X in unquoted heredocs;
 // quoted delimiters (`<<'EOF'`) preserve literals.
 //
-// Post-fix: HeredocHandler._finishHeredoc invokes expandHeredocVars
-// (from features.ts) on accumulated content when delimiter is not
-// quoted. ${NAME} and $NAME forms supported.
+// Heredoc input is collected by the terminal wrapper and executed by
+// the shell substrate, where unquoted heredoc bodies expand variables.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/heredoc-vars');
@@ -17,6 +16,7 @@ console.log(`shell/compat/r3/new/heredoc-vars — ${process.env.BASE}`);
 
 const sid = await mintSession();
 const t = new Terminal(sid);
+try {
 await t.connect();
 await t.waitForPrompt(60_000);
 
@@ -28,14 +28,6 @@ function body(raw) {
   return lines.join('\n');
 }
 
-// Note: heredoc-to-cmd-stdin (`cat <<EOF\n...\nEOF`) has a separate
-// timing issue in how lifo-sh pipes accumulated content to the
-// command's stdin. The CORE FIX (expandHeredocVars + HeredocHandler
-// hook) operates on accumulated content before it's written/piped.
-// Probe via heredoc-to-file (`cat > FILE <<EOF`) which is the path
-// most users hit and that exercises the same expansion code.
-
-// Probe 1: unquoted heredoc → file with $VAR
 await t.run('export VARFOO=replaced', 3_000);
 await t.run('rm -rf /tmp/hd1.txt', 2_000);
 t.reset();
@@ -52,7 +44,6 @@ a.check(
   `body=${JSON.stringify(body(r1.output))}`,
 );
 
-// Probe 2: single-quoted-delimiter preserves literal
 await t.run('rm -rf /tmp/hd2.txt', 2_000);
 t.reset();
 t.cmd("cat > /tmp/hd2.txt <<'EOF'");
@@ -68,7 +59,6 @@ a.check(
   `body=${JSON.stringify(body(r2.output))}`,
 );
 
-// Probe 3: ${NAME} form
 await t.run('rm -rf /tmp/hd3.txt', 2_000);
 t.reset();
 t.cmd('cat > /tmp/hd3.txt <<EOF');
@@ -84,6 +74,10 @@ a.check(
   `body=${JSON.stringify(body(r3.output))}`,
 );
 
-await t.close();
+} finally {
+  try { await t.close(); } catch {}
+  const cleanup = await deleteSession(sid);
+  a.check('probe session deleted', cleanup.ok, `status=${cleanup.status} body=${JSON.stringify(cleanup.body.slice(0, 500))}`);
+}
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

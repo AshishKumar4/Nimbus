@@ -38,6 +38,8 @@ import {
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { injectRouterBasename, shouldProcessForRouter } from '../runtime/router-basename.js';
+import { rewriteJavaScriptModuleSource, type StaticModuleSpecifierContext } from '../runtime/module-source-rewriter.js';
+import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import {
   TAILWIND_PLAY_BUNDLE,
   TAILWIND_PLAY_VERSION,
@@ -448,34 +450,7 @@ const RESERVED_ES_KEYWORDS = new Set([
  * basePath must be the dev server's mount point without trailing slash
  * (e.g. "/preview"). If basePath is "/" or empty, output is origin-rooted.
  */
-/**
- * Collapse `..` and `.` segments in a VFS path.
- *
- * Essential for entries coming from package.json `main`/`module` that point
- * OUTSIDE their own directory — e.g. react-remove-scroll-bar's nested
- * `constants/package.json` has `"module": "../dist/es2015/constants.js"`,
- * which when naively joined produces `constants/../dist/es2015/constants.js`.
- * The VFS doesn't interpret `..` at lookup time — it treats it as a literal
- * path component that doesn't exist, so resolution fails and we fall through
- * to a bogus CDN wrapper.
- *
- * Leading slashes are preserved. Trailing slashes are stripped.
- * Returns the empty string for a pure-dot path like "." or "./.".
- */
-function normalizePath(p: string): string {
-  const leadingSlash = p.startsWith('/');
-  const segments = p.split('/').reduce<string[]>((acc, seg) => {
-    if (seg === '..') {
-      // Pop the previous segment if there is one (don't pop past root).
-      if (acc.length > 0 && acc[acc.length - 1] !== '..') acc.pop();
-      else if (!leadingSlash) acc.push('..'); // preserve leading .. for relative paths
-    } else if (seg !== '.' && seg !== '') {
-      acc.push(seg);
-    }
-    return acc;
-  }, []);
-  return (leadingSlash ? '/' : '') + segments.join('/');
-}
+const normalizePath = normalizeVfsPath;
 
 function resolveAliasSpecifier(specifier: string, aliases: Record<string, string>, basePath: string): string | null {
   // Sort by alias length descending for longest-match-first
@@ -484,11 +459,12 @@ function resolveAliasSpecifier(specifier: string, aliases: Record<string, string
     // Match exact alias or alias followed by /
     if (specifier === alias || specifier.startsWith(alias + '/')) {
       const rest = specifier.slice(alias.length); // e.g. "/components/Foo" or ""
-      const resolvedTarget = target.replace(/^\.\//, '').replace(/^\//, '');
+      const resolvedTarget = normalizePath(target);
       // Normalize basePath: strip trailing slash so we always emit exactly one
       // slash between base and target. Handle root ("/" or "") specially.
       const base = basePath === '/' || basePath === '' ? '' : basePath.replace(/\/+$/, '');
-      return `${base}/${resolvedTarget}${rest}`;
+      const resolvedPath = [resolvedTarget, stripLeadingSlashes(rest)].filter(Boolean).join('/');
+      return `${base}/${resolvedPath}`;
     }
   }
   return null;
@@ -556,6 +532,7 @@ function resolveBareSpecifier(
   // Skip already-rewritten or absolute URLs
   if (specifier.startsWith('@modules/')) return null;
   if (specifier.startsWith('http://') || specifier.startsWith('https://')) return null;
+  if (specifier.startsWith('.') || specifier.startsWith('/')) return null;
   // Skip protocol-like specifiers: data:, blob:, virtual:, node:, etc.
   if (/^[a-z][a-z0-9+.-]*:/i.test(specifier)) return null;
 
@@ -672,83 +649,44 @@ function resolveHashImportFromImporter(
  *   5. export { named } from "specifier"         (re-export)
  *   6. export * from "specifier"                 (re-export all)
  *   7. import("specifier")                       (dynamic)
- *
- * Strategy: Three separate passes to avoid cross-statement regex issues.
- *   Pass 1: CSS side-effect imports (append ?import)
- *   Pass 2: Side-effect bare imports (import "specifier";)
- *   Pass 3: All "from" clause specifiers (works with multi-line imports)
- *   Pass 4: Dynamic imports (import("specifier"))
  */
-// Valid npm specifier character class. Allows package names (letters, digits,
-// hyphens, underscores, dots), scoped packages (@scope/name), subpaths
-// (slashes), and query strings (?v=123 for HMR invalidation). Crucially,
-// it EXCLUDES spaces, operators (+, *, (, )), and other punctuation that
-// would never appear in a real import specifier. Before this restriction,
-// regexes like `/from "([^"]*)"/` matched inside string literals such as:
-//
-//   throw new Error("called from " + fn.name + " here");
-//
-// treating "` + fn.name + `" as a specifier and corrupting the source code.
-// After: only character sequences that look like valid specifiers match.
-//
-// Leading `#` is permitted so Node.js subpath-imports specifiers
-// (`package.json#imports`, e.g. `import x from "#minpath"` from
-// inside vfile/unified) are parsed by the rewriter and routed to the
-// hash-resolver in `resolveBareSpecifier`. Without `#` in the leading
-// class, `import x from "#minpath"` survived the rewriter literally
-// and the browser crashed with `Failed to resolve module specifier
-// "#minpath"` — Markflow regression on prod 0a488bab.
-const SPECIFIER_WITH_QUERY = '[A-Za-z0-9_@#][A-Za-z0-9_@./?=&-]*';
-
-function rewriteAllImports(
+export function rewriteAllImports(
   code: string,
   aliases?: Record<string, string>,
   basePath?: string,
   importerCtx?: HashImportCtx,
 ): string {
-  // Pass 1: CSS side-effect imports: import "./foo.css" → import "./foo.css?import"
-  //         import "@/index.css" → import "/preview/src/index.css?import"
-  code = code.replace(
-    /import\s+(["'])([^"']+\.css)\1\s*;/g,
-    (_match: string, quote: string, path: string) => {
-      if (aliases && !path.startsWith('.') && !path.startsWith('/')) {
-        const resolved = resolveAliasSpecifier(path, aliases, basePath || '/preview');
-        if (resolved) return `import ${quote}${resolved}?import${quote};`;
-      }
-      return `import ${quote}${path}?import${quote};`;
-    }
-  );
-
-  // Pass 2: Side-effect bare imports: import "specifier";
-  code = code.replace(
-    new RegExp(`import\\s+(["'])(${SPECIFIER_WITH_QUERY})\\1\\s*;`, 'g'),
-    (match: string, quote: string, specifier: string) => {
+  return rewriteJavaScriptModuleSource(code, {
+    staticSpecifier(specifier, context) {
       const resolved = resolveBareSpecifier(specifier, aliases, basePath, importerCtx);
-      return resolved ? `import ${quote}${resolved}${quote};` : match;
-    }
-  );
+      const candidate = resolved || specifier;
+      const cssSideEffect = cssSideEffectModuleSpecifier(candidate, context);
+      return cssSideEffect === specifier ? undefined : cssSideEffect || resolved || undefined;
+    },
+    dynamicImport(specifier) {
+      return resolveBareSpecifier(specifier, aliases, basePath, importerCtx) || undefined;
+    },
+  });
+}
 
-  // Pass 3: All "from" clause specifiers — handles single AND multi-line imports.
-  // Matches: import X from "pkg", import { X } from "pkg", export { X } from "pkg",
-  // import * as X from "pkg", export * from "pkg" — even multi-line.
-  code = code.replace(
-    new RegExp(`(\\bfrom\\s+)(["'])(${SPECIFIER_WITH_QUERY})\\2`, 'g'),
-    (match: string, fromPart: string, quote: string, specifier: string) => {
-      const resolved = resolveBareSpecifier(specifier, aliases, basePath, importerCtx);
-      return resolved ? `${fromPart}${quote}${resolved}${quote}` : match;
-    }
-  );
+function cssSideEffectModuleSpecifier(
+  specifier: string,
+  context: StaticModuleSpecifierContext,
+): string | undefined {
+  if (!context.isSideEffectImport) return undefined;
+  const parts = splitSpecifierSuffix(specifier);
+  if (!parts.pathname.endsWith('.css')) return undefined;
+  if (!parts.suffix) return `${parts.pathname}?import`;
+  if (parts.suffix.startsWith('#')) return `${parts.pathname}?import${parts.suffix}`;
+  return specifier;
+}
 
-  // Pass 4: Dynamic imports: import("specifier")
-  code = code.replace(
-    new RegExp(`import\\(\\s*(["'])(${SPECIFIER_WITH_QUERY})\\1\\s*\\)`, 'g'),
-    (match: string, quote: string, specifier: string) => {
-      const resolved = resolveBareSpecifier(specifier, aliases, basePath, importerCtx);
-      return resolved ? `import(${quote}${resolved}${quote})` : match;
-    }
-  );
-
-  return code;
+function splitSpecifierSuffix(specifier: string): { pathname: string; suffix: string } {
+  const query = specifier.indexOf('?');
+  const hash = specifier.indexOf('#');
+  const cut = query === -1 ? hash : hash === -1 ? query : Math.min(query, hash);
+  if (cut === -1) return { pathname: specifier, suffix: '' };
+  return { pathname: specifier.slice(0, cut), suffix: specifier.slice(cut) };
 }
 
 // ── Tailwind @apply expander ────────────────────────────────────────────

@@ -6,6 +6,7 @@ export interface RuntimeVfsStat {
   type: RuntimeFileType;
   size: number;
   ctime: number;
+  atime: number;
   mtime: number;
   mode: number;
   revision: number;
@@ -44,6 +45,7 @@ export interface RuntimeFsBridge {
     createParents?: boolean;
     expectedRevision?: number;
   }): Promise<void>;
+  utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
   open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;
@@ -87,12 +89,76 @@ export interface RuntimePortBridge {
   list(): Promise<Array<{ port: number; processId: number; registeredAt: number }>>;
 }
 
+export const NIMBUS_OS_NAME = 'nimbus';
+export const NIMBUS_ABI_TARGET = 'wasm32-wasi-nimbus';
+export const NIMBUS_ABI_ID = NIMBUS_ABI_TARGET;
+
 export type RuntimePackageAbi =
   | 'javascript'
-  | 'wasm32-wasi-nimbus'
+  | typeof NIMBUS_ABI_TARGET
+  | 'pyodide-emscripten-2025_0-wasm32'
+  | 'py3-none-any'
+  | 'python-source-pure'
   | 'pyodide'
   | 'ruby-wasm'
   | 'native-unsupported';
+
+export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = Object.freeze({
+  clang: NIMBUS_ABI_TARGET,
+  python: 'pyodide',
+  ruby: 'ruby-wasm',
+  node: 'javascript',
+  bun: 'javascript',
+});
+
+export type RuntimeAbiCapability =
+  | 'wasi.snapshot-preview1'
+  | 'wasi.unstable-import-alias'
+  | 'vfs.snapshot-diff'
+  | 'stdio'
+  | 'argv'
+  | 'env'
+  | 'clock'
+  | 'random'
+  | 'path'
+  | 'symlink'
+  | 'hardlink'
+  | 'poll'
+  | 'outbound-tcp-devtcp';
+
+export interface RuntimeAbiDescriptor {
+  os: typeof NIMBUS_OS_NAME;
+  target: typeof NIMBUS_ABI_TARGET;
+  id: typeof NIMBUS_ABI_ID;
+  env: Readonly<Record<string, string>>;
+  capabilities: readonly RuntimeAbiCapability[];
+}
+
+export const WASM32_WASI_NIMBUS_ABI: RuntimeAbiDescriptor = {
+  os: NIMBUS_OS_NAME,
+  target: NIMBUS_ABI_TARGET,
+  id: NIMBUS_ABI_ID,
+  env: Object.freeze({
+    NIMBUS_OS: NIMBUS_OS_NAME,
+    NIMBUS_ABI: NIMBUS_ABI_ID,
+    NIMBUS_ABI_TARGET,
+  }),
+  capabilities: Object.freeze([
+    'wasi.snapshot-preview1',
+    'wasi.unstable-import-alias',
+    'vfs.snapshot-diff',
+    'stdio',
+    'argv',
+    'env',
+    'clock',
+    'random',
+    'path',
+    'symlink',
+    'hardlink',
+    'poll',
+    'outbound-tcp-devtcp',
+  ]),
+};
 
 export interface RuntimeCommandProvider {
   runtimeName: string;

@@ -3,7 +3,7 @@
 // tab should not be duplicated by its registered /port/<n>/ alias.
 
 import { makeAsserter, mintSession } from '../../_driver.mjs';
-import { launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { applyProbeCookies, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -14,6 +14,7 @@ console.log(`${label} — BASE=${process.env.BASE}`);
 const sid = await mintSession();
 const browser = await launchBrowser({ timeout: 60_000 });
 const page = await browser.newPage();
+await applyProbeCookies(page);
 const runtimeErrors = [];
 
 async function sendShellInput(data) {

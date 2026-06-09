@@ -208,13 +208,40 @@ export class ProcessLogStore {
         this._evict(state, pid);
         this._fanout(state, chunk);
     }
+    /**
+     * Return chunks with stable per-PID sequence numbers. `cursor` is an
+     * exclusive read position: pass the previous returned `cursor` to receive only
+     * newer chunks. If older chunks have been evicted, `truncated` is true
+     * and the response starts at the oldest retained chunk.
+     */
+    read(pid, opts = {}) {
+        const state = this._maybeHydrateRead(pid);
+        if (!state)
+            return { chunks: [], cursor: 0, truncated: false };
+        const firstSeq = state.nextSeq - state.chunks.length;
+        const cursor = Number.isFinite(opts.cursor) ? Number(opts.cursor) : null;
+        const start = cursor === null
+            ? this._tailStartIndex(state, opts)
+            : Math.max(0, Math.floor(cursor) - firstSeq);
+        const truncated = cursor !== null && Math.floor(cursor) < firstSeq;
+        return {
+            chunks: state.chunks.slice(start).map((chunk, index) => ({
+                ...chunk,
+                seq: firstSeq + start + index,
+            })),
+            cursor: state.nextSeq,
+            truncated,
+        };
+    }
     /** Return the last N chunks (by line count) in chronological order. */
     tail(pid, opts = {}) {
         const state = this._maybeHydrateRead(pid);
         if (!state)
             return [];
-        if (!opts.lines && !opts.bytes)
+        if (opts.lines === undefined && opts.bytes === undefined)
             return [...state.chunks];
+        if (opts.lines === 0 || opts.bytes === 0)
+            return [];
         // Walk from newest → oldest, accumulate until we hit the limit.
         const out = [];
         let lines = 0;
@@ -223,7 +250,7 @@ export class ProcessLogStore {
             const c = state.chunks[i];
             out.unshift(c);
             bytes += c.data.length;
-            if (opts.lines) {
+            if (opts.lines !== undefined) {
                 // Count \n in chunk + 1 if chunk doesn't end with \n but has content.
                 for (let j = 0; j < c.data.length; j++)
                     if (c.data.charCodeAt(j) === 10)
@@ -231,10 +258,33 @@ export class ProcessLogStore {
                 if (lines >= opts.lines)
                     break;
             }
-            if (opts.bytes && bytes >= opts.bytes)
+            if (opts.bytes !== undefined && bytes >= opts.bytes)
                 break;
         }
         return out;
+    }
+    _tailStartIndex(state, opts) {
+        if (opts.lines === undefined && opts.bytes === undefined)
+            return 0;
+        if (opts.lines === 0 || opts.bytes === 0)
+            return state.chunks.length;
+        let lines = 0;
+        let bytes = 0;
+        for (let i = state.chunks.length - 1; i >= 0; i--) {
+            const chunk = state.chunks[i];
+            bytes += chunk.data.length;
+            if (opts.lines !== undefined) {
+                for (let j = 0; j < chunk.data.length; j++) {
+                    if (chunk.data.charCodeAt(j) === 10)
+                        lines++;
+                }
+                if (lines >= opts.lines)
+                    return i;
+            }
+            if (opts.bytes !== undefined && bytes >= opts.bytes)
+                return i;
+        }
+        return 0;
     }
     /** All chunks for a pid, chronological. */
     all(pid) {

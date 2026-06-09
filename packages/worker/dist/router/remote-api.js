@@ -1,6 +1,20 @@
 import { LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
+import { z } from 'zod/v4';
 import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, NimbusTokenMalformedError, isNimbusIdComponent, } from '../auth/index.js';
+import { useRpcResource } from '../_shared/rpc-dispose.js';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
+const RemoteRpcBodySchema = z.object({
+    profile: z.string().optional(),
+    tenant: z.string().optional(),
+    subject: z.string().optional(),
+    root: z.string().optional(),
+    op: z.string().optional(),
+    args: z.array(z.unknown()).optional(),
+}).passthrough();
+const WireBytesSchema = z.object({
+    __nimbusWireType: z.literal('bytes'),
+    base64: z.string(),
+}).passthrough();
 export async function handleNimbusRemoteApi(request, env, sdk) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
@@ -22,10 +36,10 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
     }
     let body;
     try {
-        body = decodeWire(await request.json());
+        body = RemoteRpcBodySchema.parse(decodeWire(await request.json()));
     }
     catch (e) {
-        return remoteJson({ ok: false, error: `Invalid JSON body: ${e?.message || e}`, code: 'E_BAD_JSON' }, 400);
+        return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
     }
     const remoteAuth = await resolveRemoteAuth(request, env, remote, match.sandboxId);
     if (remoteAuth instanceof Response)
@@ -48,15 +62,15 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
         verified: remoteAuth.verified,
     };
     try {
-        const result = await dispatchRemoteRpc(ctx);
-        return remoteJson({ ok: true, result });
+        return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson({ ok: true, result }));
     }
     catch (e) {
+        const err = remoteError(e);
         return remoteJson({
             ok: false,
-            error: e?.message || String(e),
-            code: e?.code || 'E_NIMBUS_REMOTE_RPC',
-        }, e?.httpStatus || 500);
+            error: err.message,
+            code: err.code,
+        }, err.httpStatus);
     }
 }
 function normalizeRemoteConfig(remote) {
@@ -83,8 +97,7 @@ function matchRemoteRpc(pathname, basePath) {
     }
 }
 async function resolveRemoteAuth(request, env, remote, sandboxId) {
-    const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
-    if (!hasSecret) {
+    if (!hasJwtSecret(env)) {
         if (remote.allowLegacy) {
             return {
                 tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
@@ -140,7 +153,7 @@ async function dispatchRemoteRpc(ctx) {
         case 'readFileBytes':
             return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
         case 'writeFile':
-            return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), args[1]);
+            return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), fileContentArg(args[1]));
         case 'stat':
             return ctx.stub._rpcStat(stringArg(args[0], 'path'));
         case 'readdir':
@@ -168,8 +181,21 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcListProcesses();
         case 'killProcess':
             return ctx.stub._rpcKillProcess(numberArg(args[0], 'pid'));
+        case 'writeProcessInput':
+            return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), stringArg(args[1], 'data'));
+        case 'endProcessInput':
+            return ctx.stub._rpcEndProcessInput(numberArg(args[0], 'pid'));
+        case 'resizeProcess': {
+            const size = objectArg(args[1]);
+            return ctx.stub._rpcResizeProcess(numberArg(args[0], 'pid'), {
+                columns: numberArg(size.columns, 'columns'),
+                rows: numberArg(size.rows, 'rows'),
+            });
+        }
+        case 'signalProcess':
+            return ctx.stub._rpcSignalProcess(numberArg(args[0], 'pid'), stringArg(args[1], 'signal'));
         case 'processLogs':
-            return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), objectArg(args[1]));
+            return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), processLogOptions(args[1]));
         case 'listPorts':
             return ctx.stub._rpcListPorts();
         case 'exposePort':
@@ -196,6 +222,14 @@ function execOptions(ctx, value) {
     return {
         ...options,
         cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,
+    };
+}
+function processLogOptions(value) {
+    const options = objectArg(value);
+    return {
+        ...(options.cursor === undefined ? {} : { cursor: numberArg(options.cursor, 'cursor') }),
+        ...(options.lines === undefined ? {} : { lines: numberArg(options.lines, 'lines') }),
+        ...(options.bytes === undefined ? {} : { bytes: numberArg(options.bytes, 'bytes') }),
     };
 }
 function configuredPreinstall(profile, requested) {
@@ -251,11 +285,32 @@ function numberArg(value, name) {
         throw apiError(`${name} must be a number`, 'E_ARG_SHAPE', 400);
     return number;
 }
+function fileContentArg(value) {
+    if (typeof value === 'string' || value instanceof Uint8Array)
+        return value;
+    throw apiError('content must be a string or Uint8Array', 'E_ARG_SHAPE', 400);
+}
 function apiError(message, code, status) {
     const err = new Error(message);
     err.code = code;
     err.httpStatus = status;
     return err;
+}
+function isApiError(value) {
+    return value instanceof Error
+        && typeof Reflect.get(value, 'code') === 'string'
+        && typeof Reflect.get(value, 'httpStatus') === 'number';
+}
+function remoteError(value) {
+    if (isApiError(value))
+        return value;
+    return apiError(errorMessage(value), 'E_NIMBUS_REMOTE_RPC', 500);
+}
+function errorMessage(value) {
+    return value instanceof Error ? value.message : String(value);
+}
+function hasJwtSecret(env) {
+    return typeof env.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
 }
 function normalizeBasePath(path) {
     const trimmed = trimSlashes(String(path || DEFAULT_REMOTE_BASE_PATH));
@@ -320,12 +375,9 @@ function encodeWire(value) {
     return value;
 }
 function decodeWire(value) {
-    if (value
-        && typeof value === 'object'
-        && value.__nimbusWireType === 'bytes'
-        && typeof value.base64 === 'string') {
-        return base64ToBytes(value.base64);
-    }
+    const bytes = WireBytesSchema.safeParse(value);
+    if (bytes.success)
+        return base64ToBytes(bytes.data.base64);
     if (Array.isArray(value))
         return value.map(decodeWire);
     if (value && typeof value === 'object') {

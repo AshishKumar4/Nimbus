@@ -75,6 +75,8 @@
     .logs-panel-body { flex: 1; overflow: auto; background: #0d1117; position: relative; min-height: 0; }
     .logs-view { display: none; white-space: pre; font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace; font-size: 12px; line-height: 1.5; color: #c9d1d9; padding: 8px 10px; word-break: break-all; min-height: 100%; }
     .logs-view.active { display: block; }
+    .logs-view.terminal-view { padding: 0; white-space: normal; overflow: hidden; }
+    .logs-view.terminal-view .xterm { height: 100%; padding: 6px 8px; }
     .logs-view .stderr { color: #ff7b72; }
     .logs-view .binary { color: #8b949e; font-style: italic; }
     .logs-view .banner { display: block; color: #d29922; background: #221a00; border-left: 2px solid #d29922; padding: 4px 8px; margin: 6px 0; font-family: inherit; }
@@ -544,7 +546,7 @@
     <button id="btnEditor" class="active" title="Editor">Editor</button>
     <button id="btnAgent" title="Agent chat">Agent</button>
     <div class="sep"></div>
-    <button id="btnProcs" title="Toggle process logs panel">
+    <button id="btnProcs" title="Toggle process terminals">
       <span class="procs-dot"></span>
       <span>Processes</span>
       <span id="procsCount" style="color:#8b949e">0</span>
@@ -664,9 +666,23 @@
     // paths (/ws, /api/*, /preview/*) live under the same session prefix.
     // Compute once at load time — location.pathname won't change.
     const SESSION_PREFIX = (function() {
-      const m = location.pathname.match(/^\/s\/([a-z]{3,14}-[a-z]{3,14}-\d{4})(?:\/|$)/);
-      return m ? '/s/' + m[1] : '';
+      const parts = location.pathname.split('/').filter(Boolean);
+      const candidate = parts[0] === 's' ? parts[1] : '';
+      return isNimbusSessionId(candidate) ? '/s/' + candidate : '';
     })();
+    function isNimbusSessionId(value) {
+      if (!value) return false;
+      const parts = String(value).split('-');
+      return parts.length === 3 &&
+        isLowerWord(parts[0], 3, 14) &&
+        isLowerWord(parts[1], 3, 14) &&
+        parts[2].length === 4 &&
+        Array.from(parts[2]).every((ch) => ch >= '0' && ch <= '9');
+    }
+    function isLowerWord(value, min, max) {
+      if (!value || value.length < min || value.length > max) return false;
+      return Array.from(value).every((ch) => ch >= 'a' && ch <= 'z');
+    }
     const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
                    '//' + location.host + SESSION_PREFIX + '/ws';
     const STATS_URL = SESSION_PREFIX + '/api/stats';
@@ -848,21 +864,10 @@
         el.classList.toggle('dirty', !!dirty);
       }
 
-      // Send a fs-* message; await the paired result. Resolves with the
-      // result frame; rejects on error or timeout (15s — generous for
-      // big trees, tight enough that a hung session surfaces fast).
-      // Queue fs-* frames sent before ws.onopen fires. Race window:
-      // connect() runs at page-load and ws is in CONNECTING
-      // state (readyState === 0). If the user clicks Editor BEFORE
-      // ws.onopen fires, setLayout('editor') invokes Editor.ensureLoaded
-      // → eventually fsRequest, which pre-fix rejected synchronously.
-      //
-      // Fix: register the pending request synchronously (reqId assigned,
-      // resolve/reject stored), queue the frame in `outQueue`, return
-      // the promise. When ws.onopen fires (drainFsQueue below),
-      // we ws.send() every queued frame. The response handler
-      // (tryHandleFsResult) is unchanged; it resolves the same pending
-      // entry whenever the server replies.
+      // Send a fs-* message and await the paired result. Frames created
+      // before ws.onopen are registered in pendingReqs first, then queued
+      // for the open handler to drain, so callers always get the same
+      // promise lifecycle.
       const outQueue = [];
       function fsRequest(frame, resultType) {
         const reqId = nextReqId++;
@@ -1456,7 +1461,8 @@
       function iconFor(node) {
         if (node.type === 'directory') return node.expanded ? '📂' : '📁';
         // Light extension-based icons.
-        const ext = (node.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+        const dot = node.name.lastIndexOf('.');
+        const ext = dot >= 0 ? node.name.slice(dot + 1).toLowerCase() : '';
         const m = {
           js:'📜', mjs:'📜', cjs:'📜', ts:'📘', tsx:'📘', jsx:'📜',
           py:'🐍', rb:'💎', go:'🐹', rs:'🦀',
@@ -3120,7 +3126,7 @@
             // panel invisible for the most common user actions (node
             // script.js, npm run <non-dev-script>), which defeats the
             // whole point of the panel.
-            LogTabs.openTab(msg.pid, msg.command);
+            LogTabs.openTab(msg.pid, msg.command, { attach: msg.longRunning === true });
           } else if (msg.type === 'exit') {
             // An exit can arrive for a pid we never saw a spawn for
             // (e.g. `node -e`, which the supervisor intentionally
@@ -3150,8 +3156,8 @@
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
     });
 
-    // ── Process log tabs panel ─────────────────────────────────────────
-    // One tab per PID streaming `/api/logs/<pid>` over a WebSocket.
+    // ── Process terminal tabs panel ────────────────────────────────────
+    // One tab per PID attached to `/api/logs/<pid>` over a WebSocket.
     // Auto-opens on EVERY `{type:'spawn'}` from the main WS; manually
     // closable via the ✕ on each tab, or collapsible via the toolbar
     // "Processes" button. The ring buffer retains logs for 10 min
@@ -3171,7 +3177,7 @@
       // dropped down once). Defaults to true; toggled by #btnProcs.
       let userWantsVisible = true;
 
-      // Minimal ANSI CSI stripper — the log stream passes ANSI through;
+      // Minimal ANSI CSI stripper — non-terminal fallback views pass ANSI through;
       // we keep stderr coloring via a CSS class rather than trying to
       // faithfully render xterm sequences inside a <pre>.
       const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>()][^\s]?/g;
@@ -3261,6 +3267,11 @@
       }
 
       function renderChunk(tab, chunk) {
+        if (tab.term) {
+          const data = String(chunk.data || '');
+          tab.term.write(tab.attachedTty ? data : data.replace(/\n/g, '\r\n'));
+          return;
+        }
         const span = document.createElement('span');
         span.textContent = stripAnsi(chunk.data);
         if (chunk.binary) span.className = 'binary';
@@ -3269,6 +3280,10 @@
       }
 
       function renderBanner(tab, text, cls) {
+        if (tab.term) {
+          tab.term.write('\r\n' + text + '\r\n');
+          return;
+        }
         const div = document.createElement('span');
         div.className = 'banner' + (cls ? ' ' + cls : '');
         div.textContent = text;
@@ -3281,7 +3296,26 @@
           t.tabEl.classList.toggle('active', p === pid);
           t.viewEl.classList.toggle('active', p === pid);
         }
+        const tab = tabs.get(pid);
+        if (tab?.fit) {
+          setTimeout(() => {
+            try { tab.fit.fit(); } catch {}
+            sendProcessResize(tab);
+            try { tab.term?.focus(); } catch {}
+          }, 0);
+        }
         if (pid !== null) body.scrollTop = body.scrollHeight;
+      }
+
+      function sendProcessResize(tab) {
+        if (!tab?.term || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+        try {
+          tab.ws.send(JSON.stringify({
+            type: 'resize',
+            columns: tab.term.cols,
+            rows: tab.term.rows,
+          }));
+        } catch {}
       }
 
       function closeTab(pid) {
@@ -3300,7 +3334,7 @@
         applyVisibility();
       }
 
-      // Open the log-stream WebSocket for a tab, if it hasn't been
+      // Open the process-terminal WebSocket for a tab, if it hasn't been
       // opened already. Audit R3 / PERF-AUDIT.md: since auto-open-
       // every-spawn landed, every short-lived `node foo.js` opened a
       // persistent log WS that stayed alive 10 min. Every facet
@@ -3321,31 +3355,45 @@
         // Drop the "click this tab to attach" placeholder (if any).
         // Backlog + live chunks will repopulate the view.
         tab.viewEl.replaceChildren();
+        ensureAttachedTerminal(tab);
         const pid = tab.pid;
         const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
                       '//' + location.host + SESSION_PREFIX + '/api/logs/' + pid;
         let logWs;
         try { logWs = new WebSocket(wsUrl); } catch {
-          renderBanner(tab, '[log stream could not be opened]', 'failed');
+          renderBanner(tab, '[process terminal could not be opened]', 'failed');
           return;
         }
         tab.ws = logWs;
+        if (tab.term) {
+          tab.term.onData((data) => {
+            if (logWs.readyState === WebSocket.OPEN) {
+              logWs.send(JSON.stringify({ type: 'input', data }));
+            }
+          });
+        }
+        logWs.onopen = () => sendProcessResize(tab);
         logWs.onmessage = (ev) => {
           let msg;
           try { msg = JSON.parse(ev.data); } catch { return; }
           if (msg.type === 'backlog') {
-            for (const c of (msg.chunks || [])) renderChunk(tab, c);
+            const chunks = msg.chunks || [];
+            if (chunks.length === 0) {
+              if (!tab.attachedTty) renderBanner(tab, '[process attached; no output captured yet]', '');
+            } else {
+              for (const c of chunks) renderChunk(tab, c);
+            }
           } else if (msg.type === 'chunk') {
             renderChunk(tab, msg);
           } else if (msg.type === 'exit') {
             markExit(pid, msg.code, msg.reason);
           } else if (msg.type === 'notfound') {
             // Mark exited so the server-side close doesn't emit a second
-            // "[log stream closed]" banner on top of this one.
+            // "[process terminal closed]" banner on top of this one.
             tab.exited = true;
-            tab.failed = true;
-            tab.tabEl.classList.add('exited', 'failed');
-            renderBanner(tab, '[no log buffer for pid ' + pid + ' — process may have been reaped]', 'failed');
+            tab.failed = false;
+            tab.tabEl.classList.add('exited');
+            renderBanner(tab, '[no output captured for pid ' + pid + ']', '');
           }
         };
         logWs.onclose = () => {
@@ -3354,16 +3402,30 @@
           // still read the backlog; reconnect would require a manual close
           // + reopen via the shell.
           if (!tab.exited) {
-            renderBanner(tab, '[log stream closed]', '');
+            renderBanner(tab, '[process terminal closed]', '');
           }
         };
         logWs.onerror = () => {
-          renderBanner(tab, '[log stream error]', 'failed');
+          renderBanner(tab, '[process terminal error]', 'failed');
         };
       }
 
-      function openTab(pid, command) {
-        if (tabs.has(pid)) { setActive(pid); userWantsVisible = true; applyVisibility(); return; }
+      function openTab(pid, command, options) {
+        const shouldAttach = !!(options && options.attach);
+        if (tabs.has(pid)) {
+          const existing = tabs.get(pid);
+          if (existing && shouldAttach) existing.attachedTty = true;
+          if (shouldAttach && existing) ensureLogWs(existing);
+          setActive(pid);
+          userWantsVisible = true;
+          applyVisibility();
+          if (shouldAttach) {
+            setTimeout(() => {
+              try { existing?.term?.focus(); } catch {}
+            }, 0);
+          }
+          return;
+        }
 
         const label = labelFor(command);
         const tabEl = document.createElement('div');
@@ -3388,7 +3450,7 @@
             target.classList.contains('logs-tab-action')
           )) return;
           // User click: this is the signal that they want to read the
-          // log stream. Open the WS if it isn't already, then activate.
+          // process terminal. Open the WS if it isn't already, then activate.
           const t = tabs.get(pid);
           if (t) ensureLogWs(t);
           setActive(pid);
@@ -3439,13 +3501,13 @@
         tabBar.appendChild(tabEl);
         body.appendChild(viewEl);
 
-        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label };
+        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label, term: null, fit: null, attachedTty: shouldAttach };
         tabs.set(pid, tab);
         // Placeholder until the user clicks — so the active tab doesn't
         // look broken on auto-activate. renderBanner uses the existing
         // `.banner` styling. Replaced by real content when the WS
         // delivers a backlog frame (ensureLogWs → onmessage).
-        renderBanner(tab, '[click this tab to attach to the log stream]', '');
+        renderBanner(tab, '[click this tab to attach to the process terminal]', '');
         // Any new tab re-opens the panel if the user had collapsed it —
         // seeing a new process spawn is a stronger signal than a stale
         // "I don't want this right now" click. setActive is purely a
@@ -3453,8 +3515,51 @@
         // chip still react immediately to the spawn event.
         userWantsVisible = true;
         setActive(pid);
+        if (shouldAttach) ensureLogWs(tab);
         applyVisibility();
+        if (shouldAttach) {
+          setTimeout(() => {
+            try { tab.term?.focus(); } catch {}
+          }, 0);
+        }
       }
+
+      function ensureAttachedTerminal(tab) {
+        if (tab.term) return;
+        tab.viewEl.classList.add('terminal-view');
+        const procTerm = new Terminal({
+          cursorBlink: true,
+          cursorStyle: 'bar',
+          fontSize: 12,
+          fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+          theme: {
+            background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff', selectionBackground: '#264f78',
+            black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+            blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
+            brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
+            brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
+          },
+          allowProposedApi: true,
+          macOptionIsMeta: true,
+        });
+        const procFit = new FitAddon.FitAddon();
+        procTerm.loadAddon(procFit);
+        procTerm.open(tab.viewEl);
+        try { procFit.fit(); } catch {}
+        tab.term = procTerm;
+        tab.fit = procFit;
+        setTimeout(() => {
+          try { procTerm.focus(); } catch {}
+        }, 0);
+      }
+
+      window.addEventListener('resize', () => {
+        for (const tab of tabs.values()) {
+          if (!tab.fit || !tab.term) continue;
+          try { tab.fit.fit(); } catch {}
+          sendProcessResize(tab);
+        }
+      });
 
       function markExit(pid, code, reason) {
         const tab = tabs.get(pid);
@@ -3493,7 +3598,7 @@
             if (!data?.processes) return;
             for (const p of data.processes) {
               if (p.state === 'running' && !tabs.has(p.pid)) {
-                openTab(p.pid, p.command);
+                openTab(p.pid, p.command, { attach: p.longRunning === true });
               } else if (p.state !== 'running' && tabs.has(p.pid)) {
                 // Server says exited; reconcile in case our main-WS
                 // exit event got dropped during reconnect.

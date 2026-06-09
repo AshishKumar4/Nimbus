@@ -5,13 +5,14 @@
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
-import { Kernel, Shell } from '@lifo-sh/core';
+import { Kernel, Shell } from '../substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { ProcessTable } from '../runtime/process-table.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
+import { ProcessInputStore } from '../runtime/process-input.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -88,6 +89,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     processTable: ProcessTable;
     portRegistry: PortRegistry;
     processLogs: ProcessLogStore;
+    processInput: ProcessInputStore;
     /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
      *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
      *  prevented hibernation per CF DO docs). The alarm itself lives in
@@ -211,6 +213,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string): Promise<any>;
+    _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     _rpcReaddir(path: string): Promise<{
         name: string;
         type: string;
@@ -302,6 +305,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         installed: import("../runtime/package-manager.js").RuntimeSummary[];
         available: {
             name: string;
+            abi: import("../runtime/os-contracts.js").RuntimePackageAbi;
             defaultVersion: string;
             versions: Array<{
                 version: string;
@@ -315,25 +319,47 @@ export declare class NimbusSession extends CloudflareDurableObject {
         ok: boolean;
         pid: number;
     }>;
+    _rpcWriteProcessInput(pid: number, data: string): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcEndProcessInput(pid: number): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcResizeProcess(pid: number, size: {
+        columns: number;
+        rows: number;
+    }): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcSignalProcess(pid: number, signal: string): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
     _rpcProcessLogs(pid: number, options?: {
+        cursor?: number;
         lines?: number;
         bytes?: number;
     }): Promise<{
         pid: number;
-        chunks: any;
-        text: any;
-        exit: any;
+        chunks: import("../runtime/process-logs.js").SequencedLogChunk[];
+        text: string;
+        cursor: number;
+        truncated: boolean;
+        exit: import("../runtime/process-logs.js").ProcessExitInfo | null;
     }>;
     _rpcListPorts(): Promise<_programmatic.SerializedPort[]>;
     _rpcExposePort(port: number): Promise<{
         port: number;
         listening: boolean;
-        pid: any;
-        registeredAt: any;
+        pid: number | null;
+        registeredAt: number | null;
     }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
-        ok: any;
+        ok: boolean;
     }>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
@@ -344,6 +370,8 @@ export declare class NimbusSession extends CloudflareDurableObject {
     vfsStat(path: string): {
         type: string;
         size: number;
+        atime: number;
+        ctime: number;
         mtime: number;
         mode: number;
     } | null;

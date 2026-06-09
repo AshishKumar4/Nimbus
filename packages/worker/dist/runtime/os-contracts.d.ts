@@ -4,6 +4,7 @@ export interface RuntimeVfsStat {
     type: RuntimeFileType;
     size: number;
     ctime: number;
+    atime: number;
     mtime: number;
     mode: number;
     revision: number;
@@ -41,6 +42,9 @@ export interface RuntimeFsBridge {
     writeFile(path: string, bytes: string | Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;
+    }): Promise<void>;
+    utimes(path: string, atimeMs: number, mtimeMs: number, options?: {
+        followSymlinks?: boolean;
     }): Promise<void>;
     open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
@@ -94,7 +98,20 @@ export interface RuntimePortBridge {
         registeredAt: number;
     }>>;
 }
-export type RuntimePackageAbi = 'javascript' | 'wasm32-wasi-nimbus' | 'pyodide' | 'ruby-wasm' | 'native-unsupported';
+export declare const NIMBUS_OS_NAME = "nimbus";
+export declare const NIMBUS_ABI_TARGET = "wasm32-wasi-nimbus";
+export declare const NIMBUS_ABI_ID = "wasm32-wasi-nimbus";
+export type RuntimePackageAbi = 'javascript' | typeof NIMBUS_ABI_TARGET | 'pyodide-emscripten-2025_0-wasm32' | 'py3-none-any' | 'python-source-pure' | 'pyodide' | 'ruby-wasm' | 'native-unsupported';
+export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>>;
+export type RuntimeAbiCapability = 'wasi.snapshot-preview1' | 'wasi.unstable-import-alias' | 'vfs.snapshot-diff' | 'stdio' | 'argv' | 'env' | 'clock' | 'random' | 'path' | 'symlink' | 'hardlink' | 'poll' | 'outbound-tcp-devtcp';
+export interface RuntimeAbiDescriptor {
+    os: typeof NIMBUS_OS_NAME;
+    target: typeof NIMBUS_ABI_TARGET;
+    id: typeof NIMBUS_ABI_ID;
+    env: Readonly<Record<string, string>>;
+    capabilities: readonly RuntimeAbiCapability[];
+}
+export declare const WASM32_WASI_NIMBUS_ABI: RuntimeAbiDescriptor;
 export interface RuntimeCommandProvider {
     runtimeName: string;
     version: string;

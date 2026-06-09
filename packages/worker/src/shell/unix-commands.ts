@@ -291,10 +291,10 @@ function mkWhereis(vfs: SqliteVFS, registry: any): CmdFn {
  *   command clang ARG → invoke clang bypassing any function/alias
  *
  * For the invoke case (no -v/-V), we don't have a way to bypass
- * alias/function within lifo-sh from here, so we just dispatch to
+ * alias/function from here, so we just dispatch to
  * the registry. Aliases are checked at executeLine time so `command
  * X` going through our normal dispatch IS bypassing the alias
- * (because lifo-sh's executeSimpleCommand only consults aliases
+ * (because the interpreter only consults aliases
  * for the head word).
  */
 function mkCommand(vfs: SqliteVFS, registry: any): CmdFn {
@@ -344,14 +344,14 @@ function mkCommand(vfs: SqliteVFS, registry: any): CmdFn {
 }
 
 /**
- * shell compatibility (2026-05-11): `type` builtin. lifo-sh doesn't ship
+ * shell compatibility (2026-05-11): `type` builtin. The shell did not ship
  * one; pre-fix `type echo` → 'type: command not found'. bash's
  * `type X` reports how X would be interpreted (builtin, alias,
  * function, file, or unknown).
  *
  * Our subset (matches bash `type` output for common shapes):
  *   type echo  → 'echo is a shell builtin'        (Shell.builtins entry)
- *   type ls    → 'ls is a shell builtin'          (lifo-sh lazy registry)
+ *   type ls    → 'ls is a shell builtin'          (lazy registry)
  *   type rm    → 'rm is a shell builtin'          (our wrap'd registry)
  *   type node  → 'node is /usr/bin/node'          (registry but facet-direct)
  *   type X     → 'type: X: not found' + exit 1
@@ -757,7 +757,7 @@ function mkFind(vfs: SqliteVFS): CmdFn {
       const slashPath = '/' + fullPath;
       if (execArgv) {
         // Substitute {} with the path and invoke. We do NOT have
-        // cross-registry execution here in a sync context; lifo-sh's
+        // cross-registry execution here in a sync context; POSIX find's
         // -exec usually runs the cmd via the registry. The R2-3
         // xargs fix used registry.resolve; we can do same. For now
         // emit a marker that the test harness can recognize OR
@@ -946,7 +946,7 @@ function mkGrep(vfs: SqliteVFS): CmdFn {
  * draining null (or by the SHELL-R6-2 abort cascade kicking in when
  * we return).
  *
- * Why: lifo-sh's head reads via readAll(), which never returns when
+ * Why: the original head implementation read via readAll(), which never returns when
  * upstream is `yes`. Our SHELL-R6-2 pipeline abort only fires when
  * the consumer resolves — so head must resolve quickly via its own
  * line-count termination, which then triggers the cascade.
@@ -1823,9 +1823,8 @@ function mkAwk(vfs: SqliteVFS): CmdFn {
  * returned 0. Real xargs runs the command, possibly batched (-n),
  * with arguments substituted (-I).
  *
- * We do cross-command dispatch through the same `registry` lifo-sh
- * uses, so xargs can drive `echo`, `cat`, `rm`, `seq`, lifo-sh
- * lazy-loaded builtins — anything in the registry. The execution
+ * We do cross-command dispatch through the shell registry, so xargs can drive
+ * `echo`, `cat`, `rm`, `seq`, lazy-loaded builtins — anything in the registry. The execution
  * runs IN-SUPERVISOR (not through facet spawn) which means it
  * works for pure-builtins but NOT for facet-direct commands like
  * `node`, `git`, `npm` (the registry resolver returns those by
@@ -2037,24 +2036,23 @@ function mkDiff(vfs: SqliteVFS): CmdFn {
 /**
  * shell compatibility (2026-05-11): POSIX rm with proper -f semantics.
  *
- * lifo-sh's rm calls `r.vfs.stat(...)` and catches `e instanceof VFSError`.
+ * The original rm implementation called `r.vfs.stat(...)` and caught `e instanceof VFSError`.
  * Our SqliteVFSProvider's stat method delegates to SqliteVFS.stat which
- * throws raw `Error("ENOENT: ...")` — NOT VFSError. lifo-sh's rm
+ * throws raw `Error("ENOENT: ...")` — NOT VFSError. That rm path
  * therefore falls through to `else throw e`, the error propagates up,
  * and executeCommand returns exit 1.
  *
  * Real-world impact: every `rm -rf <nonexistent> && ...` short-circuits.
  * The most common cleanup idiom in shell scripts.
  *
- * Fix: register our own rm in the registry's `commands` map (takes
- * precedence over lifo-sh's lazy). Treat -f silently when target is
+ * Fix: register rm in the registry's `commands` map. Treat -f silently when target is
  * missing (return 0). Handle both files (unlink) and directories
  * (rmdir recursive when -r). Translate raw errors so the unix-command
  * contract is honoured.
  */
 /**
  * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
- * resolves. lifo-sh's `echo` is a Shell.builtins entry, NOT in the
+ * resolves. `echo` is a Shell.builtins entry, NOT in the
  * registry map. xargs's cross-command dispatch goes through
  * registry.resolve(name) — without a registry entry for echo it falls
  * back to 'command not found'. The init.ts override for echo flag
@@ -2108,8 +2106,8 @@ function mkEcho(): CmdFn {
 /**
  * SHELL-R6-4 (2026-05-12): symlink-aware `ls`.
  *
- * Pre-fix: lifo-sh's lazy `ls` (node_modules/@lifo-sh/core/dist/ls-*.js)
- * formats `mode` with first-char `d` or `-`; it has no symlink concept,
+ * Pre-fix: the lazy `ls` implementation formatted `mode` with first-char
+ * `d` or `-`; it had no symlink concept,
  * and our SymlinkRegistry entries are not in the VFS dir listing at all,
  * so `ls -l` after `ln -s t.txt l.txt` showed ONLY `t.txt`.
  *
@@ -2122,7 +2120,7 @@ function mkEcho(): CmdFn {
  *   - Hidden-file rule (skip if leading `.`) still honored unless `-a`.
  *
  * Args supported: `-l` long, `-a` all, `-1` one-per-line, plus path
- * positional. Matches lifo-sh's flag surface so we don't regress.
+ * positional. Matches the shell `ls` flag surface so we don't regress.
  */
 function mkLs(vfs: SqliteVFS): CmdFn {
   return (ctx) => {
@@ -2316,7 +2314,7 @@ function mkLs(vfs: SqliteVFS): CmdFn {
 
 /**
  * shell compatibilityc (2026-05-11): registry-level cat (for xargs cross-
- * command dispatch). Behaves like lifo-sh's lazy cat: reads files (or
+ * command dispatch). Behaves like the shell cat command: reads files (or
  * stdin if none), concatenates to stdout.
  */
 function mkCat(vfs: SqliteVFS): CmdFn {
@@ -2329,7 +2327,7 @@ function mkCat(vfs: SqliteVFS): CmdFn {
     // shell compatibility follow-up: prefer ctx.vfs (Kernel.VFS, sees /dev
     // mount) over the closure-captured SqliteVFS. Without this fallback,
     // `cat /dev/null` errors with ENOENT because SqliteVFS doesn't know
-    // about the /dev provider mounted on Kernel.VFS. lifo-sh's
+    // about the /dev provider mounted on Kernel.VFS. The shell
     // executeCommand passes Kernel.VFS as ctx.vfs.
     const kvfs: any = (ctx as any).vfs;
     // SHELL-FOLLOWUPS-4: dereference symlinks via SymlinkRegistry
@@ -2999,7 +2997,7 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
     try {
       // Resolve stdin: shell passes a stream object with .readAll() when piping.
       //
-      // BUG-SWEEP fix (2026-05-11): lifo-sh ≥0.5.5 passes the shell's
+      // BUG-SWEEP fix (2026-05-11): the shell passes its
       // `terminalStdin` (an Ls instance) as ctx.stdin for EVERY command,
       // not just piped ones. Ls.readAll() loops until close(), which the
       // shell only triggers in its executeLine() finally — AFTER the
@@ -3191,11 +3189,11 @@ export function registerUnixCommands(
   // shell-polish (2026-05-12): `read VAR` is registered here as a
   // NO-OP fallback (matches the pre-existing stub behaviour). The
   // REAL working implementation lives in src/session/init.ts as a
-  // lifo-sh shell builtin (shellAny.builtins.set('read', ...)).
+  // shell builtin (shellAny.builtins.set('read', ...)).
   //
-  // Why two registrations: lifo-sh's interpreter executes registered
+  // Why two registrations: the interpreter executes registered
   // shell commands with `ctx.env = { ...this.config.env }` — a SHALLOW
-  // COPY (see node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5197).
+  // COPY.
   // Mutating ctx.env inside a registered command therefore CANNOT
   // propagate the var-assignment back to the shell. Builtins, by
   // contrast, run inside the interp instance with direct access to

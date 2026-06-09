@@ -23,6 +23,7 @@
  *       SHOULD_SWAP(name) → { from, to } | null
  *       SHOULD_WARN_SKIP_TRANSITIVE(name) → { from, reason } | null
  *       SHOULD_REJECT_FAIL(name) → { from, reason, suggest? } | null
+ *       NATIVE_EXECUTABLE_REJECT(pkg) → { from, reason, suggest? } | null
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null

@@ -559,7 +559,7 @@ const sections = [
   {
     icon: Cpu,
     title: 'Compile native code',
-    body: 'nimbus install clang, then clang hello.c -o hello && ./hello. LLVM 8 → wasm32-wasi, multi-translation-unit + user headers + fopen. A starter hello.c is already in your home directory.',
+    body: 'nimbus install clang, then clang hello.c -o hello && ./hello. LLVM 8 to wasm32-wasi-nimbus, multi-translation-unit + user headers + fopen. A starter hello.c is already in your home directory.',
   },
   {
     icon: Code2,
@@ -875,7 +875,7 @@ Nimbus ships a package manager (\`nimbus install\`) that streams
 additional runtimes from R2 into your VFS on demand:
 
     nimbus install --available     # show catalog
-    nimbus install clang           # LLVM 8 -> wasm32-wasi, ~50 MiB
+    nimbus install clang           # LLVM 8 -> wasm32-wasi-nimbus, ~50 MiB
     nimbus install python          # Pyodide CPython 3.13, ~12 MiB
     nimbus install ruby            # ruby.wasm 3.3, ~34 MiB
 

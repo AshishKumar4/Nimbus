@@ -14,11 +14,13 @@ licenses remain in effect.
 
 | Component | Use in Nimbus | Upstream license notes |
 |---|---|---|
-| `@lifo-sh/core` | Shell interpreter, command framework, core userland substrate. | MIT. |
+| `lifo-sh/lifo` `packages/core` source | Shell interpreter, command framework, core userland substrate imported under `packages/worker/src/substrate/lifo`. | MIT. |
 | `@ashishkumar472/cf-git` / `isomorphic-git` fork | Cloudflare-compatible Git implementation. | MIT. |
 | `esbuild` / `esbuild-wasm` | TypeScript/JS transform and bundling in Worker Loader facets. | MIT. |
 | `wabt` / wabt.js | Test and WASM tooling support. | Apache-2.0. |
 | Cloudflare `workerd`, Wrangler, and Workers types | Local development and Worker runtime compatibility. | Apache-2.0 and/or MIT, depending on package. |
+| `pip-requirements-js` | PEP 508 / requirements-file parsing for the Nimbus pip planner. | MPL-2.0. |
+| `@renovatebot/pep440` | PEP 440 version/specifier matching for the Nimbus pip planner. | Apache-2.0. |
 | Pyodide / CPython | Python runtime package synced into Nimbus runtime cache. | Pyodide is MPL-2.0; the distribution also contains CPython and package-level licenses. |
 | `ruby.wasm` / CRuby | Ruby runtime package synced into Nimbus runtime cache. | ruby.wasm is MIT; bundled Ruby components carry their upstream notices. |
 | `binji/wasm-clang`, LLVM, LLD, wasi-libc | Clang, linker, and WASI sysroot runtime packages. | Apache-2.0, Apache-2.0 WITH LLVM-exception, MIT, and LLVM project license notices. |

@@ -159,7 +159,6 @@ function renderWranglerJsonc(name) {
   // not omit any of these — \`git clone\` will fail at runtime if any
   // are missing.
   "alias": {
-    "@lifo-sh/ui": "./node_modules/@nimbus-sh/worker/dist/stubs/lifo-ui.js",
     "clean-git-ref": "clean-git-ref/lib/index.js",
     "is-git-ref-name-valid": "is-git-ref-name-valid/index.js",
     "crc-32": "crc-32",

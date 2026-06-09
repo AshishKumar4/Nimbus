@@ -24,6 +24,8 @@
  * `fetchAndStagePackage`. Keep the two in sync if behaviour changes.
  */
 
+import { disposeRpcResource } from './rpc-dispose.js';
+
 /** Default retry count AFTER the first attempt (3 = up to 4 total attempts). */
 export const DEFAULT_RETRIES = 3;
 
@@ -174,11 +176,7 @@ export async function retryableFetch(
       // documented in WORKERD-CRASH.md.
       //
       // Same disposer pattern as src/npm-resolver.ts:312-316.
-      try {
-        const disposerKey = (Symbol as any).dispose;
-        const disposer = disposerKey ? (resp as any)?.[disposerKey] : undefined;
-        if (typeof disposer === 'function') disposer.call(resp);
-      } catch { /* best-effort */ }
+      disposeRpcResource(resp);
       const delayMs = jittered(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]);
       opts?.onRetry?.(attempt + 1, totalRetries, delayMs, `HTTP ${resp.status}`);
       await new Promise<void>((r) => setTimeout(r, delayMs));

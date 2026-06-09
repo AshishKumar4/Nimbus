@@ -23,6 +23,7 @@
  */
 
 import { enc, dec } from '../_shared/bytes.js';
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -34,6 +35,8 @@ import {
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import type { BatchInodeEntry } from '../vfs/sqlite-vfs.js';
+import { z } from 'zod/v4';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
 // would require enumerating ~25 fields/methods AND the protected ctx,
@@ -41,6 +44,29 @@ import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
 // recommendation 1, the class delegators cast `this as any` at the
 // boundary; runtime impact is zero (TS-only).
 type RpcHost = any;
+
+const WriteBatchInodeSchema: z.ZodType<BatchInodeEntry> = z.object({
+  path: z.string(),
+  parentPath: z.string(),
+  isDir: z.boolean(),
+  size: z.number(),
+  atime: z.number().optional(),
+  mtime: z.number(),
+  mode: z.number(),
+  chunkCount: z.number(),
+});
+
+const WriteBatchChunkSchema = z.object({
+  path: z.string(),
+  chunkId: z.number(),
+  data: z.unknown(),
+}).passthrough();
+
+const WriteBatchPayloadSchema = z.object({
+  inodes: z.array(WriteBatchInodeSchema).default([]),
+  chunks: z.array(WriteBatchChunkSchema).default([]),
+  deletePaths: z.array(z.string()).optional(),
+}).passthrough();
 
 function runtimeFs(self: RpcHost): SqliteRuntimeFsBridge {
   self.ensureSqliteFs();
@@ -115,15 +141,19 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
         body: req.body,
       });
       const res: Response = await facet.fetch(r);
-      const resHeaderList: [string, string][] = [];
-      res.headers.forEach((v: string, k: string) => { resHeaderList.push([k, v]); });
-      const resBody = await res.arrayBuffer();
-      return {
-        status: res.status,
-        statusText: res.statusText,
-        headers: resHeaderList,
-        body: resBody,
-      };
+      try {
+        const resHeaderList: [string, string][] = [];
+        res.headers.forEach((v: string, k: string) => { resHeaderList.push([k, v]); });
+        const resBody = await res.arrayBuffer();
+        return {
+          status: res.status,
+          statusText: res.statusText,
+          headers: resHeaderList,
+          body: resBody,
+        };
+      } finally {
+        disposeRpcResource(res);
+      }
     } catch (e: any) {
       const body = enc.encode(
         `Nimbus inner DO error: ${e?.message || String(e)}`,
@@ -149,6 +179,10 @@ export async function _rpcWriteFile(self: RpcHost, path: string, content: string
 
 export async function _rpcStat(self: RpcHost, path: string): Promise<any> {
     return runtimeFs(self).stat(path);
+}
+
+export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void> {
+    await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
 }
 
 export async function _rpcReaddir(self: RpcHost, path: string): Promise<{ name: string; type: string }[]> {
@@ -239,39 +273,38 @@ export async function _rpcUnlink(self: RpcHost, path: string): Promise<void> {
    *   deletePaths?: string[]
    * }
    */
-export async function _rpcWriteBatch(self: RpcHost, payload: any): Promise<{ inodes: number; chunks: number }> {
+export async function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise<{ inodes: number; chunks: number }> {
     self.ensureSqliteFs();
-    const inodes = Array.isArray(payload?.inodes) ? payload.inodes : [];
-    const rawChunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
-    const deletePaths = Array.isArray(payload?.deletePaths) ? payload.deletePaths : undefined;
+    const parsed = WriteBatchPayloadSchema.safeParse(payload);
+    if (!parsed.success) throw new Error('writeBatch payload failed validation');
+    const { inodes, chunks: rawChunks, deletePaths } = parsed.data;
 
     // Normalize chunk data — RPC may deliver Uint8Array, ArrayBuffer, or { type: 'Buffer', data: [...] }
-    const chunks = rawChunks.map((c: any) => {
-      let data: Uint8Array;
-      if (c.data instanceof Uint8Array) {
-        data = c.data;
-      } else if (c.data instanceof ArrayBuffer) {
-        data = new Uint8Array(c.data);
-      } else if (ArrayBuffer.isView(c.data)) {
-        data = new Uint8Array((c.data as ArrayBufferView).buffer,
-          (c.data as ArrayBufferView).byteOffset,
-          (c.data as ArrayBufferView).byteLength);
-      } else if (Array.isArray(c.data)) {
-        data = new Uint8Array(c.data);
-      } else if (c.data && typeof c.data === 'object' && Array.isArray(c.data.data)) {
-        // Buffer JSON serialization fallback
-        data = new Uint8Array(c.data.data);
-      } else {
-        data = new Uint8Array(0);
-      }
-      return { path: String(c.path), chunkId: Number(c.chunkId), data };
-    });
+    const chunks = rawChunks.map((c) => ({
+      path: c.path,
+      chunkId: c.chunkId,
+      data: normalizeWriteBatchChunkData(c.data),
+    }));
 
     return self.sqliteFs!.writeBatch({
       inodes,
       chunks,
       deletePaths,
     });
+}
+
+function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) return new Uint8Array(value);
+  if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
+    const data = Reflect.get(value, 'data');
+    if (Array.isArray(data)) return new Uint8Array(data);
+  }
+  return new Uint8Array(0);
 }
 
   /**
@@ -347,7 +380,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
     // un-traceable facets.
     try {
       if (pid > 0) self.processLogs.append(pid, 'stdout', data);
-      if (self.terminal) self.terminal.write(data);
+      if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) self.terminal.write(data);
     } catch (e: any) {
       // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
       // drops here are exactly what hides bugs; default-off so we don't
@@ -364,12 +397,17 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: string): Prom
       if (pid > 0) self.processLogs.append(pid, 'stderr', data);
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
-      if (self.terminal) self.terminal.write(`\x1b[31m${data}\x1b[0m`);
+      if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) self.terminal.write(`\x1b[31m${data}\x1b[0m`);
     } catch (e: any) {
       if (self.nimbusDebug && self.terminal) {
         try { self.terminal.write(`\x1b[33m[rpc-error] _rpcStderr(pid=${pid}) threw: ${e?.message || e}\x1b[0m\r\n`); } catch {}
       }
     }
+}
+
+function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
+  if (pid <= 0) return true;
+  return self.processTable.get(pid)?.attachedTty !== true;
 }
 
   /**
@@ -382,11 +420,15 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: string): Prom
    */
 export async function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string): Promise<void> {
     if (pid <= 0) return; // Ignore the pid-0 sentinel.
+    try { self.processInput?.close?.(pid); } catch {}
     if (tail) self.processLogs.append(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
     // (e.g. from an external kill path) don't dump twice.
     if (self.processLogs.getExit(pid)) return;
     self.processLogs.markExit(pid, code);
+    try { self.facetManager?.noteProcessReportedExit?.(pid, code); } catch {
+      try { self.processTable?.exit?.(pid, code); } catch {}
+    }
     // Structured exit notification for the tabs UI. Idempotent on the
     // client — subscribeExit fires once, and the shell-exec finalizer
     // also emits, so we dedupe on pid there. Include the command (when
@@ -531,6 +573,7 @@ export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code
    */
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
     if (self.processLogs.getExit(pid)) return;
+    try { self.processInput?.close?.(pid); } catch {}
     if (reason) {
       self.processLogs.append(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
@@ -666,16 +709,26 @@ export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: 
 }
 
 export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: string): Promise<{ ok: boolean }> {
+    if (self.processInput?.has?.(childPid)) {
+      return self.processInput.write(childPid, data);
+    }
     const fpm = self._ensureFacetProcessManager();
     return fpm.stdinWrite(childPid, data);
 }
 
 export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void> {
+    if (self.processInput?.has?.(childPid)) {
+      self.processInput.end(childPid);
+      return;
+    }
     const fpm = self._ensureFacetProcessManager();
     fpm.stdinEnd(childPid);
 }
 
 export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number) {
+    if (self.processInput?.has?.(childPid)) {
+      return self.processInput.read(childPid, waitMs);
+    }
     const fpm = self._ensureFacetProcessManager();
     return fpm.cpReadStdin(childPid, waitMs);
 }
@@ -747,8 +800,8 @@ export function vfsReadFileString(self: RpcHost, path: string): string | null {
     }
 }
 
-  /** RPC: Stat a path. Returns { type, size, mtime, mode } or null. */
-export function vfsStat(self: RpcHost, path: string): { type: string; size: number; mtime: number; mode: number } | null {
+  /** RPC: Stat a path. Returns file metadata or null. */
+export function vfsStat(self: RpcHost, path: string): { type: string; size: number; atime: number; ctime: number; mtime: number; mode: number } | null {
     self.ensureSqliteFs();
     try {
       const stripped = path.replace(/^\/+/, '');

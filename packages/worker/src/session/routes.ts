@@ -33,6 +33,7 @@ import { readDiagCounters } from '../observability/diag-counters.js';
 import {
   getFailures, getLastRpcFrame, getLastFacetId,
   getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents,
+  type SessionState,
 } from '../observability/oom-discriminator.js';
 import { LRU_MAX_ENTRIES } from '../constants.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '../observability/heap-estimate.js';
@@ -53,8 +54,81 @@ import { handleAgentRequest } from './agent.js';
 import { R2CacheClient, R2_CACHE_PREFIX, L2_KEY_HOST } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT, hashKeyToShard } from '../loaders/fanout-pool.js';
+import { z } from 'zod/v4';
 
 type RoutesHost = any;
+
+const TestSpawnEmitterBodySchema = z.object({
+  lines: z.coerce.number().optional(),
+  lineText: z.unknown().optional().transform((value) => value == null ? 'line' : String(value)),
+}).passthrough();
+
+const RecoverySessionStateSchema: z.ZodType<SessionState> = z.enum([
+  'cold',
+  'hydrated',
+  'active',
+  'drained',
+  'rehydrate',
+  'build',
+  'wire',
+  'online',
+]);
+
+function normalizeForwardedHttpPath(path: string): string {
+  const text = path || '/';
+  return '/' + text.replace(/^\/+/, '');
+}
+
+const RecoveryEventRecordBodySchema = z.object({
+  at: z.coerce.number().optional(),
+  fromState: RecoverySessionStateSchema.default('cold'),
+  toState: RecoverySessionStateSchema.default('hydrated'),
+  trigger: z.unknown().optional().transform((value) => value == null ? 'manual-test' : String(value)),
+  isolateGen: z.coerce.number().optional(),
+  dataLoss: z.boolean().optional(),
+  snapshotKeysRehydrated: z.coerce.number().optional(),
+  notes: z.unknown().optional().transform((value) => value == null || value === '' ? undefined : String(value)),
+}).passthrough();
+
+const WriteFileBodySchema = z.object({
+  path: z.string().min(1),
+  content: z.unknown().transform((value) => value == null ? '' : String(value)),
+}).passthrough();
+
+const MkdirBodySchema = z.object({
+  path: z.string().min(1),
+}).passthrough();
+
+const StartViteBodySchema = z.object({
+  root: z.string().optional(),
+  port: z.number().optional(),
+  aliases: z.record(z.string(), z.string()).optional(),
+  define: z.record(z.string(), z.string()).optional(),
+  injectBasename: z.boolean().optional(),
+}).passthrough();
+
+const CachePackumentSeedBodySchema = z.object({
+  name: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+  payload: z.unknown().optional(),
+}).passthrough();
+
+const CacheTarballSeedBodySchema = z.object({
+  name: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+  version: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+  sizeKb: z.coerce.number().optional(),
+}).passthrough();
+
+const FanoutBenchBodySchema = z.object({
+  n: z.coerce.number().optional(),
+  sleepMs: z.coerce.number().optional(),
+}).passthrough();
+
+async function parseJsonBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
+  const value = await request.json();
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new Error('invalid request body');
+  return parsed.data;
+}
 
 export async function handleFetch(self: RoutesHost, request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -173,6 +247,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       return handleLogsWebSocketRequest(request, logsPid, {
         processLogs: self.processLogs,
         processTable: self.processTable,
+        processInput: self.processInput,
         // W9: pass ctx so the upgrade uses ctx.acceptWebSocket (hibernatable).
         ctx: self.ctx as any,
       });
@@ -236,16 +311,19 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
             } catch { /* keep going to teardown processTable / portRegistry */ }
             try { self.portRegistry.unregisterByPid(pid); } catch {}
             try { self.processTable.kill(pid); } catch {}
+            try { self.processInput.close(pid); } catch {}
             self._viteShimPid = null;
             self._viteShimPort = null;
           } else if (self.facetManager) {
             const ok = self.facetManager.kill(pid);
             if (!ok) return json(404, { error: 'facetManager.kill returned false', pid });
+            try { self.processInput.close(pid); } catch {}
           } else {
             // No facetManager and not a vite shim — best-effort
             // process-table tombstone so the UI can re-render the badge.
             try { self.portRegistry.unregisterByPid(pid); } catch {}
             try { self.processTable.kill(pid); } catch {}
+            try { self.processInput.close(pid); } catch {}
           }
         } catch (e: any) {
           return json(502, { error: String(e?.message || e), pid });
@@ -563,9 +641,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // probe drive the W9 code path without a real long-running
         // facet (which the test environment may not support).
         try {
-          const body = await request.json() as any;
-          const lines = Math.max(1, Math.min(1000, Number(body.lines) || 50));
-          const text = String(body.lineText || 'line');
+          const body = await parseJsonBody(request, TestSpawnEmitterBodySchema);
+          const lines = Math.max(1, Math.min(1000, body.lines || 50));
+          const text = body.lineText;
           const entry = self.processTable.spawn(`_test:${text}`, ['_test'], '/');
           const pid = entry.pid;
           for (let i = 0; i < lines; i++) {
@@ -594,16 +672,16 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // events flow through the ring naturally — these endpoints stay
       // error-recovery/).
       if (url.pathname === '/api/_test/recovery-event/record' && request.method === 'POST') {
-        const body = await request.json() as any;
+        const body = await parseJsonBody(request, RecoveryEventRecordBodySchema);
         recordRecoveryEvent({
-          at: Number(body.at) || Date.now(),
-          fromState: String(body.fromState ?? 'cold') as any,
-          toState: String(body.toState ?? 'hydrated') as any,
-          trigger: String(body.trigger ?? 'manual-test'),
-          isolateGen: Number(body.isolateGen) || self._w9IsolateGen,
-          dataLoss: !!body.dataLoss,
-          snapshotKeysRehydrated: Number(body.snapshotKeysRehydrated) || 0,
-          notes: body.notes ? String(body.notes) : undefined,
+          at: body.at || Date.now(),
+          fromState: body.fromState,
+          toState: body.toState,
+          trigger: body.trigger,
+          isolateGen: body.isolateGen || self._w9IsolateGen,
+          dataLoss: body.dataLoss === true,
+          snapshotKeysRehydrated: body.snapshotKeysRehydrated || 0,
+          notes: body.notes,
         });
         return Response.json({ recorded: true, ringSize: getRecoveryEvents().length });
       }
@@ -689,15 +767,15 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     if (url.pathname === '/api/write-file' && request.method === 'POST') {
       self.ensureSqliteFs();
       try {
-        const body = await request.json() as any;
-        const path = String(body.path).replace(/^\/+/, '');
+        const body = await parseJsonBody(request, WriteFileBodySchema);
+        const path = body.path.replace(/^\/+/, '');
         // Ensure parent dirs
         const parts = path.split('/');
         for (let i = 1; i < parts.length; i++) {
           const dir = parts.slice(0, i).join('/');
           if (dir && !self.sqliteFs!.exists(dir)) self.sqliteFs!.mkdir(dir, { recursive: true });
         }
-        self.sqliteFs!.writeFile(path, String(body.content));
+        self.sqliteFs!.writeFile(path, body.content);
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
@@ -707,8 +785,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     if (url.pathname === '/api/mkdir' && request.method === 'POST') {
       self.ensureSqliteFs();
       try {
-        const body = await request.json() as any;
-        const path = String(body.path).replace(/^\/+/, '');
+        const body = await parseJsonBody(request, MkdirBodySchema);
+        const path = body.path.replace(/^\/+/, '');
         self.sqliteFs!.mkdir(path, { recursive: true });
         return Response.json({ ok: true, path });
       } catch (e: any) {
@@ -720,8 +798,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     if (url.pathname === '/api/start-vite' && request.method === 'POST') {
       self.ensureSqliteFs();
       try {
-        const body = await request.json() as any;
-        const root = String(body.root || 'home/user').replace(/^\/+/, '');
+        const body = await parseJsonBody(request, StartViteBodySchema);
+        const root = (body.root || 'home/user').replace(/^\/+/, '');
 
         // Stop existing server
         if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
@@ -830,7 +908,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         return Number.isFinite(n) && n > 0 && n < 65536 ? n : null;
       })();
       if (queryPort != null) {
-        const previewInner = (url.pathname.replace(/^\/preview/, '') || '/') + (() => {
+        const previewInner = normalizeForwardedHttpPath(url.pathname.replace(/^\/preview/, '') || '/') + (() => {
           // Strip our `?port=N` so the inner handler doesn't re-see it.
           const sp = new URLSearchParams(url.search);
           sp.delete('port');
@@ -1039,7 +1117,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     const portMatch = url.pathname.match(/^\/port\/(\d+)(\/.*)?$/);
     if (portMatch) {
       const port = parseInt(portMatch[1]);
-      const path = portMatch[2] || '/';
+      const path = normalizeForwardedHttpPath(portMatch[2] || '/');
       const result = await self.portRegistry.routeRequest(port, request, path);
       if (result) return result;
       return new Response(`No process listening on port ${port}`, {
@@ -1117,9 +1195,9 @@ async function handleCacheTestEndpoint(
   };
 
   if (path === '/api/_test/cache/packument/seed' && request.method === 'POST') {
-    const body = await request.json() as any;
-    const name = String(body.name || '');
-    const payload = String(body.payload || JSON.stringify({ name, versions: {} }));
+    const body = await parseJsonBody(request, CachePackumentSeedBodySchema);
+    const name = body.name;
+    const payload = body.payload == null ? JSON.stringify({ name, versions: {} }) : String(body.payload);
     if (!name) return Response.json({ error: 'missing name' }, { status: 400 });
     // Purge L2 first so the next bench read starts from L3 cold.
     await purgeL2(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/p/${encodeURIComponent(name)}.json`);
@@ -1149,10 +1227,10 @@ async function handleCacheTestEndpoint(
   }
 
   if (path === '/api/_test/cache/tarball/seed' && request.method === 'POST') {
-    const body = await request.json() as any;
-    const name = String(body.name || '');
-    const version = String(body.version || '');
-    const sizeKb = Math.max(1, Math.min(15360, Number(body.sizeKb) || 16)); // up to 15 MiB (under MAX_R2_TARBALL_BYTES = 30 MiB)
+    const body = await parseJsonBody(request, CacheTarballSeedBodySchema);
+    const name = body.name;
+    const version = body.version;
+    const sizeKb = Math.max(1, Math.min(15360, body.sizeKb || 16)); // up to 15 MiB (under MAX_R2_TARBALL_BYTES = 30 MiB)
     if (!name || !version) return Response.json({ error: 'missing name/version' }, { status: 400 });
     await purgeL2(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`);
     // Synthetic payload — bytes are arbitrary; the cache layer doesn't
@@ -1266,9 +1344,9 @@ async function handleFanoutTestEndpoint(
   }
 
   if (path === '/api/_test/fanout/bench' && request.method === 'POST') {
-    const body = await request.json() as any;
-    const n = Math.max(1, Math.min(64, Number(body.n) || 8));
-    const sleepMs = Math.max(0, Math.min(2000, Number(body.sleepMs) || 100));
+    const body = await parseJsonBody(request, FanoutBenchBodySchema);
+    const n = Math.max(1, Math.min(64, body.n || 8));
+    const sleepMs = Math.max(0, Math.min(2000, body.sleepMs || 100));
 
     const pool = new NimbusFanoutPool(env, self.ctx, {
       tag: 'fanout-bench',
@@ -1329,9 +1407,9 @@ async function handleFanoutTestEndpoint(
   }
 
   if (path === '/api/_test/fanout/serial-bench' && request.method === 'POST') {
-    const body = await request.json() as any;
-    const n = Math.max(1, Math.min(64, Number(body.n) || 8));
-    const sleepMs = Math.max(0, Math.min(2000, Number(body.sleepMs) || 100));
+    const body = await parseJsonBody(request, FanoutBenchBodySchema);
+    const n = Math.max(1, Math.min(64, body.n || 8));
+    const sleepMs = Math.max(0, Math.min(2000, body.sleepMs || 100));
 
     // Same workload, but FORCE serial dispatch by using a single
     // NimbusLoaderPool with concurrency=1 and submitting one task

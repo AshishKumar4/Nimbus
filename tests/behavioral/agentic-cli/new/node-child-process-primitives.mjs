@@ -14,6 +14,8 @@ import { spawn, exec, execFile, spawnSync } from 'node:child_process';
 console.log('ENV_HOME=' + process.env.HOME);
 console.log('ENV_PATH_HAS_USR_BIN=' + String((process.env.PATH || '').split(':').includes('/usr/bin')));
 console.log('TTY_FLAGS=' + String(process.stdin.isTTY) + ':' + String(process.stdout.isTTY));
+console.log('EXEC_PATH=' + process.execPath);
+console.log('EXEC_ARGV=' + JSON.stringify(process.execArgv));
 
 const child = spawn('node', ['-e', [
   "process.stdin.setEncoding('utf8')",
@@ -96,6 +98,8 @@ const out = stripAnsi(run.output);
 a.check('HOME is the Nimbus user home', /ENV_HOME=\/home\/user/.test(out), JSON.stringify(out.slice(-800)));
 a.check('PATH includes /usr/bin', /ENV_PATH_HAS_USR_BIN=true/.test(out), JSON.stringify(out.slice(-800)));
 a.check('non-interactive node process reports non-TTY stdio', /TTY_FLAGS=false:false/.test(out), JSON.stringify(out.slice(-800)));
+a.check('process.execPath exposes the canonical Nimbus node path', /EXEC_PATH=\/usr\/local\/bin\/node/.test(out), JSON.stringify(out.slice(-800)));
+a.check('process.execArgv is available as an array', /EXEC_ARGV=\[\]/.test(out), JSON.stringify(out.slice(-800)));
 a.check('child_process.spawn returns child stdout', /SPAWN_OUT=CHILD_STDOUT:hello-agent/.test(out), JSON.stringify(out.slice(-800)));
 a.check('child_process.spawn returns child stderr', /SPAWN_ERR=CHILD_STDERR:ok/.test(out), JSON.stringify(out.slice(-800)));
 a.check('child_process.spawn close code is 0', /SPAWN_CODE=0/.test(out), JSON.stringify(out.slice(-800)));

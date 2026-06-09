@@ -3,8 +3,8 @@
 // editor workspace and backed by session-scoped API routes. This probe drives
 // the browser surface and safe API endpoints; it does not call Workers AI.
 
-import { BASE, makeAsserter, mintSession } from '../../_driver.mjs';
-import { launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { BASE, makeAsserter, mintSession, requestHeaders } from '../../_driver.mjs';
+import { applyProbeCookies, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -17,6 +17,7 @@ let page = null;
 
 try {
   page = await browser.newPage();
+  await applyProbeCookies(page);
   const runtimeErrors = [];
   page.on('pageerror', (err) => runtimeErrors.push(err.message || String(err)));
   page.on('console', (msg) => {
@@ -81,7 +82,7 @@ try {
   a.check('Agent status resolves from Checking', ui.status !== 'Checking...', JSON.stringify(ui));
 
   const statusResponse = await fetch(`${BASE}/s/${sid}/api/agent/status`, {
-    headers: { Accept: 'application/json', 'Cache-Control': 'no-store' },
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
   });
   const status = await statusResponse.json();
   a.check('Agent status API returns ok JSON',
@@ -93,7 +94,7 @@ try {
     JSON.stringify(status.capabilities));
 
   const messagesResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
-    headers: { Accept: 'application/json', 'Cache-Control': 'no-store' },
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
   });
   const messages = await messagesResponse.json();
   a.check('Agent messages API starts empty',
@@ -102,7 +103,7 @@ try {
 
   const startResponse = await fetch(`${BASE}/s/${sid}/api/agent/oauth/start`, {
     method: 'POST',
-    headers: { Accept: 'application/json', 'Cache-Control': 'no-store' },
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
   });
   const start = await startResponse.json();
   if (status.oauth?.configured) {
@@ -124,7 +125,7 @@ try {
   if (!status.connected) {
     const chatResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
       body: JSON.stringify({ message: 'hello' }),
     });
     const chat = await chatResponse.json();

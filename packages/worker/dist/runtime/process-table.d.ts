@@ -22,6 +22,8 @@ export interface ProcessEntry {
      *  process-logs-api.ts:LONG_RUNNING_CMD_RE — when set, the API
      *  returns this directly. */
     longRunning?: boolean;
+    /** Output is owned by a process-terminal attachment, not the parent shell. */
+    attachedTty?: boolean;
 }
 export declare class ProcessTable {
     private nextPid;
@@ -45,6 +47,8 @@ export declare class ProcessTable {
      */
     /** child-process isolation: mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid: number): void;
+    /** Mark an existing entry as an attached terminal process. Idempotent. */
+    setAttachedTty(pid: number): void;
     exit(pid: number, exitCode: number): void;
     /** Mark a process as killed. */
     kill(pid: number): boolean;

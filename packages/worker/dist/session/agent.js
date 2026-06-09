@@ -807,7 +807,7 @@ async function runTool(self, name, args) {
         return { error: `unknown tool: ${name}` };
     }
     catch (e) {
-        return { error: e?.message || String(e) };
+        return { error: e instanceof Error ? e.message : String(e) };
     }
 }
 async function loadAiCredentials(self, request, url) {

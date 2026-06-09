@@ -23,11 +23,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!p) return null;
     if (this.symlinks.isSymlink(p) && options.followSymlinks === false) {
       const target = this.symlinks.readlink(p) || '';
+      const now = Date.now();
       return {
         type: 'symlink',
         size: new TextEncoder().encode(target).byteLength,
-        ctime: Date.now(),
-        mtime: Date.now(),
+        ctime: now,
+        atime: now,
+        mtime: now,
         mode: 0o777,
         revision: this.vfs.revision(),
       };
@@ -38,6 +40,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         type: st.type === 'directory' ? 'directory' : 'file',
         size: st.size,
         ctime: st.ctime,
+        atime: st.atime,
         mtime: st.mtime,
         mode: st.mode,
         revision: this.vfs.revision(),
@@ -66,6 +69,17 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const p = this.resolveDataPath(path, true) || normalizeVfsPath(path);
     if (options.createParents !== false) this.ensureParent(p);
     this.vfs.writeFile(p, bytes);
+  }
+
+  async utimes(
+    path: string,
+    atimeMs: number,
+    mtimeMs: number,
+    options: { followSymlinks?: boolean } = {},
+  ): Promise<void> {
+    const p = this.resolveDataPath(path, options.followSymlinks !== false);
+    if (!p || !this.vfs.exists(p)) throw fsError('ENOENT', 'utimes', path);
+    this.vfs.utimes(p, atimeMs, mtimeMs);
   }
 
   async open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {

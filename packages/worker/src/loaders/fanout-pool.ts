@@ -17,6 +17,7 @@
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { NimbusLoaderPool } from './loader-pool.js';
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 
 /**
  * Threshold at which routing switches from coordinator-local loaders to
@@ -79,6 +80,32 @@ export interface NimbusFanoutPoolOptions {
    * NimbusLoaderPool's omitSupervisor flag).
    */
   omitSupervisor?: boolean;
+}
+
+interface NimbusFanoutPeerStub {
+  _rpcFanoutExecute<R>(
+    fnSource: string,
+    args: unknown[],
+    poolOpts?: Record<string, unknown>,
+  ): Promise<{ results?: R[] }>;
+}
+
+function isNimbusFanoutPeerStub(value: unknown): value is NimbusFanoutPeerStub {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return false;
+  }
+  const execute = Reflect.get(value, '_rpcFanoutExecute');
+  return typeof execute === 'function';
+}
+
+function fanoutPeerStub(value: unknown): NimbusFanoutPeerStub {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    throw new BindingError('NimbusFanoutPool: NIMBUS_SESSION.get() did not return a peer stub.');
+  }
+  if (!isNimbusFanoutPeerStub(value)) {
+    throw new BindingError('NimbusFanoutPool: peer stub does not expose _rpcFanoutExecute().');
+  }
+  return value;
 }
 
 /**
@@ -261,44 +288,56 @@ export class NimbusFanoutPool {
     for (const [shard, bucket] of shards) {
       const siblingName = `nbf:${this.opts.tag}:${this.coordDoIdShort}:${shard}`;
       const id = ns.idFromName(siblingName);
-      const stub = ns.get(id);
+      const peerStub = ns.get(id);
+      const stub = fanoutPeerStub(peerStub);
       dispatchers.push(async () => {
-        // Each peer DO RPC call uses ONE LOADER worker on its side.
-        // Supervisor → peer DO is a stub.fetch / RPC method call,
-        // NOT an env.LOADER.get(); that's the cap-sidestep that
-        // makes peer-DO fanout work.
-        const peerArgs = bucket.map((t) => t.args);
-        const rpcResp = await (stub as any)._rpcFanoutExecute(
-          fnSource,
-          peerArgs,
-          {
-            tag: this.opts.tag,
-            timeoutMs: this.opts.timeoutMs,
-            preamble: this.opts.preamble,
-            wasmModules: this.opts.wasmModules,
-            extraBindings: this.opts.extraBindings,
-            omitSupervisor: this.opts.omitSupervisor,
-            // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-            // the peer's NimbusLoaderPool can mint a SUPERVISOR
-            // binding that routes back HERE (the user's session DO),
-            // not to the peer DO itself. Without this, peer DOs'
-            // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
-            // ... write into the peer's own VFS — invisible to the
-            // user. See INSTALL-HONESTY-retro.md.
-            coordinatorDoId: this.coordDoId,
-          },
-        );
-        const peerResults = (rpcResp?.results ?? []) as R[];
-        if (peerResults.length !== bucket.length) {
-          throw new Error(
-            `peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
-            `(siblingName=${siblingName})`,
+        try {
+          // Each peer DO RPC call uses ONE LOADER worker on its side.
+          // Supervisor → peer DO is a stub.fetch / RPC method call,
+          // NOT an env.LOADER.get(); that's the cap-sidestep that
+          // makes peer-DO fanout work.
+          const peerArgs = bucket.map((t) => t.args);
+          const rpcResp = await stub._rpcFanoutExecute<R>(
+            fnSource,
+            peerArgs,
+            {
+              tag: this.opts.tag,
+              timeoutMs: this.opts.timeoutMs,
+              preamble: this.opts.preamble,
+              wasmModules: this.opts.wasmModules,
+              extraBindings: this.opts.extraBindings,
+              omitSupervisor: this.opts.omitSupervisor,
+              // INSTALL-HONESTY: forward the COORDINATOR's full doId so
+              // the peer's NimbusLoaderPool can mint a SUPERVISOR
+              // binding that routes back HERE (the user's session DO),
+              // not to the peer DO itself. Without this, peer DOs'
+              // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
+              // ... write into the peer's own VFS — invisible to the
+              // user. See INSTALL-HONESTY-retro.md.
+              coordinatorDoId: this.coordDoId,
+            },
           );
-        }
-        // Place each result back into its original input slot.
-        for (let i = 0; i < bucket.length; i++) {
-          const origIdx = taskIndex.get(bucket[i])!;
-          results[origIdx] = peerResults[i];
+          try {
+            const peerResults = rpcResp.results ?? [];
+            if (peerResults.length !== bucket.length) {
+              throw new Error(
+                `peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
+                `(siblingName=${siblingName})`,
+              );
+            }
+            // Place each result back into its original input slot.
+            for (let i = 0; i < bucket.length; i++) {
+              const origIdx = taskIndex.get(bucket[i]);
+              if (origIdx === undefined) {
+                throw new Error(`peer DO result had no original task index (siblingName=${siblingName})`);
+              }
+              results[origIdx] = peerResults[i];
+            }
+          } finally {
+            disposeRpcResource(rpcResp);
+          }
+        } finally {
+          disposeRpcResource(peerStub);
         }
       });
     }

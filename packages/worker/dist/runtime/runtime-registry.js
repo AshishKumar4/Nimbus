@@ -36,6 +36,8 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
+import { parseFacetBundleProfile } from './bundle-profile.js';
+import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 /**
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
@@ -49,7 +51,9 @@ export function buildRuntimeHandler(spec, ctx0) {
     return async function runtimeHandler(ctx) {
         const args = ctx.args || [];
         const name = spec.name;
-        const captureOutput = !!ctx.__nimbusCaptureOutput;
+        const nimbusCtx = ctx;
+        const captureOutput = !!nimbusCtx.__nimbusCaptureOutput;
+        const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
         // ── Subcommand dispatch ──
         //
         // BEFORE flag-span computation: subcommands like `bun install`
@@ -105,6 +109,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 dirname: ctx.cwd || '/home/user',
                 command: `${name} -e ...`,
                 ...(captureOutput ? { captureOutput: true } : {}),
+                ...(bundleProfile ? { bundleProfile } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -163,6 +168,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 dirname,
                 command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
                 ...(captureOutput ? { captureOutput: true } : {}),
+                ...(bundleProfile ? { bundleProfile } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -281,11 +287,9 @@ export function buildRuntimeHandler(spec, ctx0) {
                 const transformed = await eb.transform(code, {
                     loader,
                     format: 'cjs',
-                    define: {
-                        'import.meta.url': JSON.stringify(absUrl),
-                    },
+                    define: importMetaDefines(absUrl),
                 });
-                code = transformed.code;
+                code = bindImportMetaResolve(transformed.code, absUrl);
             }
             catch (e) {
                 ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${e?.message}\n`);
@@ -301,7 +305,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             : '/';
         // Primitive #1 / G4 — propagate bin-spawn ctx if the runtime
         // supports it (currently node only).
-        const binSpawn = spec.supportsBinSpawn ? ctx.__nimbusBinSpawn : undefined;
+        const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
         const leadingFlags = args.slice(0, scriptIdx);
         const result = await spec.run(facetMgr, code, {
             argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
@@ -310,8 +314,14 @@ export function buildRuntimeHandler(spec, ctx0) {
             filename,
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-            ...(binSpawn ? { skipSpawn: true, callerPid: binSpawn.callerPid } : {}),
+            ...(binSpawn ? {
+                skipSpawn: true,
+                callerPid: binSpawn.callerPid,
+                forceLongRunning: binSpawn.forceLongRunning === true,
+                attachedTty: binSpawn.attachedTty === true,
+            } : {}),
             ...(captureOutput ? { captureOutput: true } : {}),
+            ...(bundleProfile ? { bundleProfile } : {}),
         });
         if (result.stdout)
             ctx.stdout.write(result.stdout);

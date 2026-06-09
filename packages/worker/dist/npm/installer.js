@@ -41,6 +41,7 @@ import { waitForLowAllocPressure } from '../observability/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '../_shared/bytes.js';
+import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
     vfs;
@@ -1077,16 +1078,14 @@ export class NpmInstaller {
         const binChunks = [];
         const mtime = Date.now();
         const dirs = new Set();
+        const manifestEntries = [];
         dirs.add(binDir);
         for (const [, pkg] of resolved) {
-            if (!pkg.bin || Object.keys(pkg.bin).length === 0)
-                continue;
-            for (const [binName, binPath] of Object.entries(pkg.bin)) {
-                const targetPath = nmDir + '/' + pkg.name + '/' + binPath.replace(/^\.\//, '');
-                // Create a shell script that points to the target
-                const script = `#!/usr/bin/env node\n// Bin link: ${binName} → ${targetPath}\nrequire('${targetPath}');\n`;
+            for (const binEntry of packageBinEntries(pkg, nmDir)) {
+                manifestEntries.push(binEntry);
+                const script = createNpmBinShim(binEntry);
                 const data = enc.encode(script);
-                const linkPath = binDir + '/' + binName;
+                const linkPath = binDir + '/' + binEntry.name;
                 binEntries.push({
                     path: linkPath,
                     parentPath: binDir,
@@ -1101,6 +1100,18 @@ export class NpmInstaller {
         }
         if (binEntries.length === 0)
             return;
+        const manifestPath = npmBinManifestPath(nmDir);
+        const manifestData = enc.encode(JSON.stringify(createNpmBinManifest(manifestEntries), null, 2) + '\n');
+        binEntries.push({
+            path: manifestPath,
+            parentPath: binDir,
+            isDir: false,
+            size: manifestData.length,
+            mtime,
+            mode: 0o644,
+            chunkCount: 1,
+        });
+        binChunks.push({ path: manifestPath, chunkId: 0, data: manifestData });
         // Add directory inodes
         for (const dir of dirs) {
             binEntries.push({

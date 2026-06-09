@@ -5,7 +5,90 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-type Host = any;
+import { type MinShellRegistry } from '../runtime/package-manager.js';
+import { ProcessTable } from '../runtime/process-table.js';
+import { ProcessLogStore, type ProcessLogReadOptions } from '../runtime/process-logs.js';
+import { ProcessInputStore } from '../runtime/process-input.js';
+import { PortRegistry } from '../runtime/port-registry.js';
+import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+interface ProgrammaticShell {
+    env?: Record<string, string>;
+    getEnv?(): Record<string, string>;
+    getCwd?(): string;
+    execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{
+        exitCode: number;
+    }>;
+}
+interface ProgrammaticShellExecuteOptions {
+    cwd?: string;
+    env?: Record<string, string>;
+    onStdout?: (data: string) => void;
+    onStderr?: (data: string) => void;
+    signal?: AbortSignal;
+    stdin?: string;
+}
+interface ProgrammaticContext {
+    getWebSockets?(tag?: string): WebSocket[];
+    storage: {
+        delete(key: string): Promise<void>;
+        deleteAll(): Promise<void>;
+    };
+}
+interface ProgrammaticFacetManager {
+    kill(pid: number): boolean;
+}
+interface ProgrammaticViteServer {
+    isRunning: boolean;
+    stop(): void;
+}
+interface ProgrammaticCirrusServer {
+    isRunning: boolean;
+    stop(ctx: ProgrammaticContext): void;
+}
+export interface ProgrammaticHost {
+    env: RuntimeCatalogEnv;
+    ctx: ProgrammaticContext;
+    shell: ProgrammaticShell | null;
+    sqliteFs: SqliteVFS | null;
+    processTable: ProcessTable;
+    portRegistry: PortRegistry;
+    processLogs: ProcessLogStore;
+    processInput: ProcessInputStore;
+    facetManager: ProgrammaticFacetManager | null;
+    viteDevServer: ProgrammaticViteServer | null;
+    cirrusReal: ProgrammaticCirrusServer | null;
+    _cpRegistry: MinShellRegistry | null;
+    _viteShimPid: number | null;
+    _viteShimPort: number | null;
+    _cirrusHmrWsClients?: {
+        clear(): void;
+    } | null;
+    terminal?: {
+        write(text: string): void;
+        close(): void;
+    } | null;
+    kernel?: unknown;
+    facetProcessManager?: unknown;
+    esbuildService?: unknown;
+    nimbusWrangler?: unknown;
+    npmInstaller?: unknown;
+    fetchProxyEntrypoint?: unknown;
+    runtimeFsBridge?: unknown;
+    sessionBasePath?: string;
+    sessionBasePathHydrated?: boolean;
+    wranglerAliasBannerShown?: boolean;
+    _b4Phase?: string | null;
+    _w9PersistWired?: boolean;
+    _w9FlushTimer?: ReturnType<typeof setTimeout> | null;
+    _w9SchemaInit?: boolean;
+    _w9IsolateGen?: number;
+    _w9IsolateGenPersisted?: boolean;
+    _w9WireProcessLogPersist?(): void;
+    ensureSqliteFs(): void;
+    ensureFacetManager(): void;
+    initSession(ws: WebSocket): void;
+}
 export interface ProgrammaticReadyOptions {
     preinstall?: string[];
 }
@@ -48,32 +131,34 @@ export interface SerializedProcess {
     startTime: number;
     endTime: number | null;
     longRunning: boolean;
+    attachedTty: boolean;
 }
 export interface SerializedPort {
     port: number;
     pid: number;
     registeredAt: number;
 }
-export declare function ensureProgrammaticReady(self: Host, options?: ProgrammaticReadyOptions): Promise<{
+export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?: ProgrammaticReadyOptions): Promise<{
     ok: true;
     preinstalled: string[];
 }>;
-export declare function rpcExec(self: Host, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticExecResult>;
-export declare function rpcStartProcess(self: Host, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticStartResult>;
-export declare function rpcRunCode(self: Host, code: string, options?: ProgrammaticExecOptions & {
+export declare function rpcExec(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticExecResult>;
+export declare function rpcStartProcess(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticStartResult>;
+export declare function rpcRunCode(self: ProgrammaticHost, code: string, options?: ProgrammaticExecOptions & {
     language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
     install?: 'never' | 'ifMissing';
 }): Promise<ProgrammaticExecResult>;
-export declare function rpcInstallRuntime(self: Host, spec: string, options?: {
+export declare function rpcInstallRuntime(self: ProgrammaticHost, spec: string, options?: {
     force?: boolean;
 }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary>;
-export declare function rpcEnsureRuntimes(self: Host, specs: string[], options?: {
+export declare function rpcEnsureRuntimes(self: ProgrammaticHost, specs: string[], options?: {
     force?: boolean;
 }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
-export declare function rpcListRuntimes(self: Host): Promise<{
+export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<{
     installed: import("../runtime/package-manager.js").RuntimeSummary[];
     available: {
         name: string;
+        abi: import("../runtime/os-contracts.js").RuntimePackageAbi;
         defaultVersion: string;
         versions: Array<{
             version: string;
@@ -82,34 +167,52 @@ export declare function rpcListRuntimes(self: Host): Promise<{
         }>;
     }[];
 }>;
-export declare function rpcListProcesses(self: Host): Promise<SerializedProcess[]>;
-export declare function rpcKillProcess(self: Host, pid: number): Promise<{
+export declare function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]>;
+export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{
     ok: boolean;
     pid: number;
 }>;
-export declare function rpcProcessLogs(self: Host, pid: number, options?: {
-    lines?: number;
-    bytes?: number;
-}): Promise<{
+export declare function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string): Promise<{
+    ok: boolean;
     pid: number;
-    chunks: any;
-    text: any;
-    exit: any;
 }>;
-export declare function rpcListPorts(self: Host): Promise<SerializedPort[]>;
-export declare function rpcExposePort(self: Host, port: number): Promise<{
+export declare function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{
+    ok: boolean;
+    pid: number;
+}>;
+export declare function rpcResizeProcess(self: ProgrammaticHost, pid: number, size: {
+    columns: number;
+    rows: number;
+}): Promise<{
+    ok: boolean;
+    pid: number;
+}>;
+export declare function rpcSignalProcess(self: ProgrammaticHost, pid: number, signal: string): Promise<{
+    ok: boolean;
+    pid: number;
+}>;
+export declare function rpcProcessLogs(self: ProgrammaticHost, pid: number, options?: ProcessLogReadOptions): Promise<{
+    pid: number;
+    chunks: import("../runtime/process-logs.js").SequencedLogChunk[];
+    text: string;
+    cursor: number;
+    truncated: boolean;
+    exit: import("../runtime/process-logs.js").ProcessExitInfo | null;
+}>;
+export declare function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]>;
+export declare function rpcExposePort(self: ProgrammaticHost, port: number): Promise<{
     port: number;
     listening: boolean;
-    pid: any;
-    registeredAt: any;
+    pid: number | null;
+    registeredAt: number | null;
 }>;
-export declare function rpcUnexposePort(self: Host, port: number): Promise<{
+export declare function rpcUnexposePort(self: ProgrammaticHost, port: number): Promise<{
     port: number;
-    ok: any;
+    ok: boolean;
 }>;
-export declare function rpcDeleteFile(self: Host, path: string, options?: {
+export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, options?: {
     recursive?: boolean;
 }): Promise<void>;
-export declare function rpcDestroy(self: Host, options?: ProgrammaticDestroyOptions): Promise<ProgrammaticDestroyResult>;
+export declare function rpcDestroy(self: ProgrammaticHost, options?: ProgrammaticDestroyOptions): Promise<ProgrammaticDestroyResult>;
 export {};
 //# sourceMappingURL=programmatic.d.ts.map

@@ -1,11 +1,10 @@
 /**
  * npx-install.ts — Nimbus-native npx implementation.
  *
- * Replaces @lifo-sh/core's createNpxCommand (which uses a too-narrow
- * semver-range detector that misses major-only ranges like `'1'`, `'2'`,
- * `'1.0'`). The core's `ic()` regex `/[\^~>=<|*x]/.test(r)` flagged
- * caret/tilde/comparator/x ranges correctly but treated `'1'` as a
- * literal version → fetched `/wrappy/1` → 404 → silently skipped.
+ * Fixes the too-narrow semver-range detector in the original substrate command
+ * path, which missed major-only ranges like `'1'`, `'2'`, and `'1.0'`.
+ * That path treated `'1'` as a literal version, fetched `/wrappy/1`, got 404,
+ * and silently skipped the dependency.
  *
  * Symptom captured by tests/behavioral/install/transitive-dep-resolution.mjs:
  *   `npx --yes rimraf@3.0.2 --help` →
@@ -18,7 +17,7 @@
  * (resolve-one-facet.ts:264 + RESOLVE_VERSION). Handles all semver-range
  * syntax including major-only and major.minor.
  *
- * Binary-lookup and execution stay closer to the @lifo-sh/core flow:
+ * Binary lookup and execution follow the same user-visible npx flow:
  *   1. Check cwd/node_modules/.bin/<cmd>
  *   2. Check /tmp/.npx-cache/node_modules/.bin/<cmd>
  *   3. Check global registry (built-ins like vite, esbuild — handled by
@@ -28,10 +27,9 @@
  *   6. Invoke via Nimbus's `node` registry command (preserves PID
  *      tracking, log buffer, process table membership)
  */
-/** Path where npx caches packages it installs. Matches the constant
- *  in @lifo-sh/core (Vs in dist/index-Djm2onjx.js) so any other code
- *  reading this dir (e.g. tooling that introspects npx state) sees the
- *  same layout. */
+import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
+/** Path where npx caches packages it installs. Matches the vendored substrate
+ * cache layout so tooling that introspects npx state sees the expected path. */
 export const NPX_CACHE_DIR = '/tmp/.npx-cache';
 const NPX_CACHE_NM = `${NPX_CACHE_DIR}/node_modules`;
 /**
@@ -46,6 +44,52 @@ const NPX_CACHE_NM = `${NPX_CACHE_DIR}/node_modules`;
  */
 function _vfsKey(p) {
     return p.replace(/^\/+/, '');
+}
+function readNpxInvocationHead(rawArgs) {
+    let i = 0;
+    while (i < rawArgs.length) {
+        const arg = rawArgs[i];
+        if (arg === '-y' || arg === '--yes') {
+            i++;
+            continue;
+        }
+        if (arg === '--package') {
+            i += 2;
+            continue;
+        }
+        if (arg.startsWith('--package=')) {
+            i++;
+            continue;
+        }
+        if (arg === '--version' || arg === '-v')
+            return { self: 'version', command: null, commandIndex: -1 };
+        if (arg === '--help' || arg === '-h')
+            return { self: 'help', command: null, commandIndex: -1 };
+        return { self: null, command: arg, commandIndex: i };
+    }
+    return { self: 'missing', command: null, commandIndex: -1 };
+}
+export function describeNpxSelfInvocation(rawArgs) {
+    return readNpxInvocationHead(rawArgs).self;
+}
+export function getNpxCommandWord(rawArgs) {
+    return readNpxInvocationHead(rawArgs).command;
+}
+export function getNpxCommandArgs(rawArgs) {
+    const head = readNpxInvocationHead(rawArgs);
+    return head.commandIndex >= 0 ? rawArgs.slice(head.commandIndex + 1) : [];
+}
+export function formatNpxHelp() {
+    return [
+        'Usage: npx [options] <package[@version]> [args...]',
+        '',
+        'Options:',
+        '  -y, --yes              skip prompts',
+        '  --package=<pkg>        explicit package name',
+        '  -v, --version          print version',
+        '  -h, --help             show this help',
+        '',
+    ].join('\n');
 }
 function parseNpxArgs(rawArgs) {
     let pkgOverride = null;
@@ -120,8 +164,7 @@ function splitSpec(spec) {
  *   - `Record<string, string>` → multiple bins
  *
  * Returns the resolved absolute path (rooted at packageDir) if a
- * matching bin name is found, else null. Matches @lifo-sh/core's
- * `Ht()` helper at dist/index-Djm2onjx.js:11707.
+ * matching bin name is found, else null.
  */
 function findBinInPackage(vfs, packageDir, binName) {
     const pkgJsonPath = `${packageDir}/package.json`;
@@ -152,8 +195,8 @@ function findBinInPackage(vfs, packageDir, binName) {
             resolved = candidate;
         }
         else {
-            // Fall back to the FIRST bin entry — matches @lifo-sh/core's
-            // `Object.values(i)[0]` behavior at dist/index-Djm2onjx.js:11710.
+            // Fall back to the first bin entry, matching npm's common single-binary
+            // package behavior when the requested bin is not explicitly named.
             const first = Object.values(binField)[0];
             if (typeof first === 'string')
                 resolved = first;
@@ -214,8 +257,7 @@ function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
     }
     else {
         // Ensure the parent dir exists. SqliteVFS auto-creates parent
-        // dirs in writeFile, but mkdir defensively for symmetry with
-        // @lifo-sh/core's flow.
+        // dirs in writeFile, but mkdir keeps the cache path explicit here.
         try {
             vfs.mkdir(_vfsKey(NPX_CACHE_DIR), { recursive: true });
         }
@@ -235,10 +277,9 @@ function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
  * via Nimbus's `node` command — keeping this module pure (no process
  * spawning) makes it testable.
  *
- * Note: deliberately does NOT honor `--version`/`--help` for npx
- * itself (those are caller's job); they bubble up as `error` markers
- * so the caller can format the usage banner consistently with the
- * rest of the shell.
+ * Note: deliberately does not format `--version`/`--help` for npx itself.
+ * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
+ * this resolver.
  */
 export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log) {
     const parsed = parseNpxArgs(rawArgs);
@@ -252,6 +293,7 @@ export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log) {
             ok: true,
             binPath: existing,
             binArgs: parsed.binArgs,
+            bundleProfile: bundleProfileForNpmBin({ name: parsed.binName, packageName: parsed.pkgName }),
             source: cwd && existing.startsWith(cwd) ? 'project-nm' : 'npx-cache',
         };
     }
@@ -292,6 +334,7 @@ export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log) {
             ok: true,
             binPath: installed,
             binArgs: parsed.binArgs,
+            bundleProfile: bundleProfileForNpmBin({ name: parsed.binName, packageName: parsed.pkgName }),
             source: 'fresh-install',
         };
     }

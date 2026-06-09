@@ -28,17 +28,22 @@
 export class PortRegistry {
     ports = new Map();
     facetStubsByPid = new Map();
-    /** Remember the routeable facet stub for a running process. */
+    portWaitersByPid = new Map();
+    /** Remember the available facet capabilities for a running process. */
     bindFacetStub(pid, facetStub) {
-        if (!facetStub)
+        const target = routeableFacetTarget(facetStub);
+        if (!target)
             return;
-        this.facetStubsByPid.set(pid, facetStub);
-        this.attachFacetStubByPid(pid, facetStub);
+        this.facetStubsByPid.set(pid, target);
+        this.attachFacetStubByPid(pid, target);
+        this.notifyPortWaiters(pid);
     }
     /** Register a facet as listening on a port. */
     register(port, pid, facetStub) {
-        const routeableStub = facetStub || this.facetStubsByPid.get(pid) || null;
+        const routeableStub = routeableFacetTarget(this.facetStubsByPid.get(pid)) ||
+            routeableFacetTarget(facetStub);
         this.ports.set(port, { port, pid, facetStub: routeableStub, registeredAt: Date.now() });
+        this.notifyPortWaiters(pid);
     }
     /** Unregister a port. */
     unregister(port) {
@@ -62,14 +67,33 @@ export class PortRegistry {
     }
     /** Attach a routeable facet stub to ports previously reserved by a PID. */
     attachFacetStubByPid(pid, facetStub) {
+        const routeable = routeableFacetTarget(facetStub);
+        if (!routeable)
+            return [];
         const ports = [];
         for (const entry of this.ports.values()) {
             if (entry.pid !== pid || entry.facetStub)
                 continue;
-            entry.facetStub = facetStub;
+            entry.facetStub = routeable;
             ports.push(entry.port);
         }
+        if (ports.length > 0)
+            this.notifyPortWaiters(pid);
         return ports;
+    }
+    getRouteablePortsByPid(pid) {
+        return [...this.ports.values()]
+            .filter((entry) => entry.pid === pid && entry.facetStub)
+            .map((entry) => entry.port);
+    }
+    async waitForRouteablePortsByPid(pid, facetStub, timeoutMs) {
+        this.bindFacetStub(pid, facetStub);
+        const immediate = this.getRouteablePortsByPid(pid);
+        if (immediate.length > 0)
+            return immediate;
+        await this.waitForPidPortChange(pid, timeoutMs);
+        this.bindFacetStub(pid, facetStub);
+        return this.getRouteablePortsByPid(pid);
     }
     /** Check if a port is registered. */
     has(port) {
@@ -184,4 +208,45 @@ export class PortRegistry {
             ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid })),
         };
     }
+    waitForPidPortChange(pid, timeoutMs) {
+        return new Promise((resolve) => {
+            let done = false;
+            let timeout;
+            const finish = () => {
+                if (done)
+                    return;
+                done = true;
+                clearTimeout(timeout);
+                const waiters = this.portWaitersByPid.get(pid);
+                if (waiters) {
+                    waiters.delete(finish);
+                    if (waiters.size === 0)
+                        this.portWaitersByPid.delete(pid);
+                }
+                resolve();
+            };
+            timeout = setTimeout(finish, timeoutMs);
+            const waiters = this.portWaitersByPid.get(pid) || new Set();
+            waiters.add(finish);
+            this.portWaitersByPid.set(pid, waiters);
+        });
+    }
+    notifyPortWaiters(pid) {
+        const waiters = this.portWaitersByPid.get(pid);
+        if (!waiters)
+            return;
+        this.portWaitersByPid.delete(pid);
+        for (const resolve of waiters)
+            resolve();
+    }
+}
+function routeableFacetTarget(value) {
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null)
+        return null;
+    const method = Reflect.get(value, 'fetch') || Reflect.get(value, 'handleHttpRequest');
+    if (typeof method !== 'function')
+        return null;
+    return {
+        handleHttpRequest: method.bind(value),
+    };
 }

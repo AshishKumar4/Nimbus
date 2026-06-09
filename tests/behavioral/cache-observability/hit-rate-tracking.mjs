@@ -31,16 +31,21 @@
 // Black-box driven: only POST /new + WS terminal + GET /api/_diag/cache.
 // No /api/_diag/memory (RPC-level counters, separate axis).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
 
 async function getCacheSnapshot(sid) {
-  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`);
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
+    headers: requestHeaders(),
+  });
   if (!r.ok) throw new Error(`GET /api/_diag/cache failed: ${r.status}`);
   return r.json();
 }
 
 async function resetCache(sid) {
-  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache/reset`, { method: 'POST' });
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache/reset`, {
+    method: 'POST',
+    headers: requestHeaders(),
+  });
   if (r.status !== 204) throw new Error(`reset returned ${r.status}`);
 }
 

@@ -28,7 +28,6 @@ export function defineNimbusConfig(config) {
  * by hand can drop them in without copy-paste drift.
  */
 export const NIMBUS_REQUIRED_ALIASES = Object.freeze({
-    '@lifo-sh/ui': './node_modules/@nimbus-sh/worker/dist/stubs/lifo-ui.js',
     'clean-git-ref': 'clean-git-ref/lib/index.js',
     'is-git-ref-name-valid': 'is-git-ref-name-valid/index.js',
     'crc-32': 'crc-32',

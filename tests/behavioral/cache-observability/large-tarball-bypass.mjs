@@ -29,7 +29,7 @@
 // install, we DID record an L3 lookup (hit or miss), proving the L3
 // path is not unconditionally bypassed.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
 
 const A = makeAsserter('cache-observability/large-tarball-bypass');
 
@@ -42,8 +42,13 @@ await sleep(1_500);
 await t.waitForPrompt(15_000);
 
 // Reset + verify schema completeness.
-await fetch(`${BASE}/s/${sid}/api/_diag/cache/reset`, { method: 'POST' });
-const baseline = await (await fetch(`${BASE}/s/${sid}/api/_diag/cache`)).json();
+await fetch(`${BASE}/s/${sid}/api/_diag/cache/reset`, {
+  method: 'POST',
+  headers: requestHeaders(),
+});
+const baseline = await (await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
+  headers: requestHeaders(),
+})).json();
 
 A.check('snapshot.byTier has L1/L2/L3/L4',
   baseline.byTier?.L1 && baseline.byTier?.L2 && baseline.byTier?.L3 && baseline.byTier?.L4,
@@ -79,7 +84,9 @@ await t.run(
 );
 await t.run('npm install clsx', 60_000);
 
-const after = await (await fetch(`${BASE}/s/${sid}/api/_diag/cache`)).json();
+const after = await (await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
+  headers: requestHeaders(),
+})).json();
 const l2Total =
   (after.byTier.L2.tarball.hits + after.byTier.L2.tarball.misses) +
   (after.byTier.L2.packument.hits + after.byTier.L2.packument.misses);

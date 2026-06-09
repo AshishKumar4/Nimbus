@@ -50,18 +50,17 @@
  *                                  ▼
  *                               facet loop  ──>  chokidar / ws shim
  */
-// [sdk-phase-1] Large blobs (REAL_VITE_BUNDLE 4.6 MB, ROLLUP_WASM 2.5 MB,
-// CIRRUS_PLUGIN_REACT_BUNDLE 3.0 MB) now ship via the ASSETS binding
-// instead of inline. We import async getters here; start() became async
-// so it can await them. CIRRUS_NPM_CJS_BUNDLES stays inline (1.2 MB,
-// used inside the sync part of start()).
+// [sdk-phase-1] Large blobs now ship via the ASSETS binding instead
+// of inline. We import async getters here; start() became async so it
+// can await them before assembling the dynamic Worker module graph.
 import { REAL_VITE_VERSION, VITE_CLIENT_MJS, VITE_ENV_MJS, getRealViteBundle, getRollupWasmBase64, } from '../real-vite-bundle.generated.js';
 import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cirrus-plugin-react.generated.js';
-import { CIRRUS_NPM_CJS_BUNDLES, CIRRUS_NPM_CJS_VERSIONS } from '../cirrus-npm-cjs.generated.js';
+import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '../constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
+import { stripLeadingSlashes } from '../vfs/path.js';
 /**
  * Compatibility flags for the real-vite facet.
  *
@@ -80,7 +79,7 @@ const REAL_VITE_COMPAT_FLAGS = [
 /**
  * Resolve opt-in mode.
  *
- * Priority: env var > vite.config.ts regex sniff > default ('cirrus').
+ * Priority: env var > parsed vite.config.ts opt-in > default ('cirrus').
  */
 export function shouldUseRealVite(opts) {
     const env = opts.env || {};
@@ -92,22 +91,14 @@ export function shouldUseRealVite(opts) {
         if (s === '0' || s === 'false' || s === 'no' || s === 'cirrus' || s === 'shim')
             return false;
     }
-    const cfg = opts.viteConfigSource;
-    if (cfg) {
-        // Regex-only (safe: no eval). Matches `nimbusDevServer: 'real'` /
-        // `'shim'` / `'auto'` with either quote style.
-        const m = cfg.match(/nimbusDevServer\s*:\s*['"]([a-z-]+)['"]/i);
-        if (m) {
-            const mode = m[1].toLowerCase();
-            if (mode === 'real' || mode === 'real-vite')
-                return true;
-            if (mode === 'cirrus' || mode === 'shim')
-                return false;
-            if (mode === 'auto') {
-                // Heuristic: if the config imports any @vitejs/* plugin, prefer
-                // real-vite; otherwise stick with Cirrus.
-                return /@vitejs\/plugin-[\w-]+/.test(cfg);
-            }
+    const mode = opts.viteConfig?.devServer?.toLowerCase();
+    if (mode) {
+        if (mode === 'real' || mode === 'real-vite')
+            return true;
+        if (mode === 'cirrus' || mode === 'shim')
+            return false;
+        if (mode === 'auto') {
+            return !!opts.viteConfig?.importsVitePlugin;
         }
     }
     return false;
@@ -279,13 +270,37 @@ function dispatchEvents(events) {
 // the pump: a short-timeout poll (2s) that dispatches events and
 // returns. If clients are connected, the pump schedules itself again
 // via waitUntil.
+type DisposableSymbolConstructor = SymbolConstructor & { readonly dispose?: symbol };
+
+function disposeRpcResult(value: unknown): void {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
+  const disposerKey = (Symbol as DisposableSymbolConstructor).dispose;
+  if (!disposerKey) return;
+  const dispose = Reflect.get(value, disposerKey);
+  if (typeof dispose === 'function') {
+    try { Reflect.apply(dispose, value, []); } catch {}
+  }
+}
+
+async function useRpcResult<T, R>(
+  promise: Promise<T>,
+  use: (value: T) => R | Promise<R>,
+): Promise<R> {
+  const value = await promise;
+  try {
+    return await use(value);
+  } finally {
+    disposeRpcResult(value);
+  }
+}
+
 async function pumpHmrOnce(ctx) {
   if (!_hmrBinding) return;
   try {
     // Short timeout so we don't hold a request's waitUntil chain for
     // too long. The supervisor returns immediately if there are
     // pending events, so latency is fine.
-    const events = await _hmrBinding.hmrNextEvent(2_000);
+    const events = await useRpcResult(_hmrBinding.hmrNextEvent(2_000), (result) => result);
     dispatchEvents(events);
     // Reschedule: if we have active WS clients or recent events, keep
     // polling. Otherwise one shot per request is enough.
@@ -656,7 +671,7 @@ export class CirrusReal {
         // Generate all the module sources.
         const mainCode = generateMainModuleCode({
             port: this.port,
-            root: '/' + this.root.replace(/^\/+/, ''),
+            root: '/' + stripLeadingSlashes(this.root),
             basePath: this.basePath,
             hasUserViteConfig: this.userConfigBundle != null,
         });
@@ -681,22 +696,23 @@ export class CirrusReal {
             'react-dom/client': ['/node_modules/react-dom/client.js'],
             'scheduler': ['/node_modules/scheduler/index.js'],
         };
+        // [sdk-phase-1] Pre-fetch the three large assets from the ASSETS
+        // binding before assembling the synthetic module code + loader
+        // config. After first call, all three are cached per-isolate, so
+        // subsequent start() invocations on the same supervisor pay zero.
+        const [realViteBundle, rollupWasmBase64, cirrusPluginReactBundle, cirrusNpmCjsBundles] = await Promise.all([
+            getRealViteBundle(this.env),
+            getRollupWasmBase64(this.env),
+            getCirrusPluginReactBundle(this.env),
+            getCirrusNpmCjsBundles(this.env),
+        ]);
         const cjsPrebuiltBundles = {};
-        for (const [spec, bundle] of Object.entries(CIRRUS_NPM_CJS_BUNDLES)) {
+        for (const [spec, bundle] of Object.entries(cirrusNpmCjsBundles)) {
             const suffixes = SPEC_TO_SUFFIXES[spec] || [];
             for (const suffix of suffixes) {
                 cjsPrebuiltBundles[suffix] = bundle.code;
             }
         }
-        // [sdk-phase-1] Pre-fetch the three large assets from the ASSETS
-        // binding before assembling the synthetic module code + loader
-        // config. After first call, all three are cached per-isolate, so
-        // subsequent start() invocations on the same supervisor pay zero.
-        const [realViteBundle, rollupWasmBase64, cirrusPluginReactBundle] = await Promise.all([
-            getRealViteBundle(this.env),
-            getRollupWasmBase64(this.env),
-            getCirrusPluginReactBundle(this.env),
-        ]);
         const syntheticCode = generateSyntheticModuleCode({
             viteVersion: REAL_VITE_VERSION,
             snapshotFiles: mergedFiles,
@@ -854,7 +870,7 @@ export class CirrusReal {
         if (this.vfsEvents) {
             this._vfsUnsub = this.vfsEvents.on((batch) => {
                 for (const ev of batch) {
-                    const absPath = '/' + ev.path.replace(/^\/+/, '');
+                    const absPath = '/' + stripLeadingSlashes(ev.path);
                     // chokidar uses 'addDir'/'unlinkDir' for directory events;
                     // VFS emits the same strings, so we can pass through as-is.
                     this.hmr.pushVfsEvent(ev.type, absPath, ev.oldPath);

@@ -25,7 +25,8 @@
  *
  * Errors throw and bubble up to the user as a single diagnostic line.
  */
-import { fetchCatalog, fetchManifest, fetchBlob } from './runtime-catalog.js';
+import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest } from './runtime-catalog.js';
+import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS } from './os-contracts.js';
 /** Map of runner-key → factory. Populated by init.ts before install. */
 const runnerFactories = {};
 export function registerRunnerFactory(key, factory) {
@@ -33,6 +34,20 @@ export function registerRunnerFactory(key, factory) {
 }
 export function getRegisteredRunners() {
     return Object.keys(runnerFactories);
+}
+export function runtimeAbiForManifest(manifest) {
+    const byName = NIMBUS_RUNTIME_ABIS[manifest.name];
+    if (byName)
+        return byName;
+    if (manifest.wasi_namespace)
+        return NIMBUS_ABI_TARGET;
+    if (manifest.entrypoints.some((entrypoint) => entrypoint.runner === 'clang-runner')) {
+        return NIMBUS_ABI_TARGET;
+    }
+    return 'native-unsupported';
+}
+function runtimeAbiForCatalogName(name) {
+    return NIMBUS_RUNTIME_ABIS[name] ?? 'native-unsupported';
 }
 const RUNTIME_NAME_ALIASES = {
     python3: 'python',
@@ -181,7 +196,7 @@ export function listInstalledManifests(vfs, homeDir) {
             if (!vfs.exists(manifestPath))
                 continue;
             try {
-                const manifest = JSON.parse(vfs.readFileString(manifestPath));
+                const manifest = parseRuntimeManifest(JSON.parse(vfs.readFileString(manifestPath)));
                 out.push({ root: verDir, manifest });
             }
             catch {
@@ -216,6 +231,7 @@ export function listInstalledRuntimes(vfs, homeDir) {
         name: manifest.name,
         version: manifest.version,
         root,
+        abi: runtimeAbiForManifest(manifest),
         bins: runtimeEntrypoints(manifest).map((e) => e.binName),
         sizeBytes: manifest.files.reduce((a, f) => a + f.size, 0),
         license: manifest.license,
@@ -227,6 +243,7 @@ export async function listAvailableRuntimes(env) {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, entry]) => ({
         name,
+        abi: runtimeAbiForCatalogName(name),
         defaultVersion: entry.default,
         versions: Object.entries(entry.versions)
             .sort(([a], [b]) => a.localeCompare(b))
@@ -337,7 +354,7 @@ async function runInstall(args, ctx, deps) {
         rehydrateInstalledRuntimes(deps.vfs, deps.registry, home);
         let manifest = null;
         try {
-            manifest = JSON.parse(deps.vfs.readFileString(`${root}/manifest.json`));
+            manifest = parseRuntimeManifest(JSON.parse(deps.vfs.readFileString(`${root}/manifest.json`)));
         }
         catch {
             manifest = null;
@@ -471,7 +488,7 @@ async function runList(ctx, deps) {
     for (const { root, manifest } of installed) {
         const totalBytes = manifest.files.reduce((a, f) => a + f.size, 0);
         const bins = runtimeEntrypoints(manifest).map((e) => e.binName).join(', ');
-        ctx.stdout.write(`  ${manifest.name}@${manifest.version}  ${(totalBytes / 1024 / 1024).toFixed(1)} MiB  bins=[${bins}]  ${root}\n`);
+        ctx.stdout.write(`  ${manifest.name}@${manifest.version}  abi=${runtimeAbiForManifest(manifest)}  ${(totalBytes / 1024 / 1024).toFixed(1)} MiB  bins=[${bins}]  ${root}\n`);
     }
     return 0;
 }
@@ -494,7 +511,7 @@ async function runAvailable(ctx, deps) {
     for (const name of names) {
         const r = catalog.runtimes[name];
         const versions = Object.keys(r.versions);
-        ctx.stdout.write(`  ${name}  default=${r.default}  versions=[${versions.join(', ')}]\n`);
+        ctx.stdout.write(`  ${name}  abi=${runtimeAbiForCatalogName(name)}  default=${r.default}  versions=[${versions.join(', ')}]\n`);
         for (const v of versions) {
             const ve = r.versions[v];
             ctx.stdout.write(`    ${v}  ${(ve.size_bytes / 1024 / 1024).toFixed(1)} MiB  license=${ve.license}\n`);

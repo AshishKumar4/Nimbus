@@ -1,61 +1,42 @@
 /**
- * process-logs-api.ts — HTTP/WS surface for the per-PID process log store.
+ * process-logs-api.ts - WebSocket surface for process terminal tabs.
  *
- * Extracted from nimbus-session.ts so this file owns every byte of the
- * log-tabs feature (WS handler, processes list, terminal event helper).
- * nimbus-session.ts only calls these at 4 small hook sites:
- *   - onSpawn (notify)
- *   - _rpcReportExit / _reportExternalExit / shellExecuteTracked finally (notify)
- *   - Two route branches in _handleFetch (serve)
+ * The server-to-client stream starts with a bounded backlog, then sends live
+ * stdout/stderr chunks and exit/notfound events. The client-to-server stream
+ * carries terminal input, stdin close, resize, and signal frames.
  *
- * The WebSocket protocol (server → client):
- *   { type: 'backlog', pid, chunks: [{ stream, data, ts, binary? }] }  — once on open
- *   { type: 'chunk', stream, data, ts, binary? }                       — per append
- *   { type: 'exit', code, at, reason? }                                — on exit
- *   { type: 'notfound', pid }                                          — pid unknown; socket closes
+ * Client → server:
+ *   { type: 'input', data }       — write stdin to an attached process
+ *   { type: 'stdin-end' }         — close stdin for an attached process
+ *   { type: 'resize', columns, rows }
+ *   { type: 'signal', signal }
  *
- * Client → server: ignored. Clients are output-only; close the socket to
- * unsubscribe. The ring buffer keeps state for 10 min post-exit so a tab
- * that's still open after a crash continues to show the final output.
- *
- * W9 (CF research §C.2, Lever 11): the WS now uses `ctx.acceptWebSocket`
- * (hibernatable) when a `ctx` is provided. Why the switch:
- *   - The pre-W9 `server.accept()` call pinned the actor for the full
- *     duration of the log tail. A user opening a long-running log tab
- *     and walking away kept the DO awake — accumulating co-residency-
- *     OOM risk per Section A.1 of the research doc.
- *   - With hibernatable WS, the actor sleeps when nothing else holds it.
- *     The `pid` is captured in the serialized attachment so a wake-up
- *     dispatch can re-resolve. Subscribers are NOT preserved across
- *     hibernation (per the STOR Primer: "Does not survive: All JS
- *     in-memory state"), but the client typically reconnects via a
- *     fresh WS open which triggers a new backlog frame from the now-
- *     hydrated ring (W9 hib-persist) — equivalent UX, fewer wakes.
- *   - Falls back to `server.accept()` when `ctx` is omitted (legacy
- *     callers / unit tests without a DurableObjectState).
+ * The ring buffer keeps state for 10 min post-exit so a tab that's still
+ * open after a crash continues to show the final output.
  */
 import type { ProcessLogStore } from './process-logs.js';
 import type { ProcessTable } from './process-table.js';
+import type { ProcessInputStore } from './process-input.js';
 /**
  * Parameters for `handleLogsWebSocketRequest`. We accept the process
  * table so the handler can distinguish "brand-new pid, not yet written
  * to" from "pid never existed". The former is common — a client that
- * opens a log WS immediately on the `{type:'spawn'}` frame races with
- * the first `_rpcStdout` RPC call and would otherwise get `notfound`.
+ * opens a process terminal immediately on the `{type:'spawn'}` frame
+ * races with the first `_rpcStdout` RPC call and would otherwise get
+ * `notfound`.
  */
 export interface LogsWebSocketDeps {
     processLogs: ProcessLogStore;
     processTable: ProcessTable;
+    processInput?: ProcessInputStore | null;
     /**
-     * W9: optional `DurableObjectState`. When provided, the upgrade uses
-     * `ctx.acceptWebSocket` (hibernatable) and serializes a process-logs
-     * attachment so post-hibernate dispatches can resolve the pid. When
-     * omitted, falls back to `server.accept()` (non-hibernatable; pre-W9
-     * behaviour, kept for unit tests).
+     * Durable Object state used for hibernatable process-terminal sockets.
+     * Process log sockets must use `ctx.acceptWebSocket` so hibernation,
+     * attachment dispatch, and session teardown all share one lifecycle.
      */
-    ctx?: {
+    ctx: {
         acceptWebSocket(ws: WebSocket, tags?: string[]): void;
-    } | null;
+    };
 }
 /**
  * Minimum interface this module needs from the terminal. The real type

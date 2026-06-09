@@ -7,10 +7,12 @@
  * connected user can spend their own Workers AI quota instead of the
  * Nimbus deployment owner quota.
  */
+import { type ProgrammaticHost } from './programmatic.js';
 interface AgentStorage {
     get(key: string): Promise<unknown>;
     put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<void>;
+    deleteAll(): Promise<void>;
 }
 interface AgentVfs {
     exists(path: string): boolean;
@@ -24,12 +26,12 @@ interface AgentVfs {
     }>;
     writeFile(path: string, content: string): void;
 }
-interface Host {
+interface Host extends ProgrammaticHost {
     ctx: {
         storage: AgentStorage;
     };
-    env: Record<string, unknown>;
-    sqliteFs?: AgentVfs | null;
+    env: ProgrammaticHost['env'] & Record<string, unknown>;
+    sqliteFs: (ProgrammaticHost['sqliteFs'] & AgentVfs) | null;
 }
 interface OAuthStatePayload {
     v: 1;

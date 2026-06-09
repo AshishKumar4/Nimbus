@@ -7,8 +7,13 @@ export interface RubyGemInstallReport {
     installed: string[];
     alreadyInstalled: string[];
 }
+export interface InstalledRubyGemBin {
+    name: string;
+    path: string;
+}
 export declare function defaultGemHome(): string;
 export declare function installedGemLibRoots(vfs: SqliteVFS, gemHome?: string): string[];
+export declare function installedGemBins(vfs: SqliteVFS, gemHome?: string): InstalledRubyGemBin[];
 export declare function installRubyGems(vfs: SqliteVFS, requests: RubyGemRequest[], opts?: {
     gemHome?: string;
     includeDependencies?: boolean;

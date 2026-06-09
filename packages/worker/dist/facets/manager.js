@@ -1,43 +1,31 @@
 /**
- * facets/manager.ts — Lifecycle for "user node script as a child DO".
+ * facets/manager.ts — Lifecycle for isolated user-runtime workers.
  *
  * `node script.js` from the shell prompt has to run somewhere isolated
  * — same memory bound as the supervisor (128 MiB) but separate so a
- * runaway script can't take the supervisor down. The script is also
- * stateful: `fs.readFileSync` writes inside the script need to flow
- * back to the VFS, and `http.createServer` registers a port the
- * preview iframe later proxies to. That makes a stateless Worker
- * Loader insufficient — we need a child DO with its own SQLite for
- * port registration and exit reporting.
+ * runaway script can't take the supervisor down. The script also needs
+ * supervisor-owned services: VFS writes, stdout/stderr, process exit,
+ * child-process brokering, and preview port routing.
  *
- * The pattern:
- *   1. LOADER.get(codeHash, makeConfig)            — dynamic worker w/ user script
- *   2. worker.getDurableObjectClass('NodeProcess') — class from that worker
- *   3. ctx.facets.get(`proc-${pid}`, {class})       — child DO Facet
- *   4. facet.run(argsJson)                         — RPC executes the script
- *   5. ctx.facets.delete(name)                     — cleanup, even on throw
+ * One-shot commands use a stateless dynamic Worker entrypoint:
+ *   1. LOADER.load(makeConfig)        — isolated dynamic worker
+ *   2. worker.getEntrypoint().fetch() — executes the script
+ *   3. SUPERVISOR RPC                 — streams output and VFS writes
  *
- * The codeHash includes `ctx.id.toString()` to scope the LOADER cache
- * per-supervisor-DO. Without that, two sessions executing identical
- * code would share an isolate, and the warm slot's baked-in
- * env.SUPERVISOR stub would point at whichever DO instantiated it
- * first — every other session's stdout would silently route to the
- * wrong terminal. (Same cross-session-slot-sharing fix b225db3
- * applied to install-time facets.)
- *
- * `_execViaLoader` is the local-dev fallback: when the runtime doesn't
- * support `ctx.facets.get`, fall back to `LOADER.load()` +
- * `getEntrypoint().fetch()` with a plain fetch-handler shape. The
- * supervisor's environment is the same; only the lifecycle primitive
- * differs.
+ * Long-running processes use a dynamic Worker entrypoint that stays
+ * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { generateShimsCode } from '../runtime/node-shims.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { prefetchForRequire } from '../runtime/require-resolver.js';
+import { hasTopLevelModuleSyntax } from '../runtime/javascript-ast.js';
+import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
+import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, } from '../constants.js';
 /**
  * Detect & restore a Uint8Array that's been JSON-mangled to a
@@ -85,6 +73,44 @@ function _reviveVfsWriteCell(v) {
 }
 // ── Code generators ─────────────────────────────────────────────────────
 const SHIMS = generateShimsCode();
+function getNimbusCtxExports() {
+    const ctxExports = getCtxExports();
+    if (!ctxExports || typeof ctxExports !== 'object') {
+        throw new Error('Nimbus: ctx.exports unavailable');
+    }
+    return ctxExports;
+}
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+function isNimbusWorkerLoader(value) {
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null)
+        return false;
+    return typeof Reflect.get(value, 'load') === 'function' && typeof Reflect.get(value, 'get') === 'function';
+}
+function parseFacetManagerEnv(env) {
+    const loader = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+        ? Reflect.get(env, 'LOADER')
+        : undefined;
+    if (!isNimbusWorkerLoader(loader)) {
+        throw new Error('FacetManager requires an env.LOADER binding with load() and get()');
+    }
+    return { LOADER: loader };
+}
+async function createLoadedWorkerEntrypoint(ctxExports, code, supervisor, name = null, key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`) {
+    if (!ctxExports.NimbusLoadedEntrypoint) {
+        throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
+    }
+    return await ctxExports.NimbusLoadedEntrypoint({
+        props: {
+            key,
+            name,
+            depth: 0,
+            code,
+            supervisor,
+        },
+    });
+}
 const ENTRYPOINT_PROMISE_TRACKER = `
 function __makeEntrypointPromiseTracker() {
   const __tracked = new Set();
@@ -134,30 +160,42 @@ function __makeEntrypointPromiseTracker() {
       } catch {}
     },
     track: __track,
-    async drain() {
-      while (__tracked.size > 0) {
-        const __slice = Array.from(__tracked);
-        await Promise.allSettled(__slice);
-        await new Promise((resolve) => setTimeout(resolve, 0));
+    async drain(exitPromise, maxPasses = 12, minPasses = 0) {
+      const __exit = {};
+      for (let __pass = 0; __pass < maxPasses && (__tracked.size > 0 || __pass < minPasses); __pass++) {
+        if (exitPromise && typeof exitPromise.then === "function") {
+          const __result = await Promise.race([
+            new Promise((resolve) => setTimeout(() => resolve(null), 0)),
+            exitPromise.then(() => __exit, () => __exit),
+          ]);
+          if (__result === __exit) return;
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
       }
     },
   };
 }
 `;
+const ENTRYPOINT_STARTUP_DRAIN = `
+async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises) {
+  if (__entryResult && typeof __entryResult.then === "function") {
+    const __exit = {};
+    const __result = await Promise.race([
+      __entryResult.then(() => null),
+      __nimbusProcessExitPromise.then(() => __exit, () => __exit),
+    ]);
+    if (__result === __exit) return;
+  }
+  await __entryPromises.drain(__nimbusProcessExitPromise, 12, 4);
+}
+`;
 /**
- * Static `import * as __real_X from 'node:X'` block.  Prepended to both
- * facet-code templates (NodeProcess + LOADER.load fallback) so the
- * SHIMS string can forward to workerd's real `node:*` builtins.
- * See src/_shared/real-node-imports.ts for the rationale + matrix.
+ * Static `import * as __real_X from 'node:X'` block. Prepended to generated
+ * runtime workers so the shims can forward to workerd's real `node:*` builtins.
+ * See src/_shared/real-node-imports.ts for the rationale and matrix.
  */
 const REAL_NODE_IMPORTS = getRealNodeImportsCode();
-/** Simple hash for deduplicating identical code across invocations. */
-function hashCode(s) {
-    let h = 0;
-    for (let i = 0; i < s.length; i++)
-        h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-    return 'code-' + (h >>> 0).toString(36);
-}
 /**
  * Generate vite dev server facet code.
  * Long-running dynamic worker that serves files via SUPERVISOR RPC.
@@ -180,6 +218,18 @@ const MIME = {
 };
 
 const HMR_CLIENT = '<script type="module">window.addEventListener("message",e=>{if(e.data?.type==="nimbus-hmr"){if(e.data.event==="full-reload")location.reload();if(e.data.event==="css-update")document.querySelectorAll("link[rel=stylesheet]").forEach(l=>{l.href=l.href.split("?")[0]+"?t="+Date.now();})}});console.log("[nimbus-hmr] connected");</script>';
+
+function disposeRpcResult(value) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
+  const dispose = value[Symbol.dispose];
+  if (typeof dispose === 'function') { try { dispose.call(value); } catch {} }
+}
+
+async function useRpcResult(promise, use) {
+  const value = await promise;
+  try { return await use(value); }
+  finally { disposeRpcResult(value); }
+}
 
 function ext(p) { const i = p.lastIndexOf('.'); return i > 0 ? p.substring(i) : ''; }
 function strip(p) { return p.replace(/^\\/+/,''); }
@@ -225,7 +275,7 @@ export default {
         const loader = e === '.tsx' ? 'tsx' : e === '.jsx' ? 'jsx' : 'ts';
         if (sup) {
           try {
-            const result = await sup.transform(code, loader);
+            const result = await useRpcResult(sup.transform(code, loader), (value) => value);
             if (result) code = result.code;
           } catch {}
         }
@@ -271,391 +321,19 @@ export default {
 `;
 }
 /**
- * Generate dynamic worker code with a DurableObject class.
- * This is used with LOADER.get() + ctx.facets.get() (production path).
- */
-function generateFacetCode(userCode, vfsState) {
-    const safeCode = JSON.stringify(userCode);
-    // hardening-r5: route through binary-safe serializer so Uint8Array
-    // cells survive the module-text round-trip.
-    const safeBundle = _serializeBundleForFacet(vfsState.bundle);
-    const safeManifest = JSON.stringify(vfsState.manifest);
-    return `
-import { DurableObject } from "cloudflare:workers";
-${REAL_NODE_IMPORTS}
-
-const USER_CODE = ${safeCode};
-
-// X.5-S: conditional-param-rename wrap for new Function. esbuild ESM→CJS
-// transform output (W3.5 Fix B) preserves any source-level
-// \`const __dirname = path.dirname(fileURLToPath(import.meta.url))\` line
-// (vite's open@10 idiom), which collides at parse time with a hardcoded
-// \`__dirname\` parameter. Rename the param slot to a placeholder when
-// the body declares the same name — slot alignment is preserved
-// (callers pass positional args; dropping would mis-align downstream
-// slots), and the body's own binding becomes the single declarer.
-//
-// Generalised by nuxt-process-redeclare wave (2026-05-11) to also cover
-// the 7 extra-param shim names (\`process\`, \`console\`, \`Buffer\`,
-// \`setTimeout\`, \`setInterval\`, \`clearTimeout\`, \`clearInterval\`).
-// Pre-fix, the two-pass esbuild ESM→CJS path emitted \`const process =
-// (() => { const _m = require("node:process"); ... })();\` in the
-// requires block for \`import process from 'node:process'\` (nuxi.mjs
-// shape). That const declaration sits at the top-level of the wrapped
-// function body and collides with the \`process\` param at parse time:
-// SyntaxError: Identifier 'process' has already been declared.
-// Same class for the other 6 shim names. esbuild's single-pass CJS
-// path is unaffected (it renames the user's binding to \`process$1\`).
-//
-// Regex extended from (const|let|var) to (const|let|var|function|class)
-// as defensive coverage for future shapes — current convertEsmImportsToRequire
-// only emits \`const\` in the requires block, but the broader regex
-// guards against drift.
-//
-function __mkCompiledFn(code, extraParams) {
-  function renameIfDeclared(name) {
-    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
-    return re.test(code) ? name + "__nimbus_unused" : name;
-  }
-  const baseParams = [
-    "exports", "require", "module",
-    renameIfDeclared("__filename"),
-    renameIfDeclared("__dirname"),
-  ];
-  const renamedExtras = (extraParams || []).map(renameIfDeclared);
-  return new Function(...baseParams, ...renamedExtras, code);
-}
-
-const __compiledFn = __mkCompiledFn(USER_CODE, [
-  "console", "process", "Buffer",
-  "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-  "global", "__args",
-]);
-
-// VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
-// __MODULE_VFS_BUNDLE   = capped path→content (workerd module-size budget).
-// __MODULE_VFS_MANIFEST = uncapped path→child-names map for directory shape
-//                         (W2.5b root-cause fix — see facet-manager.ts:453).
-const __MODULE_VFS_BUNDLE = ${safeBundle};
-const __MODULE_VFS_MANIFEST = ${safeManifest};
-const __compiledModules = new Map();
-// W3.5 Fix C: stop swallowing pre-compile errors. Record the path → error
-// message so __loadModule can surface the real reason (typically
-// SyntaxError on ESM source) instead of the misleading "file was not
-// pre-bundled" message at request time.
-const __compileFailures = new Map();
-// G2/G3 (runtime-pkg wave): sub-modules receive the SAME shim params
-// as the entry. Pre-fix, sub-module precompiled fns took only
-// (exports, require, module, __filename, __dirname); their references
-// to process, console, Buffer resolved up the V8 scope chain to
-// workerd's GLOBAL bindings — so process.exit() inside any require'd
-// file hit workerd's real process API and produced 'Canceling the
-// request', and console.log bypassed our supervisor streaming.
-// Adding the extras to the param list shadows globals inside every
-// sub-module body. require.main is also threaded so bins doing
-// 'if (require.main === module)' route correctly through the
-// scopedRequire chain (G2 cowsay).
-for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
-    try {
-      __compiledModules.set(__p, __mkCompiledFn(__c, [
-        "console", "process", "Buffer",
-        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-      ]));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
-  }
-}
-
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
-}
-
-export class NodeProcess extends DurableObject {
-  async run(argsJson) {
-    const args = JSON.parse(argsJson);
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
-    const __vfsBundle = __MODULE_VFS_BUNDLE;
-    const __vfsManifest = __MODULE_VFS_MANIFEST;
-    const __supervisor = this.env?.SUPERVISOR || null;
-    const __pendingIO = [];
-    // Fix 6 orphan-detection counters: every supervisor RPC push catches
-    // its own rejection (necessary for allSettled semantics), but that
-    // previously swallowed the drop silently. Count them so reportExit
-    // can include a summary in its tail, and the supervisor's ring
-    // buffer has proof that output was lost.
-    let __rpcDrops = 0;
-    let __rpcDropBytes = 0;
-    let __rpcLastError = "";
-    const __onRpcDrop = (bytes, e) => {
-      __rpcDrops++;
-      __rpcDropBytes += bytes | 0;
-      if (e) { __rpcLastError = (e && e.message) || String(e); }
-    };
-    let __rpcWriteChain = Promise.resolve();
-    const __queueRpcWrite = (method, s) => {
-      const __task = __rpcWriteChain
-        .then(() => __supervisor[method](s))
-        .catch((e) => __onRpcDrop(s.length, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-    };
-    let cwd = _cwd || "/home/user";
-    let stdout = "", stderr = "";
-    let exitCode = 0;
-    const __vfsWrites = {};
-    const __vfsDirs = {};
-
-${SHIMS}
-
-${ENTRYPOINT_PROMISE_TRACKER}
-
-    // Override console AND process.stdout/stderr for live SUPERVISOR streaming
-    if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
-      __consoleMod.warn = __consoleMod.error;
-      __consoleMod.info = __consoleMod.log;
-      __consoleMod.debug = __consoleMod.log;
-      // Hook process.stdout/stderr.write for live streaming (libraries use this directly)
-      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __queueRpcWrite("stdout", s); return true; };
-      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __queueRpcWrite("stderr", s); return true; };
-    }
-
-    // ── console-facet (2026-05-12): expose the shimmed console on
-    // globalThis so user code can reach it via BOTH \`console.log(...)\`
-    // (resolved through the __compiledFn positional 'console' param)
-    // AND \`globalThis.console.log(...)\` (resolved through the global
-    // scope). Pre-fix, only the positional binding was patched; calls
-    // through globalThis hit workerd's native console which writes
-    // to the worker log (NOT our supervisor stdout/stderr stream) so
-    // the output was lost from the user's perspective.
-    //
-    // Verbatim repro on prod:
-    //   $ node -e 'console.log("bare")'                  -> "bare"
-    //   $ node -e 'globalThis.console.log("global")'     -> (silent)
-    //   $ node -e 'console.log(globalThis.console === console)' -> false
-    //
-    // workerd's globalThis.console descriptor is writable+configurable
-    // (verified empirically — see smoketest-globalthis-write.mjs in
-    // assignment is sufficient. Do NOT touch globalThis.process /
-    // globalThis.Buffer here — Pyodide / Ruby bootstrap paths detect a
-    // Node-shaped env via globalThis.process and would take the wrong
-    // code path; see AGENTS.md gotcha #4.
-    try { globalThis.console = __consoleMod; } catch { /* readonly fallback */ }
-
-    // ── Unhandled rejection / uncaught error capture ──────────────────
-    //
-    // The try/catch around __compiledFn below catches only SYNCHRONOUS
-    // exceptions. Async fire-and-forget rejections (e.g.
-    //   import('./missing').then(({main}) => main())  // no .catch
-    // ) fire during the microtask drain and are neither caught nor
-    // reported \u2014 pre-fix the facet exits exitCode=0 with empty stderr,
-    // and the W5 zero-silent-OOM contract only catches non-zero exits.
-    //
-    // workerd's globalThis supports the standard WHATWG events:
-    //   - 'unhandledrejection' \u2014 fired on .reject() with no .catch
-    //   - 'error'              \u2014 uncaught synchronous errors on the
-    //                             global scope (e.g. errors thrown in
-    //                             setTimeout-scheduled callbacks that
-    //                             escape the __compiledFn try/catch)
-    //
-    // This listener converts each event into a stderr line + bumps
-    // exitCode to 1 (only on first event; subsequent events still
-    // append stderr). Mirrors real Node's default
-    // unhandled-rejection-is-fatal behaviour.
-    //
-    let __unhandledFired = false;
-    const __reportUnhandled = (label, reason) => {
-      // framework-fixes-F3 (2026-05-12): suppress reports whose reason
-      // is a __ProcessExit. process.exit(N) throws __ProcessExit by
-      // design (see __processMod.exit in node-shims.ts:2158) to halt
-      // user code. The outer try/catch at __compiledFn unwraps it for
-      // the SYNCHRONOUS case, but async fire-and-forget paths (e.g.
-      // create-remix's deprecation banner that calls process.exit(0)
-      // from an async main() with no .catch()) bubble it to the
-      // unhandled-rejection listener. Pre-fix that produced a noisy
-      // 'Unhandled promise rejection: Error: process.exit(0)' line
-      // alongside the expected exit. exitCode is already set correctly
-      // by the __processMod.exit shim AND by the catch in main run loop.
-      //
-      // Concrete repro: npm create remix@latest prints a deprecation
-      // banner from upstream + process.exit(0). User sees the banner
-      // (the user-facing semantic the upstream tool emits) and exit 0
-      // (correct), but ALSO the rejection noise (artifact of our shim
-      // shape). This filter removes the noise without changing exit
-      // semantics.
-      //
-      // The filter matches BOTH the class identity (reason instanceof
-      // __ProcessExit) AND the message shape (reason.message starts
-      // with 'process.exit(') because in async paths the unhandled-
-      // rejection event sometimes loses the prototype chain across
-      // microtask hops.
-      if (reason instanceof __ProcessExit) return;
-      if (reason && typeof reason.message === "string" &&
-          /^process\\.exit\\(/.test(reason.message)) return;
-      const text = reason && reason.stack
-        ? String(reason.stack)
-        : (reason && reason.message ? String(reason.message) : String(reason));
-      const line = label + ": " + text + "\\n";
-      stderr += line;
-      if (__supervisor && !captureOutput) {
-        try {
-          __pendingIO.push(__supervisor.stderr(line).catch((e) =>
-            __onRpcDrop(line.length, e)));
-        } catch {}
-      }
-      if (!__unhandledFired) {
-        __unhandledFired = true;
-        if (exitCode === 0) exitCode = 1;
-      }
-    };
-    globalThis.addEventListener("unhandledrejection", (event) => {
-      __reportUnhandled("Unhandled promise rejection", event && event.reason);
-    });
-    globalThis.addEventListener("error", (event) => {
-      // ErrorEvent \u2014 uncaught synchronous error on the global scope.
-      // The try/catch around __compiledFn captures errors thrown DURING
-      // its synchronous execution; this listener catches errors from
-      // setTimeout/setInterval/microtask callbacks that escape the
-      // entry scope.
-      __reportUnhandled("Uncaught", event && (event.error || event.message));
-    });
-
-    const mod = { exports: {} };
-    // G2 (runtime-pkg wave): bins commonly check
-    //   if (require.main === module) { main(); }
-    // — the canonical 'is this file being executed directly?' guard.
-    // Pre-fix, __require.main was null; the check was always false;
-    // bins like cowsay silently treated themselves as imported and
-    // never ran main(). Setting require.main = entry's module here
-    // (and to the loaded module on each __loadModule call below)
-    // makes the check true exactly when the file is the entry.
-    __require.main = mod;
-    try {
-      const __entryPromises = __makeEntrypointPromiseTracker();
-      let __entryResult;
-      __entryPromises.start();
-      try {
-        __entryResult = __compiledFn(
-          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
-          __consoleMod, __processMod, __BufferMod,
-          globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
-          globalThis, argv || []
-        );
-      } finally {
-        __entryPromises.stop();
-      }
-      __entryPromises.track(__entryResult);
-      if (__entryResult && typeof __entryResult.then === "function") await __entryResult;
-      await __entryPromises.drain();
-    } catch (e) {
-      if (e instanceof __ProcessExit) { exitCode = e.code; }
-      else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        // Stream the trace live so it lands in the supervisor ring buffer.
-        // Without this, the error is visible only in the local 'stderr'
-        // string which gets zeroed below when __supervisor is attached,
-        // leaving the user with an empty prompt after a crash.
-        if (__supervisor && !captureOutput) {
-          try { __pendingIO.push(__supervisor.stderr(trace + "\\n").catch((e2) => __onRpcDrop((trace || "").length + 1, e2))); } catch {}
-        }
-      }
-    }
-
-    async function __drainPendingIO(maxPasses = 12) {
-      let __settledIO = 0;
-      for (let __pass = 0; __pass < maxPasses; __pass++) {
-        await new Promise(r => setTimeout(r, 0));
-        if (__pendingIO.length <= __settledIO) break;
-        const __slice = __pendingIO.slice(__settledIO);
-        __settledIO = __pendingIO.length;
-        await Promise.allSettled(__slice);
-      }
-    }
-
-    await __drainPendingIO();
-
-    // Flush writes via SUPERVISOR RPC if available (live VFS writes)
-    const __failedWrites = {};
-    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(
-          __supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; })
-        );
-      }
-    }
-    await __drainPendingIO();
-
-    // W8 BLOCKER-1 fix: parent-exit synchronous flush of any live
-    // child_process children. Without this, output from spawn-and-forget
-    // children (e.g., concurrently 'echo a' 'echo b' from a parent that
-    // exits before its data listeners drain) gets dropped between the
-    // last cpReadOutput poll and reportExit. __cpDrainAllChildren issues
-    // a single cpDrainOutput RPC per live child to flush remaining
-    // buffers; idempotent on already-exited children.
-    try {
-      if (__childProcessMod && typeof __childProcessMod.__cpDrainAllChildren === "function") {
-        await __childProcessMod.__cpDrainAllChildren();
-      }
-    } catch (e) {
-      // Best-effort. Drain failure must not block reportExit.
-    }
-
-    // Report exit AFTER I/O drains so the ring buffer has everything the
-    // facet wrote before the dump fires on the supervisor side.
-    //
-    // Fix 6: include an orphan-drop tail in the exit report so the
-    // supervisor knows how many writes (and bytes) were lost, plus the
-    // last RPC error for debugging. Empty string when clean. Pid is
-    // intentionally omitted — the supervisor already knows the pid
-    // (it's the RPC parameter) and prepends its own banner.
-    if (__supervisor) {
-      let __tail = "";
-      if (__rpcDrops > 0) {
-        __tail = "[orphan output: " + __rpcDrops + " dropped RPC write(s), ~" +
-                 __rpcDropBytes + " bytes lost" +
-                 (__rpcLastError ? "; last error: " + __rpcLastError : "") + "]\\n";
-      }
-      try { await __supervisor.reportExit(exitCode, __tail); } catch {}
-    }
-
-    // Return results:
-    // - When SUPERVISOR streamed output live, return empty stdout/stderr
-    //   (prevents double display in the terminal)
-    // - Failed writes fall back to the old vfsWrites path for supervisor-side flush
-    return JSON.stringify({
-      exitCode,
-      stdout: (__supervisor && !captureOutput) ? "" : stdout,
-      stderr: (__supervisor && !captureOutput) ? "" : stderr,
-      vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
-    });
-  }
-}
-`;
-}
-/**
- * Generate fallback code with a plain fetch handler.
- * Used with LOADER.load() when facets are unavailable (local dev).
+ * Generate one-shot runtime code with a plain fetch handler.
  */
 function generateEntrypointCode(userCode, vfsState) {
     const safeCode = JSON.stringify(userCode);
-    // hardening-r5: same binary-safe serializer as generateFacetCode.
     const safeBundle = _serializeBundleForFacet(vfsState.bundle);
     const safeManifest = JSON.stringify(vfsState.manifest);
     return `
 ${REAL_NODE_IMPORTS}
 
 const USER_CODE = ${safeCode};
+const __NimbusHostResponse = globalThis.Response;
 
-// X.5-S: conditional-param-rename wrap. Kept byte-equivalent to
-// generateFacetCode's helper so both pre-compile loops see the same
-// diagnostic surface. See generateFacetCode for the rationale and the
-// nuxt-process-redeclare-wave generalisation rationale.
-function __mkCompiledFn(code, extraParams) {
+function __mkCompiledFn(code) {
   function renameIfDeclared(name) {
     const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
     return re.test(code) ? name + "__nimbus_unused" : name;
@@ -665,34 +343,26 @@ function __mkCompiledFn(code, extraParams) {
     renameIfDeclared("__filename"),
     renameIfDeclared("__dirname"),
   ];
-  const renamedExtras = (extraParams || []).map(renameIfDeclared);
-  return new Function(...baseParams, ...renamedExtras, code);
+  return new Function(...baseParams, code);
 }
 
-const __compiledFn = __mkCompiledFn(USER_CODE, [
-  "console", "process", "Buffer",
-  "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-  "global", "__args",
-]);
+let __compiledFn = null;
+let __entryCompileFailure = null;
+try {
+  __compiledFn = __mkCompiledFn(USER_CODE);
+} catch (__e) {
+  __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
+}
 
 // VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
-// See generateFacetCode for the rationale; this is the fallback (LOADER.load)
-// path used when facets API is unavailable.
 const __MODULE_VFS_BUNDLE = ${safeBundle};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __compiledModules = new Map();
-// W3.5 Fix C: keep this template byte-equivalent to generateFacetCode's
-// pre-compile loop so __loadModule sees the same diagnostic surface.
-// G2/G3 (runtime-pkg wave): same extra-params shim as the facet API
-// path above — see comment block there for the rationale.
 const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
-      __compiledModules.set(__p, __mkCompiledFn(__c, [
-        "console", "process", "Buffer",
-        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-      ]));
+      __compiledModules.set(__p, __mkCompiledFn(__c));
     } catch (__e) {
       __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
     }
@@ -738,6 +408,7 @@ export default {
 ${SHIMS}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
+${ENTRYPOINT_STARTUP_DRAIN}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
@@ -746,36 +417,35 @@ ${ENTRYPOINT_PROMISE_TRACKER}
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __queueRpcWrite("stdout", s); return true; };
-      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __queueRpcWrite("stderr", s); return true; };
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stdout += s; __queueRpcWrite("stdout", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stderr += s; __queueRpcWrite("stderr", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
 
-    // console-facet (2026-05-12): mirror the shimmed console onto
-    // globalThis so user code can reach it via globalThis.console.log
-    // as well as bare console.log. See generateFacetCode for the full
-    // rationale (verbatim repro + workerd descriptor empirical check).
-    try { globalThis.console = __consoleMod; } catch { /* readonly fallback */ }
+    try { globalThis.console = __consoleMod; } catch {}
+    try { globalThis.process = __processMod; } catch {}
+    try { globalThis.Buffer = __BufferMod; } catch {}
+    try { globalThis.global = globalThis; } catch {}
 
     const mod = { exports: {} };
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
+      if (__entryCompileFailure) throw new Error(__entryCompileFailure);
+      if (!__compiledFn) throw new Error("entrypoint compile failed");
       const __entryPromises = __makeEntrypointPromiseTracker();
       let __entryResult;
       __entryPromises.start();
       try {
         __entryResult = __compiledFn(
-          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
-          __consoleMod, __processMod, __BufferMod,
-          globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
-          globalThis, argv || []
+          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
         );
       } finally {
         __entryPromises.stop();
       }
       __entryPromises.track(__entryResult);
-      if (__entryResult && typeof __entryResult.then === "function") await __entryResult;
-      await __entryPromises.drain();
+      await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
+      if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
+      if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
@@ -809,8 +479,7 @@ ${ENTRYPOINT_PROMISE_TRACKER}
     }
     await __drainPendingIO();
 
-    // W8 BLOCKER-1 fix: parent-exit synchronous flush of child_process
-    // children. See generateFacetCode for the rationale.
+    // Drain child_process output before reporting process exit.
     try {
       if (__childProcessMod && typeof __childProcessMod.__cpDrainAllChildren === "function") {
         await __childProcessMod.__cpDrainAllChildren();
@@ -830,7 +499,7 @@ ${ENTRYPOINT_PROMISE_TRACKER}
       try { await __supervisor.reportExit(exitCode, __tail); } catch {}
     }
 
-    return Response.json({
+    return __NimbusHostResponse.json({
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
@@ -856,16 +525,19 @@ function generateLongRunningNodeCode(userCode, vfsState, opts) {
         filename: opts.filename || '<script>',
         dirname: opts.dirname || opts.cwd || '/home/user',
         stdin: opts.stdin || '',
+        attachedTty: opts.attachedTty === true,
     });
     const safeBundle = _serializeBundleForFacet(vfsState.bundle);
     const safeManifest = JSON.stringify(vfsState.manifest);
     return `
+import { WorkerEntrypoint } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 
 const USER_CODE = ${safeCode};
 const __NIMBUS_ARGS = ${safeArgs};
+const __NimbusHostResponse = globalThis.Response;
 
-function __mkCompiledFn(code, extraParams) {
+function __mkCompiledFn(code) {
   function renameIfDeclared(name) {
     const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
     return re.test(code) ? name + "__nimbus_unused" : name;
@@ -875,15 +547,16 @@ function __mkCompiledFn(code, extraParams) {
     renameIfDeclared("__filename"),
     renameIfDeclared("__dirname"),
   ];
-  const renamedExtras = (extraParams || []).map(renameIfDeclared);
-  return new Function(...baseParams, ...renamedExtras, code);
+  return new Function(...baseParams, code);
 }
 
-const __compiledFn = __mkCompiledFn(USER_CODE, [
-  "console", "process", "Buffer",
-  "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-  "global", "__args",
-]);
+let __compiledFn = null;
+let __entryCompileFailure = null;
+try {
+  __compiledFn = __mkCompiledFn(USER_CODE);
+} catch (__e) {
+  __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
+}
 
 const __MODULE_VFS_BUNDLE = ${safeBundle};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
@@ -892,10 +565,7 @@ const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
-      __compiledModules.set(__p, __mkCompiledFn(__c, [
-        "console", "process", "Buffer",
-        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-      ]));
+      __compiledModules.set(__p, __mkCompiledFn(__c));
     } catch (__e) {
       __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
     }
@@ -909,6 +579,7 @@ class __ProcessExit extends Error {
 let __nimbusStarted = false;
 let __nimbusStarting = null;
 let __nimbusRuntime = null;
+let __nimbusAttachedLifecycle = null;
 
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
@@ -927,12 +598,12 @@ async function __nimbusFlushRuntime() {
   }
 }
 
-async function __nimbusEnsureStarted(workerEnv) {
+async function __nimbusEnsureStarted(workerEnv, workerCtx) {
   if (__nimbusStarted) return;
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty } = args;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __supervisor = workerEnv?.SUPERVISOR || null;
@@ -961,30 +632,57 @@ async function __nimbusEnsureStarted(workerEnv) {
 
 ${SHIMS}
 
+${ENTRYPOINT_PROMISE_TRACKER}
+${ENTRYPOINT_STARTUP_DRAIN}
+
     if (__supervisor && !captureOutput) {
       __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
       __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d) => { const s = String(d); stdout += s; __queueRpcWrite("stdout", s); return true; };
-      __processMod.stderr.write = (d) => { const s = String(d); stderr += s; __queueRpcWrite("stderr", s); return true; };
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stdout += s; __queueRpcWrite("stdout", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stderr += s; __queueRpcWrite("stderr", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
 
     try { globalThis.console = __consoleMod; } catch {}
+    try { globalThis.process = __processMod; } catch {}
+    try { globalThis.Buffer = __BufferMod; } catch {}
+    try { globalThis.global = globalThis; } catch {}
+    if (attachedTty) {
+      try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
+    }
 
     const mod = { exports: {} };
     __require.main = mod;
+    let __attachedCompletion = null;
+    let __attachedExplicitExit = false;
     try {
-      const __entryResult = __compiledFn(
-        mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user",
-        __consoleMod, __processMod, __BufferMod,
-        globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
-        globalThis, argv || []
-      );
-      if (__entryResult && typeof __entryResult.then === "function") await __entryResult;
+      if (__entryCompileFailure) throw new Error(__entryCompileFailure);
+      if (!__compiledFn) throw new Error("entrypoint compile failed");
+      const __entryPromises = __makeEntrypointPromiseTracker();
+      let __entryResult;
+      __entryPromises.start();
+      try {
+        __entryResult = __compiledFn(
+          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
+        );
+      } finally {
+        __entryPromises.stop();
+      }
+      __entryPromises.track(__entryResult);
+      if (__entryResult && typeof __entryResult.then === "function") {
+        if (attachedTty) __attachedCompletion = __entryResult;
+      }
+      if (attachedTty) {
+        await __entryPromises.drain(__nimbusProcessExitPromise, 32, 8);
+      } else {
+        await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
+      }
     } catch (e) {
       if (e instanceof __ProcessExit) {
+        __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
         const trace = (e && e.stack) || (e && e.message) || String(e);
@@ -1005,6 +703,43 @@ ${SHIMS}
     };
     await __nimbusFlushRuntime();
 
+    if (attachedTty && !__attachedExplicitExit) {
+      const __attachedLifecycle = (async () => {
+        if (__attachedCompletion) {
+          const __exitMarker = {};
+          const __result = await Promise.race([
+            __attachedCompletion.then(() => null),
+            __nimbusProcessExitPromise.then(() => __exitMarker),
+          ]);
+          if (__result === __exitMarker) return;
+        } else {
+          await __nimbusProcessExitPromise;
+        }
+        await __nimbusFlushRuntime();
+        if (__supervisor && !__nimbusProcessExitReported) {
+          await __supervisor.reportExit(0, "");
+        }
+      })().catch(async (e) => {
+        if (e instanceof __ProcessExit) {
+          await __nimbusFlushRuntime();
+          if (!__nimbusProcessExitReported) {
+            __nimbusReportProcessExit(e.code, "");
+          }
+          return;
+        }
+        const trace = (e && e.stack) || (e && e.message) || String(e);
+        stderr += trace + "\\n";
+        if (__supervisor) {
+          try { await __supervisor.stderr(trace + "\\n"); } catch {}
+          await __supervisor.reportExit(1, trace + "\\n");
+        }
+      });
+      __nimbusAttachedLifecycle = __attachedLifecycle;
+      workerCtx.waitUntil(__attachedLifecycle);
+    } else if (attachedTty && __attachedExplicitExit && __supervisor) {
+      if (!__nimbusProcessExitReported) await __supervisor.reportExit(exitCode, stderr);
+    }
+
     if (__rpcDrops > 0 && __supervisor) {
       const tail = "[orphan output: " + __rpcDrops + " dropped RPC write(s), ~" +
         __rpcDropBytes + " bytes lost" +
@@ -1012,8 +747,8 @@ ${SHIMS}
       try { await __supervisor.stderr(tail); } catch {}
     }
     if (exitCode !== 0) {
-      if (__supervisor) {
-        try { await __supervisor.reportExit(exitCode, stderr || ("exit " + exitCode + "\\n")); } catch {}
+      if (__supervisor && !__nimbusProcessExitReported) {
+        await __supervisor.reportExit(exitCode, stderr || ("exit " + exitCode + "\\n"));
       }
       throw new Error(stderr || ("long-running node startup exited " + exitCode));
     }
@@ -1022,18 +757,15 @@ ${SHIMS}
   return __nimbusStarting;
 }
 
-async function __nimbusDispatchHttp(req, workerEnv) {
-  await __nimbusEnsureStarted(workerEnv);
-  if (req.headers.get("X-Nimbus-Internal-Boot") === "1") {
-    return new Response(null, { status: 204 });
-  }
+async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
+  const url = new URL(req.url);
+  await __nimbusEnsureStarted(workerEnv, workerCtx);
   const ports = globalThis.__portRegistry;
   const hinted = Number(req.headers.get("X-Nimbus-Port") || 0);
   const server = ports && (ports.get(hinted) || ports.values().next().value);
   if (!server || typeof server._handleRequest !== "function") {
-    return new Response("Nimbus: no HTTP server is listening in this process", { status: 502 });
+    return new __NimbusHostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
   }
-  const url = new URL(req.url);
   const headers = {};
   req.headers.forEach((v, k) => { headers[k] = v; });
   let body = "";
@@ -1046,13 +778,19 @@ async function __nimbusDispatchHttp(req, workerEnv) {
     });
   }
   await __nimbusFlushRuntime();
-  return new Response((res._body || []).join(""), { status: res.statusCode || 200, headers: res.headers || {} });
+  return new __NimbusHostResponse((res._body || []).join(""), { status: res.statusCode || 200, headers: res.headers || {} });
 }
 
-export default {
-  async fetch(req, env) { return __nimbusDispatchHttp(req, env); },
-  async handleHttpRequest(req) { return __nimbusDispatchHttp(req, undefined); },
-};
+export class NimbusNodeProcess extends WorkerEntrypoint {
+  async startProcess() {
+    await __nimbusEnsureStarted(this.env, this.ctx);
+    if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
+    return { ok: true };
+  }
+  async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
+  async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
+}
+export default NimbusNodeProcess;
 `;
 }
 /**
@@ -1071,9 +809,6 @@ export default {
  */
 function _readBundleCell(vfs, path) {
     const bytes = vfs.readFile(path);
-    // Bun/workerd both support fatal:true on TextDecoder. Cast to any
-    // because TypeScript's lib.dom.d.ts marks ignoreBOM as required when
-    // an options object is provided; at runtime both fields are optional.
     try {
         return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     }
@@ -1719,22 +1454,21 @@ export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetSta
  * ENOENT at runtime.
  *
  * Fix shape: when entry is inside a `node_modules/<pkg>` directory,
- * walk that pkg dir's contents and pull every regular file under
+ * walk that pkg dir's contents and pull runtime package files under
  * VFS_BUNDLE_MAX_BYTES, capped at `MAX_PKG_FILES` per-pkg so a
- * 1000-file barrel package can't blow the bundle budget.
+ * 1000-file barrel package can't blow the bundle budget. Scaffold
+ * bundle profile keeps full package-template access for `create-*`
+ * initializers.
  *
- * The cap is intentionally generous (200 files): typical CLI
- * packages have <50 files; cowsay has ~85 (many .cow files);
- * commander has ~30. A 200-cap accommodates the long tail without
- * regressing big packages where the standard prefetch is already
- * doing the right thing.
+ * Runtime profile skips docs/examples/source maps/images, while scaffold
+ * profile preserves initializer template trees.
  *
  * Caller already passed the `cwd` and the `scriptPath`; we only act
  * if scriptPath is /<...>/node_modules/<pkg>/... — anything else
  * (user scripts, npx-cache files outside node_modules, eval) is
  * a no-op.
  */
-function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState) {
+function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile) {
     if (!scriptPath)
         return { added: 0 };
     const stripped = scriptPath.replace(/^\/+/, '');
@@ -1755,7 +1489,8 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState) {
     if (pkgEnd > segs.length)
         return { added: 0 };
     const pkgRoot = segs.slice(0, pkgEnd).join('/');
-    // npm-create-fix wave (2026-05-12): bumped from 200 to 1000 to cover
+    // npm-create-fix wave (2026-05-12): scaffold profile needs this cap
+    // high enough to cover
     // multi-template scaffolds. create-vite ships 242 files + 74 dirs (316
     // visit entries) across 21 template-* subdirs; the 200-cap exhausted
     // BFS budget before late-alphabetical template files (vanilla, vue, etc.)
@@ -1797,11 +1532,15 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState) {
                 continue;
             const child = dir + '/' + e.name;
             if (e.type === 'directory') {
+                if (!shouldVisitBinPackageDirectory(pkgRoot, child, bundleProfile))
+                    continue;
                 queue.push(child);
                 continue;
             }
             // File. Skip if already in bundle (the static walker beat us
-            // to it). Otherwise pull, respecting global budget caps.
+            // to it) or outside this profile's package-data policy.
+            if (!shouldIncludeBinPackageFile(pkgRoot, child, bundleProfile))
+                continue;
             if (bundle[child] !== undefined)
                 continue;
             if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
@@ -1826,6 +1565,60 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState) {
         }
     }
     return { added };
+}
+const RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS = new Set([
+    'docs',
+    'doc',
+    'examples',
+    'example',
+    'test',
+    'tests',
+    '__tests__',
+    'coverage',
+    '.github',
+]);
+const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
+    '.map',
+    '.d.ts',
+    '.d.ts.map',
+    '.tsbuildinfo',
+    '.md',
+    '.markdown',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.avif',
+    '.ico',
+    '.mp4',
+    '.mov',
+    '.webm',
+];
+function shouldIncludeBinPackageFile(pkgRoot, path, bundleProfile) {
+    if (bundleProfile === 'scaffold')
+        return true;
+    if (RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS.has(binPackageRootSegment(pkgRoot, path)))
+        return false;
+    const lower = binPackageRelativePath(pkgRoot, path).toLowerCase();
+    for (const suffix of RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES) {
+        if (lower.endsWith(suffix))
+            return false;
+    }
+    return true;
+}
+function shouldVisitBinPackageDirectory(pkgRoot, path, bundleProfile) {
+    if (bundleProfile === 'scaffold')
+        return true;
+    return !RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS.has(binPackageRootSegment(pkgRoot, path));
+}
+function binPackageRootSegment(pkgRoot, path) {
+    const rel = binPackageRelativePath(pkgRoot, path);
+    const firstSlash = rel.indexOf('/');
+    return firstSlash >= 0 ? rel.slice(0, firstSlash) : rel;
+}
+function binPackageRelativePath(pkgRoot, path) {
+    return path.startsWith(pkgRoot + '/') ? path.slice(pkgRoot.length + 1) : path;
 }
 function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
     const root = (cwd || '/home/user').replace(/^\/+/, '').replace(/\/+$/, '') || 'home/user';
@@ -1978,37 +1771,8 @@ function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
     }
     return { added };
 }
-/**
- * W3.5 Fix B helper — detect ESM source by sniffing for top-level
- * `import` / `export` STATEMENTS. Identifier/property uses (`obj.import`,
- * `pkg.export`) won't match because we anchor at start-of-line / `^\s*`.
- *
- * Comment stripping is intentionally cheap: regex over `//…` and
- * `/* … *​/` blocks. Strings containing the patterns won't be touched,
- * but esbuild produces valid CJS for any input it parses, so a false
- * positive is harmless (just a wasted transform).
- *
- * Misses to be aware of:
- *   - JSX-only files with no import/export — but those wouldn't load via
- *     plain new Function anyway (loader: 'js' rejects JSX).
- *   - Files inside a "type":"module" package that don't use import/export
- *     keywords (rare; nominally CJS-shaped). Accepted limitation, called
- */
 function looksLikeEsm(src) {
-    // Cheap comment strip. Not a full parser — enough to avoid the
-    // common false positives ("// import X" or `/* export */`).
-    const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-    // import STATEMENT: catches `^...import...`, `\n...import...`,
-    // `;import...` (post-statement on same line), `}import...` (post-block).
-    // Trailing `[\s{]` catches the no-whitespace minified form `import{...}from"..."`
-    // shipped by @tailwindcss/vite/dist/index.mjs and other minified ESM bundles.
-    // Skips dynamic `import(...)` (which is fine in CJS) because `(` ∉ `[\s{]`.
-    // anchor [\n;}] AND trailing [\s{]).
-    const importStmt = /(^|[\n;}])\s*import[\s{]/;
-    // export STATEMENT: same dual relaxation. Trailing `[\s{*]` covers
-    // `export ` (whitespace), `export{` (no-ws minified), and `export*`.
-    const exportStmt = /(^|[\n;}])\s*export[\s{*]/;
-    return importStmt.test(stripped) || exportStmt.test(stripped);
+    return hasTopLevelModuleSyntax(src);
 }
 /**
  * W3.5 Fix B — module-level cache for ESM→CJS transform results, keyed
@@ -2122,12 +1886,11 @@ async function transformEsmInBundle(bundle, esbuild) {
                 loader: 'js',
                 format: 'cjs',
                 target: 'esnext',
-                define: {
-                    'import.meta.url': JSON.stringify(absUrl),
-                },
+                define: importMetaDefines(absUrl),
             });
-            bundle[path] = t.code;
-            __esmTransformCache.set(key, t.code);
+            const code = bindImportMetaResolve(t.code, absUrl);
+            bundle[path] = code;
+            __esmTransformCache.set(key, code);
             transformed++;
         }
         catch (e) {
@@ -2186,7 +1949,7 @@ async function transformEsmInBundle(bundle, esbuild) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild) {
+async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE) {
     // 1. Static reachable-set walk from entry.
     const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
     const bundle = { ...prefetch.bundle };
@@ -2236,7 +1999,7 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild) {
     //      catches custom extensions (.cow, .pem, .ttf, .wasm bundled
     //      as data, etc.) without needing a per-pkg whitelist.
     //      No-op when entry isn't inside node_modules.
-    const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState);
+    const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile);
     void binSiblingAdd;
     totalBytes = budgetState.totalBytes;
     fileCount = budgetState.fileCount;
@@ -2340,16 +2103,16 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild) {
     void greedy;
     return { bundle, manifest, reachableCount: fileCount, truncated };
 }
+const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 export class FacetManager {
     ctx;
     env;
     processTable;
     portRegistry;
     vfs = null;
-    /** Track whether facets API is available (detected on first use). */
-    _hasFacets = null;
-    _facetLogOnce = false;
     hooks;
+    processRpcResources = new Map();
+    timedOutProcessIds = new Set();
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
      * over the prefetch bundle. Created on first exec where vfs is set;
@@ -2360,7 +2123,7 @@ export class FacetManager {
     esbuild = null;
     constructor(ctx, env, processTable, portRegistry, hooks = {}) {
         this.ctx = ctx;
-        this.env = env;
+        this.env = parseFacetManagerEnv(env);
         this.processTable = processTable;
         this.portRegistry = portRegistry;
         this.hooks = hooks;
@@ -2372,13 +2135,28 @@ export class FacetManager {
      * for the user-shell `node` runtime; sharing avoids paying init twice.
      */
     setEsbuildService(esbuild) { this.esbuild = esbuild; }
-    /**
-     * Execute JS code in a facet (or fallback dynamic worker).
-     *
-     * Strategy:
-     *   1. Try LOADER.get() + ctx.facets.get() (production: warm reuse, own SQLite)
-     *   2. Fallback: LOADER.load() + getEntrypoint().fetch() (local dev)
-     */
+    trackProcessRpcResources(pid, resources, options = {}) {
+        this.releaseProcessRpcResources(pid);
+        this.processRpcResources.set(pid, {
+            resources: [...resources],
+            releaseOnReportExit: options.releaseOnReportExit !== false,
+        });
+    }
+    releaseProcessRpcResources(pid) {
+        const tracked = this.processRpcResources.get(pid);
+        if (!tracked)
+            return;
+        this.processRpcResources.delete(pid);
+        disposeRpcResources(tracked.resources);
+    }
+    noteProcessReportedExit(pid, exitCode) {
+        this.portRegistry.unregisterByPid(pid);
+        this.processTable.exit(pid, exitCode);
+        const tracked = this.processRpcResources.get(pid);
+        if (tracked?.releaseOnReportExit)
+            this.releaseProcessRpcResources(pid);
+    }
+    /** Execute one-shot JS code in an isolated dynamic Worker. */
     async exec(code, opts) {
         const command = opts.command
             || (opts.filename && opts.filename !== '<eval>'
@@ -2426,61 +2204,14 @@ export class FacetManager {
             }
         }
         const vfsState = this.vfs
-            ? await buildPrefetchBundle(this.vfs, opts.filename, opts.cwd || '/home/user', code, this.esbuild || undefined)
+            ? await buildPrefetchBundle(this.vfs, opts.filename, opts.cwd || '/home/user', code, this.esbuild || undefined, opts.bundleProfile)
             : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+        const abortController = new AbortController();
         try {
-            let result;
-            // Try facets API first (production path)
-            if (this._hasFacets !== false) {
-                try {
-                    result = await this._execWithTimeout(this._execViaFacets(code, opts, entry, vfsState), entry);
-                    this._hasFacets = true;
-                    this.processTable.exit(entry.pid, result.exitCode);
-                    // W5 Lever 5: zero-silent-OOM contract — every non-zero exit
-                    // must yield a ring entry.
-                    if (result.exitCode !== 0) {
-                        this._w5RecordTermination(entry.pid, result.exitCode, 'facet', result.stderr || `exit ${result.exitCode}`);
-                    }
-                    this._flushVfsWrites(result);
-                    return result;
-                }
-                catch (facetErr) {
-                    // Detect if it's a facets-unavailable error vs a user code error
-                    const isFacetApiError = facetErr?.message?.includes('is not a function') ||
-                        facetErr?.message?.includes('facets') ||
-                        facetErr?.message?.includes('getDurableObjectClass') ||
-                        facetErr?.message?.includes('not available');
-                    if (!isFacetApiError) {
-                        // User code error — don't fall back. Route through the
-                        // external-exit hook so the supervisor's log store records
-                        // the exit AND the structured {type:'exit'} notification
-                        // fires on the terminal WS (otherwise the tabs UI shows a
-                        // stuck "running" dot for facets that crash before they get
-                        // a chance to self-report).
-                        this.processTable.exit(entry.pid, 1);
-                        this._w5RecordTermination(entry.pid, 1, 'facet', 'facet error: ' + (facetErr?.message || String(facetErr)));
-                        try {
-                            this.hooks.onExternalExit?.(entry.pid, 1, 'facet error: ' + (facetErr?.message || String(facetErr)));
-                        }
-                        catch { }
-                        this._flushVfsWrites({ exitCode: 1, stdout: '', stderr: '', vfsWrites: {} });
-                        return { exitCode: 1, stdout: '', stderr: facetErr?.message || String(facetErr) };
-                    }
-                    // Mark facets as unavailable and fall through
-                    if (this._hasFacets === null) {
-                        this._hasFacets = false;
-                        if (!this._facetLogOnce) {
-                            this._facetLogOnce = true;
-                            console.log('[nimbus] Facets API unavailable, using LOADER.load() fallback');
-                        }
-                    }
-                }
-            }
-            // Fallback: LOADER.load() (local dev)
-            result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState), entry);
+            const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal), entry, () => abortController.abort());
             this.processTable.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
-                this._w5RecordTermination(entry.pid, result.exitCode, 'facet', result.stderr || `exit ${result.exitCode}`);
+                this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
             }
             this._flushVfsWrites(result);
             return result;
@@ -2491,24 +2222,26 @@ export class FacetManager {
             // generic exit code 1. (_reportExternalExit's guard separately
             // prevents double-dump; this stops ProcessTable from showing a
             // different exit code than the ring buffer's footer.)
-            const timedOut = !!entry.__timedOut;
+            const timedOut = this.timedOutProcessIds.has(entry.pid);
             const exitCode = timedOut ? 124 : 1;
+            const reason = timedOut ? 'timeout' : `runtime worker error: ${errorMessage(err)}`;
             this.processTable.exit(entry.pid, exitCode);
             // W5 Lever 5: ring entry on every catch-path exit.
-            this._w5RecordTermination(entry.pid, exitCode, timedOut ? 'rpc' : 'facet', timedOut
-                ? 'timeout'
-                : ('facet error: ' + (err?.message || String(err))));
+            this._w5RecordTermination(entry.pid, exitCode, timedOut ? 'rpc' : 'runtime-worker', reason);
             // Non-timeout failure: route through external-exit so the log
             // store marks exit AND the tabs-UI structured event fires. The
             // timeout path already called onExternalExit from the timeout
             // handler; _reportExternalExit's getExit() guard dedupes.
             if (!timedOut) {
                 try {
-                    this.hooks.onExternalExit?.(entry.pid, exitCode, 'facet error: ' + (err?.message || String(err)));
+                    this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
                 }
                 catch { }
             }
-            return { exitCode, stdout: '', stderr: err?.message || String(err) };
+            return { exitCode, stdout: '', stderr: errorMessage(err) };
+        }
+        finally {
+            this.timedOutProcessIds.delete(entry.pid);
         }
     }
     /**
@@ -2546,84 +2279,14 @@ export class FacetManager {
             console.warn('[facet-manager/W5] recordFailure threw:', e?.message);
         }
     }
-    // ── Strategy 1: Real DO Facets (production) ───────────────────────────
-    async _execViaFacets(code, opts, entry, vfsState) {
-        const workerCode = generateFacetCode(code, vfsState);
-        // Scope the LOADER cache key to this DO. Without the doId prefix,
-        // two sessions that happen to execute identical code + vfs key sets
-        // share a warm isolate — and the isolate's baked-in env.SUPERVISOR
-        // stub was minted against whichever DO instantiated the slot FIRST.
-        // Same cross-session-slot-sharing failure mode that b225db3 fixed
-        // for install-time facets in facet-pool.ts; this path wasn't covered.
-        // Cache key includes manifest keys so a re-install that adds packages
-        // mints a fresh isolate (otherwise the warm slot's baked-in manifest
-        // would still hide newly-installed packages from readdirSync).
-        const codeId = `${this.ctx.id.toString()}:${hashCode(code + JSON.stringify(Object.keys(vfsState.bundle)) + JSON.stringify(Object.keys(vfsState.manifest)))}`;
-        // LOADER.get(id, callback) — creates/reuses a warm dynamic worker
-        // Pass SUPERVISOR binding for facet → supervisor RPC
-        const ctxExports = getCtxExports();
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid: entry.pid } })
-            : undefined;
-        const worker = this.env.LOADER.get(codeId, async () => ({
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-            mainModule: 'runner.js',
-            modules: { 'runner.js': workerCode },
-            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-        }));
-        // Get the DurableObject class from the dynamic worker
-        const NodeProcessClass = worker.getDurableObjectClass('NodeProcess');
-        // ctx.facets.get(name, callback) — creates a child DO with its own SQLite
-        const facetName = `proc-${entry.pid}`;
-        const facet = this.ctx.facets.get(facetName, async () => ({
-            class: NodeProcessClass,
-        }));
-        // RPC: call the facet's run() method (vfsBundle is embedded in the module code)
-        const argsJson = JSON.stringify({
-            argv: opts.argv || [],
-            env: opts.env || {},
-            cwd: opts.cwd || '/home/user',
-            filename: opts.filename || '<eval>',
-            dirname: opts.dirname || '/home/user',
-            stdin: opts.stdin || '',
-            captureOutput: !!opts.captureOutput,
-        });
-        // Clean up the facet (free SQLite storage) regardless of outcome.
-        // AUDIT.md M3 / STABILITY-AUDIT.md M-S2 / TOP-5-NEXT.md #3 (A3):
-        // prior to this, facets.delete ran only on the success branch.
-        // Timeouts (via _execWithTimeout) and user-code errors (throwing
-        // from facet.run) both left the ctx.facets entry and its per-facet
-        // SQLite storage slot orphaned until DO hibernation. Try/finally
-        // ensures cleanup for every exit path.
-        try {
-            const resultJson = await facet.run(argsJson);
-            const result = JSON.parse(resultJson);
-            return result;
-        }
-        finally {
-            try {
-                this.ctx.facets.delete(facetName);
-            }
-            catch { }
-        }
-    }
-    // ── Strategy 2: LOADER.load() fallback (local dev) ────────────────────
-    async _execViaLoader(code, opts, entry, vfsState) {
+    // ── One-shot dynamic Worker entrypoint ────────────────────────────────
+    async _execViaLoader(code, opts, entry, vfsState, signal) {
         const workerCode = generateEntrypointCode(code, vfsState);
-        // Pass SUPERVISOR binding for facet → supervisor RPC
+        // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid: entry.pid } })
             : undefined;
-        const worker = this.env.LOADER.load({
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-            mainModule: 'runner.js',
-            modules: { 'runner.js': workerCode },
-            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-        });
-        const entrypoint = worker.getEntrypoint();
         const body = JSON.stringify({
             argv: opts.argv || [],
             env: opts.env || {},
@@ -2633,11 +2296,37 @@ export class FacetManager {
             stdin: opts.stdin || '',
             captureOutput: !!opts.captureOutput,
         });
-        const response = await entrypoint.fetch(new Request('http://facet/run', {
-            method: 'POST',
-            body,
-        }));
-        return await response.json();
+        let worker;
+        let entrypoint;
+        try {
+            worker = this.env.LOADER.load({
+                compatibilityDate: CF_COMPAT_DATE,
+                compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+                mainModule: 'runner.js',
+                modules: { 'runner.js': workerCode },
+                ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+            });
+            entrypoint = worker.getEntrypoint();
+            if (typeof entrypoint.fetch !== 'function') {
+                throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
+            }
+            const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', {
+                method: 'POST',
+                body,
+                signal,
+            }));
+            try {
+                return await response.json();
+            }
+            finally {
+                disposeRpcResource(response);
+            }
+        }
+        finally {
+            disposeRpcResource(entrypoint);
+            disposeRpcResource(worker);
+            disposeRpcResource(supervisorBinding);
+        }
     }
     /** Flush files written by the script back to the supervisor's VFS. */
     _flushVfsWrites(result) {
@@ -2667,19 +2356,14 @@ export class FacetManager {
         }
     }
     /** Execution timeout. */
-    async _execWithTimeout(promise, entry) {
+    async _execWithTimeout(promise, entry, abort) {
         let timer;
-        let timedOut = false;
         const timeout = new Promise((_, reject) => {
             timer = setTimeout(() => {
-                timedOut = true;
-                // Try to abort the facet
-                try {
-                    this.ctx.facets?.abort(`proc-${entry.pid}`, new Error('timeout'));
-                }
-                catch { }
-                // The facet's `reportExit` never runs — notify the session so
-                // the ring buffer gets marked and any dump fires.
+                this.timedOutProcessIds.add(entry.pid);
+                abort();
+                // The process cannot report exit after the request is cancelled, so
+                // notify the session explicitly.
                 try {
                     this.hooks.onExternalExit?.(entry.pid, 124, // conventional timeout exit code
                     `timeout after ${FACET_TIMEOUT_MS / 1000}s`);
@@ -2695,10 +2379,8 @@ export class FacetManager {
             return await Promise.race([promise, timeout]);
         }
         finally {
-            clearTimeout(timer);
-            // Expose the flag so callers (exec's outer catch) can avoid
-            // overriding the exit code that onExternalExit already stamped.
-            entry.__timedOut = timedOut;
+            if (timer !== undefined)
+                clearTimeout(timer);
         }
     }
     /**
@@ -2710,9 +2392,9 @@ export class FacetManager {
      * Spawn a vite dev server facet.
      * Returns immediately with the facet stub for HTTP routing.
      */
-    spawnVite(root, basePath = '/preview') {
+    async spawnVite(root, basePath = '/preview') {
         const code = generateViteFacetCode(root, basePath);
-        return this.spawn(code, 'vite (' + root + ')', root);
+        return await this.spawn(code, 'vite (' + root + ')', root);
     }
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
@@ -2722,12 +2404,26 @@ export class FacetManager {
         this.processTable.reap();
         const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
         const cwd = opts.cwd || '/home/user';
-        const entry = this.processTable.spawn(command, opts.argv || [], cwd);
-        this.processTable.setLongRunning(entry.pid);
-        try {
-            this.hooks.onSpawn?.(entry.pid, command, true);
+        let entry;
+        if (opts.skipSpawn && opts.callerPid != null) {
+            const found = this.processTable.get(opts.callerPid);
+            if (!found) {
+                throw new Error(`facetMgr.spawnNode skipSpawn: callerPid=${opts.callerPid} not in processTable`);
+            }
+            entry = found;
         }
-        catch { }
+        else {
+            entry = this.processTable.spawn(command, opts.argv || [], cwd);
+        }
+        this.processTable.setLongRunning(entry.pid);
+        if (opts.attachedTty)
+            this.processTable.setAttachedTty(entry.pid);
+        if (!opts.skipSpawn) {
+            try {
+                this.hooks.onSpawn?.(entry.pid, command, true);
+            }
+            catch { }
+        }
         if (this.vfs && !this.esbuild) {
             try {
                 this.esbuild = new EsbuildService(this.vfs);
@@ -2737,39 +2433,96 @@ export class FacetManager {
             }
         }
         const vfsState = this.vfs
-            ? await buildPrefetchBundle(this.vfs, opts.filename, cwd, code, this.esbuild || undefined)
+            ? await buildPrefetchBundle(this.vfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
             : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
-        const workerCode = generateLongRunningNodeCode(code, vfsState, opts);
-        const ctxExports = getCtxExports();
+        const processEnv = opts.attachedTty
+            ? {
+                ...(opts.env || {}),
+                NIMBUS_ATTACHED_TTY: '1',
+                NIMBUS_CP_CHILD_PID: String(entry.pid),
+                TERM: opts.env?.TERM || 'xterm-256color',
+                COLORTERM: opts.env?.COLORTERM || 'truecolor',
+                COLUMNS: opts.env?.COLUMNS || '80',
+                LINES: opts.env?.LINES || '24',
+                FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
+            }
+            : opts.env;
+        const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv });
+        const ctxExports = getNimbusCtxExports();
+        const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
         const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid: entry.pid } })
+            ? ctxExports.SupervisorRPC({ props: supervisor })
             : undefined;
+        let worker;
+        let startStub;
+        let routeStub;
+        let resourcesTracked = false;
         try {
-            const worker = this.env.LOADER.load({
+            const workerKey = `nimbus-process:${supervisor.doId}:${supervisor.pid}`;
+            const workerConfig = {
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
                 mainModule: 'worker.js',
                 modules: { 'worker.js': workerCode },
                 ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-            });
-            const facetStub = worker.getEntrypoint();
-            const bootResponse = await facetStub.fetch(new Request('http://nimbus.internal/__nimbus_start', {
-                headers: { 'X-Nimbus-Internal-Boot': '1' },
-            }));
-            if (!bootResponse.ok) {
-                const body = await bootResponse.text().catch(() => '');
-                throw new Error(body || `long-running node boot failed with HTTP ${bootResponse.status}`);
+            };
+            const routeConfig = {
+                compatibilityDate: CF_COMPAT_DATE,
+                compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+                mainModule: 'worker.js',
+                modules: { 'worker.js': workerCode },
+            };
+            const loadedWorker = this.env.LOADER.get(workerKey, async () => workerConfig);
+            worker = loadedWorker;
+            startStub = loadedWorker.getEntrypoint();
+            routeStub = await createLoadedWorkerEntrypoint(ctxExports, routeConfig, supervisor, null, workerKey);
+            this.trackProcessRpcResources(entry.pid, [routeStub, startStub, worker, supervisorBinding], { releaseOnReportExit: !opts.attachedTty });
+            resourcesTracked = true;
+            this.portRegistry.bindFacetStub(entry.pid, routeStub);
+            if (typeof startStub.startProcess !== 'function') {
+                throw new Error('Nimbus: long-running node entrypoint has no startProcess method');
+            }
+            const startPromise = startStub.startProcess();
+            if (opts.attachedTty) {
+                this.ctx.waitUntil(startPromise
+                    .catch((e) => {
+                    const reason = 'long-running node process failed: ' + errorMessage(e);
+                    try {
+                        this.processTable.exit(entry.pid, 1);
+                    }
+                    catch { }
+                    try {
+                        this._w5RecordTermination(entry.pid, 1, 'facet', reason);
+                    }
+                    catch { }
+                    try {
+                        this.hooks.onExternalExit?.(entry.pid, 1, reason);
+                    }
+                    catch { }
+                })
+                    .finally(() => {
+                    this.releaseProcessRpcResources(entry.pid);
+                }));
+            }
+            else {
+                await startPromise;
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
-                this.portRegistry.register(opts.port, entry.pid, facetStub);
+                this.portRegistry.register(opts.port, entry.pid, routeStub);
             }
-            return { pid: entry.pid, facetStub };
+            return { pid: entry.pid, facetStub: startStub };
         }
         catch (e) {
+            this.portRegistry.unregisterByPid(entry.pid);
+            if (resourcesTracked)
+                this.releaseProcessRpcResources(entry.pid);
+            else
+                disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
             this.processTable.exit(entry.pid, 1);
-            this._w5RecordTermination(entry.pid, 1, 'facet', 'long-running node boot failed: ' + (e?.message || String(e)));
+            const reason = 'long-running node boot failed: ' + errorMessage(e);
+            this._w5RecordTermination(entry.pid, 1, 'facet', reason);
             try {
-                this.hooks.onExternalExit?.(entry.pid, 1, 'long-running node boot failed: ' + (e?.message || String(e)));
+                this.hooks.onExternalExit?.(entry.pid, 1, reason);
             }
             catch { }
             throw e;
@@ -2785,8 +2538,8 @@ export class FacetManager {
      * @param command Display name for process listing
      * @returns Process entry with pid and facet stub
      */
-    spawn(workerCode, command, cwd, opts = {}) {
-        return this.spawnWorker(workerCode, command, cwd, {
+    async spawn(workerCode, command, cwd, opts = {}) {
+        return await this.spawnWorker(workerCode, command, cwd, {
             port: opts.port,
             compatibilityFlags: ['nodejs_compat'],
         });
@@ -2799,7 +2552,7 @@ export class FacetManager {
      * sockets, and future WASI socket servers should use
      * this path instead of each owning process-table and PortRegistry plumbing.
      */
-    spawnWorker(workerCode, command, cwd, opts = {}) {
+    async spawnWorker(workerCode, command, cwd, opts = {}) {
         this.processTable.reap();
         const entry = this.processTable.spawn(command, [], cwd);
         // child-process isolation gap #2: stamp the explicit longRunning flag on the
@@ -2814,23 +2567,57 @@ export class FacetManager {
             this.hooks.onSpawn?.(entry.pid, command, true);
         }
         catch { }
-        const ctxExports = getCtxExports();
+        const ctxExports = getNimbusCtxExports();
+        const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
         const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid: entry.pid } })
+            ? ctxExports.SupervisorRPC({ props: supervisor })
             : undefined;
-        const worker = this.env.LOADER.load({
+        const workerKey = `nimbus-process:${supervisor.doId}:${supervisor.pid}`;
+        const workerConfig = {
             compatibilityDate: CF_COMPAT_DATE,
             compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
             mainModule: 'worker.js',
             modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
             ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-        });
-        const facetStub = worker.getEntrypoint();
-        this.portRegistry.bindFacetStub(entry.pid, facetStub);
-        if (opts.port && opts.port > 0 && opts.port < 65536) {
-            this.portRegistry.register(opts.port, entry.pid, facetStub);
+        };
+        const routeConfig = {
+            compatibilityDate: CF_COMPAT_DATE,
+            compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
+            mainModule: 'worker.js',
+            modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
+        };
+        let worker;
+        let startStub;
+        let routeStub;
+        let resourcesTracked = false;
+        try {
+            const loadedWorker = this.env.LOADER.get(workerKey, async () => workerConfig);
+            worker = loadedWorker;
+            startStub = loadedWorker.getEntrypoint();
+            routeStub = await createLoadedWorkerEntrypoint(ctxExports, routeConfig, supervisor, null, workerKey);
+            this.trackProcessRpcResources(entry.pid, [routeStub, startStub, worker, supervisorBinding]);
+            resourcesTracked = true;
+            this.portRegistry.bindFacetStub(entry.pid, routeStub);
+            if (opts.port && opts.port > 0 && opts.port < 65536) {
+                this.portRegistry.register(opts.port, entry.pid, routeStub);
+            }
+            return { pid: entry.pid, facetStub: startStub };
         }
-        return { pid: entry.pid, facetStub };
+        catch (e) {
+            this.portRegistry.unregisterByPid(entry.pid);
+            if (resourcesTracked)
+                this.releaseProcessRpcResources(entry.pid);
+            else
+                disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+            this.processTable.exit(entry.pid, 1);
+            const reason = 'long-running worker boot failed: ' + errorMessage(e);
+            this._w5RecordTermination(entry.pid, 1, 'facet', reason);
+            try {
+                this.hooks.onExternalExit?.(entry.pid, 1, reason);
+            }
+            catch { }
+            throw e;
+        }
     }
     registerPort(pid, port, facetStub) {
         if (port > 0 && port < 65536) {
@@ -2840,9 +2627,13 @@ export class FacetManager {
     attachReservedPorts(pid, facetStub) {
         return this.portRegistry.attachFacetStubByPid(pid, facetStub);
     }
+    waitForRouteablePorts(pid, facetStub, timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS) {
+        return this.portRegistry.waitForRouteablePortsByPid(pid, facetStub, timeoutMs);
+    }
     finishProcess(pid, exitCode, reason = 'exited') {
         this.portRegistry.unregisterByPid(pid);
         this.processTable.exit(pid, exitCode);
+        this.releaseProcessRpcResources(pid);
         if (exitCode !== 0) {
             this._w5RecordTermination(pid, exitCode, 'facet', reason);
             try {
@@ -2865,6 +2656,7 @@ export class FacetManager {
         }
         catch { }
         this.portRegistry.unregisterByPid(pid);
+        this.releaseProcessRpcResources(pid);
         const result = this.processTable.kill(pid);
         if (result) {
             try {

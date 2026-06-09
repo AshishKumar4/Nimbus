@@ -347,7 +347,16 @@ class __NimbusVirtualSocketKernel {
     this.connections.set(id, conn);
     listener.push(conn);
     try {
-      try { await globalThis.__nimbusVirtualSocketRequestQueued?.(Number(port)); } catch {}
+      try {
+        const accepted = await globalThis.__nimbusVirtualSocketRequestQueued?.(Number(port));
+        if (accepted === false) {
+          const detail = typeof globalThis.__nimbusVirtualSocketLastError === "string"
+            ? globalThis.__nimbusVirtualSocketLastError.trim()
+            : "";
+          const suffix = detail ? ": " + detail : "";
+          return new Response("Nimbus virtual socket: runtime handler did not accept the request" + suffix, { status: 502 });
+        }
+      } catch {}
       return await conn.response(__NIMBUS_SOCKET_TIMEOUT_MS);
     } finally {
       conn.close();

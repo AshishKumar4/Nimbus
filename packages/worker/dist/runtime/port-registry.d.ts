@@ -25,6 +25,9 @@
  *   the facet can consume once. The returned Response is returned
  *   to the outer fetch as-is; its body is streamed directly.
  */
+export interface RouteableFacetTarget {
+    handleHttpRequest(request: Request): Promise<Response>;
+}
 export interface PortEntry {
     port: number;
     pid: number;
@@ -33,16 +36,17 @@ export interface PortEntry {
      * May be null when a facet has reserved a port but not yet wired up
      * the request handler (see _rpcRegisterPort in nimbus-session.ts).
      */
-    facetStub: any;
+    facetStub: RouteableFacetTarget | null;
     registeredAt: number;
 }
 export declare class PortRegistry {
     private ports;
     private facetStubsByPid;
-    /** Remember the routeable facet stub for a running process. */
-    bindFacetStub(pid: number, facetStub: any): void;
+    private portWaitersByPid;
+    /** Remember the available facet capabilities for a running process. */
+    bindFacetStub(pid: number, facetStub: unknown): void;
     /** Register a facet as listening on a port. */
-    register(port: number, pid: number, facetStub: any): void;
+    register(port: number, pid: number, facetStub: unknown): void;
     /** Unregister a port. */
     unregister(port: number): boolean;
     /** Unregister all ports owned by a specific PID. */
@@ -50,7 +54,9 @@ export declare class PortRegistry {
     /** Look up a port entry. */
     get(port: number): PortEntry | undefined;
     /** Attach a routeable facet stub to ports previously reserved by a PID. */
-    attachFacetStubByPid(pid: number, facetStub: any): number[];
+    attachFacetStubByPid(pid: number, facetStub: unknown): number[];
+    getRouteablePortsByPid(pid: number): number[];
+    waitForRouteablePortsByPid(pid: number, facetStub: unknown, timeoutMs: number): Promise<number[]>;
     /** Check if a port is registered. */
     has(port: number): boolean;
     /** Get all registered ports. */
@@ -81,5 +87,7 @@ export declare class PortRegistry {
             pid: number;
         }[];
     };
+    private waitForPidPortChange;
+    private notifyPortWaiters;
 }
 //# sourceMappingURL=port-registry.d.ts.map

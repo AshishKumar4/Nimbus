@@ -19,11 +19,18 @@
  *   { name, version, license, wasi_namespace, memfs_companion,
  *     files: [{ path, content, sha256, size, mode? }],
  *     entrypoints: [{ binName, runner, args[], kind? }],
- *     runtime_artifacts?: [{ path, kind, id, source_sha256?, sha256 }] }
+ *     runtime_artifacts?: [
+ *       { path, kind: "workerd-adapter", id, source_sha256?, sha256 },
+ *       { path, kind: "python-package", id, language: "python", packageName,
+ *         version, abi, pyodideVersion, pythonVersion, wheelFileName,
+ *         wheelSha256, loadMode: "startup-module", imports[], dependencies[],
+ *         extensionModules[] }
+ *     ] }
  *
  * R2 and Cache API failures throw; the shell verb formats the diagnostic for
  * the user.
  */
+import { z } from 'zod/v4';
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {
     get(key: string): Promise<{
@@ -78,6 +85,29 @@ export interface RuntimeArtifactMetadata {
     source_sha256?: string;
     sha256: string;
 }
+export type RuntimePythonPackageAbi = 'pyodide-emscripten-2025_0-wasm32';
+export interface RuntimePythonExtensionModuleMetadata {
+    /** Path inside Python site-packages, as stored in the wheel. */
+    path: string;
+    /** Path inside the installed Nimbus runtime root. */
+    runtimePath: string;
+    sha256: string;
+}
+export interface RuntimePythonPackageArtifactMetadata extends RuntimeArtifactMetadata {
+    kind: 'python-package';
+    language: 'python';
+    packageName: string;
+    version: string;
+    abi: RuntimePythonPackageAbi;
+    pyodideVersion: string;
+    pythonVersion: string;
+    wheelFileName: string;
+    wheelSha256: string;
+    loadMode: 'startup-module';
+    imports: string[];
+    dependencies: string[];
+    extensionModules: RuntimePythonExtensionModuleMetadata[];
+}
 export interface RuntimeManifest {
     name: string;
     version: string;
@@ -92,6 +122,10 @@ export interface RuntimeManifest {
     entrypoints: ManifestEntrypoint[];
     runtime_artifacts?: RuntimeArtifactMetadata[];
 }
+export declare const RuntimePythonPackageArtifactMetadataSchema: z.ZodType<RuntimePythonPackageArtifactMetadata>;
+export declare function parseRuntimeCatalog(value: unknown): RuntimeCatalog;
+export declare function parseRuntimeManifest(value: unknown): RuntimeManifest;
+export declare function isRuntimePythonPackageArtifactMetadata(artifact: RuntimeArtifactMetadata): artifact is RuntimePythonPackageArtifactMetadata;
 /** Fetch the top-level catalog. Throws if neither L2 nor R2 has it. */
 export declare function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCatalog>;
 /** Fetch a per-version manifest by its R2 key. */
@@ -105,5 +139,6 @@ export declare function fetchManifest(env: RuntimeCatalogEnv, manifestKey: strin
  * a hard integrity failure.
  */
 export declare function fetchBlob(env: RuntimeCatalogEnv, blobKey: string, expectedSha256?: string): Promise<Uint8Array>;
+export declare function sha256Hex(bytes: Uint8Array): Promise<string>;
 export {};
 //# sourceMappingURL=runtime-catalog.d.ts.map

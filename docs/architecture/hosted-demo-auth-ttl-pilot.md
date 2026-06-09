@@ -62,8 +62,8 @@ Current hosted-demo state:
   or `sid` pinning.
 - `auth/middleware.ts` documents `nimbus_token` query-to-cookie behavior, but
   the router does not currently set that cookie.
-- There is no core `destroy()` primitive for deleting a whole sandbox and
-  reclaiming DO SQLite storage.
+- The SDK exposes `destroy()` for deleting a whole sandbox and reclaiming DO
+  SQLite storage; remote calls require `session:destroy` or `session:admin`.
 
 ## Design Principles
 

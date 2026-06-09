@@ -191,6 +191,10 @@ export interface MinimalPackument {
     libc?: string[];
     main?: string;
 }
+export interface PackageBinManifest {
+    name: string;
+    bin?: Record<string, string>;
+}
 /**
  * Heuristic: does this packument represent a platform-native binding
  * that workerd cannot load?
@@ -211,6 +215,7 @@ export interface MinimalPackument {
  * resolved tree).
  */
 export declare function isOptionalNativeBinding(p: MinimalPackument): boolean;
+export declare function nativeExecutableReject(pkg: PackageBinManifest): RejectEntry | undefined;
 /**
  * Select which entries in `peerDependencies` should be auto-installed.
  *

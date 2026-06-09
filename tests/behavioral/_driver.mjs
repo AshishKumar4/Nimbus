@@ -14,6 +14,7 @@ import WebSocket from 'ws';
 
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
 export const WS_BASE = BASE.replace(/^http/, 'ws');
+export const AUTH_COOKIE = process.env.NIMBUS_PROBE_COOKIE || process.env.NIMBUS_AUTH_COOKIE || '';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,9 +22,17 @@ export function stripAnsi(s) {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
 }
 
+export function requestHeaders(extra = {}) {
+  return AUTH_COOKIE ? { Cookie: AUTH_COOKIE, ...extra } : extra;
+}
+
+function wsHeaders() {
+  return AUTH_COOKIE ? { headers: { Cookie: AUTH_COOKIE } } : undefined;
+}
+
 /** POST /new → 302 → sid. The only session-creation surface. */
 export async function mintSession() {
-  const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual' });
+  const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual', headers: requestHeaders() });
   const loc = r.headers.get('location');
   if (!loc) throw new Error(`POST /new returned no Location (status ${r.status})`);
   const m = loc.match(/\/s\/([^/]+)/);
@@ -31,11 +40,20 @@ export async function mintSession() {
   return m[1];
 }
 
+export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
+  const r = await fetch(`${BASE}/s/${encodeURIComponent(sid)}/`, {
+    method: 'DELETE',
+    headers: requestHeaders({ 'X-Nimbus-Cleanup-Reason': reason }),
+  });
+  const text = await r.text().catch(() => '');
+  return { ok: r.ok, status: r.status, body: text };
+}
+
 /** GET /s/<sid>/preview/ — returns {status, html}. */
 export async function fetchPreview(sid, opts = {}) {
   const url = `${BASE}/s/${sid}/preview/${opts.path || ''}`;
   const t0 = Date.now();
-  const r = await fetch(url, { redirect: 'manual' });
+  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
   const text = await r.text().catch(() => '');
   return { status: r.status, html: text, elapsed: Date.now() - t0, url };
 }
@@ -44,7 +62,7 @@ export async function fetchPreview(sid, opts = {}) {
 export async function fetchPort(sid, port, path = '') {
   const url = `${BASE}/s/${sid}/port/${port}/${path}`;
   const t0 = Date.now();
-  const r = await fetch(url, { redirect: 'manual' });
+  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
   const text = await r.text().catch(() => '');
   return { status: r.status, body: text, elapsed: Date.now() - t0, url };
 }
@@ -64,7 +82,7 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`);
+    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, AUTH_COOKIE ? { headers: { Cookie: AUTH_COOKIE } } : undefined);
     this.connected = false;
     this.closed = false;
     this.ws.on('open', () => { this.connected = true; });
@@ -153,6 +171,66 @@ export class Terminal {
       }, 25);
     });
   }
+}
+
+export async function connectProcessTerminal(sid, pid, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const ws = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${pid}`, wsHeaders());
+  let open = false;
+  let closed = false;
+  let exit = null;
+  let stdinAck = null;
+  let text = '';
+
+  ws.on('open', () => { open = true; });
+  ws.on('close', () => { closed = true; });
+  ws.on('error', () => {});
+  ws.on('message', (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
+    if (msg.type === 'backlog') {
+      for (const chunk of msg.chunks || []) text += String(chunk.data || '');
+    } else if (msg.type === 'chunk') {
+      text += String(msg.data || '');
+    } else if (msg.type === 'exit') {
+      exit = msg;
+    } else if (msg.type === 'stdin-ack') {
+      stdinAck = msg;
+    }
+  });
+
+  const started = Date.now();
+  while (!open && Date.now() - started < timeoutMs) await sleep(50);
+  if (!open) throw new Error('process terminal WebSocket connect timeout');
+
+  return {
+    ws,
+    async waitFor(predicate, waitMs = 30_000, label = 'process terminal output') {
+      const t0 = Date.now();
+      while (Date.now() - t0 < waitMs) {
+        if (predicate(stripAnsi(text))) return Date.now() - t0;
+        if (closed) {
+          throw new Error(`process terminal WebSocket closed while waiting for ${label}; tail=${JSON.stringify(stripAnsi(text).slice(-400))}`);
+        }
+        await sleep(50);
+      }
+      throw new Error(`waitFor(${label}) timeout after ${waitMs}ms; tail=${JSON.stringify(stripAnsi(text).slice(-400))}`);
+    },
+    input(data) {
+      ws.send(JSON.stringify({ type: 'input', data }));
+    },
+    resize(columns, rows) {
+      ws.send(JSON.stringify({ type: 'resize', columns, rows }));
+    },
+    signal(signal) {
+      ws.send(JSON.stringify({ type: 'signal', signal }));
+    },
+    get rawOutput() { return text; },
+    get output() { return stripAnsi(text); },
+    get stdinAck() { return stdinAck; },
+    get exit() { return exit; },
+    get closed() { return closed; },
+  };
 }
 
 /** Write a file via base64 + node -e to avoid shell-quoting hazards. */

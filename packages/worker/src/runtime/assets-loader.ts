@@ -35,6 +35,8 @@
  * same content.
  */
 
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+
 /**
  * Per-isolate cache. Keys are asset paths (e.g. `/_assets/foo.js`).
  * Values are settled promises so concurrent callers share the same
@@ -99,24 +101,28 @@ export function loadAssetBytes(
     // — it just routes by pathname. Use a stable sentinel origin.
     const url = `https://assets.invalid${path}`;
     const r = await assets.fetch(url);
-    if (r.status === 404) {
-      throw new NimbusAssetLoadError(
-        `Asset not found: ${path}`,
-        'E_ASSET_NOT_FOUND',
-        path,
-        404,
-      );
+    try {
+      if (r.status === 404) {
+        throw new NimbusAssetLoadError(
+          `Asset not found: ${path}`,
+          'E_ASSET_NOT_FOUND',
+          path,
+          404,
+        );
+      }
+      if (!r.ok) {
+        throw new NimbusAssetLoadError(
+          `Asset fetch failed: ${path} → ${r.status}`,
+          'E_ASSET_FETCH_FAILED',
+          path,
+          r.status,
+        );
+      }
+      const buf = await r.arrayBuffer();
+      return new Uint8Array(buf);
+    } finally {
+      disposeRpcResource(r);
     }
-    if (!r.ok) {
-      throw new NimbusAssetLoadError(
-        `Asset fetch failed: ${path} → ${r.status}`,
-        'E_ASSET_FETCH_FAILED',
-        path,
-        r.status,
-      );
-    }
-    const buf = await r.arrayBuffer();
-    return new Uint8Array(buf);
   })();
   __assetBytesCache.set(path, promise);
   // Evict on failure so subsequent calls retry.
@@ -146,23 +152,27 @@ export function loadAssetText(
   const promise = (async () => {
     const url = `https://assets.invalid${path}`;
     const r = await assets.fetch(url);
-    if (r.status === 404) {
-      throw new NimbusAssetLoadError(
-        `Asset not found: ${path}`,
-        'E_ASSET_NOT_FOUND',
-        path,
-        404,
-      );
+    try {
+      if (r.status === 404) {
+        throw new NimbusAssetLoadError(
+          `Asset not found: ${path}`,
+          'E_ASSET_NOT_FOUND',
+          path,
+          404,
+        );
+      }
+      if (!r.ok) {
+        throw new NimbusAssetLoadError(
+          `Asset fetch failed: ${path} → ${r.status}`,
+          'E_ASSET_FETCH_FAILED',
+          path,
+          r.status,
+        );
+      }
+      return await r.text();
+    } finally {
+      disposeRpcResource(r);
     }
-    if (!r.ok) {
-      throw new NimbusAssetLoadError(
-        `Asset fetch failed: ${path} → ${r.status}`,
-        'E_ASSET_FETCH_FAILED',
-        path,
-        r.status,
-      );
-    }
-    return r.text();
   })();
   __assetTextCache.set(path, promise);
   promise.catch(() => __assetTextCache.delete(path));

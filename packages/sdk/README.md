@@ -161,6 +161,10 @@ Worker verifies the JWT, enforces `sid` pins and `sandbox:use` scope, applies
 the configured runtime policy, and delegates to the same `NimbusSession` RPC
 methods used by `Nimbus.fromEnv()`.
 
+Sandbox destruction is a separate lifecycle operation. Tokens that call
+`box.destroy()` must include `session:destroy` or `session:admin` in addition
+to the normal sandbox scope.
+
 ## Flue connector
 
 Use `@nimbus-sh/sdk/flue` when an agent runtime expects Flue's sandbox
@@ -240,7 +244,7 @@ object with `tools.exec.execute`, `runCode`, `readFile`, `writeFile`,
 `provider.capabilities` is intentionally honest: Nimbus claims shell,
 JavaScript/TypeScript, npm, git, owned filesystem, outbound fetch, inbound
 HTTP-like port routing, process spawn/long-running processes, Python/Ruby
-when allowed, and clang as WASI-native. It does not claim Docker, apt, GPU,
+when allowed, and clang-backed WASI/WebAssembly execution. It does not claim Docker, apt, GPU,
 custom Linux images, native Linux ELF execution, or raw TCP listeners.
 
 ## Quickstart — mint a session token

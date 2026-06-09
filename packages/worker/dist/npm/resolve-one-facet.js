@@ -23,6 +23,7 @@
  *       SHOULD_SWAP(name) → { from, to } | null
  *       SHOULD_WARN_SKIP_TRANSITIVE(name) → { from, reason } | null
  *       SHOULD_REJECT_FAIL(name) → { from, reason, suggest? } | null
+ *       NATIVE_EXECUTABLE_REJECT(pkg) → { from, reason, suggest? } | null
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null
@@ -119,6 +120,33 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         cacheStatEvents,
         error,
     });
+    const outNativeExecutableReject = (pkg, bytes, source) => {
+        const reject = NATIVE_EXECUTABLE_REJECT(pkg);
+        if (!reject)
+            return null;
+        if (spec.isOptional) {
+            messages.push(`[npm] [skip] ${spec.name} — ${reject.reason}`);
+            events.push({
+                type: 'transitive-skip',
+                from: spec.name,
+                reason: reject.reason,
+            });
+            return out(null, bytes, 'skipped');
+        }
+        events.push({
+            type: 'reject',
+            from: reject.from,
+            reason: reject.reason,
+            suggest: reject.suggest,
+            ctx: 'transitive',
+        });
+        return out(null, bytes, source, {
+            type: 'w6-reject',
+            from: reject.from,
+            reason: reject.reason,
+            suggest: reject.suggest,
+        });
+    };
     // 1. SKIP_PACKAGES gate.
     // @ts-ignore — preamble.
     if (!spec.topLevel && SHOULD_SKIP_PACKAGE(spec.name, !!spec.frameworkAware)) {
@@ -210,6 +238,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             module: cached.moduleField,
             bin,
         };
+        const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
+        if (nativeReject)
+            return nativeReject;
         return out(pkgFromCache, 0, 'cache-hit');
     }
     // 4 + 5. R2 race + network fetch.
@@ -229,7 +260,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (env?.SUPERVISOR && typeof env.SUPERVISOR.getCachedPackument === 'function') {
         try {
             const r2P = Promise.race([
-                env.SUPERVISOR.getCachedPackument(effName),
+                __nimbusUseRpcResult(env.SUPERVISOR.getCachedPackument(effName), (result) => result),
                 new Promise((rs) => setTimeout(() => rs(null), R2_RACE_MS)),
             ]).catch(() => null);
             const r2Raw = await r2P;
@@ -302,7 +333,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
                     // [W4] Best-effort R2 write-back. Awaited per W4-plan §11.
                     if (env?.SUPERVISOR && typeof env.SUPERVISOR.putCachedPackument === 'function') {
                         try {
-                            await env.SUPERVISOR.putCachedPackument(effName, packumentText);
+                            await __nimbusUseRpcResult(env.SUPERVISOR.putCachedPackument(effName, packumentText), () => undefined);
                         }
                         catch { /* swallow */ }
                     }
@@ -413,6 +444,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         return resolvedOut;
     };
     const pkg = versionToResolved(vData);
+    const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
+    if (nativeReject)
+        return nativeReject;
     // 8. Stage cache writes.
     cacheWrites.push({
         name: pkg.name,

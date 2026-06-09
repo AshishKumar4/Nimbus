@@ -42,6 +42,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { ProcessTable } from '../runtime/process-table.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import type { ProcessLogStore } from '../runtime/process-logs.js';
+import type { ProcessInputStore } from '../runtime/process-input.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
@@ -49,7 +50,7 @@ import type { ViteDevServer } from '../facets/vite-dev-server.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
-import type { Kernel, Shell } from '@lifo-sh/core';
+import type { Kernel, Shell } from '../substrate/lifo/index.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import type { W12EnableResult } from './replica-routes.js';
 
@@ -96,6 +97,7 @@ export interface SessionInternal {
   processTable: ProcessTable;
   portRegistry: PortRegistry;
   processLogs: ProcessLogStore;
+  processInput: ProcessInputStore;
 
   // ── W9 hibernation persistence state ────────────────────────────────
   _w9WsConfig: WsHibernationConfigResult | null;
@@ -189,7 +191,11 @@ export interface SessionInternal {
   _rpcListRuntimes(): Promise<any>;
   _rpcListProcesses(): Promise<any>;
   _rpcKillProcess(pid: number): Promise<{ ok: boolean; pid: number }>;
-  _rpcProcessLogs(pid: number, options?: { lines?: number; bytes?: number }): Promise<any>;
+  _rpcWriteProcessInput(pid: number, data: string): Promise<{ ok: boolean; pid: number }>;
+  _rpcEndProcessInput(pid: number): Promise<{ ok: boolean; pid: number }>;
+  _rpcResizeProcess(pid: number, size: { columns: number; rows: number }): Promise<{ ok: boolean; pid: number }>;
+  _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
+  _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<any>;
   _rpcListPorts(): Promise<any>;
   _rpcExposePort(port: number): Promise<any>;
   _rpcUnexposePort(port: number): Promise<any>;

@@ -1,0 +1,27 @@
+export declare const RESET = "\u001B[0m";
+export declare const BOLD = "\u001B[1m";
+export declare const DIM = "\u001B[2m";
+export declare const ITALIC = "\u001B[3m";
+export declare const UNDERLINE = "\u001B[4m";
+export declare const RED = "\u001B[31m";
+export declare const GREEN = "\u001B[32m";
+export declare const YELLOW = "\u001B[33m";
+export declare const BLUE = "\u001B[34m";
+export declare const MAGENTA = "\u001B[35m";
+export declare const CYAN = "\u001B[36m";
+export declare const WHITE = "\u001B[37m";
+export declare const BRIGHT_RED = "\u001B[91m";
+export declare const BRIGHT_GREEN = "\u001B[92m";
+export declare const BRIGHT_YELLOW = "\u001B[93m";
+export declare const BRIGHT_BLUE = "\u001B[94m";
+export declare const BRIGHT_MAGENTA = "\u001B[95m";
+export declare const BRIGHT_CYAN = "\u001B[96m";
+export declare function red(s: string): string;
+export declare function green(s: string): string;
+export declare function yellow(s: string): string;
+export declare function blue(s: string): string;
+export declare function magenta(s: string): string;
+export declare function cyan(s: string): string;
+export declare function bold(s: string): string;
+export declare function dim(s: string): string;
+//# sourceMappingURL=colors.d.ts.map

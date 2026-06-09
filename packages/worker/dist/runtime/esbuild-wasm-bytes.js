@@ -42,6 +42,7 @@
  * ASSETS fetch returning non-200 → throw (deploy bug, surface loudly).
  */
 import { ESBUILD_VERSION } from '../constants.js';
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 /**
  * Path inside env.ASSETS where the esbuild-wasm binary lives.
  * Versioned so a future esbuild-wasm bump produces a different asset
@@ -92,14 +93,20 @@ export async function fetchEsbuildWasmBytes(env) {
     // the host is ignored. Using `.invalid` per RFC-2606 makes it
     // unambiguous that this URL is internal-binding-only.
     const res = await env.ASSETS.fetch(new Request(url));
-    if (!res.ok) {
-        throw new Error(`esbuild-wasm asset fetch failed: ${res.status} ${res.statusText} ` +
-            `for ${ESBUILD_WASM_ASSET_PATH} — deploy is missing the wasm asset`);
+    let ab;
+    try {
+        if (!res.ok) {
+            throw new Error(`esbuild-wasm asset fetch failed: ${res.status} ${res.statusText} ` +
+                `for ${ESBUILD_WASM_ASSET_PATH} — deploy is missing the wasm asset`);
+        }
+        // Read the bytes once (Response body is a one-shot stream). The
+        // caller needs the ArrayBuffer to hand to workerd's LOADER; we
+        // also use it to write through to L2.
+        ab = await res.arrayBuffer();
     }
-    // Read the bytes once (Response body is a one-shot stream). The
-    // caller needs the ArrayBuffer to hand to workerd's LOADER; we
-    // also use it to write through to L2.
-    const ab = await res.arrayBuffer();
+    finally {
+        disposeRpcResource(res);
+    }
     // ── L2 write-back ──────────────────────────────────────────────
     // Eternal immutable TTL: the URL is version-pinned so a new
     // ESBUILD_VERSION lands a fresh cache entry; the old one naturally

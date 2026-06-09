@@ -3,15 +3,20 @@
  * scripts/bundle-npm-cjs.mjs. DO NOT EDIT.
  *
  * Pre-bundled ESM artifacts for CJS packages in the React ecosystem
- * (react, react-dom, scheduler). Ships alongside cirrus-plugin-react.
+ * (react, react-dom, scheduler). Ships as a static Worker asset alongside
+ * cirrus-plugin-react.
  * Consumed by src/cirrus-real.ts — injected as LOADER modules, and
  * the Vite resolver's output (e.g. /home/user/app/node_modules/react/index.js)
  * is rewritten to point at one of these bundles at request time.
  */
+import { type AssetsFetcher } from './runtime/assets-loader.js';
 export interface CirrusNpmCjsBundle {
     moduleName: string;
     code: string;
 }
 export declare const CIRRUS_NPM_CJS_VERSIONS: Record<string, string>;
-export declare const CIRRUS_NPM_CJS_BUNDLES: Record<string, CirrusNpmCjsBundle>;
+export declare const CIRRUS_NPM_CJS_BUNDLES_ASSET_PATH = "/_assets/cirrus-npm-cjs-bundles.json";
+export declare function getCirrusNpmCjsBundles(env: {
+    ASSETS: AssetsFetcher;
+}): Promise<Record<string, CirrusNpmCjsBundle>>;
 //# sourceMappingURL=cirrus-npm-cjs.generated.d.ts.map

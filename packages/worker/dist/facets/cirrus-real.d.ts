@@ -53,14 +53,15 @@
 import { HmrBridge } from './real-vite-hmr.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { VfsEventEmitter } from '../vfs/events.js';
+import type { ParsedViteConfig } from '../runtime/vite-config-parser.js';
 /**
  * Resolve opt-in mode.
  *
- * Priority: env var > vite.config.ts regex sniff > default ('cirrus').
+ * Priority: env var > parsed vite.config.ts opt-in > default ('cirrus').
  */
 export declare function shouldUseRealVite(opts: {
     env?: Record<string, string | undefined> | undefined;
-    viteConfigSource?: string | undefined;
+    viteConfig?: Pick<ParsedViteConfig, 'devServer' | 'importsVitePlugin'> | undefined;
 }): boolean;
 export declare class CirrusReal {
     private env;

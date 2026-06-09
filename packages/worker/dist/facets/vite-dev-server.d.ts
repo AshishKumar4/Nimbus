@@ -71,6 +71,38 @@ export interface ViteDevServerOptions {
         append: (pid: number, stream: 'stdout' | 'stderr', data: string) => void;
     };
 }
+/**
+ * Importer context for `#X` subpath-import resolution. The dev-server
+ * passes this through `rewriteAllImports` whenever it knows the source
+ * file the imports came from (transformed user TS files; cached
+ * pre-bundles via the package they belong to).
+ */
+interface HashImportCtx {
+    /** VFS path of the importing file (e.g. `home/user/app/src/foo.ts`). */
+    importerVfsPath: string;
+    /** Project root (e.g. `home/user/app`). Used to clip the resolved
+     *  target to a /preview-relative URL. */
+    root: string;
+    /** VFS readers — kept narrow so callers don't have to expose the
+     *  full SqliteVFS surface. */
+    vfs: {
+        exists(p: string): boolean;
+        readFileString(p: string): string;
+    };
+}
+/**
+ * Rewrite all bare import/export specifiers in JS code.
+ *
+ * Handles ALL import forms including multi-line:
+ *   1. import "specifier"                       (side-effect)
+ *   2. import defaultExport from "specifier"     (default)
+ *   3. import { named } from "specifier"         (named, possibly multi-line)
+ *   4. import * as ns from "specifier"           (namespace)
+ *   5. export { named } from "specifier"         (re-export)
+ *   6. export * from "specifier"                 (re-export all)
+ *   7. import("specifier")                       (dynamic)
+ */
+export declare function rewriteAllImports(code: string, aliases?: Record<string, string>, basePath?: string, importerCtx?: HashImportCtx): string;
 export declare class ViteDevServer {
     private vfs;
     private esbuild;
@@ -292,4 +324,5 @@ export declare class ViteDevServer {
         aliases: string[];
     };
 }
+export {};
 //# sourceMappingURL=vite-dev-server.d.ts.map

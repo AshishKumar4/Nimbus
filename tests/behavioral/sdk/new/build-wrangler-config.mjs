@@ -87,11 +87,9 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
   a.check('crc-32 alias present (required)', c.alias['crc-32'] === 'crc-32');
   a.check('clean-git-ref alias present (required)',
     c.alias['clean-git-ref'] === 'clean-git-ref/lib/index.js');
-  a.check('@lifo-sh/ui stub alias present (required)',
-    c.alias['@lifo-sh/ui'] === './node_modules/@nimbus-sh/worker/dist/stubs/lifo-ui.js');
   a.check('extra alias merged', c.alias['my-shim'] === 'my-shim-impl');
-  a.check('NIMBUS_REQUIRED_ALIASES has 13 entries',
-    Object.keys(NIMBUS_REQUIRED_ALIASES).length === 13);
+  a.check('NIMBUS_REQUIRED_ALIASES has 12 entries',
+    Object.keys(NIMBUS_REQUIRED_ALIASES).length === 12);
 }
 
 // 7. Missing name throws.

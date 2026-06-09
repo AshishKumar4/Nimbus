@@ -132,10 +132,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         if (supportsStreaming) {
             // @ts-ignore — preamble symbol.
             const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-            await env.SUPERVISOR.writeBatchStream(stream);
+            await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), () => undefined);
         }
         else {
-            await env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow });
+            await __nimbusUseRpcResult(env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow }), () => undefined);
         }
     };
     const sharedFlush = async () => {
@@ -195,7 +195,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // — the envelope's events are spliced into cacheStatEvents.
             const r2P = r2Available
                 ? Promise.race([
-                    env.SUPERVISOR.getCachedTarball(spec.name, spec.version),
+                    __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.name, spec.version), (result) => result),
                     new Promise((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
                 ]).catch(() => null)
                 : Promise.resolve(null);
@@ -541,7 +541,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 tarballsCompleted++;
                 if (capturedTgzBytes && typeof env.SUPERVISOR.putCachedTarball === 'function') {
                     try {
-                        await env.SUPERVISOR.putCachedTarball(spec.name, spec.version, capturedTgzBytes);
+                        await __nimbusUseRpcResult(env.SUPERVISOR.putCachedTarball(spec.name, spec.version, capturedTgzBytes), () => undefined);
                     }
                     catch {
                         // Best-effort cache write — never fail the install on R2 errors.

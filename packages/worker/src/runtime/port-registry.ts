@@ -26,6 +26,10 @@
  *   to the outer fetch as-is; its body is streamed directly.
  */
 
+export interface RouteableFacetTarget {
+  handleHttpRequest(request: Request): Promise<Response>;
+}
+
 export interface PortEntry {
   port: number;
   pid: number;
@@ -34,25 +38,31 @@ export interface PortEntry {
    * May be null when a facet has reserved a port but not yet wired up
    * the request handler (see _rpcRegisterPort in nimbus-session.ts).
    */
-  facetStub: any;
+  facetStub: RouteableFacetTarget | null;
   registeredAt: number;
 }
 
 export class PortRegistry {
   private ports = new Map<number, PortEntry>();
-  private facetStubsByPid = new Map<number, any>();
+  private facetStubsByPid = new Map<number, RouteableFacetTarget>();
+  private portWaitersByPid = new Map<number, Set<() => void>>();
 
-  /** Remember the routeable facet stub for a running process. */
-  bindFacetStub(pid: number, facetStub: any): void {
-    if (!facetStub) return;
-    this.facetStubsByPid.set(pid, facetStub);
-    this.attachFacetStubByPid(pid, facetStub);
+  /** Remember the available facet capabilities for a running process. */
+  bindFacetStub(pid: number, facetStub: unknown): void {
+    const target = routeableFacetTarget(facetStub);
+    if (!target) return;
+    this.facetStubsByPid.set(pid, target);
+    this.attachFacetStubByPid(pid, target);
+    this.notifyPortWaiters(pid);
   }
 
   /** Register a facet as listening on a port. */
-  register(port: number, pid: number, facetStub: any): void {
-    const routeableStub = facetStub || this.facetStubsByPid.get(pid) || null;
+  register(port: number, pid: number, facetStub: unknown): void {
+    const routeableStub =
+      routeableFacetTarget(this.facetStubsByPid.get(pid)) ||
+      routeableFacetTarget(facetStub);
     this.ports.set(port, { port, pid, facetStub: routeableStub, registeredAt: Date.now() });
+    this.notifyPortWaiters(pid);
   }
 
   /** Unregister a port. */
@@ -79,14 +89,32 @@ export class PortRegistry {
   }
 
   /** Attach a routeable facet stub to ports previously reserved by a PID. */
-  attachFacetStubByPid(pid: number, facetStub: any): number[] {
+  attachFacetStubByPid(pid: number, facetStub: unknown): number[] {
+    const routeable = routeableFacetTarget(facetStub);
+    if (!routeable) return [];
     const ports: number[] = [];
     for (const entry of this.ports.values()) {
       if (entry.pid !== pid || entry.facetStub) continue;
-      entry.facetStub = facetStub;
+      entry.facetStub = routeable;
       ports.push(entry.port);
     }
+    if (ports.length > 0) this.notifyPortWaiters(pid);
     return ports;
+  }
+
+  getRouteablePortsByPid(pid: number): number[] {
+    return [...this.ports.values()]
+      .filter((entry) => entry.pid === pid && entry.facetStub)
+      .map((entry) => entry.port);
+  }
+
+  async waitForRouteablePortsByPid(pid: number, facetStub: unknown, timeoutMs: number): Promise<number[]> {
+    this.bindFacetStub(pid, facetStub);
+    const immediate = this.getRouteablePortsByPid(pid);
+    if (immediate.length > 0) return immediate;
+    await this.waitForPidPortChange(pid, timeoutMs);
+    this.bindFacetStub(pid, facetStub);
+    return this.getRouteablePortsByPid(pid);
   }
 
   /** Check if a port is registered. */
@@ -217,4 +245,42 @@ export class PortRegistry {
       ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid })),
     };
   }
+
+  private waitForPidPortChange(pid: number, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      let done = false;
+      let timeout: ReturnType<typeof setTimeout>;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeout);
+        const waiters = this.portWaitersByPid.get(pid);
+        if (waiters) {
+          waiters.delete(finish);
+          if (waiters.size === 0) this.portWaitersByPid.delete(pid);
+        }
+        resolve();
+      };
+      timeout = setTimeout(finish, timeoutMs);
+      const waiters = this.portWaitersByPid.get(pid) || new Set<() => void>();
+      waiters.add(finish);
+      this.portWaitersByPid.set(pid, waiters);
+    });
+  }
+
+  private notifyPortWaiters(pid: number): void {
+    const waiters = this.portWaitersByPid.get(pid);
+    if (!waiters) return;
+    this.portWaitersByPid.delete(pid);
+    for (const resolve of waiters) resolve();
+  }
+}
+
+function routeableFacetTarget(value: unknown): RouteableFacetTarget | null {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return null;
+  const method = Reflect.get(value, 'fetch') || Reflect.get(value, 'handleHttpRequest');
+  if (typeof method !== 'function') return null;
+  return {
+    handleHttpRequest: method.bind(value),
+  };
 }

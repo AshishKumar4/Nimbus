@@ -2,7 +2,7 @@
  * constants.ts — Single source of truth for all Nimbus configuration.
  */
 export declare const NIMBUS_VERSION = "2.0.0";
-export declare const NODE_VERSION = "v22.11.0";
+export declare const NODE_VERSION = "v22.19.0";
 export declare const NODE_VERSIONS: {
     node: string;
     v8: string;
@@ -30,5 +30,6 @@ export declare const DEFAULT_HOSTNAME = "nimbus";
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";
 export declare const DEFAULT_SHELL = "/bin/sh";
+export declare const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin";
 export declare const DEFAULT_MOUNT_POINTS: string[];
 //# sourceMappingURL=constants.d.ts.map

@@ -24,6 +24,8 @@ export interface ProcessEntry {
    *  process-logs-api.ts:LONG_RUNNING_CMD_RE — when set, the API
    *  returns this directly. */
   longRunning?: boolean;
+  /** Output is owned by a process-terminal attachment, not the parent shell. */
+  attachedTty?: boolean;
 }
 
 export class ProcessTable {
@@ -69,6 +71,12 @@ export class ProcessTable {
   setLongRunning(pid: number): void {
     const entry = this.processes.get(pid);
     if (entry) entry.longRunning = true;
+  }
+
+  /** Mark an existing entry as an attached terminal process. Idempotent. */
+  setAttachedTty(pid: number): void {
+    const entry = this.processes.get(pid);
+    if (entry) entry.attachedTty = true;
   }
 
   exit(pid: number, exitCode: number): void {

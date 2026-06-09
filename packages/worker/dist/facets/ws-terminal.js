@@ -63,6 +63,21 @@ export class WebSocketTerminal {
         if (onFlush !== undefined)
             this.onFlush = onFlush;
     }
+    close() {
+        if (this.flushTimer) {
+            clearTimeout(this.flushTimer);
+            this.flushTimer = null;
+        }
+        this.buffer = [];
+        this.onFlush = null;
+        this.dataCallback = null;
+        this.replCallback = null;
+        this.fsCallback = null;
+        try {
+            this.ws.close(1000, 'terminal closed');
+        }
+        catch { }
+    }
     get cols() { return this._cols; }
     get rows() { return this._rows; }
     write(data) {

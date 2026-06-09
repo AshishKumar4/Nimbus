@@ -10,6 +10,7 @@
 
 import type { NpmCache, RegistryCacheEntry } from './cache.js';
 import { retryableFetch, DEFAULT_RETRIES } from '../_shared/retry.js';
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import {
   setResolverPhase,
   packumentFetchStart, packumentFetchEnd, responseStubDisposed,
@@ -18,7 +19,7 @@ import {
   lookupSwap, lookupReject, shouldWarnSkipTransitive,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
-  isOptionalNativeBinding, classifyInstallError,
+  isOptionalNativeBinding, classifyInstallError, nativeExecutableReject,
 } from '../facets/wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
@@ -392,21 +393,8 @@ export async function resolvePackage(
       bytesDecoded = text.length;
       data = JSON.parse(text);
     } finally {
-      // Symbol.dispose is ES2023; our tsconfig targets ES2022 so we reach
-      // it via the any-cast. At runtime workerd provides the symbol on
-      // RPC stubs; on plain Response objects the getter simply returns
-      // undefined and the try-block is a no-op.
-      const disposerKey = (Symbol as any).dispose;
-      const disposer = disposerKey ? (resp as any)?.[disposerKey] : undefined;
-      if (typeof disposer === 'function') {
-        try { disposer.call(resp); responseStubDisposed(); }
-        catch { /* best-effort */ }
-      } else {
-        // Plain Response — there is no stub to leak, but balance the
-        // counter we incremented at packumentFetchStart() so
-        // liveResponseStubs reflects reality.
-        responseStubDisposed();
-      }
+      disposeRpcResource(resp);
+      responseStubDisposed();
     }
   } catch (e: any) {
     log?.(`  ${registryName}: fetch error: ${e?.message}`);
@@ -751,6 +739,26 @@ export async function resolveTree(
               reason,
             });
             return null;
+          }
+          const nativeBinReject = pkg ? nativeExecutableReject(pkg) : null;
+          if (nativeBinReject) {
+            if (isOptional) {
+              onProgress?.(`[npm] [skip] ${name} — ${nativeBinReject.reason}`);
+              emitRegistryEvent({
+                type: 'transitive-skip',
+                from: name,
+                reason: nativeBinReject.reason,
+              });
+              return null;
+            }
+            emitRegistryEvent({
+              type: 'reject',
+              from: nativeBinReject.from,
+              reason: nativeBinReject.reason,
+              suggest: nativeBinReject.suggest,
+              ctx: 'transitive',
+            });
+            throw new RegistryRejectError([nativeBinReject]);
           }
           return pkg;
         } catch (e: any) {

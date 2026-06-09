@@ -24,7 +24,8 @@
  *   - acceptShellWebSocket → self.initSession(ws)  (S7 will extract).
  *   - The class still has `initSession(ws)` as a delegator method.
  */
-import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenceBackend, createCurlCommand, createNpmCommand, createNpxCommand, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages, } from '@lifo-sh/core';
+import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenceBackend, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages, } from '../substrate/lifo/index.js';
+import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -32,15 +33,23 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runNodeScript } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler } from '../runtime/runtime-registry.js';
-import { makeWasmRunner, WASM_RUNNER_VERSION, WASM_RUNNER_HELP, } from '../runtime/wasm-runner.js';
+import { parseViteConfigSource } from '../runtime/vite-config-parser.js';
+import { rewriteCirrusViteConfigBundle } from '../runtime/cirrus-vite-config-rewriter.js';
+import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
+import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { makeWasmRunner, WASM_RUNNER_VERSION, WASM_RUNNER_HELP, formatWasmRunnerWasiInfo, } from '../runtime/wasm-runner.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '../runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
-import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, NIMBUS_UNSUPPORTED_BINS, } from './helpers.js';
-import { HeredocHandler, LineEditorExtender, FdRedirectNormalizer, SubshellNormalizer, BraceExpander, DollarVarShim, BacktickNormalizer } from '../shell/features.js';
+import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, } from './helpers.js';
+import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
+import { registerShellEntrypointCommands } from '../shell/shell-entrypoints.js';
+import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
+import { parseNpmInstallInvocation } from '../npm/install-args.js';
+import { materializeNpmBinShims } from '../npm/bin-links.js';
 import { registerGitCommands } from '../git/commands.js';
 import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, rehydrateInstalledRuntimes, registerRunnerFactory, } from '../runtime/package-manager.js';
 import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
@@ -49,11 +58,16 @@ import { makeRubyRunnerFactory } from '../runtime/ruby-runner.js';
 import { hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '../runtime/process-logs.js';
-import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, } from '../constants.js';
+import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, DEFAULT_PATH, } from '../constants.js';
 import { enc } from '../_shared/bytes.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
 import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
 import { setPhase } from './init-phases.js';
+function resolveNpmPrefix(prefix, cwd) {
+    return prefix.startsWith('/')
+        ? normalizeVfsPath(prefix)
+        : resolveVfsPath(prefix, cwd || '/home/user');
+}
 export function initSession(self, ws) {
     self.ensureSqliteFs();
     self.ensureFacetManager();
@@ -155,7 +169,7 @@ export function initSession(self, ws) {
     // `ENOENT: '/dev': no such file or directory`. This provider
     // synthesizes /dev/null, /dev/zero, /dev/random, /dev/urandom,
     // /dev/full, /dev/{stdin,stdout,stderr,tty}. Read/write surface
-    // matches MountProvider so lifo-sh's redirect machinery sees
+    // matches MountProvider so the redirect machinery sees
     // valid targets. Not persisted — recreated fresh each init.
     try {
         self.kernel.vfs.mount('/dev', new DevProvider());
@@ -212,14 +226,10 @@ export function initSession(self, ws) {
     // the same heuristic hardening-r5 already uses for VFS<->facet
     // serialization (see manager.ts _readBundleCell).
     //
-    // Path normalization: strip leading '/'. SqliteVFS is rooted at
-    // the bare filename space ('home/user/...' etc.). The editor pane
-    // sends absolute paths (POSIX-shaped) so we normalize here.
     self.terminal.onFs((msg, reply) => {
-        const stripSlash = (p) => (p || '').replace(/^\/+/, '');
         try {
             if (msg.type === 'fs-read') {
-                const p = stripSlash(String(msg.path || ''));
+                const p = stripLeadingSlashes(String(msg.path || ''));
                 if (!sqliteFs.exists(p)) {
                     reply({ type: 'fs-read-result', path: msg.path, error: 'ENOENT: no such file or directory' });
                     return;
@@ -247,26 +257,24 @@ export function initSession(self, ws) {
                 return;
             }
             if (msg.type === 'fs-write') {
-                const p = stripSlash(String(msg.path || ''));
+                const p = stripLeadingSlashes(String(msg.path || ''));
                 if (!p) {
                     reply({ type: 'fs-write-result', path: msg.path, ok: false, error: 'empty path' });
                     return;
                 }
-                // Ensure parent exists (mkdir -p the directory chain).
-                const lastSlash = p.lastIndexOf('/');
-                if (lastSlash > 0) {
+                const parent = parentVfsPath(p);
+                if (parent)
                     try {
-                        sqliteFs.mkdir(p.substring(0, lastSlash), { recursive: true });
+                        sqliteFs.mkdir(parent, { recursive: true });
                     }
                     catch { }
-                }
                 const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
                 sqliteFs.writeFile(p, content);
                 reply({ type: 'fs-write-result', path: msg.path, ok: true });
                 return;
             }
             if (msg.type === 'fs-list') {
-                const dir = stripSlash(String(msg.dir || ''));
+                const dir = stripLeadingSlashes(String(msg.dir || ''));
                 const recursive = msg.recursive === true;
                 if (dir && !sqliteFs.exists(dir)) {
                     reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOENT' });
@@ -352,27 +360,8 @@ export function initSession(self, ws) {
         // honoured. The wasm-bytes existence check is also live —
         // recompile produces fresh bytes; we always re-check the
         // magic on the latest VFS state.
-        const cwdN = ((self.shell && self.shell.getCwd?.()) || '/home/user')
-            .replace(/^\/+/, '').replace(/\/+$/, '');
-        let resolved;
-        if (name.startsWith('/')) {
-            resolved = name.replace(/^\/+/, '');
-        }
-        else {
-            const parts = (`${cwdN}/${name}`).split('/');
-            const out = [];
-            for (const p of parts) {
-                if (!p || p === '.')
-                    continue;
-                if (p === '..') {
-                    if (out.length)
-                        out.pop();
-                    continue;
-                }
-                out.push(p);
-            }
-            resolved = out.join('/');
-        }
+        const cwdN = normalizeVfsPath((self.shell && self.shell.getCwd?.()) || '/home/user');
+        const resolved = resolveVfsPath(name, cwdN);
         if (!sqliteFs.exists(resolved) || sqliteFs.isDirectory(resolved)) {
             return undefined;
         }
@@ -494,7 +483,7 @@ export function initSession(self, ws) {
     // drops into an interactive REPL. The wrap is purely additive —
     // args-bearing invocations pass through to the existing handler.
     try {
-        const oneRuby = makeRubyRunnerFactory({ facetMgr, vfs: sqliteFs });
+        const oneRuby = makeRubyRunnerFactory({ facetMgr, vfs: sqliteFs, registry });
         const wrappedRuby = (manifest, installRoot, binName, binKind) => {
             const oneShotHandler = oneRuby(manifest, installRoot, binName, binKind);
             return async function rubyReplOrOneShot(ctx) {
@@ -517,11 +506,11 @@ export function initSession(self, ws) {
         console.error('[init] ruby-runner registration FAILED:', e?.message || e, e?.stack || '');
     }
     {
-        // Cast registry to the minimal package-manager shape. lifo-sh's
+        // Cast registry to the minimal package-manager shape. CommandRegistry
         // CommandRegistry has register(name, handler) which matches.
         const pkgRegistry = registry;
         const nimbusGetHome = () => {
-            // Shell env carries HOME; fall back to the lifo-sh convention.
+            // Shell env carries HOME; fall back to Nimbus's default home.
             const envHome = (self.shell && self.shell.env && self.shell.env.HOME)
                 ? self.shell.env.HOME
                 : '/home/user';
@@ -694,7 +683,7 @@ export function initSession(self, ws) {
                     ctx.stderr.write('bun run: missing script name\n');
                     return 1;
                 }
-                const pkgPath = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/package.json';
+                const pkgPath = normalizeVfsPath(ctx.cwd || '/home/user') + '/package.json';
                 let pkgScript;
                 try {
                     const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
@@ -764,6 +753,12 @@ export function initSession(self, ws) {
         name: 'wasm-runner',
         version: WASM_RUNNER_VERSION,
         helpText: WASM_RUNNER_HELP,
+        subcommands: {
+            '--wasi-info': async (ctx) => {
+                ctx.stdout.write(formatWasmRunnerWasiInfo());
+                return 0;
+            },
+        },
         run: makeWasmRunner({
             // filesystem WASI: extended VFS surface for WASI file-IO. The wasm-runner
             // snapshots a session subtree into the facet, flushes the diff
@@ -878,13 +873,7 @@ export function initSession(self, ws) {
         // Transform-only mode (single file, no --bundle)
         if (entryPoints.length === 1 && !flags['bundle']) {
             // Read the file and transform it
-            let filePath = entryPoints[0];
-            if (!filePath.startsWith('/')) {
-                filePath = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/' + filePath;
-            }
-            else {
-                filePath = filePath.replace(/^\/+/, '');
-            }
+            const filePath = resolveVfsPath(entryPoints[0], ctx.cwd || '/home/user');
             let code;
             try {
                 code = sqliteFs.readFileString(filePath);
@@ -906,14 +895,10 @@ export function initSession(self, ws) {
                     minify: flags['minify'] === 'true',
                 });
                 if (flags['outfile']) {
-                    const outPath = flags['outfile'].replace(/^\/+/, '');
-                    // Ensure parent dirs exist
-                    const parts = outPath.split('/');
-                    for (let i = 1; i < parts.length; i++) {
-                        const dir = parts.slice(0, i).join('/');
-                        if (dir && !sqliteFs.exists(dir))
-                            sqliteFs.mkdir(dir, { recursive: true });
-                    }
+                    const outPath = resolveVfsPath(flags['outfile'], ctx.cwd || '/home/user');
+                    const parent = parentVfsPath(outPath);
+                    if (parent && !sqliteFs.exists(parent))
+                        sqliteFs.mkdir(parent, { recursive: true });
                     sqliteFs.writeFile(outPath, result.code);
                     ctx.stdout.write(`  ${outPath}  ${result.code.length} bytes\n`);
                 }
@@ -936,11 +921,7 @@ export function initSession(self, ws) {
             return 1;
         }
         // Resolve entry points relative to cwd
-        const resolvedEntryPoints = entryPoints.map(ep => {
-            if (ep.startsWith('/'))
-                return ep.replace(/^\/+/, '');
-            return (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/' + ep;
-        });
+        const resolvedEntryPoints = entryPoints.map(ep => resolveVfsPath(ep, ctx.cwd || '/home/user'));
         try {
             ctx.stderr.write('Bundling...\n');
             const result = await self.esbuildService.build(resolvedEntryPoints, {
@@ -964,13 +945,10 @@ export function initSession(self, ws) {
                 return 1;
             // Write output files to VFS
             for (const f of result.outputFiles || []) {
-                const outPath = f.path.replace(/^\/+/, '');
-                const parts = outPath.split('/');
-                for (let i = 1; i < parts.length; i++) {
-                    const dir = parts.slice(0, i).join('/');
-                    if (dir && !sqliteFs.exists(dir))
-                        sqliteFs.mkdir(dir, { recursive: true });
-                }
+                const outPath = normalizeVfsPath(f.path);
+                const parent = parentVfsPath(outPath);
+                if (parent && !sqliteFs.exists(parent))
+                    sqliteFs.mkdir(parent, { recursive: true });
                 sqliteFs.writeFile(outPath, f.contents);
                 ctx.stdout.write(`  ${outPath}  ${f.contents.length} bytes\n`);
             }
@@ -985,7 +963,7 @@ export function initSession(self, ws) {
     // ── vite command: start/stop the dev server ──────────────────────────
     registry.register('vite', async (ctx) => {
         const args = ctx.args || [];
-        const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+        const cwd = normalizeVfsPath(ctx.cwd || '/home/user');
         if (args.includes('--help') || args.includes('-h')) {
             ctx.stdout.write('Usage: vite [command] [options]\n\n');
             ctx.stdout.write('Commands:\n');
@@ -999,7 +977,6 @@ export function initSession(self, ws) {
             return 0;
         }
         self.ensureSqliteFs();
-        // ── Parse vite.config.ts if it exists ──
         const viteConfig = {};
         for (const cfgName of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
             const cfgPath = cwd + '/' + cfgName;
@@ -1013,40 +990,7 @@ export function initSession(self, ws) {
                         const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
                         cfgCode = t.code;
                     }
-                    // Extract config values via regex (safer than eval in Workers)
-                    const rootMatch = cfgCode.match(/root\s*:\s*['"]([^'"]+)['"]/);
-                    if (rootMatch)
-                        viteConfig.root = rootMatch[1];
-                    const portMatch = cfgCode.match(/port\s*:\s*(\d+)/);
-                    if (portMatch)
-                        viteConfig.port = parseInt(portMatch[1]);
-                    const outDirMatch = cfgCode.match(/outDir\s*:\s*['"]([^'"]+)['"]/);
-                    if (outDirMatch)
-                        viteConfig.outDir = outDirMatch[1];
-                    const baseMatch = cfgCode.match(/base\s*:\s*['"]([^'"]+)['"]/);
-                    if (baseMatch)
-                        viteConfig.base = baseMatch[1];
-                    // Nimbus-specific: opt out of the React Router basename injection.
-                    // Users who want to handle /preview/ routing themselves can set
-                    // `nimbusInjectBasename: false` in vite.config.ts.
-                    const injectMatch = cfgCode.match(/nimbusInjectBasename\s*:\s*(true|false)/);
-                    if (injectMatch)
-                        viteConfig.injectBasename = injectMatch[1] === 'true';
-                    // resolve.alias: "@": path.resolve(__dirname, "./src") or "@": "./src"
-                    // After esbuild transform, values can be string literals OR path.resolve() calls.
-                    // Supports any alias key (not just @-prefixed): "@", "~", "#", "components", etc.
-                    if (!viteConfig.alias)
-                        viteConfig.alias = {};
-                    // Match string literal values: "key": "./path"
-                    const aliasLiterals = cfgCode.matchAll(/["']([^"']+)["']\s*:\s*["'](\.[^"']+)["']/g);
-                    for (const am of aliasLiterals) {
-                        viteConfig.alias[am[1]] = am[2];
-                    }
-                    // Match path.resolve() values: "key": path.resolve(__dirname, "./path")
-                    const aliasResolves = cfgCode.matchAll(/["']([^"']+)["']\s*:\s*(?:path\.resolve|resolve)\s*\([^,]*,\s*["']([^"']+)["']\s*\)/g);
-                    for (const am of aliasResolves) {
-                        viteConfig.alias[am[1]] = am[2];
-                    }
+                    Object.assign(viteConfig, parseViteConfigSource(cfgCode));
                 }
                 catch (e) {
                     ctx.stderr.write(`Warning: could not parse ${cfgName}: ${e?.message}\n`);
@@ -1063,9 +1007,9 @@ export function initSession(self, ws) {
             let origHtml = '';
             try {
                 origHtml = self.sqliteFs.readFileString(htmlPath);
-                const m = origHtml.match(/src=["']([^"']+\.(?:tsx?|jsx?|mjs))["']/);
-                if (m)
-                    entryPoint = cwd + '/' + m[1].replace(/^\//, '');
+                const htmlEntrypoint = await findHtmlScriptEntrypoint(origHtml);
+                if (htmlEntrypoint)
+                    entryPoint = cwd + '/' + stripLeadingSlashes(htmlEntrypoint);
             }
             catch {
                 ctx.stderr.write('Warning: no index.html\n');
@@ -1144,14 +1088,11 @@ export function initSession(self, ws) {
                 }
                 // Generate dist/index.html
                 if (origHtml) {
-                    let distHtml = origHtml;
-                    // Only remove importmap if ALL packages are bundled (no CDN needed)
-                    if (cdnPackages.length === 0) {
-                        distHtml = distHtml.replace(/<script\s+type=["']importmap["']>[\s\S]*?<\/script>\s*/i, '');
-                    }
-                    distHtml = distHtml
-                        .replace(/(<script[^>]*)\ssrc=["'][^"']+\.(?:tsx?|jsx?|mjs)["']/, '$1 src="/assets/' + jsFilename + '"')
-                        .replace(/<link[^>]*href=["'][^"']*\.css["'][^>]*\/?>/, '<link rel="stylesheet" crossorigin href="/assets/' + cssFilename + '">');
+                    const distHtml = await rewriteViteBuildHtml(origHtml, {
+                        jsFilename,
+                        cssFilename: allCss.trim() ? cssFilename : undefined,
+                        removeImportMap: cdnPackages.length === 0,
+                    });
                     self.sqliteFs.writeFile(distDir + '/index.html', distHtml);
                     ctx.stdout.write('  \x1b[2m' + outDir + '/index.html\x1b[0m  ' + (distHtml.length / 1024).toFixed(2) + ' kB\n');
                     if (cdnPackages.length > 0) {
@@ -1258,20 +1199,12 @@ export function initSession(self, ws) {
         let vfsRoot = cwd;
         for (let i = 0; i < args.length; i++) {
             if (args[i] === '--root' && args[i + 1])
-                vfsRoot = args[i + 1].replace(/^\/+/, '');
+                vfsRoot = resolveVfsPath(args[i + 1], cwd);
         }
         if (viteConfig.root && viteConfig.root !== '.') {
-            // Resolve relative root against cwd
-            const configRoot = viteConfig.root.replace(/^\.\//, '');
-            vfsRoot = configRoot.startsWith('/') ? configRoot : cwd + '/' + configRoot;
+            vfsRoot = resolveVfsPath(viteConfig.root, cwd);
         }
-        // Normalize: remove /., //, leading/trailing slashes
-        vfsRoot = vfsRoot
-            .replace(/\/\.\//g, '/') // /./ → /
-            .replace(/\/\.$/, '') // trailing /.
-            .replace(/\/+/g, '/') // collapse //
-            .replace(/^\/+/, '') // leading /
-            .replace(/\/+$/, ''); // trailing /
+        vfsRoot = normalizeVfsPath(vfsRoot);
         // Argv expansion: package.json scripts commonly write
         // `--port ${PORT:-3000}`. Resolve it once and feed both Vite
         // backends so `/api/stats`, `/preview/`, and port tabs agree.
@@ -1309,16 +1242,8 @@ export function initSession(self, ws) {
         // error here falls back to Cirrus by the user re-running without
         // the env flag — we do not silently fall back (fidelity over
         // magic).
-        let realViteCfgSource;
-        try {
-            const p = [cwd + '/vite.config.ts', cwd + '/vite.config.js', cwd + '/vite.config.mjs']
-                .find(p => self.sqliteFs.exists(p));
-            if (p)
-                realViteCfgSource = self.sqliteFs.readFileString(p);
-        }
-        catch { }
         const sessionEnv = (ctx && ctx.env) || {};
-        const useReal = shouldUseRealVite({ env: sessionEnv, viteConfigSource: realViteCfgSource });
+        const useReal = shouldUseRealVite({ env: sessionEnv, viteConfig });
         if (useReal) {
             if (self.cirrusReal?.isRunning)
                 self.cirrusReal.stop(self.ctx);
@@ -1385,9 +1310,9 @@ export function initSession(self, ws) {
                             'vite', 'vite/*',
                             '@vitejs/plugin-react', '@vitejs/plugin-react/*',
                         ],
-                        // Same synthetic import.meta.url hack as vite.bundle.js so
-                        // plugins that use `fileURLToPath(import.meta.url)` to find
-                        // their own install dir don't crash.
+                        // Give bundled user config a stable module URL so plugins that
+                        // resolve files relative to import.meta.url can find their own
+                        // synthetic install location.
                         define: {
                             'import.meta.url': JSON.stringify('file:///user-vite-config.js'),
                         },
@@ -1395,28 +1320,7 @@ export function initSession(self, ws) {
                     });
                     const out = bundleResult.outputFiles?.[0];
                     if (out) {
-                        userConfigBundle = String(out.contents);
-                        // LOADER.load requires .js-suffixed specifiers. Externals
-                        // survive bundling as bare specifiers in the output; we
-                        // rewrite them to .js-suffixed paths pointing at the
-                        // facets helper modules.
-                        userConfigBundle = userConfigBundle.replace(/from\s*["']vite["']/g, 'from "./vite-config-helper.js"');
-                        userConfigBundle = userConfigBundle.replace(/from\s*["']vite\/(.+?)["']/g, 'from "./vite-config-helper.js"');
-                        userConfigBundle = userConfigBundle.replace(/from\s*["']@vitejs\/plugin-react["']/g, 'from "./cirrus-plugin-react.js"');
-                        userConfigBundle = userConfigBundle.replace(/from\s*["']@vitejs\/plugin-react\/(.+?)["']/g, 'from "./cirrus-plugin-react.js"');
-                        // Path C eliminates the need for userspaceRequire /
-                        // createRequire / node:fs rewrites in the user-config
-                        // bundle — the heavy lifting moved into the
-                        // prebundled @vitejs/plugin-react. Left as-is in case
-                        // other plugins the user adds still need them.
-                        userConfigBundle = userConfigBundle.replace(/\bimport\(\s*(["'][^"']+["'])\s*\)/g, (_, spec) => `Promise.resolve().then(() => {` +
-                            ` const m = globalThis.__cirrusRealUserspaceRequire?.(${spec});` +
-                            ` if (!m) throw new Error('[cirrus-real] dynamic import failed for ' + ${spec});` +
-                            ` return { default: m.default ?? m, ...(typeof m === 'object' ? m : {}) };` +
-                            ` })`);
-                        userConfigBundle = userConfigBundle.replace(/\bcreateRequire\(/g, '(globalThis.__cirrusNodeCreateRequire || createRequire)(');
-                        userConfigBundle = userConfigBundle.replace(/from\s*["']node:fs["']/g, 'from "./cirrus-fs.js"');
-                        userConfigBundle = userConfigBundle.replace(/from\s*["']node:fs\/promises["']/g, 'from "./cirrus-fs-promises.js"');
+                        userConfigBundle = rewriteCirrusViteConfigBundle(String(out.contents));
                         if (bundleResult.errors?.length) {
                             console.warn('[vite-cmd] esbuild bundle errors:', bundleResult.errors);
                         }
@@ -1488,45 +1392,13 @@ export function initSession(self, ws) {
             ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mNIMBUS_REAL_VITE=0 vite\x1b[2m for Cirrus.\x1b[0m\n\n');
             return 0;
         }
-        // Parse define config from vite.config.ts (e.g. define: { global: "globalThis" })
-        let viteDefine;
-        try {
-            const cfgPath = [cwd + '/vite.config.ts', cwd + '/vite.config.js', cwd + '/vite.config.mjs']
-                .find(p => self.sqliteFs.exists(p));
-            if (cfgPath) {
-                let cfgCode = self.sqliteFs.readFileString(cfgPath);
-                if (cfgPath.endsWith('.ts')) {
-                    const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
-                    cfgCode = t.code;
-                }
-                const defineMatch = cfgCode.match(/define\s*:\s*\{([^}]+)\}/);
-                if (defineMatch) {
-                    viteDefine = {};
-                    const entries = defineMatch[1].matchAll(/["']?([^"',:\s]+)["']?\s*:\s*["']([^"']+)["']/g);
-                    for (const e of entries)
-                        viteDefine[e[1]] = e[2];
-                }
-            }
-        }
-        catch { }
         if (!self.esbuildService)
             self.esbuildService = new EsbuildService(self.sqliteFs);
         const previewBasePath = self.viteBasePath;
-        // Primitive #3 — long-running PORT-bound process registration.
-        //
-        // BEFORE this wave: vite was a fire-and-forget shell builtin. No
-        // PID, no port, no log buffer, --port silently ignored. Markflow's
-        // `vite --host 0.0.0.0 --port ${PORT:-3000}` printed a banner and
-        // returned the prompt, leaving the user with a blank preview and
-        // no process tab.
-        //
-        // AFTER: vite allocates a real PID via processTable, registers the
-        // resolved port with the supervisor's port-registry, exposes a
-        // handler stub via the generic long-running adapter, and is
-        // visible to `ps` / the Process tab. `vite stop` (or `kill <pid>`)
-        // tears it down via the same primitives that handle every other
-        // long-running facet.
-        //
+        const viteDefine = viteConfig.define;
+        // Vite dev servers are represented as long-running process-table
+        // entries and port-registry handlers, so `ps`, logs, preview routing,
+        // `vite stop`, and `kill <pid>` share the same lifecycle primitives.
         // Allocate PID FIRST so we can plumb it into ViteDevServer's
         // process-log wiring at construction time. The PID stays valid
         // for the life of this dev-server instance; subsequent log lines
@@ -1683,7 +1555,7 @@ export function initSession(self, ws) {
         // Stop existing
         if (self.nimbusWrangler?.isRunning)
             self.nimbusWrangler.stop();
-        const vfsRoot = root.replace(/^\/+/, '');
+        const vfsRoot = resolveVfsPath(root, ctx.cwd || '/home/user');
         // Pre-flight: read the wrangler config ourselves and call out any
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
         // still try to bundle + load, but user sees up-front why their
@@ -1766,7 +1638,7 @@ export function initSession(self, ws) {
             return 1;
         }
         self.ensureSqliteFs();
-        const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+        const cwd = normalizeVfsPath(ctx.cwd || '/home/user');
         // Ensure package.json exists
         const pkgJsonPath = cwd + '/package.json';
         if (!self.sqliteFs.exists(pkgJsonPath)) {
@@ -1835,7 +1707,7 @@ export function initSession(self, ws) {
         HOSTNAME: DEFAULT_HOSTNAME,
         TERM: 'xterm-256color',
         PWD: '/home/user',
-        PATH: '/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin',
+        PATH: DEFAULT_PATH,
         PS1: `\x1b[1;32muser@${DEFAULT_HOSTNAME}\x1b[0m:\x1b[1;34m\\w\x1b[0m$ `,
         NODE_ENV: 'development',
         LANG: 'en_US.UTF-8',
@@ -1884,468 +1756,15 @@ export function initSession(self, ws) {
         }
     }
     // Rehydrate cwd if persisted. The Shell ctor defaults this.cwd to
-    // env.HOME (which we did NOT override in the persisted overlay
-    // above — HOME stays the platform default). setCwd is exposed in
-    // the Shell's public API; cd-builtin assigns this.cwd directly
-    // bypassing setCwd (verified in node_modules/@lifo-sh/core), but
-    // restoring AFTER construction is fine because nothing has called
-    // cd yet. The next user `cd` will of course work as expected.
+    // env.HOME, and restoring after construction is safe because no
+    // interactive command has run yet.
     if (persisted.cwd) {
         try {
             self.shell.setCwd(persisted.cwd);
         }
         catch { /* fail-soft */ }
     }
-    // ── SHELL-R6-1 + SHELL-R6-2 + SHELL-R6-3 ─────────────────────────
-    //
-    // Three interpreter-level patches over @lifo-sh/core's Interpreter
-    // (instance: self.shell.interpreter). All three are upstream bugs;
-    // patching at the interpreter instance avoids touching the
-    // node_modules tree (postinstall) while still giving us full
-    // control over the affected semantics.
-    //
-    // The patches are idempotent: each one keeps a reference to the
-    // original and replaces the bound method on the instance.
-    //
-    // SHELL-R6-1 (executeListEntries — `&&`/`||` chain):
-    //   Pre-fix: `false && A || B` produces neither A nor B because
-    //   the original loop does `break` when a connector "short-
-    //   circuits", abandoning the rest of the chain. POSIX semantic is
-    //   "skip the IMMEDIATELY NEXT entry, keep evaluating the
-    //   remaining connectors against the unchanged exit code."
-    //
-    // SHELL-R6-2 (executePipelineCommands — broken-pipe abort):
-    //   Pre-fix: `yes | head -n 5` hangs forever because `head`
-    //   reads all of stdin via readAll() and `yes` is never aborted
-    //   when `head` exits. Patched version creates a per-pipeline
-    //   AbortController, swaps it into config.getAbortSignal for the
-    //   duration, and aborts it the moment the LAST command in the
-    //   pipeline (the consumer) resolves — propagating SIGPIPE-like
-    //   semantics to producer commands that watch their `e.signal`.
-    //
-    // SHELL-R6-3 (wait builtin — registered below in step 3):
-    //   Pre-fix: `wait` is "command not found". Implementing it lets
-    //   users reliably collect background-job output before continuing.
-    //
-    // Layer notes:
-    //   - These are not in src/shell/ because the bug is in the
-    //     interpreter's control-flow, not in a builtin or a
-    //     line-preprocessor wrapper. Shimming at executeLine wouldn't
-    //     help — the parsed AST already encodes the connectors.
-    //   - We bind methods to the interpreter instance so the
-    //     prototype stays untouched (other sessions sharing the same
-    //     module won't see our patches — important because the Shell
-    //     class itself is per-session-instance but the prototype
-    //     methods would be shared).
-    {
-        const interp = self.shell.interpreter;
-        if (interp) {
-            // ── SHELL-R6-1: corrected executeListEntries ──
-            const originalExecutePipeline = interp.executePipeline.bind(interp);
-            interp.executeListEntries = async function patchedExecuteListEntries(entries, t) {
-                let s = 0;
-                let skipNext = false;
-                for (let n = 0; n < entries.length; n++) {
-                    const entry = entries[n];
-                    if (!skipNext) {
-                        s = await originalExecutePipeline(entry.pipeline, t);
-                    }
-                    skipNext = false;
-                    // Decide whether to skip the NEXT entry based on this
-                    // entry's connector + the *current* exit status (whether
-                    // we just executed or carried forward from a skip).
-                    if (entry.connector === '&&' && s !== 0)
-                        skipNext = true;
-                    else if (entry.connector === '||' && s === 0)
-                        skipNext = true;
-                }
-                this.lastExitCode = s;
-                return s;
-            };
-            // ── SHELL-R6-2: corrected executePipelineCommands ──
-            //
-            // Per-pipeline AbortController + config.getAbortSignal swap.
-            // When the LAST command in the pipeline resolves (the
-            // consumer side), abort the per-pipeline controller, which
-            // cascades to all sibling commands' per-command signals via
-            // the upstream-link they set up at executeSimpleCommand
-            // creation (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5194).
-            const originalExecuteCommand = interp.executeCommand.bind(interp);
-            // The pipe class used by lifo-sh between pipeline commands.
-            // We need a reference to call .close() at the right moment.
-            // It's not exported, but we can instantiate one via a probe
-            // and capture the constructor. Easier: just rely on the
-            // close-on-completion semantics already in place AND add the
-            // abort propagation as a separate concern.
-            interp.executePipelineCommands = async function patchedExecutePipelineCommands(commands, stdin) {
-                const pipes = [];
-                const promises = [];
-                // Per-pipeline abort: linked to upstream (if any) so cancel
-                // still flows through, AND we trigger it ourselves when the
-                // consumer finishes.
-                const perPipelineCtrl = new AbortController();
-                const origGetAbortSignal = this.config.getAbortSignal;
-                this.config.getAbortSignal = () => {
-                    // Re-derive the linked signal each call. Per-command code
-                    // in lifo-sh calls this once at command-spawn time, but
-                    // we keep the chaining honest in case multiple calls
-                    // happen during pipeline setup.
-                    const upstream = origGetAbortSignal ? origGetAbortSignal.call(this.config) : null;
-                    if (upstream && !upstream.aborted) {
-                        upstream.addEventListener('abort', () => perPipelineCtrl.abort(), { once: true });
-                    }
-                    else if (upstream && upstream.aborted) {
-                        perPipelineCtrl.abort();
-                    }
-                    return perPipelineCtrl.signal;
-                };
-                // Need a way to construct the same pipe class lifo-sh uses
-                // internally. Easiest: probe the prototype of an existing
-                // execution by calling original executePipelineCommands with
-                // 2 trivial commands… too circular. Better: lazy-discover
-                // by running a tiny one-shot probe at startup, or import
-                // the class.
-                //
-                // Pragmatic: lifo-sh's pipe class is not exported, but its
-                // shape is `{ reader: { read, readAll }, writer: { write }, close() }`.
-                // We reimplement it inline — small footprint, exact shape.
-                class R6Pipe {
-                    buffer = [];
-                    closed = false;
-                    waiting = null;
-                    writer = {
-                        write: (e) => {
-                            if (this.closed)
-                                return; // SIGPIPE — drop write
-                            if (this.waiting) {
-                                const t = this.waiting;
-                                this.waiting = null;
-                                t(e);
-                            }
-                            else {
-                                this.buffer.push(e);
-                            }
-                        },
-                    };
-                    reader = {
-                        read: () => this.read(),
-                        readAll: () => this.readAll(),
-                    };
-                    read() {
-                        if (this.buffer.length > 0)
-                            return Promise.resolve(this.buffer.shift());
-                        if (this.closed)
-                            return Promise.resolve(null);
-                        return new Promise((resolve) => { this.waiting = resolve; });
-                    }
-                    async readAll() {
-                        const out = [];
-                        while (true) {
-                            const t = await this.read();
-                            if (t === null)
-                                break;
-                            out.push(t);
-                        }
-                        return out.join('');
-                    }
-                    close() {
-                        this.closed = true;
-                        if (this.waiting) {
-                            const w = this.waiting;
-                            this.waiting = null;
-                            w(null);
-                        }
-                    }
-                }
-                try {
-                    for (let o = 0; o < commands.length; o++) {
-                        const a = o > 0 ? pipes[o - 1].reader : undefined;
-                        let c;
-                        if (o < commands.length - 1) {
-                            const f = new R6Pipe();
-                            pipes.push(f);
-                            c = f.writer;
-                        }
-                        const isLast = o === commands.length - 1;
-                        const l = commands[o];
-                        const u = o === 0 ? stdin : undefined;
-                        const h = originalExecuteCommand(l, a, c, u).then((f) => {
-                            if (o < commands.length - 1)
-                                pipes[o].close();
-                            if (isLast) {
-                                // Consumer done — abort all upstream producers.
-                                // They watch e.signal via the per-command AbortController
-                                // that linked to our perPipelineCtrl.signal.
-                                perPipelineCtrl.abort();
-                                // Close any still-open upstream pipes so producers'
-                                // writes become no-ops (defense-in-depth).
-                                for (const p of pipes)
-                                    p.close();
-                            }
-                            return f;
-                        });
-                        promises.push(h);
-                    }
-                    const i = await Promise.all(promises);
-                    return i[i.length - 1];
-                }
-                finally {
-                    this.config.getAbortSignal = origGetAbortSignal;
-                }
-            };
-        }
-    }
-    // ── SHELL-R6-3: `wait` builtin ───────────────────────────────────
-    //
-    // POSIX: `wait` (no args) blocks until all currently-running
-    // background jobs finish; `wait %N` or `wait pid` waits for a
-    // specific one. lifo-sh's jobTable already tracks job promises
-    // (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5386 — `zi`).
-    //
-    // We register at the Shell.builtins map (same pattern as the
-    // BUG-SWEEP-4 echo override below). This must run AFTER Shell
-    // construction (jobTable doesn't exist before).
-    //
-    // Note: this addresses the `wait: command not found` half of
-    // SHELL-R6-B3. The naked `cmd &` racing-past-prompt issue is a
-    // deeper architectural limit of lifo-sh's `executeList`
-    // background path (it prints `[N] PID (background)` then
-    // immediately returns 0, with the printPrompt() of the line
-    // editor happening before the background job's stdout drains).
-    // A correct fix would need to defer the prompt until job output
-    // settles, which spans the Shell + line-editor + executor —
-    // beyond R6's scope. With `wait` available, users have a
-    // reliable path: `cmd & wait` collects output deterministically.
-    // ── shell-polish (2026-05-12): real `read` as a lifo-sh builtin ──
-    //
-    // Pre-fix `read VAR < file` set VAR to "" because the registered
-    // command in src/shell/unix-commands.ts mutates ctx.env which is a
-    // shallow COPY of the shell env (see node_modules/@lifo-sh/core/dist
-    // /index-Djm2onjx.js:5197 — `env: { ...this.config.env }`). Builtins
-    // run with direct `this.env` access (no copy), so a builtin CAN
-    // mutate the shell env. The same workaround pattern as the `wait`
-    // builtin below.
-    //
-    // Builtin signature per node_modules/@lifo-sh/core/dist
-    // /index-Djm2onjx.js:5182-5184 is `(args, stdout, stderr, stdin)`.
-    // The stdin arg is either:
-    //   - the redirect-file reader for `read x < file` (has .read())
-    //   - the pipe reader for `echo X | read x` (also has .read())
-    //   - undefined when no stdin
-    //
-    // We drain one line from stdin (real bash: `read` consumes until \n
-    // or EOF). The line goes into shellAny.env[VAR].
-    {
-        const shellAny = self.shell;
-        if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {
-            shellAny.builtins.set('read', async function nimbusRead(args, _stdout, _stderr, stdin) {
-                // Drop flag-args (we tolerate -r, -p, -t, -n but don't
-                // implement non-defaults). Treat all reads as raw.
-                const positional = args.filter((a) => !a.startsWith('-'));
-                const varName = positional[0] || 'REPLY';
-                // Drain stdin if present.
-                let content = '';
-                if (stdin && typeof stdin.readAll === 'function') {
-                    try {
-                        content = await stdin.readAll();
-                    }
-                    catch {
-                        content = '';
-                    }
-                }
-                else if (stdin && typeof stdin.read === 'function') {
-                    // Some stream shapes only expose .read() yielding chunks.
-                    const parts = [];
-                    try {
-                        let chunk;
-                        while ((chunk = await stdin.read()) !== null && chunk !== undefined) {
-                            parts.push(String(chunk));
-                        }
-                    }
-                    catch { /* fail-soft */ }
-                    content = parts.join('');
-                }
-                // Real `read` consumes ONE line — first newline or all of stdin.
-                const firstNewline = content.indexOf('\n');
-                const line = firstNewline >= 0 ? content.substring(0, firstNewline) : content;
-                // Mutate the shell env in place — this is the whole point of
-                // the builtin shim.
-                shellAny.env[varName] = line;
-                // POSIX: exit 1 on EOF (no input).
-                return content.length === 0 ? 1 : 0;
-            });
-        }
-    }
-    {
-        const shellAny = self.shell;
-        if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {
-            shellAny.builtins.set('wait', async function nimbusWait(args, t) {
-                const jobTable = shellAny.jobTable;
-                if (!jobTable || typeof jobTable.list !== 'function') {
-                    // jobTable unavailable — nothing to wait on, succeed silently.
-                    return 0;
-                }
-                const targetIds = [];
-                if (args.length > 0) {
-                    for (const a of args) {
-                        const m = /^%(\d+)$/.exec(a) || /^(\d+)$/.exec(a);
-                        if (!m) {
-                            try {
-                                t.write(`wait: ${a}: not a valid job id\n`);
-                            }
-                            catch { }
-                            return 127;
-                        }
-                        targetIds.push(parseInt(m[1], 10));
-                    }
-                }
-                const jobs = jobTable.list().filter((j) => {
-                    if (targetIds.length === 0)
-                        return j.status === 'running';
-                    return targetIds.includes(j.id);
-                });
-                if (jobs.length === 0)
-                    return 0;
-                // Await each job's promise; ignore individual failures so we
-                // mirror POSIX `wait` (returns exit code of the LAST one).
-                let last = 0;
-                for (const j of jobs) {
-                    try {
-                        const r = await j.promise;
-                        last = (typeof r === 'number') ? r : 0;
-                    }
-                    catch {
-                        last = 1;
-                    }
-                }
-                return last;
-            });
-        }
-    }
-    // ── Heredoc support (<<) — all logic lives in shell-features.ts ──
-    HeredocHandler.install(self.shell, self.terminal, self.sqliteFs);
-    // ── fd-redirect normalizer (BUG-SWEEP-2) — strip `2>&1` / `>&2` /
-    //    `<&0` etc before lifo-sh's parser chokes on them. Stdout and
-    //    stderr share the terminal sink so these are no-ops anyway. ──
-    FdRedirectNormalizer.install(self.shell);
-    // ── Brace expansion (shell compatibility) — `ls *.{js,ts}` etc.
-    //    Runs BEFORE subshell / dollar / fd-redirect so token expansion
-    //    happens before downstream parsing. lifo-sh's executeLine chain
-    //    invokes wrappers most-recently-installed-first; since we install
-    //    BraceExpander AFTER FdRedirectNormalizer, it wraps FdRedirect
-    //    and runs first. Same pattern for the others below.
-    BraceExpander.install(self.shell);
-    // ── $$ / $0 expansion (shell compatibility) — lifo-sh doesn't expand
-    //    these special vars. We rewrite before lifo-sh's parser sees
-    //    the line.
-    DollarVarShim.install(self.shell);
-    // ── Subshell `(...)` (shell compatibility) — lifo-sh's parser rejects.
-    //    Strip outer parens for bare subshells and run inner commands
-    //    with cwd/env save-restore. Chained / piped cases fall through
-    //    to orig (still errors but with clearer surface).
-    SubshellNormalizer.install(self.shell);
-    // ── Backtick `\`cmd\`` (shell compatibility) — rewrite to $(cmd) so
-    //    lifo-sh's existing $(...) machinery handles it. Quote-aware.
-    BacktickNormalizer.install(self.shell);
-    // ── BUG-SWEEP-4: echo -n / -e flag override ─────────────────────
-    //
-    // @lifo-sh/core builtinEcho ignores flags: `echo -n hi` outputs
-    // `-n hi` literally; `echo -e "a\tb"` outputs `-e "a\\tb"`.
-    // Real users hit this immediately. The Shell exposes `builtins`
-    // as a Map; replacing the entry post-construction is supported.
-    //
-    // POSIX echo handles -n (suppress trailing newline), -e (interpret
-    // backslash escapes: \\t \\n \\r \\\\ \\0 \\\\xNN). -E disables -e
-    // (default). Multiple flags can stack as -ne. We replicate that
-    // behaviour against the same `t.write(...)` sink lifo-sh passes.
-    {
-        const shellAny = self.shell;
-        if (shellAny.builtins && typeof shellAny.builtins.set === 'function') {
-            shellAny.builtins.set('echo', async function nimbusEcho(args, t) {
-                let interpretEscapes = false;
-                let suppressNewline = false;
-                let i = 0;
-                // Parse leading flags. Stop at first non-flag arg (POSIX).
-                while (i < args.length) {
-                    const a = args[i];
-                    if (a === '--') {
-                        i++;
-                        break;
-                    }
-                    if (a === '-n') {
-                        suppressNewline = true;
-                        i++;
-                        continue;
-                    }
-                    if (a === '-e') {
-                        interpretEscapes = true;
-                        i++;
-                        continue;
-                    }
-                    if (a === '-E') {
-                        interpretEscapes = false;
-                        i++;
-                        continue;
-                    }
-                    // Combined flags like -ne, -en, -nE
-                    if (/^-[neE]+$/.test(a)) {
-                        for (const ch of a.slice(1)) {
-                            if (ch === 'n')
-                                suppressNewline = true;
-                            else if (ch === 'e')
-                                interpretEscapes = true;
-                            else if (ch === 'E')
-                                interpretEscapes = false;
-                        }
-                        i++;
-                        continue;
-                    }
-                    break;
-                }
-                let out = args.slice(i).join(' ');
-                if (interpretEscapes) {
-                    out = out
-                        .replace(/\\\\/g, '\u0000') // protect literal \\\\ → NUL placeholder
-                        .replace(/\\n/g, '\n')
-                        .replace(/\\t/g, '\t')
-                        .replace(/\\r/g, '\r')
-                        .replace(/\\b/g, '\b')
-                        .replace(/\\f/g, '\f')
-                        .replace(/\\v/g, '\v')
-                        .replace(/\\a/g, '\x07')
-                        .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
-                        .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
-                        .replace(/\u0000/g, '\\');
-                }
-                t.write(suppressNewline ? out : out + '\n');
-                return 0;
-            });
-            // shell compatibility (2026-05-11): `unset VAR` doesn't actually
-            // unset on prod. lifo-sh's executeSimpleCommand passes a
-            // COPY of shell.env (env: {...this.config.env}); our
-            // registered mkUnset only mutates the copy. Override the
-            // builtin so mutation hits shell.env directly.
-            //
-            // bash semantics: `unset VAR [VAR2 ...]` deletes each from
-            // the shell's environment. Returns 0 even if var didn't
-            // exist (unset is idempotent).
-            shellAny.builtins.set('unset', async function nimbusUnset(args) {
-                for (const name of args) {
-                    if (name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-                        delete shellAny.env[name];
-                    }
-                }
-                return 0;
-            });
-            // shell compatibilityb: `export VAR=val` similarly needs to mutate
-            // shell.env (not just ctx.env). lifo-sh has its own builtinExport
-            // (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:builtinExport)
-            // that DOES mutate this.env correctly. Verify by re-checking
-            // ts output after deploy. Keep our override OFF here unless
-            // empirical evidence shows the lifo-sh impl is wrong.
-            // (Skipping override; relying on lifo-sh's builtinExport.)
-        }
-    }
+    installShellExecutionFeatures(self.shell, self.terminal);
     // ── Readline-parity keybindings (Ctrl+K, Ctrl+W, Alt+B, Alt+F, Alt+D,
     //    Ctrl+Y, Ctrl+T, Ctrl+L, Ctrl+R, Alt+. , Ctrl+←/→, Alt+←/→, Linux
     //    Home/End variants, Ctrl+B/F/N/P, …). Installed AFTER Heredoc so
@@ -2360,22 +1779,25 @@ export function initSession(self, ws) {
             env: cmdCtx.env,
             onStdout: (d) => cmdCtx.stdout.write(d),
             onStderr: (d) => cmdCtx.stderr.write(d),
+            stdin: typeof cmdCtx.stdin === 'string' ? cmdCtx.stdin : undefined,
         });
         return result.exitCode;
     };
-    // ── Fix 3: tracked shell.execute — wires output into processTable +
-    //   ProcessLogStore so scripts that bypass the facet pipeline (like
-    //   npm-run fallthrough) still show up in `ps`, `logs`, and exit
-    //   dumps. Mirrors the instrumentation `_rpcStdout` / `_rpcStderr`
-    //   already provide for facet processes.
-    //
-    //   Also honours the `longRunning` flag: pass `longRunning=true` for
-    //   npm run dev / start so the `[started (long-running): pid=N ...]`
-    //   banner matches the existing facet UX.
-    //   Note: `self` is declared earlier in this method (line ~1359).
+    const shellEntrypointExecutor = {
+        execute: async (cmd, options) => {
+            const terminal = createHeadlessTerminal();
+            const childShell = new Shell(terminal, self.kernel.vfs, registry, { ...env, ...(options?.env || {}) }, processRegistry);
+            installShellExecutionFeatures(childShell, terminal);
+            if (options?.cwd)
+                childShell.setCwd(options.cwd);
+            return childShell.execute(cmd, options);
+        },
+    };
+    registerShellEntrypointCommands(registry, shellEntrypointExecutor, sqliteFs);
+    // Shell scripts that execute through the local shell still need the same
+    // process-table and log-store contract as facet-backed processes.
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
-        const argv = cmd.split(/\s+/).filter(Boolean);
-        const entry = self.processTable.spawn(cmd, argv, cmdCtx.cwd || '/home/user');
+        const entry = self.processTable.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
         const pid = entry.pid;
         const startedAt = Date.now();
         // Spawn banner — matches facet-manager.ts onSpawn format.
@@ -2412,8 +1834,7 @@ export function initSession(self, ws) {
             exitCode = result.exitCode;
         }
         catch (e) {
-            // Surface the error in the terminal AND the ring buffer — the
-            // whole reason this path exists is to stop silent failures.
+            // Surface the error in the terminal and the ring buffer.
             const msg = (e && (e.stack || e.message)) || String(e);
             tee('stderr', cmdCtx.stderr)('shellExecuteTracked error: ' + msg + '\n');
             exitCode = 1;
@@ -2434,8 +1855,8 @@ export function initSession(self, ws) {
             // Include the command so the UI can backfill a tab for pids it
             // never saw a spawn event for (e.g. evals routed past onSpawn).
             notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: exitCode, command: cmd });
-            // Fix 5 trace + Fix 4 dump both read this state; invoke the
-            // session helper so semantics stay in one place.
+            // Keep shell execution diagnostics on the same session helper used by
+            // the rest of the process subsystem.
             try {
                 self._emitShellExecDone(pid, cmd, exitCode, Date.now() - startedAt);
             }
@@ -2443,298 +1864,35 @@ export function initSession(self, ws) {
         }
         return exitCode;
     };
-    // ── Primitive #2 (runtime primitive support): generic .bin handler ──
-    //
-    // Direct terminal invocation of `<bincmd> [args]` (e.g. `tsc --version`,
-    // `prettier --check .`, `eslint .`) used to fall through to "command
-    // not found" because `registry.resolve(name)` only knows about
-    // pre-registered commands. The user had to type `npm run <script>`
-    // — but that requires a script entry in package.json.
-    //
-    // Fix: wrap registry.resolve. When the upstream resolver returns
-    // undefined AND the cwd has `node_modules/.bin/<name>`, synthesise
-    // a handler that:
-    //   - reads the shim's "node <relative-script>" pointer (the
-    //     node_modules/.bin/<name> file is a tiny POSIX wrapper or a
-    //     direct JS file in well-formed packages);
-    //   - feeds the resulting `node <script> <args...>` line through
-    //     shellExecuteTracked so the bin gets a PID, log buffer,
-    //     processTable entry, and Process tab presence — same long-
-    //     running treatment as a `npm run dev` script.
-    //
-    // Long-running detection: if the bin name is dev/start/serve/watch,
-    // OR the argv contains explicit watch/dev/serve flags, the
-    // shellExecuteTracked call gets longRunning=true so the Process
-    // tab opens automatically and ^C/restart wires through.
-    //
-    // This is generic — it does NOT enumerate per-bin behaviours.
-    // Every project's bin shims are picked up the same way.
-    const LONG_RUNNING_BIN_NAMES = new Set([
-        'vite', 'next', 'astro', 'nuxt', 'remix', 'serve', 'http-server',
-        'wrangler', 'nodemon', 'tsx', 'ts-node-dev', 'webpack-dev-server',
-        'parcel', 'rollup', 'esbuild', 'turbo',
-    ]);
-    function looksLongRunning(binName, argv) {
-        // Bin name says "long-running"
-        if (LONG_RUNNING_BIN_NAMES.has(binName)) {
-            // ...unless the user passed a one-shot subcommand or version flag.
-            for (const a of argv) {
-                if (a === '--version' || a === '-v' || a === '--help' || a === '-h')
-                    return false;
-                if (a === 'build' || a === 'preview')
-                    return false;
-            }
-            return true;
-        }
-        // Argv flag says "long-running"
-        for (const a of argv) {
-            if (a === '--watch' || a === '-w' || a === '--serve' || a === '--dev')
-                return true;
-        }
-        return false;
-    }
-    const upstreamResolve = registry.resolve.bind(registry);
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
-    registry.resolve = async function nimbusBinFallbackResolve(name) {
-        const upstream = await upstreamResolve(name);
-        if (upstream)
-            return upstream;
-        // CRITICAL: probe for the bin shim BEFORE returning a handler.
-        // If we always returned a handler, callers like Nimbus's npx
-        // wrapper that check `if (resolved) { use resolved } else
-        // { fall through to core's auto-install }` would never reach
-        // the auto-install path — every unknown name would short-circuit
-        // through us and fail with "command not found", regressing
-        // `npx <pkg>` for unstalled packages.
-        //
-        // The cwd lookup uses self.shell.cwd (the live shell state)
-        // when no specific cwd is supplied. Best-effort: if shell isn't
-        // built yet (very early init), fall back to /home/user.
-        const cwd = (self.shell?.cwd || '/home/user').replace(/^\/+/, '');
-        const binShimPath = cwd + '/node_modules/.bin/' + name;
-        if (!sqliteFs.exists(binShimPath)) {
-            let hint = null;
+    installNpmBinFallbackResolver(registry, {
+        vfs: sqliteFs,
+        getCwd: () => self.shell?.cwd || '/home/user',
+        processTable: self.processTable,
+        processInput: self.processInput,
+        processLogs: self.processLogs,
+        terminal: self.terminal,
+        notifyTerminalEvent: (event) => notifyTerminalEvent(self.terminal, event),
+        runtimeCommandHint,
+        emitShellExecDone: (pid, command, exitCode, durationMs) => {
             try {
-                hint = await runtimeCommandHint(name);
+                self._emitShellExecDone(pid, command, exitCode, durationMs);
             }
-            catch {
-                hint = null;
-            }
-            if (!hint)
-                return undefined;
-            const hintHandler = async (ctx) => {
-                ctx.stderr.write(`${name}: command not found\n`);
-                ctx.stderr.write(`hint: install it with: nimbus install ${hint.installSpec}\n`);
-                return 127;
-            };
-            hintHandler.__nimbusRuntimeInstallHint = true;
-            return hintHandler;
-        }
-        // Synthesised handler. Each resolve call recomputes (cwd can
-        // change between invocations); we never cache under `name`.
-        return async (ctx) => {
-            // Re-check at INVOCATION TIME against ctx.cwd — the cwd at
-            // resolve() time was the shell's current cwd, but the user
-            // could have piped through a subshell since. Same path
-            // computation as above; identical when cwd hasn't changed.
-            const ctxCwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-            const ctxBinShimPath = ctxCwd + '/node_modules/.bin/' + name;
-            if (!sqliteFs.exists(ctxBinShimPath)) {
-                ctx.stderr.write(`${name}: command not found\n`);
-                return 127;
-            }
-            const binShimPath = ctxBinShimPath;
-            // Bin shims are typically a 2-liner:
-            //   #!/usr/bin/env node
-            //   require('../lib/<entry>.js')
-            //
-            // We can't just feed the shim to Nimbus's node command:
-            //   1. The shebang line isn't stripped (real node strips it
-            //      pre-parse; Nimbus's node-runner does not).
-            //   2. The require's relative path is anchored to the SHIM's
-            //      directory (.../node_modules/.bin/), so running the
-            //      shim from a different cwd resolves wrong.
-            //
-            // Approach: parse the shim to find the actual entry script,
-            // resolve it against the shim's directory, and pass THAT
-            // directly to node. The entry script handles its own require
-            // graph from its real location.
-            let entryAbsPath;
-            try {
-                const shimCode = sqliteFs.readFileString(binShimPath);
-                const stripped = shimCode.replace(/^#![^\n]*\n/, '');
-                const reqMatch = stripped.match(/require\s*\(\s*["']([^"']+)["']\s*\)/);
-                if (!reqMatch) {
-                    // Some shims are direct JS (no wrapper require). Fall back
-                    // to running the stripped-shebang version verbatim.
-                    const tmpPath = 'tmp/.bin-' + name + '.js';
-                    try {
-                        sqliteFs.mkdir('tmp', { recursive: true });
-                    }
-                    catch { }
-                    sqliteFs.writeFile(tmpPath, stripped);
-                    entryAbsPath = tmpPath;
-                }
-                else {
-                    const reqArg = reqMatch[1];
-                    // Three possible shim shapes we observe in the wild:
-                    //   1. `require('../lib/X.js')` — relative; resolve against
-                    //      shim's directory. Real-Node convention.
-                    //   2. `require('home/user/.../X')` — VFS-absolute (no
-                    //      leading slash, no leading dot). This is what
-                    //      Nimbus's installer at npm/installer.ts:1453
-                    //      generates. Use the path AS-IS.
-                    //   3. `require('/abs/path')` — POSIX absolute. Strip the
-                    //      leading slash and use directly.
-                    //
-                    // Discriminator: a leading '.' marks (1); otherwise treat
-                    // as already-resolved (2 or 3).
-                    if (reqArg.startsWith('./') || reqArg.startsWith('../')) {
-                        const shimDir = binShimPath.substring(0, binShimPath.lastIndexOf('/'));
-                        const parts = (shimDir + '/' + reqArg).split('/');
-                        const stack = [];
-                        for (const p of parts) {
-                            if (p === '' || p === '.')
-                                continue;
-                            if (p === '..') {
-                                stack.pop();
-                                continue;
-                            }
-                            stack.push(p);
-                        }
-                        entryAbsPath = stack.join('/');
-                    }
-                    else {
-                        entryAbsPath = reqArg.replace(/^\/+/, '');
-                    }
-                    // Try common JS extensions if the file doesn't exist
-                    // verbatim (some shims drop them).
-                    if (!sqliteFs.exists(entryAbsPath)) {
-                        for (const ext of ['.js', '.cjs', '.mjs']) {
-                            if (sqliteFs.exists(entryAbsPath + ext)) {
-                                entryAbsPath = entryAbsPath + ext;
-                                break;
-                            }
-                        }
-                    }
-                    if (!sqliteFs.exists(entryAbsPath)) {
-                        ctx.stderr.write(`${name}: bin entry not found: ${entryAbsPath}\n`);
-                        return 1;
-                    }
-                }
-            }
-            catch (e) {
-                ctx.stderr.write(`${name}: failed to parse bin shim: ${e?.message || e}\n`);
-                return 1;
-            }
-            const argv = ctx.args || [];
-            const longRunning = looksLongRunning(name, argv);
-            // CRITICAL: do NOT route through shell.execute → registry.resolve
-            // → this same wrapper (would recurse). Instead, invoke the
-            // 'node' command directly with the bin shim as argv[0]. The
-            // node command is registered upstream-side, so upstreamResolve
-            // returns the real handler; no recursion.
-            const nodeCmd = await upstreamResolve('node');
-            if (!nodeCmd) {
-                ctx.stderr.write(`${name}: node command unavailable\n`);
-                return 1;
-            }
-            // Build shell-line for the spawn-tracked banner: the user-facing
-            // command label that `ps` and the Process tab show.
-            const shellLine = `${name} ${argv.join(' ')}`.trim();
-            // PID + log + (if long-running) port-registry: shellExecuteTracked
-            // does this. But we've established it can recurse via
-            // shell.execute. To get the bookkeeping WITHOUT the recursion,
-            // we replicate the spawn-banner + processTable.spawn dance
-            // here, then dispatch via nodeCmd directly.
-            const entry = self.processTable.spawn(shellLine, [name, ...argv], cwd);
-            const pid = entry.pid;
-            const startedAt = Date.now();
-            if (longRunning) {
-                self.processTable.setLongRunning(pid);
-            }
-            if (self.terminal) {
-                const label = longRunning ? 'started (long-running)' : 'started';
-                self.terminal.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
-            }
-            notifyTerminalEvent(self.terminal, {
-                type: 'spawn', pid, command: shellLine, longRunning,
-            });
-            // Tee output through processLogs the same way shellExecuteTracked
-            // does, so logs <pid> + the Process tab WS log stream see chunks.
-            const tee = (stream, target) => (d) => {
-                try {
-                    self.processLogs.append(pid, stream, String(d));
-                }
-                catch { }
-                try {
-                    target.write(d);
-                }
-                catch { }
-            };
-            let exitCode = 1;
-            try {
-                // Prepend '/' so nodeCmd's path-resolver treats this as an
-                // absolute VFS path (line ~295) rather than cwd-relative.
-                // entryAbsPath is already VFS-absolute (no leading slash, no
-                // ./../); we just adapt to nodeCmd's input contract.
-                const entryForNode = '/' + entryAbsPath;
-                // G4 (runtime-pkg wave): we ALREADY allocated `pid` above;
-                // signal nodeCmd to NOT spawn a duplicate one. Pre-fix,
-                // facetMgr.exec did its own processTable.spawn → ps showed
-                // TWO rows per bin invocation (the wrapper's banner + the
-                // facet's `node /tmp/...`). Now both layers share one PID
-                // and one user-visible "command" string (the typed line).
-                //
-                // Stash the spawn directives on ctx so they propagate
-                // through nodeCmd → runFresh → facetMgr.exec. We cannot
-                // pass them via args; they aren't argv. ctx is the only
-                // arbitrarily-extensible shape.
-                const ctxWithSpawn = {
-                    ...ctx,
-                    args: [entryForNode, ...argv],
-                    stdout: { write: tee('stdout', ctx.stdout) },
-                    stderr: { write: tee('stderr', ctx.stderr) },
-                    __nimbusBinSpawn: { skipSpawn: true, callerPid: pid, command: shellLine },
-                };
-                exitCode = await nodeCmd(ctxWithSpawn);
-            }
-            catch (e) {
-                const msg = (e && (e.stack || e.message)) || String(e);
-                tee('stderr', ctx.stderr)(`bin error: ${msg}\n`);
-                exitCode = 1;
-            }
-            finally {
-                try {
-                    self.processTable.exit(pid, exitCode);
-                }
-                catch { }
-                try {
-                    if (!self.processLogs.getExit(pid)) {
-                        self.processLogs.markExit(pid, exitCode);
-                    }
-                }
-                catch { }
-                notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: exitCode, command: shellLine });
-                try {
-                    self._emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt);
-                }
-                catch { }
-            }
-            return exitCode;
-        };
-    };
+            catch { }
+        },
+    });
     // Register core npm with enhanced `npm run <script>` support
     const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel);
     registry.register('npm', async (ctx) => {
         const args = ctx.args || [];
         const sub = args[0];
+        const cwdKey = normalizeVfsPath(ctx.cwd || '/home/user');
         // npm run <script> / npm test / npm start — parse package.json and execute
         if (sub === 'run' || sub === 'run-script' || sub === 'test' || sub === 'start') {
             const scriptName = sub === 'test' ? 'test' : sub === 'start' ? 'start' : args[1];
             if (!scriptName) {
                 // npm run (no script) — list available scripts
-                const pkgPath = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/package.json';
+                const pkgPath = cwdKey + '/package.json';
                 try {
                     const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
                     if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
@@ -2753,7 +1911,7 @@ export function initSession(self, ws) {
                 }
                 return 0;
             }
-            const pkgPath = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/package.json';
+            const pkgPath = cwdKey + '/package.json';
             try {
                 const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
                 const script = pkg.scripts?.[scriptName];
@@ -2780,8 +1938,7 @@ export function initSession(self, ws) {
                     scriptArgs.includes('--no-install-check') ||
                     ctx.env?.NIMBUS_SKIP_INSTALL_CHECK === '1';
                 if (!bypassRunCheck) {
-                    const projDir = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-                    const guard = checkNodeModulesGuard(sqliteFs, projDir);
+                    const guard = checkNodeModulesGuard(sqliteFs, cwdKey);
                     if (guard.missing) {
                         const bundler = detectBundlerBin(script);
                         if (bundler) {
@@ -2831,131 +1988,10 @@ export function initSession(self, ws) {
                     ctx.stderr.write(NEXT_BLOCK_MESSAGE);
                     return 127;
                 }
-                // ── Shell-composite detection ──────────────────────────────────
-                // Scripts like `cd packages/cf-backend && vite dev` or
-                // `NODE_ENV=prod node build.js | tee log` need the full shell
-                // parser (operators, builtins like cd/export, pipes, redirects,
-                // env-var prefixes, globs, heredocs). The naive whitespace split
-                // below can only handle a single bare command — for anything
-                // else it mis-identifies the first token (e.g. "cd") as the
-                // command name, fails to resolve it in the registry, and emits
-                // a misleading "cd: command not found".
-                //
-                // `shellExecuteTracked` routes through `shell.execute` which
-                // IS the full shell (same path as interactive terminal input),
-                // so composite scripts behave identically to typing them at
-                // the prompt.
-                //
-                // Metacharacters checked:
-                //   &&  ||  |  ;           operator chains + pipes
-                //   > <                    redirects (covers >> and <<)
-                //   ` $(                   command substitution
-                //   ^NAME=                 leading env-var prefix (VAR=x cmd)
-                // Single-command scripts (no metacharacters) still take the
-                // fast registry path below for better stdout wiring + clearer
-                // "unsupported" / "command not found" messages.
                 const scriptTrim = script.trim();
-                const hasShellMeta = /(\&\&|\|\||[|;<>`]|\$\()/.test(scriptTrim) ||
-                    /^[A-Za-z_][A-Za-z0-9_]*=/.test(scriptTrim);
-                if (hasShellMeta) {
-                    const longRunningComposite = scriptName === 'dev' || scriptName === 'start' ||
-                        scriptName === 'serve' || scriptName === 'watch';
-                    return await shellExecuteTracked(scriptTrim, {
-                        ...ctx,
-                        env: {
-                            ...ctx.env,
-                            npm_lifecycle_event: scriptName,
-                            npm_package_name: pkg.name || '',
-                        },
-                    }, { longRunning: longRunningComposite });
-                }
-                // Parse script into command + args (single-command fast path).
-                const scriptParts = scriptTrim.split(/\s+/);
-                const cmdName = scriptParts[0];
-                const cmdArgs = scriptParts.slice(1);
-                // Try to resolve via registry — same path as direct terminal input
-                const resolved = await registry.resolve(cmdName);
-                if (resolved) {
-                    // Call with the SAME ctx (stdout wired to terminal)
-                    return await resolved({
-                        ...ctx,
-                        args: cmdArgs,
-                        env: { ...ctx.env, npm_lifecycle_event: scriptName, npm_package_name: pkg.name || '' },
-                    });
-                }
-                // ── Fix 1: deterministic "unsupported command" hint ────────────
-                // A command not registered in the shell (and therefore about to
-                // fall through to `shell.execute`, whose "command not found"
-                // message silently vanishes into a buffered string) typically
-                // means one of:
-                //   a) The project expects a tool like `wrangler` that Nimbus
-                //      skips during `npm install` (see SKIP_PACKAGES in
-                //      src/npm-resolver.ts). There may be a `.bin` shim if the
-                //      user installed it manually, but it tries to spawn workerd
-                //      via `child_process.spawn` which isn't available in a DO
-                //      isolate. Running it just hangs or crashes silently.
-                //   b) The project uses a genuinely unknown command. Surface
-                //      that too so the user sees SOMETHING rather than a silent
-                //      prompt.
-                const projDirForBin = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-                const binShimPath = projDirForBin + '/node_modules/.bin/' + cmdName;
-                const hasBinShim = sqliteFs.exists(binShimPath);
-                const unsupported = NIMBUS_UNSUPPORTED_BINS[cmdName];
-                if (unsupported) {
-                    ctx.stderr.write('\x1b[31m\u2718\x1b[0m \x1b[1m' + cmdName + '\x1b[0m is not supported inside Nimbus.\n' +
-                        '  ' + unsupported.reason + '\n' +
-                        (unsupported.alternative
-                            ? '  \x1b[2mTry:\x1b[0m \x1b[36m' + unsupported.alternative + '\x1b[0m\n'
-                            : '') +
-                        (hasBinShim
-                            ? '  \x1b[2m(Found node_modules/.bin/' + cmdName + ' — it installed, but it cannot run here.)\x1b[0m\n'
-                            : ''));
-                    return 127;
-                }
-                // Known POSIX shell builtins are handled by shell.execute, not
-                // by Nimbus's command registry or by node_modules/.bin shims.
-                // A single-command script like `cd target-dir` (degenerate but
-                // occasionally seen) or `true` / `:` (exit-0 no-op placeholders)
-                // would otherwise trip the "command not found" branch below
-                // with a misleading "not a built-in Nimbus command" message.
-                // Route them through shellExecuteTracked so the shell's own
-                // builtin handler runs.
-                const SHELL_BUILTINS = new Set([
-                    'cd', 'export', 'unset', 'set', 'source', '.', 'alias',
-                    'unalias', 'eval', 'exec', 'exit', 'return', 'shift',
-                    'pwd', 'read', 'true', 'false', ':', 'test', '[',
-                ]);
-                if (SHELL_BUILTINS.has(cmdName)) {
-                    const longRunningBuiltin = scriptName === 'dev' || scriptName === 'start' ||
-                        scriptName === 'serve' || scriptName === 'watch';
-                    return await shellExecuteTracked(scriptTrim, {
-                        ...ctx,
-                        env: {
-                            ...ctx.env,
-                            npm_lifecycle_event: scriptName,
-                            npm_package_name: pkg.name || '',
-                        },
-                    }, { longRunning: longRunningBuiltin });
-                }
-                if (!hasBinShim) {
-                    // Command not registered, no bin shim, not a shell builtin.
-                    // Tell the user explicitly.
-                    ctx.stderr.write('\x1b[31m\u2718\x1b[0m \x1b[1m' + cmdName + ': command not found\x1b[0m\n' +
-                        '  Script "' + scriptName + '" wants to run: \x1b[36m' + script + '\x1b[0m\n' +
-                        '  "' + cmdName + '" is not a built-in Nimbus command and no\n' +
-                        '  \x1b[2mnode_modules/.bin/' + cmdName + '\x1b[0m shim was found.\n' +
-                        '  Check your package.json scripts or install the missing package.\n');
-                    return 127;
-                }
-                // Has a .bin shim (shell.execute would try to exec it via the
-                // PATH-lookup in @lifo-sh/core). Route through shellExecuteTracked
-                // so stdout/stderr land in the terminal AND the ring buffer, AND
-                // the process shows up in `ps`/`logs` for post-mortem. Long-
-                // running flag is set for dev/start scripts so the banner reads
-                // "started (long-running)" and exit dumps always fire (Fix 4).
                 const longRunning = scriptName === 'dev' || scriptName === 'start' ||
                     scriptName === 'serve' || scriptName === 'watch';
-                return await shellExecuteTracked(script, {
+                return await shellExecuteTracked(scriptTrim, {
                     ...ctx,
                     env: { ...ctx.env, npm_lifecycle_event: scriptName, npm_package_name: pkg.name || '' },
                 }, { longRunning });
@@ -2967,8 +2003,8 @@ export function initSession(self, ws) {
         }
         // npm ls — list installed packages
         if (sub === 'ls' || sub === 'list') {
-            const pkgPath = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/package.json';
-            const nmDir = (ctx.cwd || '/home/user').replace(/^\/+/, '') + '/node_modules';
+            const pkgPath = cwdKey + '/package.json';
+            const nmDir = cwdKey + '/node_modules';
             try {
                 const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
                 ctx.stdout.write(`${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${ctx.cwd}\n`);
@@ -2996,7 +2032,7 @@ export function initSession(self, ws) {
         }
         // npm init / npm init -y
         if (sub === 'init') {
-            const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+            const cwd = cwdKey;
             const pkgPath = cwd + '/package.json';
             if (sqliteFs.exists(pkgPath) && !args.includes('-y') && !args.includes('--yes')) {
                 ctx.stderr.write('package.json already exists. Use -y to overwrite.\n');
@@ -3020,8 +2056,7 @@ export function initSession(self, ws) {
                 ctx.stderr.write('Usage: npm uninstall <pkg>\n');
                 return 1;
             }
-            const cwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-            const nmDir = cwd + '/node_modules';
+            const nmDir = cwdKey + '/node_modules';
             for (const pkg of packages) {
                 const pkgDir = nmDir + '/' + pkg;
                 // Recursively delete package directory
@@ -3048,7 +2083,7 @@ export function initSession(self, ws) {
                 ctx.stdout.write('removed ' + pkg + '\n');
             }
             // Update package.json
-            const pkgPath = cwd + '/package.json';
+            const pkgPath = cwdKey + '/package.json';
             try {
                 const pkgJson = JSON.parse(sqliteFs.readFileString(pkgPath));
                 for (const pkg of packages) {
@@ -3062,16 +2097,24 @@ export function initSession(self, ws) {
         }
         // npm install (no args or with packages) — use NpmInstaller v2 (batched writes)
         if (sub === 'install' || sub === 'i' || sub === 'add') {
-            const explicitPkgs = args.slice(1).filter((a) => !a.startsWith('-'));
+            const installInvocation = parseNpmInstallInvocation(args.slice(1));
+            const explicitPkgs = installInvocation.packages;
+            const globalPrefix = installInvocation.global
+                ? resolveNpmPrefix(installInvocation.prefix ?? String(ctx.env?.npm_config_prefix || '/usr/local'), ctx.cwd || '/home/user')
+                : null;
             self.ensureSqliteFs();
-            const installCwd = (ctx.cwd || '/home/user').replace(/^\/+/, '');
+            const installCwd = globalPrefix ? `${globalPrefix}/lib` : cwdKey;
             // Ensure package.json exists for bare `npm install`
-            if (explicitPkgs.length === 0) {
+            if (!globalPrefix && explicitPkgs.length === 0) {
                 const pkgJsonPath = installCwd + '/package.json';
                 if (!sqliteFs.exists(pkgJsonPath)) {
                     ctx.stderr.write('npm ERR! no package.json found\n');
                     return 1;
                 }
+            }
+            if (globalPrefix && explicitPkgs.length === 0) {
+                ctx.stderr.write('npm ERR! missing package name for global install\n');
+                return 1;
             }
             const pkgLabel = explicitPkgs.length > 0
                 ? `${explicitPkgs.length} packages`
@@ -3095,6 +2138,12 @@ export function initSession(self, ws) {
                 ctx.stdout.write(`\n${color}added ${result.installed?.length || 0} packages (${result.totalFiles || 0} files) in ${((result.elapsed || 0) / 1000).toFixed(1)}s${suffix}\x1b[0m\n`);
                 if (result.cachedHits > 0) {
                     ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
+                }
+                if (globalPrefix && (result.failed?.length || 0) === 0) {
+                    const linked = materializeNpmBinShims(sqliteFs, `${installCwd}/node_modules`, `${globalPrefix}/bin`);
+                    if (linked > 0) {
+                        ctx.stdout.write(`\x1b[2m  linked ${linked} bin${linked === 1 ? '' : 's'} into /${globalPrefix}/bin\x1b[0m\n`);
+                    }
                 }
                 return result.failed?.length > 0 ? 1 : 0;
             }
@@ -3120,7 +2169,7 @@ export function initSession(self, ws) {
         // initializer-package case (1+ args after `init`).
         //
         // Without this routing, `npm create vite@latest mvp -- --template
-        // react-ts` hits lifo-sh's core npm dispatch which only knows
+        // react-ts` hits the base npm dispatch which only knows
         // {init, install/i/add, uninstall/remove/rm/un, list/ls,
         // run/run-script, start, test, info/view/show, search, version}
         // — and emits "npm: unknown command 'create'". Every modern
@@ -3179,9 +2228,8 @@ export function initSession(self, ws) {
             // Inform the user what we're routing to — matches npm's own
             // visible "npx" line so the create flow is honest.
             ctx.stdout.write(`> npx --yes ${createPkg}${stripped.length ? ' ' + stripped.join(' ') : ''}\n`);
-            // Dispatch through the npx registry entry (which itself falls
-            // back to lifo-sh core npx for install + exec). `--yes` skips
-            // the "Ok to proceed? (y)" prompt.
+            // Dispatch through the npx registry entry. `--yes` skips the
+            // "Ok to proceed? (y)" prompt.
             const npxHandler = await registry.resolve('npx');
             if (!npxHandler) {
                 ctx.stderr.write('npm create: npx command unavailable\n');
@@ -3195,31 +2243,32 @@ export function initSession(self, ws) {
         // Fall through to core npm for other subcommands
         return coreNpmCmd(ctx);
     });
-    // npx: check node_modules/.bin first, then built-in commands, then
-    // Nimbus-native install + run via NpmInstaller (handles major-only
-    // semver ranges correctly — see remix-wrappy-fix wave). The lifo-sh
-    // core createNpxCommand is retained as a last-resort fallback for
-    // any edge case the Nimbus path doesn't handle (e.g. `--help`
-    // banners).
-    const coreNpxCmd = createNpxCommand(registry, shellExecute);
+    // npx: check registered commands first, then resolve/install through
+    // Nimbus's NpmInstaller and execute the package bin via the Node runtime.
     registry.register('npx', async (ctx) => {
         const npxArgs = ctx.args || [];
-        const cmd = npxArgs[0];
-        if (!cmd) {
+        const { describeNpxSelfInvocation, formatNpxHelp, getNpxCommandArgs, getNpxCommandWord, resolveNpxBinary, } = await import('../npm/npx-install.js');
+        const selfInvocation = describeNpxSelfInvocation(npxArgs);
+        if (selfInvocation === 'missing') {
             ctx.stderr.write('Usage: npx <command> [args...]\n');
             return 1;
         }
-        // Check if it's a built-in command (vite, esbuild, etc.)
-        const resolved = await registry.resolve(cmd);
-        if (resolved) {
-            return await resolved({ ...ctx, args: npxArgs.slice(1) });
+        if (selfInvocation === 'version') {
+            ctx.stdout.write(NPM_VERSION + '\n');
+            return 0;
         }
-        // Nimbus-native npx install + run path. Routes the package
-        // install through NpmInstaller (full-packument-resolve) instead
-        // of @lifo-sh/core's per-version-endpoint shortcut which drops
-        // major-only-range transitive deps (wrappy:'1', inherits:'2',
-        // etc.). See src/npm/npx-install.ts for the audit.
-        const { resolveNpxBinary } = await import('../npm/npx-install.js');
+        if (selfInvocation === 'help') {
+            ctx.stdout.write(formatNpxHelp());
+            return 0;
+        }
+        const cmd = getNpxCommandWord(npxArgs);
+        // Check if it's a built-in command (vite, esbuild, etc.)
+        const resolved = cmd ? await registry.resolve(cmd) : null;
+        if (resolved) {
+            return await resolved({ ...ctx, args: getNpxCommandArgs(npxArgs) });
+        }
+        // Nimbus-native npx install + run path. Routes package installation
+        // through NpmInstaller's full-packument resolver.
         self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
@@ -3230,19 +2279,14 @@ export function initSession(self, ws) {
                 return await nodeCmd({
                     ...ctx,
                     args: [resolveResult.binPath, ...(resolveResult.binArgs || [])],
+                    __nimbusBundleProfile: resolveResult.bundleProfile,
                 });
             }
-            // Node not registered — should never happen but fall through
-            // to core for safety.
-        }
-        else if (resolveResult.error && !/^(--version|-v|--help|-h|missing-cmd)$/.test(resolveResult.error)) {
-            // Real install/resolve failure — surface and bail.
-            ctx.stderr.write(resolveResult.error + '\n');
+            ctx.stderr.write('npx: node runtime is not registered\n');
             return 1;
         }
-        // --version / --help / missing-cmd / node-unregistered → fall
-        // through to core npx for its banner / help output.
-        return coreNpxCmd(ctx);
+        ctx.stderr.write((resolveResult.error || 'npx: could not resolve binary') + '\n');
+        return 1;
     });
     // ── Register process commands (enhanced with facet process tracking) ──
     registry.register('ps', async (ctx) => {
@@ -3422,16 +2466,23 @@ export function initSession(self, ws) {
         }
         return 0;
     });
+    const shellKillCommand = createKillCommand(processRegistry);
     registry.register('kill', async (ctx) => {
         const pidArg = ctx.args[0];
         if (!pidArg) {
             ctx.stderr.write('Usage: kill <pid>\n');
             return 1;
         }
+        if (pidArg.startsWith('-') || pidArg.startsWith('%')) {
+            return shellKillCommand(ctx);
+        }
         const pid = parseInt(pidArg);
         if (isNaN(pid)) {
             ctx.stderr.write('kill: invalid pid\n');
             return 1;
+        }
+        if (processRegistry.get(pid)) {
+            return shellKillCommand(ctx);
         }
         // runtime primitive support (P11): if the target is the vite shim PID
         // (registered by P5's long-running spawn), tear down the
@@ -3616,4 +2667,18 @@ export function initSession(self, ws) {
         catch { }
     })();
     ws.send(JSON.stringify({ type: 'ready' }));
+}
+function installShellExecutionFeatures(shell, terminal) {
+    HeredocHandler.install(shell, terminal);
+}
+function createHeadlessTerminal() {
+    return {
+        cols: 80,
+        rows: 24,
+        write() { },
+        writeln() { },
+        onData() { },
+        focus() { },
+        clear() { },
+    };
 }

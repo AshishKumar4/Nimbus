@@ -8,13 +8,14 @@
  *   - exit code via `exit N` / unhandled exception → 1
  *   - argv passed through to ARGV; $PROGRAM_NAME / $0 set
  *   - stdlib loaded from the packed wasi-vfs inside the wasm
+ *   - compatible pure Ruby gems through Nimbus RubyGems
+ *   - WEBrick/Rack-style preview through Nimbus virtual sockets
  *
  * Out of v1:
- *   - REPL mode (`ruby` with no args)
  *   - native extension gems
- *   - js-runtime bindings (gem "js") — those imports are stubbed
- *     and will raise NotImplementedError if Ruby code tries to use
- *     them
+ *
+ * `ruby` with no args is handled by the session-level ruby-repl wrapper;
+ * this file owns args-bearing Ruby execution and Ruby package commands.
  *
  * Architecture: SAME LOADER-modules transport as python-runner / wasm-
  * runner. ruby+stdlib.wasm bytes ship via the LOADER `modules` map
@@ -24,8 +25,8 @@
  *   - Wasm size 34.3 MiB (well under empirical 32 MiB-ish per-call
  *     ceiling we cleared with Pyodide + clang).
  *   - 35 wasi_snapshot_preview1 imports (provided by wasi-instance.ts).
- *   - 21 rb-js-abi-host imports (stubbed throw-when-called — none fire
- *     for v1 `puts "hi"`).
+ *   - 21 rb-js-abi-host imports (implemented for the `js` bridge used
+ *     by the Ruby socket adapter).
  *   - 3 canonical_abi imports (resource lifecycle — implemented as
  *     a minimal Slab<number,object>).
  *   - Exports: _initialize, __wasi_vfs_rt_init, ruby-init,
@@ -36,18 +37,31 @@
 import type { RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
+import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
+import { z } from 'zod';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
-import { createLiveStaticServerCode, parsePort } from './static-server.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.js';
+import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import {
   defaultGemHome,
   installRubyBundle,
   installRubyGems,
+  installedGemBins,
   installedGemLibRoots,
   parseRubyGemRequirements,
   type RubyGemRequest,
 } from './ruby-gems.js';
+
+const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
+
+type RubyRunnerFactory = (
+  manifest: RuntimeManifest,
+  installRoot: string,
+  binName: string,
+  binKind: string | undefined,
+) => Command;
 
 /**
  * Build the ruby-runner factory. Called once at session init; the
@@ -57,9 +71,12 @@ import {
 export function makeRubyRunnerFactory(deps: {
   facetMgr: FacetManager;
   vfs: SqliteVFS;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
-    (ctx: any) => Promise<number> {
-  const { facetMgr, vfs } = deps;
+  registry?: {
+    register(name: string, handler: Command): void;
+    resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
+  };
+}): RubyRunnerFactory {
+  const { facetMgr, vfs, registry } = deps;
 
   return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -69,12 +86,31 @@ export function makeRubyRunnerFactory(deps: {
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
     let fsSnapshotCache: { cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
 
-    return async function rubyBinHandler(ctx: any): Promise<number> {
-      const argv: string[] = ctx.args || [];
-      const cwd: string = ctx.cwd || '/home/user';
+    const registerGemBins = (): void => {
+      if (!registry) return;
+      for (const bin of installedGemBins(vfs, defaultGemHome())) {
+        if (RUBY_RUNTIME_BIN_NAMES.has(bin.name)) continue;
+        registry.register(bin.name, async (ctx: CommandContext) => {
+          const args = [bin.path.startsWith('/') ? bin.path : '/' + bin.path, ...(ctx.args ?? [])];
+          const ruby = typeof registry.resolve === 'function' ? await registry.resolve('ruby') : null;
+          if (!ruby) {
+            ctx.stderr.write(`${bin.name}: Ruby runtime is not registered\n`);
+            return 127;
+          }
+          return ruby({ ...ctx, args });
+        });
+      }
+    };
+
+    const rubyBinHandler = async function rubyBinHandler(ctx: CommandContext): Promise<number> {
+      const argv = ctx.args ?? [];
+      const cwd = ctx.cwd || '/home/user';
 
       const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
-      if (packageCommand.handled) return packageCommand.exitCode;
+      if (packageCommand.handled) {
+        if (packageCommand.exitCode === 0) registerGemBins();
+        return packageCommand.exitCode;
+      }
 
       const toolInvocation = buildRubyToolInvocation(binKind, binName, argv);
       if (toolInvocation.error) {
@@ -91,17 +127,7 @@ export function makeRubyRunnerFactory(deps: {
         ctx.stdout.write(`Usage: ${binName} [switches] [--] [programfile] [arguments]\n`);
         ctx.stdout.write(`Nimbus Ruby runtime (ruby.wasm).\n`);
         ctx.stdout.write(`Supported: -e <code>, <file.rb>, -r <lib>, VFS-backed require_relative and file IO\n`);
-        ctx.stdout.write(`Ruby socket/native gem install support is not available in this ruby.wasm build.\n`);
-        return 0;
-      }
-
-      const staticServer = parseRubyHttpd(argv, cwd);
-      if (staticServer) {
-        const code = createLiveStaticServerCode(staticServer.root);
-        const command = `${binName} -run -e httpd ${staticServer.root} -p ${staticServer.port}`;
-        const spawned = facetMgr.spawn(code, command, staticServer.root, { port: staticServer.port });
-        ctx.stdout.write(`Serving HTTP on 0.0.0.0 port ${staticServer.port} from /${staticServer.root}\n`);
-        ctx.stdout.write(`[nimbus] started: pid=${spawned.pid} cmd="${command}" port=${staticServer.port}\n`);
+        ctx.stdout.write(`WEBrick/Rack preview uses Nimbus virtual sockets; native extension gems are rejected with a precise diagnostic.\n`);
         return 0;
       }
 
@@ -144,11 +170,11 @@ export function makeRubyRunnerFactory(deps: {
         }
         try {
           userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
-        } catch (e: any) {
-          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${e?.message || e}\n`);
+        } catch (e: unknown) {
+          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
           return 1;
         }
-        progName = '/' + absPath;
+        progName = parsed.scriptPath;
         rbArgv = [parsed.scriptPath, ...parsed.scriptArgs];
       }
 
@@ -170,7 +196,7 @@ export function makeRubyRunnerFactory(deps: {
       // wasi default of "ASCII-8BIT".
       if (!userEnv.LC_ALL) userEnv.LC_ALL = 'C.UTF-8';
 
-      const revision = typeof (vfs as any).revision === 'function' ? (vfs as any).revision() : Date.now();
+      const revision = vfs.revision();
       let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
         ? fsSnapshotCache.result
         : null;
@@ -183,8 +209,7 @@ export function makeRubyRunnerFactory(deps: {
         return 1;
       }
 
-      // Dispatch the facet.
-      const result = await dispatchRubyFacet(facetMgr, {
+      const facetArgs = {
         wasmBytes,
         userCode,
         rbArgv,
@@ -192,7 +217,12 @@ export function makeRubyRunnerFactory(deps: {
         progName,
         cwd,
         fsSnapshot: fsSnapshot.snapshot,
-      });
+      };
+
+      const command = formatRubyCommand(binName, argv);
+      const result = shouldRunRubyAsSocketProcess(parsed)
+        ? await spawnRubySocketProcess(facetMgr, facetArgs, command)
+        : await dispatchRubyFacet(facetMgr, facetArgs);
 
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -203,6 +233,9 @@ export function makeRubyRunnerFactory(deps: {
       }
       return result.exitCode;
     };
+
+    registerGemBins();
+    return rubyBinHandler;
   };
 }
 
@@ -219,7 +252,7 @@ async function maybeHandleRubyPackageCommand(
   argv: string[],
   cwd: string,
   vfs: SqliteVFS,
-  ctx: any,
+  ctx: CommandContext,
 ): Promise<{ handled: boolean; exitCode: number }> {
   const isGem = binKind === 'gem' || binName === 'gem';
   const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
@@ -236,8 +269,8 @@ async function maybeHandleRubyPackageCommand(
       for (const name of report.alreadyInstalled) ctx.stdout.write(`${name} is already installed\n`);
       ctx.stdout.write(`${report.installed.length + report.alreadyInstalled.length} gem(s) processed\n`);
       return { handled: true, exitCode: 0 };
-    } catch (e: any) {
-      ctx.stderr.write(`gem install: ${e?.message || e}\n`);
+    } catch (e: unknown) {
+      ctx.stderr.write(`gem install: ${errorMessage(e)}\n`);
       return { handled: true, exitCode: 1 };
     }
   }
@@ -250,8 +283,8 @@ async function maybeHandleRubyPackageCommand(
       ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${report.installed.length + report.alreadyInstalled.length} gem(s) now installed.\n`);
       ctx.stdout.write(`Bundled lockfile written to /${lockfilePath}\n`);
       return { handled: true, exitCode: 0 };
-    } catch (e: any) {
-      ctx.stderr.write(`bundle install: ${e?.message || e}\n`);
+    } catch (e: unknown) {
+      ctx.stderr.write(`bundle install: ${errorMessage(e)}\n`);
       return { handled: true, exitCode: 1 };
     }
   }
@@ -383,50 +416,6 @@ function buildRubyToolInvocation(
   };
 }
 
-function parseRubyHttpd(argv: string[], cwd: string): { port: number; root: string } | null {
-  let requiresUn = false;
-  let hasHttpdEval = false;
-  let afterEval = -1;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '-run' || arg === '-r' && argv[i + 1] === 'un') {
-      requiresUn = true;
-      if (arg === '-r') i++;
-      continue;
-    }
-    if (arg === '-e' && argv[i + 1] === 'httpd') {
-      hasHttpdEval = true;
-      afterEval = i + 2;
-      i++;
-      continue;
-    }
-    if (arg === '-ehttpd') {
-      hasHttpdEval = true;
-      afterEval = i + 1;
-      continue;
-    }
-  }
-  if (!requiresUn || !hasHttpdEval) return null;
-  let port = 8080;
-  let directory = '.';
-  for (let i = Math.max(afterEval, 0); i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '-p' || arg === '--port') {
-      port = parsePort(argv[i + 1], port);
-      i++;
-      continue;
-    }
-    if (arg.startsWith('--port=')) {
-      port = parsePort(arg.slice('--port='.length), port);
-      continue;
-    }
-    if (!arg.startsWith('-') && directory === '.') {
-      directory = arg;
-    }
-  }
-  return { port, root: resolveVfsPath(directory, cwd) };
-}
-
 // ── argv parser ──────────────────────────────────────────────────────
 
 interface ParsedRbArgv {
@@ -509,6 +498,31 @@ function parseRubyArgv(argv: string[]): ParsedRbArgv {
     requires, exitCode: 2, error: "REPL not supported in v1. Use 'ruby -e \"code\"' or 'ruby script.rb'." };
 }
 
+function shouldRunRubyAsSocketProcess(parsed: ParsedRbArgv): boolean {
+  if (parsed.mode === 'script') return true;
+  return parsed.requires.some((name) => {
+    const root = name.split('/', 1)[0];
+    return root === 'socket' || root === 'webrick' || root === 'rackup' || root === 'un';
+  });
+}
+
+function formatRubyCommand(binName: string, argv: string[]): string {
+  return [binName, ...argv].map((part) => {
+    if (/^[A-Za-z0-9_./:=@+-]+$/.test(part)) return part;
+    return JSON.stringify(part);
+  }).join(' ');
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
 // ── Facet dispatch ───────────────────────────────────────────────────
 
 interface RubyFacetArgs {
@@ -521,6 +535,16 @@ interface RubyFacetArgs {
   fsSnapshot: WasiFsSnapshot;
 }
 
+interface RubyFacetCallArgs {
+  userCode: string;
+  rbArgv: string[];
+  userEnv: Record<string, string>;
+  progName: string;
+  cwd: string;
+  fsSnapshot: WasiFsSnapshot;
+  rubyPrelude?: string;
+}
+
 interface RubyFacetResult {
   exitCode: number;
   stdout: string;
@@ -529,13 +553,258 @@ interface RubyFacetResult {
   fsDiff?: WasiFsDiff;
 }
 
+interface RubySocketProcessResult extends RubyFacetResult {
+  spawnedPid?: number;
+  port?: number;
+}
+
+const RubyFacetResultSchema = z.object({
+  exitCode: z.number().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  error: z.string().optional(),
+  fsDiff: z.custom<WasiFsDiff>().optional(),
+}).passthrough();
+
+const RubySocketProcessBootResponseSchema = z.object({
+  state: z.string().optional(),
+  port: z.number().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  result: RubyFacetResultSchema.optional(),
+}).passthrough();
+
+function normalizeRubyFacetResult(raw: unknown): RubyFacetResult | null {
+  const parsed = RubyFacetResultSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  return {
+    exitCode: Number(parsed.data.exitCode || 0),
+    stdout: parsed.data.stdout || '',
+    stderr: parsed.data.stderr || '',
+    error: parsed.data.error,
+    fsDiff: parsed.data.fsDiff,
+  };
+}
+
+async function spawnRubySocketProcess(
+  facetMgr: FacetManager,
+  args: RubyFacetArgs,
+  command: string,
+): Promise<RubySocketProcessResult> {
+  const workerCode = buildRubySocketProcessWorker(buildRubyPreamble());
+  const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
+    compatibilityFlags: ['nodejs_compat'],
+    modules: {
+      'ruby+stdlib.wasm': { wasm: toArrayBuffer(args.wasmBytes) },
+    },
+  });
+
+  const bootPayload = await spawned.facetStub.startProcess({
+    userCode: args.userCode,
+    rbArgv: args.rbArgv,
+    userEnv: args.userEnv,
+    progName: args.progName,
+    cwd: args.cwd,
+    fsSnapshot: args.fsSnapshot,
+    rubyPrelude: RUBY_SOCKET_SHIM,
+  }).catch(() => null);
+  const parsed = RubySocketProcessBootResponseSchema.safeParse(bootPayload);
+  if (!parsed.success) {
+    facetMgr.finishProcess(spawned.pid, 1, 'ruby process boot failed');
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'ruby process boot failed\n',
+    };
+  }
+
+  const boot = parsed.data;
+  if (boot.state === 'listening' && typeof boot.port === 'number' && boot.port > 0) {
+    facetMgr.registerPort(spawned.pid, Number(boot.port), spawned.facetStub);
+    const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid, spawned.facetStub);
+    const routeablePort = routeablePorts.includes(Number(boot.port)) ? Number(boot.port) : routeablePorts[0];
+    if (!routeablePort) {
+      facetMgr.kill(spawned.pid);
+      return {
+        exitCode: 1,
+        stdout: boot.stdout || '',
+        stderr: `${boot.stderr || ''}ruby: virtual socket port ${boot.port} failed to attach a route handler\n`,
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${routeablePort}]\x1b[0m\n`,
+      stderr: boot.stderr || '',
+      spawnedPid: spawned.pid,
+      port: routeablePort,
+    };
+  }
+
+  const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid, spawned.facetStub);
+  if (reservedPorts.length > 0) {
+    return {
+      exitCode: 0,
+      stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${reservedPorts[0]}]\x1b[0m\n`,
+      stderr: boot.stderr || '',
+      spawnedPid: spawned.pid,
+      port: reservedPorts[0],
+    };
+  }
+
+  if (boot.state === 'exited') {
+    const result = normalizeRubyFacetResult(boot.result) || {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'ruby process returned an invalid exit payload\n',
+    };
+    facetMgr.finishProcess(spawned.pid, result.exitCode, result.stderr || 'ruby process exited');
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr || result.error || '',
+      fsDiff: result.fsDiff,
+    };
+  }
+
+  return {
+    exitCode: 0,
+    stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`,
+    stderr: boot.stderr || '',
+    spawnedPid: spawned.pid,
+  };
+}
+
+function buildRubySocketProcessWorker(preamble: string): string {
+  return [
+    'import { WorkerEntrypoint } from "cloudflare:workers";',
+    "import __NIMBUS_WASM_ruby_stdlib from './ruby+stdlib.wasm';",
+    'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
+    "globalThis.__NIMBUS_WASM['ruby+stdlib.wasm'] = __NIMBUS_WASM_ruby_stdlib;",
+    '',
+    VIRTUAL_SOCKET_KERNEL_SRC,
+    '',
+    'function __nimbusBase64FromBytes(bytes) {',
+    '  let binary = "";',
+    '  for (let i = 0; i < bytes.length; i += 8192) {',
+    '    const chunk = bytes.subarray(i, Math.min(i + 8192, bytes.length));',
+    '    binary += String.fromCharCode(...chunk);',
+    '  }',
+    '  return btoa(binary);',
+    '}',
+    'function __nimbusBytesFromBase64(encoded) {',
+    '  const binary = atob(String(encoded || ""));',
+    '  const out = new Uint8Array(binary.length);',
+    '  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);',
+    '  return out;',
+    '}',
+    'globalThis.__nimbusRubySockets = {',
+    '  listen(port) { return globalThis.__nimbusVirtualSockets.listen(Number(port)); },',
+    '  closeListener(port) { globalThis.__nimbusVirtualSockets.closeListener(Number(port)); return true; },',
+    '  pending(port) { return globalThis.__nimbusVirtualSockets.pending(Number(port)); },',
+    '  acceptNowJson(port) { const conn = globalThis.__nimbusVirtualSockets.acceptNow(Number(port)); return conn ? JSON.stringify(conn) : ""; },',
+    '  recvBase64(id, maxBytes) { return __nimbusBase64FromBytes(Uint8Array.from(globalThis.__nimbusVirtualSockets.recv(Number(id), Number(maxBytes)))); },',
+    '  sendBase64(id, encoded) { return globalThis.__nimbusVirtualSockets.send(Number(id), __nimbusBytesFromBase64(encoded)); },',
+    '  close(id) { globalThis.__nimbusVirtualSockets.close(Number(id)); return true; },',
+    '};',
+    '',
+    'globalThis.__nimbusVirtualPortRegistrationPromises = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
+    'globalThis.__nimbusVirtualSocketDidListen = function __nimbusVirtualSocketDidListen(port) {',
+    '  const supervisor = globalThis.__nimbusRubySupervisor;',
+    '  if (!supervisor || typeof supervisor.registerPort !== "function") return;',
+    '  try {',
+    '    const p = supervisor.registerPort(Number(port)).catch((e) => {',
+    '      const msg = e && e.message ? e.message : String(e);',
+    '      (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push("[ruby-runner] port registration failed: " + msg + "\\n");',
+    '    });',
+    '    globalThis.__nimbusVirtualPortRegistrationPromises.push(p);',
+    '  } catch (e) {',
+    '    const msg = e && e.message ? e.message : String(e);',
+    '    (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push("[ruby-runner] port registration failed: " + msg + "\\n");',
+    '  }',
+    '};',
+    '',
+    preamble,
+    '',
+    'globalThis.__nimbusRubySocketQueue = globalThis.__nimbusRubySocketQueue || Promise.resolve();',
+    'function __nimbusRunRubySocketCall(fnName, port) {',
+    '  const run = async () => {',
+    '    const args = globalThis.__nimbusRubyProcessArgs;',
+    '    if (!args) return false;',
+    '    const n = Number(port);',
+    '    if (!Number.isInteger(n) || n <= 0 || n >= 65536) return false;',
+    '    const code = "exit((" + fnName + "(" + n + ")) ? 0 : 70)";',
+    '    const result = await globalThis.__rubyRun({ ...args, userCode: code, rubyPrelude: "" });',
+    '    if (result && result.stderr) (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push(result.stderr);',
+    '    const ok = !!(result && Number(result.exitCode || 0) === 0);',
+    '    if (!ok) globalThis.__nimbusVirtualSocketLastError = (result && result.stderr) ? String(result.stderr).trim() : "runtime handler did not accept the request";',
+    '    return ok;',
+    '  };',
+    '  const task = globalThis.__nimbusRubySocketQueue.then(run, run);',
+    '  globalThis.__nimbusRubySocketQueue = task.then(() => {}, () => {});',
+    '  return task;',
+    '}',
+    'globalThis.__nimbusVirtualSocketRequestQueued = function __nimbusVirtualSocketRequestQueued(port) {',
+    '  return __nimbusRunRubySocketCall("__nimbus_handle_virtual_socket_request", port);',
+    '};',
+    '',
+    'async function __nimbusStartRubyProcess(args) {',
+    '  if (!globalThis.__nimbusRubyProcessPromise) {',
+    '    const stdoutStart = (globalThis.__nimbusRubyStdout || []).length;',
+    '    const stderrStart = (globalThis.__nimbusRubyStderr || []).length;',
+    '    globalThis.__nimbusRubyProcessOutputStart = { stdoutStart, stderrStart };',
+    '    globalThis.__nimbusRubyProcessArgs = {',
+    '      userCode: args.userCode,',
+    '      rbArgv: args.rbArgv || [],',
+    '      userEnv: args.userEnv || {},',
+    '      progName: args.progName || "ruby",',
+    '      cwd: args.cwd || "/home/user",',
+    '      fsSnapshot: args.fsSnapshot,',
+    '      rubyPrelude: args.rubyPrelude || "",',
+    '    };',
+    '    globalThis.__nimbusRubyProcessPromise = globalThis.__rubyRun(globalThis.__nimbusRubyProcessArgs).then((result) => {',
+    '      globalThis.__nimbusRubyProcessResult = result;',
+    '      return result;',
+    '    });',
+    '  }',
+    '  const started = globalThis.__nimbusRubyProcessOutputStart || { stdoutStart: 0, stderrStart: 0 };',
+    '  const listen = globalThis.__nimbusVirtualSockets.waitForListen(10_000).then((port) => ({ state: port ? "listening" : "pending", port }));',
+    '  const exit = globalThis.__nimbusRubyProcessPromise.then((result) => ({ state: "exited", result }));',
+    '  const first = await Promise.race([listen, exit]);',
+    '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
+    '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
+    '  const stdout = (globalThis.__nimbusRubyStdout || []).slice(started.stdoutStart).join("");',
+    '  const stderr = (globalThis.__nimbusRubyStderr || []).slice(started.stderrStart).join("");',
+    '  if (first.state === "listening") return { state: "listening", port: first.port, stdout, stderr };',
+    '  if (first.state === "exited") return { state: "exited", result: first.result, stdout, stderr };',
+    '  const currentPort = globalThis.__nimbusVirtualSockets.firstListeningPort();',
+    '  if (currentPort) return { state: "listening", port: currentPort, stdout, stderr };',
+    '  return { state: "running", stdout, stderr };',
+    '}',
+    '',
+    'export default class NimbusRubyProcess extends WorkerEntrypoint {',
+    '  async startProcess(args) {',
+    '    globalThis.__nimbusRubySupervisor = this.env?.SUPERVISOR;',
+    '    return __nimbusStartRubyProcess(args || {});',
+    '  }',
+    '  async fetch(request) {',
+    '    globalThis.__nimbusRubySupervisor = this.env?.SUPERVISOR;',
+    '    return this.handleHttpRequest(request);',
+    '  }',
+    '  async handleHttpRequest(request) {',
+    '    globalThis.__nimbusRubySupervisor = this.env?.SUPERVISOR;',
+    '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
+    '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
+    '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
+    '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
+    '  }',
+    '}',
+  ].join('\n');
+}
+
 async function dispatchRubyFacet(
   facetMgr: FacetManager,
   args: RubyFacetArgs,
 ): Promise<RubyFacetResult> {
-  const toAB = (u8: Uint8Array): ArrayBuffer =>
-    u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-
   // The Ruby preamble runs the entire bootstrap at child-facet module-
   // init time (same architecture as Pyodide v2). The wasm Module is
   // instantiated synchronously where workerd permits, _initialize +
@@ -547,8 +816,7 @@ async function dispatchRubyFacet(
   const preamble = buildRubyPreamble();
 
   const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-  const env = (facetMgr as any).env;
-  const ctx = (facetMgr as any).ctx;
+  const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
   const pool = new NimbusLoaderPool(env, ctx, {
     tag: 'ruby-runner',
     concurrency: 1,
@@ -557,22 +825,9 @@ async function dispatchRubyFacet(
   });
 
   const facetFn = async function rubyFacetCall(
-    inArgs: {
-      userCode: string;
-      rbArgv: string[];
-      userEnv: Record<string, string>;
-      progName: string;
-      cwd: string;
-      fsSnapshot: WasiFsSnapshot;
-    },
-  ): Promise<{
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-    error?: string;
-    fsDiff?: WasiFsDiff;
-  }> {
-    const fn = (globalThis as any).__rubyRun;
+    inArgs: RubyFacetCallArgs,
+  ): Promise<unknown> {
+    const fn = Reflect.get(globalThis, '__rubyRun');
     if (typeof fn !== 'function') {
       return { exitCode: 127, stdout: '', stderr: '',
         error: 'ruby-runner preamble missing: __rubyRun not in scope' };
@@ -588,7 +843,7 @@ async function dispatchRubyFacet(
   };
 
   try {
-    const result: any = await pool.submit(facetFn, {
+    const rawResult = await pool.submit<RubyFacetCallArgs, unknown>(facetFn, {
       userCode: args.userCode,
       rbArgv: args.rbArgv,
       userEnv: args.userEnv,
@@ -597,25 +852,38 @@ async function dispatchRubyFacet(
       fsSnapshot: args.fsSnapshot,
     }, {
       wasmModules: {
-        'ruby+stdlib.wasm': toAB(args.wasmBytes),
+        'ruby+stdlib.wasm': toArrayBuffer(args.wasmBytes),
       },
       timeoutMs: 300_000,
     });
-    return {
-      exitCode: result.exitCode,
-      stdout: result.stdout || '',
-      stderr: result.stderr || '',
-      error: result.error,
-      fsDiff: result.fsDiff,
+    return normalizeRubyFacetResult(rawResult) || {
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+      error: 'ruby-runner dispatch returned an invalid payload',
     };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return {
       exitCode: 1,
       stdout: '',
       stderr: '',
-      error: `ruby-runner dispatch failed: ${e?.message || e}`,
+      error: `ruby-runner dispatch failed: ${errorMessage(e)}`,
     };
   }
+}
+
+function getFacetManagerLoaderHost(facetMgr: FacetManager): { env: unknown; ctx: DurableObjectState } {
+  const env = Reflect.get(facetMgr, 'env');
+  const ctx = Reflect.get(facetMgr, 'ctx');
+  if (!isDurableObjectState(ctx)) {
+    throw new Error('ruby-runner requires a FacetManager with DurableObjectState context');
+  }
+  return { env, ctx };
+}
+
+function isDurableObjectState(value: unknown): value is DurableObjectState {
+  if (typeof value !== 'object' || value === null) return false;
+  return 'id' in value && typeof Reflect.get(value, 'waitUntil') === 'function';
 }
 
 /**
@@ -649,9 +917,9 @@ function buildRubyPreamble(): string {
 /**
  * The Ruby-specific portion of the preamble. Wires the wasm imports
  * (wasi_snapshot_preview1 from __wasiMakeImports, canonical_abi from a
- * tiny Slab implementation, rb-js-abi-host as stubs that throw on
- * call), instantiates the wasm Module from __NIMBUS_WASM at module-
- * init, and runs Ruby's bootstrap sequence.
+ * tiny Slab implementation, rb-js-abi-host for the `js` bridge),
+ * instantiates the wasm Module from __NIMBUS_WASM at module-init, and
+ * runs Ruby's bootstrap sequence.
  *
  * Per-call __rubyRun then mutates WASI argv/env, clears the stdout/
  * stderr capture buffers, and invokes rb-eval-string-protect with a
@@ -757,37 +1025,104 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     },
   };
 
-  // rb-js-abi-host imports — 21 fns. Ruby only calls these when user
-  // code interacts with JS (gem "js"). For v1 (puts "hi") none fire.
-  // We stub each to throw a clear error so any future user code that
-  // needs JS interop gets a recognizable diagnostic instead of a
-  // wasm trap.
-  const _stub = (name) => () => { throw new Error('ruby-runner v1: rb-js-abi-host.' + name + ' not implemented (gem "js" not supported)'); };
+  const jsAbiResources = jsValueSlab;
+  function readGuestString(ptr, len) {
+    return new TextDecoder().decode(new Uint8Array(memRef.buffer, ptr, len));
+  }
+  function writeGuestString(outPtr, value) {
+    const bytes = new TextEncoder().encode(String(value));
+    const strPtr = cabiRealloc(0, 0, 1, bytes.length);
+    new Uint8Array(memRef.buffer).set(bytes, strPtr);
+    const dv = new DataView(memRef.buffer);
+    dv.setUint32(outPtr + 0, strPtr, true);
+    dv.setUint32(outPtr + 4, bytes.length, true);
+  }
+  function writeJsResult(outPtr, tag, value) {
+    const dv = new DataView(memRef.buffer);
+    dv.setInt8(outPtr + 0, tag === 'success' ? 0 : 1, true);
+    dv.setInt32(outPtr + 4, jsAbiResources.insert(value), true);
+  }
+  function readJsHandle(id) {
+    return jsAbiResources.get(id);
+  }
+  function readJsHandleList(ptr, len) {
+    const dv = new DataView(memRef.buffer);
+    const out = [];
+    for (let i = 0; i < len; i++) out.push(readJsHandle(dv.getInt32(ptr + i * 4, true)));
+    return out;
+  }
+  function jsFailure(error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
   const rb_js_abi_host = {
     rb_wasm_throw_prohibit_rewind_exception: () => {
       // This one CAN fire from Ruby internals (Fiber rewind guard).
       // Make it a no-op so Ruby's continuation machinery proceeds.
     },
-    'eval-js: func(code: string) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': _stub('eval-js'),
-    'is-js: func(value: handle<js-abi-value>) -> bool': _stub('is-js'),
-    'instance-of: func(value: handle<js-abi-value>, klass: handle<js-abi-value>) -> bool': _stub('instance-of'),
-    'global-this: func() -> handle<js-abi-value>': _stub('global-this'),
-    'int-to-js-number: func(value: s32) -> handle<js-abi-value>': _stub('int-to-js-number'),
-    'float-to-js-number: func(value: float64) -> handle<js-abi-value>': _stub('float-to-js-number'),
-    'string-to-js-string: func(value: string) -> handle<js-abi-value>': _stub('string-to-js-string'),
-    'bool-to-js-bool: func(value: bool) -> handle<js-abi-value>': _stub('bool-to-js-bool'),
-    'proc-to-js-function: func(value: u32) -> handle<js-abi-value>': _stub('proc-to-js-function'),
-    'rb-object-to-js-rb-value: func(raw-rb-abi-value: u32) -> handle<js-abi-value>': _stub('rb-object-to-js-rb-value'),
-    'js-value-to-string: func(value: handle<js-abi-value>) -> string': _stub('js-value-to-string'),
-    'js-value-to-integer: func(value: handle<js-abi-value>) -> variant { as-float(float64), bignum(string) }': _stub('js-value-to-integer'),
-    'export-js-value-to-host: func(value: handle<js-abi-value>) -> ()': _stub('export-js-value-to-host'),
-    'import-js-value-from-host: func() -> handle<js-abi-value>': _stub('import-js-value-from-host'),
-    'js-value-typeof: func(value: handle<js-abi-value>) -> string': _stub('js-value-typeof'),
-    'js-value-equal: func(lhs: handle<js-abi-value>, rhs: handle<js-abi-value>) -> bool': _stub('js-value-equal'),
-    'js-value-strictly-equal: func(lhs: handle<js-abi-value>, rhs: handle<js-abi-value>) -> bool': _stub('js-value-strictly-equal'),
-    'reflect-apply: func(target: handle<js-abi-value>, this-argument: handle<js-abi-value>, arguments: list<handle<js-abi-value>>) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': _stub('reflect-apply'),
-    'reflect-get: func(target: handle<js-abi-value>, property-key: string) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': _stub('reflect-get'),
-    'reflect-set: func(target: handle<js-abi-value>, property-key: string, value: handle<js-abi-value>) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': _stub('reflect-set'),
+    'eval-js: func(code: string) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': (ptr, len, outPtr) => {
+      try {
+        writeJsResult(outPtr, 'success', Function(readGuestString(ptr, len))());
+      } catch (e) {
+        writeJsResult(outPtr, 'failure', jsFailure(e));
+      }
+    },
+    'is-js: func(value: handle<js-abi-value>) -> bool': () => 1,
+    'instance-of: func(value: handle<js-abi-value>, klass: handle<js-abi-value>) -> bool': (value, klass) => {
+      const ctor = readJsHandle(klass);
+      return typeof ctor === 'function' && readJsHandle(value) instanceof ctor ? 1 : 0;
+    },
+    'global-this: func() -> handle<js-abi-value>': () => jsAbiResources.insert(globalThis),
+    'int-to-js-number: func(value: s32) -> handle<js-abi-value>': (value) => jsAbiResources.insert(value),
+    'float-to-js-number: func(value: float64) -> handle<js-abi-value>': (value) => jsAbiResources.insert(value),
+    'string-to-js-string: func(value: string) -> handle<js-abi-value>': (ptr, len) => jsAbiResources.insert(readGuestString(ptr, len)),
+    'bool-to-js-bool: func(value: bool) -> handle<js-abi-value>': (value) => {
+      if (value !== 0 && value !== 1) throw new TypeError('Ruby JS bridge received an invalid bool value');
+      return jsAbiResources.insert(value === 1);
+    },
+    'proc-to-js-function: func(value: u32) -> handle<js-abi-value>': () => jsAbiResources.insert(() => {
+      throw new Error('Nimbus Ruby JS bridge does not expose Ruby Proc callbacks yet');
+    }),
+    'rb-object-to-js-rb-value: func(raw-rb-abi-value: u32) -> handle<js-abi-value>': (value) => jsAbiResources.insert({ __nimbusRubyValue: value >>> 0 }),
+    'js-value-to-string: func(value: handle<js-abi-value>) -> string': (value, outPtr) => writeGuestString(outPtr, String(readJsHandle(value))),
+    'js-value-to-integer: func(value: handle<js-abi-value>) -> variant { as-float(float64), bignum(string) }': (value, outPtr) => {
+      const raw = readJsHandle(value);
+      const dv = new DataView(memRef.buffer);
+      if (typeof raw === 'bigint') {
+        dv.setInt8(outPtr + 0, 1, true);
+        writeGuestString(outPtr + 8, raw.toString());
+        return;
+      }
+      dv.setInt8(outPtr + 0, 0, true);
+      dv.setFloat64(outPtr + 8, Number(raw), true);
+    },
+    'export-js-value-to-host: func(value: handle<js-abi-value>) -> ()': (value) => {
+      globalThis.__nimbusRubyExportedJsValue = readJsHandle(value);
+    },
+    'import-js-value-from-host: func() -> handle<js-abi-value>': () => jsAbiResources.insert(globalThis.__nimbusRubyExportedJsValue),
+    'js-value-typeof: func(value: handle<js-abi-value>) -> string': (value, outPtr) => writeGuestString(outPtr, typeof readJsHandle(value)),
+    'js-value-equal: func(lhs: handle<js-abi-value>, rhs: handle<js-abi-value>) -> bool': (lhs, rhs) => readJsHandle(lhs) == readJsHandle(rhs) ? 1 : 0,
+    'js-value-strictly-equal: func(lhs: handle<js-abi-value>, rhs: handle<js-abi-value>) -> bool': (lhs, rhs) => readJsHandle(lhs) === readJsHandle(rhs) ? 1 : 0,
+    'reflect-apply: func(target: handle<js-abi-value>, this-argument: handle<js-abi-value>, arguments: list<handle<js-abi-value>>) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': (target, thisArg, argsPtr, argsLen, outPtr) => {
+      try {
+        writeJsResult(outPtr, 'success', Reflect.apply(readJsHandle(target), readJsHandle(thisArg), readJsHandleList(argsPtr, argsLen)));
+      } catch (e) {
+        writeJsResult(outPtr, 'failure', jsFailure(e));
+      }
+    },
+    'reflect-get: func(target: handle<js-abi-value>, property-key: string) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': (target, keyPtr, keyLen, outPtr) => {
+      try {
+        writeJsResult(outPtr, 'success', Reflect.get(readJsHandle(target), readGuestString(keyPtr, keyLen)));
+      } catch (e) {
+        writeJsResult(outPtr, 'failure', jsFailure(e));
+      }
+    },
+    'reflect-set: func(target: handle<js-abi-value>, property-key: string, value: handle<js-abi-value>) -> variant { success(handle<js-abi-value>), failure(handle<js-abi-value>) }': (target, keyPtr, keyLen, value, outPtr) => {
+      try {
+        writeJsResult(outPtr, 'success', Reflect.set(readJsHandle(target), readGuestString(keyPtr, keyLen), readJsHandle(value)));
+      } catch (e) {
+        writeJsResult(outPtr, 'failure', jsFailure(e));
+      }
+    },
   };
 
   const imports = {
@@ -1050,6 +1385,22 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   }
   if (preludeStatus && preludeStatus.status !== 0) {
     globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] prelude returned non-zero status: ' + preludeStatus.status + '\\n');
+  }
+
+  if (args.rubyPrelude) {
+    try {
+      const adapterStatus = callEvalStringProtect(String(args.rubyPrelude));
+      if (adapterStatus && adapterStatus.status !== 0) {
+        globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] adapter prelude returned non-zero status: ' + adapterStatus.status + '\\n');
+      }
+    } catch (e) {
+      return {
+        exitCode: 1,
+        stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
+        stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+        error: 'ruby adapter prelude threw: ' + (e && e.message),
+      };
+    }
   }
 
   // Stage 2: run user code wrapped for SystemExit/Exception capture.

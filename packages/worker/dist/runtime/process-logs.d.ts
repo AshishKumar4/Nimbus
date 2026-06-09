@@ -55,6 +55,14 @@ export interface LogChunk {
     /** Set for chunks we flagged as binary — lets UI render differently. */
     binary?: boolean;
 }
+export interface SequencedLogChunk extends LogChunk {
+    seq: number;
+}
+export interface ProcessLogReadOptions {
+    cursor?: number;
+    lines?: number;
+    bytes?: number;
+}
 export interface ProcessExitInfo {
     code: number;
     /** When the exit was recorded (ms epoch). */
@@ -190,11 +198,20 @@ export declare class ProcessLogStore {
     append(pid: number, stream: LogStream, data: string): void;
     /** W9: shared insert path — assigns a seq, marks dirty, evicts, fans out. */
     private _appendChunk;
+    /**
+     * Return chunks with stable per-PID sequence numbers. `cursor` is an
+     * exclusive read position: pass the previous returned `cursor` to receive only
+     * newer chunks. If older chunks have been evicted, `truncated` is true
+     * and the response starts at the oldest retained chunk.
+     */
+    read(pid: number, opts?: ProcessLogReadOptions): {
+        chunks: SequencedLogChunk[];
+        cursor: number;
+        truncated: boolean;
+    };
     /** Return the last N chunks (by line count) in chronological order. */
-    tail(pid: number, opts?: {
-        lines?: number;
-        bytes?: number;
-    }): LogChunk[];
+    tail(pid: number, opts?: Pick<ProcessLogReadOptions, 'lines' | 'bytes'>): LogChunk[];
+    private _tailStartIndex;
     /** All chunks for a pid, chronological. */
     all(pid: number): LogChunk[];
     /** Record exit. Idempotent: second call is ignored (preserves first). */

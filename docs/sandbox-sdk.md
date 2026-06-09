@@ -95,7 +95,7 @@ export default createNimbusHandler({
 - `startProcess(command, options?)`
 - `files.read/write/list/delete/exists/stat`
 - `runtimes.install/ensure/list`
-- `processes.list/kill/logs`
+- `processes.list/kill/logs/write/endInput/resize/signal`
 - `ports.expose/unexpose/list`
 - `capabilities()`
 - `tools(options?)`
@@ -106,7 +106,7 @@ Nimbus is a Cloudflare Worker, Durable Object, and WebAssembly sandbox. It
 supports:
 
 - persistent SQLite-backed virtual filesystems
-- Node, Bun, npm, git, shell, Python, Ruby, clang, and WASI execution
+- Node, Bun, npm, git, shell, Python, Ruby, clang, and WASI/WebAssembly execution
 - long-running process metadata and logs
 - preview-port routing for HTTP development servers
 - runtime installation from the Nimbus runtime catalog
@@ -122,8 +122,8 @@ agent runtimes that need a sandbox provider without depending on a browser
 terminal or WebSocket session.
 
 Capabilities are reported honestly. For example, Python is reported when it is
-installed or installable by policy, and native binary support is reported as
-WASI/WebAssembly execution rather than Linux ELF execution.
+allowed by policy, Ruby is reported when allowed by policy, and clang support
+is reported as WASI/WebAssembly execution rather than Linux ELF execution.
 
 ## Flue Connector
 
@@ -152,12 +152,18 @@ not add native Linux execution, Docker, or a second filesystem.
 
 ## Agentic CLI Compatibility
 
-Nimbus supports the primitives needed by JavaScript and WASM-based agent tools:
-persistent home/config files, npm/npx installs, npm alias dependencies,
-`child_process.spawn`, `exec`, `execFile`, `sh -c`, `/bin/sh -lc`, virtual
-absolute command paths such as `/usr/local/bin/node`, piped
-stdin/stdout/stderr, process streams, logs, outbound HTTPS, and preview ports
-for HTTP-like agent servers.
+Nimbus supports many primitives needed by JavaScript and WASM-based agent
+tools: persistent home/config files, npm/npx installs, npm alias dependencies,
+`child_process.spawn`, `exec`, `execFile`, piped stdin/stdout/stderr, process
+streams, process stdin writes, resize/signal delivery, logs, outbound HTTPS, and
+preview ports for HTTP-like agent servers.
+
+Foreground attached npm-bin processes have a TTY-shaped terminal surface with
+stdin, raw mode state, resize events, ANSI output, and signal delivery. This is
+still alpha and is not a complete POSIX PTY contract. Pi's official
+`curl -fsSL https://pi.dev/install.sh | sh` installer and direct npm path are
+production-probed. Tools such as opencode and Proteus-style CLIs need live
+probes before Nimbus docs should claim they run unmodified.
 
 Tools that ship only native platform shards such as `linux-x64`, `darwin`, or
 `win32` binaries need a WASM build, pure-JS entrypoint, or Nimbus adapter.

@@ -30,7 +30,7 @@ a.check('python runtime installs from runtime catalog',
 const pip = await t.run('pip install flask', 300_000);
 const cleanPip = stripAnsi(pip.output);
 a.check('pip install flask completes',
-  /Successfully installed flask/.test(cleanPip) && !/ModuleNotFoundError|PackageManager\.install\(\) got an unexpected keyword/.test(cleanPip),
+  /Successfully installed flask/.test(cleanPip) && !/ModuleNotFoundError|PackageManager\.install\(\) got an unexpected keyword|Failed to load MarkupSafe|Failed to load dynamic library|Wasm code generation disallowed/i.test(cleanPip),
   JSON.stringify(cleanPip.slice(-1000)));
 
 const script = `from flask import Flask, request

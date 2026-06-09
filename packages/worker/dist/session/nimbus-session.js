@@ -12,6 +12,7 @@ import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { ProcessTable } from '../runtime/process-table.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
+import { ProcessInputStore } from '../runtime/process-input.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
@@ -29,9 +30,10 @@ import { NpmInstaller } from '../npm/installer.js';
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { setCtxExports } from './ctx-exports.js';
-import { NIMBUS_VERSION, DEFAULT_HOSTNAME, CF_COMPAT_DATE } from '../constants.js';
+import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '../constants.js';
 import { seedProject } from '../vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
+import { dec } from '../_shared/bytes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState, } from './replica-routes.js';
@@ -70,6 +72,19 @@ import * as _diag from './diag.js';
 //  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
 // Helpers needed by this class file's own logic (not just re-export).
 import { _classifyCommand, } from './helpers.js';
+import { z } from 'zod/v4';
+const CpFacetDirectPayloadSchema = z.object({
+    command: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+    args: z.array(z.unknown()).optional().transform((value) => (value || []).map((item) => String(item))),
+    env: z.record(z.string(), z.unknown()).optional().transform((value) => {
+        const out = {};
+        for (const [key, item] of Object.entries(value || {}))
+            out[key] = String(item);
+        return out;
+    }),
+    cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
+    stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+}).passthrough();
 function normalizeCpCommandName(name) {
     const text = String(name || '').trim();
     if (!text.startsWith('/'))
@@ -227,6 +242,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // S4: visibility relaxed (was `private`) so ./nimbus-session-hib.ts's
     // HibHost interface can declare it. Per plan §IX.1.
     processLogs = new ProcessLogStore();
+    processInput = new ProcessInputStore();
     /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
      *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
      *  prevented hibernation per CF DO docs). The alarm itself lives in
@@ -469,6 +485,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcWriteFile(path, content) { return _rpc._rpcWriteFile(this, path, content); }
     async _rpcStat(path) { return _rpc._rpcStat(this, path); }
+    async _rpcUtimes(path, atimeMs, mtimeMs) {
+        return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs);
+    }
     async _rpcReaddir(path) { return _rpc._rpcReaddir(this, path); }
     async _rpcExists(path) { return _rpc._rpcExists(this, path); }
     async _rpcMkdir(path) { return _rpc._rpcMkdir(this, path); }
@@ -531,6 +550,10 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcListRuntimes() { return _programmatic.rpcListRuntimes(this); }
     async _rpcListProcesses() { return _programmatic.rpcListProcesses(this); }
     async _rpcKillProcess(pid) { return _programmatic.rpcKillProcess(this, pid); }
+    async _rpcWriteProcessInput(pid, data) { return _programmatic.rpcWriteProcessInput(this, pid, data); }
+    async _rpcEndProcessInput(pid) { return _programmatic.rpcEndProcessInput(this, pid); }
+    async _rpcResizeProcess(pid, size) { return _programmatic.rpcResizeProcess(this, pid, size); }
+    async _rpcSignalProcess(pid, signal) { return _programmatic.rpcSignalProcess(this, pid, signal); }
     async _rpcProcessLogs(pid, options) { return _programmatic.rpcProcessLogs(this, pid, options); }
     async _rpcListPorts() { return _programmatic.rpcListPorts(this); }
     async _rpcExposePort(port) { return _programmatic.rpcExposePort(this, port); }
@@ -666,6 +689,12 @@ export class NimbusSession extends CloudflareDurableObject {
             this.facetManager = new FacetManager(this.ctx, this.env, this.processTable, this.portRegistry, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
                 onSpawn: (pid, command, longRunning) => {
+                    if (longRunning) {
+                        try {
+                            this.processInput.open(pid);
+                        }
+                        catch { }
+                    }
                     // Only surface long-running / user-visible spawns to keep
                     // the terminal uncluttered. Short `node <file>` evals also
                     // get a line because users want the pid for `logs`/`kill`.
@@ -717,13 +746,13 @@ export class NimbusSession extends CloudflareDurableObject {
                 // path: {command, args, env, cwd, stdin}. We dispatch through the
                 // existing shell registry by resolving the command and invoking
                 // it with synthesized output streams that route to hooks.
-                let payload;
+                let payload = CpFacetDirectPayloadSchema.parse({});
                 try {
-                    payload = JSON.parse(codeJson);
+                    const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
+                    if (parsed.success)
+                        payload = parsed.data;
                 }
-                catch {
-                    payload = { command: '', args: [], env: {}, cwd: '/' };
-                }
+                catch { }
                 const registry = this._cpRegistry;
                 if (!registry) {
                     hooks.onStderr('child_process: command registry unavailable\n');
@@ -735,7 +764,7 @@ export class NimbusSession extends CloudflareDurableObject {
                     hooks.onStderr(`${payload.command}: command not found\n`);
                     return 127;
                 }
-                // Synthesize a CommandContext compatible with @lifo-sh/core.
+                // Synthesize a CommandContext for the internal shell substrate.
                 const stdoutStream = { write: (d) => hooks.onStdout(String(d)) };
                 const stderrStream = { write: (d) => hooks.onStderr(String(d)) };
                 const ac = new AbortController();
@@ -1072,8 +1101,12 @@ export class NimbusSession extends CloudflareDurableObject {
             fs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
                 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
         }
+        const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
         if (!fs.exists('etc/profile')) {
-            fs.writeFile('etc/profile', 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n');
+            fs.writeFile('etc/profile', defaultProfile);
+        }
+        else if (dec.decode(fs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
+            fs.writeFile('etc/profile', defaultProfile);
         }
         if (!fs.exists('home/user/.nimbusrc')) {
             fs.writeFile('home/user/.nimbusrc', '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n');

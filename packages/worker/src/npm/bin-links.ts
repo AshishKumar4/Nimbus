@@ -1,0 +1,392 @@
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
+import type { ResolvedPackage } from './resolver.js';
+import { z } from 'zod/v4';
+
+export const NPM_BIN_MANIFEST_VERSION = 1;
+export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
+
+export interface NpmBinEntry {
+  name: string;
+  packageName: string;
+  packageVersion: string;
+  packagePath: string;
+  targetPath: string;
+}
+
+export interface NpmBinManifest {
+  version: typeof NPM_BIN_MANIFEST_VERSION;
+  bins: Record<string, NpmBinEntry>;
+}
+
+export interface NpmBinResolution extends NpmBinEntry {
+  shimPath: string;
+}
+
+type VfsLike = Pick<SqliteVFS, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
+type WritableVfsLike = VfsLike & Pick<SqliteVFS, 'mkdir' | 'writeFile'>;
+
+interface PackageJsonLike {
+  name: string;
+  version?: string;
+  bin?: string | Record<string, string>;
+}
+
+const NpmBinEntrySchema: z.ZodType<NpmBinEntry> = z.object({
+  name: z.string().min(1),
+  packageName: z.string().min(1),
+  packageVersion: z.string(),
+  packagePath: z.string().min(1),
+  targetPath: z.string().min(1),
+});
+
+const NpmBinManifestSchema: z.ZodType<NpmBinManifest> = z.object({
+  version: z.literal(NPM_BIN_MANIFEST_VERSION),
+  bins: z.record(z.string(), NpmBinEntrySchema),
+});
+
+const PackageJsonSchema: z.ZodType<PackageJsonLike> = z.object({
+  name: z.string().min(1),
+  version: z.string().optional(),
+  bin: z.union([
+    z.string(),
+    z.record(z.string(), z.string()),
+  ]).optional(),
+}).passthrough();
+
+export function npmBinDirPath(nodeModulesPath: string): string {
+  return normalizeVfsPath(`${nodeModulesPath}/.bin`);
+}
+
+export function npmBinManifestPath(nodeModulesPath: string): string {
+  return `${npmBinDirPath(nodeModulesPath)}/${NPM_BIN_MANIFEST_NAME}`;
+}
+
+export function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest {
+  const bins: Record<string, NpmBinEntry> = {};
+  for (const entry of entries) bins[entry.name] = entry;
+  return { version: NPM_BIN_MANIFEST_VERSION, bins };
+}
+
+export function createNpmBinShim(entry: NpmBinEntry): string {
+  return `#!/usr/bin/env node\nrequire(${JSON.stringify(entry.targetPath)});\n`;
+}
+
+export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[] {
+  const packagePath = normalizeVfsPath(`${nodeModulesPath}/${pkg.name}`);
+  const entries: NpmBinEntry[] = [];
+  const packageVersion = String(pkg.version || '');
+
+  if (!pkg.bin || typeof pkg.bin !== 'object') return entries;
+  for (const [name, rawTarget] of Object.entries(pkg.bin)) {
+    if (typeof rawTarget !== 'string' || !name) continue;
+    entries.push({
+      name,
+      packageName: pkg.name,
+      packageVersion,
+      packagePath,
+      targetPath: resolveVfsPath(rawTarget, packagePath),
+    });
+  }
+  return entries;
+}
+
+export function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): NpmBinResolution | null {
+  const root = normalizeVfsPath(cwd || '/home/user');
+  for (const nodeModulesPath of candidateNodeModulesPaths(root)) {
+    const resolved = resolveNpmBinAt(vfs, nodeModulesPath, name);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+export function resolveNpmBinFromPath(
+  vfs: VfsLike,
+  cwd: string,
+  envPath: string,
+  name: string,
+): NpmBinResolution | null {
+  for (const binDir of candidatePathDirs(cwd, envPath)) {
+    const resolved = resolveNpmBinInBinDir(vfs, binDir, name);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+export function materializeNpmBinShims(
+  vfs: WritableVfsLike,
+  nodeModulesPath: string,
+  binDir: string,
+): number {
+  const entries = listNpmBinEntries(vfs, normalizeVfsPath(nodeModulesPath));
+  if (entries.length === 0) return 0;
+
+  const targetBinDir = normalizeVfsPath(binDir);
+  vfs.mkdir(targetBinDir, { recursive: true });
+  for (const entry of entries) {
+    vfs.writeFile(`${targetBinDir}/${entry.name}`, createNpmBinShim(entry));
+  }
+  vfs.writeFile(
+    `${targetBinDir}/${NPM_BIN_MANIFEST_NAME}`,
+    JSON.stringify(createNpmBinManifest(entries), null, 2) + '\n',
+  );
+  return entries.length;
+}
+
+function resolveNpmBinAt(vfs: VfsLike, nodeModulesPath: string, name: string): NpmBinResolution | null {
+  const binDir = npmBinDirPath(nodeModulesPath);
+  const shimPath = `${binDir}/${name}`;
+  if (!vfs.exists(shimPath) || safeIsDirectory(vfs, shimPath)) return null;
+
+  const manifestEntry = resolveFromManifest(vfs, nodeModulesPath, name);
+  if (manifestEntry) return { ...manifestEntry, shimPath };
+
+  const packageEntry = resolveFromPackageTree(vfs, nodeModulesPath, name);
+  if (packageEntry) return { ...packageEntry, shimPath };
+
+  return {
+    name,
+    packageName: name,
+    packageVersion: '',
+    packagePath: binDir,
+    targetPath: shimPath,
+    shimPath,
+  };
+}
+
+function resolveNpmBinInBinDir(vfs: VfsLike, binDir: string, name: string): NpmBinResolution | null {
+  const cleanBinDir = normalizeVfsPath(binDir);
+  if (!cleanBinDir) return null;
+  const shimPath = `${cleanBinDir}/${name}`;
+  if (!vfs.exists(shimPath) || safeIsDirectory(vfs, shimPath)) return null;
+
+  const nodeModulesPath = nodeModulesPathForBinDir(cleanBinDir);
+  if (nodeModulesPath) {
+    const resolved = resolveNpmBinAt(vfs, nodeModulesPath, name);
+    if (resolved) return resolved;
+  }
+
+  const manifestEntry = resolveFromBinDirManifest(vfs, cleanBinDir, name);
+  if (manifestEntry) return { ...manifestEntry, shimPath };
+
+  return {
+    name,
+    packageName: name,
+    packageVersion: '',
+    packagePath: cleanBinDir,
+    targetPath: shimPath,
+    shimPath,
+  };
+}
+
+function candidateNodeModulesPaths(cwd: string): string[] {
+  const paths: string[] = [];
+  let current = normalizeVfsPath(cwd || '/home/user');
+  while (current) {
+    paths.push(`${current}/node_modules`);
+    const slash = current.lastIndexOf('/');
+    if (slash < 0) break;
+    current = current.slice(0, slash);
+  }
+  return paths;
+}
+
+function candidatePathDirs(cwd: string, envPath: string): string[] {
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  for (const rawDir of (envPath || '').split(':')) {
+    if (!rawDir) continue;
+    const dir = rawDir.startsWith('/')
+      ? normalizeVfsPath(rawDir)
+      : resolveVfsPath(rawDir, cwd || '/home/user');
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+function nodeModulesPathForBinDir(binDir: string): string | null {
+  const suffix = '/.bin';
+  if (!binDir.endsWith(suffix)) return null;
+  return binDir.slice(0, -suffix.length);
+}
+
+function resolveFromManifest(vfs: VfsLike, nodeModulesPath: string, name: string): NpmBinEntry | null {
+  const manifestPath = npmBinManifestPath(nodeModulesPath);
+  if (!vfs.exists(manifestPath) || safeIsDirectory(vfs, manifestPath)) return null;
+
+  try {
+    const manifest = JSON.parse(vfs.readFileString(manifestPath)) as Partial<NpmBinManifest>;
+    if (manifest.version !== NPM_BIN_MANIFEST_VERSION || !manifest.bins || typeof manifest.bins !== 'object') {
+      return null;
+    }
+    return validateEntry(vfs, manifest.bins[name]);
+  } catch {
+    return null;
+  }
+}
+
+function resolveFromBinDirManifest(vfs: VfsLike, binDir: string, name: string): NpmBinEntry | null {
+  const manifestPath = `${binDir}/${NPM_BIN_MANIFEST_NAME}`;
+  if (!vfs.exists(manifestPath) || safeIsDirectory(vfs, manifestPath)) return null;
+  return resolveManifestEntry(vfs, manifestPath, name);
+}
+
+function listNpmBinEntries(vfs: VfsLike, nodeModulesPath: string): NpmBinEntry[] {
+  const manifestPath = npmBinManifestPath(nodeModulesPath);
+  const manifestEntries = readManifestEntries(vfs, manifestPath);
+  if (manifestEntries) return manifestEntries;
+
+  const entries: NpmBinEntry[] = [];
+  if (!vfs.exists(nodeModulesPath) || !safeIsDirectory(vfs, nodeModulesPath)) return entries;
+  for (const packagePath of listPackagePaths(vfs, nodeModulesPath)) {
+    const pkg = readPackageJson(vfs, `${packagePath}/package.json`);
+    if (!pkg) continue;
+    entries.push(...packageJsonBinEntry(vfs, packagePath, pkg));
+  }
+  return entries;
+}
+
+function readManifestEntries(vfs: VfsLike, manifestPath: string): NpmBinEntry[] | null {
+  const manifest = readNpmBinManifest(vfs, manifestPath);
+  if (!manifest) return null;
+
+  const entries: NpmBinEntry[] = [];
+  for (const entry of Object.values(manifest.bins)) {
+    const valid = validateEntry(vfs, entry);
+    if (valid) entries.push(valid);
+  }
+  return entries;
+}
+
+function resolveManifestEntry(vfs: VfsLike, manifestPath: string, name: string): NpmBinEntry | null {
+  const manifest = readNpmBinManifest(vfs, manifestPath);
+  return manifest ? validateEntry(vfs, manifest.bins[name]) : null;
+}
+
+function resolveFromPackageTree(vfs: VfsLike, nodeModulesPath: string, name: string): NpmBinEntry | null {
+  if (!vfs.exists(nodeModulesPath) || !safeIsDirectory(vfs, nodeModulesPath)) return null;
+
+  for (const packagePath of listPackagePaths(vfs, nodeModulesPath)) {
+    const pkg = readPackageJson(vfs, `${packagePath}/package.json`);
+    if (!pkg) continue;
+    const entry = packageJsonBinEntry(vfs, packagePath, pkg, name)[0];
+    if (entry) return entry;
+  }
+  return null;
+}
+
+function* listPackagePaths(vfs: VfsLike, nodeModulesPath: string): Generator<string> {
+  let entries: { name: string; type: string }[] = [];
+  try { entries = vfs.readdir(nodeModulesPath); } catch { return; }
+
+  for (const entry of entries) {
+    if (entry.type !== 'directory' || entry.name === '.bin') continue;
+    const path = `${nodeModulesPath}/${entry.name}`;
+    if (!entry.name.startsWith('@')) {
+      yield path;
+      continue;
+    }
+
+    let scopedEntries: { name: string; type: string }[] = [];
+    try { scopedEntries = vfs.readdir(path); } catch { continue; }
+    for (const scoped of scopedEntries) {
+      if (scoped.type === 'directory') yield `${path}/${scoped.name}`;
+    }
+  }
+}
+
+function packageJsonBinEntry(
+  vfs: VfsLike,
+  packagePath: string,
+  pkg: PackageJsonLike,
+  requestedName?: string,
+): NpmBinEntry[] {
+  const packageName = pkg.name;
+  const packageVersion = pkg.version || '';
+  const bin = pkg.bin;
+
+  if (typeof bin === 'string') {
+    const name = defaultBinName(packageName);
+    if (requestedName && requestedName !== name) return [];
+    const entry = validateEntry(vfs, {
+      name,
+      packageName,
+      packageVersion,
+      packagePath,
+      targetPath: resolveVfsPath(bin, packagePath),
+    });
+    return entry ? [entry] : [];
+  }
+
+  if (!bin || typeof bin !== 'object') return [];
+  const entries: NpmBinEntry[] = [];
+  for (const [name, rawTarget] of Object.entries(bin)) {
+    if (requestedName && requestedName !== name) continue;
+    if (typeof rawTarget !== 'string') continue;
+    const entry = validateEntry(vfs, {
+      name,
+      packageName,
+      packageVersion,
+      packagePath,
+      targetPath: resolveVfsPath(rawTarget, packagePath),
+    });
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+function validateEntry(vfs: VfsLike, entry: unknown): NpmBinEntry | null {
+  const parsed = NpmBinEntrySchema.safeParse(entry);
+  if (!parsed.success) return null;
+
+  const candidate = parsed.data;
+  const targetPath = normalizeVfsPath(candidate.targetPath);
+  const resolvedTarget = resolveExistingTarget(vfs, targetPath);
+  if (!resolvedTarget) return null;
+  return {
+    name: candidate.name,
+    packageName: candidate.packageName,
+    packageVersion: candidate.packageVersion,
+    packagePath: normalizeVfsPath(candidate.packagePath),
+    targetPath: resolvedTarget,
+  };
+}
+
+function resolveExistingTarget(vfs: VfsLike, targetPath: string): string | null {
+  if (vfs.exists(targetPath) && !safeIsDirectory(vfs, targetPath)) return targetPath;
+  for (const ext of ['.js', '.cjs', '.mjs']) {
+    const withExt = targetPath + ext;
+    if (vfs.exists(withExt) && !safeIsDirectory(vfs, withExt)) return withExt;
+  }
+  return null;
+}
+
+function readPackageJson(vfs: VfsLike, path: string): PackageJsonLike | null {
+  try {
+    const parsed = PackageJsonSchema.safeParse(JSON.parse(vfs.readFileString(path)));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function readNpmBinManifest(vfs: VfsLike, manifestPath: string): NpmBinManifest | null {
+  if (!vfs.exists(manifestPath) || safeIsDirectory(vfs, manifestPath)) return null;
+  try {
+    const parsed = NpmBinManifestSchema.safeParse(JSON.parse(vfs.readFileString(manifestPath)));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeIsDirectory(vfs: VfsLike, path: string): boolean {
+  try { return vfs.isDirectory(path); } catch { return false; }
+}
+
+function defaultBinName(packageName: string): string {
+  const slash = packageName.lastIndexOf('/');
+  return slash >= 0 ? packageName.slice(slash + 1) : packageName;
+}

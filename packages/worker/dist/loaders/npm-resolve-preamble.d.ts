@@ -12,6 +12,7 @@
  *   - SHOULD_SWAP(name)         → { from, to } | undefined
  *   - SHOULD_REJECT_FAIL(name)  → { from, reason, suggest? } | undefined
  *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → entry | undefined
+ *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
  *   - PARSE_SEMVER(v) → [major, minor, patch] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean

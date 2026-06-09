@@ -1,0 +1,1 @@
+{"version":3,"file":"string_decoder.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/string_decoder.ts"],"names":[],"mappings":"AAAA,qBAAa,aAAa;IACxB,OAAO,CAAC,OAAO,CAAc;gBAEjB,QAAQ,CAAC,EAAE,MAAM;IAY7B,KAAK,CAAC,MAAM,EAAE,UAAU,GAAG,MAAM;IAIjC,GAAG,CAAC,MAAM,CAAC,EAAE,UAAU,GAAG,MAAM;CAIjC;;;;AAED,wBAAiC"}

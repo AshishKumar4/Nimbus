@@ -197,7 +197,7 @@ export declare class NimbusLoaderPool {
     private readonly defaultTimeoutMs;
     private readonly defaultRetries;
     private readonly tag;
-    private readonly bindings;
+    private bindings;
     private readonly preamble;
     private readonly preambleHash;
     /**

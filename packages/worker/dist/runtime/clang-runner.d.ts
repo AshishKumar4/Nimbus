@@ -1,5 +1,5 @@
 /**
- * clang-runner.ts — compile, link, and execute C programs as wasm32-wasi.
+ * clang-runner.ts — compile, link, and execute C programs for Nimbus WASI.
  *
  * Architecture (compile-link-run, two facet calls):
  *

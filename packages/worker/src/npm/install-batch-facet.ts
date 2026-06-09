@@ -44,6 +44,11 @@
 
 import type { FacetPackageSpec } from './install-facet.js';
 
+declare const __nimbusUseRpcResult: <T, R>(
+  promise: Promise<T>,
+  use: (value: T) => R | Promise<R>,
+) => Promise<R>;
+
 // ── Types exchanged between supervisor and facet ────────────────────────
 
 export interface InstallBatchSpec {
@@ -154,8 +159,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   }
   // [W7] Detect streaming RPC support ONCE per batch — the typeof check
   // is cheap but we don't want to repeat it inside every flush hot path.
-  const supportsStreaming =
-    typeof (env.SUPERVISOR as any).writeBatchStream === 'function';
+  const supportsStreaming = typeof env.SUPERVISOR.writeBatchStream === 'function';
 
   // [W4] Cap on how long we wait for the R2 cache before committing to
   // the network response. 300 ms is generous enough for a regional R2
@@ -252,9 +256,15 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     if (supportsStreaming) {
       // @ts-ignore — preamble symbol.
       const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-      await (env.SUPERVISOR as any).writeBatchStream(stream);
+      await __nimbusUseRpcResult(
+        env.SUPERVISOR.writeBatchStream!(stream),
+        () => undefined,
+      );
     } else {
-      await env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow });
+      await __nimbusUseRpcResult(
+        env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow }),
+        () => undefined,
+      );
     }
   };
   const sharedFlush = async (): Promise<void> => {
@@ -314,7 +324,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         | { bytes: Uint8Array | null; events: any[] }
       > = r2Available
         ? Promise.race([
-            env.SUPERVISOR.getCachedTarball!(spec.name, spec.version),
+            __nimbusUseRpcResult(
+              env.SUPERVISOR.getCachedTarball!(spec.name, spec.version),
+              (result) => result,
+            ),
             new Promise<null>((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
           ]).catch(() => null)
         : Promise.resolve(null);
@@ -654,7 +667,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         tarballsCompleted++;
         if (capturedTgzBytes && typeof env.SUPERVISOR.putCachedTarball === 'function') {
           try {
-            await env.SUPERVISOR.putCachedTarball(spec.name, spec.version, capturedTgzBytes);
+            await __nimbusUseRpcResult(
+              env.SUPERVISOR.putCachedTarball(spec.name, spec.version, capturedTgzBytes),
+              () => undefined,
+            );
           } catch {
             // Best-effort cache write — never fail the install on R2 errors.
           }

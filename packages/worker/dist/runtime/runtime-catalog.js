@@ -19,11 +19,89 @@
  *   { name, version, license, wasi_namespace, memfs_companion,
  *     files: [{ path, content, sha256, size, mode? }],
  *     entrypoints: [{ binName, runner, args[], kind? }],
- *     runtime_artifacts?: [{ path, kind, id, source_sha256?, sha256 }] }
+ *     runtime_artifacts?: [
+ *       { path, kind: "workerd-adapter", id, source_sha256?, sha256 },
+ *       { path, kind: "python-package", id, language: "python", packageName,
+ *         version, abi, pyodideVersion, pythonVersion, wheelFileName,
+ *         wheelSha256, loadMode: "startup-module", imports[], dependencies[],
+ *         extensionModules[] }
+ *     ] }
  *
  * R2 and Cache API failures throw; the shell verb formats the diagnostic for
  * the user.
  */
+import { z } from 'zod/v4';
+const HexSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const CatalogVersionEntrySchema = z.object({
+    manifest: z.string().min(1),
+    size_bytes: z.number().int().nonnegative(),
+    license: z.string(),
+});
+const RuntimeCatalogSchema = z.object({
+    version: z.literal(1),
+    runtimes: z.record(z.string(), z.object({
+        default: z.string().min(1),
+        versions: z.record(z.string(), CatalogVersionEntrySchema),
+    })),
+});
+const ManifestFileSchema = z.object({
+    path: z.string().min(1),
+    content: z.string().min(1),
+    sha256: HexSha256Schema,
+    size: z.number().int().nonnegative(),
+    mode: z.literal('exec').optional(),
+});
+const ManifestEntrypointSchema = z.object({
+    binName: z.string().min(1),
+    runner: z.string().min(1),
+    args: z.array(z.string()),
+    kind: z.string().optional(),
+});
+const RuntimeArtifactMetadataSchema = z.object({
+    path: z.string().min(1),
+    kind: z.string().min(1),
+    id: z.string().min(1),
+    source_sha256: HexSha256Schema.optional(),
+    sha256: HexSha256Schema,
+}).passthrough();
+export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(z.object({
+    kind: z.literal('python-package'),
+    language: z.literal('python'),
+    packageName: z.string().min(1),
+    version: z.string().min(1),
+    abi: z.literal('pyodide-emscripten-2025_0-wasm32'),
+    pyodideVersion: z.string().min(1),
+    pythonVersion: z.string().min(1),
+    wheelFileName: z.string().min(1),
+    wheelSha256: HexSha256Schema,
+    loadMode: z.literal('startup-module'),
+    imports: z.array(z.string()),
+    dependencies: z.array(z.string()),
+    extensionModules: z.array(z.object({
+        path: z.string().min(1),
+        runtimePath: z.string().min(1),
+        sha256: HexSha256Schema,
+    })),
+}));
+const RuntimeManifestSchema = z.object({
+    name: z.string().min(1),
+    version: z.string().min(1),
+    license: z.string(),
+    wasi_namespace: z.string().nullable(),
+    memfs_companion: z.string().nullable(),
+    files: z.array(ManifestFileSchema),
+    entrypoints: z.array(ManifestEntrypointSchema),
+    runtime_artifacts: z.array(RuntimeArtifactMetadataSchema).optional(),
+});
+export function parseRuntimeCatalog(value) {
+    return RuntimeCatalogSchema.parse(value);
+}
+export function parseRuntimeManifest(value) {
+    return RuntimeManifestSchema.parse(value);
+}
+export function isRuntimePythonPackageArtifactMetadata(artifact) {
+    return RuntimePythonPackageArtifactMetadataSchema.safeParse(artifact).success;
+}
 // ── Cache key helpers ────────────────────────────────────────────────
 /** Synthetic L2 cache URLs. Reserved-invalid TLD so they can never
  *  collide with real user requests. */
@@ -37,7 +115,7 @@ export async function fetchCatalog(env) {
     // L2 hot path.
     const text = await l2GetText(catalogL2Key());
     if (text)
-        return JSON.parse(text);
+        return parseRuntimeCatalog(JSON.parse(text));
     // R2 path.
     const r2 = env.NIMBUS_RUNTIME_CACHE;
     if (!r2) {
@@ -52,14 +130,14 @@ export async function fetchCatalog(env) {
     // Cache-Control: this matches Pyodide-research §D2's "5-min TTL on
     // packument-style metadata".
     await l2PutText(catalogL2Key(), catalogText, 300);
-    return JSON.parse(catalogText);
+    return parseRuntimeCatalog(JSON.parse(catalogText));
 }
 /** Fetch a per-version manifest by its R2 key. */
 export async function fetchManifest(env, manifestKey) {
     // L2 hot path.
     const text = await l2GetText(manifestL2Key(manifestKey));
     if (text)
-        return JSON.parse(text);
+        return parseRuntimeManifest(JSON.parse(text));
     // R2 path.
     const r2 = env.NIMBUS_RUNTIME_CACHE;
     if (!r2) {
@@ -74,7 +152,7 @@ export async function fetchManifest(env, manifestKey) {
     // could go eternal, but a short TTL lets us correct a bad upload
     // by re-running bundle-runtime.mjs without manual cache invalidation.
     await l2PutText(manifestL2Key(manifestKey), manifestText, 300);
-    return JSON.parse(manifestText);
+    return parseRuntimeManifest(JSON.parse(manifestText));
 }
 /**
  * Fetch a content-addressed blob by R2 key. Bytes are eternally
@@ -120,7 +198,7 @@ async function assertSha256(bytes, expected, label) {
 async function bytesMatchSha256(bytes, expected) {
     return await sha256Hex(bytes) === expected.toLowerCase();
 }
-async function sha256Hex(bytes) {
+export async function sha256Hex(bytes) {
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     return bytesToHex(new Uint8Array(digest));
 }

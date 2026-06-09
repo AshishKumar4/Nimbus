@@ -82,7 +82,6 @@ export default createNimbusHandler({
     "run_worker_first": ["/api/*", "/s/*", "/new"]
   },
   "alias": {
-    "@lifo-sh/ui": "./node_modules/@nimbus-sh/worker/dist/stubs/lifo-ui.js",
     "clean-git-ref": "clean-git-ref/lib/index.js",
     "is-git-ref-name-valid": "is-git-ref-name-valid/index.js",
     "crc-32": "crc-32",
@@ -205,6 +204,7 @@ export default createNimbusHandler({
 Remote calls use `POST /api/nimbus/v1/sandboxes/<id>/rpc` internally.
 Applications normally call it through `Nimbus.connect({ endpoint, token,
 config })`. The route requires a valid Nimbus JWT and `sandbox:use` scope.
+`box.destroy()` additionally requires `session:destroy` or `session:admin`.
 
 For long-running app servers, start an explicit long-running process and
 expose the virtual port:

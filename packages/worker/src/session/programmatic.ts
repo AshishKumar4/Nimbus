@@ -11,12 +11,98 @@ import {
   installRuntimeProgrammatic,
   listAvailableRuntimes,
   listInstalledRuntimes,
+  type MinShellRegistry,
 } from '../runtime/package-manager.js';
 import { ProcessTable, type ProcessEntry } from '../runtime/process-table.js';
-import { ProcessLogStore } from '../runtime/process-logs.js';
-import { PortRegistry } from '../runtime/port-registry.js';
+import { ProcessLogStore, type LogChunk, type ProcessLogReadOptions } from '../runtime/process-logs.js';
+import { ProcessInputStore } from '../runtime/process-input.js';
+import { PortRegistry, type PortEntry } from '../runtime/port-registry.js';
+import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import {
+  endProcessInput,
+  resizeProcess,
+  signalProcess,
+  writeProcessInput,
+} from '../runtime/process-input-routing.js';
+import { z } from 'zod/v4';
 
-type Host = any;
+interface ProgrammaticShell {
+  env?: Record<string, string>;
+  getEnv?(): Record<string, string>;
+  getCwd?(): string;
+  execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{ exitCode: number }>;
+}
+
+interface ProgrammaticShellExecuteOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+  onStdout?: (data: string) => void;
+  onStderr?: (data: string) => void;
+  signal?: AbortSignal;
+  stdin?: string;
+}
+
+interface ProgrammaticContext {
+  getWebSockets?(tag?: string): WebSocket[];
+  storage: {
+    delete(key: string): Promise<void>;
+    deleteAll(): Promise<void>;
+  };
+}
+
+interface ProgrammaticFacetManager {
+  kill(pid: number): boolean;
+}
+
+interface ProgrammaticViteServer {
+  isRunning: boolean;
+  stop(): void;
+}
+
+interface ProgrammaticCirrusServer {
+  isRunning: boolean;
+  stop(ctx: ProgrammaticContext): void;
+}
+
+export interface ProgrammaticHost {
+  env: RuntimeCatalogEnv;
+  ctx: ProgrammaticContext;
+  shell: ProgrammaticShell | null;
+  sqliteFs: SqliteVFS | null;
+  processTable: ProcessTable;
+  portRegistry: PortRegistry;
+  processLogs: ProcessLogStore;
+  processInput: ProcessInputStore;
+  facetManager: ProgrammaticFacetManager | null;
+  viteDevServer: ProgrammaticViteServer | null;
+  cirrusReal: ProgrammaticCirrusServer | null;
+  _cpRegistry: MinShellRegistry | null;
+  _viteShimPid: number | null;
+  _viteShimPort: number | null;
+  _cirrusHmrWsClients?: { clear(): void } | null;
+  terminal?: { write(text: string): void; close(): void } | null;
+  kernel?: unknown;
+  facetProcessManager?: unknown;
+  esbuildService?: unknown;
+  nimbusWrangler?: unknown;
+  npmInstaller?: unknown;
+  fetchProxyEntrypoint?: unknown;
+  runtimeFsBridge?: unknown;
+  sessionBasePath?: string;
+  sessionBasePathHydrated?: boolean;
+  wranglerAliasBannerShown?: boolean;
+  _b4Phase?: string | null;
+  _w9PersistWired?: boolean;
+  _w9FlushTimer?: ReturnType<typeof setTimeout> | null;
+  _w9SchemaInit?: boolean;
+  _w9IsolateGen?: number;
+  _w9IsolateGenPersisted?: boolean;
+  _w9WireProcessLogPersist?(): void;
+  ensureSqliteFs(): void;
+  ensureFacetManager(): void;
+  initSession(ws: WebSocket): void;
+}
 
 export interface ProgrammaticReadyOptions {
   preinstall?: string[];
@@ -66,6 +152,7 @@ export interface SerializedProcess {
   startTime: number;
   endTime: number | null;
   longRunning: boolean;
+  attachedTty: boolean;
 }
 
 export interface SerializedPort {
@@ -74,13 +161,20 @@ export interface SerializedPort {
   registeredAt: number;
 }
 
+const ProcessLogsOptionsSchema = z.object({
+  cursor: z.number().int().nonnegative().optional(),
+  lines: z.number().int().nonnegative().optional(),
+  bytes: z.number().int().nonnegative().optional(),
+}).strict();
+
 function makeHeadlessWebSocket(): WebSocket {
   const listeners = new Map<string, Set<(event?: unknown) => void>>();
+  const state = { readyState: 1 };
   const ws = {
-    readyState: 1,
+    get readyState() { return state.readyState; },
     send(_data: string) {},
     close() {
-      (ws as any).readyState = 3;
+      state.readyState = 3;
       for (const cb of listeners.get('close') ?? []) {
         try { cb(); } catch {}
       }
@@ -100,7 +194,7 @@ function makeHeadlessWebSocket(): WebSocket {
   return ws as unknown as WebSocket;
 }
 
-function getHome(self: Host): string {
+function getHome(self: ProgrammaticHost): string {
   try {
     const envHome = self.shell?.env?.HOME;
     if (envHome) return String(envHome);
@@ -112,18 +206,20 @@ function getHome(self: Host): string {
   return '/home/user';
 }
 
-function runtimeDeps(self: Host) {
+function runtimeDeps(self: ProgrammaticHost) {
   self.ensureSqliteFs();
+  if (!self.sqliteFs) throw new Error('Nimbus SQLite filesystem did not initialize');
+  if (!self._cpRegistry) throw new Error('Nimbus shell registry did not initialize');
   return {
-    env: self.env as any,
-    vfs: self.sqliteFs!,
+    env: self.env,
+    vfs: self.sqliteFs,
     registry: self._cpRegistry,
     getHome: () => getHome(self),
   };
 }
 
 export async function ensureProgrammaticReady(
-  self: Host,
+  self: ProgrammaticHost,
   options: ProgrammaticReadyOptions = {},
 ): Promise<{ ok: true; preinstalled: string[] }> {
   if (!self.shell) {
@@ -152,7 +248,7 @@ export async function ensureProgrammaticReady(
 }
 
 export async function rpcExec(
-  self: Host,
+  self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticExecResult> {
@@ -179,22 +275,22 @@ export async function rpcExec(
     stdin: options.stdin,
   });
 
-  const result = await (options.timeoutMs && options.timeoutMs > 0
-    ? Promise.race([
-        run,
-        new Promise<{ exitCode: number }>((resolve) => {
-          timeout = setTimeout(() => {
-            timedOut = true;
-            try { controller.abort(); } catch {}
-            resolve({ exitCode: 124 });
-          }, options.timeoutMs);
-        }),
-      ])
-    : run);
+  const result: { exitCode: number } = options.timeoutMs && options.timeoutMs > 0
+    ? await Promise.race([
+      run,
+      new Promise<{ exitCode: number }>((resolve) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          try { controller.abort(); } catch {}
+          resolve({ exitCode: 124 });
+        }, options.timeoutMs);
+      }),
+    ])
+    : await run;
 
   if (timeout) clearTimeout(timeout);
 
-  const exitCode = Number((result as any)?.exitCode ?? (timedOut ? 124 : 0));
+  const exitCode = Number(result.exitCode ?? (timedOut ? 124 : 0));
   if (timedOut) {
     stderr.push(`command timed out after ${options.timeoutMs}ms\n`);
   }
@@ -215,7 +311,7 @@ export async function rpcExec(
 }
 
 function collectNewProcessOutput(
-  self: Host,
+  self: ProgrammaticHost,
   beforePids: Set<number>,
 ): { stdout: string; stderr: string } {
   const created = self.processTable.getAll()
@@ -224,7 +320,7 @@ function collectNewProcessOutput(
   const stdout: string[] = [];
   const stderr: string[] = [];
   for (const entry of created) {
-    const chunks = self.processLogs.all(Number(entry.pid));
+    const chunks: LogChunk[] = self.processLogs.all(Number(entry.pid));
     for (const chunk of chunks) {
       if (chunk.stream === 'stderr') stderr.push(String(chunk.data));
       else stdout.push(String(chunk.data));
@@ -234,7 +330,7 @@ function collectNewProcessOutput(
 }
 
 export async function rpcStartProcess(
-  self: Host,
+  self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticStartResult> {
@@ -250,13 +346,13 @@ export async function rpcStartProcess(
   const pid = running?.pid ?? created[0]?.pid ?? null;
   const process = pid != null ? serializeProcess(self.processTable.get(pid)) : null;
   const ports = pid != null
-    ? self.portRegistry.getAll().filter((p: any) => p.pid === pid).map(serializePort)
+    ? self.portRegistry.getAll().filter((p) => p.pid === pid).map(serializePort)
     : [];
   return { ...result, pid, process, ports };
 }
 
 export async function rpcRunCode(
-  self: Host,
+  self: ProgrammaticHost,
   code: string,
   options: ProgrammaticExecOptions & {
     language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
@@ -279,7 +375,7 @@ export async function rpcRunCode(
 }
 
 export async function rpcInstallRuntime(
-  self: Host,
+  self: ProgrammaticHost,
   spec: string,
   options: { force?: boolean } = {},
 ) {
@@ -288,7 +384,7 @@ export async function rpcInstallRuntime(
 }
 
 export async function rpcEnsureRuntimes(
-  self: Host,
+  self: ProgrammaticHost,
   specs: string[],
   options: { force?: boolean } = {},
 ) {
@@ -300,20 +396,20 @@ export async function rpcEnsureRuntimes(
   );
 }
 
-export async function rpcListRuntimes(self: Host) {
+export async function rpcListRuntimes(self: ProgrammaticHost) {
   await ensureProgrammaticReady(self);
   return {
     installed: listInstalledRuntimes(self.sqliteFs!, getHome(self)),
-    available: await listAvailableRuntimes(self.env as any),
+    available: await listAvailableRuntimes(self.env),
   };
 }
 
-export async function rpcListProcesses(self: Host): Promise<SerializedProcess[]> {
+export async function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]> {
   await ensureProgrammaticReady(self);
   return self.processTable.getAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
-export async function rpcKillProcess(self: Host, pid: number): Promise<{ ok: boolean; pid: number }> {
+export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
   let ok = false;
@@ -331,37 +427,77 @@ export async function rpcKillProcess(self: Host, pid: number): Promise<{ ok: boo
     } catch {}
     try { self.portRegistry.unregisterByPid(n); } catch {}
     ok = self.processTable.kill(n);
+    try { self.processInput.close(n); } catch {}
     self._viteShimPid = null;
     self._viteShimPort = null;
   } else if (self.facetManager) {
     ok = self.facetManager.kill(n);
+    if (ok) try { self.processInput.close(n); } catch {}
   } else {
     ok = self.processTable.kill(n);
+    if (ok) try { self.processInput.close(n); } catch {}
   }
   return { ok, pid: n };
 }
 
-export async function rpcProcessLogs(
-  self: Host,
+export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string): Promise<{ ok: boolean; pid: number }> {
+  await ensureProgrammaticReady(self);
+  const n = Number(pid);
+  return writeProcessInput(self, n, String(data ?? ''));
+}
+
+export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {
+  await ensureProgrammaticReady(self);
+  const n = Number(pid);
+  return endProcessInput(self, n);
+}
+
+export async function rpcResizeProcess(
+  self: ProgrammaticHost,
   pid: number,
-  options: { lines?: number; bytes?: number } = {},
+  size: { columns: number; rows: number },
+): Promise<{ ok: boolean; pid: number }> {
+  await ensureProgrammaticReady(self);
+  return resizeProcess(self, Number(pid), Number(size.columns), Number(size.rows));
+}
+
+export async function rpcSignalProcess(
+  self: ProgrammaticHost,
+  pid: number,
+  signal: string,
+): Promise<{ ok: boolean; pid: number }> {
+  await ensureProgrammaticReady(self);
+  return signalProcess(self, Number(pid), String(signal));
+}
+
+export async function rpcProcessLogs(
+  self: ProgrammaticHost,
+  pid: number,
+  options: ProcessLogReadOptions = {},
 ) {
   await ensureProgrammaticReady(self);
-  const chunks = self.processLogs.tail(Number(pid), options.bytes ? { bytes: options.bytes } : { lines: options.lines ?? 200 });
+  const parsed = ProcessLogsOptionsSchema.parse(options);
+  const readOptions: ProcessLogReadOptions = {
+    cursor: parsed.cursor,
+    ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
+  };
+  const chunks = self.processLogs.read(Number(pid), readOptions);
   return {
     pid: Number(pid),
-    chunks,
-    text: chunks.map((c: any) => c.data).join(''),
+    chunks: chunks.chunks,
+    text: chunks.chunks.map((c) => c.data).join(''),
+    cursor: chunks.cursor,
+    truncated: chunks.truncated,
     exit: self.processLogs.getExit(Number(pid)),
   };
 }
 
-export async function rpcListPorts(self: Host): Promise<SerializedPort[]> {
+export async function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]> {
   await ensureProgrammaticReady(self);
   return self.portRegistry.getAll().map(serializePort);
 }
 
-export async function rpcExposePort(self: Host, port: number) {
+export async function rpcExposePort(self: ProgrammaticHost, port: number) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
   const entry = self.portRegistry.get(n);
@@ -373,14 +509,14 @@ export async function rpcExposePort(self: Host, port: number) {
   };
 }
 
-export async function rpcUnexposePort(self: Host, port: number) {
+export async function rpcUnexposePort(self: ProgrammaticHost, port: number) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
   return { port: n, ok: self.portRegistry.unregister(n) };
 }
 
 export async function rpcDeleteFile(
-  self: Host,
+  self: ProgrammaticHost,
   path: string,
   options: { recursive?: boolean } = {},
 ): Promise<void> {
@@ -399,7 +535,7 @@ export async function rpcDeleteFile(
 }
 
 export async function rpcDestroy(
-  self: Host,
+  self: ProgrammaticHost,
   options: ProgrammaticDestroyOptions = {},
 ): Promise<ProgrammaticDestroyResult> {
   const reason = typeof options.reason === 'string' && options.reason.trim()
@@ -443,17 +579,53 @@ export async function rpcDestroy(
 
   try { self.processLogs?.flush?.(); } catch {}
   try { self.sqliteFs?.flushAll?.(); } catch {}
-  try { await self.ctx.storage.deleteAll(); } catch (e: any) {
-    throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${e?.message || e}`);
+  await quiesceInMemorySessionState(self);
+  try { await self.ctx.storage.deleteAll(); } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);
   }
 
   resetInMemorySessionState(self);
   return { ok: true, killed, destroyedAt, reason };
 }
 
-function resetInMemorySessionState(self: Host): void {
+async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void> {
+  if (self._w9FlushTimer) {
+    try { clearTimeout(self._w9FlushTimer); } catch {}
+    self._w9FlushTimer = null;
+  }
+  try { self.terminal?.close?.(); } catch {}
+  self.terminal = null;
+  await closeAcceptedWebSockets(self);
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
-  try { self.terminal?.write?.('\r\n[nimbus] session destroyed\r\n'); } catch {}
+  self.processInput = new ProcessInputStore();
+  self.processLogs = new ProcessLogStore();
+  self.processTable = new ProcessTable();
+  self.portRegistry = new PortRegistry();
+  self._w9PersistWired = false;
+}
+
+async function closeAcceptedWebSockets(self: ProgrammaticHost): Promise<void> {
+  const getWebSockets = self.ctx.getWebSockets;
+  if (typeof getWebSockets !== 'function') return;
+  let sockets: WebSocket[] = [];
+  try { sockets = getWebSockets.call(self.ctx); } catch { sockets = []; }
+  for (const ws of sockets) {
+    try { ws.close(1000, 'session destroyed'); } catch {}
+  }
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try { sockets = getWebSockets.call(self.ctx); } catch { sockets = []; }
+    if (sockets.length === 0) return;
+    for (const ws of sockets) {
+      try { ws.close(1000, 'session destroyed'); } catch {}
+    }
+    await delay(25);
+  }
+}
+
+function resetInMemorySessionState(self: ProgrammaticHost): void {
+  try { self._cirrusHmrWsClients?.clear?.(); } catch {}
   try { self.terminal?.close?.(); } catch {}
 
   self.sqliteFs = null;
@@ -481,11 +653,19 @@ function resetInMemorySessionState(self: Host): void {
   self.processTable = new ProcessTable();
   self.portRegistry = new PortRegistry();
   self.processLogs = new ProcessLogStore();
+  self.processInput = new ProcessInputStore();
   self._w9PersistWired = false;
+  self._w9SchemaInit = false;
+  self._w9IsolateGen = 0;
+  self._w9IsolateGenPersisted = false;
   try { self._w9WireProcessLogPersist?.(); } catch {}
 }
 
-function rmrf(vfs: any, path: string): void {
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function rmrf(vfs: SqliteVFS, path: string): void {
   for (const entry of vfs.readdir(path)) {
     const child = `${path}/${entry.name}`;
     if (entry.type === 'directory') rmrf(vfs, child);
@@ -506,10 +686,11 @@ function serializeProcess(p: ProcessEntry | undefined): SerializedProcess | null
     startTime: p.startTime,
     endTime: p.endTime,
     longRunning: p.longRunning === true,
+    attachedTty: p.attachedTty === true,
   };
 }
 
-function serializePort(p: any): SerializedPort {
+function serializePort(p: PortEntry): SerializedPort {
   return {
     port: Number(p.port),
     pid: Number(p.pid),

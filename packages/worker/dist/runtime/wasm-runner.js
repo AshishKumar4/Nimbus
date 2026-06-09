@@ -48,6 +48,7 @@
  *   - NO direct WebAssembly.instantiate(bytes) at request time —
  *     workerd CSP rejects that path.
  */
+import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
@@ -76,12 +77,23 @@ export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [expor
     '  - Only integer return values are surfaced.\n' +
     '\n' +
     'Limitations (WASI mode, core WASI):\n' +
+    `  - target ABI: ${WASM32_WASI_NIMBUS_ABI.id}.\n` +
     '  - implemented imports: ' + WASI_IMPLEMENTED_FNS.join(', ') + '.\n' +
-    '  - path_*, fd_readdir, fd_filestat_*, fd_pread, fd_pwrite, poll_oneoff,\n' +
-    '    sock_* return ENOSYS (filesystem WASI will add SqliteFS-backed paths).\n' +
+    '  - filesystem access is rooted at the current Nimbus VFS subtree and\n' +
+    '    flushed back after process exit.\n' +
     '  - fd 0 (stdin) returns EOF immediately.\n' +
     '  - Transport: bytes ship via the LOADER modules map, NOT\n' +
     '    WebAssembly.instantiate(bytes) at request time (CSP-blocked).';
+export function formatWasmRunnerWasiInfo() {
+    return JSON.stringify({
+        abi: WASM32_WASI_NIMBUS_ABI.id,
+        os: WASM32_WASI_NIMBUS_ABI.os,
+        target: WASM32_WASI_NIMBUS_ABI.target,
+        env: WASM32_WASI_NIMBUS_ABI.env,
+        capabilities: WASM32_WASI_NIMBUS_ABI.capabilities,
+        imports: WASI_IMPLEMENTED_FNS,
+    }, null, 2) + '\n';
+}
 /**
  * Cheap supervisor-side WASI-detect: scan the wasm import section
  * header bytes for the literal `wasi_snapshot_preview1` module name.
@@ -406,7 +418,9 @@ export function makeWasmRunner(deps) {
         // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
         // runtime-registry's RuntimeRunOpts carries env on the way in; we
         // forward to the WASI shim. Direct mode doesn't use env.
-        const wasiEnv = isWasi ? (opts.env || {}) : {};
+        const wasiEnv = isWasi
+            ? { ...(opts.env || {}), ...WASM32_WASI_NIMBUS_ABI.env }
+            : {};
         // ── filesystem WASI: snapshot user's session VFS for WASI mode ──
         //
         // The user's cwd at invocation time is our session-root preopen

@@ -1,0 +1,1 @@
+{"version":3,"file":"ifconfig.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/net/ifconfig.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAC3C,OAAO,KAAK,EAAE,MAAM,EAAE,MAAM,uBAAuB,CAAC;AAEpD;;;GAGG;AACH,wBAAgB,qBAAqB,CAAC,MAAM,EAAE,MAAM,GAAG,OAAO,CA8F7D"}

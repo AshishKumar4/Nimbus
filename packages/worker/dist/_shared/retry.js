@@ -23,6 +23,7 @@
  * so `src/npm-install-facet.ts` duplicates this retry loop inline inside
  * `fetchAndStagePackage`. Keep the two in sync if behaviour changes.
  */
+import { disposeRpcResource } from './rpc-dispose.js';
 /** Default retry count AFTER the first attempt (3 = up to 4 total attempts). */
 export const DEFAULT_RETRIES = 3;
 /** Base backoff delays in ms. Index = retry attempt (0-indexed). */
@@ -126,13 +127,7 @@ export async function retryableFetch(url, init, opts) {
             // documented in WORKERD-CRASH.md.
             //
             // Same disposer pattern as src/npm-resolver.ts:312-316.
-            try {
-                const disposerKey = Symbol.dispose;
-                const disposer = disposerKey ? resp?.[disposerKey] : undefined;
-                if (typeof disposer === 'function')
-                    disposer.call(resp);
-            }
-            catch { /* best-effort */ }
+            disposeRpcResource(resp);
             const delayMs = jittered(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]);
             opts?.onRetry?.(attempt + 1, totalRetries, delayMs, `HTTP ${resp.status}`);
             await new Promise((r) => setTimeout(r, delayMs));

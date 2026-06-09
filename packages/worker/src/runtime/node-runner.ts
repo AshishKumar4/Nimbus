@@ -56,6 +56,7 @@
 
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { resolveLongRunningPort } from './long-running-handle.js';
+import type { FacetBundleProfile } from './bundle-profile.js';
 
 /**
  * Argv-only long-running detection. The ONLY signals we honour:
@@ -109,6 +110,9 @@ export interface RunFreshOpts {
    */
   skipSpawn?: boolean;
   callerPid?: number;
+  forceLongRunning?: boolean;
+  attachedTty?: boolean;
+  bundleProfile?: FacetBundleProfile;
 }
 
 /**
@@ -166,7 +170,7 @@ export async function runFresh(
 ): Promise<RunFreshResult> {
   const args = opts.argv || [];
 
-  if (!isLongRunningInvocation(args)) {
+  if (!opts.forceLongRunning && !isLongRunningInvocation(args)) {
     // Short path: fresh-isolate-per-call via facetMgr.exec.
     // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
     // invocation gets a fresh isolate; warm slots are reused only
@@ -203,9 +207,13 @@ export async function runFresh(
         dirname: opts.dirname,
         command,
         port,
+        attachedTty: opts.attachedTty,
+        skipSpawn: opts.skipSpawn,
+        callerPid: opts.callerPid,
+        bundleProfile: opts.bundleProfile,
       });
     } else {
-      spawned = facetMgr.spawn(workerCode, command, cwd, { port });
+      spawned = await facetMgr.spawn(workerCode, command, cwd, { port });
     }
   } catch (e: any) {
     // Hard-fail per anti-requirement: missing env.LOADER throws here.
@@ -216,8 +224,9 @@ export async function runFresh(
       longRunning: true,
     };
   }
-  const noticeLine =
-    `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`;
+  const noticeLine = opts.skipSpawn
+    ? ''
+    : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`;
   return {
     exitCode: 0,
     stdout: noticeLine,

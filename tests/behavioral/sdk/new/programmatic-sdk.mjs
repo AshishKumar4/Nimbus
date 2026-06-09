@@ -23,6 +23,8 @@ class FakeNamespace {
 }
 
 const calls = [];
+const processLogChunks = [];
+let processLogCursor = 0;
 const stub = {
   async _rpcReady(options) {
     calls.push(['ready', options]);
@@ -55,10 +57,37 @@ const stub = {
   async _rpcDeleteFile(path, options) { calls.push(['deleteFile', path, options]); },
   async _rpcInstallRuntime(spec, options) { calls.push(['installRuntime', spec, options]); return { spec, exitCode: 0 }; },
   async _rpcEnsureRuntimes(specs, options) { calls.push(['ensureRuntimes', specs, options]); return specs.map((spec) => ({ spec, exitCode: 0 })); },
-  async _rpcListRuntimes() { calls.push(['listRuntimes']); return { installed: [], available: [{ name: 'python', defaultVersion: '0.29.4', versions: [] }] }; },
+  async _rpcListRuntimes() {
+    calls.push(['listRuntimes']);
+    return {
+      installed: [{ name: 'clang', version: 'wasi-libc-modern', root: '/home/user/.nimbus/runtimes/clang/wasi-libc-modern', abi: 'wasm32-wasi-nimbus', bins: ['clang', 'wasm-ld'], sizeBytes: 1, license: 'Apache-2.0' }],
+      available: [{ name: 'python', abi: 'pyodide', defaultVersion: '0.29.4', versions: [] }],
+    };
+  },
   async _rpcListProcesses() { calls.push(['listProcesses']); return []; },
   async _rpcKillProcess(pid) { calls.push(['killProcess', pid]); return { ok: true, pid }; },
-  async _rpcProcessLogs(pid, options) { calls.push(['processLogs', pid, options]); return { text: 'logs' }; },
+  async _rpcWriteProcessInput(pid, data) {
+    calls.push(['writeProcessInput', pid, data]);
+    processLogChunks.push({ seq: processLogCursor++, ts: Date.now(), stream: 'stdout', data });
+    return { ok: true, pid };
+  },
+  async _rpcEndProcessInput(pid) { calls.push(['endProcessInput', pid]); return { ok: true, pid }; },
+  async _rpcResizeProcess(pid, size) { calls.push(['resizeProcess', pid, size]); return { ok: true, pid }; },
+  async _rpcSignalProcess(pid, signal) { calls.push(['signalProcess', pid, signal]); return { ok: true, pid }; },
+  async _rpcProcessLogs(pid, options = {}) {
+    calls.push(['processLogs', pid, options]);
+    const chunks = options.cursor === undefined
+      ? [...processLogChunks]
+      : processLogChunks.filter((chunk) => chunk.seq >= Number(options.cursor));
+    return {
+      pid,
+      chunks,
+      text: chunks.map((chunk) => chunk.data).join(''),
+      cursor: processLogCursor,
+      truncated: false,
+      exit: null,
+    };
+  },
   async _rpcListPorts() { calls.push(['listPorts']); return [{ port: 3000, pid: 7, registeredAt: 1 }]; },
   async _rpcExposePort(port) { calls.push(['exposePort', port]); return { port, listening: true, pid: 7, registeredAt: 1 }; },
   async _rpcUnexposePort(port) { calls.push(['unexposePort', port]); return { port, ok: true }; },
@@ -106,6 +135,14 @@ a.check('runCode passes python install policy', py.stdout === '4\n'
 await box.runtimes.ensure(['python', 'clang']);
 a.check('runtimes.ensure calls RPC', !!calls.find((c) => c[0] === 'ensureRuntimes' && c[1].length === 2));
 
+const runtimeList = await box.runtimes.list();
+a.check('runtimes.list exposes installed runtime ABI',
+  runtimeList.installed[0]?.abi === 'wasm32-wasi-nimbus',
+  JSON.stringify(runtimeList.installed[0] ?? null));
+a.check('runtimes.list exposes available runtime ABI',
+  runtimeList.available[0]?.abi === 'pyodide',
+  JSON.stringify(runtimeList.available[0] ?? null));
+
 const port = await box.ports.expose(3000);
 a.check('exposePort returns path-style URL', port.url === 'https://nimbus.ashishkumarsingh.com/s/agent-1/port/3000/');
 
@@ -113,9 +150,85 @@ const provider = box.tools();
 a.check('tools namespace from profile', provider.name === 'sandbox' && provider.kind === 'sandbox');
 a.check('tools expose Proteus exec', typeof provider.tools.exec.execute === 'function');
 a.check('capabilities do not claim docker', !provider.capabilities.includes('docker'));
+a.check('capabilities report allowed runtimes without generic native overclaim',
+  provider.capabilities.includes('python')
+    && provider.capabilities.includes('ruby')
+    && provider.capabilities.includes('wasi')
+    && provider.capabilities.includes('clang_wasi')
+    && !provider.capabilities.includes('native_binary'),
+  JSON.stringify(provider.capabilities));
 
 const stat = await box.files.stat('/home/user/project/a.txt');
 a.check('files.stat exposes VFS stat', stat?.type === 'file' && stat.size === 4);
+
+await box.processes.resize(7, { columns: 100, rows: 31 });
+a.check('processes.resize calls terminal-size RPC',
+  !!calls.find((c) => c[0] === 'resizeProcess' && c[1] === 7 && c[2]?.columns === 100 && c[2]?.rows === 31));
+
+await box.processes.signal(7, 'SIGWINCH');
+a.check('processes.signal calls process signal RPC',
+  !!calls.find((c) => c[0] === 'signalProcess' && c[1] === 7 && c[2] === 'SIGWINCH'));
+
+const attached = box.processes.attach(7, { pollIntervalMs: 25 });
+await attached.write('hello-sdk\n');
+const firstLogs = await attached.logs({ cursor: 0 });
+a.check('processes.attach writes input and reads sequenced logs',
+  firstLogs.text === 'hello-sdk\n'
+  && firstLogs.cursor === 1
+  && firstLogs.chunks[0]?.seq === 0
+  && calls.find((c) => c[0] === 'writeProcessInput' && c[2] === 'hello-sdk\n'));
+
+await attached.logs({ lines: 0 });
+a.check('processes.logs preserves zero line limits',
+  calls.some((c) => c[0] === 'processLogs' && c[2]?.lines === 0),
+  JSON.stringify(calls.filter((c) => c[0] === 'processLogs').slice(-3)));
+
+const zeroStreamController = new AbortController();
+const zeroStreamStart = calls.length;
+const zeroAttachment = box.processes.attach(7);
+const zeroIterator = zeroAttachment.stream({
+  bytes: 0,
+  lines: 99,
+  pollIntervalMs: 25,
+  signal: zeroStreamController.signal,
+})[Symbol.asyncIterator]();
+const zeroNext = zeroIterator.next().catch((err) => ({ error: String(err?.message ?? err) }));
+for (let i = 0; i < 20; i++) {
+  if (calls.slice(zeroStreamStart).some((c) => c[0] === 'processLogs')) break;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+zeroStreamController.abort();
+await Promise.race([
+  zeroNext,
+  new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 100)),
+]);
+a.check('processes.attach stream preserves zero byte limits',
+  calls.slice(zeroStreamStart).some((c) =>
+    c[0] === 'processLogs'
+    && c[2]?.bytes === 0
+    && c[2]?.lines === undefined),
+  JSON.stringify(calls.filter((c) => c[0] === 'processLogs').slice(-4)));
+
+const controller = new AbortController();
+const streaming = box.processes.attach(7, { pollIntervalMs: 25, signal: controller.signal });
+await streaming.logs({ cursor: 0 });
+const iterator = streaming[Symbol.asyncIterator]();
+const nextChunk = iterator.next();
+await streaming.write('stream-sdk\n');
+const streamed = await Promise.race([
+  nextChunk,
+  new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 500)),
+]);
+controller.abort();
+a.check('processes.attach streams new log chunks from the cursor',
+  !streamed.timeout
+  && streamed.value?.data === 'stream-sdk\n'
+  && streamed.value?.seq === 1,
+  JSON.stringify(streamed));
+
+await attached.endInput();
+a.check('processes.attach can end stdin',
+  !!calls.find((c) => c[0] === 'endProcessInput' && c[1] === 7));
 
 const destroyed = await box.destroy({ reason: 'test-cleanup' });
 a.check('destroy calls lifecycle RPC',

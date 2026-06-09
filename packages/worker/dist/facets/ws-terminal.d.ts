@@ -56,6 +56,7 @@ export declare class WebSocketTerminal {
      * self.ctx, but TypeScript-wise it's a fresh function value).
      */
     attach(ws: WebSocket, onFlush?: (data: string) => void): void;
+    close(): void;
     get cols(): number;
     get rows(): number;
     write(data: string): void;

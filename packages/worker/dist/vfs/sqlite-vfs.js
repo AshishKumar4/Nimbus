@@ -156,6 +156,7 @@ export class SqliteVFS {
       parent_path TEXT NOT NULL DEFAULT '',
       is_dir INTEGER NOT NULL DEFAULT 0,
       size INTEGER NOT NULL DEFAULT 0,
+      atime INTEGER NOT NULL DEFAULT 0,
       mtime INTEGER NOT NULL DEFAULT 0,
       mode INTEGER NOT NULL DEFAULT 0,
       chunk_count INTEGER NOT NULL DEFAULT 0
@@ -174,6 +175,16 @@ export class SqliteVFS {
         catch {
             try {
                 this.sql.exec("ALTER TABLE inodes ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0");
+            }
+            catch { }
+        }
+        try {
+            this.sql.exec("SELECT atime FROM inodes LIMIT 0");
+        }
+        catch {
+            try {
+                this.sql.exec("ALTER TABLE inodes ADD COLUMN atime INTEGER NOT NULL DEFAULT 0");
+                this.sql.exec("UPDATE inodes SET atime = mtime WHERE atime = 0");
             }
             catch { }
         }
@@ -242,14 +253,17 @@ export class SqliteVFS {
         this._totalFiles = 0;
         this._totalDirs = 0;
         this._usedBytes = 0;
-        const rows = [...this.sql.exec("SELECT path, parent_path, is_dir, size, mtime, mode, chunk_count FROM inodes")];
+        const rows = [...this.sql.exec("SELECT path, parent_path, is_dir, size, atime, mtime, mode, chunk_count FROM inodes")];
         for (const row of rows) {
+            const mtime = Number(row.mtime);
+            const atime = Number(row.atime) || mtime;
             const inode = {
                 path: String(row.path),
                 parentPath: String(row.parent_path),
                 isDir: Number(row.is_dir) === 1,
                 size: Number(row.size),
-                mtime: Number(row.mtime),
+                atime,
+                mtime,
                 mode: Number(row.mode),
                 chunkCount: Number(row.chunk_count),
             };
@@ -704,7 +718,7 @@ export class SqliteVFS {
      *
      * Staying synchronous preserves the sqlite-vfs invariant that all
      * file ops are sync (documented at the top of this file) — required
-     * by the LIFO @lifo-sh/core MountProvider interface.
+     * by the vendored MountProvider interface.
      */
     flushAll() {
         // Flush cache dirty entries
@@ -806,9 +820,9 @@ export class SqliteVFS {
     }
     _mkdirSingle(path) {
         const pp = this.parentPath(path);
-        const mtime = this.now();
-        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, mtime, mode, chunk_count) VALUES (?, ?, 1, 0, ?, ?, 0)", path, pp, mtime, 0o755);
-        const inode = { path, parentPath: pp, isDir: true, size: 0, mtime, mode: 0o755, chunkCount: 0 };
+        const now = this.now();
+        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, 1, 0, ?, ?, ?, 0)", path, pp, now, now, 0o755);
+        const inode = { path, parentPath: pp, isDir: true, size: 0, atime: now, mtime: now, mode: 0o755, chunkCount: 0 };
         this.inodes.set(path, inode);
         this._addToChildrenIndex(pp, path);
         this._totalDirs++; // B3
@@ -818,7 +832,7 @@ export class SqliteVFS {
     writeFile(path, content) {
         const data = typeof content === 'string' ? enc.encode(content) : content;
         const pp = this.parentPath(path);
-        const mtime = this.now();
+        const now = this.now();
         const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
         // Capture prior state BEFORE mutating this.inodes (B3 delta tracking).
         const prior = this.inodes.get(path);
@@ -831,8 +845,8 @@ export class SqliteVFS {
             this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
         }
         // Write inode
-        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, mtime, mode, chunk_count) VALUES (?, ?, 0, ?, ?, ?, ?)", path, pp, data.length, mtime, 0o644, chunkCount);
-        const newInode = { path, parentPath: pp, isDir: false, size: data.length, mtime, mode: 0o644, chunkCount };
+        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, 0, ?, ?, ?, ?, ?)", path, pp, data.length, now, now, 0o644, chunkCount);
+        const newInode = { path, parentPath: pp, isDir: false, size: data.length, atime: now, mtime: now, mode: 0o644, chunkCount };
         this.inodes.set(path, newInode);
         if (isNew)
             this._addToChildrenIndex(pp, path);
@@ -953,10 +967,23 @@ export class SqliteVFS {
         return {
             type: inode.isDir ? 'directory' : 'file',
             size: inode.size,
+            atime: inode.atime || inode.mtime,
             ctime: inode.mtime,
             mtime: inode.mtime,
             mode: inode.mode,
         };
+    }
+    utimes(path, atimeMs, mtimeMs) {
+        const inode = this.inodes.get(path);
+        if (!inode)
+            throw new Error("ENOENT: " + path);
+        const atime = Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
+        const mtime = Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
+        inode.atime = atime;
+        inode.mtime = mtime;
+        this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, path);
+        this._revision++;
+        this.events.emit('change', path);
     }
     readdir(path) {
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -1401,16 +1428,17 @@ export class SqliteVFS {
                 }
                 // 2. Batch insert inodes — multi-row VALUES.
                 // DO SQLite has a low bind-parameter limit (~100 variables).
-                // 7 columns per inode → max 14 rows per statement (14×7=98).
-                const INODE_BATCH = 14;
+                // 8 columns per inode → max 12 rows per statement (12×8=96).
+                const INODE_BATCH = 12;
                 for (let i = 0; i < payload.inodes.length; i += INODE_BATCH) {
                     const batch = payload.inodes.slice(i, i + INODE_BATCH);
-                    const placeholders = batch.map(() => '(?,?,?,?,?,?,?)').join(',');
+                    const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?)').join(',');
                     const values = [];
                     for (const n of batch) {
-                        values.push(n.path, n.parentPath, n.isDir ? 1 : 0, n.size, n.mtime, n.mode, n.chunkCount);
+                        const atime = n.atime !== undefined && Number.isFinite(n.atime) ? n.atime : n.mtime;
+                        values.push(n.path, n.parentPath, n.isDir ? 1 : 0, n.size, atime, n.mtime, n.mode, n.chunkCount);
                     }
-                    this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, mtime, mode, chunk_count) VALUES ${placeholders}`, ...values);
+                    this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES ${placeholders}`, ...values);
                     inodeCount += batch.length;
                 }
                 // 3. Batch insert chunks — multi-row VALUES.
@@ -1447,11 +1475,13 @@ export class SqliteVFS {
         const __diag = (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
         for (const entry of payload.inodes) {
             const prior = this.inodes.get(entry.path);
+            const atime = entry.atime !== undefined && Number.isFinite(entry.atime) ? entry.atime : entry.mtime;
             const node = {
                 path: entry.path,
                 parentPath: entry.parentPath,
                 isDir: entry.isDir,
                 size: entry.size,
+                atime,
                 mtime: entry.mtime,
                 mode: entry.mode,
                 chunkCount: entry.chunkCount,

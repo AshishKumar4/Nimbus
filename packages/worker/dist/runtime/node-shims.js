@@ -59,6 +59,25 @@ function __fmt(v) {
   return String(v);
 }
 
+function __nimbusDisposeRpcResult(value) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+  const dispose = value[Symbol.dispose];
+  if (typeof dispose === "function") { try { dispose.call(value); } catch {} }
+}
+async function __nimbusUseRpcResult(promise, use) {
+  const value = await promise;
+  try { return await use(value); }
+  finally { __nimbusDisposeRpcResult(value); }
+}
+
+let __nimbusLiveStdinPump = null;
+let __nimbusProcessExitReported = false;
+let __nimbusProcessExitResolve = null;
+let __nimbusProcessExitCode = null;
+const __nimbusProcessExitPromise = new Promise((resolve) => {
+  __nimbusProcessExitResolve = resolve;
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // ──  path module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -132,12 +151,39 @@ const __BufferMod = (() => {
   }
 
   function alloc(n, fill) { const a = new Uint8Array(n); if (fill !== undefined) a.fill(typeof fill === "number" ? fill : 0); return _wrap(a); }
+  function allocUnsafe(n) { return _wrap(new Uint8Array(Number(n) || 0)); }
   function isBuffer(o) { return o instanceof Uint8Array && typeof o.toString === "function" && o.__isBuffer; }
   function concat(bufs, len) {
     const total = len ?? bufs.reduce((s, b) => s + b.length, 0);
     const r = new Uint8Array(total); let off = 0;
     for (const b of bufs) { r.set(b.subarray(0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
     return _wrap(r);
+  }
+  function byteLength(value, encoding) {
+    if (typeof value === "string") {
+      if (encoding === "base64") {
+        try { return from(value, "base64").byteLength; } catch { return 0; }
+      }
+      if (encoding === "hex") return Math.floor(value.length / 2);
+      return _enc.encode(value).length;
+    }
+    if (value instanceof ArrayBuffer) return value.byteLength;
+    if (value instanceof Uint8Array) return value.byteLength;
+    return 0;
+  }
+  function compare(a, b) {
+    const aa = from(a);
+    const bb = from(b);
+    const n = Math.min(aa.length, bb.length);
+    for (let i = 0; i < n; i++) {
+      if (aa[i] !== bb[i]) return aa[i] < bb[i] ? -1 : 1;
+    }
+    if (aa.length === bb.length) return 0;
+    return aa.length < bb.length ? -1 : 1;
+  }
+  function isEncoding(enc) {
+    if (!enc) return false;
+    return ["utf8", "utf-8", "base64", "hex", "ascii", "latin1", "binary"].includes(String(enc).toLowerCase());
   }
   function _wrap(u8) {
     u8.__isBuffer = true;
@@ -155,7 +201,18 @@ const __BufferMod = (() => {
     u8.indexOf = function(v) { if (typeof v === "number") return Uint8Array.prototype.indexOf.call(this, v); const b = typeof v === "string" ? _enc.encode(v) : v; outer: for (let i = 0; i <= this.length - b.length; i++) { for (let j = 0; j < b.length; j++) if (this[i+j] !== b[j]) continue outer; return i; } return -1; };
     return u8;
   }
-  const B = Object.assign(from, { from, alloc, isBuffer, concat, byteLength: (s, e) => _enc.encode(s).length });
+  const B = Object.assign(from, {
+    from,
+    alloc,
+    allocUnsafe,
+    allocUnsafeSlow: allocUnsafe,
+    isBuffer,
+    concat,
+    byteLength,
+    compare,
+    isEncoding,
+    poolSize: 8192,
+  });
   return B;
 })();
 
@@ -241,6 +298,48 @@ const __fsMod = (() => {
     return err;
   }
 
+  const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
+
+  function _coerceTimeMs(value, syscall, p) {
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      if (Number.isFinite(ms)) return Math.trunc(ms);
+      throw _fsErr("EINVAL", syscall, p);
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw _fsErr("EINVAL", syscall, p);
+    return Math.trunc(n * 1000);
+  }
+
+  function _recordLocalTimes(absPath, atime, mtime, syscall, p) {
+    const k = _strip(absPath);
+    const time = {
+      atimeMs: _coerceTimeMs(atime, syscall, p),
+      mtimeMs: _coerceTimeMs(mtime, syscall, p),
+    };
+    _localTimes[k] = time;
+    return time;
+  }
+
+  function _localStatObject(k, isDir, isSymlink, size, mode) {
+    const time = _localTimes[k];
+    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs : Date.now();
+    const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
+    const mtime = new Date(mtimeMs);
+    const atime = new Date(atimeMs);
+    return {
+      isFile: () => !isDir && !isSymlink,
+      isDirectory: () => isDir,
+      isSymbolicLink: () => isSymlink,
+      size,
+      atime,
+      mtime,
+      ctime: mtime,
+      birthtime: mtime,
+      mode,
+    };
+  }
+
   function _supervisor() {
     try { return typeof __supervisor !== "undefined" ? __supervisor : null; }
     catch { return null; }
@@ -264,19 +363,37 @@ const __fsMod = (() => {
     globalThis.__nimbusVfsMayBeStale = true;
   }
 
+  async function _flushLocalPathToSupervisor(absPath, supervisor) {
+    const k = _strip(absPath);
+    if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
+      await supervisor.writeFile(absPath, __vfsWrites[k]);
+      delete __vfsWrites[k];
+      _markVfsStale();
+      return;
+    }
+    if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
+      await supervisor.mkdir(absPath);
+      _markVfsStale();
+    }
+  }
+
   function _statObject(meta) {
     const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
     const size = Number(meta?.size || 0);
     const mtime = new Date(Number(meta?.mtime || Date.now()));
+    const atime = new Date(Number(meta?.atime || meta?.mtime || Date.now()));
     const mode = Number(meta?.mode || (isDir ? 0o755 : 0o644));
     return {
       isFile: () => !isDir && !isSymlink,
       isDirectory: () => isDir,
       isSymbolicLink: () => isSymlink,
       size,
+      atime,
       mtime,
+      ctime: mtime,
+      birthtime: mtime,
       mode,
     };
   }
@@ -299,7 +416,7 @@ const __fsMod = (() => {
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
 
     if (typeof supervisor.readFileBytes === "function") {
-      const bytes = await supervisor.readFileBytes(absPath);
+      const bytes = await __nimbusUseRpcResult(supervisor.readFileBytes(absPath), (result) => result);
       if (bytes !== null && bytes !== undefined) {
         _rememberBundle(absPath, bytes);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
@@ -307,7 +424,7 @@ const __fsMod = (() => {
     }
 
     if (typeof supervisor.readFile === "function") {
-      const text = await supervisor.readFile(absPath);
+      const text = await __nimbusUseRpcResult(supervisor.readFile(absPath), (result) => result);
       if (text !== null && text !== undefined) {
         _rememberBundle(absPath, text);
         return encoding ? _asString(text) : __BufferMod.from(text);
@@ -336,14 +453,14 @@ const __fsMod = (() => {
       if (e?.code !== "ENOENT") throw e;
       const supervisor = _supervisor();
       if (!supervisor || typeof supervisor.stat !== "function") throw e;
-      const meta = await supervisor.stat(absPath);
+      const meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
       if (!meta) throw e;
       return _statObject(meta);
     }
 
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.stat === "function") {
-      const meta = await supervisor.stat(absPath);
+      const meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
       if (meta) return _statObject(meta);
     }
     return statSync(p);
@@ -359,7 +476,7 @@ const __fsMod = (() => {
 
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.readdir === "function") {
-      const entries = await supervisor.readdir(absPath);
+      const entries = await __nimbusUseRpcResult(supervisor.readdir(absPath), (result) => result);
       if (Array.isArray(entries)) {
         if (opts?.withFileTypes) {
           const byName = new Map();
@@ -468,6 +585,41 @@ const __fsMod = (() => {
       await supervisor.rename(_resolve(oldP), _resolve(newP));
       _markVfsStale();
     }
+  }
+
+  function utimesSync(p, atime, mtime) {
+    if (!existsSync(p)) throw _fsErr("ENOENT", "utimes", p);
+    const absPath = _resolve(p);
+    _recordLocalTimes(absPath, atime, mtime, "utimes", p);
+  }
+
+  function lutimesSync(p, atime, mtime) {
+    if (!existsSync(p)) throw _fsErr("ENOENT", "lutimes", p);
+    const absPath = _resolve(p);
+    _recordLocalTimes(absPath, atime, mtime, "lutimes", p);
+  }
+
+  async function _utimesAsync(p, atime, mtime, opts) {
+    const followSymlinks = !(opts && opts.followSymlinks === false);
+    const syscall = followSymlinks ? "utimes" : "lutimes";
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    let localExists = false;
+    try { localExists = existsSync(p); } catch {}
+    if (!localExists && (!supervisor || typeof supervisor.utimes !== "function")) {
+      throw _fsErr("ENOENT", syscall, p);
+    }
+    const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
+    if (supervisor && typeof supervisor.utimes === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await __nimbusUseRpcResult(
+        supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
+        () => undefined,
+      );
+      _markVfsStale();
+      return;
+    }
+    if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", syscall, p);
   }
 
   // ── readFileSync ──
@@ -581,11 +733,11 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     // Check if it's a known directory written this exec session
     if (__vfsDirs && k in __vfsDirs) {
-      return { isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false, size: 0, mtime: new Date(), mode: 0o755 };
+      return _localStatObject(k, true, false, 0, 0o755);
     }
     // W2.5b: consult uncapped manifest first for directory shape.
     if (__vfsManifest && k in __vfsManifest) {
-      return { isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false, size: 0, mtime: new Date(), mode: 0o755 };
+      return _localStatObject(k, true, false, 0, 0o755);
     }
     // File with content embedded?
     const content = _bundleLookup(absPath);
@@ -594,7 +746,7 @@ const __fsMod = (() => {
       // (byteLength) — fixes binary writes from reporting the
       // post-corruption byte count.
       const size = _byteLen(content);
-      return { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size, mtime: new Date(), mode: 0o644 };
+      return _localStatObject(k, false, false, size, 0o644);
     }
     // File listed in parent's manifest but content was capped out — return
     // a zero-size file stat so callers like fs.stat / fs.statSync see the
@@ -606,7 +758,7 @@ const __fsMod = (() => {
       const name = slash >= 0 ? k.slice(slash + 1) : k;
       const sib = __vfsManifest[parent];
       if (sib && sib.indexOf(name) !== -1) {
-        return { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: 0, mtime: new Date(), mode: 0o644 };
+        return _localStatObject(k, false, false, 0, 0o644);
       }
     }
     // Last-resort: bundle prefix scan (legacy path).
@@ -614,7 +766,7 @@ const __fsMod = (() => {
       const prefix = k + "/";
       for (const bk in __vfsBundle) {
         if (bk.startsWith(prefix)) {
-          return { isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false, size: 0, mtime: new Date(), mode: 0o755 };
+          return _localStatObject(k, true, false, 0, 0o755);
         }
       }
     }
@@ -759,6 +911,8 @@ const __fsMod = (() => {
   }
   function unlink(p, cb) { _unlinkAsync(p).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function rename(oldP, newP, cb) { _renameAsync(oldP, newP).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function utimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function lutimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function access(p, mode, cb) {
     if (typeof mode === "function") { cb = mode; mode = undefined; }
     _existsAsync(p).then((ok) => {
@@ -813,7 +967,7 @@ const __fsMod = (() => {
       const cur = readFileSync(this._path, "utf8");
       await _writeFileAsync(this._path, cur.slice(0, len || 0));
     }
-    async chmod() {} async chown() {} async utimes() {} async sync() {} async datasync() {}
+    async chmod() {} async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
     async close() { this._closed = true; }
     [Symbol.asyncDispose]() { return this.close(); }
   }
@@ -880,7 +1034,8 @@ const __fsMod = (() => {
       await _writeFileAsync(p, cur.slice(0, len || 0));
     },
     chmod: async () => {}, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
-    utimes: async () => {}, lutimes: async () => {},
+    utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
+    lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
     link: async () => { throw _fsErr("ENOSYS", "link", ""); },
     readlink: async (p) => _readlinkAsync(p),
@@ -938,8 +1093,8 @@ const __fsMod = (() => {
   return {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
-    realpathSync,
-    readFile, writeFile, stat, readdir, exists, mkdir, unlink, rename, access,
+    realpathSync, utimesSync, lutimesSync,
+    readFile, writeFile, stat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({
@@ -1241,9 +1396,10 @@ const __eventsMod = (() => {
     constructor() { this._e = {}; this._maxListeners = 10; }
     on(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).push(fn); return this; }
     addListener(n, fn) { return this.on(n, fn); }
-    once(n, fn) { const w = (...a) => { this.off(n, w); fn(...a); }; w.__orig = fn; return this.on(n, w); }
-    off(n, fn) { const e = (this._e ??= {}); if (e[n]) e[n] = e[n].filter(f => f !== fn && f.__orig !== fn); return this; }
-    removeListener(n, fn) { return this.off(n, fn); }
+    once(n, fn) { const w = (...a) => { this.removeListener(n, w); fn(...a); }; w.__orig = fn; return this.on(n, w); }
+    _remove(n, fn) { const e = (this._e ??= {}); if (e[n]) e[n] = e[n].filter(f => f !== fn && f.__orig !== fn); return this; }
+    off(n, fn) { return this._remove(n, fn); }
+    removeListener(n, fn) { return this._remove(n, fn); }
     removeAllListeners(n) { if (n) { const e = (this._e ??= {}); delete e[n]; } else this._e = {}; return this; }
     emit(n, ...a) { const e = (this._e ??= {}); const fns = e[n]; if (!fns || !fns.length) return false; for (const fn of [...fns]) fn(...a); return true; }
     listeners(n) { const e = (this._e ??= {}); return (e[n] || []).map(f => f.__orig || f); }
@@ -1831,8 +1987,7 @@ const __childProcessMod = (() => {
           }
           return listener(out);
         };
-        // Stash so removeListener still works against the original.
-        listener.__wrapped = wrapped;
+        wrapped.__orig = listener;
         const result = origOn("data", wrapped);
         if (typeof r.resume === "function") {
           try { r.resume(); } catch {}
@@ -1867,7 +2022,9 @@ const __childProcessMod = (() => {
     }
     if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() => __supervisor.cpStdinWrite(child.pid, data));
+    const next = prior.then(() =>
+      __nimbusUseRpcResult(__supervisor.cpStdinWrite(child.pid, data), () => undefined)
+    );
     child._stdinChain = next.catch(() => {});
     __pendingIO.push(next.catch(() => {}));
     return next;
@@ -1877,7 +2034,9 @@ const __childProcessMod = (() => {
     if (!child.pid) return Promise.resolve();
     if (!HAS_SUPERVISOR) return Promise.resolve();
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() => __supervisor.cpStdinEnd(child.pid));
+    const next = prior.then(() =>
+      __nimbusUseRpcResult(__supervisor.cpStdinEnd(child.pid), () => undefined)
+    );
     child._stdinChain = next.catch(() => {});
     __pendingIO.push(next.catch(() => {}));
     return next;
@@ -1979,7 +2138,7 @@ const __childProcessMod = (() => {
       if (!child.pid) { child._pendingKill = { signal: sig }; return true; }
       if (!HAS_SUPERVISOR) return true;
       __pendingIO.push(
-        Promise.resolve(__supervisor.cpKill(child.pid, sig)).catch(() => {}),
+        __nimbusUseRpcResult(__supervisor.cpKill(child.pid, sig), () => undefined).catch(() => {}),
       );
       return true;
     };
@@ -2027,7 +2186,10 @@ const __childProcessMod = (() => {
     const BACKOFF_MAX = 1500;
     while (HAS_SUPERVISOR && child.pid && !child._streamsClosed) {
       try {
-        const r = await __supervisor.cpReadOutput(child.pid, fd, sinceSeqRef.value, backoff);
+        const r = await __nimbusUseRpcResult(
+          __supervisor.cpReadOutput(child.pid, fd, sinceSeqRef.value, backoff),
+          (result) => result,
+        );
         if (r && Array.isArray(r.chunks) && r.chunks.length > 0) {
           backoff = 100;  // reset — child is producing
           for (const c of r.chunks) {
@@ -2061,7 +2223,10 @@ const __childProcessMod = (() => {
   async function _runWaitLoop(child) {
     while (HAS_SUPERVISOR && child.pid && !child._exitFired) {
       try {
-        const r = await __supervisor.cpWait(child.pid, 1000);
+        const r = await __nimbusUseRpcResult(
+          __supervisor.cpWait(child.pid, 1000),
+          (result) => result,
+        );
         if (r && r.done) {
           child.exitCode = r.exitCode;
           child.signalCode = r.signal;
@@ -2113,15 +2278,18 @@ const __childProcessMod = (() => {
     // callers can attach 'data' listeners before any chunk arrives.
     __pendingIO.push((async () => {
       try {
-        const r = await __supervisor.cpSpawn({
-          command: cmd,
-          args,
-          env: { ...(__processMod.env || {}), ...(opts.env || {}) },
-          cwd: opts.cwd || cwd || "/home/user",
-          stdio: opts.stdio || ["pipe", "pipe", "pipe"],
-          detached: !!opts.detached,
-          shell: opts.shell || false,
-        });
+        const r = await __nimbusUseRpcResult(
+          __supervisor.cpSpawn({
+            command: cmd,
+            args,
+            env: { ...(__processMod.env || {}), ...(opts.env || {}) },
+            cwd: opts.cwd || cwd || "/home/user",
+            stdio: opts.stdio || ["pipe", "pipe", "pipe"],
+            detached: !!opts.detached,
+            shell: opts.shell || false,
+          }),
+          (result) => result,
+        );
         child.pid = r.childPid;
         child.connected = true;
         __cpChildren.set(child.pid, child);
@@ -2133,18 +2301,27 @@ const __childProcessMod = (() => {
         if (child._pendingStdin && child._pendingStdin.length > 0) {
           const pending = child._pendingStdin.splice(0);
           for (const d of pending) {
-            await __supervisor.cpStdinWrite(child.pid, d).catch(() => {});
+            await __nimbusUseRpcResult(
+              __supervisor.cpStdinWrite(child.pid, d),
+              () => undefined,
+            ).catch(() => {});
           }
         }
         if (child._pendingStdinEnd) {
-          await __supervisor.cpStdinEnd(child.pid).catch(() => {});
+          await __nimbusUseRpcResult(
+            __supervisor.cpStdinEnd(child.pid),
+            () => undefined,
+          ).catch(() => {});
         }
 
         // Flush a queued kill if .kill() was called before pid landed.
         if (child._pendingKill) {
           const sig = child._pendingKill.signal;
           child._pendingKill = null;
-          __pendingIO.push(__supervisor.cpKill(child.pid, sig).catch(() => {}));
+          __pendingIO.push(__nimbusUseRpcResult(
+            __supervisor.cpKill(child.pid, sig),
+            () => undefined,
+          ).catch(() => {}));
         }
 
         // Start the loops.  Each of these is its own async task pushed
@@ -2354,7 +2531,10 @@ const __childProcessMod = (() => {
     for (const [pid, child] of __cpChildren) {
       drains.push((async () => {
         try {
-          const r = await __supervisor.cpDrainOutput(pid);
+          const r = await __nimbusUseRpcResult(
+            __supervisor.cpDrainOutput(pid),
+            (result) => result,
+          );
           if (r && r.stdout && child.stdout) {
             try { child.stdout.write(r.stdout); } catch {}
           }
@@ -2368,7 +2548,10 @@ const __childProcessMod = (() => {
           if (!child._exitFired) {
             // No exit reported yet — wait briefly, then synthesize.
             try {
-              const w = await __supervisor.cpWait(pid, 500);
+              const w = await __nimbusUseRpcResult(
+                __supervisor.cpWait(pid, 500),
+                (result) => result,
+              );
               if (w && w.done) {
                 child.exitCode = w.exitCode;
                 child.signalCode = w.signal;
@@ -2421,18 +2604,105 @@ const __consoleMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+const __nimbusAttachedTty = !!(env && (env.NIMBUS_ATTACHED_TTY === "1" || env.FORCE_TTY === "1"));
+let __nimbusTtyColumns = Number(env && env.COLUMNS) || 80;
+let __nimbusTtyRows = Number(env && env.LINES) || 24;
+const __nimbusTerminalOutputStreams = [];
+function __nimbusClampTerminalCoordinate(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+function __nimbusWriteControl(stream, data, cb) {
+  if (stream && typeof stream.write === "function") stream.write(data);
+  if (typeof cb === "function") queueMicrotask(cb);
+  return true;
+}
+function __nimbusClearLine(stream, dir, cb) {
+  const n = Number(dir);
+  const mode = n < 0 ? 1 : n > 0 ? 0 : 2;
+  return __nimbusWriteControl(stream, "\\x1b[" + mode + "K", cb);
+}
+function __nimbusClearScreenDown(stream, cb) {
+  return __nimbusWriteControl(stream, "\\x1b[0J", cb);
+}
+function __nimbusCursorTo(stream, x, y, cb) {
+  if (typeof y === "function") {
+    cb = y;
+    y = undefined;
+  }
+  const col = __nimbusClampTerminalCoordinate(x) + 1;
+  if (y === undefined) return __nimbusWriteControl(stream, "\\x1b[" + col + "G", cb);
+  const row = __nimbusClampTerminalCoordinate(y) + 1;
+  return __nimbusWriteControl(stream, "\\x1b[" + row + ";" + col + "H", cb);
+}
+function __nimbusMoveCursor(stream, dx, dy, cb) {
+  let out = "";
+  const x = Math.trunc(Number(dx) || 0);
+  const y = Math.trunc(Number(dy) || 0);
+  if (x < 0) out += "\\x1b[" + (-x) + "D";
+  else if (x > 0) out += "\\x1b[" + x + "C";
+  if (y < 0) out += "\\x1b[" + (-y) + "A";
+  else if (y > 0) out += "\\x1b[" + y + "B";
+  return __nimbusWriteControl(stream, out, cb);
+}
+function __nimbusEmitTerminalResize() {
+  for (const stream of __nimbusTerminalOutputStreams) {
+    try { stream.emit("resize"); } catch {}
+  }
+}
 function __makeProcessStdin() {
   const r = new __streamMod.PassThrough();
   let seeded = false;
   let encoding = null;
-  r.isTTY = false;
+  r.isTTY = __nimbusAttachedTty;
+  r.isRaw = false;
+  r.setRawMode = function(mode) {
+    r.isRaw = mode !== false;
+    return r;
+  };
+  r.ref = function() { return r; };
+  r.unref = function() { return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
   const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
     ? Number(env.NIMBUS_CP_CHILD_PID)
     : 0;
+  if (liveChildPid) {
+    try {
+      globalThis.__nimbusProcessStdin = r;
+      const pending = Array.isArray(globalThis.__nimbusPendingProcessInput)
+        ? globalThis.__nimbusPendingProcessInput.splice(0)
+        : [];
+      globalThis.__nimbusPendingProcessInputBytes = 0;
+      for (const chunk of pending) r.write(String(chunk));
+      if (globalThis.__nimbusPendingProcessInputEnded) {
+        globalThis.__nimbusPendingProcessInputEnded = false;
+        queueMicrotask(() => r.end());
+      }
+    } catch {}
+  }
   async function pumpLiveStdin() {
     while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
-      const packet = await __supervisor.cpReadStdin(liveChildPid, 1000);
+      const packet = await __nimbusUseRpcResult(
+        __supervisor.cpReadStdin(liveChildPid, 1000),
+        (result) => result,
+      );
+      if (packet && packet.resize) {
+        __nimbusTtyColumns = Number(packet.resize.columns) || __nimbusTtyColumns;
+        __nimbusTtyRows = Number(packet.resize.rows) || __nimbusTtyRows;
+        __nimbusEmitTerminalResize();
+        try { __processEvents.emit("SIGWINCH"); } catch {}
+      }
+      if (packet && packet.signal) {
+        const sig = String(packet.signal);
+        let handled = false;
+        try { handled = __processEvents.emit(sig); } catch {}
+        if (!handled && (sig === "SIGINT" || sig === "SIGTERM" || sig === "SIGKILL")) {
+          const code = sig === "SIGINT" ? 130 : sig === "SIGKILL" ? 137 : 143;
+          __nimbusReportProcessExit(code, sig);
+          throw new __ProcessExit(code);
+        }
+      }
       if (packet && packet.data) r.write(packet.data);
       if (packet && packet.ended) {
         r.end();
@@ -2444,9 +2714,20 @@ function __makeProcessStdin() {
     if (seeded) return;
     seeded = true;
     if (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
-      __pendingIO.push(pumpLiveStdin().catch(() => {
+      const pump = pumpLiveStdin().catch((e) => {
+        if (e instanceof __ProcessExit) {
+          if (!__nimbusProcessExitReported) {
+            try { __nimbusReportProcessExit(e.code, ""); } catch {}
+          }
+          return;
+        }
+        const trace = (e && e.stack) || (e && e.message) || String(e);
+        stderr += trace + "\\n";
+        try { __nimbusUseRpcResult(__supervisor.stderr(trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+        try { __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined).catch(() => {}); } catch {}
         try { r.end(); } catch {}
-      }));
+      });
+      __nimbusLiveStdinPump = pump;
       return;
     }
     queueMicrotask(() => {
@@ -2455,9 +2736,19 @@ function __makeProcessStdin() {
       r.end();
     });
   };
+  r.__nimbusStartLivePump = seed;
+  const origResume = typeof r.resume === "function" ? r.resume.bind(r) : null;
+  const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
+  r.resume = function() {
+    seed();
+    return origResume ? origResume() : r;
+  };
+  r.pause = function() {
+    return origPause ? origPause() : r;
+  };
   const origOn = r.on.bind(r);
   function wrapDataListener(listener) {
-    return (chunk) => {
+    const wrapped = (chunk) => {
       let out = chunk;
       if (encoding && chunk instanceof Uint8Array) {
         try { out = new TextDecoder(encoding).decode(chunk); }
@@ -2465,12 +2756,13 @@ function __makeProcessStdin() {
       }
       return listener(out);
     };
+    wrapped.__orig = listener;
+    return wrapped;
   }
   r.on = function(event, listener) {
     seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
-      listener.__wrapped = wrapped;
       const ret = origOn(event, wrapped);
       try { r.resume(); } catch {}
       return ret;
@@ -2483,17 +2775,111 @@ function __makeProcessStdin() {
   return r;
 }
 
+function __makeProcessOutputStream(streamName) {
+  const stream = new __eventsMod();
+  Object.assign(stream, {
+    fd: streamName === "stderr" ? 2 : 1,
+    isTTY: __nimbusAttachedTty,
+    writable: true,
+    writableEnded: false,
+    writableFinished: false,
+    writableLength: 0,
+    writableNeedDrain: false,
+    writableHighWaterMark: 16 * 1024,
+    writableObjectMode: false,
+    writableCorked: 0,
+    readable: false,
+    destroyed: false,
+    closed: false,
+    errored: null,
+    write(d, enc, cb) {
+      if (typeof enc === "function") cb = enc;
+      const s = String(d);
+      if (streamName === "stderr") stderr += s;
+      else stdout += s;
+      if (typeof cb === "function") queueMicrotask(cb);
+      return true;
+    },
+    getColorDepth: () => __nimbusAttachedTty ? 24 : 1,
+    hasColors: () => __nimbusAttachedTty,
+    clearLine(dir, cb) { return __nimbusClearLine(stream, dir, cb); },
+    clearScreenDown(cb) { return __nimbusClearScreenDown(stream, cb); },
+    cursorTo(x, y, cb) { return __nimbusCursorTo(stream, x, y, cb); },
+    moveCursor(dx, dy, cb) { return __nimbusMoveCursor(stream, dx, dy, cb); },
+    end(d, enc, cb) {
+      if (d !== undefined && typeof d !== "function") stream.write(d, enc);
+      if (typeof d === "function") cb = d;
+      if (typeof enc === "function") cb = enc;
+      stream.writableEnded = true;
+      stream.writableFinished = true;
+      if (typeof cb === "function") queueMicrotask(cb);
+      stream.emit("finish");
+      return stream;
+    },
+    destroy(err) {
+      stream.destroyed = true;
+      stream.closed = true;
+      stream.errored = err || null;
+      if (err) stream.emit("error", err);
+      stream.emit("close");
+      return stream;
+    },
+    cork() { stream.writableCorked++; },
+    uncork() { if (stream.writableCorked > 0) stream.writableCorked--; },
+    ref() { return stream; },
+    unref() { return stream; },
+  });
+  Object.defineProperty(stream, "columns", { enumerable: true, get() { return __nimbusTtyColumns; } });
+  Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
+  __nimbusTerminalOutputStreams.push(stream);
+  return stream;
+}
+
+function __nimbusReportProcessExit(code, reason) {
+  if (__nimbusProcessExitReported) return;
+  __nimbusProcessExitReported = true;
+  __nimbusProcessExitCode = Number(code ?? 0);
+  try { if (__nimbusProcessExitResolve) __nimbusProcessExitResolve(__nimbusProcessExitCode); } catch {}
+  if (__supervisor && typeof __supervisor.reportExit === "function") {
+    try {
+      const task = __nimbusUseRpcResult(__supervisor.reportExit(code, reason || ""), () => undefined);
+      if (Array.isArray(__pendingIO) && task && typeof task.catch === "function") {
+        __pendingIO.push(task.catch(() => {}));
+      }
+    } catch {}
+  }
+}
+
+function __nimbusSignalSelf(signal) {
+  const sig = String(signal || "SIGTERM");
+  const handled = __processEvents.emit(sig);
+  if (!handled && (sig === "SIGINT" || sig === "SIGTERM" || sig === "SIGKILL")) {
+    const code = sig === "SIGINT" ? 130 : sig === "SIGKILL" ? 137 : 143;
+    __nimbusReportProcessExit(code, sig);
+    throw new __ProcessExit(code);
+  }
+  return true;
+}
+
+const __processEvents = new __eventsMod();
 const __processMod = {
   argv: ["node", ...(argv || [])],
   env: env || {},
   cwd: () => cwd || "/home/user",
   chdir: (d) => { cwd = __pathMod.resolve(cwd || "/home/user", d); },
-  exit: (code) => { exitCode = code ?? 0; throw new __ProcessExit(exitCode); },
+  exit: (code) => {
+    exitCode = code ?? 0;
+    try { __processEvents.emit("exit", exitCode); } catch {}
+    __nimbusReportProcessExit(exitCode, "");
+    throw new __ProcessExit(exitCode);
+  },
   platform: "linux", arch: "x64",
   version: ${NODE_VERSION_LITERAL}, versions: ${NODE_VERSIONS_LITERAL},
+  execPath: "/usr/local/bin/node",
+  execArgv: [],
   pid: 1, ppid: 0, title: "node",
-  stdout: { write: (d) => { stdout += String(d); return true; }, isTTY: false },
-  stderr: { write: (d) => { stderr += String(d); return true; }, isTTY: false },
+  stdout: __makeProcessOutputStream("stdout"),
+  stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
   hrtime: Object.assign(
     (prev) => { const n = Date.now(); const s = Math.floor(n / 1000); const ns = (n % 1000) * 1e6; if (!prev) return [s, ns]; return [s - prev[0], ns - prev[1]]; },
@@ -2501,12 +2887,67 @@ const __processMod = {
   ),
   memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
-  on: () => __processMod, once: () => __processMod, emit: () => false,
-  removeListener: () => __processMod, removeAllListeners: () => __processMod,
-  uptime: () => 0, kill: () => {},
+  on: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
+  addListener: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
+  prependListener: (name, listener) => { __processEvents.prependListener(name, listener); return __processMod; },
+  once: (name, listener) => { __processEvents.once(name, listener); return __processMod; },
+  off: (name, listener) => { __processEvents.removeListener(name, listener); return __processMod; },
+  removeListener: (name, listener) => { __processEvents.removeListener(name, listener); return __processMod; },
+  removeAllListeners: (name) => { __processEvents.removeAllListeners(name); return __processMod; },
+  emit: (name, ...args) => __processEvents.emit(name, ...args),
+  listeners: (name) => __processEvents.listeners(name),
+  rawListeners: (name) => __processEvents.rawListeners(name),
+  listenerCount: (name) => __processEvents.listenerCount(name),
+  eventNames: () => __processEvents.eventNames(),
+  setMaxListeners: (n) => { __processEvents.setMaxListeners(n); return __processMod; },
+  getMaxListeners: () => __processEvents.getMaxListeners(),
+  uptime: () => 0,
+  kill: (pid, signal) => {
+    const n = Number(pid);
+    if (n === __processMod.pid || n === 0) return __nimbusSignalSelf(signal || "SIGTERM");
+    return false;
+  },
   umask: () => 0o022,
   binding: () => { throw new Error("process.binding is not supported"); },
 };
+
+function __nimbusRuntimeErrorTrace(error) {
+  if (error && typeof error === "object") {
+    return error.stack || error.message || String(error);
+  }
+  return String(error);
+}
+
+function __nimbusFailUnhandledAsync(error) {
+  if (error instanceof __ProcessExit) {
+    __nimbusReportProcessExit(error.code, "");
+    return;
+  }
+  const trace = __nimbusRuntimeErrorTrace(error);
+  stderr += trace + "\\n";
+  if (__supervisor && typeof __supervisor.stderr === "function") {
+    try { __nimbusUseRpcResult(__supervisor.stderr(trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+  }
+  __nimbusReportProcessExit(1, trace + "\\n");
+}
+
+if (typeof globalThis.addEventListener === "function") {
+  globalThis.addEventListener("unhandledrejection", (event) => {
+    const reason = event && typeof event === "object" && "reason" in event ? event.reason : event;
+    const promise = event && typeof event === "object" && "promise" in event ? event.promise : undefined;
+    let handled = false;
+    try { handled = __processEvents.emit("unhandledRejection", reason, promise); } catch {}
+    if (!handled) __nimbusFailUnhandledAsync(reason);
+    try { event.preventDefault?.(); } catch {}
+  });
+  globalThis.addEventListener("error", (event) => {
+    const error = event && typeof event === "object" && "error" in event ? event.error : event;
+    let handled = false;
+    try { handled = __processEvents.emit("uncaughtException", error); } catch {}
+    if (!handled) __nimbusFailUnhandledAsync(error);
+    try { event.preventDefault?.(); } catch {}
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Builtins initialization (MUST come before require) ─────────────
@@ -2662,8 +3103,26 @@ builtins.dns = (() => {
   async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
   return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: (h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
 })();
-builtins.tty = { isatty: () => false, ReadStream: class extends __streamMod.Readable { constructor() { super(); this.isTTY = false; } }, WriteStream: class extends __streamMod.Writable { constructor() { super(); this.isTTY = false; this.columns = 80; this.rows = 24; } } };
-builtins.module = { get builtinModules() { return Object.keys(builtins); }, createRequire: () => __require, _resolveFilename: (id) => id, _cache: {} };
+builtins.tty = {
+  isatty: () => __nimbusAttachedTty,
+  ReadStream: class extends __streamMod.Readable {
+    constructor() { super(); this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
+    setRawMode(mode) { this.isRaw = mode !== false; return this; }
+  },
+  WriteStream: class extends __streamMod.Writable {
+    constructor() { super(); this.isTTY = __nimbusAttachedTty; }
+    get columns() { return __nimbusTtyColumns; }
+    get rows() { return __nimbusTtyRows; }
+    getColorDepth() { return __nimbusAttachedTty ? 24 : 1; }
+    hasColors() { return __nimbusAttachedTty; }
+    clearLine(dir, cb) { return __nimbusClearLine(this, dir, cb); }
+    clearScreenDown(cb) { return __nimbusClearScreenDown(this, cb); }
+    cursorTo(x, y, cb) { return __nimbusCursorTo(this, x, y, cb); }
+    moveCursor(dx, dy, cb) { return __nimbusMoveCursor(this, dx, dy, cb); }
+    getWindowSize() { return [this.columns, this.rows]; }
+  },
+};
+	builtins.module = { get builtinModules() { return Object.keys(builtins); }, createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)), _resolveFilename: (id) => id, _cache: {} };
 builtins.timers = { setTimeout: globalThis.setTimeout, setInterval: globalThis.setInterval, clearTimeout: globalThis.clearTimeout, clearInterval: globalThis.clearInterval, setImmediate: (fn,...a) => setTimeout(fn,0,...a), clearImmediate: clearTimeout };
 builtins.zlib = (() => {
   function _c(d,a) { const i=typeof d==="string"?new TextEncoder().encode(d):d; return new Response(new Blob([i]).stream().pipeThrough(new CompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
@@ -2671,8 +3130,160 @@ builtins.zlib = (() => {
   return { gzip:(d,o,cb)=>{if(typeof o==="function")cb=o;_c(d,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}, gunzip:(d,o,cb)=>{if(typeof o==="function")cb=o;_d(d,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}, deflate:(d,o,cb)=>{if(typeof o==="function")cb=o;_c(d,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}, inflate:(d,o,cb)=>{if(typeof o==="function")cb=o;_d(d,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}, gzipSync:()=>{throw new Error("use async gzip()");}, gunzipSync:()=>{throw new Error("use async gunzip()");}, createGzip:()=>new __streamMod.Transform({transform(c,e,cb){_c(c,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}}), createGunzip:()=>new __streamMod.Transform({transform(c,e,cb){_d(c,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}}), createDeflate:()=>new __streamMod.Transform({transform(c,e,cb){_c(c,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}}), createInflate:()=>new __streamMod.Transform({transform(c,e,cb){_d(c,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}}), constants:{Z_NO_FLUSH:0,Z_PARTIAL_FLUSH:1,Z_SYNC_FLUSH:2,Z_FULL_FLUSH:3,Z_FINISH:4,Z_BEST_COMPRESSION:9,Z_DEFAULT_COMPRESSION:-1} };
 })();
 builtins.readline = (() => {
-  function createInterface(opts) { const inp=typeof opts==="object"&&!opts.input?opts:{input:opts?.input,output:opts?.output}; const rl=new __eventsMod(); rl.close=()=>{rl.emit("close");}; rl.question=(q,o,cb)=>{if(typeof o==="function")cb=o;if(inp.output?.write)inp.output.write(q);if(cb)queueMicrotask(()=>cb(""));}; rl.prompt=()=>{if(inp.output?.write)inp.output.write("> ");}; rl.on=(...a)=>{__eventsMod.prototype.on.apply(rl,a);return rl;}; rl.setPrompt=()=>rl; rl[Symbol.asyncIterator]=async function*(){}; return rl; }
-  return { createInterface, Interface: __eventsMod };
+  function emitKeypressEvents(stream) {
+    if (!stream || stream.__nimbusKeypressEvents) return;
+    stream.__nimbusKeypressEvents = true;
+    stream.on("data", (chunk) => {
+      const text = chunk instanceof Uint8Array
+        ? new TextDecoder("utf-8").decode(chunk)
+        : String(chunk);
+      for (let i = 0; i < text.length; i++) {
+        let str = text[i];
+        let key = { sequence: str, name: str, ctrl: false, meta: false, shift: false };
+        if (str === "\\x1b" && text[i + 1] === "[") {
+          const code = text[i + 2];
+          if (code === "A" || code === "B" || code === "C" || code === "D") {
+            i += 2;
+            str = "\\x1b[" + code;
+            key = {
+              sequence: str,
+              name: code === "A" ? "up" : code === "B" ? "down" : code === "C" ? "right" : "left",
+              ctrl: false,
+              meta: false,
+              shift: false,
+            };
+          }
+        } else if (str === "\\x03") {
+          key = { sequence: str, name: "c", ctrl: true, meta: false, shift: false };
+        } else if (str === "\\x7f" || str === "\\b") {
+          key = { sequence: str, name: "backspace", ctrl: false, meta: false, shift: false };
+        } else if (str === "\\r" || str === "\\n") {
+          key = { sequence: str, name: "enter", ctrl: false, meta: false, shift: false };
+        }
+        stream.emit("keypress", str, key);
+      }
+    });
+  }
+  function createInterface(opts) {
+    const inp = typeof opts === "object" && opts ? opts : { input: opts };
+    const input = inp.input || __processMod.stdin;
+    const output = inp.output || __processMod.stdout;
+    const rl = new __eventsMod();
+    let closed = false;
+    let promptText = inp.prompt || "> ";
+    let buffer = "";
+    const pending = [];
+    const queued = [];
+    function pushLine(line) {
+      if (closed) return;
+      rl.emit("line", line);
+      const waiter = pending.shift();
+      if (waiter) waiter({ value: line, done: false });
+      else queued.push(line);
+    }
+    function handleInputText(text) {
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === "\\r" || ch === "\\n") {
+          if (ch === "\\r" && text[i + 1] === "\\n") i++;
+          const line = buffer;
+          buffer = "";
+          pushLine(line);
+          continue;
+        }
+        if (ch === "\\x7f" || ch === "\\b") {
+          if (buffer.length > 0) buffer = buffer.slice(0, -1);
+          continue;
+        }
+        if (ch === "\\x03") {
+          rl.emit("SIGINT");
+          continue;
+        }
+        buffer += ch;
+      }
+    }
+    function onData(chunk) {
+      const text = chunk instanceof Uint8Array
+        ? new TextDecoder("utf-8").decode(chunk)
+        : String(chunk);
+      handleInputText(text);
+    }
+    function onEnd() {
+      if (buffer) {
+        const tail = buffer;
+        buffer = "";
+        pushLine(tail);
+      }
+      rl.close();
+    }
+    try {
+      input.on("data", onData);
+      input.on("end", onEnd);
+      input.on("close", onEnd);
+      if (typeof input.resume === "function") input.resume();
+    } catch {}
+    rl.close = () => {
+      if (closed) return;
+      closed = true;
+      try { input.removeListener?.("data", onData); } catch {}
+      try { input.removeListener?.("end", onEnd); } catch {}
+      try { input.removeListener?.("close", onEnd); } catch {}
+      for (const waiter of pending.splice(0)) waiter({ value: undefined, done: true });
+      rl.emit("close");
+    };
+    rl.question = (q, o, cb) => {
+      if (typeof o === "function") cb = o;
+      if (output && typeof output.write === "function") output.write(q);
+      const onLine = (line) => {
+        rl.removeListener("line", onLine);
+        if (typeof cb === "function") cb(line);
+      };
+      rl.on("line", onLine);
+    };
+    rl.prompt = () => { if (output && typeof output.write === "function") output.write(promptText); };
+    rl.setPrompt = (p) => { promptText = String(p); return rl; };
+    rl.getPrompt = () => promptText;
+    rl.pause = () => { try { input.pause?.(); } catch {} return rl; };
+    rl.resume = () => { try { input.resume?.(); } catch {} return rl; };
+    rl.write = (data) => { onData(data); return rl; };
+    rl[Symbol.asyncIterator] = async function*() {
+      while (!closed) {
+        if (queued.length > 0) {
+          yield queued.shift();
+          continue;
+        }
+        const next = await new Promise((resolve) => pending.push(resolve));
+        if (next.done) return;
+        yield next.value;
+      }
+    };
+    return rl;
+  }
+  function clearLine(stream, dir, cb) { return __nimbusClearLine(stream, dir, cb); }
+  function clearScreenDown(stream, cb) { return __nimbusClearScreenDown(stream, cb); }
+  function cursorTo(stream, x, y, cb) { return __nimbusCursorTo(stream, x, y, cb); }
+  function moveCursor(stream, dx, dy, cb) { return __nimbusMoveCursor(stream, dx, dy, cb); }
+  const promises = {
+    createInterface(opts) {
+      const iface = createInterface(opts);
+      const originalQuestion = iface.question.bind(iface);
+      iface.question = (query, options) => new Promise((resolve) => {
+        void options;
+        originalQuestion(query, (answer) => resolve(answer));
+      });
+      return iface;
+    },
+  };
+  return {
+    createInterface,
+    Interface: __eventsMod,
+    clearLine,
+    clearScreenDown,
+    cursorTo,
+    moveCursor,
+    emitKeypressEvents,
+    promises,
+  };
 })();
 builtins.perf_hooks = { performance: globalThis.performance || { now:()=>Date.now(), mark:()=>{}, measure:()=>{}, getEntriesByName:()=>[], clearMarks:()=>{}, clearMeasures:()=>{} } };
 // X.5-Z5 §3 follow-on: minimal v8 stub for jiti (used transitively by
@@ -2697,7 +3308,38 @@ builtins.v8 = {
   deserialize: (b) => JSON.parse(__BufferMod.from(b).toString()),
   writeHeapSnapshot: () => "",
 };
-builtins.worker_threads = { isMainThread:true, parentPort:null, workerData:null, threadId:0, Worker: class extends __eventsMod { constructor(){super();} terminate(){return Promise.resolve(0);} postMessage(){} } };
+const __workerThreadsUntransferable = new WeakSet();
+const __workerThreadsUncloneable = new WeakSet();
+builtins.worker_threads = {
+  isMainThread: true,
+  parentPort: null,
+  workerData: null,
+  threadId: 0,
+  SHARE_ENV: Symbol.for("nodejs.worker_threads.SHARE_ENV"),
+  Worker: class extends __eventsMod {
+    constructor() { super(); }
+    terminate() { return Promise.resolve(0); }
+    postMessage() {}
+  },
+  MessageChannel: globalThis.MessageChannel,
+  MessagePort: globalThis.MessagePort,
+  BroadcastChannel: globalThis.BroadcastChannel,
+  receiveMessageOnPort: () => undefined,
+  markAsUntransferable(value) {
+    if (value && (typeof value === "object" || typeof value === "function")) {
+      __workerThreadsUntransferable.add(value);
+    }
+  },
+  isMarkedAsUntransferable(value) {
+    return !!(value && (typeof value === "object" || typeof value === "function") &&
+      __workerThreadsUntransferable.has(value));
+  },
+  markAsUncloneable(value) {
+    if (value && (typeof value === "object" || typeof value === "function")) {
+      __workerThreadsUncloneable.add(value);
+    }
+  },
+};
 
 // ── W3 additions: builtins forwarded/shimmed for axios/jsdom/fastify/
 //                 puppeteer-core/ts-node + Node 20 surface completeness.
@@ -2713,6 +3355,8 @@ builtins.async_hooks = __asyncHooksMod;
 // site that bypasses the strip path.
 builtins["fs/promises"] = __fsMod.promises;
 builtins["node:fs/promises"] = __fsMod.promises;
+builtins["readline/promises"] = builtins.readline.promises;
+builtins["node:readline/promises"] = builtins.readline.promises;
 
 // stream/promises — promise-wrapped versions of pipeline + finished.
 // Surfaced by sv (svelte CLI, the new replacement for create-svelte
@@ -3145,6 +3789,52 @@ function __mkCompiledFn(code) {
   return new Function("exports", "require", "module", fnName, dnName, code);
 }
 
+function __exportsTarget(mod) {
+  const value = mod.exports;
+  if (value && (typeof value === "object" || typeof value === "function")) return value;
+  return Object(value);
+}
+
+function __isTdzExportRead(error) {
+  const message = error && typeof error.message === "string"
+    ? error.message
+    : String(error);
+  return message.includes("before initialization") ||
+    message.includes("Cannot read properties of undefined (reading");
+}
+
+function __makeLoadingExports(mod) {
+  return new Proxy({}, {
+    get(_target, prop) {
+      try {
+        return Reflect.get(__exportsTarget(mod), prop);
+      } catch (error) {
+        if (__isTdzExportRead(error)) return undefined;
+        throw error;
+      }
+    },
+    set(_target, prop, value) {
+      if (!mod.exports || (typeof mod.exports !== "object" && typeof mod.exports !== "function")) {
+        mod.exports = {};
+      }
+      return Reflect.set(mod.exports, prop, value);
+    },
+    has(_target, prop) {
+      return Reflect.has(__exportsTarget(mod), prop);
+    },
+    ownKeys() {
+      return Reflect.ownKeys(__exportsTarget(mod));
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      const desc = Reflect.getOwnPropertyDescriptor(__exportsTarget(mod), prop);
+      return desc ? { ...desc, configurable: true } : undefined;
+    },
+    getPrototypeOf() {
+      return Reflect.getPrototypeOf(__exportsTarget(mod));
+    },
+  });
+}
+
 /**
  * Load and execute a JS/JSON module from VFS.
  * Returns the module.exports value.
@@ -3152,9 +3842,8 @@ function __mkCompiledFn(code) {
 function __loadModule(resolvedPath) {
   if (__moduleCache.has(resolvedPath)) return __moduleCache.get(resolvedPath);
 
-  // Prevent circular require: set empty exports before executing
   const mod = { exports: {} };
-  __moduleCache.set(resolvedPath, mod.exports);
+  __moduleCache.set(resolvedPath, __makeLoadingExports(mod));
 
   const code = __readFileOr(resolvedPath, null);
   if (code === null) throw new Error("Cannot read module: " + resolvedPath);
@@ -3175,19 +3864,6 @@ function __loadModule(resolvedPath) {
     return r;
   };
   scopedRequire.cache = __moduleCache;
-  // G2 (runtime-pkg wave): scopedRequire.main mirrors the top-level
-  // __require.main (set to the entry module by the runner). Pre-fix
-  // it was hardcoded null, so:
-  //   - 'require.main' inside a sub-module returned null
-  //   - 'require.main === module' was false for the entry too
-  //     (because in the entry, require.main was null too)
-  //
-  // Post-fix: in the ENTRY, __require.main === entry's module ⇒
-  // require.main === module is true. In a SUB-MODULE (loaded via
-  // __loadModule), scopedRequire.main === entry's module, but
-  // module === sub-module's mod, so require.main === module is
-  // FALSE — exactly the canonical 'is this file being executed
-  // directly?' semantics.
   scopedRequire.main = __require.main;
 
   // X.5-M3: thread currently-loading module path through globalThis so the
@@ -3202,38 +3878,21 @@ function __loadModule(resolvedPath) {
     // Normalize path to match VFS bundle key format (no leading /)
     const normalizedPath = resolvedPath.replace(/^\\/+/, "");
     const precompiled = __compiledModules.get(normalizedPath) || __compiledModules.get(resolvedPath);
-    // G2/G3 (runtime-pkg wave): pass console/process/Buffer + timer
-    // shims into every sub-module so process.exit() inside a required
-    // file routes through __processMod (NOT workerd's real process,
-    // which crashes with 'Canceling the request'). Pre-fix call site
-    // passed only 5 params; sub-modules' references to these globals
-    // resolved up the V8 scope chain to workerd's real bindings.
-    //
-    // The compile-time params list at manager.ts already added the
-    // extras; here we provide them at call time. Order MUST match
-    // the params list at manager.ts:225+.
     if (precompiled) {
       precompiled(
         mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir,
-        __consoleMod, __processMod, __BufferMod,
-        globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
       );
     } else {
-      // Fallback: try new Function at request time (works if eval is permitted)
+      // Try new Function at request time when the file was not part of the
+      // startup precompile set.
       // X.5-S: conditional-param-rename via __mkCompiledFn — see helper
       // comment above. Without this, esbuild-transformed ESM that declares
       // \`const __dirname = …\` at top level (e.g. vite's chunks/node.js)
       // collides with the previously hardcoded \`__dirname\` parameter.
       try {
-        // G2/G3: same extra-params extension on the fallback path.
-        const fn = __mkCompiledFn(code, [
-          "console", "process", "Buffer",
-          "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-        ]);
+        const fn = __mkCompiledFn(code);
         fn(
           mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir,
-          __consoleMod, __processMod, __BufferMod,
-          globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval,
         );
       } catch (evalErr) {
         // W3.5 Fix C: if the file was in the bundle but its pre-compile
@@ -3257,6 +3916,17 @@ function __loadModule(resolvedPath) {
     }
   } catch (e) {
     __moduleCache.delete(resolvedPath);
+    if (e && typeof e === "object" && !e.__nimbusModulePath) {
+      try {
+        e.__nimbusModulePath = resolvedPath;
+        if (typeof e.message === "string") {
+          e.message += "\\nNimbus module: " + resolvedPath;
+        }
+        if (typeof e.stack === "string" && !e.stack.includes("Nimbus module:")) {
+          e.stack += "\\nNimbus module: " + resolvedPath;
+        }
+      } catch {}
+    }
     throw e;
   } finally {
     globalThis.__currentModulePath = __prevModulePath;
@@ -3305,6 +3975,25 @@ function __resolveFrom(id, fromDir) {
   return __resolveNodeModule(id, fromDir);
 }
 
+globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
+  const currentFromParent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
+    ? parentUrl.replace(/^file:\\/\\/\\/+/, "")
+    : "";
+  const current = currentFromParent || (
+    typeof globalThis.__currentModulePath === "string"
+      ? globalThis.__currentModulePath.replace(/^\\/+/, "")
+      : ""
+  );
+  const fromDir = current.includes("/") ? current.substring(0, current.lastIndexOf("/")) : "";
+  const text = String(specifier);
+  if (text.startsWith("file:")) return text;
+  if (text.startsWith("./") || text.startsWith("../") || text.startsWith("/")) {
+    return new URL(text, current ? "file:///" + current : "file:///").href;
+  }
+  const resolved = __resolveFrom(text, fromDir);
+  return resolved ? "file:///" + resolved.replace(/^\\/+/, "") : text;
+};
+
 /**
  * require() from a specific directory context.
  * This is what each loaded module gets as its require function.
@@ -3321,6 +4010,29 @@ function __requireFrom(id, fromDir) {
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
 
   return __loadModule(resolved);
+}
+
+function __requireBaseDir(specifier) {
+  const text = String(specifier || "");
+  const filePath = text.startsWith("file:")
+    ? builtins.url.fileURLToPath(text)
+    : text;
+  const normalized = filePath.replace(/^\\/+/, "");
+  const fullPath = normalized || (dirname || cwd || "/home/user").replace(/^\\/+/, "");
+  const slash = fullPath.lastIndexOf("/");
+  return slash >= 0 ? fullPath.substring(0, slash) : "";
+}
+
+function __makeRequire(fromDir) {
+  const localRequire = (id) => __requireFrom(id, fromDir);
+  localRequire.resolve = (id) => {
+    const r = __resolveFrom(id, fromDir);
+    if (!r) throw new Error("Cannot resolve '" + id + "'");
+    return "/" + r;
+  };
+  localRequire.cache = __moduleCache;
+  localRequire.main = __require.main;
+  return localRequire;
 }
 
 /**

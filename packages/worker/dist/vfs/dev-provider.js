@@ -21,7 +21,7 @@
  * The provider is mounted at `/dev` (no leading slash for Kernel
  * convention which already does that). All entries are virtual:
  * stat returns synthesized FileType-shaped objects. The MountProvider
- * surface lifo-sh expects (readFile/writeFile/exists/stat/readdir/
+ * surface the vendored MountProvider expects (readFile/writeFile/exists/stat/readdir/
  * unlink/mkdir/rmdir/rename/copyFile) is fully implemented — reads
  * from non-existent dev nodes return ENOENT, writes to read-only
  * nodes silently succeed (Unix /dev/null/zero/random semantics).
@@ -92,7 +92,7 @@ function makeNodes() {
     return nodes;
 }
 /**
- * MountProvider impl for /dev. lifo-sh's Kernel routes any path
+ * MountProvider impl for /dev. The vendored Kernel routes any path
  * under /dev/* through these methods.
  */
 export class DevProvider {

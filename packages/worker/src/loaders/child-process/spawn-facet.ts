@@ -30,6 +30,11 @@ export interface SpawnInIsolateResult {
   stderr: string;
 }
 
+declare const __nimbusUseRpcResult: <T, R>(
+  promise: Promise<T>,
+  use: (value: T) => R | Promise<R>,
+) => Promise<R>;
+
 /**
  * Signature must remain `(spec, env)` because Worker Loader dispatch calls
  * the task as `fn(item, env)`.
@@ -70,12 +75,14 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(
   }
 
   try {
-    const r = await env.SUPERVISOR.cpDispatchInline(spec.req, spec.kind);
-    return {
-      exitCode: typeof r.exitCode === 'number' ? r.exitCode : 1,
-      stdout: typeof r.stdout === 'string' ? r.stdout : '',
-      stderr: typeof r.stderr === 'string' ? r.stderr : '',
-    };
+    return await __nimbusUseRpcResult(
+      env.SUPERVISOR.cpDispatchInline(spec.req, spec.kind),
+      (r) => ({
+        exitCode: typeof r.exitCode === 'number' ? r.exitCode : 1,
+        stdout: typeof r.stdout === 'string' ? r.stdout : '',
+        stderr: typeof r.stderr === 'string' ? r.stderr : '',
+      }),
+    );
   } catch (e: any) {
     return {
       exitCode: 1,

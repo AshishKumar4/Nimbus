@@ -3,7 +3,7 @@
  *
  * One DO can host multiple WS kinds simultaneously: the user's shell
  * terminal, cirrus-real HMR clients (one per browser tab on /preview),
- * and process-log streams (one per `logs -f`). Without a discriminator
+ * and process terminal streams. Without a discriminator
  * a close on the HMR socket would null the shell's terminal and the
  * user's tab would freeze (Audit F1). The wsKind() classifier reads
  * the attachment tag set at upgrade time to route each lifecycle
@@ -11,8 +11,8 @@
  *
  * Surfaces:
  *   - wsKind(ws)              — pure attachment-tag classifier.
- *   - wsMessage(self, ws, m)  — route by kind to terminal/HMR/process-logs.
- *   - wsClose(self, ws, ...) — Audit F1: HMR/process-logs close does
+ *   - wsMessage(self, ws, m)  — route by kind to terminal/HMR/process terminals.
+ *   - wsClose(self, ws, ...) — Audit F1: HMR/process terminal close does
  *     NOT null shell/terminal/kernel; only shell-kind close does.
  *   - wsError(self, ws, err) — same discriminator; W5 ring-persist +
  *     W9 flush-on-close + recordFailure on error.
@@ -43,11 +43,16 @@ import {
   cleanupFsWatchOnClose,
   type FsWatchSub,
 } from './fs-watch.js';
+import { parseProcessLogClientFrame } from '../runtime/process-io-protocol.js';
+import { applyProcessClientFrame } from '../runtime/process-input-routing.js';
+import { z } from 'zod/v4';
 import type { ProcessLogStore } from '../runtime/process-logs.js';
+import type { ProcessInputStore } from '../runtime/process-input.js';
+import type { ProcessTable } from '../runtime/process-table.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { Kernel, Shell } from '@lifo-sh/core';
+import type { Kernel, Shell } from '../substrate/lifo/index.js';
 
 /**
  * Minimal host shape for WS lifecycle. Per plan §IX.1 b': fields here
@@ -67,6 +72,8 @@ export interface WsHost {
    *  that never open the file tree carry no watch state. */
   _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
   processLogs: ProcessLogStore;
+  processInput: ProcessInputStore;
+  processTable: ProcessTable;
   wranglerAliasBannerShown: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
@@ -138,43 +145,84 @@ function snapshotShellState(self: WsHost): void {
  * Any other (undefined/unknown) attachment falls back to 'shell' to
  * preserve pre-F1 behaviour for legacy accept sites.
  */
-export function wsKind(ws: WebSocket): { kind: string; clientId?: string } {
+interface WsAttachment {
+  kind: string;
+  clientId?: string;
+  pid?: number;
+}
+
+const WsAttachmentSchema = z.object({
+  kind: z.string(),
+  clientId: z.string().optional(),
+  pid: z.number().int().optional(),
+}).passthrough();
+
+const FsWatchClientFrameSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('fs-watch-subscribe'),
+    reqId: z.unknown().optional(),
+    paths: z.array(z.string()).optional(),
+  }).passthrough(),
+  z.object({
+    type: z.literal('fs-watch-unsubscribe'),
+    reqId: z.unknown().optional(),
+    subId: z.string().optional(),
+  }).passthrough(),
+]);
+
+const TerminalMessageSchema = z.object({
+  type: z.string(),
+  data: z.string().optional(),
+  cols: z.number().optional(),
+  rows: z.number().optional(),
+  path: z.string().optional(),
+  content: z.string().optional(),
+  dir: z.string().optional(),
+  recursive: z.boolean().optional(),
+}).passthrough();
+
+function wsAttachment(ws: WebSocket): WsAttachment {
   try {
-    const att = (ws as any).deserializeAttachment?.();
-    if (att && typeof att === 'object' && typeof att.kind === 'string') {
-      return att as { kind: string; clientId?: string };
-    }
+    const method = Reflect.get(ws, 'deserializeAttachment');
+    if (typeof method !== 'function') return { kind: 'shell' };
+    const parsed = WsAttachmentSchema.safeParse(Reflect.apply(method, ws, []));
+    if (parsed.success) return parsed.data;
   } catch { /* deserializeAttachment is optional */ }
   return { kind: 'shell' };
+}
+
+export function wsKind(ws: WebSocket): WsAttachment {
+  return wsAttachment(ws);
 }
 
 export async function wsMessage(self: WsHost, ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
   try {
     // HMR clients: route messages to the facet via HmrBridge.
     // We identify HMR sockets by the attachment tag set at accept time.
-    const attach = (ws as any).deserializeAttachment?.();
+    const attach = wsAttachment(ws);
     if (attach?.kind === 'cirrus-hmr') {
       const data = typeof message === 'string' ? message : dec.decode(message);
-      self.cirrusReal?.deliverHmrClientMessage(attach.clientId, data);
+      if (attach.clientId) self.cirrusReal?.deliverHmrClientMessage(attach.clientId, data);
       return;
     }
-    // W9: process-logs sockets are output-only by contract. Drop
-    // any inbound frame; never let it parse-fail to the shell.
     if (attach?.kind === 'process-logs') {
+      await routeProcessLogClientMessage(self, ws, attach, message);
       return;
     }
     const data = typeof message === 'string' ? message : dec.decode(message);
-    const msg = JSON.parse(data);
+    const value: unknown = JSON.parse(data);
     // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE
     // delegating to the terminal. These messages are WS-scoped (the
     // bus listener captures `ws`), so the dispatch site needs the live
     // ws ref — the terminal.onFs callback only has (msg, reply). Reply
     // pattern mirrors the fs-* reqId-echo at ws-terminal.ts:142-150.
-    if (msg && (msg.type === 'fs-watch-subscribe' || msg.type === 'fs-watch-unsubscribe')) {
-      const reqId = (msg as any).reqId;
-      const reply = (frame: any) => {
+    const fsWatchFrame = FsWatchClientFrameSchema.safeParse(value);
+    if (fsWatchFrame.success) {
+      const msg = fsWatchFrame.data;
+      const reqId = msg.reqId;
+      const reply = (frame: Record<string, unknown>) => {
         try {
-          const merged = (reqId !== undefined && frame && typeof frame === 'object')
+          const merged = reqId !== undefined
             ? { ...frame, reqId }
             : frame;
           ws.send(JSON.stringify(merged));
@@ -204,7 +252,8 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     if (attach?.kind === 'fs-watch') {
       return;
     }
-    if (self.terminal) self.terminal.handleMessage(msg);
+    const terminalMessage = TerminalMessageSchema.safeParse(value);
+    if (self.terminal && terminalMessage.success) self.terminal.handleMessage(terminalMessage.data);
     // ── B'.1 snapshot ───────────────────────────────────────────────
     // Persist Shell state to DO SQLite after the terminal has handled
     // the user's keystroke. The Shell builtin `cd` mutates this.cwd
@@ -217,6 +266,34 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     // Never let a message parsing error crash the DO
     console.error('[nimbus] webSocketMessage error:', e?.message);
   }
+}
+
+async function routeProcessLogClientMessage(
+  self: WsHost,
+  ws: WebSocket,
+  attach: WsAttachment,
+  message: string | ArrayBuffer,
+): Promise<void> {
+  const pid = attach.pid;
+  if (!pid) return;
+  const entry = self.processTable.get(pid);
+  if (!entry || entry.state !== 'running') return;
+
+  let frame: ReturnType<typeof parseProcessLogClientFrame>;
+  try {
+    const data = typeof message === 'string' ? message : dec.decode(message);
+    frame = parseProcessLogClientFrame(data);
+  } catch {
+    return;
+  }
+
+  if (!frame) return;
+  const result = await applyProcessClientFrame(self, pid, frame);
+  sendProcessInputAck(ws, pid, result.ok, result.type);
+}
+
+function sendProcessInputAck(ws: WebSocket, pid: number, ok: boolean, action: string): void {
+  try { ws.send(JSON.stringify({ type: 'stdin-ack', pid, ok, action })); } catch {}
 }
 
 export async function wsClose(

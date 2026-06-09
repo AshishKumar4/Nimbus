@@ -29,12 +29,11 @@ export class ReplSession {
     terminal;
     detachReplCb = null;
     /**
-     * REPL-R7-1 (2026-05-12): optional reference to the lifo-sh Shell.
+     * REPL-R7-1 (2026-05-12): optional reference to the Nimbus shell.
      *
      * Required when the REPL is launched from a multi-line WS frame
-     * (e.g. user pastes `python\nexit(7)`). lifo-sh's input handler
-     * (node_modules/@lifo-sh/core/dist/index-Djm2onjx.js:5855
-     * `handleInput`) splits the frame on \r\n and pushes lines AFTER
+     * (e.g. user pastes `python\nexit(7)`). The shell input handler
+     * splits the frame on \r\n and pushes lines AFTER
      * the first into `shell.pasteQueue`, which is drained ONLY when
      * the shell becomes idle (after executeLine returns). While our
      * REPL is running, those pasteQueue lines sit there waiting and

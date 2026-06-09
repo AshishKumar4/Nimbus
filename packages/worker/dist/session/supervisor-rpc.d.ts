@@ -62,6 +62,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * Uses doId from ctx.props to find the correct NimbusSession instance.
      */
     private _getStub;
+    private _call;
     readFile(path: string): Promise<string | null>;
     /**
      * Read a file as raw bytes. Used by the git network facet for binary
@@ -70,6 +71,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     readFileBytes(path: string): Promise<Uint8Array | null>;
     writeFile(path: string, content: string | Uint8Array): Promise<void>;
     stat(path: string): Promise<any>;
+    utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     readdir(path: string): Promise<{
         name: string;
         type: string;
@@ -245,6 +247,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     cpReadStdin(childPid: number, waitMs: number): Promise<{
         data: string;
         ended: boolean;
+        resize?: {
+            columns: number;
+            rows: number;
+        };
+        signal?: string;
     }>;
     cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
         chunks: {

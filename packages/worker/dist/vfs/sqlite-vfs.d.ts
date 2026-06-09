@@ -50,6 +50,7 @@ export interface BatchInodeEntry {
     parentPath: string;
     isDir: boolean;
     size: number;
+    atime?: number;
     mtime: number;
     mode: number;
     chunkCount: number;
@@ -216,7 +217,7 @@ export declare class SqliteVFS {
      *
      * Staying synchronous preserves the sqlite-vfs invariant that all
      * file ops are sync (documented at the top of this file) — required
-     * by the LIFO @lifo-sh/core MountProvider interface.
+     * by the vendored MountProvider interface.
      */
     flushAll(): void;
     /**
@@ -250,10 +251,12 @@ export declare class SqliteVFS {
     stat(path: string): {
         type: string;
         size: number;
+        atime: number;
         ctime: number;
         mtime: number;
         mode: number;
     };
+    utimes(path: string, atimeMs: number, mtimeMs: number): void;
     readdir(path: string): {
         name: string;
         type: string;
@@ -418,6 +421,7 @@ export declare class SqliteVFSProvider {
     stat(sub: string): {
         type: string;
         size: number;
+        atime: number;
         ctime: number;
         mtime: number;
         mode: number;

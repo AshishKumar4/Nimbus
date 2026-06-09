@@ -1,6 +1,7 @@
 import { base64Utf8, sealJson, unsealJson, } from '../_shared/crypto.js';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
+import { z } from 'zod/v4';
 export const NIMBUS_AGENT_AUTH_COOKIE = 'nimbus_agent_oauth';
 export const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = 'nimbus-agent-oauth-auth';
@@ -8,6 +9,36 @@ export const NIMBUS_CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 export const NIMBUS_CF_OAUTH_AUTH_URL = 'https://dash.cloudflare.com/oauth2/auth';
 export const NIMBUS_CF_OAUTH_TOKEN_URL = 'https://dash.cloudflare.com/oauth2/token';
 export const NIMBUS_CF_OAUTH_USERINFO_URL = 'https://dash.cloudflare.com/oauth2/userinfo';
+const CloudflareErrorPayloadSchema = z.object({
+    error: z.string().optional(),
+    error_description: z.string().optional(),
+    errors: z.array(z.object({
+        message: z.string().optional(),
+    }).passthrough()).optional(),
+}).passthrough();
+const CloudflareOAuthTokenResponseSchema = z.object({
+    access_token: z.string().min(1),
+    token_type: z.string().optional(),
+    expires_in: z.number().optional(),
+    refresh_token: z.string().optional(),
+}).passthrough();
+const CloudflareAccountsResponseSchema = z.object({
+    result: z.array(z.object({
+        id: z.string(),
+        name: z.string().optional(),
+    }).passthrough()).default([]),
+}).merge(CloudflareErrorPayloadSchema);
+const NimbusAgentOAuthCookieSchema = z.object({
+    mode: z.literal('oauth'),
+    accessToken: z.string().min(1),
+    refreshToken: z.string().optional(),
+    tokenType: z.string(),
+    expiresAt: z.number().finite().nullable(),
+    connectedAt: z.number().finite(),
+    accountId: z.string().refine(isNimbusCloudflareAccountId).nullable(),
+    sessionId: z.string().refine(isValidSessionId),
+    tenantSegment: z.string().refine(isNimbusTenantSegment),
+});
 export async function requestNimbusCloudflareOAuthToken(config, fields) {
     if (!config.oauthClientId)
         throw new Error('OAuth client id is not configured');
@@ -27,21 +58,23 @@ export async function requestNimbusCloudflareOAuthToken(config, fields) {
         headers,
         body,
     });
-    const payload = await response.json().catch(() => null);
+    const payload = await responseJson(response);
     if (!response.ok) {
-        const detail = payload?.error_description || payload?.error || response.statusText;
+        const detail = cloudflareErrorDetail(payload, response.statusText);
         throw new Error(`Cloudflare token exchange failed: ${detail}`);
     }
-    return payload;
+    const parsed = CloudflareOAuthTokenResponseSchema.safeParse(payload);
+    if (!parsed.success)
+        throw new Error('Cloudflare token exchange returned an invalid OAuth token payload');
+    return parsed.data;
 }
 export async function fetchNimbusCloudflareUserInfo(accessToken) {
     const response = await fetch(NIMBUS_CF_OAUTH_USERINFO_URL, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
     });
-    const payload = await response.json().catch(() => null);
+    const payload = await responseJson(response);
     if (!response.ok) {
-        const detail = payload?.error_description || payload?.error || 'userinfo request failed';
-        throw new Error(detail);
+        throw new Error(cloudflareErrorDetail(payload, 'userinfo request failed'));
     }
     return payload;
 }
@@ -49,12 +82,13 @@ export async function fetchNimbusCloudflareAccounts(accessToken) {
     const response = await fetch(`${NIMBUS_CLOUDFLARE_API}/accounts`, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
     });
-    const payload = await response.json().catch(() => null);
+    const payload = await responseJson(response);
+    const parsed = CloudflareAccountsResponseSchema.safeParse(payload);
     if (!response.ok)
-        throw new Error(payload?.errors?.[0]?.message || payload?.error || 'accounts request failed');
-    const accounts = Array.isArray(payload?.result) ? payload.result : [];
+        throw new Error(cloudflareErrorDetail(payload, 'accounts request failed'));
+    const accounts = parsed.success ? parsed.data.result : [];
     return accounts
-        .map((account) => ({ id: String(account.id || ''), name: String(account.name || account.id || '') }))
+        .map((account) => ({ id: account.id, name: account.name || account.id }))
         .filter((account) => isNimbusCloudflareAccountId(account.id));
 }
 export async function createNimbusAgentOAuthCookie(auth, secret, basePathOrRequest) {
@@ -156,19 +190,26 @@ export function isNimbusTenantSegment(value) {
     return true;
 }
 function isNimbusAgentOAuthCookie(value) {
-    const auth = value;
-    return !!auth
-        && auth.mode === 'oauth'
-        && typeof auth.accessToken === 'string'
-        && auth.accessToken.length > 0
-        && typeof auth.tokenType === 'string'
-        && Number.isFinite(auth.connectedAt)
-        && (auth.expiresAt == null || Number.isFinite(auth.expiresAt))
-        && (auth.accountId == null || isNimbusCloudflareAccountId(auth.accountId))
-        && isValidSessionId(auth.sessionId)
-        && isNimbusTenantSegment(auth.tenantSegment);
+    return NimbusAgentOAuthCookieSchema.safeParse(value).success;
 }
 function envString(env, key) {
     const value = env?.[key];
     return typeof value === 'string' ? value.trim() : '';
+}
+async function responseJson(response) {
+    try {
+        return await response.json();
+    }
+    catch {
+        return null;
+    }
+}
+function cloudflareErrorDetail(payload, fallback) {
+    const parsed = CloudflareErrorPayloadSchema.safeParse(payload);
+    if (!parsed.success)
+        return fallback;
+    return parsed.data.error_description ||
+        parsed.data.error ||
+        parsed.data.errors?.find((error) => error.message)?.message ||
+        fallback;
 }

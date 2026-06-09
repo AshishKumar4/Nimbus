@@ -24,6 +24,9 @@ await t.run('nimbus install python', 180_000);
   a.check('pip install flask completes',
     /Successfully installed flask/.test(stripped),
     JSON.stringify(stripped.slice(-1500)));
+  a.check('pip install flask does not try to load MarkupSafe extension wasm',
+    !/Failed to load MarkupSafe|Failed to load dynamic library|Wasm code generation disallowed/i.test(stripped),
+    JSON.stringify(stripped.slice(-1500)));
 }
 
 {

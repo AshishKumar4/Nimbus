@@ -162,11 +162,12 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
         const batch = pendingCacheWrites;
         pendingCacheWrites = [];
         try {
-            const r = await env.SUPERVISOR.putRegistryEntries(batch);
-            totalCacheWrites += r.written;
-            if (r.failed > 0) {
-                messages.push(`[resolve-facet] cache write: ${r.failed} entries failed`);
-            }
+            await __nimbusUseRpcResult(env.SUPERVISOR.putRegistryEntries(batch), (r) => {
+                totalCacheWrites += r.written;
+                if (r.failed > 0) {
+                    messages.push(`[resolve-facet] cache write: ${r.failed} entries failed`);
+                }
+            });
         }
         catch (e) {
             messages.push(`[resolve-facet] cache flush failed: ${e?.message || e}`);
@@ -298,7 +299,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
         if (r2Available) {
             try {
                 const r2P = Promise.race([
-                    env.SUPERVISOR.getCachedPackument(name),
+                    __nimbusUseRpcResult(env.SUPERVISOR.getCachedPackument(name), (result) => result),
                     new Promise((rs) => setTimeout(() => rs(null), R2_PACKUMENT_RACE_TIMEOUT_MS)),
                 ]).catch(() => null);
                 const r2Raw = await r2P;
@@ -384,7 +385,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
                         // mitigated by pLimit hiding it behind concurrent work.
                         if (typeof env.SUPERVISOR.putCachedPackument === 'function') {
                             try {
-                                await env.SUPERVISOR.putCachedPackument(name, text);
+                                await __nimbusUseRpcResult(env.SUPERVISOR.putCachedPackument(name, text), () => undefined);
                             }
                             catch {
                                 // best-effort cache write
@@ -441,8 +442,31 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
     // X.5-F R1: names the user typed at the top level + required peer-deps
     // bypass SKIP_PACKAGES. Populated lazily as the BFS walk discovers
     const topLevelNames = new Set(Object.keys(spec.specs));
+    const handleNativeExecutableReject = (requestName, pkg, opts) => {
+        const nativeReject = NATIVE_EXECUTABLE_REJECT(pkg);
+        if (!nativeReject)
+            return false;
+        if (opts.isOptional) {
+            messages.push(`[resolve-facet] [skip] ${requestName} — ${nativeReject.reason}`);
+            __EMIT_EVENT({ type: 'transitive-skip', from: requestName, reason: nativeReject.reason });
+            return true;
+        }
+        __EMIT_EVENT({
+            type: 'reject',
+            from: nativeReject.from,
+            reason: nativeReject.reason,
+            suggest: nativeReject.suggest,
+            ctx: 'transitive',
+        });
+        throw registryRejectError(nativeReject.from, nativeReject.reason);
+    };
+    const registryRejectError = (from, reason) => Object.assign(new Error(`npm install rejected: ${from} — ${reason}`), {
+        __nimbus_registry_reject: true,
+        __nimbus_registry_reject_from: from,
+        __nimbus_registry_reject_reason: reason,
+    });
     /** Resolve one spec: cache-hit or fetch packument. */
-    const resolveOne = async (name, range) => {
+    const resolveOne = async (name, range, opts = {}) => {
         // @ts-ignore — SHOULD_SKIP_PACKAGE provided by preamble.
         if (!topLevelNames.has(name) && SHOULD_SKIP_PACKAGE(name, !!spec.frameworkAware))
             return null;
@@ -482,16 +506,15 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
                 // Tag with own-property so the BFS catch can identify a
                 // registry reject without relying on message-prefix string
                 // matching. Mirror of supervisor-side RegistryRejectError.
-                const err = new Error(`npm install rejected: ${__fail.from} — ${__fail.reason}`);
-                err.__nimbus_registry_reject = true;
-                err.__nimbus_registry_reject_from = __fail.from;
-                err.__nimbus_registry_reject_reason = __fail.reason;
-                throw err;
+                throw registryRejectError(__fail.from, __fail.reason);
             }
         }
         const cached = resolveFromCache(effName, range);
-        if (cached)
+        if (cached) {
+            if (handleNativeExecutableReject(name, cached, opts))
+                return null;
             return cached;
+        }
         const data = await fetchPackumentWithRetry(effName);
         if (!data || !data.versions)
             return null;
@@ -513,6 +536,8 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
         }
         const vData = data.versions[version];
         const pkg = versionToResolved(vData);
+        if (handleNativeExecutableReject(name, pkg, opts))
+            return null;
         // Stage cache writes for the resolved version + a few popular ones.
         enqueueCacheWrite({
             name: pkg.name,
@@ -652,7 +677,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(spec, env) {
                 return null;
             const isOptional = optionalNames.has(name);
             try {
-                const pkg = await resolveOne(name, range);
+                const pkg = await resolveOne(name, range, { isOptional });
                 // X.5-G G1: silent-skip platform-native bindings sourced
                 // from optionalDependencies. Mirrors npm-resolver.ts.
                 if (pkg && isOptional && isOptionalNativeBindingFacet({

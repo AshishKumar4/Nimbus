@@ -25,6 +25,7 @@
  */
 import { CF_COMPAT_DATE } from '../constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
+import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
@@ -44,6 +45,16 @@ import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from
 const ESBUILD_RUNTIME_SHIM = [
     'const __defProp = Object.defineProperty;',
     'const __name = (target, value) => __defProp(target, "name", { value, configurable: true });',
+    'const __nimbusDisposeRpcResult = (value) => {',
+    '  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;',
+    '  const dispose = value[Symbol.dispose];',
+    '  if (typeof dispose === "function") { try { dispose.call(value); } catch {} }',
+    '};',
+    'const __nimbusUseRpcResult = async (promise, use) => {',
+    '  const value = await promise;',
+    '  try { return await use(value); }',
+    '  finally { __nimbusDisposeRpcResult(value); }',
+    '};',
 ].join('\n');
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
@@ -605,18 +616,8 @@ export class NimbusLoaderPool {
     dispose() {
         if (!this.bindings)
             return;
-        const disposerKey = Symbol.dispose;
-        if (!disposerKey)
-            return;
         for (const key of Object.keys(this.bindings)) {
-            const stub = this.bindings[key];
-            const disposer = stub?.[disposerKey];
-            if (typeof disposer === 'function') {
-                try {
-                    disposer.call(stub);
-                }
-                catch { /* best-effort */ }
-            }
+            disposeRpcResource(this.bindings[key]);
         }
         // Prevent double-dispose from re-running the loop.
         this.bindings = undefined;

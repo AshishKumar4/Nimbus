@@ -1,5 +1,5 @@
 /**
- * clang-runner.ts — compile, link, and execute C programs as wasm32-wasi.
+ * clang-runner.ts — compile, link, and execute C programs for Nimbus WASI.
  *
  * Architecture (compile-link-run, two facet calls):
  *
@@ -25,6 +25,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
+import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps) {
@@ -45,12 +46,13 @@ export function makeClangRunnerFactory(deps) {
             // Fast paths — no wasm boot.
             if (argv.includes('--version') || argv.includes('-v')) {
                 ctx.stdout.write(`Nimbus wasm-clang (binji-2020, LLVM 8.0.1)\n`);
-                ctx.stdout.write(`Target: wasm32-wasi (via wasm-ld linker)\n`);
+                ctx.stdout.write(`Target: ${WASM32_WASI_NIMBUS_ABI.id} (via wasm-ld linker)\n`);
                 return 0;
             }
             if (argv.includes('--help') || argv.includes('-h')) {
                 ctx.stdout.write(`usage: ${binName} [options] <source.c> -o <output>\n`);
                 ctx.stdout.write(`Wasm-compiled clang/wasm-ld bundle for Nimbus.\n`);
+                ctx.stdout.write(`Target: ${WASM32_WASI_NIMBUS_ABI.id}\n`);
                 ctx.stdout.write(`Supported: C compilation + linking to wasm.\n`);
                 return 0;
             }

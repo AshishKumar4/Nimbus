@@ -55,6 +55,7 @@ import {
   rpcListProcesses,
   rpcProcessLogs,
   rpcStartProcess,
+  type ProgrammaticHost,
 } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
 
@@ -62,6 +63,7 @@ interface AgentStorage {
   get(key: string): Promise<unknown>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
+  deleteAll(): Promise<void>;
 }
 
 interface AgentVfs {
@@ -72,10 +74,10 @@ interface AgentVfs {
   writeFile(path: string, content: string): void;
 }
 
-interface Host {
+interface Host extends ProgrammaticHost {
   ctx: { storage: AgentStorage };
-  env: Record<string, unknown>;
-  sqliteFs?: AgentVfs | null;
+  env: ProgrammaticHost['env'] & Record<string, unknown>;
+  sqliteFs: (ProgrammaticHost['sqliteFs'] & AgentVfs) | null;
 }
 
 interface OAuthStatePayload {
@@ -917,7 +919,7 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user');
       const base = trimTrailingSlash(path);
-      const entries = self.sqliteFs!.readdir(path).map((entry: any) => ({
+      const entries = self.sqliteFs!.readdir(path).map((entry) => ({
         name: entry.name,
         type: entry.type,
         path: '/' + base + '/' + entry.name,
@@ -948,8 +950,8 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
     }
     if (name === 'list_ports') return rpcListPorts(self);
     return { error: `unknown tool: ${name}` };
-  } catch (e: any) {
-    return { error: e?.message || String(e) };
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : String(e) };
   }
 }
 

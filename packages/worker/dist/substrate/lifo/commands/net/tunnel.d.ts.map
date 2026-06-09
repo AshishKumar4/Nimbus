@@ -1,0 +1,1 @@
+{"version":3,"file":"tunnel.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/net/tunnel.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAC3C,OAAO,KAAK,EAAE,MAAM,EAAE,MAAM,uBAAuB,CAAC;AAuQpD,wBAAgB,mBAAmB,CAAC,MAAM,EAAE,MAAM,GAAG,OAAO,CAE3D;AAGD,QAAA,MAAM,OAAO,EAAE,OAA4B,CAAC;AAE5C,eAAe,OAAO,CAAC"}

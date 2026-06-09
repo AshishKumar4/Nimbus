@@ -31,10 +31,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, closeSync } from 'node:fs';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID;
 if (!ACCOUNT) {
@@ -190,6 +190,7 @@ const SPECS = {
         'utf8',
       ),
     },
+    python_packages: ['numpy', 'markupsafe'],
   },
 
   // 2026-05-11 sysroot-prep Phase 0 — R2 ingestion ONLY for the
@@ -326,6 +327,8 @@ for (const f of spec.files) {
   console.log(`[bundle-runtime]   ${f.vfs} (← ${f.src}) → ${(bytes.length / 1024 / 1024).toFixed(2)} MiB sha256=${sha256.slice(0, 16)}…`);
 }
 
+const packageRuntimeArtifacts = stagePythonPackages(spec, workDir, downloaded);
+
 // Bundled LICENSE file. Skipped in ingest_only mode — the swap wave
 // composes the final LICENSE at manifest-compose time.
 if (!spec.ingest_only) {
@@ -376,6 +379,7 @@ if (spec.ingest_only) {
       source_sha256: f.transformMetadata.source_sha256,
       sha256: f.sha256,
     }));
+  runtimeArtifacts.push(...packageRuntimeArtifacts);
 
   const manifest = {
     name: RUNTIME,
@@ -513,6 +517,128 @@ function countOccurrences(haystack, needle) {
     count++;
     offset = idx + needle.length;
   }
+}
+
+function stagePythonPackages(spec, workDir, downloaded) {
+  if (!spec.python_packages || spec.python_packages.length === 0) return [];
+  const lockfileLocal = join(workDir, 'pyodide-lock.json');
+  if (!existsSync(lockfileLocal)) {
+    throw new Error('python_packages requires pyodide-lock.json in the runtime spec');
+  }
+  const lockfile = JSON.parse(readFileSync(lockfileLocal, 'utf8'));
+  const packages = lockfile && typeof lockfile === 'object' && lockfile.packages && typeof lockfile.packages === 'object'
+    ? lockfile.packages
+    : null;
+  if (!packages) throw new Error('pyodide-lock.json has no packages object');
+
+  const artifacts = [];
+  for (const requested of spec.python_packages) {
+    const entry = findPyodideLockPackage(packages, requested);
+    if (!entry) throw new Error(`pyodide package '${requested}' not found in lockfile`);
+    const wheelFileName = entry.file_name;
+    const wheelUrl = `${spec.upstream_base}/${wheelFileName}`;
+    const packageDir = join(workDir, 'python-packages', entry.name.toLowerCase());
+    mkdirSync(packageDir, { recursive: true });
+    const wheelLocal = join(packageDir, wheelFileName);
+    if (!existsSync(wheelLocal)) {
+      console.log(`[bundle-runtime] fetch python package ${wheelUrl}`);
+      execFileSync('curl', ['-sS', '-L', '-o', wheelLocal, wheelUrl], { stdio: 'inherit' });
+    }
+    const wheelBytes = readFileSync(wheelLocal);
+    const wheelSha256 = createHash('sha256').update(wheelBytes).digest('hex');
+    if (wheelSha256 !== String(entry.sha256).toLowerCase()) {
+      throw new Error(`${entry.name}: wheel sha256 mismatch: expected ${entry.sha256} got ${wheelSha256}`);
+    }
+    const wheelVfs = `share/pyodide/packages/${wheelFileName}`;
+    downloaded.push({
+      src: `python-packages/${entry.name}/${wheelFileName}`,
+      vfs: wheelVfs,
+      local: wheelLocal,
+      bytes: wheelBytes,
+      sha256: wheelSha256,
+      size: wheelBytes.length,
+      r2Key: runtimeBlobKey(`python-packages/${entry.name}/${wheelFileName}`, wheelSha256),
+    });
+
+    const extensionModules = [];
+    const members = execFileSync('zipinfo', ['-1', wheelLocal], { encoding: 'utf8' })
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.endsWith('.so'));
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
+      const runtimePath = `share/pyodide/packages/${entry.name}/side-modules/${member}`;
+      const sideLocal = join(packageDir, 'side-modules', member);
+      extractZipMemberToFile(wheelLocal, member, sideLocal);
+      const sideBytes = readFileSync(sideLocal);
+      const sideSha256 = createHash('sha256').update(sideBytes).digest('hex');
+      downloaded.push({
+        src: `python-packages/${entry.name}/side-modules/${member}`,
+        vfs: runtimePath,
+        local: sideLocal,
+        bytes: sideBytes,
+        sha256: sideSha256,
+        size: sideBytes.length,
+        r2Key: runtimeBlobKey(`python-packages/${entry.name}/side-modules/${member}`, sideSha256),
+      });
+      extensionModules.push({
+        path: member,
+        runtimePath,
+        sha256: sideSha256,
+      });
+    }
+    artifacts.push({
+      path: wheelVfs,
+      kind: 'python-package',
+      id: `pyodide-package:${entry.name.toLowerCase()}@${entry.version}`,
+      sha256: wheelSha256,
+      language: 'python',
+      packageName: entry.name,
+      version: entry.version,
+      abi: 'pyodide-emscripten-2025_0-wasm32',
+      pyodideVersion: VERSION,
+      pythonVersion: lockfile.info?.python || '3.13.2',
+      wheelFileName,
+      wheelSha256,
+      loadMode: 'startup-module',
+      imports: Array.isArray(entry.imports) ? entry.imports : [],
+      dependencies: Array.isArray(entry.depends) ? entry.depends : [],
+      extensionModules,
+    });
+    console.log(`[bundle-runtime] python package ${entry.name} ${entry.version}: ${members.length} startup module(s)`);
+  }
+  return artifacts;
+}
+
+function extractZipMemberToFile(zipPath, member, outPath) {
+  mkdirSync(dirname(outPath), { recursive: true });
+  const fd = openSync(outPath, 'w');
+  let result;
+  try {
+    result = spawnSync('unzip', ['-p', zipPath, member], {
+      stdio: ['ignore', fd, 'pipe'],
+    });
+  } finally {
+    closeSync(fd);
+  }
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const stderr = result.stderr ? Buffer.from(result.stderr).toString('utf8').trim() : '';
+    throw new Error(`unzip failed for ${member}: ${stderr || `exit ${result.status ?? 'unknown'}`}`);
+  }
+}
+
+function findPyodideLockPackage(packages, requested) {
+  const canonicalRequested = canonicalPythonPackageName(requested);
+  for (const entry of Object.values(packages)) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (canonicalPythonPackageName(entry.name) === canonicalRequested) return entry;
+  }
+  return null;
+}
+
+function canonicalPythonPackageName(name) {
+  return String(name).replace(/[_.]+/g, '-').toLowerCase();
 }
 
 // ── Repackage step (sysroot-prep wave) ──────────────────────────────

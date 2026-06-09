@@ -1,12 +1,12 @@
 /**
  * real-node-imports.ts — single source of truth for the static
- * `import * as __real_X from 'node:X'` block that the generated facet
- * code prepends so the SHIMS string can forward to workerd's real
+ * `import * as __real_X from 'node:X'` block that generated runtime
+ * workers prepend so the SHIMS string can forward to workerd's real
  * `node:*` builtins.
  *
  * Used by:
- *   - src/facet-manager.ts:generateFacetCode (NodeProcess template)
- *   - src/facet-manager.ts: LOADER.load fallback template
+ *   - src/facet-manager.ts one-shot runtime worker template
+ *   - src/facet-manager.ts long-running process worker template
  *
  * Symmetry constraint (W3 plan §3): both templates MUST consume this
  * helper to prevent drift. If you add a new `import * as __real_X`,

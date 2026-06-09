@@ -12,6 +12,7 @@
  *   - SHOULD_SWAP(name)         → { from, to } | undefined
  *   - SHOULD_REJECT_FAIL(name)  → { from, reason, suggest? } | undefined
  *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → entry | undefined
+ *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
  *   - PARSE_SEMVER(v) → [major, minor, patch] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
@@ -110,6 +111,35 @@ function SHOULD_REJECT_FAIL(name) {
 function SHOULD_WARN_SKIP_TRANSITIVE(name) {
   const r = __REJECT_INSTALL.get(name);
   if (r && r.transitive === 'warn') return r;
+  return undefined;
+}
+function __FILE_EXTENSION(path) {
+  const text = String(path || '');
+  const query = text.indexOf('?');
+  const fragment = text.indexOf('#');
+  const end = query < 0
+    ? (fragment < 0 ? text.length : fragment)
+    : (fragment < 0 ? query : Math.min(query, fragment));
+  const clean = text.slice(0, end);
+  const slash = clean.lastIndexOf('/');
+  const name = slash >= 0 ? clean.slice(slash + 1) : clean;
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot).toLowerCase() : '';
+}
+function NATIVE_EXECUTABLE_REJECT(pkg) {
+  const bins = pkg && pkg.bin ? Object.values(pkg.bin) : [];
+  for (const target of bins) {
+    const ext = __FILE_EXTENSION(target);
+    if (ext === '.exe' || ext === '.node') {
+      return {
+        from: pkg.name,
+        reason:
+          "Package " + pkg.name + " exposes native executable bin '" + target + "'. " +
+          'Nimbus cannot execute Linux/Windows/macOS native binaries; publish a JavaScript, WASM, or wasm32-wasi-nimbus artifact.',
+        transitive: 'fail',
+      };
+    }
+  }
   return undefined;
 }
 

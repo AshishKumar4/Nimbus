@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// ruby/httpd-preview — ruby -run -e httpd registers a live preview port
-// backed by supervisor VFS reads.
+// ruby/httpd-preview — ruby -run -e httpd reaches Ruby's WEBrick path
+// and serves through Nimbus virtual sockets.
 
 import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, fetchPort } from '../_driver.mjs';
 
@@ -16,8 +16,9 @@ await t.connect();
 await t.waitForPrompt(60_000);
 
 await t.run('nimbus install ruby', 180_000);
+await t.run('gem install webrick', 180_000);
 await t.run('mkdir -p /home/user/ruby-site && cd /home/user/ruby-site', 10_000);
-await t.run(heredocCommand('index.html', '<!doctype html><h1>nimbus ruby static server</h1>'), 10_000);
+await t.run(heredocCommand('index.html', '<!doctype html><h1>nimbus ruby httpd</h1>'), 10_000);
 
 let pid = 0;
 {
@@ -25,23 +26,15 @@ let pid = 0;
   const stripped = stripAnsi(output);
   const m = stripped.match(/pid=(\d+)/);
   pid = m ? Number(m[1]) : 0;
-  a.check('ruby httpd returns a long-running Nimbus process',
-    pid > 0 && /Serving HTTP/.test(stripped),
+  a.check('ruby httpd starts as a long-running virtual-socket process',
+    pid > 0 && /port=8124/.test(stripped),
     JSON.stringify(stripped.slice(-800)));
 }
 
 {
   const r = await fetchPort(sid, 8124);
-  a.check('port proxy serves index.html from live VFS',
-    r.status === 200 && /nimbus ruby static server/.test(r.body),
-    `status=${r.status} body=${JSON.stringify(r.body.slice(0, 200))}`);
-}
-
-await t.run(heredocCommand('index.html', '<!doctype html><h1>ruby live update</h1>'), 10_000);
-{
-  const r = await fetchPort(sid, 8124);
-  a.check('ruby static server sees edits after startup',
-    r.status === 200 && /ruby live update/.test(r.body),
+  a.check('port proxy serves index.html through Ruby WEBrick',
+    r.status === 200 && /nimbus ruby httpd/.test(r.body),
     `status=${r.status} body=${JSON.stringify(r.body.slice(0, 200))}`);
 }
 

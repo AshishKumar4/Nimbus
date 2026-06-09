@@ -22,6 +22,8 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { z } from 'zod/v4';
+import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
 
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
@@ -99,19 +101,27 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
     // SPA fallback: any unmatched path serves the top-level index.html.
     candidates.push(base + 'index.html');
 
-    for (const candidate of candidates) {
-      try {
-        const bytes = await stub._rpcReadFileBytes(candidate);
-        if (bytes && bytes.byteLength !== undefined) {
-          return new Response(bytes, {
-            status: 200,
-            headers: {
-              'Content-Type': mimeTypeForPath(candidate),
-              'Cache-Control': 'no-store',
+    try {
+      for (const candidate of candidates) {
+        try {
+          const response = await useRpcResource(
+            stub._rpcReadFileBytes(candidate),
+            (bytes: ArrayBuffer | Uint8Array | null) => {
+              if (!bytes || bytes.byteLength === undefined) return null;
+              return new Response(bytes, {
+                status: 200,
+                headers: {
+                  'Content-Type': mimeTypeForPath(candidate),
+                  'Cache-Control': 'no-store',
+                },
+              });
             },
-          });
-        }
-      } catch { /* try next */ }
+          );
+          if (response) return response;
+        } catch { /* try next */ }
+      }
+    } finally {
+      disposeRpcResource(stub);
     }
 
     return new Response('Not found', { status: 404 });
@@ -206,6 +216,40 @@ function mimeTypeForPath(path: string): string {
 const _NIMBUS_LOADED_CODES: Map<string, any> = new Map();
 const _LOADED_CODES_MAX = 32;
 let _loadedCodesEvictions = 0;
+
+const NimbusLoadedEntrypointPropsSchema = z.object({
+  key: z.string().min(1),
+  name: z.string().nullable().optional(),
+  depth: z.number().int().nonnegative().optional(),
+  code: z.unknown().optional(),
+  supervisor: z.object({
+    doId: z.string().min(1),
+    pid: z.number().int().nonnegative(),
+  }).optional(),
+}).passthrough();
+
+type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
+
+async function materializeNestedRpcRequest(request: Request): Promise<Request> {
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+  const init: RequestInit & { duplex?: 'half' } = {
+    method: request.method,
+    headers: new Headers(request.headers),
+    body: hasBody ? await request.arrayBuffer() : undefined,
+  };
+  if (hasBody) init.duplex = 'half';
+  return new Request(request.url, init);
+}
+
+async function materializeNestedRpcResponse(response: Response): Promise<Response> {
+  const bodyAllowed = response.status !== 204 && response.status !== 205 && response.status !== 304;
+  const body = bodyAllowed ? await response.arrayBuffer() : null;
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: new Headers(response.headers),
+  });
+}
 
 /**
  * Insert OR refresh a key in the LRU. New keys may evict the oldest
@@ -380,6 +424,87 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
 
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
 export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
+  _props(): NimbusLoadedEntrypointProps {
+    return NimbusLoadedEntrypointPropsSchema.parse((this.ctx as { props?: unknown }).props || {});
+  }
+
+  async _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown> {
+    if (!props.supervisor) return undefined;
+    const ctxExports = (this.ctx as { exports?: Record<string, unknown> }).exports;
+    const factory = ctxExports?.SupervisorRPC;
+    if (typeof factory !== 'function') {
+      throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+    }
+    return await factory({ props: props.supervisor });
+  }
+
+  async _codeWithSupervisor(props: NimbusLoadedEntrypointProps, includeSupervisor: boolean): Promise<unknown> {
+    if (props.code === undefined) return undefined;
+    if (!includeSupervisor) return props.code;
+    const supervisorBinding = await this._supervisorBinding(props);
+    if (!supervisorBinding) return props.code;
+    if (!props.code || typeof props.code !== 'object' || Array.isArray(props.code)) {
+      throw new Error('Nimbus: loaded worker config must be an object when supervisor binding is requested');
+    }
+    const config = props.code as Record<string, unknown>;
+    const env = config.env && typeof config.env === 'object' && !Array.isArray(config.env)
+      ? config.env as Record<string, unknown>
+      : {};
+    return {
+      ...config,
+      env: {
+        ...env,
+        SUPERVISOR: supervisorBinding,
+      },
+    };
+  }
+
+  async _resolveEntrypoint(options: { includeSupervisor: boolean }): Promise<any> {
+    const props = this._props();
+    const outerLoader = (this.env as any)?.LOADER;
+    if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
+    const code = await this._codeWithSupervisor(props, options.includeSupervisor);
+    const outerStub = code === undefined
+      ? _resolveStubInCurrentContext(outerLoader, props.key)
+      : outerLoader.get(props.key, async () => code);
+    const outer = await outerStub;
+    if (!outer) throw new Error('Nimbus: loaded worker code missing');
+    return await (props.name ? outer.getEntrypoint(props.name) : outer.getEntrypoint());
+  }
+
+  async startProcess(args: any): Promise<any> {
+    const ep = await this._resolveEntrypoint({ includeSupervisor: true });
+    try {
+      if (typeof ep.startProcess !== 'function') {
+        throw new Error('Nimbus: loaded worker entrypoint has no startProcess method');
+      }
+      return await useRpcResource(ep.startProcess(args), (result) => result);
+    } finally {
+      disposeRpcResource(ep);
+    }
+  }
+
+  async handleHttpRequest(request: Request): Promise<Response> {
+    const ep = await this._resolveEntrypoint({ includeSupervisor: false });
+    try {
+      const method = ep.handleHttpRequest || ep.fetch;
+      if (typeof method !== 'function') {
+        return new Response('Nimbus: loaded worker entrypoint has no HTTP request handler', { status: 502 });
+      }
+      return await useRpcResource(
+        method.call(ep, await materializeNestedRpcRequest(request)),
+        async (response) => {
+          if (!(response instanceof Response)) {
+            return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
+          }
+          return await materializeNestedRpcResponse(response);
+        },
+      );
+    } finally {
+      disposeRpcResource(ep);
+    }
+  }
+
   /**
    * Forward fetch() to the outer worker's entrypoint. All three outer
    * hops (load → getEntrypoint → fetch) run in the same outer request
@@ -387,13 +512,20 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
    * cross-request-I/O limitation.
    */
   async fetch(request: Request): Promise<Response> {
-    const propsAny = (this.ctx as any).props || {};
-    const outerLoader = (this.env as any)?.LOADER;
-    if (!outerLoader) return new Response('Nimbus: outer env.LOADER missing', { status: 500 });
-    const outer = _resolveStubInCurrentContext(outerLoader, propsAny.key);
-    if (!outer) return new Response('Nimbus: loaded worker code missing', { status: 502 });
-    const ep = propsAny.name ? outer.getEntrypoint(propsAny.name) : outer.getEntrypoint();
-    return ep.fetch(request);
+    const ep = await this._resolveEntrypoint({ includeSupervisor: false });
+    try {
+      return await useRpcResource(
+        ep.fetch(await materializeNestedRpcRequest(request)),
+        async (response) => {
+          if (!(response instanceof Response)) {
+            return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
+          }
+          return await materializeNestedRpcResponse(response);
+        },
+      );
+    } finally {
+      disposeRpcResource(ep);
+    }
   }
 }
 
@@ -516,18 +648,25 @@ export class NimbusDOStub extends WorkerEntrypoint {
       : null;
     const headerList: [string, string][] = [];
     request.headers.forEach((v, k) => { headerList.push([k, v]); });
-    const res = await stub._rpcInnerDoFetch({
-      bindingName,
-      id,
-      method: request.method,
-      url: request.url,
-      headers: headerList,
-      body,
-    });
-    return new Response(res.body, {
-      status: res.status,
-      statusText: res.statusText,
-      headers: res.headers,
-    });
+    try {
+      return await useRpcResource(
+        stub._rpcInnerDoFetch({
+          bindingName,
+          id,
+          method: request.method,
+          url: request.url,
+          headers: headerList,
+          body,
+        }),
+        (res: { body: ArrayBuffer; status: number; statusText: string; headers: [string, string][] }) =>
+          new Response(res.body, {
+            status: res.status,
+            statusText: res.statusText,
+            headers: res.headers,
+          }),
+      );
+    } finally {
+      disposeRpcResource(stub);
+    }
   }
 }

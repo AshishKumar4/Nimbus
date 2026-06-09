@@ -8,14 +8,23 @@
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, listInstalledRuntimes, } from '../runtime/package-manager.js';
 import { ProcessTable } from '../runtime/process-table.js';
 import { ProcessLogStore } from '../runtime/process-logs.js';
+import { ProcessInputStore } from '../runtime/process-input.js';
 import { PortRegistry } from '../runtime/port-registry.js';
+import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '../runtime/process-input-routing.js';
+import { z } from 'zod/v4';
+const ProcessLogsOptionsSchema = z.object({
+    cursor: z.number().int().nonnegative().optional(),
+    lines: z.number().int().nonnegative().optional(),
+    bytes: z.number().int().nonnegative().optional(),
+}).strict();
 function makeHeadlessWebSocket() {
     const listeners = new Map();
+    const state = { readyState: 1 };
     const ws = {
-        readyState: 1,
+        get readyState() { return state.readyState; },
         send(_data) { },
         close() {
-            ws.readyState = 3;
+            state.readyState = 3;
             for (const cb of listeners.get('close') ?? []) {
                 try {
                     cb();
@@ -54,6 +63,10 @@ function getHome(self) {
 }
 function runtimeDeps(self) {
     self.ensureSqliteFs();
+    if (!self.sqliteFs)
+        throw new Error('Nimbus SQLite filesystem did not initialize');
+    if (!self._cpRegistry)
+        throw new Error('Nimbus shell registry did not initialize');
     return {
         env: self.env,
         vfs: self.sqliteFs,
@@ -105,8 +118,8 @@ export async function rpcExec(self, command, options = {}) {
         signal: controller.signal,
         stdin: options.stdin,
     });
-    const result = await (options.timeoutMs && options.timeoutMs > 0
-        ? Promise.race([
+    const result = options.timeoutMs && options.timeoutMs > 0
+        ? await Promise.race([
             run,
             new Promise((resolve) => {
                 timeout = setTimeout(() => {
@@ -119,10 +132,10 @@ export async function rpcExec(self, command, options = {}) {
                 }, options.timeoutMs);
             }),
         ])
-        : run);
+        : await run;
     if (timeout)
         clearTimeout(timeout);
-    const exitCode = Number(result?.exitCode ?? (timedOut ? 124 : 0));
+    const exitCode = Number(result.exitCode ?? (timedOut ? 124 : 0));
     if (timedOut) {
         stderr.push(`command timed out after ${options.timeoutMs}ms\n`);
     }
@@ -236,24 +249,63 @@ export async function rpcKillProcess(self, pid) {
         }
         catch { }
         ok = self.processTable.kill(n);
+        try {
+            self.processInput.close(n);
+        }
+        catch { }
         self._viteShimPid = null;
         self._viteShimPort = null;
     }
     else if (self.facetManager) {
         ok = self.facetManager.kill(n);
+        if (ok)
+            try {
+                self.processInput.close(n);
+            }
+            catch { }
     }
     else {
         ok = self.processTable.kill(n);
+        if (ok)
+            try {
+                self.processInput.close(n);
+            }
+            catch { }
     }
     return { ok, pid: n };
 }
+export async function rpcWriteProcessInput(self, pid, data) {
+    await ensureProgrammaticReady(self);
+    const n = Number(pid);
+    return writeProcessInput(self, n, String(data ?? ''));
+}
+export async function rpcEndProcessInput(self, pid) {
+    await ensureProgrammaticReady(self);
+    const n = Number(pid);
+    return endProcessInput(self, n);
+}
+export async function rpcResizeProcess(self, pid, size) {
+    await ensureProgrammaticReady(self);
+    return resizeProcess(self, Number(pid), Number(size.columns), Number(size.rows));
+}
+export async function rpcSignalProcess(self, pid, signal) {
+    await ensureProgrammaticReady(self);
+    return signalProcess(self, Number(pid), String(signal));
+}
 export async function rpcProcessLogs(self, pid, options = {}) {
     await ensureProgrammaticReady(self);
-    const chunks = self.processLogs.tail(Number(pid), options.bytes ? { bytes: options.bytes } : { lines: options.lines ?? 200 });
+    const parsed = ProcessLogsOptionsSchema.parse(options);
+    const readOptions = {
+        cursor: parsed.cursor,
+        ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
+    };
+    const chunks = self.processLogs.read(Number(pid), readOptions);
     return {
         pid: Number(pid),
-        chunks,
-        text: chunks.map((c) => c.data).join(''),
+        chunks: chunks.chunks,
+        text: chunks.chunks.map((c) => c.data).join(''),
+        cursor: chunks.cursor,
+        truncated: chunks.truncated,
         exit: self.processLogs.getExit(Number(pid)),
     };
 }
@@ -358,22 +410,80 @@ export async function rpcDestroy(self, options = {}) {
         self.sqliteFs?.flushAll?.();
     }
     catch { }
+    await quiesceInMemorySessionState(self);
     try {
         await self.ctx.storage.deleteAll();
     }
     catch (e) {
-        throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${e?.message || e}`);
+        const message = e instanceof Error ? e.message : String(e);
+        throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);
     }
     resetInMemorySessionState(self);
     return { ok: true, killed, destroyedAt, reason };
 }
-function resetInMemorySessionState(self) {
+async function quiesceInMemorySessionState(self) {
+    if (self._w9FlushTimer) {
+        try {
+            clearTimeout(self._w9FlushTimer);
+        }
+        catch { }
+        self._w9FlushTimer = null;
+    }
+    try {
+        self.terminal?.close?.();
+    }
+    catch { }
+    self.terminal = null;
+    await closeAcceptedWebSockets(self);
     try {
         self._cirrusHmrWsClients?.clear?.();
     }
     catch { }
+    self.processInput = new ProcessInputStore();
+    self.processLogs = new ProcessLogStore();
+    self.processTable = new ProcessTable();
+    self.portRegistry = new PortRegistry();
+    self._w9PersistWired = false;
+}
+async function closeAcceptedWebSockets(self) {
+    const getWebSockets = self.ctx.getWebSockets;
+    if (typeof getWebSockets !== 'function')
+        return;
+    let sockets = [];
     try {
-        self.terminal?.write?.('\r\n[nimbus] session destroyed\r\n');
+        sockets = getWebSockets.call(self.ctx);
+    }
+    catch {
+        sockets = [];
+    }
+    for (const ws of sockets) {
+        try {
+            ws.close(1000, 'session destroyed');
+        }
+        catch { }
+    }
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+        try {
+            sockets = getWebSockets.call(self.ctx);
+        }
+        catch {
+            sockets = [];
+        }
+        if (sockets.length === 0)
+            return;
+        for (const ws of sockets) {
+            try {
+                ws.close(1000, 'session destroyed');
+            }
+            catch { }
+        }
+        await delay(25);
+    }
+}
+function resetInMemorySessionState(self) {
+    try {
+        self._cirrusHmrWsClients?.clear?.();
     }
     catch { }
     try {
@@ -404,11 +514,18 @@ function resetInMemorySessionState(self) {
     self.processTable = new ProcessTable();
     self.portRegistry = new PortRegistry();
     self.processLogs = new ProcessLogStore();
+    self.processInput = new ProcessInputStore();
     self._w9PersistWired = false;
+    self._w9SchemaInit = false;
+    self._w9IsolateGen = 0;
+    self._w9IsolateGenPersisted = false;
     try {
         self._w9WireProcessLogPersist?.();
     }
     catch { }
+}
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function rmrf(vfs, path) {
     for (const entry of vfs.readdir(path)) {
@@ -433,6 +550,7 @@ function serializeProcess(p) {
         startTime: p.startTime,
         endTime: p.endTime,
         longRunning: p.longRunning === true,
+        attachedTty: p.attachedTty === true,
     };
 }
 function serializePort(p) {

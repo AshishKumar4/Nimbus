@@ -27,6 +27,7 @@
  */
 import { type RuntimeCatalogEnv, type RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type RuntimePackageAbi } from './os-contracts.js';
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
 export interface ShellCtx {
     args: string[];
@@ -69,10 +70,12 @@ export interface RuntimeSummary {
     name: string;
     version: string;
     root: string;
+    abi: RuntimePackageAbi;
     bins: string[];
     sizeBytes: number;
     license: string;
 }
+export declare function runtimeAbiForManifest(manifest: RuntimeManifest): RuntimePackageAbi;
 export interface RuntimeInstallTarget {
     runtimeName: string;
     versionOverride: string | null;
@@ -105,6 +108,7 @@ export declare function rehydrateInstalledRuntimes(vfs: SqliteVFS, registry: Min
 export declare function listInstalledRuntimes(vfs: SqliteVFS, homeDir: string): RuntimeSummary[];
 export declare function listAvailableRuntimes(env: RuntimeCatalogEnv): Promise<Array<{
     name: string;
+    abi: RuntimePackageAbi;
     defaultVersion: string;
     versions: Array<{
         version: string;

@@ -54,6 +54,7 @@
  * All under the 250ms warm-pool gate; no warm-pool needed.
  */
 import type { FacetManager } from '../facets/manager.js';
+import type { FacetBundleProfile } from './bundle-profile.js';
 /**
  * Argv-only long-running detection. The ONLY signals we honour:
  *   --watch       (node --watch / bun --watch)
@@ -97,6 +98,9 @@ export interface RunFreshOpts {
      */
     skipSpawn?: boolean;
     callerPid?: number;
+    forceLongRunning?: boolean;
+    attachedTty?: boolean;
+    bundleProfile?: FacetBundleProfile;
 }
 /**
  * Always-fresh-isolate dispatcher. Replaces the previous

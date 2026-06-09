@@ -2,7 +2,7 @@
 // sdk/new/live-sdk-smoke — hosted-demo route exercises
 // @nimbus-sh/sdk against the deployed NIMBUS_SESSION binding.
 
-import { BASE, makeAsserter } from '../../_driver.mjs';
+import { BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -10,7 +10,7 @@ const a = makeAsserter('sdk/new/live-sdk-smoke');
 console.log(`sdk/new/live-sdk-smoke — BASE=${BASE}`);
 
 const r = await fetch(`${BASE}/api/sdk-smoke`, {
-  headers: { 'Cache-Control': 'no-store' },
+  headers: requestHeaders({ 'Cache-Control': 'no-store' }),
 });
 const body = await r.text();
 let json = null;

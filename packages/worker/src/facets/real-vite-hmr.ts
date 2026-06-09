@@ -43,6 +43,7 @@
 // All are emitted by the generators below.
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
 
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
@@ -228,7 +229,13 @@ export class CirrusHmrRPC extends WorkerEntrypoint {
     if (!stub) return;
     // Call the DO's own RPC method, which runs in the DO's context
     // and can legally call ws.send() on hibernatable sockets.
-    try { await stub._rpcHmrRelay(clientId, msg); } catch { /* socket gone */ }
+    try {
+      await useRpcResource(stub._rpcHmrRelay(clientId, msg), () => undefined);
+    } catch {
+      /* socket gone */
+    } finally {
+      disposeRpcResource(stub);
+    }
   }
 
   async hmrNextEvent(timeoutMs: number = 25_000): Promise<any[]> {

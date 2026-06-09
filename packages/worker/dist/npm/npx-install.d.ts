@@ -1,11 +1,10 @@
 /**
  * npx-install.ts — Nimbus-native npx implementation.
  *
- * Replaces @lifo-sh/core's createNpxCommand (which uses a too-narrow
- * semver-range detector that misses major-only ranges like `'1'`, `'2'`,
- * `'1.0'`). The core's `ic()` regex `/[\^~>=<|*x]/.test(r)` flagged
- * caret/tilde/comparator/x ranges correctly but treated `'1'` as a
- * literal version → fetched `/wrappy/1` → 404 → silently skipped.
+ * Fixes the too-narrow semver-range detector in the original substrate command
+ * path, which missed major-only ranges like `'1'`, `'2'`, and `'1.0'`.
+ * That path treated `'1'` as a literal version, fetched `/wrappy/1`, got 404,
+ * and silently skipped the dependency.
  *
  * Symptom captured by tests/behavioral/install/transitive-dep-resolution.mjs:
  *   `npx --yes rimraf@3.0.2 --help` →
@@ -18,7 +17,7 @@
  * (resolve-one-facet.ts:264 + RESOLVE_VERSION). Handles all semver-range
  * syntax including major-only and major.minor.
  *
- * Binary-lookup and execution stay closer to the @lifo-sh/core flow:
+ * Binary lookup and execution follow the same user-visible npx flow:
  *   1. Check cwd/node_modules/.bin/<cmd>
  *   2. Check /tmp/.npx-cache/node_modules/.bin/<cmd>
  *   3. Check global registry (built-ins like vite, esbuild — handled by
@@ -30,11 +29,15 @@
  */
 import type { NpmInstaller } from './installer.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-/** Path where npx caches packages it installs. Matches the constant
- *  in @lifo-sh/core (Vs in dist/index-Djm2onjx.js) so any other code
- *  reading this dir (e.g. tooling that introspects npx state) sees the
- *  same layout. */
+import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
+/** Path where npx caches packages it installs. Matches the vendored substrate
+ * cache layout so tooling that introspects npx state sees the expected path. */
 export declare const NPX_CACHE_DIR = "/tmp/.npx-cache";
+export type NpxSelfInvocation = 'help' | 'version' | 'missing' | null;
+export declare function describeNpxSelfInvocation(rawArgs: string[]): NpxSelfInvocation;
+export declare function getNpxCommandWord(rawArgs: string[]): string | null;
+export declare function getNpxCommandArgs(rawArgs: string[]): string[];
+export declare function formatNpxHelp(): string;
 /**
  * Result of a Nimbus-native npx invocation.
  *
@@ -49,6 +52,7 @@ export interface NpxResolveResult {
     ok: boolean;
     binPath?: string;
     binArgs?: string[];
+    bundleProfile?: FacetBundleProfile;
     error?: string;
     /** Diagnostic: which path located the bin (project-nm / npx-cache /
      *  fresh-install). Useful in logs. */
@@ -65,10 +69,9 @@ export interface NpxResolveResult {
  * via Nimbus's `node` command — keeping this module pure (no process
  * spawning) makes it testable.
  *
- * Note: deliberately does NOT honor `--version`/`--help` for npx
- * itself (those are caller's job); they bubble up as `error` markers
- * so the caller can format the usage banner consistently with the
- * rest of the shell.
+ * Note: deliberately does not format `--version`/`--help` for npx itself.
+ * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
+ * this resolver.
  */
 export declare function resolveNpxBinary(installer: NpmInstaller, vfs: SqliteVFS, cwd: string, rawArgs: string[], log: (msg: string) => void): Promise<NpxResolveResult>;
 //# sourceMappingURL=npx-install.d.ts.map

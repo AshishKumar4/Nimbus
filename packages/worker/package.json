@@ -57,13 +57,16 @@
     "bundle:esbuild": "node scripts/bundle-esbuild-wasm.mjs",
     "bundle:tailwind": "node scripts/bundle-tailwind-play.mjs",
     "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:tailwind",
-    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "clean:dist": "node scripts/clean-dist.mjs",
+    "build": "npm run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.41",
-    "@lifo-sh/core": "^0.5.5",
+    "@renovatebot/pep440": "^5.0.0",
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.5",
     "ai": "^6.0.182",
     "clean-git-ref": "^2.0.1",
     "crc-32": "^1.2.2",
@@ -73,13 +76,16 @@
     "ignore": "^7.0.5",
     "is-git-ref-name-valid": "^1.0.0",
     "isomorphic-git": "npm:@ashishkumar472/cf-git@1.0.5",
+    "magic-string": "^0.30.21",
     "minimisted": "^2.0.1",
     "pako": "1.0.11",
     "pify": "^6.1.0",
+    "pip-requirements-js": "^1.0.3",
     "readable-stream": "^4.7.0",
     "sha.js": "^2.4.12",
     "simple-get": "^4.0.1",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250327.0",

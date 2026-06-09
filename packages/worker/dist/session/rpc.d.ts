@@ -56,6 +56,7 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
 }>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void>;
 export declare function _rpcStat(self: RpcHost, path: string): Promise<any>;
+export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void>;
 export declare function _rpcReaddir(self: RpcHost, path: string): Promise<{
     name: string;
     type: string;
@@ -89,7 +90,7 @@ export declare function _rpcUnlink(self: RpcHost, path: string): Promise<void>;
  *   deletePaths?: string[]
  * }
  */
-export declare function _rpcWriteBatch(self: RpcHost, payload: any): Promise<{
+export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise<{
     inodes: number;
     chunks: number;
 }>;
@@ -250,10 +251,12 @@ export declare function _rpcCpDispatchInline(self: RpcHost, req: any, kind: stri
 export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
 /** RPC: Read a file as string. Returns string or null. */
 export declare function vfsReadFileString(self: RpcHost, path: string): string | null;
-/** RPC: Stat a path. Returns { type, size, mtime, mode } or null. */
+/** RPC: Stat a path. Returns file metadata or null. */
 export declare function vfsStat(self: RpcHost, path: string): {
     type: string;
     size: number;
+    atime: number;
+    ctime: number;
     mtime: number;
     mode: number;
 } | null;

@@ -40,6 +40,8 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from './esbuild-service.js';
+import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
+import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -69,6 +71,9 @@ export interface RuntimeRunOpts {
   /** Capture stdout/stderr in the result instead of streaming to the
    *  terminal supervisor. Used by child_process pipe semantics. */
   captureOutput?: boolean;
+  forceLongRunning?: boolean;
+  attachedTty?: boolean;
+  bundleProfile?: FacetBundleProfile;
 }
 
 export interface RuntimeSpec {
@@ -118,9 +123,8 @@ export interface RuntimeSpec {
 }
 
 /**
- * Minimal registry shape we depend on. Avoids importing the full
- * @lifo-sh/core type tree (the shell registry's runtime shape is a
- * few methods on a Map-like class).
+ * Minimal registry shape we depend on. Avoids importing the full vendored
+ * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
   resolve(name: string): Promise<any> | any;
@@ -150,7 +154,18 @@ export function buildRuntimeHandler(
   return async function runtimeHandler(ctx: any): Promise<number> {
     const args: string[] = ctx.args || [];
     const name = spec.name;
-    const captureOutput = !!(ctx as any).__nimbusCaptureOutput;
+    const nimbusCtx = ctx as {
+      __nimbusCaptureOutput?: unknown;
+      __nimbusBundleProfile?: unknown;
+      __nimbusBinSpawn?: {
+        callerPid?: number;
+        command?: string;
+        forceLongRunning?: boolean;
+        attachedTty?: boolean;
+      };
+    };
+    const captureOutput = !!nimbusCtx.__nimbusCaptureOutput;
+    const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
 
     // ── Subcommand dispatch ──
     //
@@ -210,6 +225,7 @@ export function buildRuntimeHandler(
         dirname: ctx.cwd || '/home/user',
         command: `${name} -e ...`,
         ...(captureOutput ? { captureOutput: true } : {}),
+        ...(bundleProfile ? { bundleProfile } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -270,6 +286,7 @@ export function buildRuntimeHandler(
         dirname,
         command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
         ...(captureOutput ? { captureOutput: true } : {}),
+        ...(bundleProfile ? { bundleProfile } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -390,11 +407,9 @@ export function buildRuntimeHandler(
         const transformed = await eb.transform(code, {
           loader,
           format: 'cjs',
-          define: {
-            'import.meta.url': JSON.stringify(absUrl),
-          },
+          define: importMetaDefines(absUrl),
         });
-        code = transformed.code;
+        code = bindImportMetaResolve(transformed.code, absUrl);
       } catch (e: any) {
         ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${e?.message}\n`);
         return 1;
@@ -411,7 +426,7 @@ export function buildRuntimeHandler(
 
     // Primitive #1 / G4 — propagate bin-spawn ctx if the runtime
     // supports it (currently node only).
-    const binSpawn = spec.supportsBinSpawn ? (ctx as any).__nimbusBinSpawn : undefined;
+    const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
 
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(facetMgr, code, {
@@ -422,8 +437,14 @@ export function buildRuntimeHandler(
       dirname,
       command:
         binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-      ...(binSpawn ? { skipSpawn: true, callerPid: binSpawn.callerPid } : {}),
+      ...(binSpawn ? {
+        skipSpawn: true,
+        callerPid: binSpawn.callerPid,
+        forceLongRunning: binSpawn.forceLongRunning === true,
+        attachedTty: binSpawn.attachedTty === true,
+      } : {}),
       ...(captureOutput ? { captureOutput: true } : {}),
+      ...(bundleProfile ? { bundleProfile } : {}),
     });
     if (result.stdout) ctx.stdout.write(result.stdout);
     if (result.stderr) ctx.stderr.write(result.stderr);

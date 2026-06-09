@@ -83,6 +83,31 @@ The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
 that support matrix unless a behavioral probe proves a larger capability.
 
+## Engineering Bar
+
+Nimbus is intended to push what a Workers + Durable Objects runtime can do. The
+shell substrate is imported as Nimbus-owned source under
+`packages/worker/src/substrate/lifo`; when it lacks a shell, parser, process,
+PTY, filesystem, networking, package, or runtime primitive that Nimbus needs,
+implement the missing capability cleanly in that substrate or another proper
+Nimbus runtime boundary instead of adding script-specific patches.
+
+For parser and language work, prefer existing libraries and structured
+representations:
+
+- Use ASTs, token streams, or upstream parser primitives when they are available.
+- Use libraries such as Acorn, Babel tooling, or other maintained parsers for
+  JavaScript/TypeScript analysis and rewriting.
+- Avoid ad hoc string rewriting, regex-only parsers, duplicated normalizers, or
+  broad compatibility fallbacks for language, shell, or module semantics.
+- If a dependency cannot expose the needed structure, introduce a typed Nimbus
+  substrate at the correct boundary rather than stacking more preprocessors.
+
+For noisy exploration, use sub-agents where available to inspect large dependency
+trees, transcript history, generated bundles, or broad code-quality scans. Keep
+mainline implementation decisions grounded in the resulting source evidence and
+behavioral probes.
+
 ## Runtimes
 
 Runtime blobs and manifests are synced through the CLI:
@@ -98,9 +123,9 @@ Current runtime substrate:
 
 | Runtime | Bins | Notes |
 |---|---|---|
-| `python` | `python`, `python3`, `pip`, `pip3` | Pyodide / CPython 3.13. `pip` supports pure wheels and packages with pure fallbacks; runtime-loaded extension modules need a Nimbus startup-module path. |
-| `ruby` | `ruby`, `ruby3` | ruby.wasm / Ruby 3.3. |
-| `clang` | `clang`, `wasm-ld` | LLVM 8 to wasm32-wasi. |
+| `python` | `python`, `python3`, `pip`, `pip3` | Pyodide / CPython 3.13. `pip` is alpha but ABI-aware: PyPI pure wheels, requirements, constraints, extras, markers, local pure wheels, curated pure source artifacts, and declared Pyodide startup-module package artifacts are supported. Request-time extension-module loading is blocked by Workers and must not be used. |
+| `ruby` | `ruby`, `ruby3`, `gem`, `bundle`, `bundler` | ruby.wasm / Ruby 3.3. Pure Ruby gems, simple Bundler Gemfiles, gem bins, Rack/WEBrick-style preview, and native-gem unsupported diagnostics are implemented; full Bundler parity and native Ruby extensions need a Nimbus ABI path. |
+| `clang` | `clang`, `wasm-ld` | LLVM 8 to Nimbus' `wasm32-wasi-nimbus` ABI. |
 | `node`, `bun` | `node`, `bun`, `npm`, `npx` | Cloudflare workerd `nodejs_compat` and Nimbus shims, not upstream native binaries. |
 
 ## Agentic CLI Compatibility
@@ -111,10 +136,23 @@ surfaces are:
 
 - shell exec, persistent files, env/home/config directories
 - npm/npx package installation, including npm alias dependencies
-- `child_process.spawn`, `exec`, `execFile`, streams, and long-running process logs
+- `child_process.spawn`, `exec`, `execFile`, streams, stdin/stdout/stderr,
+  and long-running process logs
+- foreground attached npm-bin process tabs with TTY-shaped stdio, resize,
+  input delivery, ANSI output, and clean exit handling
 - outbound HTTPS via fetch-compatible APIs
 - HTTP-like preview/port routing for local agent servers
 - sync Node `fs` reads of ordinary project files from the current working tree
+
+Current proven path: JavaScript npm-bin CLIs can launch as foreground attached
+process tabs with TTY-shaped stdio, resize, stdin, signals, and ANSI output.
+Pi's official `curl -fsSL https://pi.dev/install.sh | sh` installer works,
+the direct npm install path works, `pi --version`/`pi --help` return as short
+commands, and bare `pi` starts as a long-running attached process. This is not
+yet a full POSIX PTY: attach/detach replay, terminal line discipline,
+`stdio: "inherit"` parity, and arbitrary full-screen TUI correctness need
+deeper probes. Keep opencode and local Proteus claims gated behind live probes
+until they are verified.
 
 Behavioral probes cover these primitives under:
 
@@ -123,8 +161,13 @@ Behavioral probes cover these primitives under:
 - `tests/behavioral/runtime-primitives/npx-vite.mjs`
 
 Native platform binaries are not Linux-executable in Nimbus. Packages that ship
-only `linux-x64`/`darwin`/`win32` native shards need a WASM build, a pure-JS
-entrypoint, or a Nimbus-specific adapter.
+only `linux-x64`/`darwin`/`win32` native shards, native Python wheels, or
+native Ruby extensions need a Nimbus ABI artifact, WASM build, pure-language
+entrypoint, or a precise unsupported-ABI diagnostic.
+
+The canonical unfinished-work plan is
+`docs/architecture/nimbus-os-runtime-spec.md`. Keep README and UI claims within
+that support matrix unless a live production probe proves a larger capability.
 
 ## Session Agent
 
@@ -190,7 +233,8 @@ Useful commands:
 
 Probes should assert user-visible behavior, not static strings or HTTP 200
 alone. Use bounded polling with loud failures; do not add sleep-only or
-defensive-catch tests.
+defensive-catch tests. Live probes that create hosted-demo sessions must delete
+those sessions in `finally` via the public cleanup path.
 
 Agent-specific probes:
 

@@ -175,6 +175,7 @@ export function resolvePackageEntry(
     // We return null to let caller decide (some callers fall back to
     // direct filesystem probing for compatibility with packages that
     // mis-declare exports).
+    return null;
   }
 
   // 2. Root entry: module → main
@@ -293,6 +294,7 @@ function resolvePackageEntry(pkg, subpath, conditions) {
   if (pkg.exports !== undefined && pkg.exports !== null) {
     const entry = resolveExports(pkg.exports, subpath, conditions);
     if (entry) return entry;
+    return null;
   }
   if (subpath === '.') {
     if (pkg.module) return pkg.module;

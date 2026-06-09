@@ -10,7 +10,7 @@
  *
  * Current limits:
  *   - REPL mode (`python` with no args)
- *   - Native Linux wheels, runtime-loaded extension modules, and extension builds
+ *   - Native Linux wheels, undeclared extension modules, and extension builds
  *   - Sync HTTP (urllib3 / requests blocked without JSPI)
  *
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
@@ -25,7 +25,7 @@
  * 0.29.4 (8.25 MB asm.wasm), this is well under the empirical
  * ~32 MiB per-call ceiling.
  */
-import type { RuntimeManifest } from './runtime-catalog.js';
+import { type RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 /**
@@ -37,6 +37,26 @@ export declare function makePythonRunnerFactory(deps: {
     facetMgr: FacetManager;
     vfs: SqliteVFS;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => (ctx: any) => Promise<number>;
+interface PythonSideModule {
+    packageId: string;
+    packageName: string;
+    version: string;
+    sitePath: string;
+    moduleKey: string;
+    runtimePath: string;
+    bytes: ArrayBuffer;
+}
+interface PythonSideModuleSet {
+    modules: PythonSideModule[];
+    wasmModules: Record<string, ArrayBuffer>;
+    resolverEntries: Array<{
+        packageId: string;
+        packageName: string;
+        version: string;
+        sitePath: string;
+        moduleKey: string;
+    }>;
+}
 /**
  * Compose the per-call preamble by splicing the workerd-adapted
  * pyodide.asm.js source ahead of the __pyodideRun helper. Workerd compiles this
@@ -44,5 +64,6 @@ export declare function makePythonRunnerFactory(deps: {
  * assignment are allowed), then the asm.js's `var _createPyodideModule`
  * is hoisted onto globalThis.
  */
-export declare function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string, lockfileContents?: string): string;
+export declare function buildPyodidePreamble(asmJsSrc: string, stdlibB64: string, lockfileContents?: string, sideModules?: PythonSideModuleSet['resolverEntries']): string;
+export {};
 //# sourceMappingURL=python-runner.d.ts.map

@@ -1,6 +1,7 @@
 import {
   LEGACY_PUBLIC_DO_SEGMENT,
 } from '../_shared/session-router.js';
+import { z } from 'zod/v4';
 import {
   requireScopes,
   requireSessionPin,
@@ -11,6 +12,7 @@ import {
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
 } from '../auth/index.js';
+import { useRpcResource } from '../_shared/rpc-dispose.js';
 
 export type NimbusRuntimeName =
   | 'node'
@@ -69,18 +71,47 @@ export interface NimbusSdkRouterConfig {
   config?: NimbusConfig;
 }
 
-interface RemoteRpcBody {
-  profile?: string;
-  tenant?: string;
-  subject?: string;
-  root?: string;
-  op?: string;
-  args?: unknown[];
+interface NimbusSessionRpcStub {
+  _rpcReady(options?: { preinstall?: string[] }): Promise<unknown>;
+  _rpcExec(command: string, options?: Record<string, unknown>): Promise<unknown>;
+  _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<unknown>;
+  _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<unknown>;
+  _rpcReadFile(path: string): Promise<unknown>;
+  _rpcReadFileBytes(path: string): Promise<unknown>;
+  _rpcWriteFile(path: string, content: string | Uint8Array): Promise<unknown>;
+  _rpcStat(path: string): Promise<unknown>;
+  _rpcReaddir(path: string): Promise<unknown>;
+  _rpcExists(path: string): Promise<unknown>;
+  _rpcMkdir(path: string): Promise<unknown>;
+  _rpcDeleteFile(path: string, options?: Record<string, unknown>): Promise<unknown>;
+  _rpcInstallRuntime(spec: string, options?: Record<string, unknown>): Promise<unknown>;
+  _rpcEnsureRuntimes(specs: string[], options?: Record<string, unknown>): Promise<unknown>;
+  _rpcListRuntimes(): Promise<unknown>;
+  _rpcListProcesses(): Promise<unknown>;
+  _rpcKillProcess(pid: number): Promise<unknown>;
+  _rpcWriteProcessInput(pid: number, data: string): Promise<unknown>;
+  _rpcEndProcessInput(pid: number): Promise<unknown>;
+  _rpcResizeProcess(pid: number, size: { columns: number; rows: number }): Promise<unknown>;
+  _rpcSignalProcess(pid: number, signal: string): Promise<unknown>;
+  _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<unknown>;
+  _rpcListPorts(): Promise<unknown>;
+  _rpcExposePort(port: number): Promise<unknown>;
+  _rpcUnexposePort(port: number): Promise<unknown>;
+  _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
+}
+
+interface NimbusSessionNamespace {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): NimbusSessionRpcStub;
+}
+
+interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
+  NIMBUS_SESSION?: NimbusSessionNamespace;
 }
 
 interface RemoteContext {
-  env: any;
-  stub: any;
+  env: NimbusRemoteEnv;
+  stub: NimbusSessionRpcStub;
   body: RemoteRpcBody;
   profileName: string;
   profile: NimbusSandboxProfile;
@@ -94,9 +125,26 @@ interface RemoteAuthResult {
 }
 
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
+
+const RemoteRpcBodySchema = z.object({
+  profile: z.string().optional(),
+  tenant: z.string().optional(),
+  subject: z.string().optional(),
+  root: z.string().optional(),
+  op: z.string().optional(),
+  args: z.array(z.unknown()).optional(),
+}).passthrough();
+
+type RemoteRpcBody = z.infer<typeof RemoteRpcBodySchema>;
+
+const WireBytesSchema = z.object({
+  __nimbusWireType: z.literal('bytes'),
+  base64: z.string(),
+}).passthrough();
+
 export async function handleNimbusRemoteApi(
   request: Request,
-  env: any,
+  env: NimbusRemoteEnv,
   sdk: NimbusSdkRouterConfig | undefined,
 ): Promise<Response | null> {
   const remote = normalizeRemoteConfig(sdk?.remote);
@@ -119,9 +167,9 @@ export async function handleNimbusRemoteApi(
 
   let body: RemoteRpcBody;
   try {
-    body = decodeWire(await request.json()) as RemoteRpcBody;
-  } catch (e: any) {
-    return remoteJson({ ok: false, error: `Invalid JSON body: ${e?.message || e}`, code: 'E_BAD_JSON' }, 400);
+    body = RemoteRpcBodySchema.parse(decodeWire(await request.json()));
+  } catch (e: unknown) {
+    return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
   }
 
   const remoteAuth = await resolveRemoteAuth(
@@ -152,14 +200,17 @@ export async function handleNimbusRemoteApi(
   };
 
   try {
-    const result = await dispatchRemoteRpc(ctx);
-    return remoteJson({ ok: true, result });
-  } catch (e: any) {
+    return await useRpcResource(
+      dispatchRemoteRpc(ctx),
+      (result) => remoteJson({ ok: true, result }),
+    );
+  } catch (e: unknown) {
+    const err = remoteError(e);
     return remoteJson({
       ok: false,
-      error: e?.message || String(e),
-      code: e?.code || 'E_NIMBUS_REMOTE_RPC',
-    }, e?.httpStatus || 500);
+      error: err.message,
+      code: err.code,
+    }, err.httpStatus);
   }
 }
 
@@ -187,12 +238,11 @@ function matchRemoteRpc(pathname: string, basePath: string): { sandboxId: string
 
 async function resolveRemoteAuth(
   request: Request,
-  env: any,
+  env: NimbusRemoteEnv,
   remote: Required<NimbusRemoteApiConfig>,
   sandboxId: string,
 ): Promise<RemoteAuthResult | Response> {
-  const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
-  if (!hasSecret) {
+  if (!hasJwtSecret(env)) {
     if (remote.allowLegacy) {
       return {
         tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
@@ -207,7 +257,7 @@ async function resolveRemoteAuth(
   }
 
   try {
-    const verified = await verifyRequestToken(request, env as NimbusAuthEnv);
+    const verified = await verifyRequestToken(request, env);
     requireScopes(verified!, remote.requiredScopes);
     requireSessionPin(verified!, sandboxId);
     return {
@@ -248,7 +298,7 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     case 'readFileBytes':
       return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
     case 'writeFile':
-      return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), args[1] as any);
+      return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), fileContentArg(args[1]));
     case 'stat':
       return ctx.stub._rpcStat(stringArg(args[0], 'path'));
     case 'readdir':
@@ -275,8 +325,21 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       return ctx.stub._rpcListProcesses();
     case 'killProcess':
       return ctx.stub._rpcKillProcess(numberArg(args[0], 'pid'));
+    case 'writeProcessInput':
+      return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), stringArg(args[1], 'data'));
+    case 'endProcessInput':
+      return ctx.stub._rpcEndProcessInput(numberArg(args[0], 'pid'));
+    case 'resizeProcess': {
+      const size = objectArg(args[1]);
+      return ctx.stub._rpcResizeProcess(numberArg(args[0], 'pid'), {
+        columns: numberArg(size.columns, 'columns'),
+        rows: numberArg(size.rows, 'rows'),
+      });
+    }
+    case 'signalProcess':
+      return ctx.stub._rpcSignalProcess(numberArg(args[0], 'pid'), stringArg(args[1], 'signal'));
     case 'processLogs':
-      return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), objectArg(args[1]));
+      return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), processLogOptions(args[1]));
     case 'listPorts':
       return ctx.stub._rpcListPorts();
     case 'exposePort':
@@ -307,6 +370,15 @@ function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown
   return {
     ...options,
     cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,
+  };
+}
+
+function processLogOptions(value: unknown): { cursor?: number; lines?: number; bytes?: number } {
+  const options = objectArg(value);
+  return {
+    ...(options.cursor === undefined ? {} : { cursor: numberArg(options.cursor, 'cursor') }),
+    ...(options.lines === undefined ? {} : { lines: numberArg(options.lines, 'lines') }),
+    ...(options.bytes === undefined ? {} : { bytes: numberArg(options.bytes, 'bytes') }),
   };
 }
 
@@ -380,11 +452,40 @@ function numberArg(value: unknown, name: string): number {
   return number;
 }
 
-function apiError(message: string, code: string, status: number): Error & { code: string; httpStatus: number } {
-  const err = new Error(message) as Error & { code: string; httpStatus: number };
+function fileContentArg(value: unknown): string | Uint8Array {
+  if (typeof value === 'string' || value instanceof Uint8Array) return value;
+  throw apiError('content must be a string or Uint8Array', 'E_ARG_SHAPE', 400);
+}
+
+interface ApiError extends Error {
+  code: string;
+  httpStatus: number;
+}
+
+function apiError(message: string, code: string, status: number): ApiError {
+  const err = new Error(message) as ApiError;
   err.code = code;
   err.httpStatus = status;
   return err;
+}
+
+function isApiError(value: unknown): value is ApiError {
+  return value instanceof Error
+    && typeof Reflect.get(value, 'code') === 'string'
+    && typeof Reflect.get(value, 'httpStatus') === 'number';
+}
+
+function remoteError(value: unknown): ApiError {
+  if (isApiError(value)) return value;
+  return apiError(errorMessage(value), 'E_NIMBUS_REMOTE_RPC', 500);
+}
+
+function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}
+
+function hasJwtSecret(env: NimbusRemoteEnv): env is NimbusRemoteEnv & NimbusAuthEnv {
+  return typeof env.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
 }
 
 function normalizeBasePath(path: string): string {
@@ -450,15 +551,9 @@ function encodeWire(value: unknown): unknown {
   return value;
 }
 
-function decodeWire(value: unknown): any {
-  if (
-    value
-    && typeof value === 'object'
-    && (value as any).__nimbusWireType === 'bytes'
-    && typeof (value as any).base64 === 'string'
-  ) {
-    return base64ToBytes((value as any).base64);
-  }
+function decodeWire(value: unknown): unknown {
+  const bytes = WireBytesSchema.safeParse(value);
+  if (bytes.success) return base64ToBytes(bytes.data.base64);
   if (Array.isArray(value)) return value.map(decodeWire);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};

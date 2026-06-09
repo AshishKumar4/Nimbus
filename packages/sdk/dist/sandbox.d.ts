@@ -64,6 +64,10 @@ export interface NimbusExecResult {
     duration: number;
     timestamp: number;
 }
+export interface NimbusTerminalSize {
+    columns: number;
+    rows: number;
+}
 export interface NimbusDestroyOptions {
     reason?: string;
 }
@@ -88,6 +92,38 @@ export interface NimbusProcess {
     startTime: number;
     endTime: number | null;
     longRunning: boolean;
+    attachedTty: boolean;
+}
+export interface NimbusProcessLogChunk {
+    seq: number;
+    ts: number;
+    stream: 'stdout' | 'stderr';
+    data: string;
+    binary?: boolean;
+}
+export interface NimbusProcessExitInfo {
+    code: number;
+    at: number;
+    reason?: string;
+}
+export interface NimbusProcessLogsOptions {
+    cursor?: number;
+    lines?: number;
+    bytes?: number;
+}
+export interface NimbusProcessLogsResult {
+    pid: number;
+    chunks: NimbusProcessLogChunk[];
+    text: string;
+    cursor: number;
+    truncated: boolean;
+    exit: NimbusProcessExitInfo | null;
+}
+export interface NimbusProcessAttachOptions {
+    pollIntervalMs?: number;
+    lines?: number;
+    bytes?: number;
+    signal?: AbortSignal;
 }
 export interface NimbusPort {
     port: number;
@@ -105,12 +141,14 @@ export interface NimbusRuntimeSummary {
     name: string;
     version: string;
     root: string;
+    abi: string;
     bins: string[];
     sizeBytes: number;
     license: string;
 }
 export interface NimbusAvailableRuntime {
     name: string;
+    abi: string;
     defaultVersion: string;
     versions: Array<{
         version: string;
@@ -118,7 +156,78 @@ export interface NimbusAvailableRuntime {
         license: string;
     }>;
 }
-type NimbusSessionNamespace = DurableObjectNamespace<any>;
+interface NimbusSessionStub {
+    _rpcReady(options?: {
+        preinstall?: string[];
+    }): Promise<{
+        ok: true;
+        preinstalled: string[];
+    }>;
+    _rpcExec(command: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
+    _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<NimbusStartResult>;
+    _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
+    _rpcReadFile(path: string): Promise<string | null>;
+    _rpcReadFileBytes(path: string): Promise<Uint8Array | null>;
+    _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
+    _rpcStat(path: string): Promise<NimbusFileStat | null>;
+    _rpcReaddir(path: string): Promise<{
+        name: string;
+        type: string;
+    }[]>;
+    _rpcExists(path: string): Promise<boolean>;
+    _rpcMkdir(path: string): Promise<void>;
+    _rpcDeleteFile(path: string, options?: {
+        recursive?: boolean;
+    }): Promise<void>;
+    _rpcInstallRuntime(spec: string, options?: {
+        force?: boolean;
+    }): Promise<unknown>;
+    _rpcEnsureRuntimes(specs: string[], options?: {
+        force?: boolean;
+    }): Promise<unknown>;
+    _rpcListRuntimes(): Promise<{
+        installed: NimbusRuntimeSummary[];
+        available: NimbusAvailableRuntime[];
+    }>;
+    _rpcListProcesses(): Promise<NimbusProcess[]>;
+    _rpcKillProcess(pid: number): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcWriteProcessInput(pid: number, data: string): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcEndProcessInput(pid: number): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcResizeProcess(pid: number, size: NimbusTerminalSize): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcSignalProcess(pid: number, signal: string): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
+    _rpcListPorts(): Promise<NimbusPort[]>;
+    _rpcExposePort(port: number): Promise<{
+        port: number;
+        listening: boolean;
+        pid: number | null;
+        registeredAt: number | null;
+    }>;
+    _rpcUnexposePort(port: number): Promise<{
+        port: number;
+        ok: boolean;
+    }>;
+    _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
+}
+interface NimbusSessionNamespace {
+    idFromName(name: string): DurableObjectId;
+    get(id: DurableObjectId): NimbusSessionStub;
+}
 type NimbusTarget = {
     kind: 'binding';
     namespace: NimbusSessionNamespace;
@@ -206,10 +315,24 @@ export declare class NimbusSandbox {
             ok: boolean;
             pid: number;
         }>;
-        logs: (pid: number, options?: {
-            lines?: number;
-            bytes?: number;
-        }) => Promise<unknown>;
+        write: (pid: number, data: string) => Promise<{
+            ok: boolean;
+            pid: number;
+        }>;
+        endInput: (pid: number) => Promise<{
+            ok: boolean;
+            pid: number;
+        }>;
+        resize: (pid: number, size: NimbusTerminalSize) => Promise<{
+            ok: boolean;
+            pid: number;
+        }>;
+        signal: (pid: number, signal: string) => Promise<{
+            ok: boolean;
+            pid: number;
+        }>;
+        logs: (pid: number, options?: NimbusProcessLogsOptions) => Promise<NimbusProcessLogsResult>;
+        attach: (pid: number, options?: NimbusProcessAttachOptions) => NimbusProcessAttachment;
     };
     ports: {
         list: () => Promise<NimbusPort[]>;
@@ -248,7 +371,7 @@ export declare class NimbusSandbox {
                 execute: (input: unknown) => Promise<string | null>;
             };
             writeFile: {
-                execute: (input: any) => Promise<void>;
+                execute: (input: unknown) => Promise<void>;
             };
             listFiles: {
                 execute: (input?: unknown) => Promise<{
@@ -263,7 +386,7 @@ export declare class NimbusSandbox {
                 }[]>;
             };
             deleteFile: {
-                execute: (input: any) => Promise<void>;
+                execute: (input: unknown) => Promise<void>;
             };
             exists: {
                 execute: (input: unknown) => Promise<boolean>;
@@ -279,12 +402,48 @@ export declare class NimbusSandbox {
                     pid: number;
                 }>;
             };
+            writeProcessInput: {
+                execute: (input: {
+                    pid: number;
+                    data: string;
+                }) => Promise<{
+                    ok: boolean;
+                    pid: number;
+                }>;
+            };
+            endProcessInput: {
+                execute: (input: number | {
+                    pid: number;
+                }) => Promise<{
+                    ok: boolean;
+                    pid: number;
+                }>;
+            };
+            resizeProcess: {
+                execute: (input: {
+                    pid: number;
+                    columns: number;
+                    rows: number;
+                }) => Promise<{
+                    ok: boolean;
+                    pid: number;
+                }>;
+            };
+            signalProcess: {
+                execute: (input: {
+                    pid: number;
+                    signal: string;
+                }) => Promise<{
+                    ok: boolean;
+                    pid: number;
+                }>;
+            };
             logs: {
                 execute: (input: number | {
                     pid: number;
                     lines?: number;
                     bytes?: number;
-                }) => Promise<unknown>;
+                }) => Promise<NimbusProcessLogsResult>;
             };
             exposePort: {
                 execute: (input: number | {
@@ -323,6 +482,37 @@ export declare class NimbusSandbox {
     private execOptions;
     private assertRuntimeAllowed;
     private portUrl;
+    private rpc;
+}
+export declare class NimbusProcessAttachment implements AsyncIterable<NimbusProcessLogChunk> {
+    private readonly sandbox;
+    readonly pid: number;
+    private readonly options;
+    private cursor;
+    constructor(sandbox: NimbusSandbox, pid: number, options?: NimbusProcessAttachOptions);
+    write(data: string): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    endInput(): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    resize(size: NimbusTerminalSize): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    signal(signal: string): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    kill(): Promise<{
+        ok: boolean;
+        pid: number;
+    }>;
+    logs(options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
+    stream(options?: NimbusProcessAttachOptions): AsyncIterable<NimbusProcessLogChunk>;
+    [Symbol.asyncIterator](): AsyncIterator<NimbusProcessLogChunk>;
 }
 export {};
 //# sourceMappingURL=sandbox.d.ts.map

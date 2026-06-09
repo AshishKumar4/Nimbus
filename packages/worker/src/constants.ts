@@ -6,7 +6,7 @@
 export const NIMBUS_VERSION = '2.0.0';
 //
 // Node version reported by Nimbus's node-shim layer (process.version,
-// process.versions.node). Bumped from v20.0.0 → v22.11.0 (Node 22 LTS
+// process.versions.node). Bumped from v20.0.0 → v22.19.0 (Node 22 LTS
 // "Jod") because Node 20 fell out of support upstream and several
 // scaffolders (create-astro is the canonical example) refuse to run on
 // majors < 22 with the literal preflight:
@@ -31,11 +31,11 @@ export const NIMBUS_VERSION = '2.0.0';
 //   - Promise.withResolvers / Object.groupBy / Map.groupBy → V8 builtins,
 //                           already available in workerd's V8 runtime
 //
-// ABI numbers (v8, modules) are mostly cosmetic but mirrored to v22.11.0
+// ABI numbers (v8, modules) are mostly cosmetic but mirrored to Node 22
 // for fingerprint consistency. v8 12.4 ships with Node 22.x; modules
 // (NODE_MODULE_VERSION) is 127 for the v22 line.
-export const NODE_VERSION = 'v22.11.0';
-export const NODE_VERSIONS = { node: '22.11.0', v8: '12.4.254.21', modules: '127' };
+export const NODE_VERSION = 'v22.19.0';
+export const NODE_VERSIONS = { node: '22.19.0', v8: '12.4.254.21', modules: '127' };
 export const ESBUILD_VERSION = '0.24.2';
 
 // ── VFS Constants ───────────────────────────────────────────────────────
@@ -120,4 +120,5 @@ export const DEFAULT_HOSTNAME = 'nimbus';
 export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';
+export const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin';
 export const DEFAULT_MOUNT_POINTS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 'opt'];

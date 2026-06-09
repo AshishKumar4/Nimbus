@@ -3,7 +3,7 @@
  *
  * One DO can host multiple WS kinds simultaneously: the user's shell
  * terminal, cirrus-real HMR clients (one per browser tab on /preview),
- * and process-log streams (one per `logs -f`). Without a discriminator
+ * and process terminal streams. Without a discriminator
  * a close on the HMR socket would null the shell's terminal and the
  * user's tab would freeze (Audit F1). The wsKind() classifier reads
  * the attachment tag set at upgrade time to route each lifecycle
@@ -11,8 +11,8 @@
  *
  * Surfaces:
  *   - wsKind(ws)              — pure attachment-tag classifier.
- *   - wsMessage(self, ws, m)  — route by kind to terminal/HMR/process-logs.
- *   - wsClose(self, ws, ...) — Audit F1: HMR/process-logs close does
+ *   - wsMessage(self, ws, m)  — route by kind to terminal/HMR/process terminals.
+ *   - wsClose(self, ws, ...) — Audit F1: HMR/process terminal close does
  *     NOT null shell/terminal/kernel; only shell-kind close does.
  *   - wsError(self, ws, err) — same discriminator; W5 ring-persist +
  *     W9 flush-on-close + recordFailure on error.
@@ -34,10 +34,12 @@
  */
 import { type FsWatchSub } from './fs-watch.js';
 import type { ProcessLogStore } from '../runtime/process-logs.js';
+import type { ProcessInputStore } from '../runtime/process-input.js';
+import type { ProcessTable } from '../runtime/process-table.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { Kernel, Shell } from '@lifo-sh/core';
+import type { Kernel, Shell } from '../substrate/lifo/index.js';
 /**
  * Minimal host shape for WS lifecycle. Per plan §IX.1 b': fields here
  * drop `private` on the class. `ctx` NOT on the interface (D1).
@@ -56,6 +58,8 @@ export interface WsHost {
      *  that never open the file tree carry no watch state. */
     _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
     processLogs: ProcessLogStore;
+    processInput: ProcessInputStore;
+    processTable: ProcessTable;
     wranglerAliasBannerShown: boolean;
     _w9PersistWired: boolean;
     _w9FlushTimer: any;
@@ -80,10 +84,12 @@ export interface WsHost {
  * Any other (undefined/unknown) attachment falls back to 'shell' to
  * preserve pre-F1 behaviour for legacy accept sites.
  */
-export declare function wsKind(ws: WebSocket): {
+interface WsAttachment {
     kind: string;
     clientId?: string;
-};
+    pid?: number;
+}
+export declare function wsKind(ws: WebSocket): WsAttachment;
 export declare function wsMessage(self: WsHost, ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
 export declare function wsClose(self: WsHost, ws: WebSocket, _code?: number, _reason?: string, _wasClean?: boolean): Promise<void>;
 export declare function wsError(self: WsHost, ws: WebSocket, _error?: any): Promise<void>;
@@ -93,4 +99,5 @@ export declare function wsError(self: WsHost, ws: WebSocket, _error?: any): Prom
  * (test contexts). Takes ctx via `(self as any).ctx` cast — D1 escape.
  */
 export declare function safePersistRing(self: WsHost): void;
+export {};
 //# sourceMappingURL=ws.d.ts.map

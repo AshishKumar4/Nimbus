@@ -2,7 +2,7 @@
 // preview/new/lucide-barrel-cache-widens — large barrel module caches are
 // invalidated when user source imports additional named exports.
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, BASE, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'preview/new/lucide-barrel-cache-widens';
@@ -63,7 +63,7 @@ await t.waitFor((b) => /Nimbus Vite Dev Server|Preview:|Local:|started \(long-ru
 
 async function fetchModule() {
   const url = `${BASE}/s/${sid}/preview/@modules/lucide-react`;
-  const r = await fetch(url, { redirect: 'manual' });
+  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
   const code = await r.text();
   return { status: r.status, code };
 }

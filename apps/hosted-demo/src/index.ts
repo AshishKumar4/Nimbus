@@ -53,6 +53,7 @@ import {
   renderLaunchPage,
   sessionIdFromPath,
   touchDemoSession,
+  type DemoSession,
 } from './demo-sessions.js';
 
 // Re-export the DO class + every RPC class so wrangler discovers them
@@ -190,6 +191,9 @@ async function handleSessionRequest(
 
   const session = await loadOwnedDemoSession(env, sessionId, auth);
   if (!session) return renderForbiddenSession();
+  if (request.method === 'DELETE') {
+    return destroyOwnedDemoSession(request, env, auth, session);
+  }
   if (session.status !== 'active' || session.expiresAt <= Date.now()) {
     return renderExpiredSession(sessionId);
   }
@@ -197,6 +201,49 @@ async function handleSessionRequest(
   ctx.waitUntil(touchDemoSession(env, session));
   const authorized = await withInternalNimbusAuth(request, env, auth, sessionId);
   return nimbus.fetch(authorized, env, ctx);
+}
+
+async function destroyOwnedDemoSession(
+  request: Request,
+  env: any,
+  auth: DemoAuth,
+  session: DemoSession,
+): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname !== `/s/${session.sessionId}` && url.pathname !== `/s/${session.sessionId}/`) {
+    return new Response('Method not allowed', {
+      status: 405,
+      headers: { Allow: 'GET, DELETE', 'Cache-Control': 'no-store' },
+    });
+  }
+  if (session.status === 'destroyed') {
+    return Response.json({ ok: true, sessionId: session.sessionId, status: 'destroyed' }, {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
+  const box = Nimbus.fromEnv(env, sandboxConfig).sandbox(session.sessionId, {
+    tenant: 'demo',
+    subject: auth.userId,
+  });
+  try {
+    const result = await box.destroy({ reason: 'demo-user-delete' });
+    await markDemoSessionDestroyed(env, session.sessionId, 'demo-user-delete');
+    return Response.json({ ok: true, sessionId: session.sessionId, result }, {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    await markDemoSessionDestroyFailed(env, session.sessionId, message);
+    return Response.json({
+      ok: false,
+      sessionId: session.sessionId,
+      error: message,
+    }, {
+      status: 500,
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
 }
 
 async function handleSdkSmoke(request: Request, env: any): Promise<Response> {

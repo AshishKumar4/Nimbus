@@ -1,40 +1,25 @@
 /**
- * facets/manager.ts — Lifecycle for "user node script as a child DO".
+ * facets/manager.ts — Lifecycle for isolated user-runtime workers.
  *
  * `node script.js` from the shell prompt has to run somewhere isolated
  * — same memory bound as the supervisor (128 MiB) but separate so a
- * runaway script can't take the supervisor down. The script is also
- * stateful: `fs.readFileSync` writes inside the script need to flow
- * back to the VFS, and `http.createServer` registers a port the
- * preview iframe later proxies to. That makes a stateless Worker
- * Loader insufficient — we need a child DO with its own SQLite for
- * port registration and exit reporting.
+ * runaway script can't take the supervisor down. The script also needs
+ * supervisor-owned services: VFS writes, stdout/stderr, process exit,
+ * child-process brokering, and preview port routing.
  *
- * The pattern:
- *   1. LOADER.get(codeHash, makeConfig)            — dynamic worker w/ user script
- *   2. worker.getDurableObjectClass('NodeProcess') — class from that worker
- *   3. ctx.facets.get(`proc-${pid}`, {class})       — child DO Facet
- *   4. facet.run(argsJson)                         — RPC executes the script
- *   5. ctx.facets.delete(name)                     — cleanup, even on throw
+ * One-shot commands use a stateless dynamic Worker entrypoint:
+ *   1. LOADER.load(makeConfig)        — isolated dynamic worker
+ *   2. worker.getEntrypoint().fetch() — executes the script
+ *   3. SUPERVISOR RPC                 — streams output and VFS writes
  *
- * The codeHash includes `ctx.id.toString()` to scope the LOADER cache
- * per-supervisor-DO. Without that, two sessions executing identical
- * code would share an isolate, and the warm slot's baked-in
- * env.SUPERVISOR stub would point at whichever DO instantiated it
- * first — every other session's stdout would silently route to the
- * wrong terminal. (Same cross-session-slot-sharing fix b225db3
- * applied to install-time facets.)
- *
- * `_execViaLoader` is the local-dev fallback: when the runtime doesn't
- * support `ctx.facets.get`, fall back to `LOADER.load()` +
- * `getEntrypoint().fetch()` with a plain fetch-handler shape. The
- * supervisor's environment is the same; only the lifecycle primitive
- * differs.
+ * Long-running processes use a dynamic Worker entrypoint that stays
+ * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ProcessTable } from '../runtime/process-table.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -190,10 +175,9 @@ export declare class FacetManager {
     private processTable;
     private portRegistry;
     private vfs;
-    /** Track whether facets API is available (detected on first use). */
-    private _hasFacets;
-    private _facetLogOnce;
     private hooks;
+    private processRpcResources;
+    private timedOutProcessIds;
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
      * over the prefetch bundle. Created on first exec where vfs is set;
@@ -202,7 +186,7 @@ export declare class FacetManager {
      * to avoid double-init.
      */
     private esbuild;
-    constructor(ctx: DurableObjectState, env: any, processTable: ProcessTable, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
+    constructor(ctx: DurableObjectState, env: unknown, processTable: ProcessTable, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
@@ -210,13 +194,10 @@ export declare class FacetManager {
      * for the user-shell `node` runtime; sharing avoids paying init twice.
      */
     setEsbuildService(esbuild: EsbuildService): void;
-    /**
-     * Execute JS code in a facet (or fallback dynamic worker).
-     *
-     * Strategy:
-     *   1. Try LOADER.get() + ctx.facets.get() (production: warm reuse, own SQLite)
-     *   2. Fallback: LOADER.load() + getEntrypoint().fetch() (local dev)
-     */
+    private trackProcessRpcResources;
+    private releaseProcessRpcResources;
+    noteProcessReportedExit(pid: number, exitCode: number): void;
+    /** Execute one-shot JS code in an isolated dynamic Worker. */
     exec(code: string, opts: {
         argv?: string[];
         env?: Record<string, string>;
@@ -243,6 +224,7 @@ export declare class FacetManager {
         skipSpawn?: boolean;
         /** G4: when skipSpawn is true, the PID the caller allocated. */
         callerPid?: number;
+        bundleProfile?: FacetBundleProfile;
         /** Return stdout/stderr in the result while keeping supervisor RPC
          *  available for VFS and child_process operations. */
         captureOutput?: boolean;
@@ -258,7 +240,6 @@ export declare class FacetManager {
      * always maps to rpc_timeout regardless of message.
      */
     private _w5RecordTermination;
-    private _execViaFacets;
     private _execViaLoader;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
@@ -273,10 +254,10 @@ export declare class FacetManager {
      * Spawn a vite dev server facet.
      * Returns immediately with the facet stub for HTTP routing.
      */
-    spawnVite(root: string, basePath?: string): {
+    spawnVite(root: string, basePath?: string): Promise<{
         pid: number;
         facetStub: any;
-    };
+    }>;
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
@@ -289,6 +270,10 @@ export declare class FacetManager {
         dirname?: string;
         command?: string;
         port?: number;
+        attachedTty?: boolean;
+        skipSpawn?: boolean;
+        callerPid?: number;
+        bundleProfile?: FacetBundleProfile;
     }): Promise<{
         pid: number;
         facetStub: any;
@@ -305,10 +290,10 @@ export declare class FacetManager {
      */
     spawn(workerCode: string, command: string, cwd: string, opts?: {
         port?: number;
-    }): {
+    }): Promise<{
         pid: number;
         facetStub: any;
-    };
+    }>;
     /**
      * Spawn a long-running dynamic Worker and register its routeable port.
      *
@@ -317,12 +302,13 @@ export declare class FacetManager {
      * sockets, and future WASI socket servers should use
      * this path instead of each owning process-table and PortRegistry plumbing.
      */
-    spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): {
+    spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<{
         pid: number;
         facetStub: any;
-    };
+    }>;
     registerPort(pid: number, port: number, facetStub: any): void;
     attachReservedPorts(pid: number, facetStub: any): number[];
+    waitForRouteablePorts(pid: number, facetStub: any, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
     kill(pid: number): boolean;

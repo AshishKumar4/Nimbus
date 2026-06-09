@@ -33,7 +33,6 @@
  *     in-flight reportExit RPC a chance to land (and be no-op'd by the
  *     idempotent guard).
  */
-import type { ProcessTable } from '../runtime/process-table.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this
@@ -170,6 +169,17 @@ export interface LogStoreLike {
     markExit(pid: number, code: number): void;
     getExit(pid: number): number | undefined;
 }
+export interface ProcessTableLike {
+    spawn(command: string, argv: string[], cwd: string): {
+        pid: number;
+        facetName?: string;
+    };
+    exit(pid: number, code: number): void;
+    kill(pid: number): boolean;
+    get(pid: number): unknown;
+    reap(maxAge?: number): number;
+    setLongRunning?(pid: number): void;
+}
 /**
  * Constructor deps bundle. Keeping it as a single object simplifies
  * tests AND makes the production wiring in nimbus-session.ts read
@@ -177,13 +187,7 @@ export interface LogStoreLike {
  */
 export interface FacetProcessManagerDeps {
     facetMgr: FacetManagerLike;
-    processTable: ProcessTable | {
-        spawn: (cmd: string, argv: string[], cwd: string) => any;
-        exit: (pid: number, code: number) => void;
-        kill: (pid: number) => boolean;
-        get: (pid: number) => any;
-        reap: () => number;
-    };
+    processTable: ProcessTableLike;
     processLogs: LogStoreLike;
     vfs: {
         exists(p: string): boolean;
@@ -218,7 +222,6 @@ export interface FacetProcessManagerDeps {
 export declare const CHILD_PROCESS_MAX_DEPTH = 8;
 export declare class FacetProcessManager {
     private children;
-    private nextPid;
     private deps;
     constructor(deps: FacetProcessManagerDeps);
     /**
@@ -261,6 +264,7 @@ export declare class FacetProcessManager {
     private _shellPlanFor;
     private _dispatchShell;
     private _drainStdinForShell;
+    private _shellCommandLineForPlan;
     private _runShellLine;
     stdinWrite(childPid: number, data: string): {
         ok: boolean;

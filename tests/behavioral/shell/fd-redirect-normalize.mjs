@@ -1,17 +1,12 @@
 #!/usr/bin/env bun
-// shell/fd-redirect-normalize — regression probe for BUG-SWEEP-2.
+// shell/fd-redirect-normalize — regression probe for shell fd duplication.
 //
-// Pre-fix: lifo-sh's parser raised "Expected Word but got Amp ('&')"
-// on any line containing `2>&1`, `>&2`, `<&0`, or other fd-to-fd
-// redirects. Real-world impact: `cmd 2>&1 | tail` (extremely common
-// idiom) failed at parse time, killing the pipeline.
-//
-// Post-fix: FdRedirectNormalizer strips these operators from the
-// line before passing to lifo-sh. Stdout and stderr already share
-// the terminal sink in Nimbus so the rewrite is semantically a
-// no-op for the user.
+// The lifo parser/interpreter owns these operators structurally.
+// The probe intentionally includes an apostrophe in a comment before
+// `2>&1`, matching real installer scripts that broke brittle line
+// preprocessors.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/fd-redirect-normalize');
@@ -19,54 +14,93 @@ console.log(`shell/fd-redirect-normalize — ${process.env.BASE}`);
 
 const sid = await mintSession();
 const t = new Terminal(sid);
-await t.connect();
-await t.waitForPrompt(60_000);
+try {
+  await t.connect();
+  await t.waitForPrompt(60_000);
 
-// Probe 1: `cmd 2>&1` no longer triggers parse error
-t.reset();
-t.cmd('echo hello 2>&1');
-await sleep(3000);
-const out1 = stripAnsi(t.buf);
-a.check(
-  '`echo hello 2>&1` runs without parse error',
-  /hello/.test(out1) && !/Expected.*but got/.test(out1),
-  `tail: ${JSON.stringify(out1.slice(-200))}`,
-);
+  {
+    const { output } = await t.run('echo hello 2>&1', 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      '`echo hello 2>&1` runs without parse error',
+      /hello/.test(stripped) && !/Expected.*but got/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-200))}`,
+    );
+  }
 
-// Probe 2: piped form `cmd 2>&1 | cat` works
-t.reset();
-t.cmd('echo "world" 2>&1 | cat');
-await sleep(3000);
-const out2 = stripAnsi(t.buf);
-a.check(
-  '`echo X 2>&1 | cat` pipeline runs without parse error',
-  /world/.test(out2) && !/Expected.*but got/.test(out2),
-  `tail: ${JSON.stringify(out2.slice(-200))}`,
-);
+  {
+    const { output } = await t.run('echo "world" 2>&1 | cat', 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      '`echo X 2>&1 | cat` pipeline runs without parse error',
+      /world/.test(stripped) && !/Expected.*but got/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-200))}`,
+    );
+  }
 
-// Probe 3: `>&2` (stderr redirect form)
-t.reset();
-t.cmd('echo to-stderr >&2');
-await sleep(3000);
-const out3 = stripAnsi(t.buf);
-a.check(
-  '`echo X >&2` runs without parse error (no-op rewrite)',
-  /to-stderr/.test(out3) && !/Expected.*but got/.test(out3),
-  `tail: ${JSON.stringify(out3.slice(-200))}`,
-);
+  {
+    const { output } = await t.run('echo to-stderr >&2', 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      '`echo X >&2` writes through duplicated stderr',
+      /to-stderr/.test(stripped) && !/Expected.*but got/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-200))}`,
+    );
+  }
 
-// Probe 4: single-quoted literal `'2>&1'` is NOT rewritten — the user
-// explicitly typed that string as data, not as an operator.
-t.reset();
-t.cmd("echo '2>&1 literal'");
-await sleep(3000);
-const out4 = stripAnsi(t.buf);
-a.check(
-  "single-quoted '2>&1' literal is preserved (not rewritten)",
-  /2>&1 literal/.test(out4),
-  `tail: ${JSON.stringify(out4.slice(-200))}`,
-);
+  {
+    const { output } = await t.run('echo explicit-fd 1>&2', 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      '`echo X 1>&2` uses explicit stdout fd duplication',
+      /explicit-fd/.test(stripped) && !/Expected.*but got/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-200))}`,
+    );
+  }
 
-await t.close();
+  {
+    const { output } = await t.run('rm -f /tmp/fd-order.txt; echo ordered > /tmp/fd-order.txt 2>&1; cat /tmp/fd-order.txt', 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      'ordered file redirect followed by fd duplication works',
+      hasOutputLine(stripped, 'ordered') && !/Expected.*but got/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-500))}`,
+    );
+  }
+
+  {
+    const { output } = await t.run("echo '2>&1 literal'", 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      "single-quoted '2>&1' literal is preserved",
+      /2>&1 literal/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-200))}`,
+    );
+  }
+
+  {
+    const script = "# npm's comment\\ncommand -v node >/dev/null 2>&1 && echo COMMENT_FD_OK\\n";
+    const { output } = await t.run(`printf ${JSON.stringify(script)} | sh`, 20_000);
+    const stripped = stripAnsi(output);
+    a.check(
+      'stdin sh scripts parse fd redirects after apostrophe comments',
+      hasOutputLine(stripped, 'COMMENT_FD_OK') && !/Expected Word/.test(stripped),
+      `tail: ${JSON.stringify(stripped.slice(-800))}`,
+    );
+  }
+} finally {
+  try { await t.close(); } catch {}
+  const cleanup = await deleteSession(sid);
+  a.check('probe session deleted', cleanup.ok, `status=${cleanup.status} body=${JSON.stringify(cleanup.body.slice(0, 500))}`);
+}
+
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
+
+function hasOutputLine(output, expected) {
+  return output
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .includes(expected);
+}

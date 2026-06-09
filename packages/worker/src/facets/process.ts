@@ -34,7 +34,8 @@
  *     idempotent guard).
  */
 
-import type { ProcessTable } from '../runtime/process-table.js';
+import { resolveVfsPath } from '../vfs/path.js';
+import { parseShellInvocation, type ShellName } from '../shell/shell-invocation.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -65,7 +66,7 @@ interface ChildEntry {
   args: string[];
   cwd: string;
   env: Record<string, string>;
-  facetName: string;            // 'cp-proc-${pid}' — used by abort/delete
+  facetName: string;
   startedAt: number;
   endedAt: number | null;
 
@@ -182,6 +183,15 @@ export interface LogStoreLike {
   getExit(pid: number): number | undefined;
 }
 
+export interface ProcessTableLike {
+  spawn(command: string, argv: string[], cwd: string): { pid: number; facetName?: string };
+  exit(pid: number, code: number): void;
+  kill(pid: number): boolean;
+  get(pid: number): unknown;
+  reap(maxAge?: number): number;
+  setLongRunning?(pid: number): void;
+}
+
 /**
  * Constructor deps bundle. Keeping it as a single object simplifies
  * tests AND makes the production wiring in nimbus-session.ts read
@@ -189,7 +199,7 @@ export interface LogStoreLike {
  */
 export interface FacetProcessManagerDeps {
   facetMgr: FacetManagerLike;
-  processTable: ProcessTable | { spawn: (cmd: string, argv: string[], cwd: string) => any; exit: (pid: number, code: number) => void; kill: (pid: number) => boolean; get: (pid: number) => any; reap: () => number };
+  processTable: ProcessTableLike;
   processLogs: LogStoreLike;
   vfs: { exists(p: string): boolean; readFileString(p: string): string; isDirectory(p: string): boolean };
   commandRegistry: CommandRegistryLike;
@@ -238,10 +248,10 @@ const READ_OUTPUT_DEFAULT_WAIT_MS = 250;
  */
 const WAIT_MAX_MS = 30_000;
 
-interface ShellSpawnPlan {
-  commandLine: string;
-  args: string[];
-}
+type ShellSpawnPlan =
+  | { kind: 'command'; commandLine: string; args: string[] }
+  | { kind: 'script'; path: string; args: string[] }
+  | { kind: 'stdin'; args: string[] };
 
 function basenameOfCommand(command: string): string {
   const text = String(command || '').trim();
@@ -266,31 +276,20 @@ function normalizeVirtualCommand(command: string): string {
   return text;
 }
 
-function parseShellCommandArgs(args: string[]): ShellSpawnPlan | null {
-  const argv = Array.isArray(args) ? args.map(String) : [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '--') continue;
-    if (arg === '-c') {
-      const commandLine = argv[i + 1];
-      return typeof commandLine === 'string'
-        ? { commandLine, args: argv.slice(i + 2) }
-        : null;
-    }
-    if (arg.startsWith('-') && arg.length > 2) {
-      for (let j = 1; j < arg.length; j++) {
-        if (arg[j] === 'c') {
-          const commandLine = argv[i + 1];
-          return typeof commandLine === 'string'
-            ? { commandLine, args: argv.slice(i + 2) }
-            : null;
-        }
-      }
-      continue;
-    }
-    if (!arg.startsWith('-')) return null;
+function shellNameForCommand(command: string): ShellName {
+  return basenameOfCommand(command) === 'bash' ? 'bash' : 'sh';
+}
+
+function parseShellCommandArgs(command: string, args: string[]): ShellSpawnPlan | null {
+  const parsed = parseShellInvocation(shellNameForCommand(command), args);
+  if (!parsed.ok) return null;
+  if (parsed.invocation.kind === 'command') {
+    return { kind: 'command', commandLine: parsed.invocation.body, args: parsed.invocation.args };
   }
-  return null;
+  if (parsed.invocation.kind === 'script') {
+    return { kind: 'script', path: parsed.invocation.path, args: parsed.invocation.args };
+  }
+  return { kind: 'stdin', args: parsed.invocation.args };
 }
 
 function quoteShellToken(value: string): string {
@@ -320,7 +319,6 @@ function shellLineFromSpawn(command: string, args: string[]): string {
 
 export class FacetProcessManager {
   private children = new Map<number, ChildEntry>();
-  private nextPid = 10_000; // child PIDs start above ProcessTable's range
   private deps: FacetProcessManagerDeps;
 
   constructor(deps: FacetProcessManagerDeps) {
@@ -349,8 +347,10 @@ export class FacetProcessManager {
       NIMBUS_CP_DEPTH: String(depthIn + 1),
     };
 
-    const pid = this.nextPid++;
-    const facetName = `cp-proc-${pid}`;
+    const commandLine = `${req.command} ${req.args.join(' ')}`.trim();
+    const processEntry = this.deps.processTable.spawn(commandLine, req.args, req.cwd);
+    const pid = processEntry.pid;
+    const facetName = processEntry.facetName || `cp-proc-${pid}`;
     const child: ChildEntry = {
       pid,
       command: req.command,
@@ -375,15 +375,10 @@ export class FacetProcessManager {
     };
     this.children.set(pid, child);
 
-    // ProcessTable side: register so `ps`/`logs` see the child.
-    try {
-      this.deps.processTable.spawn(`${req.command} ${req.args.join(' ')}`.trim(), req.args, req.cwd);
-    } catch { /* ignore */ }
-
     const shellPlan = this._shellPlanFor(req);
     const normalizedCommand = shellPlan ? 'sh' : normalizeVirtualCommand(req.command);
     const dispatchReq = shellPlan
-      ? { ...req, command: 'sh', args: ['-c', shellPlan.commandLine, ...shellPlan.args] }
+      ? req
       : { ...req, command: normalizedCommand };
 
     // Resolve command kind. Resolution failure → exit 127 (command not
@@ -540,7 +535,16 @@ export class FacetProcessManager {
         if (!plan) {
           return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
         }
-        const code = await this._runShellLine(plan.commandLine, childEnv, String(req.cwd || '/home/user'), '', hooks);
+        const stdin = typeof (req as any).stdin === 'string' ? (req as any).stdin : '';
+        const commandLine = this._shellCommandLineForPlan(
+          plan,
+          String(req.cwd || '/home/user'),
+          stdin,
+          hooks,
+          shellNameForCommand(req.command),
+        );
+        if (commandLine === null) return { exitCode: 127, stdout: stdoutBuf, stderr: stderrBuf };
+        const code = await this._runShellLine(commandLine, childEnv, String(req.cwd || '/home/user'), stdin, hooks);
         return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
       } catch (e: any) {
         stderrBuf += `shell error: ${e?.message || String(e)}\n`;
@@ -619,11 +623,11 @@ export class FacetProcessManager {
   private _shellPlanFor(req: SpawnReq): ShellSpawnPlan | null {
     const args = Array.isArray(req.args) ? req.args.map(String) : [];
     if (req.shell) {
-      if (isShellCommand(req.command)) return parseShellCommandArgs(args);
-      return { commandLine: shellLineFromSpawn(String(req.command), args), args: [] };
+      if (isShellCommand(req.command)) return parseShellCommandArgs(req.command, args);
+      return { kind: 'command', commandLine: shellLineFromSpawn(String(req.command), args), args: [] };
     }
     if (!isShellCommand(req.command)) return null;
-    return parseShellCommandArgs(args);
+    return parseShellCommandArgs(req.command, args);
   }
 
   private async _dispatchShell(child: ChildEntry, req: SpawnReq, hooks: OutputHooks): Promise<void> {
@@ -635,7 +639,18 @@ export class FacetProcessManager {
     }
     try {
       const stdin = await this._drainStdinForShell(child);
-      const code = await this._runShellLine(plan.commandLine, child.env, req.cwd, stdin, hooks);
+      const commandLine = this._shellCommandLineForPlan(
+        plan,
+        req.cwd,
+        stdin,
+        hooks,
+        shellNameForCommand(req.command),
+      );
+      if (commandLine === null) {
+        this._stampExit(child, 127, null);
+        return;
+      }
+      const code = await this._runShellLine(commandLine, child.env, req.cwd, stdin, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
       this._appendOutput(child, 2, `shell error: ${e?.message || String(e)}\n`);
@@ -651,6 +666,29 @@ export class FacetProcessManager {
       await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
     }
     return child.stdinChunks.join('');
+  }
+
+  private _shellCommandLineForPlan(
+    plan: ShellSpawnPlan,
+    cwd: string,
+    stdin: string,
+    hooks: OutputHooks,
+    shellName: ShellName,
+  ): string | null {
+    if (plan.kind === 'command') return plan.commandLine;
+    if (plan.kind === 'stdin') return stdin;
+
+    const scriptPath = resolveVfsPath(plan.path, cwd || '/home/user');
+    try {
+      if (!this.deps.vfs.exists(scriptPath) || this.deps.vfs.isDirectory(scriptPath)) {
+        hooks.onStderr(`${shellName}: ${plan.path}: No such file or directory\n`);
+        return null;
+      }
+      return this.deps.vfs.readFileString(scriptPath);
+    } catch (e: any) {
+      hooks.onStderr(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`);
+      return null;
+    }
   }
 
   private async _runShellLine(

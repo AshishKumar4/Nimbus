@@ -33,12 +33,11 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(spec, env) {
         };
     }
     try {
-        const r = await env.SUPERVISOR.cpDispatchInline(spec.req, spec.kind);
-        return {
+        return await __nimbusUseRpcResult(env.SUPERVISOR.cpDispatchInline(spec.req, spec.kind), (r) => ({
             exitCode: typeof r.exitCode === 'number' ? r.exitCode : 1,
             stdout: typeof r.stdout === 'string' ? r.stdout : '',
             stderr: typeof r.stderr === 'string' ? r.stderr : '',
-        };
+        }));
     }
     catch (e) {
         return {

@@ -41,6 +41,7 @@
 //   3. Facet-side: ESM source strings for the ws shim + chokidar shim.
 // All are emitted by the generators below.
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
 // `false` (default), the hot-path console.log calls in `HmrBridge`
@@ -239,9 +240,14 @@ export class CirrusHmrRPC extends WorkerEntrypoint {
         // Call the DO's own RPC method, which runs in the DO's context
         // and can legally call ws.send() on hibernatable sockets.
         try {
-            await stub._rpcHmrRelay(clientId, msg);
+            await useRpcResource(stub._rpcHmrRelay(clientId, msg), () => undefined);
         }
-        catch { /* socket gone */ }
+        catch {
+            /* socket gone */
+        }
+        finally {
+            disposeRpcResource(stub);
+        }
     }
     async hmrNextEvent(timeoutMs = 25_000) {
         // Long-poll can stay on the WorkerEntrypoint side — nextEvents

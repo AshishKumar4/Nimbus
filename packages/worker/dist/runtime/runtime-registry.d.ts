@@ -39,6 +39,7 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from './esbuild-service.js';
+import { type FacetBundleProfile } from './bundle-profile.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -66,6 +67,9 @@ export interface RuntimeRunOpts {
     /** Capture stdout/stderr in the result instead of streaming to the
      *  terminal supervisor. Used by child_process pipe semantics. */
     captureOutput?: boolean;
+    forceLongRunning?: boolean;
+    attachedTty?: boolean;
+    bundleProfile?: FacetBundleProfile;
 }
 export interface RuntimeSpec {
     /** Shell-command name: 'node' / 'bun' / 'wasm-runner' / 'python'. */
@@ -113,9 +117,8 @@ export interface RuntimeSpec {
     supportsBinSpawn?: boolean;
 }
 /**
- * Minimal registry shape we depend on. Avoids importing the full
- * @lifo-sh/core type tree (the shell registry's runtime shape is a
- * few methods on a Map-like class).
+ * Minimal registry shape we depend on. Avoids importing the full vendored
+ * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
     resolve(name: string): Promise<any> | any;

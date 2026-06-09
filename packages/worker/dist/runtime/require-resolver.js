@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, DEFAULT_CJS_CONDITIONS, } from '../_shared/exports-resolver.js';
+import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 // Match literal-string require/require.resolve with single, double, or
@@ -182,7 +182,10 @@ function resolvePkgSubpathEx(vfs, pkgDir, subpath) {
         const r = resolveFile(vfs, pkgDir + '/index');
         return r ? { resolved: r } : null;
     }
-    const entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
+    let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
+    if (entry == null && pkg.exports != null) {
+        entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
+    }
     if (entry != null) {
         const resolved = resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''));
         if (resolved)

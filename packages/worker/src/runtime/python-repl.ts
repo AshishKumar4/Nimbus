@@ -45,10 +45,10 @@ export interface PythonReplDeps {
   installRoot: string;
   manifest: RuntimeManifest;
   /**
-   * REPL-R7-1 (2026-05-12): optional lifo-sh Shell reference.
+   * REPL-R7-1 (2026-05-12): optional Nimbus shell reference.
    *
    * When a user pastes / sends a multi-line WS frame like
-   * `python\nexit(7)`, lifo-sh's input handler splits on \r\n and
+   * `python\nexit(7)`, the shell input handler splits on \r\n and
    * pushes everything after the first line into shell.pasteQueue.
    * Those lines are processed ONLY when the shell becomes idle —
    * but our REPL is running and the shell is blocked awaiting

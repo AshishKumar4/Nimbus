@@ -1,8 +1,8 @@
 {
-  "id": "pyodide-0.29.4-workerd-adapter-v1",
+  "id": "pyodide-0.29.4-workerd-adapter-v2",
   "pyodideVersion": "0.29.4",
   "artifactPath": "share/pyodide/pyodide.asm.js",
-  "sentinel": "/* Nimbus Pyodide workerd adapter: pyodide-0.29.4-workerd-adapter-v1 */",
+  "sentinel": "/* Nimbus Pyodide workerd adapter: pyodide-0.29.4-workerd-adapter-v2 */",
   "patches": [
     {
       "name": "workerd-runtime-environment-fallback",
@@ -13,6 +13,11 @@
       "name": "workerd-main-thread-loader",
       "find": "if(d.IN_BROWSER_MAIN_THREAD)",
       "replace": "if(true||d.IN_BROWSER_MAIN_THREAD)"
+    },
+    {
+      "name": "startup-module-dynamic-linker",
+      "find": "var loadWebAssemblyModule=(binary,flags,libName,localScope,handle)=>{var metadata=getDylinkMetadata(binary);",
+      "replace": "var loadWebAssemblyModule=(binary,flags,libName,localScope,handle)=>{if(globalThis.__nimbusResolvePyodideSideModule){binary=globalThis.__nimbusResolvePyodideSideModule(binary,libName)}var metadata=getDylinkMetadata(binary);"
     }
   ]
 }

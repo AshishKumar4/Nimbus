@@ -52,6 +52,7 @@ import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import { type VfsLike } from './vfs-snapshot.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
+export declare function formatWasmRunnerWasiInfo(): string;
 /**
  * Minimal processTable shape — the parts wasm-runner needs to
  * register a PID + mark exit so `ps` and `logs <pid>` see the

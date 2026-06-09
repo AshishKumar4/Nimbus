@@ -1,6 +1,6 @@
 # Nimbus
 
-A free and open-source Linux-like development environment that runs entirely on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → wasm32-wasi), and 60+ Unix commands. No Docker. No containers. No cold-start wait.
+A free and open-source Linux-like development environment that runs entirely on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands. No Docker. No containers. No image pull.
 
 🌐 **Try it now:** https://nimbus.ashishkumarsingh.com
 
@@ -20,8 +20,8 @@ Nimbus to your own Cloudflare account with `npx create-nimbus-app`.
 
 Cloud dev environments today are either heavy VMs (slow to start, expensive to idle) or browser sandboxes that can't run real toolchains. Nimbus is different:
 
-- **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on — not a JS interpreter stub, but also not the upstream Node/Bun binaries: it's the workerd-compatibility surface). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to wasm32-wasi in-session).
-- **Sub-500ms cold start.** Each session is a Cloudflare Durable Object backed by SQLite. No VM boot. No image pull.
+- **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on — not a JS interpreter stub, but also not the upstream Node/Bun binaries: it's the workerd-compatibility surface). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
+- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. No VM boot. No image pull.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
 - **The URL is the session.** Bookmark it, share it, hand it to a teammate — they join the same filesystem.
 - **10 GB of persistent storage per session**, SQLite-backed, durable across reconnects and DO eviction.
@@ -288,7 +288,7 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | `node`, `bun` via Cloudflare workerd `nodejs_compat` (V8 + Node-API shim, not the upstream binaries) | ✅ |
 | `python` / `python3` — Pyodide-based CPython 3.13 (script + `-c` + `-m` + stdlib) | ✅ |
 | `ruby` / `ruby3` — ruby.wasm-based Ruby 3.3 (script + `-e` + `-r` + stdlib) | ✅ |
-| `clang` — LLVM 8 → wasm32-wasi, modern wasi-libc sysroot default, multi-TU + user headers + `fopen` | ✅ |
+| `clang` — LLVM 8 → `wasm32-wasi-nimbus`, modern wasi-libc sysroot default, multi-TU + user headers + `fopen` | ✅ |
 | Interactive REPLs — `python`, `ruby`, `node`, `bun` (see [REPL](#repl) for state semantics) | ✅ |
 | `npm install` against the live registry, with cross-session L2 cache | ✅ |
 | npm alias dependencies such as `alias: "npm:<pkg>@<version>"` | ✅ |
@@ -297,6 +297,9 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
 | Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools | ✅ |
 | JS agent CLI primitives — env/home, npm/npx, `child_process.spawn`/`exec`/`execFile`, piped stdio, streams, logs | ✅ |
+| Foreground attached npm-bin TTY tabs — stdin, resize, ANSI output, clean exit; Pi official installer and npm path probed | Alpha |
+| Python package workflows — `pip`, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, `python -m flask run`, `python -m http.server` preview | Alpha |
+| Ruby package workflows — `gem`, `bundle`, pure gems, Rack/WEBrick preview | Alpha |
 | Session Agent — editor-workspace chat with Cloudflare OAuth / Workers AI and sandbox tools | ✅ |
 | `npx <pkg>` — first-class shebang + auto-install fallback | ✅ |
 | `node_modules/.bin/*` resolves and executes | ✅ |
@@ -311,7 +314,8 @@ Nimbus is under active development. Current framework support is:
 
 - **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers, Workers with Static Assets, npm + git workflows, Python and Ruby scripts, clang C compilation (single-file and multi-file).
 - **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use the Vite path. Nuxt has Vite/Nitro caveats.
-- **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, and raw TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
+- **Unfinished OS work:** broader Pyodide/Nimbus extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, opencode/Proteus live probes, full POSIX PTY parity, and live filesystem bridges for every long-running runtime.
+- **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, native Linux Python wheels, native Ruby extensions without Nimbus-compatible artifacts, and raw public TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
 
 ## REPL
 
@@ -330,7 +334,7 @@ Press Ctrl-D or type `exit` / `.exit` to leave. Probes: `tests/behavioral/repl/`
 
 ## C compilation
 
-`clang` compiles C to `wasm32-wasi` in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate; the user VFS is mounted into a virtual `memfs` so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
+`clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate; the user VFS is mounted into a virtual `memfs` so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
 
 What's wired today (v12 sysroot, currently deployed):
 

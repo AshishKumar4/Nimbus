@@ -34,7 +34,7 @@
 
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
+import { mintSession, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE } from './_driver.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
 
@@ -77,6 +77,29 @@ export async function launchBrowser(opts = {}) {
   });
 }
 
+export async function applyProbeCookies(page, base = BASE) {
+  if (!AUTH_COOKIE) return;
+  const url = new URL(base);
+  const cookies = AUTH_COOKIE
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const eq = entry.indexOf('=');
+      if (eq < 1) return null;
+      return {
+        name: entry.slice(0, eq),
+        value: entry.slice(eq + 1),
+        domain: url.hostname,
+        path: '/',
+        secure: url.protocol === 'https:',
+        httpOnly: false,
+      };
+    })
+    .filter(Boolean);
+  if (cookies.length > 0) await page.setCookie(...cookies);
+}
+
 /**
  * Open a `BehavioralPage` for a given session. The page hooks
  * `page.on('console')` and `page.on('pageerror')` so probes can assert
@@ -85,6 +108,7 @@ export async function launchBrowser(opts = {}) {
  */
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
+  await applyProbeCookies(page);
   const consoleMessages = [];
   const pageErrors = [];
 

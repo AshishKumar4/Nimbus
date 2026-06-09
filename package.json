@@ -34,7 +34,7 @@
     "deploy:production": "bun run --cwd apps/hosted-demo deploy:production",
     "typecheck": "./node_modules/.bin/tsc --noEmit",
     "test:behavioral": "bun tests/behavioral/run-all.mjs",
-    "postinstall": "node packages/worker/scripts/patch-lifo-ui.mjs && node packages/worker/scripts/bundle-git.mjs && node packages/worker/scripts/bundle-facet-workers.mjs && node packages/worker/scripts/bundle-esbuild-wasm.mjs && node packages/worker/scripts/bundle-tailwind-play.mjs"
+    "postinstall": "node packages/worker/scripts/patch-install-deps.mjs && node packages/worker/scripts/bundle-git.mjs && node packages/worker/scripts/bundle-facet-workers.mjs && node packages/worker/scripts/bundle-esbuild-wasm.mjs && node packages/worker/scripts/bundle-tailwind-play.mjs"
   },
   "dependencies": {},
   "devDependencies": {
