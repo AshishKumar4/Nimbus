@@ -53,6 +53,9 @@ jobs:
 
       - name: Run behavioral suite (strict, no retry)
         id: run
+        # Explicit `shell: bash` runs with `-o pipefail`, so the
+        # runner's exit code survives the `| tee` pipeline.
+        shell: bash
         run: bun tests/behavioral/run-all.mjs --no-retry | tee behavioral.log
         # `| tee` preserves CI live-log AND saves a file we upload on
         # both PASS and FAIL paths via `if: always()` below.
@@ -84,6 +87,7 @@ jobs:
 
       - name: Run behavioral suite (retry-on-banner enabled)
         id: run
+        shell: bash
         run: bun tests/behavioral/run-all.mjs | tee behavioral.log
 
       - name: Upload run log
