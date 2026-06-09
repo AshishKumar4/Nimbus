@@ -4,7 +4,7 @@
 
 import { readFileSync } from 'node:fs';
 import { BASE, makeAsserter, mintSession } from '../../_driver.mjs';
-import { applyProbeCookies, launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -26,6 +26,7 @@ let page = null;
 try {
   page = await browser.newPage();
   await applyProbeCookies(page);
+  await exchangeAttachCookie(page, sid);
   const runtimeErrors = [];
   page.on('pageerror', (err) => runtimeErrors.push(err.message || String(err)));
   page.on('console', (msg) => {

@@ -16,8 +16,11 @@ if (!secret) {
   process.exit(2);
 }
 
+const ttlMs = process.env.NIMBUS_PROBE_TOKEN_TTL_MS
+  ? Number(process.env.NIMBUS_PROBE_TOKEN_TTL_MS)
+  : undefined;
 const token = await issueNimbusToken({ JWT_SECRET: secret }, {
   tn: 'probe',
   scopes: ['session:create', 'session:attach', 'session:destroy', 'sandbox:use'],
-});
+}, ttlMs ? { ttlMs } : undefined);
 process.stdout.write(token);

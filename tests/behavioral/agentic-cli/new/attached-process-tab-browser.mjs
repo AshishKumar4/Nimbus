@@ -3,7 +3,7 @@
 // tabs open an xterm, focus it, and preserve TTY output.
 
 import { deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
-import { applyProbeCookies, launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -15,6 +15,7 @@ const sid = await mintSession();
 const browser = await launchBrowser({ timeout: 60_000 });
 const page = await browser.newPage();
 await applyProbeCookies(page);
+await exchangeAttachCookie(page, sid);
 const runtimeErrors = [];
 
 async function sendShellInput(data) {
