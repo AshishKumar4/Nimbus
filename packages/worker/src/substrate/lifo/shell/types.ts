@@ -133,8 +133,15 @@ export interface SubshellNode {
   redirections: RedirectionNode[];
 }
 
+export interface DoubleBracketNode {
+  type: 'double_bracket';
+  words: WordPart[][];
+  redirections: RedirectionNode[];
+}
+
 export type CompoundCommandNode =
   | SimpleCommandNode
+  | DoubleBracketNode
   | IfNode
   | ForNode
   | WhileNode

@@ -11,6 +11,15 @@ export function parse(tokens) {
     const parser = new Parser(tokens);
     return parser.parseScript();
 }
+function isUnquotedLiteralWord(token, value) {
+    if (token.kind !== TokenKind.Word || token.value !== value)
+        return false;
+    const parts = token.parts ?? [{ text: token.value, quoted: 'none' }];
+    return parts.length === 1
+        && parts[0]?.text === value
+        && parts[0]?.quoted === 'none'
+        && parts[0]?.commandSubstitution === undefined;
+}
 const KEYWORDS = new Set([
     'if', 'then', 'else', 'elif', 'fi',
     'for', 'in', 'do', 'done',
@@ -128,6 +137,9 @@ class Parser {
         const token = this.peek();
         // Check for compound command keywords
         if (token.kind === TokenKind.Word) {
+            if (isUnquotedLiteralWord(token, '[[')) {
+                return this.parseDoubleBracketCommand();
+            }
             switch (token.value) {
                 case 'if': return this.parseIf();
                 case 'for': return this.parseFor();
@@ -152,6 +164,28 @@ class Parser {
             return this.parseSubshell();
         }
         return this.parseSimpleCommand();
+    }
+    parseDoubleBracketCommand() {
+        this.advance();
+        const words = [];
+        while (!this.isAtEnd()) {
+            const token = this.advance();
+            if (isUnquotedLiteralWord(token, ']]')) {
+                return {
+                    type: 'double_bracket',
+                    words,
+                    redirections: this.parseTrailingRedirections(),
+                };
+            }
+            words.push(this.doubleBracketTokenParts(token));
+        }
+        throw new ParseError('missing ]]', this.peek().pos);
+    }
+    doubleBracketTokenParts(token) {
+        if (token.kind === TokenKind.Word) {
+            return token.parts ?? [{ text: token.value, quoted: 'none' }];
+        }
+        return [{ text: token.value, quoted: 'none' }];
     }
     parseCompoundList(terminators) {
         const lists = [];

@@ -122,6 +122,11 @@ export interface SubshellNode {
     body: ListNode[];
     redirections: RedirectionNode[];
 }
-export type CompoundCommandNode = SimpleCommandNode | IfNode | ForNode | WhileNode | UntilNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
+export interface DoubleBracketNode {
+    type: 'double_bracket';
+    words: WordPart[][];
+    redirections: RedirectionNode[];
+}
+export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | IfNode | ForNode | WhileNode | UntilNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
 export type ASTNode = ScriptNode | ListNode | PipelineNode | CompoundCommandNode;
 //# sourceMappingURL=types.d.ts.map

@@ -20,6 +20,10 @@ export declare class ErrexitSignal {
     exitCode: number;
     constructor(exitCode: number);
 }
+export declare class ExitSignal {
+    exitCode: number;
+    constructor(exitCode: number);
+}
 export interface ShellOptions {
     errexit: boolean;
     nounset: boolean;
@@ -116,6 +120,7 @@ export declare class Interpreter {
     private executePipelineCommands;
     private executeCommand;
     private executeIf;
+    private executeDoubleBracket;
     private executeFor;
     private executeWhile;
     private executeUntil;

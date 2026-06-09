@@ -1,6 +1,7 @@
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord } from './expander.js';
+import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { PipeChannel } from './pipe.js';
 import { exitCodeForAbortSignal } from './signals.js';
 import { resolve } from '../utils/path.js';
@@ -25,6 +26,12 @@ export class ReturnSignal {
     }
 }
 export class ErrexitSignal {
+    exitCode;
+    constructor(exitCode) {
+        this.exitCode = exitCode;
+    }
+}
+export class ExitSignal {
     exitCode;
     constructor(exitCode) {
         this.exitCode = exitCode;
@@ -58,6 +65,9 @@ export class Interpreter {
         }
         catch (error) {
             if (error instanceof ErrexitSignal) {
+                exitCode = error.exitCode;
+            }
+            else if (error instanceof ExitSignal) {
                 exitCode = error.exitCode;
             }
             else {
@@ -225,18 +235,27 @@ export class Interpreter {
                     registerProcess: io.registerProcess,
                     positionals: this.forkPositionals(io),
                 });
-                const cmdPromise = this.executeCommand(cmd, cmdIo)
-                    .then((code) => {
-                    if (i < commands.length - 1) {
-                        pipes[i].close();
+                const cmdPromise = (async () => {
+                    try {
+                        return await this.executeCommand(cmd, cmdIo);
                     }
-                    if (isLast) {
-                        pipelineAbortController.abort();
-                        for (const pipe of pipes)
-                            pipe.close();
+                    catch (e) {
+                        if (e instanceof ExitSignal) {
+                            return e.exitCode;
+                        }
+                        throw e;
                     }
-                    return code;
-                });
+                    finally {
+                        if (i < commands.length - 1) {
+                            pipes[i].close();
+                        }
+                        if (isLast) {
+                            pipelineAbortController.abort();
+                            for (const pipe of pipes)
+                                pipe.close();
+                        }
+                    }
+                })();
                 promises.push(cmdPromise);
             }
             const results = await Promise.all(promises);
@@ -259,6 +278,8 @@ export class Interpreter {
         switch (cmd.type) {
             case 'simple_command':
                 return this.executeSimpleCommand(cmd, io);
+            case 'double_bracket':
+                return this.executeDoubleBracket(cmd, io);
             case 'if':
                 return this.executeIf(cmd, io);
             case 'for':
@@ -291,6 +312,36 @@ export class Interpreter {
             if (node.elseBody) {
                 exitCode = await this.executeCompoundList(node.elseBody, redirIo);
             }
+            this.lastExitCode = exitCode;
+            return exitCode;
+        });
+    }
+    async executeDoubleBracket(node, io) {
+        return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+            const stdout = redirIo.stdout ?? this.config.defaultStdout ?? {
+                write: (text) => this.config.writeToTerminal(text),
+            };
+            const stderr = redirIo.stderr ?? this.config.defaultStderr ?? {
+                write: (text) => this.config.writeToTerminal(text),
+            };
+            const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
+            const builtinIo = this.createIoFromFds(redirIo, fds);
+            const exitCode = await evaluateDoubleBracketWords(node.words, this.createExpandContext(redirIo), this.config.vfs, stderr, {
+                stdin: builtinIo.stdin,
+                stdout,
+                stderr,
+                terminalStdin: redirIo.terminalStdin,
+                terminalFds: {
+                    stdin: fds.terminalInputFds.has(0),
+                    stdout: fds.terminalOutputFds.has(1),
+                    stderr: fds.terminalOutputFds.has(2),
+                },
+                scriptMode: redirIo.scriptMode,
+                isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                getPositionals: () => this.readPositionals(builtinIo),
+                setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
+                executeInline: (input, options) => this.executeInline(input, builtinIo, options),
+            });
             this.lastExitCode = exitCode;
             return exitCode;
         });
@@ -433,6 +484,14 @@ export class Interpreter {
         subshellIo.positionals = this.forkPositionals(io);
         try {
             exitCode = await this.executeWithRedirections(node.redirections, subshellIo, (redirIo) => this.executeCompoundList(node.body, redirIo));
+        }
+        catch (e) {
+            if (e instanceof ExitSignal) {
+                exitCode = e.exitCode;
+            }
+            else {
+                throw e;
+            }
         }
         finally {
             this.config.setCwd(savedCwd);

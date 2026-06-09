@@ -6,7 +6,7 @@ import { parseShellInvocation } from '../../packages/worker/src/shell/shell-invo
 {
   const parsed = parseShellInvocation('sh', ['-c', 'echo ok', 'arg1']);
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.invocation, { kind: 'command', body: 'echo ok', args: ['arg1'] });
+  assert.deepEqual(parsed.invocation, { kind: 'command', body: 'echo ok', args: ['arg1'], options: {} });
 }
 
 {
@@ -16,31 +16,42 @@ import { parseShellInvocation } from '../../packages/worker/src/shell/shell-invo
     kind: 'command',
     body: 'echo ok',
     args: ['runner', 'alpha', 'beta'],
+    options: {},
   });
 }
 
 {
   const parsed = parseShellInvocation('bash', ['-lc', 'echo ok']);
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.invocation, { kind: 'command', body: 'echo ok', args: [] });
+  assert.deepEqual(parsed.invocation, { kind: 'command', body: 'echo ok', args: [], options: {} });
 }
 
 {
   const parsed = parseShellInvocation('bash', ['-euo', 'pipefail', '-c', 'echo strict']);
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.invocation, { kind: 'command', body: 'echo strict', args: [] });
+  assert.deepEqual(parsed.invocation, {
+    kind: 'command',
+    body: 'echo strict',
+    args: [],
+    options: { errexit: true, nounset: true, pipefail: true },
+  });
 }
 
 {
   const parsed = parseShellInvocation('sh', ['-o', 'pipefail', './install.sh', '--flag']);
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.invocation, { kind: 'script', path: './install.sh', args: ['--flag'] });
+  assert.deepEqual(parsed.invocation, {
+    kind: 'script',
+    path: './install.sh',
+    args: ['--flag'],
+    options: { pipefail: true },
+  });
 }
 
 {
   const parsed = parseShellInvocation('sh', ['-s']);
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.invocation, { kind: 'stdin', args: [] });
+  assert.deepEqual(parsed.invocation, { kind: 'stdin', args: [], options: {} });
 }
 
 {
@@ -49,6 +60,7 @@ import { parseShellInvocation } from '../../packages/worker/src/shell/shell-invo
   assert.deepEqual(parsed.invocation, {
     kind: 'stdin',
     args: ['--prefix', '/home/user/.local'],
+    options: {},
   });
 }
 

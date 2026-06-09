@@ -89,6 +89,68 @@ await t.run(heredocCommand('/home/user/install.sh', [
 }
 
 {
+  const script = 'if [[ abc == a* && 2 -gt 1 ]]; then echo DOUBLE_BRACKET_OK; fi\\n';
+  const { output } = await t.run(`printf ${JSON.stringify(script)} | bash`, 20_000);
+  const stripped = stripAnsi(output);
+  a.check('bash stdin scripts keep double-bracket operators inside the test expression',
+    hasOutputLine(stripped, 'DOUBLE_BRACKET_OK') && !/Expected Word|command not found/.test(stripped),
+    JSON.stringify(stripped.slice(-800)));
+}
+
+{
+  const script = 'if [[ "x" == "]]" ]]; then echo BAD; else echo QUOTED_DELIM_OK; fi\\n';
+  const { output } = await t.run(`printf ${JSON.stringify(script)} | bash`, 20_000);
+  const stripped = stripAnsi(output);
+  a.check('quoted ]] is not a double-bracket delimiter',
+    hasOutputLine(stripped, 'QUOTED_DELIM_OK') && !/too many arguments|command not found/.test(stripped),
+    JSON.stringify(stripped.slice(-800)));
+}
+
+{
+  const { output } = await t.run(
+    'cat <<\'NIMBUS_TEST\' | bash\npat="f*"; if [[ foo == "$pat" ]]; then echo BAD; else echo QUOTED_PATTERN_OK; fi\npat="f*"; if [[ foo == $pat ]]; then echo UNQUOTED_PATTERN_OK; fi\nNIMBUS_TEST',
+    20_000,
+  );
+  const stripped = stripAnsi(output);
+  a.check('double-bracket patterns preserve quotedness',
+    hasOutputLine(stripped, 'QUOTED_PATTERN_OK') && hasOutputLine(stripped, 'UNQUOTED_PATTERN_OK') && !hasOutputLine(stripped, 'BAD'),
+    JSON.stringify(stripped.slice(-1000)));
+}
+
+{
+  const script = 'exit 7\\necho SHOULD_NOT_RUN\\n';
+  const { output } = await t.run(`printf ${JSON.stringify(script)} | bash; echo STATUS=$?`, 20_000);
+  const stripped = stripAnsi(output);
+  a.check('exit terminates stdin scripts with the requested status',
+    hasOutputLine(stripped, 'STATUS=7') && !hasOutputLine(stripped, 'SHOULD_NOT_RUN'),
+    JSON.stringify(stripped.slice(-800)));
+}
+
+{
+  const { output } = await t.run('exit 3 | cat; echo PIPELINE_AFTER=$?', 20_000);
+  const stripped = stripAnsi(output);
+  a.check('exit in a pipeline segment stays local to that segment',
+    hasOutputLine(stripped, 'PIPELINE_AFTER=0'),
+    JSON.stringify(stripped.slice(-800)));
+}
+
+{
+  const { output } = await t.run('( exit 7 ); echo SUBSHELL_STATUS=$?', 20_000);
+  const stripped = stripAnsi(output);
+  a.check('exit inside a subshell does not terminate the parent shell',
+    hasOutputLine(stripped, 'SUBSHELL_STATUS=7'),
+    JSON.stringify(stripped.slice(-800)));
+}
+
+{
+  const { output } = await t.run('cat <<\'NIMBUS_TEST\' | sed \'s/b/\\&/\'\nabc\nNIMBUS_TEST\ncat <<\'NIMBUS_TEST\' | sed \'s/a/$1/\'\nabc\nNIMBUS_TEST', 20_000);
+  const stripped = stripAnsi(output);
+  a.check('sed replacements preserve escaped ampersands and literal dollars',
+    hasOutputLine(stripped, 'a&c') && hasOutputLine(stripped, '$1bc'),
+    JSON.stringify(stripped.slice(-800)));
+}
+
+{
   const { output } = await t.run('printf "echo DASH_STDIN_OK\\n" | sh -', 20_000);
   const stripped = stripAnsi(output);
   a.check('sh - executes stdin scripts',

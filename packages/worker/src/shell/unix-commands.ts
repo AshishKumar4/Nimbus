@@ -14,6 +14,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { enc } from '../_shared/bytes.js';
+import { runSed } from '../substrate/lifo/commands/text/sed.js';
 
 type Ctx = {
   args: string[];
@@ -1134,24 +1135,19 @@ function mkUniq(): CmdFn {
 }
 
 function mkSed(vfs: SqliteVFS): CmdFn {
-  return (ctx) => {
-    const expr = ctx.args[0] || '';
-    const files = ctx.args.slice(1).filter(a => !a.startsWith('-'));
-    let input = ctx.stdin || '';
-    if (files.length > 0 && !input) {
-      try { input = vfs.readFileString(resolvePath(ctx.cwd, files[0])); }
-      catch { ctx.stderr.write(`sed: ${files[0]}: No such file\n`); return 1; }
-    }
-    // Support s/pattern/replacement/flags
-    const m = expr.match(/^s(.)(.*?)\1(.*?)\1([gi]*)$/);
-    if (!m) { ctx.stderr.write(`sed: invalid expression: ${expr}\n`); return 1; }
-    const [, , pattern, replacement, flags] = m;
-    const re = new RegExp(pattern, flags.includes('g') ? 'g' + (flags.includes('i') ? 'i' : '') : (flags.includes('i') ? 'i' : ''));
-    const lines = input.split('\n');
-    for (const line of lines) {
-      ctx.stdout.write(line.replace(re, replacement) + '\n');
-    }
-    return 0;
+  return (ctx) => runSed({
+    args: ctx.args,
+    cwd: ctx.cwd,
+    vfs,
+    stdout: ctx.stdout,
+    stderr: ctx.stderr,
+    stdin: ctx.stdin === undefined ? undefined : stringInput(ctx.stdin),
+  });
+}
+
+function stringInput(text: string): { readAll(): Promise<string> } {
+  return {
+    readAll: async () => text,
   };
 }
 

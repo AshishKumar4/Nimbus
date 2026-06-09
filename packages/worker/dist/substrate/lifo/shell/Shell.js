@@ -1,7 +1,7 @@
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { VFSError } from '../kernel/vfs/index.js';
-import { Interpreter, } from './interpreter.js';
+import { ExitSignal, Interpreter, } from './interpreter.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
 import { signalAbortReason } from './signals.js';
@@ -93,7 +93,7 @@ export class Shell {
         this.builtins.set('echo', (args, stdout) => this.builtinEcho(args, stdout));
         this.builtins.set('clear', () => this.builtinClear());
         this.builtins.set('export', (args, _stdout, stderr) => this.builtinExport(args, stderr));
-        this.builtins.set('exit', (_args, stdout) => this.builtinExit(stdout));
+        this.builtins.set('exit', (args, _stdout, stderr) => this.builtinExit(args, stderr));
         this.builtins.set('true', () => Promise.resolve(0));
         this.builtins.set('false', () => Promise.resolve(1));
         this.builtins.set(':', () => Promise.resolve(0));
@@ -1223,9 +1223,20 @@ export class Shell {
         replaceMap(this.traps, frame.traps);
         replaceSet(this.readonlyNames, frame.readonlyNames);
     }
-    async builtinExit(stdout) {
-        stdout.write('logout\n');
-        return 0;
+    async builtinExit(args, stderr) {
+        if (args.length > 1) {
+            stderr.write('exit: too many arguments\n');
+            return 1;
+        }
+        if (args.length === 0) {
+            throw new ExitSignal(this.interpreter.getLastExitCode());
+        }
+        const status = parseShellExitStatus(args[0] ?? '');
+        if (status === null) {
+            stderr.write(`exit: ${args[0]}: numeric argument required\n`);
+            throw new ExitSignal(2);
+        }
+        throw new ExitSignal(status);
     }
     async builtinJobs(stdout) {
         const jobs = this.jobTable.list();
@@ -1625,6 +1636,17 @@ function isDecimalInteger(value) {
             return false;
     }
     return true;
+}
+function parseShellExitStatus(raw) {
+    if (raw.length === 0)
+        return null;
+    const sign = raw[0] === '-' ? -1n : 1n;
+    const digits = raw[0] === '-' || raw[0] === '+' ? raw.slice(1) : raw;
+    if (!isDecimalInteger(digits))
+        return null;
+    const value = BigInt(digits) * sign;
+    const normalized = ((value % 256n) + 256n) % 256n;
+    return Number(normalized);
 }
 function snapshotEnvKeys(env, keys) {
     const snapshot = new Map();

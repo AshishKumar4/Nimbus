@@ -4,6 +4,7 @@ import type {
   PipelineNode,
   SimpleCommandNode,
   CompoundCommandNode,
+  DoubleBracketNode,
   IfNode,
   ForNode,
   WhileNode,
@@ -25,6 +26,7 @@ import type {
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, type ExpandContext } from './expander.js';
+import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
@@ -47,6 +49,10 @@ export class ReturnSignal {
 }
 
 export class ErrexitSignal {
+  constructor(public exitCode: number) {}
+}
+
+export class ExitSignal {
   constructor(public exitCode: number) {}
 }
 
@@ -182,6 +188,8 @@ export class Interpreter {
       }
     } catch (error) {
       if (error instanceof ErrexitSignal) {
+        exitCode = error.exitCode;
+      } else if (error instanceof ExitSignal) {
         exitCode = error.exitCode;
       } else {
         throw error;
@@ -384,8 +392,15 @@ export class Interpreter {
           registerProcess: io.registerProcess,
           positionals: this.forkPositionals(io),
         });
-        const cmdPromise = this.executeCommand(cmd, cmdIo)
-          .then((code) => {
+        const cmdPromise = (async (): Promise<number> => {
+          try {
+            return await this.executeCommand(cmd, cmdIo);
+          } catch (e) {
+            if (e instanceof ExitSignal) {
+              return e.exitCode;
+            }
+            throw e;
+          } finally {
             if (i < commands.length - 1) {
               pipes[i].close();
             }
@@ -393,8 +408,8 @@ export class Interpreter {
               pipelineAbortController.abort();
               for (const pipe of pipes) pipe.close();
             }
-            return code;
-          });
+          }
+        })();
 
         promises.push(cmdPromise);
       }
@@ -421,6 +436,8 @@ export class Interpreter {
     switch (cmd.type) {
       case 'simple_command':
         return this.executeSimpleCommand(cmd, io);
+      case 'double_bracket':
+        return this.executeDoubleBracket(cmd, io);
       case 'if':
         return this.executeIf(cmd, io);
       case 'for':
@@ -457,6 +474,43 @@ export class Interpreter {
         exitCode = await this.executeCompoundList(node.elseBody, redirIo);
       }
 
+      this.lastExitCode = exitCode;
+      return exitCode;
+    });
+  }
+
+  private async executeDoubleBracket(node: DoubleBracketNode, io: ExecutionIo): Promise<number> {
+    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      const stdout = redirIo.stdout ?? this.config.defaultStdout ?? {
+        write: (text: string) => this.config.writeToTerminal(text),
+      };
+      const stderr = redirIo.stderr ?? this.config.defaultStderr ?? {
+        write: (text: string) => this.config.writeToTerminal(text),
+      };
+      const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
+      const builtinIo = this.createIoFromFds(redirIo, fds);
+      const exitCode = await evaluateDoubleBracketWords(
+        node.words,
+        this.createExpandContext(redirIo),
+        this.config.vfs,
+        stderr,
+        {
+          stdin: builtinIo.stdin,
+          stdout,
+          stderr,
+          terminalStdin: redirIo.terminalStdin,
+          terminalFds: {
+            stdin: fds.terminalInputFds.has(0),
+            stdout: fds.terminalOutputFds.has(1),
+            stderr: fds.terminalOutputFds.has(2),
+          },
+          scriptMode: redirIo.scriptMode,
+          isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+          getPositionals: () => this.readPositionals(builtinIo),
+          setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
+          executeInline: (input, options) => this.executeInline(input, builtinIo, options),
+        },
+      );
       this.lastExitCode = exitCode;
       return exitCode;
     });
@@ -613,6 +667,12 @@ export class Interpreter {
         subshellIo,
         (redirIo) => this.executeCompoundList(node.body, redirIo),
       );
+    } catch (e) {
+      if (e instanceof ExitSignal) {
+        exitCode = e.exitCode;
+      } else {
+        throw e;
+      }
     } finally {
       this.config.setCwd(savedCwd);
       for (const key of Object.keys(this.config.env)) delete this.config.env[key];

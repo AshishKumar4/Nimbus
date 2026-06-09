@@ -13,6 +13,7 @@ import {
   type WhileNode,
   type UntilNode,
   type CaseNode,
+  type DoubleBracketNode,
   type FunctionDefNode,
   type GroupNode,
   type SubshellNode,
@@ -28,6 +29,15 @@ export class ParseError extends Error {
 export function parse(tokens: Token[]): ScriptNode {
   const parser = new Parser(tokens);
   return parser.parseScript();
+}
+
+function isUnquotedLiteralWord(token: Token, value: string): boolean {
+  if (token.kind !== TokenKind.Word || token.value !== value) return false;
+  const parts = token.parts ?? [{ text: token.value, quoted: 'none' as const }];
+  return parts.length === 1
+    && parts[0]?.text === value
+    && parts[0]?.quoted === 'none'
+    && parts[0]?.commandSubstitution === undefined;
 }
 
 const KEYWORDS = new Set([
@@ -183,6 +193,10 @@ class Parser {
 
     // Check for compound command keywords
     if (token.kind === TokenKind.Word) {
+      if (isUnquotedLiteralWord(token, '[[')) {
+        return this.parseDoubleBracketCommand();
+      }
+
       switch (token.value) {
         case 'if': return this.parseIf();
         case 'for': return this.parseFor();
@@ -211,6 +225,32 @@ class Parser {
     }
 
     return this.parseSimpleCommand();
+  }
+
+  private parseDoubleBracketCommand(): DoubleBracketNode {
+    this.advance();
+    const words: WordPart[][] = [];
+
+    while (!this.isAtEnd()) {
+      const token = this.advance();
+      if (isUnquotedLiteralWord(token, ']]')) {
+        return {
+          type: 'double_bracket',
+          words,
+          redirections: this.parseTrailingRedirections(),
+        };
+      }
+      words.push(this.doubleBracketTokenParts(token));
+    }
+
+    throw new ParseError('missing ]]', this.peek().pos);
+  }
+
+  private doubleBracketTokenParts(token: Token): WordPart[] {
+    if (token.kind === TokenKind.Word) {
+      return token.parts ?? [{ text: token.value, quoted: 'none' as const }];
+    }
+    return [{ text: token.value, quoted: 'none' }];
   }
 
   private parseCompoundList(terminators: string[]): ListNode[] {

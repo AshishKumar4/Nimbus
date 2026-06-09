@@ -37,10 +37,11 @@ function parseSedExpr(expr) {
         if (parts.length < 2)
             return null;
         const patternStr = parts[0];
-        const replacement = parts[1];
+        const replacement = parts[1] ?? '';
         const flagStr = parts[2] || '';
         const globalFlag = flagStr.includes('g');
         const caseInsensitive = flagStr.includes('i');
+        const print = flagStr.includes('p');
         let regex;
         try {
             let flags = '';
@@ -48,40 +49,41 @@ function parseSedExpr(expr) {
                 flags += 'g';
             if (caseInsensitive)
                 flags += 'i';
-            regex = new RegExp(patternStr, flags);
+            regex = new RegExp(toJavascriptPattern(patternStr ?? ''), flags);
         }
         catch {
             return null;
         }
-        return { type: 's', pattern: regex, replacement, global: globalFlag };
+        return { type: 's', pattern: regex, replacement, global: globalFlag, print };
     }
     return null;
 }
-const command = async (ctx) => {
-    let inPlace = false;
-    const expressions = [];
-    const files = [];
-    for (let i = 0; i < ctx.args.length; i++) {
-        const arg = ctx.args[i];
-        if (arg === '-i') {
-            inPlace = true;
+function toJavascriptPattern(pattern) {
+    let result = '';
+    for (let i = 0; i < pattern.length; i++) {
+        const char = pattern[i];
+        const next = pattern[i + 1];
+        if (char === '\\' && (next === '(' || next === ')')) {
+            result += next;
+            i++;
+            continue;
         }
-        else if (arg === '-e' && i + 1 < ctx.args.length) {
-            expressions.push(ctx.args[++i]);
-        }
-        else if (expressions.length === 0 && !arg.startsWith('-')) {
-            expressions.push(arg);
-        }
-        else {
-            files.push(arg);
-        }
+        result += char;
     }
-    if (expressions.length === 0) {
+    return result;
+}
+function isDigit(value) {
+    const code = value.charCodeAt(0);
+    return code >= 48 && code <= 57;
+}
+export async function runSed(ctx) {
+    const options = parseSedArgs(ctx.args);
+    if (options.expressions.length === 0) {
         ctx.stderr.write('sed: missing expression\n');
         return 1;
     }
     const parsedExprs = [];
-    for (const expr of expressions) {
+    for (const expr of options.expressions) {
         const parsed = parseSedExpr(expr);
         if (!parsed) {
             ctx.stderr.write(`sed: invalid expression: ${expr}\n`);
@@ -96,7 +98,15 @@ const command = async (ctx) => {
             let deleted = false;
             for (const expr of parsedExprs) {
                 if (expr.type === 's' && expr.pattern && expr.replacement !== undefined) {
-                    line = line.replace(expr.pattern, expr.replacement);
+                    let changed = false;
+                    expr.pattern.lastIndex = 0;
+                    line = line.replace(expr.pattern, (...match) => {
+                        changed = true;
+                        return expandReplacement(expr.replacement ?? '', match.slice(1, -2), String(match[0]));
+                    });
+                    if (changed && expr.print) {
+                        output.push(line);
+                    }
                 }
                 else if (expr.type === 'd') {
                     deleted = true;
@@ -106,13 +116,13 @@ const command = async (ctx) => {
                     output.push(line);
                 }
             }
-            if (!deleted) {
+            if (!deleted && !options.quiet) {
                 output.push(line);
             }
         }
         return output.join('\n') + '\n';
     }
-    if (files.length === 0) {
+    if (options.files.length === 0) {
         if (ctx.stdin) {
             const text = await ctx.stdin.readAll();
             ctx.stdout.write(processText(text));
@@ -124,7 +134,7 @@ const command = async (ctx) => {
         return 0;
     }
     let exitCode = 0;
-    for (const file of files) {
+    for (const file of options.files) {
         const path = resolve(ctx.cwd, file);
         try {
             ctx.vfs.stat(path);
@@ -134,7 +144,7 @@ const command = async (ctx) => {
             }
             const content = ctx.vfs.readFileString(path);
             const result = processText(content);
-            if (inPlace) {
+            if (options.inPlace) {
                 ctx.vfs.writeFile(path, result);
             }
             else {
@@ -152,5 +162,87 @@ const command = async (ctx) => {
         }
     }
     return exitCode;
-};
+}
+function parseSedArgs(args) {
+    const options = {
+        inPlace: false,
+        quiet: false,
+        expressions: [],
+        files: [],
+    };
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i] ?? '';
+        if (arg === '-i') {
+            options.inPlace = true;
+            continue;
+        }
+        if (arg === '-n' || arg === '--quiet' || arg === '--silent') {
+            options.quiet = true;
+            continue;
+        }
+        if (arg === '-e') {
+            options.expressions.push(args[++i] ?? '');
+            continue;
+        }
+        if (arg.startsWith('-') && arg.length > 2 && parseSedShortCluster(options, arg, args, i)) {
+            if (clusterNeedsNextArg(arg))
+                i++;
+            continue;
+        }
+        if (options.expressions.length === 0 && !arg.startsWith('-')) {
+            options.expressions.push(arg);
+            continue;
+        }
+        options.files.push(arg);
+    }
+    return options;
+}
+function parseSedShortCluster(options, arg, args, index) {
+    for (let j = 1; j < arg.length; j++) {
+        const flag = arg[j];
+        if (flag === 'n') {
+            options.quiet = true;
+            continue;
+        }
+        if (flag === 'i') {
+            options.inPlace = true;
+            continue;
+        }
+        if (flag === 'e') {
+            const rest = arg.slice(j + 1);
+            options.expressions.push(rest || args[index + 1] || '');
+            return true;
+        }
+        return false;
+    }
+    return true;
+}
+function clusterNeedsNextArg(arg) {
+    const eIndex = arg.indexOf('e');
+    return eIndex !== -1 && eIndex === arg.length - 1;
+}
+function expandReplacement(replacement, captures, matched) {
+    let result = '';
+    for (let i = 0; i < replacement.length; i++) {
+        const char = replacement[i];
+        const next = replacement[i + 1];
+        if (char === '\\' && next !== undefined) {
+            if (isDigit(next)) {
+                result += String(captures[Number(next) - 1] ?? '');
+                i++;
+                continue;
+            }
+            result += next;
+            i++;
+            continue;
+        }
+        if (char === '&') {
+            result += matched;
+            continue;
+        }
+        result += char;
+    }
+    return result;
+}
+const command = async (ctx) => runSed(ctx);
 export default command;
