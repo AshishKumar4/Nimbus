@@ -9,8 +9,152 @@
  * TCP support.
  *
  * Runtime adapters (Python socket.py, Ruby socket.rb, future
- * wasm32-wasi-nimbus syscalls) should call this shared JS kernel rather
- * than each implementing their own preview bridge.
+ * wasm32-wasi-nimbus syscalls) call this shared kernel instead of each
+ * implementing their own preview bridge.
+ *
+ * This file is the typed source of truth. scripts/bundle-facet-workers.mjs
+ * bundles it at build time into virtual-socket-kernel.generated.ts as the
+ * self-contained VIRTUAL_SOCKET_KERNEL_SRC string that python-runner and
+ * ruby-runner splice into dynamic worker module sources. Because that
+ * bundle ships as injected source text, this module must stay free of
+ * runtime imports - supervisor modules are unreachable from facet isolates.
  */
-export declare const VIRTUAL_SOCKET_KERNEL_SRC = "\nconst __NIMBUS_SOCKET_TIMEOUT_MS = 30_000;\n\nclass __NimbusDeferred {\n  constructor() {\n    this.promise = new Promise((resolve, reject) => {\n      this.resolve = resolve;\n      this.reject = reject;\n    });\n  }\n}\n\nfunction __nimbusSocketBytes(value) {\n  if (value instanceof Uint8Array) return value;\n  if (value instanceof ArrayBuffer) return new Uint8Array(value);\n  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);\n  if (Array.isArray(value)) return new Uint8Array(value);\n  if (typeof value === \"string\") return new TextEncoder().encode(value);\n  if (value && typeof value.toJs === \"function\") return __nimbusSocketBytes(value.toJs());\n  return new Uint8Array(0);\n}\n\nfunction __nimbusConcatBytes(parts) {\n  let len = 0;\n  for (const p of parts) len += p.byteLength;\n  const out = new Uint8Array(len);\n  let off = 0;\n  for (const p of parts) {\n    out.set(p, off);\n    off += p.byteLength;\n  }\n  return out;\n}\n\nfunction __nimbusFindHeaderEnd(bytes) {\n  for (let i = 0; i + 3 < bytes.length; i++) {\n    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) return i + 4;\n  }\n  return -1;\n}\n\nfunction __nimbusHeaderValue(headers, name) {\n  const target = name.toLowerCase();\n  for (const [k, v] of headers) {\n    if (k.toLowerCase() === target) return v;\n  }\n  return null;\n}\n\nfunction __nimbusResponseCanHaveBody(method, status) {\n  if (String(method || \"\").toUpperCase() === \"HEAD\") return false;\n  return status !== 204 && status !== 205 && status !== 304;\n}\n\nfunction __nimbusParseChunked(body) {\n  const dec = new TextDecoder();\n  const chunks = [];\n  let off = 0;\n  while (off < body.length) {\n    let lineEnd = -1;\n    for (let i = off; i + 1 < body.length; i++) {\n      if (body[i] === 13 && body[i + 1] === 10) { lineEnd = i; break; }\n    }\n    if (lineEnd < 0) return null;\n    const line = dec.decode(body.subarray(off, lineEnd)).trim();\n    const sizeText = line.split(\";\", 1)[0];\n    const size = parseInt(sizeText, 16);\n    if (!Number.isFinite(size) || size < 0) return null;\n    off = lineEnd + 2;\n    if (body.length < off + size + 2) return null;\n    if (size === 0) return __nimbusConcatBytes(chunks);\n    chunks.push(body.subarray(off, off + size));\n    off += size;\n    if (body[off] !== 13 || body[off + 1] !== 10) return null;\n    off += 2;\n  }\n  return null;\n}\n\nasync function __nimbusRequestBytes(request) {\n  const url = new URL(request.url);\n  const path = (url.pathname || \"/\") + url.search;\n  const headers = new Headers(request.headers);\n  if (!headers.has(\"Host\")) headers.set(\"Host\", url.host || \"nimbus.local\");\n  const body = request.method === \"GET\" || request.method === \"HEAD\"\n    ? new Uint8Array(0)\n    : new Uint8Array(await request.arrayBuffer());\n  if (body.byteLength > 0 && !headers.has(\"Content-Length\")) {\n    headers.set(\"Content-Length\", String(body.byteLength));\n  }\n  const lines = [request.method + \" \" + path + \" HTTP/1.1\"];\n  headers.forEach((value, key) => lines.push(key + \": \" + value));\n  lines.push(\"\", \"\");\n  return __nimbusConcatBytes([new TextEncoder().encode(lines.join(\"\\r\\n\")), body]);\n}\n\nclass __NimbusVirtualConnection {\n  constructor(id, requestMethod, requestBytes) {\n    this.id = id;\n    this.requestMethod = requestMethod;\n    this.requestBytes = requestBytes;\n    this.requestOffset = 0;\n    this.output = [];\n    this.closed = false;\n    this.waiters = [];\n  }\n\n  read(maxBytes) {\n    if (this.requestOffset >= this.requestBytes.byteLength) return [];\n    const end = Math.min(this.requestOffset + Math.max(1, maxBytes | 0), this.requestBytes.byteLength);\n    const chunk = this.requestBytes.subarray(this.requestOffset, end);\n    this.requestOffset = end;\n    return Array.from(chunk);\n  }\n\n  write(bytesLike) {\n    const bytes = __nimbusSocketBytes(bytesLike);\n    if (bytes.byteLength > 0) this.output.push(bytes.slice());\n    this._wake();\n    return bytes.byteLength;\n  }\n\n  close() {\n    this.closed = true;\n    this._wake();\n  }\n\n  _wake() {\n    const waiters = this.waiters.splice(0);\n    for (const w of waiters) w.resolve();\n  }\n\n  _responseFromBytes() {\n    const bytes = __nimbusConcatBytes(this.output);\n    const headerEnd = __nimbusFindHeaderEnd(bytes);\n    if (headerEnd < 0) return null;\n    const headerText = new TextDecoder().decode(bytes.subarray(0, headerEnd));\n    const lines = headerText.replace(/\\r\\n/g, \"\\n\").split(\"\\n\").filter((line) => line.length > 0);\n    const statusLine = lines.shift() || \"HTTP/1.1 200 OK\";\n    const m = /^HTTP\\/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s+(.*))?$/.exec(statusLine);\n    const status = m ? parseInt(m[1], 10) : 200;\n    const statusText = m && m[2] ? m[2] : \"\";\n    const headerPairs = [];\n    for (const line of lines) {\n      const idx = line.indexOf(\":\");\n      if (idx <= 0) continue;\n      headerPairs.push([line.slice(0, idx), line.slice(idx + 1).trimStart()]);\n    }\n    const body = bytes.subarray(headerEnd);\n    const contentLength = __nimbusHeaderValue(headerPairs, \"Content-Length\");\n    const transferEncoding = __nimbusHeaderValue(headerPairs, \"Transfer-Encoding\");\n    const hasBody = __nimbusResponseCanHaveBody(this.requestMethod, status);\n    let responseBody = hasBody ? body : null;\n    if (hasBody) {\n      if (transferEncoding && /chunked/i.test(transferEncoding)) {\n        const parsed = __nimbusParseChunked(body);\n        if (!parsed) return null;\n        responseBody = parsed;\n      } else if (contentLength != null) {\n        const expected = parseInt(contentLength, 10);\n        if (Number.isFinite(expected) && body.byteLength < expected) return null;\n        if (Number.isFinite(expected)) responseBody = body.subarray(0, expected);\n      } else if (!this.closed) {\n        return null;\n      }\n    }\n    const headers = new Headers();\n    for (const [k, v] of headerPairs) {\n      if (/^transfer-encoding$/i.test(k)) continue;\n      headers.append(k, v);\n    }\n    return new Response(responseBody, { status, statusText, headers });\n  }\n\n  async response(timeoutMs) {\n    const deadline = Date.now() + Math.max(1, timeoutMs || __NIMBUS_SOCKET_TIMEOUT_MS);\n    while (Date.now() < deadline) {\n      const response = this._responseFromBytes();\n      if (response) return response;\n      const waiter = new __NimbusDeferred();\n      this.waiters.push(waiter);\n      const remaining = Math.max(1, deadline - Date.now());\n      await Promise.race([\n        waiter.promise,\n        new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 250))),\n      ]);\n    }\n    return new Response(\"Nimbus virtual socket: timed out waiting for response\", { status: 504 });\n  }\n}\n\nclass __NimbusVirtualListener {\n  constructor(port) {\n    this.port = port;\n    this.queue = [];\n    this.waiters = [];\n  }\n\n  push(conn) {\n    const waiter = this.waiters.shift();\n    if (waiter) waiter.resolve(conn);\n    else this.queue.push(conn);\n  }\n\n  accept() {\n    const queued = this.queue.shift();\n    if (queued) return Promise.resolve(queued);\n    const waiter = new __NimbusDeferred();\n    this.waiters.push(waiter);\n    return waiter.promise;\n  }\n\n  take() {\n    return this.queue.shift() || null;\n  }\n\n  pending() {\n    return this.queue.length;\n  }\n}\n\nclass __NimbusVirtualSocketKernel {\n  constructor() {\n    this.listeners = new Map();\n    this.connections = new Map();\n    this.nextConnectionId = 1;\n    this.nextEphemeralPort = 49152;\n    this.listenWaiters = [];\n  }\n\n  listen(port) {\n    let n = Number(port);\n    if (!Number.isInteger(n) || n < 0 || n >= 65536) throw new Error(\"invalid port: \" + port);\n    if (n === 0) {\n      while (this.listeners.has(this.nextEphemeralPort)) {\n        this.nextEphemeralPort++;\n        if (this.nextEphemeralPort >= 65535) this.nextEphemeralPort = 49152;\n      }\n      n = this.nextEphemeralPort++;\n      if (this.nextEphemeralPort >= 65535) this.nextEphemeralPort = 49152;\n    }\n    let listener = this.listeners.get(n);\n    if (!listener) {\n      listener = new __NimbusVirtualListener(n);\n      this.listeners.set(n, listener);\n      try { globalThis.__nimbusVirtualSocketDidListen?.(n); } catch {}\n      const waiters = this.listenWaiters.splice(0);\n      for (const waiter of waiters) waiter.resolve(n);\n    }\n    return n;\n  }\n\n  closeListener(port) {\n    this.listeners.delete(Number(port));\n  }\n\n  async accept(port) {\n    const listener = this.listeners.get(Number(port));\n    if (!listener) throw new Error(\"port is not listening: \" + port);\n    const conn = await listener.accept();\n    return { id: conn.id, host: \"127.0.0.1\", port: 0 };\n  }\n\n  acceptNow(port) {\n    const listener = this.listeners.get(Number(port));\n    if (!listener) throw new Error(\"port is not listening: \" + port);\n    const conn = listener.take();\n    return conn ? { id: conn.id, host: \"127.0.0.1\", port: 0 } : null;\n  }\n\n  recv(id, maxBytes) {\n    const conn = this.connections.get(Number(id));\n    if (!conn) return [];\n    return conn.read(maxBytes);\n  }\n\n  send(id, bytesLike) {\n    const conn = this.connections.get(Number(id));\n    if (!conn) throw new Error(\"connection is closed: \" + id);\n    return conn.write(bytesLike);\n  }\n\n  close(id) {\n    const conn = this.connections.get(Number(id));\n    if (!conn) return;\n    conn.close();\n    this.connections.delete(Number(id));\n  }\n\n  pending(port) {\n    return this.listeners.get(Number(port))?.pending() || 0;\n  }\n\n  firstListeningPort() {\n    return this.listeners.size > 0 ? Array.from(this.listeners.keys())[0] : null;\n  }\n\n  waitReadable(ports, timeoutSeconds) {\n    const normalized = (Array.isArray(ports) ? ports : []).map((p) => Number(p)).filter((p) => Number.isInteger(p));\n    for (const port of normalized) {\n      if (this.pending(port) > 0) return Promise.resolve([port]);\n    }\n    const timeoutMs = timeoutSeconds == null ? __NIMBUS_SOCKET_TIMEOUT_MS : Math.max(0, Number(timeoutSeconds) * 1000);\n    const waiter = new __NimbusDeferred();\n    const check = () => {\n      const ready = normalized.filter((port) => this.pending(port) > 0);\n      if (ready.length > 0) waiter.resolve(ready);\n    };\n    const oldWaiters = this.listenWaiters;\n    const poll = setInterval(check, 25);\n    const timer = setTimeout(() => {\n      clearInterval(poll);\n      waiter.resolve([]);\n    }, timeoutMs);\n    return waiter.promise.finally(() => {\n      clearInterval(poll);\n      clearTimeout(timer);\n      this.listenWaiters = oldWaiters;\n    });\n  }\n\n  async waitForListen(timeoutMs) {\n    const existing = this.firstListeningPort();\n    if (existing) return existing;\n    const waiter = new __NimbusDeferred();\n    this.listenWaiters.push(waiter);\n    return await Promise.race([\n      waiter.promise,\n      new Promise((resolve) => setTimeout(() => resolve(null), Math.max(1, timeoutMs || 5_000))),\n    ]);\n  }\n\n  async handleHttpRequest(port, request) {\n    let listener = this.listeners.get(Number(port));\n    if (!listener) {\n      try { await globalThis.__nimbusVirtualSocketEnsureListener?.(Number(port)); } catch {}\n      listener = this.listeners.get(Number(port));\n    }\n    if (!listener) return new Response(\"Nimbus virtual socket: no listener on port \" + port, { status: 502 });\n    const id = this.nextConnectionId++;\n    const conn = new __NimbusVirtualConnection(id, request.method, await __nimbusRequestBytes(request));\n    this.connections.set(id, conn);\n    listener.push(conn);\n    try {\n      try {\n        const accepted = await globalThis.__nimbusVirtualSocketRequestQueued?.(Number(port));\n        if (accepted === false) {\n          const detail = typeof globalThis.__nimbusVirtualSocketLastError === \"string\"\n            ? globalThis.__nimbusVirtualSocketLastError.trim()\n            : \"\";\n          const suffix = detail ? \": \" + detail : \"\";\n          return new Response(\"Nimbus virtual socket: runtime handler did not accept the request\" + suffix, { status: 502 });\n        }\n      } catch {}\n      return await conn.response(__NIMBUS_SOCKET_TIMEOUT_MS);\n    } finally {\n      conn.close();\n      this.connections.delete(id);\n    }\n  }\n}\n\nglobalThis.__nimbusVirtualSockets = globalThis.__nimbusVirtualSockets || new __NimbusVirtualSocketKernel();\n";
+/** Hooks the per-runtime adapter glue installs on the facet global scope. */
+export interface VirtualSocketHost {
+    /** Called when a new port starts listening so the adapter can register it with the supervisor. */
+    __nimbusVirtualSocketDidListen?: (port: number) => void;
+    /** Gives the runtime a chance to (re)create a listener before a request 502s. */
+    __nimbusVirtualSocketEnsureListener?: (port: number) => unknown;
+    /**
+     * Cooperative accept pump. Pyodide/ruby.wasm cannot run a background
+     * accept loop (JSPI suspension is only legal on this dedicated pump),
+     * so the kernel queues the connection and then asks the runtime to
+     * process it. Returning false rejects the queued request.
+     */
+    __nimbusVirtualSocketRequestQueued?: (port: number) => Promise<boolean | undefined> | boolean | undefined;
+    /** Detail string surfaced when the request pump returns false. */
+    __nimbusVirtualSocketLastError?: string;
+}
+/** Facet global scope once the kernel is installed. */
+export interface VirtualSocketGlobalScope extends VirtualSocketHost {
+    __nimbusVirtualSockets?: VirtualSocketKernel;
+}
+/** Buffer and timing bounds enforced by the kernel. */
+export interface VirtualSocketKernelLimits {
+    /** How long handleHttpRequest waits for a complete response before answering 504. */
+    responseTimeoutMs: number;
+    /** Largest request body accepted into the inbound read queue (whole-body buffered in stage 1). */
+    maxRequestBodyBytes: number;
+    /** Largest total response byte count accepted into the outbound write queue (whole-response buffered in stage 1). */
+    maxResponseBufferBytes: number;
+}
+/** Result shape of accept()/acceptNow(); host/port mirror a loopback peer. */
+export interface AcceptedVirtualConnection {
+    id: number;
+    host: string;
+    port: number;
+}
+/** Pyodide proxies cross the FFI boundary with a toJs() converter. */
+interface PyodideProxyLike {
+    toJs(): unknown;
+}
+/** Byte payloads accepted by send(); covers JS, Pyodide, and ruby.wasm callers. */
+export type VirtualSocketBytesLike = Uint8Array | ArrayBuffer | ArrayBufferView | readonly number[] | string | PyodideProxyLike;
+/**
+ * Stage 2 contract: what the kernel must grow before request/response
+ * bodies can stream end-to-end instead of being fully buffered. Stage 1
+ * keeps the cooperative accept model (see
+ * VirtualSocketHost.__nimbusVirtualSocketRequestQueued) - it exists
+ * because Pyodide JSPI can only suspend inside the dedicated pump call,
+ * so these members are the seam, not a replacement for that model.
+ */
+export interface VirtualSocketStreamingStage2 {
+    /**
+     * Suspending read for request bodies streamed into the inbound queue
+     * chunk-by-chunk; replaces buffering the whole request before the
+     * connection is pushed to the listener. Resolves null at EOF.
+     */
+    recvAsync(id: number, maxBytes: number): Promise<Uint8Array | null>;
+    /**
+     * Write-side backpressure: resolves once queued response bytes drop
+     * below the high-water mark, replacing the hard
+     * maxResponseBufferBytes cap with flow control.
+     */
+    awaitWritable(id: number): Promise<void>;
+    /**
+     * Headers-first streaming Response whose body is a ReadableStream fed
+     * from the outbound queue. Requires the runtime pump to interleave
+     * body writes with consumer reads instead of completing one whole
+     * request per __nimbusVirtualSocketRequestQueued call.
+     */
+    streamHttpResponse(port: number, request: Request): Promise<Response>;
+}
+declare class VirtualConnection {
+    readonly id: number;
+    /** Request bytes the guest server reads; filled in one shot in stage 1. */
+    private readonly inbound;
+    /** Response bytes the guest server writes; drained into the parser. */
+    private readonly outbound;
+    private readonly parser;
+    private readonly responseReady;
+    private settled;
+    private closed;
+    constructor(id: number, requestMethod: string, requestBytes: Uint8Array, limits: VirtualSocketKernelLimits);
+    read(maxBytes: number): number[];
+    write(bytesLike: VirtualSocketBytesLike): number;
+    /** EOF from the server side (or request teardown); completes until-close bodies. */
+    close(): void;
+    /** Abort propagation: settle the pending preview request with a terminal status. */
+    abort(message: string, status: number): void;
+    response(timeoutMs: number): Promise<Response>;
+    private pumpParser;
+    private settle;
+}
+declare class VirtualListener {
+    readonly port: number;
+    private readonly queue;
+    private readonly acceptWaiters;
+    constructor(port: number);
+    push(conn: VirtualConnection): void;
+    accept(): Promise<VirtualConnection>;
+    take(): VirtualConnection | null;
+    pending(): number;
+    drainQueued(): VirtualConnection[];
+    rejectPendingAccepts(error: Error): void;
+}
+export declare class VirtualSocketKernel {
+    private readonly host;
+    /** Public: runner glue inspects listeners.keys() for the default preview port. */
+    readonly listeners: Map<number, VirtualListener>;
+    private readonly connections;
+    private readonly limits;
+    private nextConnectionId;
+    private nextEphemeralPort;
+    private listenWaiters;
+    private readonly readableWaiters;
+    constructor(host: VirtualSocketHost, limits?: Partial<VirtualSocketKernelLimits>);
+    listen(port: number): number;
+    closeListener(port: number): void;
+    accept(port: number): Promise<AcceptedVirtualConnection>;
+    acceptNow(port: number): AcceptedVirtualConnection | null;
+    /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */
+    recv(id: number, maxBytes: number): number[];
+    send(id: number, bytesLike: VirtualSocketBytesLike): number;
+    close(id: number): void;
+    pending(port: number): number;
+    firstListeningPort(): number | null;
+    /** select()-style readiness: resolves ports with queued connections, [] on timeout. */
+    waitReadable(ports: readonly number[], timeoutSeconds?: number | null): Promise<number[]>;
+    waitForListen(timeoutMs?: number): Promise<number | null>;
+    handleHttpRequest(port: number, request: Request): Promise<Response>;
+    private notifyReadable;
+}
+/**
+ * Install the kernel on the facet global scope. The generated injection
+ * bundle (VIRTUAL_SOCKET_KERNEL_SRC) is exactly this call against
+ * globalThis, wrapped in an IIFE so no identifiers leak into the dynamic
+ * worker module scope.
+ */
+export declare function installVirtualSocketKernel(scope?: VirtualSocketGlobalScope): VirtualSocketKernel;
+export {};
 //# sourceMappingURL=virtual-socket-kernel.d.ts.map

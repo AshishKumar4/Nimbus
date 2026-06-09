@@ -28,7 +28,7 @@
 import { isRuntimePythonPackageArtifactMetadata, sha256Hex, } from './runtime-catalog.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.js';
+import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { PYTHON_SOCKET_SHIM } from './python-socket-shim.js';
 import { readPyodideRuntimeFiles } from './pyodide-runtime-assets.js';
 import { buildPipInvocation, parseInstalledPyodidePackageManifest, PYTHON_PYODIDE_PACKAGE_MANIFEST, PYTHON_SITE_PACKAGES_ROOT, } from './python-pip.js';

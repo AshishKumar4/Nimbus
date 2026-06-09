@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * bundle-facet-workers.mjs — Produce the preamble string that
- * NimbusFacetPool injects into dynamic workers.
+ * bundle-facet-workers.mjs — Produce the source strings that Nimbus
+ * injects into dynamic workers.
  *
  * WHY this exists:
- *   NimbusFacetPool's user functions get wrapped by cloudflare-parallel's
- *   codegen into a module source. Inside that module the user function
- *   can reference closure-variables only through the `context` option,
- *   which is JSON-only — you cannot pass a helper function through it.
+ *   Dynamic workers (NimbusFacetPool / NimbusLoaderPool) receive their
+ *   module source as strings — they cannot import supervisor modules,
+ *   and user functions can reference closure-variables only through the
+ *   JSON-only `context` option. Any TypeScript the injected code needs
+ *   must therefore be esbuild-bundled into a self-contained source
+ *   string at build time.
  *
  *   For the npm install facet we need the streaming tar parser
  *   (src/npm/tarball-stream.ts) available as a top-level named export
@@ -16,12 +18,19 @@
  *   option splices it into the generated module between the
  *   WorkerEntrypoint import and the user function.
  *
+ *   The virtual socket kernel (src/runtime/virtual-socket-kernel.ts) is
+ *   bundled the same way, but as an IIFE that installs
+ *   globalThis.__nimbusVirtualSockets — python-runner and ruby-runner
+ *   splice it into their socket process worker module sources.
+ *
  * Output:
  *   src/loaders/generated-workers.ts — exports
  *       TAR_STREAM_PREAMBLE: string
  *       TAR_STREAM_PREAMBLE_SIZE: number
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
  *       W7_FRAME_PREAMBLE_SIZE: number
+ *   src/runtime/virtual-socket-kernel.generated.ts — exports
+ *       VIRTUAL_SOCKET_KERNEL_SRC: string
  *
  * Runs as a postinstall + predev + predeploy step via package.json.
  */
@@ -61,6 +70,39 @@ async function bundleAsPreamble(entryPath, label) {
   stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
   return stripped;
+}
+
+/**
+ * Bundle the typed virtual socket kernel into a self-contained IIFE that
+ * installs globalThis.__nimbusVirtualSockets. IIFE format keeps every
+ * kernel identifier scoped, so the source can be spliced into any dynamic
+ * worker module without colliding with runtime preambles. No minification:
+ * injected source is serialized as text, and whole-bundle minification or
+ * helper renaming breaks the injection contract.
+ */
+async function bundleVirtualSocketKernel() {
+  const result = await build({
+    stdin: {
+      contents: [
+        "import { installVirtualSocketKernel } from './src/runtime/virtual-socket-kernel.ts';",
+        'installVirtualSocketKernel();',
+      ].join('\n'),
+      resolveDir: root,
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/virtual-socket-kernel] esbuild produced no output');
+  }
+  return result.outputFiles[0].text;
 }
 
 async function main() {
@@ -124,10 +166,35 @@ async function main() {
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, tsWrapper);
 
+  const kernelSrc = await bundleVirtualSocketKernel();
+  const kernelOutPath = join(root, 'src', 'runtime', 'virtual-socket-kernel.generated.ts');
+  const kernelWrapper = [
+    '/**',
+    ' * virtual-socket-kernel.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - src/runtime/virtual-socket-kernel.ts',
+    ' *',
+    ' * Self-contained IIFE that installs globalThis.__nimbusVirtualSockets.',
+    ' * Consumed by python-runner.ts and ruby-runner.ts: spliced into the',
+    ' * socket process worker module source passed to NimbusLoaderPool.',
+    ' *',
+    ` * Size: ${(kernelSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const VIRTUAL_SOCKET_KERNEL_SRC: string = ${JSON.stringify(kernelSrc)};`,
+    '',
+  ].join('\n');
+  writeFileSync(kernelOutPath, kernelWrapper);
+
   console.log(
     `[bundle-facet-workers] wrote ${outPath} ` +
     `(tar=${(tarStripped.length / 1024).toFixed(2)} KiB, ` +
     `w7=${(w7Stripped.length / 1024).toFixed(2)} KiB)`,
+  );
+  console.log(
+    `[bundle-facet-workers] wrote ${kernelOutPath} ` +
+    `(kernel=${(kernelSrc.length / 1024).toFixed(2)} KiB)`,
   );
 }
 

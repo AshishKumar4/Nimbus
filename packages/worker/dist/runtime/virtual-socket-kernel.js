@@ -9,370 +9,661 @@
  * TCP support.
  *
  * Runtime adapters (Python socket.py, Ruby socket.rb, future
- * wasm32-wasi-nimbus syscalls) should call this shared JS kernel rather
- * than each implementing their own preview bridge.
+ * wasm32-wasi-nimbus syscalls) call this shared kernel instead of each
+ * implementing their own preview bridge.
+ *
+ * This file is the typed source of truth. scripts/bundle-facet-workers.mjs
+ * bundles it at build time into virtual-socket-kernel.generated.ts as the
+ * self-contained VIRTUAL_SOCKET_KERNEL_SRC string that python-runner and
+ * ruby-runner splice into dynamic worker module sources. Because that
+ * bundle ships as injected source text, this module must stay free of
+ * runtime imports - supervisor modules are unreachable from facet isolates.
  */
-export const VIRTUAL_SOCKET_KERNEL_SRC = `
-const __NIMBUS_SOCKET_TIMEOUT_MS = 30_000;
-
-class __NimbusDeferred {
-  constructor() {
-    this.promise = new Promise((resolve, reject) => {
-      this.resolve = resolve;
-      this.reject = reject;
-    });
-  }
-}
-
-function __nimbusSocketBytes(value) {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  if (Array.isArray(value)) return new Uint8Array(value);
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  if (value && typeof value.toJs === "function") return __nimbusSocketBytes(value.toJs());
-  return new Uint8Array(0);
-}
-
-function __nimbusConcatBytes(parts) {
-  let len = 0;
-  for (const p of parts) len += p.byteLength;
-  const out = new Uint8Array(len);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.byteLength;
-  }
-  return out;
-}
-
-function __nimbusFindHeaderEnd(bytes) {
-  for (let i = 0; i + 3 < bytes.length; i++) {
-    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) return i + 4;
-  }
-  return -1;
-}
-
-function __nimbusHeaderValue(headers, name) {
-  const target = name.toLowerCase();
-  for (const [k, v] of headers) {
-    if (k.toLowerCase() === target) return v;
-  }
-  return null;
-}
-
-function __nimbusResponseCanHaveBody(method, status) {
-  if (String(method || "").toUpperCase() === "HEAD") return false;
-  return status !== 204 && status !== 205 && status !== 304;
-}
-
-function __nimbusParseChunked(body) {
-  const dec = new TextDecoder();
-  const chunks = [];
-  let off = 0;
-  while (off < body.length) {
-    let lineEnd = -1;
-    for (let i = off; i + 1 < body.length; i++) {
-      if (body[i] === 13 && body[i + 1] === 10) { lineEnd = i; break; }
+const DEFAULT_LIMITS = {
+    responseTimeoutMs: 30_000,
+    maxRequestBodyBytes: 32 * 1024 * 1024,
+    maxResponseBufferBytes: 64 * 1024 * 1024,
+};
+const EMPTY_BYTES = new Uint8Array(0);
+class Deferred {
+    promise;
+    resolve;
+    reject;
+    constructor() {
+        let resolve = () => { };
+        let reject = () => { };
+        this.promise = new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+        });
+        this.resolve = resolve;
+        this.reject = reject;
     }
-    if (lineEnd < 0) return null;
-    const line = dec.decode(body.subarray(off, lineEnd)).trim();
-    const sizeText = line.split(";", 1)[0];
-    const size = parseInt(sizeText, 16);
-    if (!Number.isFinite(size) || size < 0) return null;
-    off = lineEnd + 2;
-    if (body.length < off + size + 2) return null;
-    if (size === 0) return __nimbusConcatBytes(chunks);
-    chunks.push(body.subarray(off, off + size));
-    off += size;
-    if (body[off] !== 13 || body[off + 1] !== 10) return null;
-    off += 2;
-  }
-  return null;
 }
-
-async function __nimbusRequestBytes(request) {
-  const url = new URL(request.url);
-  const path = (url.pathname || "/") + url.search;
-  const headers = new Headers(request.headers);
-  if (!headers.has("Host")) headers.set("Host", url.host || "nimbus.local");
-  const body = request.method === "GET" || request.method === "HEAD"
-    ? new Uint8Array(0)
-    : new Uint8Array(await request.arrayBuffer());
-  if (body.byteLength > 0 && !headers.has("Content-Length")) {
-    headers.set("Content-Length", String(body.byteLength));
-  }
-  const lines = [request.method + " " + path + " HTTP/1.1"];
-  headers.forEach((value, key) => lines.push(key + ": " + value));
-  lines.push("", "");
-  return __nimbusConcatBytes([new TextEncoder().encode(lines.join("\\r\\n")), body]);
+function isPyodideProxyLike(value) {
+    return (value !== null &&
+        typeof value === 'object' &&
+        typeof value.toJs === 'function');
 }
-
-class __NimbusVirtualConnection {
-  constructor(id, requestMethod, requestBytes) {
-    this.id = id;
-    this.requestMethod = requestMethod;
-    this.requestBytes = requestBytes;
-    this.requestOffset = 0;
-    this.output = [];
-    this.closed = false;
-    this.waiters = [];
-  }
-
-  read(maxBytes) {
-    if (this.requestOffset >= this.requestBytes.byteLength) return [];
-    const end = Math.min(this.requestOffset + Math.max(1, maxBytes | 0), this.requestBytes.byteLength);
-    const chunk = this.requestBytes.subarray(this.requestOffset, end);
-    this.requestOffset = end;
-    return Array.from(chunk);
-  }
-
-  write(bytesLike) {
-    const bytes = __nimbusSocketBytes(bytesLike);
-    if (bytes.byteLength > 0) this.output.push(bytes.slice());
-    this._wake();
-    return bytes.byteLength;
-  }
-
-  close() {
-    this.closed = true;
-    this._wake();
-  }
-
-  _wake() {
-    const waiters = this.waiters.splice(0);
-    for (const w of waiters) w.resolve();
-  }
-
-  _responseFromBytes() {
-    const bytes = __nimbusConcatBytes(this.output);
-    const headerEnd = __nimbusFindHeaderEnd(bytes);
-    if (headerEnd < 0) return null;
-    const headerText = new TextDecoder().decode(bytes.subarray(0, headerEnd));
-    const lines = headerText.replace(/\\r\\n/g, "\\n").split("\\n").filter((line) => line.length > 0);
-    const statusLine = lines.shift() || "HTTP/1.1 200 OK";
-    const m = /^HTTP\\/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s+(.*))?$/.exec(statusLine);
-    const status = m ? parseInt(m[1], 10) : 200;
-    const statusText = m && m[2] ? m[2] : "";
-    const headerPairs = [];
-    for (const line of lines) {
-      const idx = line.indexOf(":");
-      if (idx <= 0) continue;
-      headerPairs.push([line.slice(0, idx), line.slice(idx + 1).trimStart()]);
-    }
-    const body = bytes.subarray(headerEnd);
-    const contentLength = __nimbusHeaderValue(headerPairs, "Content-Length");
-    const transferEncoding = __nimbusHeaderValue(headerPairs, "Transfer-Encoding");
-    const hasBody = __nimbusResponseCanHaveBody(this.requestMethod, status);
-    let responseBody = hasBody ? body : null;
-    if (hasBody) {
-      if (transferEncoding && /chunked/i.test(transferEncoding)) {
-        const parsed = __nimbusParseChunked(body);
-        if (!parsed) return null;
-        responseBody = parsed;
-      } else if (contentLength != null) {
-        const expected = parseInt(contentLength, 10);
-        if (Number.isFinite(expected) && body.byteLength < expected) return null;
-        if (Number.isFinite(expected)) responseBody = body.subarray(0, expected);
-      } else if (!this.closed) {
-        return null;
-      }
-    }
-    const headers = new Headers();
-    for (const [k, v] of headerPairs) {
-      if (/^transfer-encoding$/i.test(k)) continue;
-      headers.append(k, v);
-    }
-    return new Response(responseBody, { status, statusText, headers });
-  }
-
-  async response(timeoutMs) {
-    const deadline = Date.now() + Math.max(1, timeoutMs || __NIMBUS_SOCKET_TIMEOUT_MS);
-    while (Date.now() < deadline) {
-      const response = this._responseFromBytes();
-      if (response) return response;
-      const waiter = new __NimbusDeferred();
-      this.waiters.push(waiter);
-      const remaining = Math.max(1, deadline - Date.now());
-      await Promise.race([
-        waiter.promise,
-        new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 250))),
-      ]);
-    }
-    return new Response("Nimbus virtual socket: timed out waiting for response", { status: 504 });
-  }
+function toBytes(value) {
+    if (value instanceof Uint8Array)
+        return value;
+    if (value instanceof ArrayBuffer)
+        return new Uint8Array(value);
+    if (ArrayBuffer.isView(value))
+        return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (Array.isArray(value))
+        return Uint8Array.from(value);
+    if (typeof value === 'string')
+        return new TextEncoder().encode(value);
+    if (isPyodideProxyLike(value))
+        return toBytes(value.toJs());
+    return EMPTY_BYTES;
 }
-
-class __NimbusVirtualListener {
-  constructor(port) {
-    this.port = port;
-    this.queue = [];
-    this.waiters = [];
-  }
-
-  push(conn) {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter.resolve(conn);
-    else this.queue.push(conn);
-  }
-
-  accept() {
-    const queued = this.queue.shift();
-    if (queued) return Promise.resolve(queued);
-    const waiter = new __NimbusDeferred();
-    this.waiters.push(waiter);
-    return waiter.promise;
-  }
-
-  take() {
-    return this.queue.shift() || null;
-  }
-
-  pending() {
-    return this.queue.length;
-  }
+function concatBytes(parts) {
+    let length = 0;
+    for (const part of parts)
+        length += part.byteLength;
+    const out = new Uint8Array(length);
+    let offset = 0;
+    for (const part of parts) {
+        out.set(part, offset);
+        offset += part.byteLength;
+    }
+    return out;
 }
-
-class __NimbusVirtualSocketKernel {
-  constructor() {
-    this.listeners = new Map();
-    this.connections = new Map();
-    this.nextConnectionId = 1;
-    this.nextEphemeralPort = 49152;
-    this.listenWaiters = [];
-  }
-
-  listen(port) {
-    let n = Number(port);
-    if (!Number.isInteger(n) || n < 0 || n >= 65536) throw new Error("invalid port: " + port);
-    if (n === 0) {
-      while (this.listeners.has(this.nextEphemeralPort)) {
-        this.nextEphemeralPort++;
-        if (this.nextEphemeralPort >= 65535) this.nextEphemeralPort = 49152;
-      }
-      n = this.nextEphemeralPort++;
-      if (this.nextEphemeralPort >= 65535) this.nextEphemeralPort = 49152;
+function responseCanHaveBody(requestMethod, status) {
+    if (requestMethod.toUpperCase() === 'HEAD')
+        return false;
+    return status !== 204 && status !== 205 && status !== 304;
+}
+/** Serialize the Worker Request into HTTP/1.1 request bytes for the guest server. */
+function encodeHttpRequest(request, body) {
+    const url = new URL(request.url);
+    const path = (url.pathname || '/') + url.search;
+    const headers = new Headers(request.headers);
+    if (!headers.has('Host'))
+        headers.set('Host', url.host || 'nimbus.local');
+    if (body.byteLength > 0 && !headers.has('Content-Length')) {
+        headers.set('Content-Length', String(body.byteLength));
     }
-    let listener = this.listeners.get(n);
-    if (!listener) {
-      listener = new __NimbusVirtualListener(n);
-      this.listeners.set(n, listener);
-      try { globalThis.__nimbusVirtualSocketDidListen?.(n); } catch {}
-      const waiters = this.listenWaiters.splice(0);
-      for (const waiter of waiters) waiter.resolve(n);
+    const lines = [`${request.method} ${path} HTTP/1.1`];
+    headers.forEach((value, key) => lines.push(`${key}: ${value}`));
+    lines.push('', '');
+    return concatBytes([new TextEncoder().encode(lines.join('\r\n')), body]);
+}
+/**
+ * Bounded FIFO of byte chunks. One instance carries request bytes from
+ * handleHttpRequest to recv() (inbound) and one carries response bytes
+ * from send() to the HTTP parser (outbound). Stage 1 fills the inbound
+ * queue in one shot and drains the outbound queue synchronously; the
+ * async halves are declared on VirtualSocketStreamingStage2.
+ */
+class ByteChunkQueue {
+    limitTotalBytes;
+    overflowLabel;
+    chunks = [];
+    headOffset = 0;
+    enqueuedTotalBytes = 0;
+    constructor(limitTotalBytes, overflowLabel) {
+        this.limitTotalBytes = limitTotalBytes;
+        this.overflowLabel = overflowLabel;
     }
-    return n;
-  }
-
-  closeListener(port) {
-    this.listeners.delete(Number(port));
-  }
-
-  async accept(port) {
-    const listener = this.listeners.get(Number(port));
-    if (!listener) throw new Error("port is not listening: " + port);
-    const conn = await listener.accept();
-    return { id: conn.id, host: "127.0.0.1", port: 0 };
-  }
-
-  acceptNow(port) {
-    const listener = this.listeners.get(Number(port));
-    if (!listener) throw new Error("port is not listening: " + port);
-    const conn = listener.take();
-    return conn ? { id: conn.id, host: "127.0.0.1", port: 0 } : null;
-  }
-
-  recv(id, maxBytes) {
-    const conn = this.connections.get(Number(id));
-    if (!conn) return [];
-    return conn.read(maxBytes);
-  }
-
-  send(id, bytesLike) {
-    const conn = this.connections.get(Number(id));
-    if (!conn) throw new Error("connection is closed: " + id);
-    return conn.write(bytesLike);
-  }
-
-  close(id) {
-    const conn = this.connections.get(Number(id));
-    if (!conn) return;
-    conn.close();
-    this.connections.delete(Number(id));
-  }
-
-  pending(port) {
-    return this.listeners.get(Number(port))?.pending() || 0;
-  }
-
-  firstListeningPort() {
-    return this.listeners.size > 0 ? Array.from(this.listeners.keys())[0] : null;
-  }
-
-  waitReadable(ports, timeoutSeconds) {
-    const normalized = (Array.isArray(ports) ? ports : []).map((p) => Number(p)).filter((p) => Number.isInteger(p));
-    for (const port of normalized) {
-      if (this.pending(port) > 0) return Promise.resolve([port]);
-    }
-    const timeoutMs = timeoutSeconds == null ? __NIMBUS_SOCKET_TIMEOUT_MS : Math.max(0, Number(timeoutSeconds) * 1000);
-    const waiter = new __NimbusDeferred();
-    const check = () => {
-      const ready = normalized.filter((port) => this.pending(port) > 0);
-      if (ready.length > 0) waiter.resolve(ready);
-    };
-    const oldWaiters = this.listenWaiters;
-    const poll = setInterval(check, 25);
-    const timer = setTimeout(() => {
-      clearInterval(poll);
-      waiter.resolve([]);
-    }, timeoutMs);
-    return waiter.promise.finally(() => {
-      clearInterval(poll);
-      clearTimeout(timer);
-      this.listenWaiters = oldWaiters;
-    });
-  }
-
-  async waitForListen(timeoutMs) {
-    const existing = this.firstListeningPort();
-    if (existing) return existing;
-    const waiter = new __NimbusDeferred();
-    this.listenWaiters.push(waiter);
-    return await Promise.race([
-      waiter.promise,
-      new Promise((resolve) => setTimeout(() => resolve(null), Math.max(1, timeoutMs || 5_000))),
-    ]);
-  }
-
-  async handleHttpRequest(port, request) {
-    let listener = this.listeners.get(Number(port));
-    if (!listener) {
-      try { await globalThis.__nimbusVirtualSocketEnsureListener?.(Number(port)); } catch {}
-      listener = this.listeners.get(Number(port));
-    }
-    if (!listener) return new Response("Nimbus virtual socket: no listener on port " + port, { status: 502 });
-    const id = this.nextConnectionId++;
-    const conn = new __NimbusVirtualConnection(id, request.method, await __nimbusRequestBytes(request));
-    this.connections.set(id, conn);
-    listener.push(conn);
-    try {
-      try {
-        const accepted = await globalThis.__nimbusVirtualSocketRequestQueued?.(Number(port));
-        if (accepted === false) {
-          const detail = typeof globalThis.__nimbusVirtualSocketLastError === "string"
-            ? globalThis.__nimbusVirtualSocketLastError.trim()
-            : "";
-          const suffix = detail ? ": " + detail : "";
-          return new Response("Nimbus virtual socket: runtime handler did not accept the request" + suffix, { status: 502 });
+    enqueue(bytes) {
+        if (bytes.byteLength === 0)
+            return;
+        if (this.enqueuedTotalBytes + bytes.byteLength > this.limitTotalBytes) {
+            throw new Error(`Nimbus virtual socket: ${this.overflowLabel} exceeds ${this.limitTotalBytes} bytes`);
         }
-      } catch {}
-      return await conn.response(__NIMBUS_SOCKET_TIMEOUT_MS);
-    } finally {
-      conn.close();
-      this.connections.delete(id);
+        this.enqueuedTotalBytes += bytes.byteLength;
+        this.chunks.push(bytes);
     }
-  }
+    /** Drain up to maxBytes from the head chunk; empty result means no data is queued. */
+    readUpTo(maxBytes) {
+        const head = this.chunks[0];
+        if (!head)
+            return EMPTY_BYTES;
+        const available = head.byteLength - this.headOffset;
+        const take = Math.min(available, Math.max(1, maxBytes));
+        const out = head.subarray(this.headOffset, this.headOffset + take);
+        this.headOffset += take;
+        if (this.headOffset >= head.byteLength) {
+            this.chunks.shift();
+            this.headOffset = 0;
+        }
+        return out;
+    }
 }
-
-globalThis.__nimbusVirtualSockets = globalThis.__nimbusVirtualSockets || new __NimbusVirtualSocketKernel();
-`;
+/**
+ * Incremental HTTP/1.1 response parser. Consumes response bytes as the
+ * guest server writes them: status line and headers first, then the body
+ * under content-length, chunked, or until-close framing. Completing or
+ * failing is monotonic; later input is ignored.
+ */
+class HttpResponseParser {
+    requestMethod;
+    phase = 'headers';
+    settled = null;
+    headerBuffer = EMPTY_BYTES;
+    headerScanOffset = 0;
+    status = 200;
+    statusText = '';
+    headerPairs = [];
+    framing = 'none';
+    expectedBodyBytes = 0;
+    bodyChunks = [];
+    bodyByteCount = 0;
+    chunkState = 'size';
+    chunkSizeLine = [];
+    chunkDataRemaining = 0;
+    constructor(requestMethod) {
+        this.requestMethod = requestMethod;
+    }
+    get outcome() {
+        return this.settled;
+    }
+    feed(chunk) {
+        if (this.phase === 'done' || chunk.byteLength === 0)
+            return;
+        if (this.phase === 'headers') {
+            this.feedHeaders(chunk);
+            return;
+        }
+        this.feedBody(chunk);
+    }
+    /** EOF from the guest server closing the connection (or the request being torn down). */
+    finish() {
+        if (this.phase === 'done')
+            return;
+        if (this.phase === 'headers') {
+            this.fail('connection closed before response headers');
+            return;
+        }
+        if (this.framing === 'until-close') {
+            this.completeWithBody(concatBytes(this.bodyChunks));
+            return;
+        }
+        this.fail('connection closed before the response completed');
+    }
+    feedHeaders(chunk) {
+        this.headerBuffer = concatBytes([this.headerBuffer, chunk]);
+        const headerEnd = this.findHeaderEnd();
+        if (headerEnd < 0) {
+            this.headerScanOffset = Math.max(0, this.headerBuffer.byteLength - 3);
+            return;
+        }
+        this.parseHeaderBlock(this.headerBuffer.subarray(0, headerEnd));
+        const leftover = this.headerBuffer.subarray(headerEnd);
+        this.headerBuffer = EMPTY_BYTES;
+        if (!responseCanHaveBody(this.requestMethod, this.status)) {
+            this.completeWithBody(null);
+            return;
+        }
+        const transferEncoding = this.headerValue('Transfer-Encoding');
+        if (transferEncoding !== null && /chunked/i.test(transferEncoding)) {
+            this.framing = 'chunked';
+        }
+        else {
+            const contentLength = this.headerValue('Content-Length');
+            const expected = contentLength === null ? Number.NaN : parseInt(contentLength, 10);
+            if (Number.isFinite(expected) && expected >= 0) {
+                this.framing = 'content-length';
+                this.expectedBodyBytes = expected;
+                if (expected === 0) {
+                    this.completeWithBody(EMPTY_BYTES);
+                    return;
+                }
+            }
+            else {
+                this.framing = 'until-close';
+            }
+        }
+        this.phase = 'body';
+        this.feedBody(leftover);
+    }
+    feedBody(chunk) {
+        if (this.framing === 'chunked') {
+            this.feedChunkedBody(chunk);
+            return;
+        }
+        if (chunk.byteLength === 0)
+            return;
+        if (this.framing === 'content-length') {
+            const needed = this.expectedBodyBytes - this.bodyByteCount;
+            this.appendBody(chunk.subarray(0, Math.min(needed, chunk.byteLength)));
+            if (this.bodyByteCount >= this.expectedBodyBytes) {
+                this.completeWithBody(concatBytes(this.bodyChunks));
+            }
+            return;
+        }
+        this.appendBody(chunk);
+    }
+    feedChunkedBody(chunk) {
+        let i = 0;
+        while (i < chunk.byteLength && this.phase === 'body') {
+            if (this.chunkState === 'size') {
+                const byte = chunk[i++];
+                if (byte === 10) {
+                    const line = new TextDecoder().decode(Uint8Array.from(this.chunkSizeLine)).trim();
+                    this.chunkSizeLine.length = 0;
+                    const size = parseInt(line.split(';', 1)[0], 16);
+                    if (!Number.isFinite(size) || size < 0) {
+                        this.fail('malformed chunked response encoding');
+                        return;
+                    }
+                    if (size === 0) {
+                        this.completeWithBody(concatBytes(this.bodyChunks));
+                        return;
+                    }
+                    this.chunkState = 'data';
+                    this.chunkDataRemaining = size;
+                }
+                else if (byte !== 13) {
+                    this.chunkSizeLine.push(byte);
+                }
+            }
+            else if (this.chunkState === 'data') {
+                const take = Math.min(this.chunkDataRemaining, chunk.byteLength - i);
+                this.appendBody(chunk.subarray(i, i + take));
+                i += take;
+                this.chunkDataRemaining -= take;
+                if (this.chunkDataRemaining === 0)
+                    this.chunkState = 'data-end';
+            }
+            else {
+                const byte = chunk[i++];
+                if (byte === 10) {
+                    this.chunkState = 'size';
+                }
+                else if (byte !== 13) {
+                    this.fail('malformed chunked response encoding');
+                    return;
+                }
+            }
+        }
+    }
+    appendBody(bytes) {
+        if (bytes.byteLength === 0)
+            return;
+        this.bodyChunks.push(bytes);
+        this.bodyByteCount += bytes.byteLength;
+    }
+    findHeaderEnd() {
+        const bytes = this.headerBuffer;
+        for (let i = this.headerScanOffset; i + 3 < bytes.byteLength; i++) {
+            if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) {
+                return i + 4;
+            }
+        }
+        return -1;
+    }
+    parseHeaderBlock(headerBytes) {
+        const headerText = new TextDecoder().decode(headerBytes);
+        const lines = headerText.replace(/\r\n/g, '\n').split('\n').filter((line) => line.length > 0);
+        const statusLine = lines.shift() ?? 'HTTP/1.1 200 OK';
+        const match = /^HTTP\/\d(?:\.\d)?\s+(\d{3})(?:\s+(.*))?$/.exec(statusLine);
+        this.status = match ? parseInt(match[1], 10) : 200;
+        this.statusText = match?.[2] ?? '';
+        for (const line of lines) {
+            const separator = line.indexOf(':');
+            if (separator <= 0)
+                continue;
+            this.headerPairs.push([line.slice(0, separator), line.slice(separator + 1).trimStart()]);
+        }
+    }
+    headerValue(name) {
+        const target = name.toLowerCase();
+        for (const [key, value] of this.headerPairs) {
+            if (key.toLowerCase() === target)
+                return value;
+        }
+        return null;
+    }
+    completeWithBody(body) {
+        this.phase = 'done';
+        this.settled = {
+            kind: 'response',
+            response: {
+                status: this.status,
+                statusText: this.statusText,
+                headerPairs: this.headerPairs,
+                body,
+            },
+        };
+    }
+    fail(message) {
+        this.phase = 'done';
+        this.settled = { kind: 'failed', message };
+    }
+}
+class VirtualConnection {
+    id;
+    /** Request bytes the guest server reads; filled in one shot in stage 1. */
+    inbound;
+    /** Response bytes the guest server writes; drained into the parser. */
+    outbound;
+    parser;
+    responseReady = new Deferred();
+    settled = false;
+    closed = false;
+    constructor(id, requestMethod, requestBytes, limits) {
+        this.id = id;
+        this.inbound = new ByteChunkQueue(requestBytes.byteLength, 'request buffer');
+        this.inbound.enqueue(requestBytes);
+        this.outbound = new ByteChunkQueue(limits.maxResponseBufferBytes, 'response buffer');
+        this.parser = new HttpResponseParser(requestMethod);
+    }
+    read(maxBytes) {
+        return Array.from(this.inbound.readUpTo(Math.max(1, maxBytes | 0)));
+    }
+    write(bytesLike) {
+        const bytes = toBytes(bytesLike);
+        if (bytes.byteLength === 0 || this.settled || this.closed)
+            return bytes.byteLength;
+        // Copy once: Pyodide/ruby.wasm callers reuse their transfer buffers.
+        this.outbound.enqueue(bytes.slice());
+        this.pumpParser();
+        return bytes.byteLength;
+    }
+    /** EOF from the server side (or request teardown); completes until-close bodies. */
+    close() {
+        if (this.closed)
+            return;
+        this.closed = true;
+        if (this.settled)
+            return;
+        this.parser.finish();
+        this.pumpParser();
+    }
+    /** Abort propagation: settle the pending preview request with a terminal status. */
+    abort(message, status) {
+        this.closed = true;
+        this.settle(new Response(`Nimbus virtual socket: ${message}`, { status }));
+    }
+    async response(timeoutMs) {
+        const timer = setTimeout(() => {
+            this.settle(new Response('Nimbus virtual socket: timed out waiting for response', { status: 504 }));
+        }, Math.max(1, timeoutMs));
+        try {
+            return await this.responseReady.promise;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    pumpParser() {
+        for (;;) {
+            const chunk = this.outbound.readUpTo(Number.MAX_SAFE_INTEGER);
+            if (chunk.byteLength === 0)
+                break;
+            this.parser.feed(chunk);
+        }
+        const outcome = this.parser.outcome;
+        if (!outcome)
+            return;
+        if (outcome.kind === 'failed') {
+            this.settle(new Response(`Nimbus virtual socket: ${outcome.message}`, { status: 502 }));
+            return;
+        }
+        const { status, statusText, headerPairs, body } = outcome.response;
+        const headers = new Headers();
+        for (const [key, value] of headerPairs) {
+            // The framing is consumed here; the Worker Response re-frames the body itself.
+            if (/^transfer-encoding$/i.test(key))
+                continue;
+            headers.append(key, value);
+        }
+        this.settle(new Response(body, { status, statusText, headers }));
+    }
+    settle(response) {
+        if (this.settled)
+            return;
+        this.settled = true;
+        this.responseReady.resolve(response);
+    }
+}
+class VirtualListener {
+    port;
+    queue = [];
+    acceptWaiters = [];
+    constructor(port) {
+        this.port = port;
+    }
+    push(conn) {
+        const waiter = this.acceptWaiters.shift();
+        if (waiter)
+            waiter.resolve(conn);
+        else
+            this.queue.push(conn);
+    }
+    accept() {
+        const queued = this.queue.shift();
+        if (queued)
+            return Promise.resolve(queued);
+        const waiter = new Deferred();
+        this.acceptWaiters.push(waiter);
+        return waiter.promise;
+    }
+    take() {
+        return this.queue.shift() ?? null;
+    }
+    pending() {
+        return this.queue.length;
+    }
+    drainQueued() {
+        return this.queue.splice(0);
+    }
+    rejectPendingAccepts(error) {
+        for (const waiter of this.acceptWaiters.splice(0))
+            waiter.reject(error);
+    }
+}
+export class VirtualSocketKernel {
+    host;
+    /** Public: runner glue inspects listeners.keys() for the default preview port. */
+    listeners = new Map();
+    connections = new Map();
+    limits;
+    nextConnectionId = 1;
+    nextEphemeralPort = 49152;
+    listenWaiters = [];
+    readableWaiters = new Set();
+    constructor(host, limits) {
+        this.host = host;
+        this.limits = { ...DEFAULT_LIMITS, ...limits };
+    }
+    listen(port) {
+        let n = Number(port);
+        if (!Number.isInteger(n) || n < 0 || n >= 65536)
+            throw new Error(`invalid port: ${port}`);
+        if (n === 0) {
+            while (this.listeners.has(this.nextEphemeralPort)) {
+                this.nextEphemeralPort++;
+                if (this.nextEphemeralPort >= 65535)
+                    this.nextEphemeralPort = 49152;
+            }
+            n = this.nextEphemeralPort++;
+            if (this.nextEphemeralPort >= 65535)
+                this.nextEphemeralPort = 49152;
+        }
+        if (!this.listeners.has(n)) {
+            this.listeners.set(n, new VirtualListener(n));
+            try {
+                this.host.__nimbusVirtualSocketDidListen?.(n);
+            }
+            catch { }
+            for (const waiter of this.listenWaiters.splice(0))
+                waiter.resolve(n);
+        }
+        return n;
+    }
+    closeListener(port) {
+        const n = Number(port);
+        const listener = this.listeners.get(n);
+        if (!listener)
+            return;
+        this.listeners.delete(n);
+        for (const conn of listener.drainQueued()) {
+            this.connections.delete(conn.id);
+            conn.abort(`listener closed on port ${n}`, 502);
+        }
+        listener.rejectPendingAccepts(new Error(`port is not listening: ${n}`));
+    }
+    async accept(port) {
+        const listener = this.listeners.get(Number(port));
+        if (!listener)
+            throw new Error(`port is not listening: ${port}`);
+        const conn = await listener.accept();
+        return { id: conn.id, host: '127.0.0.1', port: 0 };
+    }
+    acceptNow(port) {
+        const listener = this.listeners.get(Number(port));
+        if (!listener)
+            throw new Error(`port is not listening: ${port}`);
+        const conn = listener.take();
+        return conn ? { id: conn.id, host: '127.0.0.1', port: 0 } : null;
+    }
+    /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */
+    recv(id, maxBytes) {
+        const conn = this.connections.get(Number(id));
+        if (!conn)
+            return [];
+        return conn.read(Number(maxBytes));
+    }
+    send(id, bytesLike) {
+        const conn = this.connections.get(Number(id));
+        if (!conn)
+            throw new Error(`connection is closed: ${id}`);
+        return conn.write(bytesLike);
+    }
+    close(id) {
+        const conn = this.connections.get(Number(id));
+        if (!conn)
+            return;
+        conn.close();
+        this.connections.delete(Number(id));
+    }
+    pending(port) {
+        return this.listeners.get(Number(port))?.pending() ?? 0;
+    }
+    firstListeningPort() {
+        for (const port of this.listeners.keys())
+            return port;
+        return null;
+    }
+    /** select()-style readiness: resolves ports with queued connections, [] on timeout. */
+    waitReadable(ports, timeoutSeconds) {
+        const normalized = (Array.isArray(ports) ? ports : [])
+            .map((p) => Number(p))
+            .filter((p) => Number.isInteger(p));
+        const readyNow = normalized.filter((port) => this.pending(port) > 0);
+        if (readyNow.length > 0)
+            return Promise.resolve(readyNow);
+        const timeoutMs = timeoutSeconds == null
+            ? this.limits.responseTimeoutMs
+            : Math.max(0, Number(timeoutSeconds) * 1000);
+        const deferred = new Deferred();
+        const waiter = {
+            ports: normalized,
+            deferred,
+            timer: setTimeout(() => {
+                this.readableWaiters.delete(waiter);
+                deferred.resolve([]);
+            }, timeoutMs),
+        };
+        this.readableWaiters.add(waiter);
+        return deferred.promise;
+    }
+    async waitForListen(timeoutMs) {
+        const existing = this.firstListeningPort();
+        if (existing)
+            return existing;
+        const waiter = new Deferred();
+        this.listenWaiters.push(waiter);
+        let timer = null;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve(null), Math.max(1, timeoutMs ?? 5_000));
+        });
+        try {
+            return await Promise.race([waiter.promise, timeout]);
+        }
+        finally {
+            if (timer !== null)
+                clearTimeout(timer);
+        }
+    }
+    async handleHttpRequest(port, request) {
+        const n = Number(port);
+        let listener = this.listeners.get(n);
+        if (!listener) {
+            try {
+                await this.host.__nimbusVirtualSocketEnsureListener?.(n);
+            }
+            catch { }
+            listener = this.listeners.get(n);
+        }
+        if (!listener) {
+            return new Response(`Nimbus virtual socket: no listener on port ${port}`, { status: 502 });
+        }
+        const body = request.method === 'GET' || request.method === 'HEAD'
+            ? EMPTY_BYTES
+            : new Uint8Array(await request.arrayBuffer());
+        if (body.byteLength > this.limits.maxRequestBodyBytes) {
+            return new Response(`Nimbus virtual socket: request body exceeds ${this.limits.maxRequestBodyBytes} bytes`, { status: 413 });
+        }
+        const id = this.nextConnectionId++;
+        const conn = new VirtualConnection(id, request.method, encodeHttpRequest(request, body), this.limits);
+        this.connections.set(id, conn);
+        listener.push(conn);
+        this.notifyReadable(n);
+        const signal = request.signal;
+        const onAbort = () => conn.abort('client aborted the request', 499);
+        if (signal?.aborted)
+            onAbort();
+        else
+            signal?.addEventListener('abort', onAbort);
+        try {
+            try {
+                const accepted = await this.host.__nimbusVirtualSocketRequestQueued?.(n);
+                if (accepted === false) {
+                    const detail = typeof this.host.__nimbusVirtualSocketLastError === 'string'
+                        ? this.host.__nimbusVirtualSocketLastError.trim()
+                        : '';
+                    const suffix = detail ? `: ${detail}` : '';
+                    return new Response(`Nimbus virtual socket: runtime handler did not accept the request${suffix}`, { status: 502 });
+                }
+            }
+            catch { }
+            return await conn.response(this.limits.responseTimeoutMs);
+        }
+        finally {
+            signal?.removeEventListener('abort', onAbort);
+            conn.close();
+            this.connections.delete(id);
+        }
+    }
+    notifyReadable(port) {
+        for (const waiter of Array.from(this.readableWaiters)) {
+            if (!waiter.ports.includes(port))
+                continue;
+            const ready = waiter.ports.filter((p) => this.pending(p) > 0);
+            if (ready.length === 0)
+                continue;
+            clearTimeout(waiter.timer);
+            this.readableWaiters.delete(waiter);
+            waiter.deferred.resolve(ready);
+        }
+    }
+}
+/**
+ * Install the kernel on the facet global scope. The generated injection
+ * bundle (VIRTUAL_SOCKET_KERNEL_SRC) is exactly this call against
+ * globalThis, wrapped in an IIFE so no identifiers leak into the dynamic
+ * worker module scope.
+ */
+export function installVirtualSocketKernel(scope = globalThis) {
+    if (!scope.__nimbusVirtualSockets) {
+        scope.__nimbusVirtualSockets = new VirtualSocketKernel(scope);
+    }
+    return scope.__nimbusVirtualSockets;
+}

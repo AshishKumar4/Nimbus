@@ -42,7 +42,7 @@ import { z } from 'zod';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.js';
+import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import {
   defaultGemHome,
