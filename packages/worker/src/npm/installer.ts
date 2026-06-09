@@ -25,16 +25,16 @@ import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
-  computeHoistPlan, shouldSkipPackage,
+  computeHoistPlan,
   type ResolvedPackage, type HoistPlan, type FetchFn,
 } from './resolver.js';
 import {
   applySwaps, findRejects, lookupSwap, lookupReject,
-  shouldWarnSkipTransitive,
+  shouldSkipPackage, shouldSkipPackageWithFramework,
+  shouldWarnSkipTransitive, isOptionalNativeBinding,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
-import { shouldSkipPackageWithFramework } from './resolver.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
@@ -55,12 +55,7 @@ import {
   readDiagCounters,
 } from '../observability/diag-counters.js';
 import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
-import {
-  resolveTreeInFacet,
-  type ResolveFacetSpec,
-  type ResolveFacetResult,
-  type FacetCachedEntry,
-} from './resolve-facet.js';
+import { type FacetCachedEntry } from './resolve-facet.js';
 import {
   resolveOnePackumentInFacet,
   type ResolveOneSpec,
@@ -623,6 +618,8 @@ export class NpmInstaller {
           main: e.main,
           moduleField: e.moduleField,
           binJson: e.binJson,
+          platformJson: e.platformJson,
+          optionalDepsJson: e.optionalDepsJson,
           fetchedAt: e.fetchedAt,
         }));
         const taskSpec: ResolveOneSpec = {
@@ -709,14 +706,13 @@ export class NpmInstaller {
 
         // X.5-G G1: silent-skip platform-native bindings sourced from
         // optionalDependencies. The task returns the pkg raw; the
-        // supervisor checks isOptional + os/cpu/libc/main.
+        // supervisor classifies it against the package ABI policy.
         if (optionalNames.has(taskName)) {
-          const isNativeBinding =
-            (Array.isArray((pkg as any).os) && (pkg as any).os.length > 0) ||
-            (Array.isArray((pkg as any).cpu) && (pkg as any).cpu.length > 0) ||
-            (Array.isArray((pkg as any).libc) && (pkg as any).libc.length > 0) ||
-            (typeof pkg.main === 'string' && /\.node$/.test(pkg.main));
-          if (isNativeBinding) {
+          if (isOptionalNativeBinding({
+            name: pkg.name,
+            os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc,
+            main: pkg.main,
+          })) {
             const reason = `optional native binding (os=${(pkg as any).os ?? '*'}, cpu=${(pkg as any).cpu ?? '*'}, libc=${(pkg as any).libc ?? '*'}, main=${pkg.main || '?'})`;
             log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
             emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });

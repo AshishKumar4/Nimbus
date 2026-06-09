@@ -101,8 +101,82 @@ export interface RuntimePortBridge {
 export declare const NIMBUS_OS_NAME = "nimbus";
 export declare const NIMBUS_ABI_TARGET = "wasm32-wasi-nimbus";
 export declare const NIMBUS_ABI_ID = "wasm32-wasi-nimbus";
-export type RuntimePackageAbi = 'javascript' | typeof NIMBUS_ABI_TARGET | 'pyodide-emscripten-2025_0-wasm32' | 'py3-none-any' | 'python-source-pure' | 'pyodide' | 'ruby-wasm' | 'native-unsupported';
+/** Canonical Pyodide package artifact ABI label. The single source of
+ *  truth for the label — runtime manifests, the pip planner, and
+ *  diagnostics all consume this constant. */
+export declare const PYODIDE_PACKAGE_ABI = "pyodide-emscripten-2025_0-wasm32";
+/** Canonical artifact class for native platform binaries Nimbus cannot
+ *  execute (Linux/Windows/macOS executables, .node bindings, native
+ *  wheels/gems). */
+export declare const NATIVE_UNSUPPORTED_ABI = "native-unsupported";
+export type RuntimePackageAbi = 'javascript' | typeof NIMBUS_ABI_TARGET | typeof PYODIDE_PACKAGE_ABI | 'py3-none-any' | 'python-source-pure' | 'pyodide' | 'ruby-wasm' | typeof NATIVE_UNSUPPORTED_ABI;
 export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>>;
+/** Name-to-name package rewrite at the resolver/installer boundary. */
+export interface PackageSwapEntry {
+    /** Original package name the user (or a transitive dep) asked for. */
+    from: string;
+    /** Package name we install instead. */
+    to: string;
+    /** One-line reason shown to the user. */
+    reason: string;
+    /**
+     * 'drop-in' = `require(from)` and `require(to)` work identically — same
+     *             export shape.
+     * 'shim'    = (reserved) we write package.json `dependencies` so consumer
+     *             imports `from`, gets `to`.
+     * 'manual'  = (reserved) consumer code change required. Demoted to
+     *             rejects because listing it here would silently break
+     *             user code.
+     */
+    compat: 'drop-in' | 'shim' | 'manual';
+}
+/** Deny-list entry with a helpful, always-actionable message. */
+export interface PackageRejectEntry {
+    from: string;
+    reason: string;
+    /** Optional swap-target suggestion shown inline. */
+    suggest?: string;
+    /**
+     * 'fail' = hard-fail at any depth.
+     * 'warn' = top-level hard-fails; transitive logs `[skip]` and drops the
+     *          package from the resolved tree (matches genuinely-optional
+     *          natives like fsevents).
+     */
+    transitive: 'fail' | 'warn';
+}
+/**
+ * The one typed package-ABI policy. Defined once in supervisor code
+ * (`facets/wasm-swap-registry.ts: PACKAGE_ABI_POLICY`) and serialized
+ * verbatim into resolver/loader facet preambles — generated dynamic
+ * Workers cannot import supervisor modules, so the policy travels as
+ * JSON plus serialized policy functions. The preamble parity unit test
+ * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
+ * asserts equality with this object so the two can never drift.
+ */
+export interface PackageAbiPolicy {
+    /** Public compiled-artifact target string (`wasm32-wasi-nimbus`). */
+    abiTarget: typeof NIMBUS_ABI_TARGET;
+    /** Artifact classes Nimbus can install and execute. */
+    acceptedArtifactClasses: readonly RuntimePackageAbi[];
+    /** Artifact class assigned to rejected native platform artifacts. */
+    nativeArtifactClass: typeof NATIVE_UNSUPPORTED_ABI;
+    /** Drop-in name rewrites (native package → published WASM build). */
+    swaps: readonly PackageSwapEntry[];
+    /** Known-native deny list with per-entry transitive policy. */
+    rejects: readonly PackageRejectEntry[];
+    /** Build-only packages skipped at transitive depth. */
+    skipPackages: readonly string[];
+    /** Build-only package name prefixes skipped at transitive depth. */
+    skipPrefixes: readonly string[];
+    /** Packages exempted from skipPackages when a framework needs them. */
+    frameworkRequiredPackages: readonly string[];
+    /** Known native-shard name globs, matched as `prefix-…`. */
+    nativeShardPrefixes: readonly string[];
+    /** Exact names exempted from nativeShardPrefixes (pure WASM builds). */
+    nativeShardExemptions: readonly string[];
+    /** bin-target file extensions that mark a native executable. */
+    nativeBinExtensions: readonly string[];
+}
 export type RuntimeAbiCapability = 'wasi.snapshot-preview1' | 'wasi.unstable-import-alias' | 'vfs.snapshot-diff' | 'stdio' | 'argv' | 'env' | 'clock' | 'random' | 'path' | 'symlink' | 'hardlink' | 'poll' | 'outbound-tcp-devtcp';
 export interface RuntimeAbiDescriptor {
     os: typeof NIMBUS_OS_NAME;

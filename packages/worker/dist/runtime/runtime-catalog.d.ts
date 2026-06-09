@@ -31,6 +31,7 @@
  * the user.
  */
 import { z } from 'zod/v4';
+import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {
     get(key: string): Promise<{
@@ -85,7 +86,7 @@ export interface RuntimeArtifactMetadata {
     source_sha256?: string;
     sha256: string;
 }
-export type RuntimePythonPackageAbi = 'pyodide-emscripten-2025_0-wasm32';
+export type RuntimePythonPackageAbi = typeof PYODIDE_PACKAGE_ABI;
 export interface RuntimePythonExtensionModuleMetadata {
     /** Path inside Python site-packages, as stored in the wheel. */
     path: string;

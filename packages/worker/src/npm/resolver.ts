@@ -5,7 +5,9 @@
  *   1. Proper semver parsing + range matching (^, ~, >=, ||, *, x ranges)
  *   2. Node.js-spec exports field resolution with conditions
  *   3. Aggressive hoisting algorithm (one copy of each version at the highest level)
- *   4. Build-only package skip list
+ *
+ * Build-only skip lists and all swap/reject/native policy live in
+ * `facets/wasm-swap-registry.ts: PACKAGE_ABI_POLICY`.
  */
 
 import type { NpmCache, RegistryCacheEntry } from './cache.js';
@@ -17,6 +19,7 @@ import {
 } from '../observability/diag-counters.js';
 import {
   lookupSwap, lookupReject, shouldWarnSkipTransitive,
+  shouldSkipPackageWithFramework,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
   isOptionalNativeBinding, classifyInstallError, nativeExecutableReject,
@@ -448,19 +451,7 @@ export async function resolvePackage(
   setResolverPhase('caching');
   // Cache the resolved version (non-fatal — if caching fails, we still return the package)
   try {
-    cache.putRegistryEntry({
-      name: pkg.name,
-      version: pkg.version,
-      tarballUrl: pkg.tarballUrl,
-      integrity: pkg.integrity,
-      depsJson: JSON.stringify(pkg.dependencies),
-      peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
-      exportsJson: JSON.stringify(pkg.exports ?? {}),
-      main: pkg.main,
-      moduleField: pkg.module,
-      binJson: JSON.stringify(pkg.bin),
-      fetchedAt: Date.now(),
-    });
+    cache.putRegistryEntry(registryEntryFromResolved(pkg));
   } catch (e: any) {
     console.error(`[npm-resolve] cache write failed for ${name}@${version}:`, e?.message);
   }
@@ -501,22 +492,34 @@ function cachePopularVersions(data: any, cache: NpmCache, alreadyCached: string,
     const vData = data.versions[ver];
     if (!vData) continue;
     try {
-      const pkg = versionToResolved(vData, installName);
-      cache.putRegistryEntry({
-        name: pkg.name,
-        version: pkg.version,
-        tarballUrl: pkg.tarballUrl,
-        integrity: pkg.integrity,
-        depsJson: JSON.stringify(pkg.dependencies),
-        peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
-        exportsJson: JSON.stringify(pkg.exports ?? {}),
-        main: pkg.main,
-        moduleField: pkg.module,
-        binJson: JSON.stringify(pkg.bin),
-        fetchedAt: Date.now(),
-      });
+      cache.putRegistryEntry(registryEntryFromResolved(versionToResolved(vData, installName)));
     } catch { /* skip invalid version data */ }
   }
+}
+
+/**
+ * Serialize a ResolvedPackage into the registry-cache row shape. The
+ * one supervisor-side definition of how a resolved package round-trips
+ * through the cache; `cacheEntryToResolved` is the inverse. The facet
+ * task bodies keep inline literals of the same shape because they are
+ * serialized via fn.toString() and cannot import.
+ */
+export function registryEntryFromResolved(pkg: ResolvedPackage): RegistryCacheEntry {
+  return {
+    name: pkg.name,
+    version: pkg.version,
+    tarballUrl: pkg.tarballUrl,
+    integrity: pkg.integrity,
+    depsJson: JSON.stringify(pkg.dependencies),
+    peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
+    exportsJson: JSON.stringify(pkg.exports ?? {}),
+    main: pkg.main,
+    moduleField: pkg.module,
+    binJson: JSON.stringify(pkg.bin),
+    platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
+    optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
+    fetchedAt: Date.now(),
+  };
 }
 
 /** Convert npm registry version data to ResolvedPackage. */
@@ -594,12 +597,19 @@ function extractRequiredPeers(vData: any): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Convert a RegistryCacheEntry back to ResolvedPackage. */
+/** Convert a RegistryCacheEntry back to ResolvedPackage. Inverse of
+ *  registryEntryFromResolved. */
 function registryCacheToResolved(entry: RegistryCacheEntry): ResolvedPackage {
   // X.5-F R2: surface cached peerDependencies so a registry-cache hit
   // doesn't lose the peer-enqueue signal. Empty object → undefined so
   // callers (resolveTree) can use a single truthy check.
   const peers = safeJsonParse<Record<string, string>>(entry.peerDepsJson || '{}', {});
+  // Platform constraints + optionalDependencies round-trip so warm-cache
+  // resolution applies the same ABI policy decisions as a cold fetch.
+  const platform = safeJsonParse<{ os?: string[]; cpu?: string[]; libc?: string[] }>(
+    entry.platformJson || '{}', {},
+  );
+  const optionalDeps = safeJsonParse<Record<string, string>>(entry.optionalDepsJson || '{}', {});
   return {
     name: entry.name,
     version: entry.version,
@@ -607,6 +617,10 @@ function registryCacheToResolved(entry: RegistryCacheEntry): ResolvedPackage {
     integrity: entry.integrity,
     dependencies: safeJsonParse(entry.depsJson, {}),
     peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
+    optionalDependencies: Object.keys(optionalDeps).length > 0 ? optionalDeps : undefined,
+    os:   Array.isArray(platform.os)   ? platform.os   : undefined,
+    cpu:  Array.isArray(platform.cpu)  ? platform.cpu  : undefined,
+    libc: Array.isArray(platform.libc) ? platform.libc : undefined,
     exports: safeJsonParse(entry.exportsJson, null),
     main: entry.main,
     module: entry.moduleField,
@@ -956,84 +970,6 @@ export function computeHoistPlan(
   // version per name (same as npm's flat tree), so nested is always empty.
 
   return { root, nested };
-}
-
-// ── Skip list ───────────────────────────────────────────────────────────
-
-// W6: `esbuild` and `fsevents` were removed from SKIP_PACKAGES so the
-// W6 swap/reject registry can own them. `esbuild` is in WASM_SWAPS
-// (→ esbuild-wasm); `fsevents` is in REJECT_INSTALL (transitive='warn').
-// node-gyp / node-pre-gyp remain here for transitive silence (they
-// also appear in REJECT_INSTALL with transitive='warn' so a top-level
-// `npm install node-gyp` reaches the registry first and emits a clear
-// rejection — see plan §10 risk row).
-//
-// W11: `vite` was previously unconditionally skipped because the
-// supervisor bundles real-vite. But Astro/Nuxt/Remix/SvelteKit `import`
-// from the user's installed `vite` to call createServer() — so when a
-// framework is detected, `vite` must actually land in node_modules.
-// `shouldSkipPackageWithFramework({ frameworkAware: true })` exempts
-//
-// X.5-G: `rollup` removed from SKIP_PACKAGES because it's now in
-// WASM_SWAPS (rollup → @rollup/wasm-node). SKIP would mask the swap at
-// transitive depth: vite → rollup transitive enqueue would silent-skip
-// rollup before the swap fires. Removing the SKIP entry lets the
-// transitive swap path (npm-resolver.ts:645) consult the registry.
-const SKIP_PACKAGES = new Set([
-  // Build tools (X.5-G: rollup migrated to WASM_SWAPS)
-  'typescript', 'vite', 'webpack', 'parcel',
-  'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
-  'prettier', 'eslint', 'stylelint',
-  // Native modules / build-time (chokidar = real-vite intercepts;
-  // node-gyp/pre-gyp = build-time only, never run in Workers)
-  'chokidar', 'node-gyp', 'node-pre-gyp',
-  // Cloudflare dev tools
-  '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
-  // Other build-only
-  'husky', 'lint-staged', 'commitlint',
-]);
-
-// W11: when a framework is detected at install time, packages in this
-// set are removed from the skip list. Their dev binaries `import` from
-// the project's node_modules and would crash with "Cannot find module"
-// otherwise.
-const FRAMEWORK_REQUIRED_PACKAGES = new Set([
-  'vite',
-]);
-
-const SKIP_PREFIXES = [
-  '@types/',
-  '@eslint/',
-  '@typescript-eslint/',
-  'eslint-plugin-',
-  'eslint-config-',
-  // Note: '@vitejs/' used to be skipped because the Cirrus shim
-  // ignored plugins anyway. With real-vite mode (Phase 1-4), those
-  // plugins are required — keep them installable and let whichever
-  // dev-server mode is active decide how to use them.
-];
-
-/** Check if a package should be skipped (build-only, native, types). */
-export function shouldSkipPackage(name: string): boolean {
-  if (SKIP_PACKAGES.has(name)) return true;
-  return SKIP_PREFIXES.some(p => name.startsWith(p));
-}
-
-/**
- * W11: framework-aware skip variant. When `frameworkAware` is true, the
- * resolver lets through packages in FRAMEWORK_REQUIRED_PACKAGES (currently
- * just `vite`) so framework dev binaries can import them from node_modules.
- *
- * Callers detect framework presence via `framework-detect.ts` BEFORE
- * starting resolution and thread the flag through `resolveTree`.
- *
- */
-export function shouldSkipPackageWithFramework(
-  name: string,
-  frameworkAware: boolean,
-): boolean {
-  if (frameworkAware && FRAMEWORK_REQUIRED_PACKAGES.has(name)) return false;
-  return shouldSkipPackage(name);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

@@ -48,7 +48,7 @@
  *   - No `this` references.
  *   - No closure capture other than args + preamble names.
  *   - All helpers (semver match, exports field, skip list) live in the
- *     preamble (src/parallel/npm-resolve-preamble.ts) so the facet has
+ *     preamble (src/loaders/npm-resolve-preamble.ts) so the facet has
  *     them in its lexical scope.
  *
  * Cache strategy:
@@ -77,12 +77,19 @@ declare function NATIVE_EXECUTABLE_REJECT(pkg: ResolvedPackage): {
   suggest?: string;
   transitive: 'fail';
 } | undefined;
+declare function IS_OPTIONAL_NATIVE_BINDING(pkg: {
+  name?: string;
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
+  main?: string;
+}): boolean;
 declare function __EMIT_EVENT(e: FacetRegistryEvent): void;
 
 // ── Types exchanged between supervisor and facet ─────────────────────────
 
 export interface FacetCachedEntry {
-  /** Same shape as RegistryCacheEntry from src/npm-cache.ts. JSON-only
+  /** Same shape as RegistryCacheEntry from src/npm/cache.ts. JSON-only
    *  fields so the structured-clone over RPC doesn't choke. */
   name: string;
   version: string;
@@ -95,6 +102,10 @@ export interface FacetCachedEntry {
   main: string;
   moduleField: string;
   binJson: string;
+  /** JSON-encoded `{ os?, cpu?, libc? }` platform constraints. */
+  platformJson?: string;
+  /** JSON-encoded optionalDependencies. */
+  optionalDepsJson?: string;
   fetchedAt: number;
 }
 
@@ -171,7 +182,7 @@ export interface ResolveFacetResult {
 // `resolveTreeInFacet` is serialised via fn.toString() and run inside a
 // NimbusLoaderPool isolate. It references the following symbols by bare
 // identifier; they are declared in the preamble
-// (src/parallel/npm-resolve-preamble.ts) at facet-load time:
+// (src/loaders/npm-resolve-preamble.ts) at facet-load time:
 //
 //   - SHOULD_SKIP_PACKAGE(name) → boolean
 //   - PARSE_SEMVER(v) → [maj, min, patch] | null
@@ -368,10 +379,13 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
 
   const cachedEntryToResolved = (entry: FacetCachedEntry): ResolvedPackage => {
     let deps: any = {}, peers: any = {}, exp: any = null, bin: any = {};
+    let platform: any = {}, optionalDeps: any = {};
     try { deps = JSON.parse(entry.depsJson); } catch {}
     try { peers = entry.peerDepsJson ? JSON.parse(entry.peerDepsJson) : {}; } catch {}
     try { exp = JSON.parse(entry.exportsJson); } catch {}
     try { bin = JSON.parse(entry.binJson); } catch {}
+    try { platform = entry.platformJson ? JSON.parse(entry.platformJson) : {}; } catch {}
+    try { optionalDeps = entry.optionalDepsJson ? JSON.parse(entry.optionalDepsJson) : {}; } catch {}
     return {
       name: entry.name,
       version: entry.version,
@@ -381,6 +395,12 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       // X.5-F R2: surface peerDeps from cache hits so the BFS still
       // enqueues peers when we don't re-fetch the packument.
       peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
+      // Platform constraints + optionalDependencies round-trip so the
+      // ABI policy makes the same decisions on warm-cache hits.
+      optionalDependencies: Object.keys(optionalDeps).length > 0 ? optionalDeps : undefined,
+      os:   Array.isArray(platform.os)   ? platform.os   : undefined,
+      cpu:  Array.isArray(platform.cpu)  ? platform.cpu  : undefined,
+      libc: Array.isArray(platform.libc) ? platform.libc : undefined,
       exports: exp,
       main: entry.main,
       module: entry.moduleField,
@@ -670,6 +690,8 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       main: pkg.main,
       moduleField: pkg.module,
       binJson: JSON.stringify(pkg.bin),
+      platformJson: JSON.stringify({ os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc }),
+      optionalDepsJson: JSON.stringify((pkg as any).optionalDependencies ?? {}),
       fetchedAt: Date.now(),
     });
 
@@ -687,7 +709,7 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
       if (!otherData) continue;
       try {
         const otherPkg = versionToResolved(otherData);
-        enqueueCacheWrite({
+        const otherEntry: FacetCachedEntry = {
           name: otherPkg.name,
           version: otherPkg.version,
           tarballUrl: otherPkg.tarballUrl,
@@ -698,54 +720,19 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
           main: otherPkg.main,
           moduleField: otherPkg.module,
           binJson: JSON.stringify(otherPkg.bin),
+          platformJson: JSON.stringify({ os: (otherPkg as any).os, cpu: (otherPkg as any).cpu, libc: (otherPkg as any).libc }),
+          optionalDepsJson: JSON.stringify((otherPkg as any).optionalDependencies ?? {}),
           fetchedAt: Date.now(),
-        });
+        };
+        enqueueCacheWrite(otherEntry);
         // Also keep the in-memory cache up to date for further iterations.
         let inner = cacheByName.get(otherPkg.name);
         if (!inner) { inner = new Map(); cacheByName.set(otherPkg.name, inner); }
-        inner.set(otherPkg.version, {
-          name: otherPkg.name,
-          version: otherPkg.version,
-          tarballUrl: otherPkg.tarballUrl,
-          integrity: otherPkg.integrity,
-          depsJson: JSON.stringify(otherPkg.dependencies),
-          peerDepsJson: JSON.stringify(otherPkg.peerDependencies ?? {}),
-          exportsJson: JSON.stringify(otherPkg.exports ?? {}),
-          main: otherPkg.main,
-          moduleField: otherPkg.module,
-          binJson: JSON.stringify(otherPkg.bin),
-          fetchedAt: Date.now(),
-        });
+        inner.set(otherPkg.version, otherEntry);
       } catch { /* skip malformed */ }
     }
 
     return pkg;
-  };
-
-  // X.5-G G1: facet-side mirror of isOptionalNativeBinding from
-  // src/wasm-swap-registry.ts. The facet body is serialised via
-  // fn.toString() and cannot import — local helpers are inlined here.
-  // Keep this byte-equivalent in shape with the registry export.
-  const NATIVE_SHARD_PREFIXES_FACET = [
-    '@rollup/rollup-', '@parcel/watcher-', '@swc/core-', '@next/swc-',
-    '@tailwindcss/oxide-', '@img/sharp-', '@napi-rs/canvas-',
-    '@biomejs/cli-', '@esbuild/',
-  ];
-  const isOptionalNativeBindingFacet = (p: any): boolean => {
-    if (!p) return false;
-    if (Array.isArray(p.os)   && p.os.length   > 0) return true;
-    if (Array.isArray(p.cpu)  && p.cpu.length  > 0) return true;
-    if (Array.isArray(p.libc) && p.libc.length > 0) return true;
-    if (typeof p.main === 'string' && /\.node$/.test(p.main)) return true;
-    if (typeof p.name === 'string') {
-      for (const prefix of NATIVE_SHARD_PREFIXES_FACET) {
-        if (p.name.startsWith(prefix) && p.name.length > prefix.length) {
-          if (p.name === '@rollup/wasm-node') return false;
-          return true;
-        }
-      }
-    }
-    return false;
   };
 
   // ── Breadth-first walk (mirror of npm-resolver.ts:resolveTree) ───────
@@ -793,8 +780,9 @@ export const resolveTreeInFacet = async function resolveTreeInFacet(
           try {
             const pkg = await resolveOne(name, range, { isOptional });
             // X.5-G G1: silent-skip platform-native bindings sourced
-            // from optionalDependencies. Mirrors npm-resolver.ts.
-            if (pkg && isOptional && isOptionalNativeBindingFacet({
+            // from optionalDependencies. Mirrors npm-resolver.ts; the
+            // policy heuristic is preamble-provided.
+            if (pkg && isOptional && IS_OPTIONAL_NATIVE_BINDING({
               name: pkg.name,
               os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc,
               main: pkg.main,

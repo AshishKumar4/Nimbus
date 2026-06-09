@@ -1,30 +1,34 @@
 /**
  * npm-resolve-preamble.ts — preamble injected into NimbusLoaderPool isolates
- * that run src/npm-resolve-facet.ts.
+ * that run src/npm/resolve-facet.ts and src/npm/resolve-one-facet.ts.
  *
  * NimbusLoaderPool serialises the user function via fn.toString() and runs
  * it inside a dynamic worker. Names referenced by the function at module
  * scope are NOT in that worker's lexical scope at runtime — they must be
  * re-declared in the preamble.
  *
- * The resolver-facet references the following preamble symbols:
- *   - SHOULD_SKIP_PACKAGE(name) → boolean
- *   - SHOULD_SWAP(name)         → { from, to } | undefined
- *   - SHOULD_REJECT_FAIL(name)  → { from, reason, suggest? } | undefined
- *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → entry | undefined
+ * The resolver facets reference the following preamble symbols:
+ *   - SHOULD_SKIP_PACKAGE(name, frameworkAware) → boolean
+ *   - SHOULD_SWAP(name)         → swap entry | undefined
+ *   - SHOULD_REJECT_FAIL(name)  → reject entry | undefined
+ *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
  *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
+ *   - IS_OPTIONAL_NATIVE_BINDING(pkg) → boolean
  *   - PARSE_SEMVER(v) → [major, minor, patch] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
  *   - RESOLVE_VERSION(versions, range) → string | null
  *
- * All of these are pasted from src/npm-resolver.ts and src/wasm-swap-registry.ts
- * and MUST stay byte-equivalent. Divergence between supervisor and facet
- * resolution would mean the facet picks different versions / makes different
- * swap-or-reject decisions than the legacy in-supervisor path, breaking
- * both correctness and the NIMBUS_FACET_RESOLVER=0 fallback contract.
+ * The package-ABI policy block is GENERATED at supervisor module-load
+ * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`
+ * functions are embedded via `fn.toString()`, so the facet decisions are
+ * the supervisor's decisions by construction. The parity unit test
+ * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
+ * asserts equality with the supervisor module.
  *
- * Registry data is duplicated below and gated by the preamble parity test.
+ * The semver helpers are pasted from src/npm/resolver.ts and MUST stay
+ * byte-equivalent — divergence would mean the facet picks different
+ * versions than the in-supervisor path.
  *
  * Preamble bytes are part of the loader-cache key for NimbusLoaderPool —
  * any edit invalidates the warm slot and forces a re-load on next

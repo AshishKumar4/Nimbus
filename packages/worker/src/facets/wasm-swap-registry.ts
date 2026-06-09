@@ -1,78 +1,54 @@
 /**
- * WASM swap and rejected-package registry.
+ * Package ABI policy — WASM swaps, rejected packages, build-only skips,
+ * and native-artifact classification.
  *
  * The contract:
- *   - WASM_SWAPS    : name→name rewrite at the resolver/installer boundary.
- *                     Only `compat: 'drop-in'` swaps qualify (the consumer's
- *                     `require()` call site works unchanged). Different-
- *                     require-name candidates (bcrypt → bcryptjs, argon2 →
- *                     hash-wasm, …) are NOT swaps until the resolver supports
- *                     `npm:` aliases. They live in REJECT_INSTALL with a
- *                     code-change suggestion.
+ *   - swaps  : name→name rewrite at the resolver/installer boundary.
+ *              Only `compat: 'drop-in'` swaps qualify (the consumer's
+ *              `require()` call site works unchanged). Different-
+ *              require-name candidates (bcrypt → bcryptjs, argon2 →
+ *              hash-wasm, …) are NOT swaps until the resolver supports
+ *              `npm:` aliases. They live in `rejects` with a
+ *              code-change suggestion.
  *
- *   - REJECT_INSTALL: deny list with helpful messages. Each entry has a
- *                     per-entry `transitive` policy:
- *                       'fail' = hard-fail at any depth (top + transitive).
- *                       'warn' = top-level fails; transitive logs `[skip]`
- *                                and continues (matches the existing
- *                                `shouldSkipPackage` UX for build-only).
+ *   - rejects: deny list with helpful messages. Each entry has a
+ *              per-entry `transitive` policy:
+ *                'fail' = hard-fail at any depth (top + transitive).
+ *                'warn' = top-level fails; transitive logs `[skip]`
+ *                         and continues (matches the existing
+ *                         `shouldSkipPackage` UX for build-only).
  *
- * IMPORTANT: This module is the single source of truth in the supervisor
- * isolate. The same data is *duplicated* into
- * `src/loaders/npm-resolve-preamble.ts` because that preamble is shipped
- * into NimbusLoaderPool isolates as a string (cannot `import`). The
- * preamble parity test gates the duplication.
+ * IMPORTANT: `PACKAGE_ABI_POLICY` is the single source of truth for the
+ * whole npm policy — supervisor AND facets. Generated dynamic-Worker
+ * facets cannot `import` this module, so
+ * `src/loaders/npm-resolve-preamble.ts` SERIALIZES the policy object
+ * (JSON) plus the `policy*` functions below (`fn.toString()`) into the
+ * facet preamble at supervisor module-load time. The `policy*` functions
+ * must therefore stay self-contained: parameters and globals only — no
+ * references to module-scope bindings. The parity unit test
+ * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
+ * asserts equality with this module.
  */
 
-// ─────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────
-
-export interface SwapEntry {
-  /** Original package name the user (or a transitive dep) asked for. */
-  from: string;
-  /** Package name we install instead. */
-  to: string;
-  /** One-line reason shown to the user. */
-  reason: string;
-  /**
-   * 'drop-in' = `require(from)` and `require(to)` work identically — same
-   *             export shape.
-   * 'shim'    = (reserved) we write package.json `dependencies` so consumer
-   *             imports `from`, gets `to`.
-   * 'manual'  = (reserved) consumer code change required. Demoted to
-   *             REJECT_INSTALL because listing it here would silently break
-   *             user code.
-   */
-  compat: 'drop-in' | 'shim' | 'manual';
-}
-
-export interface RejectEntry {
-  from: string;
-  /** Helpful one-liner. Always actionable. */
-  reason: string;
-  /** Optional swap-target suggestion shown inline. */
-  suggest?: string;
-  /**
-   * 'fail' = hard-fail at any depth.
-   * 'warn' = top-level hard-fails; transitive logs `[skip]` and drops the
-   *          package from the resolved tree (matches existing
-   *          `shouldSkipPackage` semantics for genuinely-optional natives
-   *          like fsevents).
-   */
-  transitive: 'fail' | 'warn';
-}
+import {
+  NATIVE_UNSUPPORTED_ABI,
+  NIMBUS_ABI_TARGET,
+  PYODIDE_PACKAGE_ABI,
+  type PackageAbiPolicy,
+  type PackageRejectEntry,
+  type PackageSwapEntry,
+} from '../runtime/os-contracts.js';
 
 // ─────────────────────────────────────────────────────────────────────────
-// Registries
+// The policy
 // ─────────────────────────────────────────────────────────────────────────
 
-export const WASM_SWAPS: ReadonlyArray<SwapEntry> = [
+const SWAPS: ReadonlyArray<PackageSwapEntry> = [
   // Different-require-name candidates (bcrypt → bcryptjs, argon2 →
   // hash-wasm, node-sass → sass, grpc → @grpc/grpc-js, @swc/core →
   // @swc/wasm-web) are intentionally NOT here. Without npm-alias
   // support, swapping them would silently break the user's
-  // `require(originalName)` call site. They are in REJECT_INSTALL
+  // `require(originalName)` call site. They are in `rejects`
   // with a code-change suggestion until npm-alias support exists.
   {
     from: 'esbuild',
@@ -101,7 +77,7 @@ export const WASM_SWAPS: ReadonlyArray<SwapEntry> = [
   },
 ];
 
-export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
+const REJECTS: ReadonlyArray<PackageRejectEntry> = [
   // ── Same-require-name natives that crash at load time ────────────────
   {
     from: 'sharp',
@@ -339,28 +315,154 @@ export const REJECT_INSTALL: ReadonlyArray<RejectEntry> = [
   },
 ];
 
+// W6: `esbuild` and `fsevents` were removed from the skip list so the
+// swap/reject policy can own them. `esbuild` is in `swaps`
+// (→ esbuild-wasm); `fsevents` is in `rejects` (transitive='warn').
+// node-gyp / node-pre-gyp remain here for transitive silence (they
+// also appear in `rejects` with transitive='warn' so a top-level
+// `npm install node-gyp` reaches the registry first and emits a clear
+// rejection).
+//
+// W11: `vite` was previously unconditionally skipped because the
+// supervisor bundles real-vite. But Astro/Nuxt/Remix/SvelteKit `import`
+// from the user's installed `vite` to call createServer() — so when a
+// framework is detected, `vite` must actually land in node_modules
+// (`frameworkRequiredPackages`).
+//
+// X.5-G: `rollup` removed from the skip list because it's in `swaps`
+// (rollup → @rollup/wasm-node). Skipping would mask the swap at
+// transitive depth.
+const SKIP_PACKAGES: ReadonlyArray<string> = [
+  // Build tools (X.5-G: rollup migrated to swaps)
+  'typescript', 'vite', 'webpack', 'parcel',
+  'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
+  'prettier', 'eslint', 'stylelint',
+  // Native modules / build-time (chokidar = real-vite intercepts;
+  // node-gyp/pre-gyp = build-time only, never run in Workers)
+  'chokidar', 'node-gyp', 'node-pre-gyp',
+  // Cloudflare dev tools
+  '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
+  // Other build-only
+  'husky', 'lint-staged', 'commitlint',
+];
+
+const SKIP_PREFIXES: ReadonlyArray<string> = [
+  '@types/',
+  '@eslint/',
+  '@typescript-eslint/',
+  'eslint-plugin-',
+  'eslint-config-',
+  // Note: '@vitejs/' used to be skipped because the Cirrus shim
+  // ignored plugins anyway. With real-vite mode those plugins are
+  // required — keep them installable.
+];
+
+/**
+ * The single typed package-ABI policy (see `PackageAbiPolicy` in
+ * runtime/os-contracts.ts). Everything the npm resolver/installer needs
+ * to decide swap / reject / skip / native-artifact classification, in
+ * one JSON-serializable object.
+ */
+export const PACKAGE_ABI_POLICY: PackageAbiPolicy = {
+  abiTarget: NIMBUS_ABI_TARGET,
+  acceptedArtifactClasses: [
+    'javascript',
+    NIMBUS_ABI_TARGET,
+    PYODIDE_PACKAGE_ABI,
+    'py3-none-any',
+    'python-source-pure',
+    'pyodide',
+    'ruby-wasm',
+  ],
+  nativeArtifactClass: NATIVE_UNSUPPORTED_ABI,
+  swaps: SWAPS,
+  rejects: REJECTS,
+  skipPackages: SKIP_PACKAGES,
+  skipPrefixes: SKIP_PREFIXES,
+  frameworkRequiredPackages: ['vite'],
+  // Known native-shard name globs. Matched as `prefix-` (so the parent
+  // package name without a platform suffix never matches).
+  nativeShardPrefixes: [
+    '@rollup/rollup-',
+    '@parcel/watcher-',
+    '@swc/core-',
+    '@next/swc-',
+    '@tailwindcss/oxide-',
+    '@img/sharp-',
+    '@napi-rs/canvas-',
+    '@biomejs/cli-',
+    '@esbuild/',
+  ],
+  // @rollup/wasm-node matches the '@rollup/rollup-'-adjacent shard shape
+  // check by prefix but is the pure-WASM build, not a native shard.
+  nativeShardExemptions: ['@rollup/wasm-node'],
+  nativeBinExtensions: ['.exe', '.node'],
+};
+
 // ─────────────────────────────────────────────────────────────────────────
-// Lookup API
+// Policy functions — SERIALIZED into facet preambles via fn.toString().
+// Self-contained by contract: parameters and JS globals only.
 // ─────────────────────────────────────────────────────────────────────────
 
-const _swapByFrom: ReadonlyMap<string, SwapEntry> = new Map(
-  WASM_SWAPS.map((e) => [e.from, e]),
-);
-
-const _rejectByFrom: ReadonlyMap<string, RejectEntry> = new Map(
-  REJECT_INSTALL.map((e) => [e.from, e]),
-);
-
-export function lookupSwap(name: string): SwapEntry | undefined {
-  return _swapByFrom.get(name);
+/** Check if a package is build-only (skipped at transitive depth). */
+export function policyShouldSkipPackage(
+  policy: PackageAbiPolicy,
+  name: string,
+  frameworkAware: boolean,
+): boolean {
+  if (frameworkAware && policy.frameworkRequiredPackages.includes(name)) return false;
+  if (policy.skipPackages.includes(name)) return true;
+  for (const prefix of policy.skipPrefixes) {
+    if (name.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
-export function lookupReject(name: string): RejectEntry | undefined {
-  return _rejectByFrom.get(name);
+export function policyLookupSwap(
+  policy: PackageAbiPolicy,
+  name: string,
+): PackageSwapEntry | undefined {
+  return policy.swaps.find((entry) => entry.from === name);
+}
+
+export function policyLookupReject(
+  policy: PackageAbiPolicy,
+  name: string,
+): PackageRejectEntry | undefined {
+  return policy.rejects.find((entry) => entry.from === name);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Supervisor lookup API
+// ─────────────────────────────────────────────────────────────────────────
+
+export function lookupSwap(name: string): PackageSwapEntry | undefined {
+  return policyLookupSwap(PACKAGE_ABI_POLICY, name);
+}
+
+export function lookupReject(name: string): PackageRejectEntry | undefined {
+  return policyLookupReject(PACKAGE_ABI_POLICY, name);
+}
+
+/** Check if a package should be skipped (build-only, types). */
+export function shouldSkipPackage(name: string): boolean {
+  return policyShouldSkipPackage(PACKAGE_ABI_POLICY, name, false);
 }
 
 /**
- * Pure: return a new specs map with every WASM_SWAPS.from key rewritten
+ * W11: framework-aware skip variant. When `frameworkAware` is true,
+ * packages in `frameworkRequiredPackages` (currently just `vite`) pass
+ * through so framework dev binaries can import them from node_modules.
+ */
+export function shouldSkipPackageWithFramework(
+  name: string,
+  frameworkAware: boolean,
+): boolean {
+  return policyShouldSkipPackage(PACKAGE_ABI_POLICY, name, frameworkAware);
+}
+
+/**
+ * Pure: return a new specs map with every swap `from` key rewritten
  * to its swap target. Records the swaps actually performed.
  *
  * Idempotent: running on already-swapped specs is a no-op.
@@ -371,11 +473,11 @@ export function lookupReject(name: string): RejectEntry | undefined {
  */
 export function applySwaps(
   specs: Record<string, string>,
-): { specs: Record<string, string>; swaps: SwapEntry[] } {
+): { specs: Record<string, string>; swaps: PackageSwapEntry[] } {
   const out: Record<string, string> = {};
-  const swaps: SwapEntry[] = [];
+  const swaps: PackageSwapEntry[] = [];
   for (const [name, range] of Object.entries(specs)) {
-    const swap = _swapByFrom.get(name);
+    const swap = lookupSwap(name);
     if (swap) {
       out[swap.to] = range;
       swaps.push(swap);
@@ -396,10 +498,10 @@ export function applySwaps(
 export function findRejects(
   specs: Record<string, string>,
   ctx: 'top' | 'transitive',
-): RejectEntry[] {
-  const out: RejectEntry[] = [];
+): PackageRejectEntry[] {
+  const out: PackageRejectEntry[] = [];
   for (const name of Object.keys(specs)) {
-    const r = _rejectByFrom.get(name);
+    const r = lookupReject(name);
     if (!r) continue;
     if (ctx === 'transitive' && r.transitive !== 'fail') continue;
     out.push(r);
@@ -413,8 +515,8 @@ export function findRejects(
  * (i.e., this is a transitive-skip case). 'fail' entries return undefined
  * here; the caller handles those via findRejects/throw.
  */
-export function shouldWarnSkipTransitive(name: string): RejectEntry | undefined {
-  const r = _rejectByFrom.get(name);
+export function shouldWarnSkipTransitive(name: string): PackageRejectEntry | undefined {
+  const r = lookupReject(name);
   if (r && r.transitive === 'warn') return r;
   return undefined;
 }
@@ -432,7 +534,7 @@ const ANSI_RESET = '\x1b[0m';
  * Single-line yellow notice emitted to onProgress when a swap fires.
  *   `[npm] [swap] esbuild → esbuild-wasm (Native esbuild not available …)`
  */
-export function formatSwapNotice(s: SwapEntry): string {
+export function formatSwapNotice(s: PackageSwapEntry): string {
   return `[npm] ${ANSI_YELLOW}[swap]${ANSI_RESET} ${s.from} → ${s.to} (${s.reason})`;
 }
 
@@ -441,7 +543,7 @@ export function formatSwapNotice(s: SwapEntry): string {
  * Includes a leading summary line and a `try:` suggestion per package
  * (when present).
  */
-export function formatRejectError(rejects: ReadonlyArray<RejectEntry>): string {
+export function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>): string {
   if (rejects.length === 0) return '';
   const head = `${ANSI_RED}npm install rejected:${ANSI_RESET} ${rejects.length} package${rejects.length === 1 ? '' : 's'} not supported on Nimbus.`;
   const lines = rejects.map((r) => {
@@ -458,7 +560,7 @@ export function formatRejectError(rejects: ReadonlyArray<RejectEntry>): string {
  * Single-line yellow notice emitted for a transitive `[skip]`.
  *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
  */
-export function formatTransitiveSkip(r: RejectEntry): string {
+export function formatTransitiveSkip(r: PackageRejectEntry): string {
   return `[npm] ${ANSI_YELLOW}[skip]${ANSI_RESET} ${r.from} — ${r.reason}`;
 }
 
@@ -481,9 +583,9 @@ export function formatTransitiveSkip(r: RejectEntry): string {
  * The own-property survives worker boundary serialization.
  */
 export class RegistryRejectError extends Error {
-  readonly rejects: ReadonlyArray<RejectEntry>;
+  readonly rejects: ReadonlyArray<PackageRejectEntry>;
   readonly __nimbus_registry_reject: true = true;
-  constructor(rejects: ReadonlyArray<RejectEntry>) {
+  constructor(rejects: ReadonlyArray<PackageRejectEntry>) {
     super(formatRejectError(rejects));
     this.name = 'RegistryRejectError';
     this.rejects = rejects;
@@ -616,24 +718,18 @@ export interface MinimalPackument {
   main?: string;
 }
 
+/**
+ * Minimal manifest shape consumed by the native-artifact classifier.
+ * Carries the npm bin map plus the package's platform-constraint
+ * metadata.
+ */
 export interface PackageBinManifest {
   name: string;
   bin?: Record<string, string>;
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
 }
-
-// Known native-shard name globs. Matched as `prefix-` (so the parent
-// package name without a platform suffix never matches).
-const NATIVE_SHARD_PREFIXES: ReadonlyArray<string> = [
-  '@rollup/rollup-',
-  '@parcel/watcher-',
-  '@swc/core-',
-  '@next/swc-',
-  '@tailwindcss/oxide-',
-  '@img/sharp-',
-  '@napi-rs/canvas-',
-  '@biomejs/cli-',
-  '@esbuild/',
-];
 
 /**
  * Heuristic: does this packument represent a platform-native binding
@@ -643,30 +739,35 @@ const NATIVE_SHARD_PREFIXES: ReadonlyArray<string> = [
  *   - `os`, `cpu`, or `libc` field is non-empty (npm spec platform
  *     constraints — package is opting out of cross-platform installs).
  *   - `main` ends in `.node` (Node.js N-API binary, not workerd-loadable).
- *   - name matches a known native-shard glob (see NATIVE_SHARD_PREFIXES).
+ *   - name matches a known native-shard glob
+ *     (policy.nativeShardPrefixes).
  *
  * Returns false for pure-JS packages, parent wrappers (e.g. the
- * non-platform `@parcel/watcher` itself), and packuments with empty
- * platform-constraint arrays.
+ * non-platform `@parcel/watcher` itself), packuments with empty
+ * platform-constraint arrays, and exempted pure-WASM builds
+ * (policy.nativeShardExemptions).
  *
  * X.5-G G1: the resolver consults this on every packument fetched from
  * a transitive `optionalDependencies` entry. Returns-true → silent-skip
  * (emit a `transitive-skip` RegistryEvent, drop the package from the
  * resolved tree).
+ *
+ * Serialized into facet preambles — self-contained by contract.
  */
-export function isOptionalNativeBinding(p: MinimalPackument): boolean {
+export function policyIsOptionalNativeBinding(
+  policy: PackageAbiPolicy,
+  p: MinimalPackument,
+): boolean {
   if (!p) return false;
   if (Array.isArray(p.os) && p.os.length > 0) return true;
   if (Array.isArray(p.cpu) && p.cpu.length > 0) return true;
   if (Array.isArray(p.libc) && p.libc.length > 0) return true;
   if (typeof p.main === 'string' && /\.node$/.test(p.main)) return true;
-  if (typeof p.name === 'string') {
-    for (const prefix of NATIVE_SHARD_PREFIXES) {
+  if (typeof p.name === 'string' && !policy.nativeShardExemptions.includes(p.name)) {
+    for (const prefix of policy.nativeShardPrefixes) {
       // Require the prefix-then-something-else shape. The parent package
-      // (e.g. `@parcel/watcher`, `@rollup/wasm-node`) does not match.
+      // (e.g. `@parcel/watcher`) does not match.
       if (p.name.startsWith(prefix) && p.name.length > prefix.length) {
-        // Carve out @rollup/wasm-node: it's the WASM build, not a native shard.
-        if (p.name === '@rollup/wasm-node') return false;
         return true;
       }
     }
@@ -674,34 +775,91 @@ export function isOptionalNativeBinding(p: MinimalPackument): boolean {
   return false;
 }
 
-export function nativeExecutableReject(pkg: PackageBinManifest): RejectEntry | undefined {
+/**
+ * Classify a required package's published artifacts against the Nimbus
+ * ABI policy and return a reject entry when the package can only run as
+ * a native platform binary. Detection is metadata-driven:
+ *
+ *   - any bin target with a native executable extension
+ *     (policy.nativeBinExtensions — .exe Windows executables, .node
+ *     N-API binaries, …)
+ *   - package.json `os` / `cpu` / `libc` allowlists. A positive
+ *     allowlist means the package opts out of cross-platform installs
+ *     (npm rejects mismatches with EBADPLATFORM); no allowlisted
+ *     platform is executable in Nimbus. Pure negations (`!win32`) do
+ *     NOT classify as native — they exclude platforms without
+ *     requiring one.
+ *
+ * Diagnostics always name the package, the artifact class found
+ * (policy.nativeArtifactClass), and the artifact kinds Nimbus accepts
+ * instead.
+ *
+ * Serialized into facet preambles — self-contained by contract.
+ */
+export function policyNativeArtifactReject(
+  policy: PackageAbiPolicy,
+  pkg: PackageBinManifest,
+): PackageRejectEntry | undefined {
+  const fileExtension = (path: string): string => {
+    const text = String(path || '');
+    const query = text.indexOf('?');
+    const fragment = text.indexOf('#');
+    const end = query < 0
+      ? (fragment < 0 ? text.length : fragment)
+      : (fragment < 0 ? query : Math.min(query, fragment));
+    const clean = text.slice(0, end);
+    const name = clean.slice(clean.lastIndexOf('/') + 1);
+    const dot = name.lastIndexOf('.');
+    return dot > 0 ? name.slice(dot).toLowerCase() : '';
+  };
   for (const target of Object.values(pkg.bin ?? {})) {
     const ext = fileExtension(target);
-    if (ext === '.exe' || ext === '.node') {
+    if (policy.nativeBinExtensions.includes(ext)) {
       return {
         from: pkg.name,
         reason:
-          `Package ${pkg.name} exposes native executable bin '${target}'. ` +
-          'Nimbus cannot execute Linux/Windows/macOS native binaries; publish a JavaScript, WASM, or wasm32-wasi-nimbus artifact.',
+          `Package ${pkg.name} exposes native executable bin '${target}' ` +
+          `(artifact class '${policy.nativeArtifactClass}'). ` +
+          'Nimbus cannot execute Linux/Windows/macOS native binaries; ' +
+          `publish a JavaScript, WASM, or ${policy.abiTarget} artifact.`,
         transitive: 'fail',
       };
     }
   }
+  const allowlisted = (values?: string[]): string[] =>
+    Array.isArray(values)
+      ? values.filter((v) => typeof v === 'string' && v.length > 0 && !v.startsWith('!'))
+      : [];
+  const os = allowlisted(pkg.os);
+  const cpu = allowlisted(pkg.cpu);
+  const libc = allowlisted(pkg.libc);
+  if (os.length > 0 || cpu.length > 0 || libc.length > 0) {
+    const constraints = [
+      os.length > 0 ? `os=[${os.join(', ')}]` : '',
+      cpu.length > 0 ? `cpu=[${cpu.join(', ')}]` : '',
+      libc.length > 0 ? `libc=[${libc.join(', ')}]` : '',
+    ].filter((part) => part.length > 0).join(' ');
+    return {
+      from: pkg.name,
+      reason:
+        `Package ${pkg.name} only ships platform-native artifacts (${constraints}; ` +
+        `artifact class '${policy.nativeArtifactClass}'). ` +
+        'Nimbus cannot execute Linux/Windows/macOS native binaries; ' +
+        `publish a JavaScript, WASM, or ${policy.abiTarget} artifact.`,
+      transitive: 'fail',
+    };
+  }
   return undefined;
 }
 
-function fileExtension(path: string): string {
-  const text = String(path || '');
-  const query = text.indexOf('?');
-  const fragment = text.indexOf('#');
-  const end = query < 0
-    ? (fragment < 0 ? text.length : fragment)
-    : (fragment < 0 ? query : Math.min(query, fragment));
-  const clean = text.slice(0, end);
-  const slash = clean.lastIndexOf('/');
-  const name = slash >= 0 ? clean.slice(slash + 1) : clean;
-  const dot = name.lastIndexOf('.');
-  return dot > 0 ? name.slice(dot).toLowerCase() : '';
+// Supervisor wrappers over the serializable policy functions.
+
+export function isOptionalNativeBinding(p: MinimalPackument): boolean {
+  return policyIsOptionalNativeBinding(PACKAGE_ABI_POLICY, p);
+}
+
+export function nativeExecutableReject(pkg: PackageBinManifest): PackageRejectEntry | undefined {
+  return policyNativeArtifactReject(PACKAGE_ABI_POLICY, pkg);
 }
 
 /**
@@ -765,14 +923,14 @@ export function classifyInstallError(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Module-load assertion: WASM_SWAPS.from and REJECT_INSTALL.from are disjoint
+// Module-load assertion: swap and reject `from` names are disjoint
 // ─────────────────────────────────────────────────────────────────────────
 
 (() => {
-  for (const s of WASM_SWAPS) {
-    if (_rejectByFrom.has(s.from)) {
+  for (const s of PACKAGE_ABI_POLICY.swaps) {
+    if (PACKAGE_ABI_POLICY.rejects.some((r) => r.from === s.from)) {
       throw new Error(
-        `Registry conflict: '${s.from}' is in both WASM_SWAPS and REJECT_INSTALL. ` +
+        `Registry conflict: '${s.from}' is in both swaps and rejects. ` +
           `A name must own one role.`,
       );
     }

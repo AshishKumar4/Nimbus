@@ -31,6 +31,7 @@
  * the user.
  */
 import { z } from 'zod/v4';
+import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 const HexSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const CatalogVersionEntrySchema = z.object({
     manifest: z.string().min(1),
@@ -69,7 +70,7 @@ export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadat
     language: z.literal('python'),
     packageName: z.string().min(1),
     version: z.string().min(1),
-    abi: z.literal('pyodide-emscripten-2025_0-wasm32'),
+    abi: z.literal(PYODIDE_PACKAGE_ABI),
     pyodideVersion: z.string().min(1),
     pythonVersion: z.string().min(1),
     wheelFileName: z.string().min(1),

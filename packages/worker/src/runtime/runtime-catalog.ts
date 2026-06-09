@@ -32,6 +32,7 @@
  */
 
 import { z } from 'zod/v4';
+import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {
@@ -97,7 +98,7 @@ export interface RuntimeArtifactMetadata {
   sha256: string;
 }
 
-export type RuntimePythonPackageAbi = 'pyodide-emscripten-2025_0-wasm32';
+export type RuntimePythonPackageAbi = typeof PYODIDE_PACKAGE_ABI;
 
 export interface RuntimePythonExtensionModuleMetadata {
   /** Path inside Python site-packages, as stored in the wheel. */
@@ -183,7 +184,7 @@ export const RuntimePythonPackageArtifactMetadataSchema: z.ZodType<RuntimePython
     language: z.literal('python'),
     packageName: z.string().min(1),
     version: z.string().min(1),
-    abi: z.literal('pyodide-emscripten-2025_0-wasm32'),
+    abi: z.literal(PYODIDE_PACKAGE_ABI),
     pyodideVersion: z.string().min(1),
     pythonVersion: z.string().min(1),
     wheelFileName: z.string().min(1),

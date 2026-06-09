@@ -210,6 +210,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     })();
     if (cached) {
         let deps = {}, peers = {}, exp = null, bin = {};
+        let platform = {}, optionalDeps = {};
         try {
             deps = JSON.parse(cached.depsJson);
         }
@@ -226,6 +227,14 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             bin = JSON.parse(cached.binJson);
         }
         catch { }
+        try {
+            platform = cached.platformJson ? JSON.parse(cached.platformJson) : {};
+        }
+        catch { }
+        try {
+            optionalDeps = cached.optionalDepsJson ? JSON.parse(cached.optionalDepsJson) : {};
+        }
+        catch { }
         const pkgFromCache = {
             name: cached.name,
             version: cached.version,
@@ -233,6 +242,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             integrity: cached.integrity,
             dependencies: deps,
             peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
+            // Platform constraints + optionalDependencies round-trip so the
+            // ABI policy makes the same decisions on warm-cache hits.
+            optionalDependencies: Object.keys(optionalDeps).length > 0 ? optionalDeps : undefined,
+            os: Array.isArray(platform.os) ? platform.os : undefined,
+            cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
+            libc: Array.isArray(platform.libc) ? platform.libc : undefined,
             exports: exp,
             main: cached.main,
             module: cached.moduleField,
@@ -459,6 +474,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         main: pkg.main,
         moduleField: pkg.module,
         binJson: JSON.stringify(pkg.bin),
+        platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
+        optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
         fetchedAt: Date.now(),
     });
     // Top-5 sibling versions, mirrors resolve-facet.ts:580.
@@ -488,6 +505,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
                 main: otherPkg.main,
                 moduleField: otherPkg.module,
                 binJson: JSON.stringify(otherPkg.bin),
+                platformJson: JSON.stringify({ os: otherPkg.os, cpu: otherPkg.cpu, libc: otherPkg.libc }),
+                optionalDepsJson: JSON.stringify(otherPkg.optionalDependencies ?? {}),
                 fetchedAt: Date.now(),
             });
         }

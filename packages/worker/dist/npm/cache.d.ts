@@ -21,6 +21,22 @@ export interface RegistryCacheEntry {
     main: string;
     moduleField: string;
     binJson: string;
+    /**
+     * JSON-encoded npm platform constraints — `{ os?, cpu?, libc? }`.
+     *
+     * Persisted so warm-cache resolution keeps the same ABI/platform
+     * decisions as a cold packument fetch (native-shard silent-skip and
+     * platform-native rejects are metadata-driven). '{}' means no
+     * constraints; rows written before the column existed read as '{}'
+     * (a metadata miss, matching pre-migration behavior).
+     */
+    platformJson?: string;
+    /**
+     * JSON-encoded `optionalDependencies`. Persisted so cached parents
+     * still enqueue their best-effort optional deps exactly like a cold
+     * resolve. Defaults to '{}' for pre-migration rows.
+     */
+    optionalDepsJson?: string;
     fetchedAt: number;
 }
 export interface TarballCacheFile {
@@ -47,6 +63,8 @@ export declare class NpmCache {
     private initialized;
     constructor(sql: SqlStorage);
     ensureSchema(): void;
+    private static readonly REGISTRY_COLUMNS;
+    private rowToRegistryEntry;
     /** Get cached registry metadata for a specific name@version.
      *
      *  L1 observability: bumps cache-stats L1.packument hit/miss. Bytes

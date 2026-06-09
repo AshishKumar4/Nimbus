@@ -25,7 +25,7 @@
  *
  * Errors throw and bubble up to the user as a single diagnostic line.
  */
-import { type RuntimeCatalogEnv, type RuntimeManifest } from './runtime-catalog.js';
+import { type RuntimeCatalogEnv, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type RuntimePackageAbi } from './os-contracts.js';
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
@@ -86,6 +86,21 @@ export interface RuntimeCommandHint {
     runtimeName: string;
     installSpec: string;
 }
+/**
+ * Commands a runtime provides beyond its manifest entrypoints. The
+ * python/ruby package-manager front-ends (pip, gem, bundler) ride the
+ * language runner rather than shipping as manifest files, and already-
+ * deployed R2 manifests cannot retroactively declare them.
+ *
+ * This is the ONE hand-maintained command table: install aliasing
+ * (`nimbus install pip` → python), command-not-found hints, and bin
+ * registration all derive from `runtimeEntrypoints`, which merges this
+ * with the catalog manifest. Catalog-declared aliases (python3, ruby3,
+ * wasm-ld, …) come from manifest entrypoints and must NOT be repeated
+ * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
+ * tests/unit/runtime-command-aliases.mjs.
+ */
+export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>>;
 export declare function createRuntimeCommandHintResolver(env: RuntimeCatalogEnv): (command: string) => Promise<RuntimeCommandHint | null>;
 /** Compute the per-user install root for (name, version). Uses
  *  `process.env.HOME` if present; falls back to `/home/user`. */

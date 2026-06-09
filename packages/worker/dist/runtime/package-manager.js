@@ -49,33 +49,39 @@ export function runtimeAbiForManifest(manifest) {
 function runtimeAbiForCatalogName(name) {
     return NIMBUS_RUNTIME_ABIS[name] ?? 'native-unsupported';
 }
-const RUNTIME_NAME_ALIASES = {
-    python3: 'python',
-    pip: 'python',
-    pip3: 'python',
-    ruby3: 'ruby',
-    gem: 'ruby',
-    bundle: 'ruby',
-    bundler: 'ruby',
-    'wasm-ld': 'clang',
+/**
+ * Commands a runtime provides beyond its manifest entrypoints. The
+ * python/ruby package-manager front-ends (pip, gem, bundler) ride the
+ * language runner rather than shipping as manifest files, and already-
+ * deployed R2 manifests cannot retroactively declare them.
+ *
+ * This is the ONE hand-maintained command table: install aliasing
+ * (`nimbus install pip` → python), command-not-found hints, and bin
+ * registration all derive from `runtimeEntrypoints`, which merges this
+ * with the catalog manifest. Catalog-declared aliases (python3, ruby3,
+ * wasm-ld, …) come from manifest entrypoints and must NOT be repeated
+ * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
+ * tests/unit/runtime-command-aliases.mjs.
+ */
+export const RUNTIME_EXTRA_ENTRYPOINTS = {
+    python: [
+        { binName: 'pip', runner: 'python-runner', kind: 'pip', args: [] },
+        { binName: 'pip3', runner: 'python-runner', kind: 'pip', args: [] },
+    ],
+    ruby: [
+        { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },
+        { binName: 'bundle', runner: 'ruby-runner', kind: 'bundle', args: [] },
+        { binName: 'bundler', runner: 'ruby-runner', kind: 'bundle', args: [] },
+    ],
 };
 function runtimeEntrypoints(manifest) {
     const out = [...manifest.entrypoints];
     const seen = new Set(out.map((ep) => ep.binName));
-    const add = (binName, runner, kind) => {
-        if (seen.has(binName))
-            return;
-        out.push({ binName, runner, kind, args: [] });
-        seen.add(binName);
-    };
-    if (manifest.name === 'python') {
-        add('pip', 'python-runner', 'pip');
-        add('pip3', 'python-runner', 'pip');
-    }
-    if (manifest.name === 'ruby') {
-        add('gem', 'ruby-runner', 'gem');
-        add('bundle', 'ruby-runner', 'bundle');
-        add('bundler', 'ruby-runner', 'bundle');
+    for (const ep of RUNTIME_EXTRA_ENTRYPOINTS[manifest.name] ?? []) {
+        if (seen.has(ep.binName))
+            continue;
+        out.push({ ...ep });
+        seen.add(ep.binName);
     }
     return out;
 }
@@ -88,14 +94,17 @@ function splitRuntimeSpec(spec) {
 }
 async function resolveRuntimeInstallTarget(env, catalog, spec) {
     const parsed = splitRuntimeSpec(spec);
-    const aliased = RUNTIME_NAME_ALIASES[parsed.name] ?? parsed.name;
-    if (catalog.runtimes[aliased]) {
+    if (catalog.runtimes[parsed.name]) {
         return {
-            runtimeName: aliased,
+            runtimeName: parsed.name,
             versionOverride: parsed.versionOverride,
             requestedName: parsed.name,
         };
     }
+    // Command-name aliasing is catalog-driven: any command a runtime
+    // provides (manifest entrypoints + RUNTIME_EXTRA_ENTRYPOINTS) resolves
+    // to that runtime, so `nimbus install python3|pip|gem|wasm-ld` all
+    // work without a hand-maintained alias map.
     for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
         const version = entry.default;
         const versionEntry = entry.versions[version];
@@ -132,10 +141,6 @@ export function createRuntimeCommandHintResolver(env) {
         };
         for (const runtimeName of Object.keys(catalog.runtimes)) {
             add(runtimeName, runtimeName);
-        }
-        for (const [alias, runtimeName] of Object.entries(RUNTIME_NAME_ALIASES)) {
-            if (catalog.runtimes[runtimeName])
-                add(alias, runtimeName);
         }
         for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
             const versionEntry = entry.versions[entry.default];

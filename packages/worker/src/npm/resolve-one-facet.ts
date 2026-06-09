@@ -341,10 +341,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
 
   if (cached) {
     let deps: any = {}, peers: any = {}, exp: any = null, bin: any = {};
+    let platform: any = {}, optionalDeps: any = {};
     try { deps = JSON.parse(cached.depsJson); } catch {}
     try { peers = cached.peerDepsJson ? JSON.parse(cached.peerDepsJson) : {}; } catch {}
     try { exp = JSON.parse(cached.exportsJson); } catch {}
     try { bin = JSON.parse(cached.binJson); } catch {}
+    try { platform = cached.platformJson ? JSON.parse(cached.platformJson) : {}; } catch {}
+    try { optionalDeps = cached.optionalDepsJson ? JSON.parse(cached.optionalDepsJson) : {}; } catch {}
     const pkgFromCache: ResolvedPackage = {
       name: cached.name,
       version: cached.version,
@@ -352,6 +355,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       integrity: cached.integrity,
       dependencies: deps,
       peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
+      // Platform constraints + optionalDependencies round-trip so the
+      // ABI policy makes the same decisions on warm-cache hits.
+      optionalDependencies: Object.keys(optionalDeps).length > 0 ? optionalDeps : undefined,
+      os:   Array.isArray(platform.os)   ? platform.os   : undefined,
+      cpu:  Array.isArray(platform.cpu)  ? platform.cpu  : undefined,
+      libc: Array.isArray(platform.libc) ? platform.libc : undefined,
       exports: exp,
       main: cached.main,
       module: cached.moduleField,
@@ -571,6 +580,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     main: pkg.main,
     moduleField: (pkg as any).module,
     binJson: JSON.stringify(pkg.bin),
+    platformJson: JSON.stringify({ os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc }),
+    optionalDepsJson: JSON.stringify((pkg as any).optionalDependencies ?? {}),
     fetchedAt: Date.now(),
   });
   // Top-5 sibling versions, mirrors resolve-facet.ts:580.
@@ -598,6 +609,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         main: otherPkg.main,
         moduleField: (otherPkg as any).module,
         binJson: JSON.stringify(otherPkg.bin),
+        platformJson: JSON.stringify({ os: (otherPkg as any).os, cpu: (otherPkg as any).cpu, libc: (otherPkg as any).libc }),
+        optionalDepsJson: JSON.stringify((otherPkg as any).optionalDependencies ?? {}),
         fetchedAt: Date.now(),
       });
     } catch { /* skip malformed */ }

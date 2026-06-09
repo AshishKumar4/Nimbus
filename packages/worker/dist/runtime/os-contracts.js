@@ -1,6 +1,14 @@
 export const NIMBUS_OS_NAME = 'nimbus';
 export const NIMBUS_ABI_TARGET = 'wasm32-wasi-nimbus';
 export const NIMBUS_ABI_ID = NIMBUS_ABI_TARGET;
+/** Canonical Pyodide package artifact ABI label. The single source of
+ *  truth for the label — runtime manifests, the pip planner, and
+ *  diagnostics all consume this constant. */
+export const PYODIDE_PACKAGE_ABI = 'pyodide-emscripten-2025_0-wasm32';
+/** Canonical artifact class for native platform binaries Nimbus cannot
+ *  execute (Linux/Windows/macOS executables, .node bindings, native
+ *  wheels/gems). */
+export const NATIVE_UNSUPPORTED_ABI = 'native-unsupported';
 export const NIMBUS_RUNTIME_ABIS = Object.freeze({
     clang: NIMBUS_ABI_TARGET,
     python: 'pyodide',

@@ -48,7 +48,7 @@
  *   - No `this` references.
  *   - No closure capture other than args + preamble names.
  *   - All helpers (semver match, exports field, skip list) live in the
- *     preamble (src/parallel/npm-resolve-preamble.ts) so the facet has
+ *     preamble (src/loaders/npm-resolve-preamble.ts) so the facet has
  *     them in its lexical scope.
  *
  * Cache strategy:
@@ -65,7 +65,7 @@
  */
 import type { ResolvedPackage } from './resolver.js';
 export interface FacetCachedEntry {
-    /** Same shape as RegistryCacheEntry from src/npm-cache.ts. JSON-only
+    /** Same shape as RegistryCacheEntry from src/npm/cache.ts. JSON-only
      *  fields so the structured-clone over RPC doesn't choke. */
     name: string;
     version: string;
@@ -78,6 +78,10 @@ export interface FacetCachedEntry {
     main: string;
     moduleField: string;
     binJson: string;
+    /** JSON-encoded `{ os?, cpu?, libc? }` platform constraints. */
+    platformJson?: string;
+    /** JSON-encoded optionalDependencies. */
+    optionalDepsJson?: string;
     fetchedAt: number;
 }
 export interface ResolveFacetSpec {

@@ -38,30 +38,35 @@ export class NpmCache {
       main           TEXT NOT NULL DEFAULT '',
       module_field   TEXT NOT NULL DEFAULT '',
       bin_json       TEXT NOT NULL DEFAULT '{}',
+      platform_json  TEXT NOT NULL DEFAULT '{}',
+      optional_deps_json TEXT NOT NULL DEFAULT '{}',
       fetched_at     INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (name, version)
     )`);
-        // X.5-F R2: peer_deps_json column added in this wave. Older tenants
-        // have a registry cache table without it — ALTER TABLE adds it
-        // with the same NOT NULL DEFAULT '{}' the CREATE specifies. SQLite
-        // ignores ADD COLUMN if the column already exists in newer setups
-        // — except it doesn't, it errors. So we probe via PRAGMA first.
-        let hasPeerCol = false;
+        // Columns added after the original CREATE (peer_deps_json in
+        // X.5-F R2; platform_json + optional_deps_json with the package ABI
+        // policy work). Older tenants have a registry cache table without
+        // them — ALTER TABLE adds each with the same NOT NULL DEFAULT '{}'
+        // the CREATE specifies. SQLite errors on ADD COLUMN for an existing
+        // column, so we probe via PRAGMA first.
+        let existingCols = new Set();
         try {
             const cols = [...this.sql.exec(`PRAGMA table_info(pkg_registry_cache)`)];
-            hasPeerCol = cols.some((r) => String(r.name) === 'peer_deps_json');
+            existingCols = new Set(cols.map((r) => String(r.name)));
         }
         catch { /* PRAGMA failed — fall through and ATTEMPT, swallow on error */ }
-        if (!hasPeerCol) {
+        for (const col of ['peer_deps_json', 'platform_json', 'optional_deps_json']) {
+            if (existingCols.has(col))
+                continue;
             try {
-                this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN peer_deps_json TEXT NOT NULL DEFAULT '{}'`);
+                this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN ${col} TEXT NOT NULL DEFAULT '{}'`);
             }
             catch (e) {
                 // Race or pre-existing — non-fatal; the column might already
                 // exist if the CREATE just ran above on a fresh tenant.
                 const msg = e?.message || String(e);
                 if (!/duplicate column/i.test(msg)) {
-                    console.error('[npm-cache] peer_deps_json migration failed:', msg);
+                    console.error(`[npm-cache] ${col} migration failed:`, msg);
                 }
             }
         }
@@ -93,6 +98,24 @@ export class NpmCache {
         this.initialized = true;
     }
     // ── Registry cache ────────────────────────────────────────────────────
+    static REGISTRY_COLUMNS = 'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, fetched_at';
+    rowToRegistryEntry(r) {
+        return {
+            name: String(r.name),
+            version: String(r.version),
+            tarballUrl: String(r.tarball_url),
+            integrity: String(r.integrity),
+            depsJson: String(r.deps_json),
+            peerDepsJson: String(r.peer_deps_json ?? '{}'),
+            exportsJson: String(r.exports_json),
+            main: String(r.main),
+            moduleField: String(r.module_field),
+            binJson: String(r.bin_json),
+            platformJson: String(r.platform_json ?? '{}'),
+            optionalDepsJson: String(r.optional_deps_json ?? '{}'),
+            fetchedAt: Number(r.fetched_at),
+        };
+    }
     /** Get cached registry metadata for a specific name@version.
      *
      *  L1 observability: bumps cache-stats L1.packument hit/miss. Bytes
@@ -104,26 +127,13 @@ export class NpmCache {
      *  SELECT). */
     getRegistryEntry(name, version) {
         this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at
+        const rows = [...this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS}
        FROM pkg_registry_cache WHERE name = ? AND version = ?`, name, version)];
         if (rows.length === 0) {
             _l1RecordMiss('L1', 'packument');
             return null;
         }
-        const r = rows[0];
-        const entry = {
-            name: String(r.name),
-            version: String(r.version),
-            tarballUrl: String(r.tarball_url),
-            integrity: String(r.integrity),
-            depsJson: String(r.deps_json),
-            peerDepsJson: String(r.peer_deps_json ?? '{}'),
-            exportsJson: String(r.exports_json),
-            main: String(r.main),
-            moduleField: String(r.module_field),
-            binJson: String(r.bin_json),
-            fetchedAt: Number(r.fetched_at),
-        };
+        const entry = this.rowToRegistryEntry(rows[0]);
         // Approximate hit-bytes: sum of variable-length string fields.
         // The fixed-cost fields (name, version, integrity, etc.) add ~150
         // bytes on average; the variable fields can be tens of KB for
@@ -148,47 +158,23 @@ export class NpmCache {
      */
     dumpRegistryEntries(maxRows) {
         this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at
+        const rows = [...this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS}
        FROM pkg_registry_cache ORDER BY fetched_at DESC LIMIT ?`, maxRows)];
-        return rows.map((r) => ({
-            name: String(r.name),
-            version: String(r.version),
-            tarballUrl: String(r.tarball_url),
-            integrity: String(r.integrity),
-            depsJson: String(r.deps_json),
-            peerDepsJson: String(r.peer_deps_json ?? '{}'),
-            exportsJson: String(r.exports_json),
-            main: String(r.main),
-            moduleField: String(r.module_field),
-            binJson: String(r.bin_json),
-            fetchedAt: Number(r.fetched_at),
-        }));
+        return rows.map((r) => this.rowToRegistryEntry(r));
     }
     /** Get all cached versions for a package name. */
     getRegistryVersions(name) {
         this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at
+        const rows = [...this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS}
        FROM pkg_registry_cache WHERE name = ?`, name)];
-        return rows.map(r => ({
-            name: String(r.name),
-            version: String(r.version),
-            tarballUrl: String(r.tarball_url),
-            integrity: String(r.integrity),
-            depsJson: String(r.deps_json),
-            peerDepsJson: String(r.peer_deps_json ?? '{}'),
-            exportsJson: String(r.exports_json),
-            main: String(r.main),
-            moduleField: String(r.module_field),
-            binJson: String(r.bin_json),
-            fetchedAt: Number(r.fetched_at),
-        }));
+        return rows.map((r) => this.rowToRegistryEntry(r));
     }
     /** Store registry metadata for a resolved package version. */
     putRegistryEntry(entry) {
         this.ensureSchema();
         this.sql.exec(`INSERT OR REPLACE INTO pkg_registry_cache
-       (name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.fetchedAt);
+       (${NpmCache.REGISTRY_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}', entry.fetchedAt);
     }
     /**
      * Bulk-write registry entries in ONE call. Used by the resolver-facet
@@ -211,8 +197,8 @@ export class NpmCache {
         for (const entry of entries) {
             try {
                 this.sql.exec(`INSERT OR REPLACE INTO pkg_registry_cache
-           (name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, fetched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.fetchedAt);
+           (${NpmCache.REGISTRY_COLUMNS})
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}', entry.fetchedAt);
                 written++;
             }
             catch (e) {

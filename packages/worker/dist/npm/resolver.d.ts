@@ -5,9 +5,11 @@
  *   1. Proper semver parsing + range matching (^, ~, >=, ||, *, x ranges)
  *   2. Node.js-spec exports field resolution with conditions
  *   3. Aggressive hoisting algorithm (one copy of each version at the highest level)
- *   4. Build-only package skip list
+ *
+ * Build-only skip lists and all swap/reject/native policy live in
+ * `facets/wasm-swap-registry.ts: PACKAGE_ABI_POLICY`.
  */
-import type { NpmCache } from './cache.js';
+import type { NpmCache, RegistryCacheEntry } from './cache.js';
 /**
  * Injectable fetch function. Allows the caller to route fetches through a
  * facet worker (required because DO fetch() hangs in wrangler local dev).
@@ -67,6 +69,14 @@ export declare function resolveVersion(versions: string[], range: string): strin
  */
 export declare function resolvePackage(name: string, versionRange: string, cache: NpmCache, fetchFn?: FetchFn, log?: (msg: string) => void): Promise<ResolvedPackage | null>;
 /**
+ * Serialize a ResolvedPackage into the registry-cache row shape. The
+ * one supervisor-side definition of how a resolved package round-trips
+ * through the cache; `cacheEntryToResolved` is the inverse. The facet
+ * task bodies keep inline literals of the same shape because they are
+ * serialized via fn.toString() and cannot import.
+ */
+export declare function registryEntryFromResolved(pkg: ResolvedPackage): RegistryCacheEntry;
+/**
  * Resolve the full dependency tree, breadth-first.
  * Calls onResolved() for each package as it's resolved (pipelined — caller
  * can start fetching tarballs immediately).
@@ -92,16 +102,4 @@ export declare function resolveTree(specs: Record<string, string>, cache: NpmCac
  * most packages agree on compatible versions and everything hoists to root.
  */
 export declare function computeHoistPlan(resolved: Map<string, ResolvedPackage>): HoistPlan;
-/** Check if a package should be skipped (build-only, native, types). */
-export declare function shouldSkipPackage(name: string): boolean;
-/**
- * W11: framework-aware skip variant. When `frameworkAware` is true, the
- * resolver lets through packages in FRAMEWORK_REQUIRED_PACKAGES (currently
- * just `vite`) so framework dev binaries can import them from node_modules.
- *
- * Callers detect framework presence via `framework-detect.ts` BEFORE
- * starting resolution and thread the flag through `resolveTree`.
- *
- */
-export declare function shouldSkipPackageWithFramework(name: string, frameworkAware: boolean): boolean;
 //# sourceMappingURL=resolver.d.ts.map

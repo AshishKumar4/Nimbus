@@ -20,6 +20,7 @@ import type {
 import { z } from 'zod/v4';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import {
   isRuntimePythonPackageArtifactMetadata,
   RuntimePythonPackageArtifactMetadataSchema,
@@ -31,7 +32,6 @@ export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages
 export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;
 
 const PYPI_API = 'https://pypi.org/pypi';
-const PYODIDE_PACKAGE_ABI = 'pyodide-emscripten-2025_0-wasm32';
 
 const IGNORED_PIP_INSTALL_FLAGS = new Set([
   '--upgrade',

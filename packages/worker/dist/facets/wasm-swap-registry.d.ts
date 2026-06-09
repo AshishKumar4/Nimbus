@@ -1,67 +1,58 @@
 /**
- * WASM swap and rejected-package registry.
+ * Package ABI policy — WASM swaps, rejected packages, build-only skips,
+ * and native-artifact classification.
  *
  * The contract:
- *   - WASM_SWAPS    : name→name rewrite at the resolver/installer boundary.
- *                     Only `compat: 'drop-in'` swaps qualify (the consumer's
- *                     `require()` call site works unchanged). Different-
- *                     require-name candidates (bcrypt → bcryptjs, argon2 →
- *                     hash-wasm, …) are NOT swaps until the resolver supports
- *                     `npm:` aliases. They live in REJECT_INSTALL with a
- *                     code-change suggestion.
+ *   - swaps  : name→name rewrite at the resolver/installer boundary.
+ *              Only `compat: 'drop-in'` swaps qualify (the consumer's
+ *              `require()` call site works unchanged). Different-
+ *              require-name candidates (bcrypt → bcryptjs, argon2 →
+ *              hash-wasm, …) are NOT swaps until the resolver supports
+ *              `npm:` aliases. They live in `rejects` with a
+ *              code-change suggestion.
  *
- *   - REJECT_INSTALL: deny list with helpful messages. Each entry has a
- *                     per-entry `transitive` policy:
- *                       'fail' = hard-fail at any depth (top + transitive).
- *                       'warn' = top-level fails; transitive logs `[skip]`
- *                                and continues (matches the existing
- *                                `shouldSkipPackage` UX for build-only).
+ *   - rejects: deny list with helpful messages. Each entry has a
+ *              per-entry `transitive` policy:
+ *                'fail' = hard-fail at any depth (top + transitive).
+ *                'warn' = top-level fails; transitive logs `[skip]`
+ *                         and continues (matches the existing
+ *                         `shouldSkipPackage` UX for build-only).
  *
- * IMPORTANT: This module is the single source of truth in the supervisor
- * isolate. The same data is *duplicated* into
- * `src/loaders/npm-resolve-preamble.ts` because that preamble is shipped
- * into NimbusLoaderPool isolates as a string (cannot `import`). The
- * preamble parity test gates the duplication.
+ * IMPORTANT: `PACKAGE_ABI_POLICY` is the single source of truth for the
+ * whole npm policy — supervisor AND facets. Generated dynamic-Worker
+ * facets cannot `import` this module, so
+ * `src/loaders/npm-resolve-preamble.ts` SERIALIZES the policy object
+ * (JSON) plus the `policy*` functions below (`fn.toString()`) into the
+ * facet preamble at supervisor module-load time. The `policy*` functions
+ * must therefore stay self-contained: parameters and globals only — no
+ * references to module-scope bindings. The parity unit test
+ * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
+ * asserts equality with this module.
  */
-export interface SwapEntry {
-    /** Original package name the user (or a transitive dep) asked for. */
-    from: string;
-    /** Package name we install instead. */
-    to: string;
-    /** One-line reason shown to the user. */
-    reason: string;
-    /**
-     * 'drop-in' = `require(from)` and `require(to)` work identically — same
-     *             export shape.
-     * 'shim'    = (reserved) we write package.json `dependencies` so consumer
-     *             imports `from`, gets `to`.
-     * 'manual'  = (reserved) consumer code change required. Demoted to
-     *             REJECT_INSTALL because listing it here would silently break
-     *             user code.
-     */
-    compat: 'drop-in' | 'shim' | 'manual';
-}
-export interface RejectEntry {
-    from: string;
-    /** Helpful one-liner. Always actionable. */
-    reason: string;
-    /** Optional swap-target suggestion shown inline. */
-    suggest?: string;
-    /**
-     * 'fail' = hard-fail at any depth.
-     * 'warn' = top-level hard-fails; transitive logs `[skip]` and drops the
-     *          package from the resolved tree (matches existing
-     *          `shouldSkipPackage` semantics for genuinely-optional natives
-     *          like fsevents).
-     */
-    transitive: 'fail' | 'warn';
-}
-export declare const WASM_SWAPS: ReadonlyArray<SwapEntry>;
-export declare const REJECT_INSTALL: ReadonlyArray<RejectEntry>;
-export declare function lookupSwap(name: string): SwapEntry | undefined;
-export declare function lookupReject(name: string): RejectEntry | undefined;
+import { type PackageAbiPolicy, type PackageRejectEntry, type PackageSwapEntry } from '../runtime/os-contracts.js';
 /**
- * Pure: return a new specs map with every WASM_SWAPS.from key rewritten
+ * The single typed package-ABI policy (see `PackageAbiPolicy` in
+ * runtime/os-contracts.ts). Everything the npm resolver/installer needs
+ * to decide swap / reject / skip / native-artifact classification, in
+ * one JSON-serializable object.
+ */
+export declare const PACKAGE_ABI_POLICY: PackageAbiPolicy;
+/** Check if a package is build-only (skipped at transitive depth). */
+export declare function policyShouldSkipPackage(policy: PackageAbiPolicy, name: string, frameworkAware: boolean): boolean;
+export declare function policyLookupSwap(policy: PackageAbiPolicy, name: string): PackageSwapEntry | undefined;
+export declare function policyLookupReject(policy: PackageAbiPolicy, name: string): PackageRejectEntry | undefined;
+export declare function lookupSwap(name: string): PackageSwapEntry | undefined;
+export declare function lookupReject(name: string): PackageRejectEntry | undefined;
+/** Check if a package should be skipped (build-only, types). */
+export declare function shouldSkipPackage(name: string): boolean;
+/**
+ * W11: framework-aware skip variant. When `frameworkAware` is true,
+ * packages in `frameworkRequiredPackages` (currently just `vite`) pass
+ * through so framework dev binaries can import them from node_modules.
+ */
+export declare function shouldSkipPackageWithFramework(name: string, frameworkAware: boolean): boolean;
+/**
+ * Pure: return a new specs map with every swap `from` key rewritten
  * to its swap target. Records the swaps actually performed.
  *
  * Idempotent: running on already-swapped specs is a no-op.
@@ -72,7 +63,7 @@ export declare function lookupReject(name: string): RejectEntry | undefined;
  */
 export declare function applySwaps(specs: Record<string, string>): {
     specs: Record<string, string>;
-    swaps: SwapEntry[];
+    swaps: PackageSwapEntry[];
 };
 /**
  * Return rejects whose policy applies at this depth.
@@ -81,30 +72,30 @@ export declare function applySwaps(specs: Record<string, string>): {
  *                      policy is handled by the caller as a `[skip]`
  *                      log + continue).
  */
-export declare function findRejects(specs: Record<string, string>, ctx: 'top' | 'transitive'): RejectEntry[];
+export declare function findRejects(specs: Record<string, string>, ctx: 'top' | 'transitive'): PackageRejectEntry[];
 /**
  * Lookup that the resolver uses at depth>0 to decide between throw and
  * `[skip]`+continue. Returns the entry only when its policy is 'warn'
  * (i.e., this is a transitive-skip case). 'fail' entries return undefined
  * here; the caller handles those via findRejects/throw.
  */
-export declare function shouldWarnSkipTransitive(name: string): RejectEntry | undefined;
+export declare function shouldWarnSkipTransitive(name: string): PackageRejectEntry | undefined;
 /**
  * Single-line yellow notice emitted to onProgress when a swap fires.
  *   `[npm] [swap] esbuild → esbuild-wasm (Native esbuild not available …)`
  */
-export declare function formatSwapNotice(s: SwapEntry): string;
+export declare function formatSwapNotice(s: PackageSwapEntry): string;
 /**
  * Multi-line red error thrown when one or more top-level rejects fire.
  * Includes a leading summary line and a `try:` suggestion per package
  * (when present).
  */
-export declare function formatRejectError(rejects: ReadonlyArray<RejectEntry>): string;
+export declare function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>): string;
 /**
  * Single-line yellow notice emitted for a transitive `[skip]`.
  *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
  */
-export declare function formatTransitiveSkip(r: RejectEntry): string;
+export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
 /**
  * Tag class for registry-driven rejects. Both the supervisor-side path
  * (npm-installer.ts and npm-resolver.ts) and the
@@ -119,9 +110,9 @@ export declare function formatTransitiveSkip(r: RejectEntry): string;
  * The own-property survives worker boundary serialization.
  */
 export declare class RegistryRejectError extends Error {
-    readonly rejects: ReadonlyArray<RejectEntry>;
+    readonly rejects: ReadonlyArray<PackageRejectEntry>;
     readonly __nimbus_registry_reject: true;
-    constructor(rejects: ReadonlyArray<RejectEntry>);
+    constructor(rejects: ReadonlyArray<PackageRejectEntry>);
 }
 /**
  * Robust check that survives the supervisor↔facet boundary: prototypes
@@ -191,9 +182,17 @@ export interface MinimalPackument {
     libc?: string[];
     main?: string;
 }
+/**
+ * Minimal manifest shape consumed by the native-artifact classifier.
+ * Carries the npm bin map plus the package's platform-constraint
+ * metadata.
+ */
 export interface PackageBinManifest {
     name: string;
     bin?: Record<string, string>;
+    os?: string[];
+    cpu?: string[];
+    libc?: string[];
 }
 /**
  * Heuristic: does this packument represent a platform-native binding
@@ -203,19 +202,46 @@ export interface PackageBinManifest {
  *   - `os`, `cpu`, or `libc` field is non-empty (npm spec platform
  *     constraints — package is opting out of cross-platform installs).
  *   - `main` ends in `.node` (Node.js N-API binary, not workerd-loadable).
- *   - name matches a known native-shard glob (see NATIVE_SHARD_PREFIXES).
+ *   - name matches a known native-shard glob
+ *     (policy.nativeShardPrefixes).
  *
  * Returns false for pure-JS packages, parent wrappers (e.g. the
- * non-platform `@parcel/watcher` itself), and packuments with empty
- * platform-constraint arrays.
+ * non-platform `@parcel/watcher` itself), packuments with empty
+ * platform-constraint arrays, and exempted pure-WASM builds
+ * (policy.nativeShardExemptions).
  *
  * X.5-G G1: the resolver consults this on every packument fetched from
  * a transitive `optionalDependencies` entry. Returns-true → silent-skip
  * (emit a `transitive-skip` RegistryEvent, drop the package from the
  * resolved tree).
+ *
+ * Serialized into facet preambles — self-contained by contract.
  */
+export declare function policyIsOptionalNativeBinding(policy: PackageAbiPolicy, p: MinimalPackument): boolean;
+/**
+ * Classify a required package's published artifacts against the Nimbus
+ * ABI policy and return a reject entry when the package can only run as
+ * a native platform binary. Detection is metadata-driven:
+ *
+ *   - any bin target with a native executable extension
+ *     (policy.nativeBinExtensions — .exe Windows executables, .node
+ *     N-API binaries, …)
+ *   - package.json `os` / `cpu` / `libc` allowlists. A positive
+ *     allowlist means the package opts out of cross-platform installs
+ *     (npm rejects mismatches with EBADPLATFORM); no allowlisted
+ *     platform is executable in Nimbus. Pure negations (`!win32`) do
+ *     NOT classify as native — they exclude platforms without
+ *     requiring one.
+ *
+ * Diagnostics always name the package, the artifact class found
+ * (policy.nativeArtifactClass), and the artifact kinds Nimbus accepts
+ * instead.
+ *
+ * Serialized into facet preambles — self-contained by contract.
+ */
+export declare function policyNativeArtifactReject(policy: PackageAbiPolicy, pkg: PackageBinManifest): PackageRejectEntry | undefined;
 export declare function isOptionalNativeBinding(p: MinimalPackument): boolean;
-export declare function nativeExecutableReject(pkg: PackageBinManifest): RejectEntry | undefined;
+export declare function nativeExecutableReject(pkg: PackageBinManifest): PackageRejectEntry | undefined;
 /**
  * Select which entries in `peerDependencies` should be auto-installed.
  *
