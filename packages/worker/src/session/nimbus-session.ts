@@ -1174,21 +1174,14 @@ export class NimbusSession extends CloudflareDurableObject {
     // ── Lazy fetch-proxy ────────────────────────────────────────────
     // The fetch-proxy is a singleton dynamic worker (LOADER.load) that
     // buffers registry responses to dodge wrangler-local-dev port
-    // exhaustion. It is ONLY needed by the legacy in-supervisor
-    // resolveTree path (src/npm-resolver.ts). With NIMBUS_FACET_RESOLVER
-    // default-on (commit 9194998) the resolver runs in a facet that
-    // uses bare globalThis.fetch — no proxy needed. Same for the
-    // install-batch-facet path (commit c285025) — uses bare fetch.
+    // exhaustion. It is only needed for the in-supervisor npm paths.
+    // When the resolver and install paths run in facets (default-on),
+    // they use bare globalThis.fetch and need no proxy.
     //
     // workerd has a per-DO cap on concurrent dynamic workers (~5-6
     // empirically). A permanent live proxy worker eats one of those
-    // slots for the entire DO lifetime. Skipping the proxy in the
-    // default-on configuration buys us back a slot.
-    //
-    // Proxy is only built when ANY legacy fallback is active — this
-    // way `NIMBUS_FACET_RESOLVER=0` (rolling back the resolver) or
-    // `NIMBUS_FACET_NPM_INSTALL_BATCH=0` (rolling back install-batch)
-    // still works exactly as before. Same emergency-rollback contract.
+    // slots for the entire DO lifetime, so the proxy is built only when
+    // any facet path is disabled via its env flag.
     const useFacetResolver = this._envFlagDefaultOn('NIMBUS_FACET_RESOLVER');
     const useFacetInstall  = this._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL');
     const useBatchFacet    = this._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL_BATCH');

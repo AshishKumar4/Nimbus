@@ -239,18 +239,11 @@ export class NpmInstaller {
       phases['lock-check'] = Date.now() - phaseStart;
 
       // ── Phase 1: Resolve ──────────────────────────────────────────
-      // F-2 (cleanup-not-done): frontier-coordinator path. Each BFS
-      // layer dispatches to NimbusFanoutPool.submitMany — width <5 in-DO
-      // (in-DO fanout), width ≥5 peer-DO (peer-DO fanout). Per-package task body is
+      // Frontier-coordinator path. Each BFS layer dispatches to
+      // NimbusFanoutPool.submitMany — width <5 in-DO (in-DO fanout),
+      // width ≥5 peer-DO (peer-DO fanout). Per-package task body is
       // self-contained (resolveOnePackumentInFacet), supervisor builds
-      // layer N+1 from layer N's edges.
-      //
-      // legacy-cleanup (2026-05-13): the legacy single-facet
-      // `resolveTreeViaFacet` path + `NIMBUS_RESOLVER_PATH=facet`
-      // env-var selector + supporting body were removed. They existed
-      // only for A/B profile measurement (against the deleted
-      // scripts/profile-layer-widths.mjs); runtime always took the
-      // fanout path by default. Missing env.LOADER throws at
+      // layer N+1 from layer N's edges. Missing env.LOADER throws at
       // construction; missing env.NIMBUS_SESSION throws at the first
       // wide-layer submitMany.
       phaseStart = Date.now();
@@ -491,18 +484,13 @@ export class NpmInstaller {
     return { installed, failed, totalFiles, elapsed, cachedHits, phases };
   }
 
-  // ── Single-resolver / single-fetcher invariant (Phase 2 A'.1) ─────────
+  // ── Single-resolver / single-fetcher invariant ───────────────────────
   //
-  // Pre-rebuild this section had three feature flags that gated the
-  // facet paths and fell back to in-supervisor resolveTree /
-  // fetchWaves / pool.map when off. The fallback paths re-introduced
-  // exactly the supervisor heap pressure the rebuild aims to remove,
-  // so they were deleted along with their feature flags.
-  //
-  // Single resolver: src/npm-resolve-facet.ts (called from
-  // resolveTreeViaFanout below).
-  // Single fetcher : src/npm-install-batch-facet.ts (called from
-  // fetchViaBatchFacet below).
+  // The resolver and fetcher each run in exactly one facet path with no
+  // in-supervisor fallback, so the supervisor heap stays flat:
+  //   Resolver: per-package fanout (resolve-one-facet.ts), driven by
+  //             resolveTreeViaFanout below.
+  //   Fetcher : install-batch-facet.ts, driven by fetchViaBatchFacet below.
   //
   // env.LOADER and ctx are platform requirements; if either is
   // missing the install fails loud at the first await on the facet
@@ -673,7 +661,7 @@ export class NpmInstaller {
         else if (res.packumentSource === 'network') r2Losses++;
         if (res.packumentBytesDecoded > 0) totalPackumentsDecoded++;
 
-        // W6 reject error handling — mirrors resolve-facet.ts:716.
+        // W6 reject error handling.
         if (res.error && res.error.type === 'w6-reject') {
           if (bestEffortNames.has(taskName)) {
             // X.5-drizzle: silent-skip inside best-effort optional-peer
@@ -710,10 +698,10 @@ export class NpmInstaller {
         if (optionalNames.has(taskName)) {
           if (isOptionalNativeBinding({
             name: pkg.name,
-            os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc,
+            os: pkg.os, cpu: pkg.cpu, libc: pkg.libc,
             main: pkg.main,
           })) {
-            const reason = `optional native binding (os=${(pkg as any).os ?? '*'}, cpu=${(pkg as any).cpu ?? '*'}, libc=${(pkg as any).libc ?? '*'}, main=${pkg.main || '?'})`;
+            const reason = `optional native binding (os=${pkg.os ?? '*'}, cpu=${pkg.cpu ?? '*'}, libc=${pkg.libc ?? '*'}, main=${pkg.main || '?'})`;
             log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
             emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
             continue;
@@ -723,14 +711,14 @@ export class NpmInstaller {
         if (resolved.has(pkg.name)) continue;
         resolved.set(pkg.name, pkg);
 
-        // Edge extraction — mirrors resolve-facet.ts:754-836.
+        // Edge extraction.
         const inheritBestEffort = bestEffortNames.has(pkg.name);
         for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
           if (resolved.has(depName) || seen.has(depName)) continue;
           if (inheritBestEffort) bestEffortNames.add(depName);
           queue.push([depName, depRange as string]);
         }
-        const optDeps = (pkg as any).optionalDependencies as Record<string, string> | undefined;
+        const optDeps = pkg.optionalDependencies;
         if (optDeps) {
           for (const [depName, depRange] of Object.entries(optDeps)) {
             if (resolved.has(depName) || seen.has(depName)) continue;
@@ -748,7 +736,7 @@ export class NpmInstaller {
           }
         }
         // X.5-F R2.5 + X.5-J: optional peers when THIS pkg is the
-        // user's top-level. Filter through REJECT_INSTALL.
+        // user's top-level. Filter through the policy reject list.
         if (topLevelNames.has(pkg.name)) {
           const allPeers = (pkg as any).__allPeerDependencies as Record<string, string> | undefined;
           if (allPeers) {
@@ -1102,8 +1090,8 @@ export class NpmInstaller {
   }
 
   /**
-   * W6: apply WASM_SWAPS rewrites and REJECT_INSTALL deny list to a
-   * top-level spec map. Emits `[swap]` notices via onProgress; throws
+   * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
+   * to a top-level spec map. Emits `[swap]` notices via onProgress; throws
    * a multi-line error on any reject (with `transitive='warn'` rejects
    * also failing at top level — they only soften at depth>0).
    *

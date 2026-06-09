@@ -80,9 +80,9 @@ function IS_OPTIONAL_NATIVE_BINDING(pkg) {
 // ── Registry telemetry: facet-side event collection ──────────────────────
 // The facet cannot import the registry's emitRegistryEvent (preamble has
 // no import surface). Instead, decision sites push into a shared
-// __pendingEvents array which resolveTreeInFacet returns inside
-// ResolveFacetResult.registryEvents. The supervisor drains it and
-// flushes via emitRegistryEvent (npm-installer.ts).
+// __pendingEvents array which resolveOnePackumentInFacet returns inside
+// ResolveOneResult.events. The supervisor drains it and flushes via
+// emitRegistryEvent (npm-installer.ts).
 //
 // Shape of each entry:
 //   { type: 'swap',            from, to,                     ctx: 'transitive' }

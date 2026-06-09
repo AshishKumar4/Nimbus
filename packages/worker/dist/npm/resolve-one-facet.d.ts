@@ -52,9 +52,9 @@
  *   5. Fetch packument with retry/backoff if no cache hit.
  *   6. Pick version via preamble's RESOLVE_VERSION.
  *   7. Materialise ResolvedPackage shape (versionToResolved-style).
- *   8. Stage cache writes for this version + top-5 recent versions
- *      (mirrors resolve-facet.ts:580). Returns them in `cacheWrites`
- *      so the supervisor can flush in one batched RPC.
+ *   8. Stage cache writes for this version + top-5 recent versions.
+ *      Returns them in `cacheWrites` so the supervisor can flush in one
+ *      batched RPC.
  *   9. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
@@ -85,7 +85,8 @@ export interface ResolveOneSpec {
      * SKIP_PACKAGES. The supervisor decides the flag at enqueue time.
      */
     topLevel: boolean;
-    /** Same X.5-G G1 semantics as resolve-facet.ts. */
+    /** X.5-G G1: this spec came from an optionalDependencies edge, so
+     *  platform-native bindings silent-skip rather than failing the parent. */
     isOptional: boolean;
     /** W11 framework-aware skip. */
     frameworkAware: boolean;
@@ -108,8 +109,7 @@ export interface ResolveOneResult {
     /**
      * Cache writes the task is asking the supervisor to flush. Includes
      * the resolved version + up to 5 recent versions seen in the
-     * packument (mirrors resolve-facet.ts:580). Empty for cache-hit-
-     * only resolutions.
+     * packument. Empty for cache-hit-only resolutions.
      */
     cacheWrites: any[];
     /** [npm] log lines, forwarded by the supervisor. */
@@ -118,7 +118,7 @@ export interface ResolveOneResult {
     events: FacetRegistryEvent[];
     /**
      * Diagnostic: how many bytes the task fetched/decoded. Folded into
-     * supervisor's facetCounters for parity with resolve-facet.ts.
+     * the supervisor's facetCounters.
      */
     packumentBytesDecoded: number;
     packumentSource: 'cache-hit' | 'r2-cache' | 'network' | 'skipped';
@@ -131,11 +131,11 @@ export interface ResolveOneResult {
      * resolver itself fetches from registry.npmjs.org.
      *
      * Folded into the DO-side cache-stats singleton by installer.ts via
-     * recordCacheStatEvents on the resolveTree-via-facet return path
-     * (same pattern as recordR2RaceCounters).
+     * recordCacheStatEvents on the fanout return path (same pattern as
+     * recordR2RaceCounters).
      *
-     * Optional in the type to keep the wire compatible with older
-     * resolver-facet bundles; default to [] when consumed supervisor-side.
+     * Optional in the type so the supervisor defaults to [] when a facet
+     * return omits it.
      */
     cacheStatEvents?: Array<{
         kind: 'hit';

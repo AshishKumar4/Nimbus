@@ -52,9 +52,9 @@
  *   5. Fetch packument with retry/backoff if no cache hit.
  *   6. Pick version via preamble's RESOLVE_VERSION.
  *   7. Materialise ResolvedPackage shape (versionToResolved-style).
- *   8. Stage cache writes for this version + top-5 recent versions
- *      (mirrors resolve-facet.ts:580). Returns them in `cacheWrites`
- *      so the supervisor can flush in one batched RPC.
+ *   8. Stage cache writes for this version + top-5 recent versions.
+ *      Returns them in `cacheWrites` so the supervisor can flush in one
+ *      batched RPC.
  *   9. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
@@ -478,7 +478,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
         fetchedAt: Date.now(),
     });
-    // Top-5 sibling versions, mirrors resolve-facet.ts:580.
+    // Top-5 sibling versions.
     const sorted = Object.keys(data.versions)
         // @ts-ignore — preamble.
         .map((v) => ({ v, p: PARSE_SEMVER(v) }))

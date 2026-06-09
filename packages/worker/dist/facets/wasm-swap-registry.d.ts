@@ -99,8 +99,8 @@ export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
 /**
  * Tag class for registry-driven rejects. Both the supervisor-side path
  * (npm-installer.ts and npm-resolver.ts) and the
- * facet-side path (npm-resolve-facet.ts:resolveTreeInFacet) throw errors
- * tagged for this case.
+ * facet-side path (resolve-one-facet.ts:resolveOnePackumentInFacet) throw
+ * errors tagged for this case.
  *
  * Supervisor-side: throw `new RegistryRejectError(rejects)` directly.
  * Facet-side: cannot import this class (preamble has no import surface),
@@ -155,7 +155,7 @@ export type RegistryEventSink = (e: RegistryEvent) => void;
  *
  * The sink is a per-isolate singleton. The supervisor isolate's sink does
  * NOT propagate to facet isolates — facet emits travel through
- * `ResolveFacetResult.registryEvents` and are flushed by the supervisor
+ * `ResolveOneResult.events` and are flushed by the supervisor
  * after the facet returns.
  */
 export declare function setRegistryEventSink(s: RegistryEventSink | null): void;

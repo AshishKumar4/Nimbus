@@ -552,7 +552,7 @@ export async function resolveTree(specs, cache, onResolved, onProgress, fetchFn,
     // X.5-drizzle: names enqueued by the X.5-J top-level optional-peer
     // path (R2.5) and ALL their transitive descendants. The user did not
     // explicitly ask for them — npm CLI's --include=peer pulls them as a
-    // best-effort convenience. When a `transitive: 'fail'` REJECT_INSTALL
+    // best-effort convenience. When a `transitive: 'fail'` policy reject
     // fires for a name in this set, we silent-skip the offending name +
     // log a notice, instead of throwing and killing the parent install.
     const bestEffortNames = new Set();
@@ -687,7 +687,7 @@ export async function resolveTree(specs, cache, onResolved, onProgress, fetchFn,
                     // user did not explicitly ask for the optional-peer-rooted
                     // subtree; mirror npm's --omit=optional behaviour for its
                     // descendants. See VERIFY-9D4B61D §6 and the mirror in
-                    // src/npm-resolve-facet.ts. Canonical chain: drizzle-orm →
+                    // resolve-one-facet.ts. Canonical chain: drizzle-orm →
                     // expo-sqlite (optpeer) → expo (peer) → @expo/metro-config
                     // (dep) → lightningcss (dep, transitive='fail').
                     if (bestEffortNames.has(name)) {
@@ -714,7 +714,7 @@ export async function resolveTree(specs, cache, onResolved, onProgress, fetchFn,
             // X.5-drizzle: when this pkg was best-effort (a child of an
             // X.5-J optional-peer subtree), its newly-enqueued descendants
             // inherit the best-effort flag so a deep `transitive: 'fail'`
-            // REJECT_INSTALL silent-skips instead of killing the parent.
+            // policy reject silent-skips instead of killing the parent.
             const inheritBestEffort = bestEffortNames.has(pkg.name);
             // Enqueue transitive deps
             for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
@@ -759,8 +759,8 @@ export async function resolveTree(specs, cache, onResolved, onProgress, fetchFn,
             // For TRANSITIVE packages we keep optionals filtered out — only
             // top-level requests get this generous treatment.
             //
-            // X.5-J: optional peers whose target is in REJECT_INSTALL get
-            // SOFT-SKIPPED at enqueue time. Without this carve-out, R2.5's
+            // X.5-J: optional peers whose target is in the policy reject
+            // list get SOFT-SKIPPED at enqueue time. Without this carve-out, R2.5's
             // generous include cascades into the W6 reject-throw and kills
             // the parent install. Two real regressions surfaced this:
             //   - drizzle-orm declares optional peer 'sql.js' (W6.5 loader gap)
@@ -768,17 +768,17 @@ export async function resolveTree(specs, cache, onResolved, onProgress, fetchFn,
             // Both packages have non-rejected primary code paths (drizzle
             // works against d1/libsql/postgres/mysql; ts-node default mode
             // uses TypeScript transformer not swc), so a soft-skip recovers
-            // the previously-working install. REQUIRED peers in REJECT_INSTALL
-            // still hard-fail via the R2 path above (peerDependencies set
-            // excludes optionals); transitive REQUIRED deps in REJECT_INSTALL
-            // also still hard-fail via the dep walk's resolveOne reject path.
+            // the previously-working install. REQUIRED peers in the policy
+            // reject list still hard-fail via the R2 path above (peerDependencies
+            // set excludes optionals); transitive REQUIRED deps in the policy
+            // reject list also still hard-fail via the dep walk's resolveOne reject path.
             if (topLevelNames.has(pkg.name)) {
                 const allPeers = pkg.__allPeerDependencies;
                 if (allPeers) {
                     for (const [peerName, peerRange] of Object.entries(allPeers)) {
                         if (resolved.has(peerName) || seen.has(peerName))
                             continue;
-                        // X.5-J: filter optional peers through REJECT_INSTALL.
+                        // X.5-J: filter optional peers through the policy reject list.
                         const peerReject = lookupReject(peerName);
                         if (peerReject) {
                             const reason = `optional peer in REJECT_INSTALL: ${peerName} — ${peerReject.reason}`;

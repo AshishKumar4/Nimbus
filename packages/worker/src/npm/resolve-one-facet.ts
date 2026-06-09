@@ -52,9 +52,9 @@
  *   5. Fetch packument with retry/backoff if no cache hit.
  *   6. Pick version via preamble's RESOLVE_VERSION.
  *   7. Materialise ResolvedPackage shape (versionToResolved-style).
- *   8. Stage cache writes for this version + top-5 recent versions
- *      (mirrors resolve-facet.ts:580). Returns them in `cacheWrites`
- *      so the supervisor can flush in one batched RPC.
+ *   8. Stage cache writes for this version + top-5 recent versions.
+ *      Returns them in `cacheWrites` so the supervisor can flush in one
+ *      batched RPC.
  *   9. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
@@ -99,7 +99,8 @@ export interface ResolveOneSpec {
    * SKIP_PACKAGES. The supervisor decides the flag at enqueue time.
    */
   topLevel: boolean;
-  /** Same X.5-G G1 semantics as resolve-facet.ts. */
+  /** X.5-G G1: this spec came from an optionalDependencies edge, so
+   *  platform-native bindings silent-skip rather than failing the parent. */
   isOptional: boolean;
   /** W11 framework-aware skip. */
   frameworkAware: boolean;
@@ -123,8 +124,7 @@ export interface ResolveOneResult {
   /**
    * Cache writes the task is asking the supervisor to flush. Includes
    * the resolved version + up to 5 recent versions seen in the
-   * packument (mirrors resolve-facet.ts:580). Empty for cache-hit-
-   * only resolutions.
+   * packument. Empty for cache-hit-only resolutions.
    */
   cacheWrites: any[];
   /** [npm] log lines, forwarded by the supervisor. */
@@ -133,7 +133,7 @@ export interface ResolveOneResult {
   events: FacetRegistryEvent[];
   /**
    * Diagnostic: how many bytes the task fetched/decoded. Folded into
-   * supervisor's facetCounters for parity with resolve-facet.ts.
+   * the supervisor's facetCounters.
    */
   packumentBytesDecoded: number;
   packumentSource: 'cache-hit' | 'r2-cache' | 'network' | 'skipped';
@@ -146,11 +146,11 @@ export interface ResolveOneResult {
    * resolver itself fetches from registry.npmjs.org.
    *
    * Folded into the DO-side cache-stats singleton by installer.ts via
-   * recordCacheStatEvents on the resolveTree-via-facet return path
-   * (same pattern as recordR2RaceCounters).
+   * recordCacheStatEvents on the fanout return path (same pattern as
+   * recordR2RaceCounters).
    *
-   * Optional in the type to keep the wire compatible with older
-   * resolver-facet bundles; default to [] when consumed supervisor-side.
+   * Optional in the type so the supervisor defaults to [] when a facet
+   * return omits it.
    */
   cacheStatEvents?: Array<
     | { kind: 'hit'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument'; bytes: number }
@@ -340,8 +340,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   })();
 
   if (cached) {
-    let deps: any = {}, peers: any = {}, exp: any = null, bin: any = {};
-    let platform: any = {}, optionalDeps: any = {};
+    let deps: Record<string, string> = {}, peers: Record<string, string> = {}, exp: unknown = null, bin: Record<string, string> = {};
+    let platform: Record<string, unknown> = {}, optionalDeps: Record<string, string> = {};
     try { deps = JSON.parse(cached.depsJson); } catch {}
     try { peers = cached.peerDepsJson ? JSON.parse(cached.peerDepsJson) : {}; } catch {}
     try { exp = JSON.parse(cached.exportsJson); } catch {}
@@ -365,7 +365,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       main: cached.main,
       module: cached.moduleField,
       bin,
-    } as any;
+    };
     const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
     if (nativeReject) return nativeReject;
     return out(pkgFromCache, 0, 'cache-hit');
@@ -578,13 +578,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
     exportsJson: JSON.stringify(pkg.exports ?? {}),
     main: pkg.main,
-    moduleField: (pkg as any).module,
+    moduleField: pkg.module,
     binJson: JSON.stringify(pkg.bin),
-    platformJson: JSON.stringify({ os: (pkg as any).os, cpu: (pkg as any).cpu, libc: (pkg as any).libc }),
-    optionalDepsJson: JSON.stringify((pkg as any).optionalDependencies ?? {}),
+    platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
+    optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
     fetchedAt: Date.now(),
   });
-  // Top-5 sibling versions, mirrors resolve-facet.ts:580.
+  // Top-5 sibling versions.
   const sorted = Object.keys(data.versions)
     // @ts-ignore — preamble.
     .map((v) => ({ v, p: PARSE_SEMVER(v) }))
@@ -607,10 +607,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         peerDepsJson: JSON.stringify(otherPkg.peerDependencies ?? {}),
         exportsJson: JSON.stringify(otherPkg.exports ?? {}),
         main: otherPkg.main,
-        moduleField: (otherPkg as any).module,
+        moduleField: otherPkg.module,
         binJson: JSON.stringify(otherPkg.bin),
-        platformJson: JSON.stringify({ os: (otherPkg as any).os, cpu: (otherPkg as any).cpu, libc: (otherPkg as any).libc }),
-        optionalDepsJson: JSON.stringify((otherPkg as any).optionalDependencies ?? {}),
+        platformJson: JSON.stringify({ os: otherPkg.os, cpu: otherPkg.cpu, libc: otherPkg.libc }),
+        optionalDepsJson: JSON.stringify(otherPkg.optionalDependencies ?? {}),
         fetchedAt: Date.now(),
       });
     } catch { /* skip malformed */ }

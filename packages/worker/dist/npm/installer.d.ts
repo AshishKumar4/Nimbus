@@ -144,8 +144,8 @@ export declare class NpmInstaller {
     private detectFrameworkAware;
     private buildSpecs;
     /**
-     * W6: apply WASM_SWAPS rewrites and REJECT_INSTALL deny list to a
-     * top-level spec map. Emits `[swap]` notices via onProgress; throws
+     * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
+     * to a top-level spec map. Emits `[swap]` notices via onProgress; throws
      * a multi-line error on any reject (with `transitive='warn'` rejects
      * also failing at top level — they only soften at depth>0).
      *
