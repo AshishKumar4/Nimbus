@@ -144,6 +144,21 @@ NIMBUS_ENDPOINT=https://my-nimbus.workers.dev nimbus session new
 # {"sessionId":"pretty-otter-1234","url":"https://.../s/pretty-otter-1234/"}
 ```
 
+Authenticated deployments can pass a token with `--token` or `NIMBUS_TOKEN`:
+
+```bash
+NIMBUS_ENDPOINT=https://my-nimbus.workers.dev \
+NIMBUS_TOKEN=<jwt-with-session-create> \
+nimbus session new
+```
+
+The token is sent only as an `Authorization: Bearer` header — it never
+appears in any URL. The printed attach URL is the server's redirect
+Location verbatim: on enforced deployments it carries a short-lived
+(90 s), single-use bootstrap token pinned to the new session. Opening it
+once sets the session cookie and redirects to the clean `/s/<id>/` URL;
+reusing it returns 401.
+
 ## Programmatic use
 
 Every verb is also exported as a function:

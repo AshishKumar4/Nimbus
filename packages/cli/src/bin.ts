@@ -73,7 +73,7 @@ Usage:
   nimbus token verify <token>
   nimbus runtime sync [--bucket <name>] [runtime[@version]...]
   nimbus runtime list
-  nimbus session new [--endpoint <url>]
+  nimbus session new [--endpoint <url>] [--token <jwt>]
   nimbus setup cloudflare --name <worker-name>
   nimbus init [directory]
 
@@ -83,6 +83,7 @@ For embedder scaffolding:
 Env:
   JWT_SECRET        Shared secret for HS256 (required for token mint/verify).
   NIMBUS_ENDPOINT   Base URL for session new. Defaults to localhost:8787.
+  NIMBUS_TOKEN      Bearer token for authenticated session new.
   CLOUDFLARE_ACCOUNT_ID  Required for runtime sync.
 `);
 }
