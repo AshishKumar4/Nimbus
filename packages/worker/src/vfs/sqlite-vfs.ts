@@ -45,6 +45,7 @@
  */
 
 import { VfsEventEmitter, type VfsEventType } from './events.js';
+import { normalizeVfsPath } from './path.js';
 import { CHUNK_SIZE, LRU_MAX_ENTRIES, BATCH_SIZE } from '../constants.js';
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
@@ -151,6 +152,16 @@ export class SqliteVFS {
   private _totalDirs = 0;
   private _usedBytes = 0;
   private _revision = 0;
+
+  // ── Per-path revisions ────────────────────────────────────────────────
+  // _revision is the monotonic mutation clock. Every mutation stamps the
+  // mutated path AND each of its ancestors with the clock value, so
+  // revision(dir) is a subtree watermark: it changes iff something under
+  // dir changed. Consumers (runtime snapshot caches, page caches, handle
+  // staleness checks) key on revision(path) instead of the global clock,
+  // so unrelated writes no longer invalidate them. In-memory only — the
+  // clock resets with the DO lifetime, exactly like the caches keyed on it.
+  private _pathRevisions = new Map<string, number>();
 
   // ── Deferred write queue (do86 pattern) ───────────────────────────────
   private pendingWrites = new Map<string, { path: string; chunkId: number; data: Uint8Array }>();
@@ -919,8 +930,29 @@ export class SqliteVFS {
     return inode !== undefined && !inode.isDir;
   }
 
-  revision(): number {
-    return this._revision;
+  /**
+   * Without a path: the global mutation clock. With a path: the clock
+   * value at the last mutation inside that path's subtree (0 if nothing
+   * under it changed in this DO lifetime). `revision('')` equals the
+   * global clock by construction (every mutation stamps all ancestors).
+   */
+  revision(path?: string): number {
+    if (path === undefined) return this._revision;
+    const p = normalizeVfsPath(path);
+    if (p === '') return this._revision;
+    return this._pathRevisions.get(p) ?? 0;
+  }
+
+  /** Advance the clock once and stamp every path + its ancestors. */
+  private bumpRevision(paths: readonly string[]): void {
+    const rev = ++this._revision;
+    for (const path of paths) {
+      let p = normalizeVfsPath(path);
+      while (p !== '') {
+        this._pathRevisions.set(p, rev);
+        p = this.parentPath(p);
+      }
+    }
   }
 
   mkdir(path: string, options?: { recursive?: boolean }): void {
@@ -951,7 +983,7 @@ export class SqliteVFS {
     this.inodes.set(path, inode);
     this._addToChildrenIndex(pp, path);
     this._totalDirs++; // B3
-    this._revision++;
+    this.bumpRevision([path]);
     this.events.emit('addDir', path);
   }
 
@@ -1038,8 +1070,17 @@ export class SqliteVFS {
       }
     }
 
-    this._revision++;
+    this.bumpRevision([path]);
     this.events.emit(isNew ? 'add' : 'change', path);
+  }
+
+  /** Read one chunk via cache → pending writes → SQL, caching on miss. */
+  private readChunk(path: string, chunkId: number): Uint8Array | null {
+    const cached = this.cacheGet(path, chunkId);
+    if (cached) return cached;
+    const data = this.readChunkFromSql(path, chunkId);
+    if (data) this.cacheSet(path, chunkId, data, false);
+    return data;
   }
 
   readFile(path: string): Uint8Array {
@@ -1049,26 +1090,14 @@ export class SqliteVFS {
     if (inode.size === 0 || inode.chunkCount === 0) return new Uint8Array(0);
 
     if (inode.chunkCount === 1) {
-      // Single chunk
-      const cached = this.cacheGet(path, 0);
-      if (cached) return cached;
-      const data = this.readChunkFromSql(path, 0);
-      if (!data) return new Uint8Array(0);
-      this.cacheSet(path, 0, data, false);
-      return data;
+      return this.readChunk(path, 0) ?? new Uint8Array(0);
     }
 
     // Multi-chunk: reassemble
     const chunks: Uint8Array[] = [];
     let totalRead = 0;
     for (let i = 0; i < inode.chunkCount; i++) {
-      let chunk = this.cacheGet(path, i);
-      if (!chunk) {
-        chunk = this.readChunkFromSql(path, i);
-        if (chunk) {
-          this.cacheSet(path, i, chunk, false);
-        }
-      }
+      const chunk = this.readChunk(path, i);
       if (chunk) {
         chunks.push(chunk);
         totalRead += chunk.length;
@@ -1083,6 +1112,184 @@ export class SqliteVFS {
       offset += c.length;
     }
     return result;
+  }
+
+  /**
+   * Read `length` bytes at `offset` without assembling the whole file —
+   * only the chunks overlapping the range are touched. Reads past EOF
+   * are clamped; chunks missing their SQL row read as zeroes.
+   */
+  readRange(path: string, offset: number, length: number): Uint8Array {
+    const inode = this.inodes.get(path);
+    if (!inode) throw new Error("ENOENT: " + path);
+    if (inode.isDir) throw new Error("EISDIR: " + path);
+    const start = clampNonNegativeInt(offset);
+    const end = Math.min(inode.size, start + clampNonNegativeInt(length));
+    if (start >= end) return new Uint8Array(0);
+
+    const out = new Uint8Array(end - start);
+    const firstChunk = Math.floor(start / CHUNK_SIZE);
+    const lastChunk = Math.floor((end - 1) / CHUNK_SIZE);
+    for (let i = firstChunk; i <= lastChunk; i++) {
+      const chunk = this.readChunk(path, i);
+      if (!chunk) continue;
+      const chunkStart = i * CHUNK_SIZE;
+      const copyFrom = Math.max(start, chunkStart);
+      const copyTo = Math.min(end, chunkStart + chunk.length);
+      if (copyFrom >= copyTo) continue;
+      out.set(chunk.subarray(copyFrom - chunkStart, copyTo - chunkStart), copyFrom - start);
+    }
+    return out;
+  }
+
+  /**
+   * Overwrite `bytes` at `offset`, rewriting only the chunks the range
+   * (plus any EOF extension) touches — file-handle and page writers must
+   * not pay a whole-file rewrite. Writing past EOF zero-fills the gap so
+   * every chunk row up to the new EOF stays materialized at its
+   * positional length (readFile reassembles by plain concatenation).
+   * Creates the file when missing; callers own parent-dir creation
+   * (same contract as writeFile).
+   */
+  writeRange(path: string, offset: number, bytes: Uint8Array): void {
+    const prior = this.inodes.get(path);
+    if (prior && prior.isDir) throw new Error("EISDIR: " + path);
+    const isNew = prior === undefined;
+    // POSIX pwrite of zero bytes never extends or dirties an existing file.
+    if (bytes.length === 0 && !isNew) return;
+
+    const start = clampNonNegativeInt(offset);
+    const end = start + bytes.length;
+    const oldSize = prior?.size ?? 0;
+    const oldChunkCount = prior?.chunkCount ?? 0;
+    const newSize = Math.max(oldSize, end);
+    const now = this.now();
+    const pp = this.parentPath(path);
+
+    if (newSize > 0) {
+      // Contiguous chunk span: the written range, plus the stretch from
+      // the old EOF when extending (gap chunks zero-fill; a partial old
+      // last chunk is re-materialized at its grown length).
+      const extending = end > oldSize;
+      const fromChunk = Math.floor((extending ? Math.min(start, oldSize) : start) / CHUNK_SIZE);
+      const toChunk = Math.floor(((extending ? newSize : end) - 1) / CHUNK_SIZE);
+      for (let i = fromChunk; i <= toChunk; i++) {
+        const chunkStart = i * CHUNK_SIZE;
+        const chunkLen = Math.min(CHUNK_SIZE, newSize - chunkStart);
+        const overlayFrom = Math.max(start, chunkStart);
+        const overlayTo = Math.min(end, chunkStart + chunkLen);
+        const chunk = new Uint8Array(chunkLen);
+        const fullyCovered = overlayFrom <= chunkStart && overlayTo >= chunkStart + chunkLen;
+        if (!fullyCovered && i < oldChunkCount) {
+          const existing = this.readChunk(path, i);
+          if (existing) chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
+        }
+        if (overlayFrom < overlayTo) {
+          chunk.set(bytes.subarray(overlayFrom - start, overlayTo - start), overlayFrom - chunkStart);
+        }
+        this.cacheSet(path, i, chunk, false);
+        this.deferWrite(path, i, chunk);
+      }
+    }
+
+    const newChunkCount = newSize === 0 ? 0 : Math.ceil(newSize / CHUNK_SIZE);
+    if (isNew) {
+      this.sql.exec(
+        "INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, 0, ?, ?, ?, ?, ?)",
+        path, pp, newSize, now, now, 0o644, newChunkCount
+      );
+      this.inodes.set(path, { path, parentPath: pp, isDir: false, size: newSize, atime: now, mtime: now, mode: 0o644, chunkCount: newChunkCount });
+      this._addToChildrenIndex(pp, path);
+      this._totalFiles++;
+      this._usedBytes += newSize;
+    } else {
+      prior.size = newSize;
+      prior.mtime = now;
+      prior.chunkCount = newChunkCount;
+      this.sql.exec("UPDATE inodes SET size = ?, mtime = ?, chunk_count = ? WHERE path = ?", newSize, now, newChunkCount, path);
+      this._usedBytes += newSize - oldSize;
+    }
+    this.bumpRevision([path]);
+    this.events.emit(isNew ? 'add' : 'change', path);
+  }
+
+  /**
+   * Truncate or zero-extend to `size`, touching only the boundary chunk.
+   * Shrinking drops trailing chunk rows (and any cache/pending entries
+   * for them, so a deferred flush cannot resurrect deleted rows) and
+   * trims the new last chunk; growing zero-fills like writeRange.
+   */
+  truncate(path: string, size: number): void {
+    const inode = this.inodes.get(path);
+    if (!inode) throw new Error("ENOENT: " + path);
+    if (inode.isDir) throw new Error("EISDIR: " + path);
+    const newSize = clampNonNegativeInt(size);
+    const oldSize = inode.size;
+    if (newSize === oldSize) return;
+    const newChunkCount = newSize === 0 ? 0 : Math.ceil(newSize / CHUNK_SIZE);
+    const now = this.now();
+
+    if (newSize > oldSize) {
+      // Zero-extend from the old EOF. A full old last chunk is skipped;
+      // a partial one is re-materialized at its grown length.
+      const fromChunk = oldSize % CHUNK_SIZE === 0 ? oldSize / CHUNK_SIZE : Math.floor(oldSize / CHUNK_SIZE);
+      for (let i = fromChunk; i < newChunkCount; i++) {
+        const chunkStart = i * CHUNK_SIZE;
+        const chunkLen = Math.min(CHUNK_SIZE, newSize - chunkStart);
+        const chunk = new Uint8Array(chunkLen);
+        if (i < inode.chunkCount) {
+          const existing = this.readChunk(path, i);
+          if (existing) chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
+        }
+        this.cacheSet(path, i, chunk, false);
+        this.deferWrite(path, i, chunk);
+      }
+    } else {
+      this.dropChunksFrom(path, newChunkCount);
+      this.sql.exec("DELETE FROM file_chunks WHERE path = ? AND chunk_id >= ?", path, newChunkCount);
+      if (newChunkCount > 0) {
+        const lastId = newChunkCount - 1;
+        const lastLen = newSize - lastId * CHUNK_SIZE;
+        if (lastLen < CHUNK_SIZE) {
+          const existing = this.readChunk(path, lastId);
+          if (existing && existing.length > lastLen) {
+            const trimmed = existing.slice(0, lastLen);
+            this.cacheSet(path, lastId, trimmed, false);
+            this.deferWrite(path, lastId, trimmed);
+          }
+        }
+      }
+    }
+
+    inode.size = newSize;
+    inode.mtime = now;
+    inode.chunkCount = newChunkCount;
+    this.sql.exec("UPDATE inodes SET size = ?, mtime = ?, chunk_count = ? WHERE path = ?", newSize, now, newChunkCount, path);
+    this._usedBytes += newSize - oldSize;
+    this.bumpRevision([path]);
+    this.events.emit('change', path);
+  }
+
+  /** Drop cache + pending-write entries for chunks >= fromChunkId. */
+  private dropChunksFrom(path: string, fromChunkId: number): void {
+    const cacheDoomed: string[] = [];
+    for (const [key, entry] of this.cache) {
+      if (entry.path === path && entry.chunkId >= fromChunkId) {
+        this._cacheBytes -= entry.data.length;
+        cacheDoomed.push(key);
+      }
+    }
+    for (const key of cacheDoomed) this.cache.delete(key);
+
+    const pendingDoomed: string[] = [];
+    for (const [key, entry] of this.pendingWrites) {
+      if (entry.path === path && entry.chunkId >= fromChunkId) pendingDoomed.push(key);
+    }
+    for (const key of pendingDoomed) {
+      const e = this.pendingWrites.get(key);
+      if (e) this._pendingWriteBytes -= e.data.length;
+      this.pendingWrites.delete(key);
+    }
   }
 
   readFileString(path: string): string {
@@ -1110,7 +1317,7 @@ export class SqliteVFS {
     inode.atime = atime;
     inode.mtime = mtime;
     this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, path);
-    this._revision++;
+    this.bumpRevision([path]);
     this.events.emit('change', path);
   }
 
@@ -1179,7 +1386,7 @@ export class SqliteVFS {
       else { this._totalFiles--; this._usedBytes -= inode.size; }
     }
     this.inodes.delete(path);
-    this._revision++;
+    this.bumpRevision([path]);
     this.events.emit('unlink', path);
   }
 
@@ -1201,7 +1408,7 @@ export class SqliteVFS {
     }
     this.inodes.delete(np);
     this.children.delete(np); // Remove empty children set
-    this._revision++;
+    this.bumpRevision([np]);
     this.events.emit('unlinkDir', np);
   }
 
@@ -1262,6 +1469,7 @@ export class SqliteVFS {
     this._addToChildrenIndex(newPp, newPath);
 
     // Rename children if directory
+    const touchedPaths: string[] = [oldPath, newPath];
     if (inode.isDir) {
       const childPaths: string[] = [];
       for (const [p] of this.inodes) {
@@ -1284,10 +1492,11 @@ export class SqliteVFS {
         childInode.parentPath = ncpp;
         this.inodes.set(ncp, childInode);
         this._addToChildrenIndex(ncpp, ncp);
+        touchedPaths.push(cp, ncp);
       }
     }
 
-    this._revision++;
+    this.bumpRevision(touchedPaths);
     this.events.emit('rename', newPath, oldPath);
   }
 
@@ -1703,7 +1912,13 @@ export class SqliteVFS {
     this._sqlWrites += inodeCount + chunkCount;
     this._batchWrites++;
     this._batchWriteRows += inodeCount + chunkCount;
-    if (inodeCount > 0 || chunkCount > 0 || payload.deletePaths?.length) this._revision++;
+    if (inodeCount > 0 || chunkCount > 0 || payload.deletePaths?.length) {
+      // One clock tick for the whole batch; stamp every touched path
+      // (affectedPaths covers files/chunks/deletes; add dir inodes too).
+      const touched = new Set<string>(affectedPaths);
+      for (const entry of payload.inodes) touched.add(entry.path);
+      this.bumpRevision(Array.from(touched));
+    }
 
     return { inodes: inodeCount, chunks: chunkCount };
   }
@@ -1836,6 +2051,10 @@ export class SqliteVFS {
       },
     };
   }
+}
+
+function clampNonNegativeInt(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
 // ── SqliteVFSProvider (MountProvider for Nimbus Kernel VFS) ────────────────────

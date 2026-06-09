@@ -17,6 +17,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
+ *   fsReadRange/fsWriteRange/fsTruncate (stateless ranged ops)
  *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -163,6 +164,20 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     async fsClose(handleId) {
         return this._call(this._getStub()._rpcFsClose(handleId));
+    }
+    /**
+     * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no
+     * server-side handle state, so they stay correct across supervisor
+     * hibernation and never rewrite whole files for partial updates.
+     */
+    async fsReadRange(path, offset, length) {
+        return this._call(this._getStub()._rpcFsReadRange(path, offset, length));
+    }
+    async fsWriteRange(path, offset, bytes) {
+        return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes));
+    }
+    async fsTruncate(path, size) {
+        return this._call(this._getStub()._rpcFsTruncate(path, size));
     }
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.

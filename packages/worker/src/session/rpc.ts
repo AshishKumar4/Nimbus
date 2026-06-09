@@ -213,9 +213,51 @@ export async function _rpcSymlink(self: RpcHost, target: string, path: string): 
     await runtimeFs(self).symlink(target, path);
 }
 
+const FsRangeOffsetSchema = z.number().int().min(0).finite();
+
+const FsReadRangeArgsSchema = z.object({
+  path: z.string(),
+  offset: FsRangeOffsetSchema,
+  length: FsRangeOffsetSchema,
+});
+
+const FsWriteRangeArgsSchema = z.object({
+  path: z.string(),
+  offset: FsRangeOffsetSchema,
+});
+
+const FsTruncateArgsSchema = z.object({
+  path: z.string(),
+  size: FsRangeOffsetSchema,
+});
+
 export async function _rpcFsRevision(self: RpcHost, path?: string): Promise<number> {
-    void path;
-    return runtimeFs(self).revision();
+    return runtimeFs(self).revision(typeof path === 'string' ? path : undefined);
+}
+
+export async function _rpcFsReadRange(
+  self: RpcHost,
+  path: string,
+  offset: number,
+  length: number,
+): Promise<Uint8Array | null> {
+    const args = FsReadRangeArgsSchema.parse({ path, offset, length });
+    return runtimeFs(self).readRange(args.path, args.offset, args.length);
+}
+
+export async function _rpcFsWriteRange(
+  self: RpcHost,
+  path: string,
+  offset: number,
+  bytes: Uint8Array | ArrayBuffer | number[],
+): Promise<number> {
+    const args = FsWriteRangeArgsSchema.parse({ path, offset });
+    return runtimeFs(self).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+}
+
+export async function _rpcFsTruncate(self: RpcHost, path: string, size: number): Promise<void> {
+    const args = FsTruncateArgsSchema.parse({ path, size });
+    await runtimeFs(self).truncate(args.path, args.size);
 }
 
 export async function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags): Promise<any> {

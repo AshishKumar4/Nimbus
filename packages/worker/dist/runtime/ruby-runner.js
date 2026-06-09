@@ -164,7 +164,9 @@ export function makeRubyRunnerFactory(deps) {
             // wasi default of "ASCII-8BIT".
             if (!userEnv.LC_ALL)
                 userEnv.LC_ALL = 'C.UTF-8';
-            const revision = vfs.revision();
+            // Per-subtree watermark over exactly what the snapshot covers (cwd +
+            // gem home), so unrelated VFS writes don't evict the cache.
+            const revision = Math.max(vfs.revision(cwd), vfs.revision(defaultGemHome()));
             let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
                 ? fsSnapshotCache.result
                 : null;

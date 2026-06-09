@@ -178,7 +178,9 @@ export function makePythonRunnerFactory(deps) {
                 userEnv.PYTHONUNBUFFERED = '1';
             if (userEnv.HOME === '/home/pyodide')
                 userEnv.HOME = '/home/user';
-            const revision = typeof vfs.revision === 'function' ? vfs.revision() : Date.now();
+            // Per-subtree watermark over exactly what the snapshot covers (cwd +
+            // site-packages), so unrelated VFS writes don't evict the cache.
+            const revision = Math.max(vfs.revision(cwd), vfs.revision(PYTHON_SITE_PACKAGES_ROOT));
             let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
                 ? fsSnapshotCache.result
                 : null;

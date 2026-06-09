@@ -608,6 +608,13 @@ export class NimbusSession extends CloudflareDurableObject {
     return _rpc._rpcFsWrite(this as any, handleId, offset, bytes);
   }
   async _rpcFsClose(handleId: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId); }
+  async _rpcFsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
+    return _rpc._rpcFsReadRange(this as any, path, offset, length);
+  }
+  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
+    return _rpc._rpcFsWriteRange(this as any, path, offset, bytes);
+  }
+  async _rpcFsTruncate(path: string, size: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size); }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }

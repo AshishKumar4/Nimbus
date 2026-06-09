@@ -17,6 +17,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
+ *   fsReadRange/fsWriteRange/fsTruncate (stateless ranged ops)
  *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -207,6 +208,23 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async fsClose(handleId: number): Promise<void> {
     return this._call(this._getStub()._rpcFsClose(handleId));
+  }
+
+  /**
+   * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no
+   * server-side handle state, so they stay correct across supervisor
+   * hibernation and never rewrite whole files for partial updates.
+   */
+  async fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
+    return this._call(this._getStub()._rpcFsReadRange(path, offset, length));
+  }
+
+  async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number> {
+    return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes));
+  }
+
+  async fsTruncate(path: string, size: number): Promise<void> {
+    return this._call(this._getStub()._rpcFsTruncate(path, size));
   }
 
   /**

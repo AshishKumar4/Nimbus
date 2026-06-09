@@ -31,7 +31,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         atime: now,
         mtime: now,
         mode: 0o777,
-        revision: this.vfs.revision(),
+        revision: this.vfs.revision(p),
       };
     }
     try {
@@ -43,7 +43,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         atime: st.atime,
         mtime: st.mtime,
         mode: st.mode,
-        revision: this.vfs.revision(),
+        revision: this.vfs.revision(p),
       };
     } catch {
       return null;
@@ -65,10 +65,50 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     bytes: string | Uint8Array,
     options: { createParents?: boolean; expectedRevision?: number } = {},
   ): Promise<void> {
-    this.assertExpectedRevision(options.expectedRevision);
     const p = this.resolveDataPath(path, true) || normalizeVfsPath(path);
+    this.assertExpectedRevision(p, options.expectedRevision);
     if (options.createParents !== false) this.ensureParent(p);
     this.vfs.writeFile(p, bytes);
+  }
+
+  async readRange(
+    path: string,
+    offset: number,
+    length: number,
+    options: { followSymlinks?: boolean } = {},
+  ): Promise<Uint8Array | null> {
+    const p = this.resolveDataPath(path, options.followSymlinks !== false);
+    if (!p) return null;
+    try {
+      return this.vfs.readRange(p, offset, length);
+    } catch {
+      return null;
+    }
+  }
+
+  async writeRange(
+    path: string,
+    offset: number,
+    bytes: Uint8Array,
+    options: { createParents?: boolean; expectedRevision?: number } = {},
+  ): Promise<number> {
+    const p = this.resolveDataPath(path, true) || normalizeVfsPath(path);
+    this.assertExpectedRevision(p, options.expectedRevision);
+    if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
+    if (options.createParents !== false) this.ensureParent(p);
+    this.vfs.writeRange(p, offset, bytes);
+    return bytes.byteLength;
+  }
+
+  async truncate(
+    path: string,
+    size: number,
+    options: { followSymlinks?: boolean } = {},
+  ): Promise<void> {
+    const p = this.resolveDataPath(path, options.followSymlinks !== false);
+    if (!p || !this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
+    if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'truncate', path);
+    this.vfs.truncate(p, size);
   }
 
   async utimes(
@@ -85,7 +125,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   async open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
     const normalizedFlags = normalizeOpenFlags(flags);
     const p = this.resolveDataPath(path, normalizedFlags.followSymlinks) || normalizeVfsPath(path);
-    this.assertExpectedRevision(normalizedFlags.expectedRevision);
+    this.assertExpectedRevision(p, normalizedFlags.expectedRevision);
 
     const exists = this.vfs.exists(p);
     if (!exists && !normalizedFlags.create) throw fsError('ENOENT', 'open', path);
@@ -94,7 +134,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       this.ensureParent(p);
       this.vfs.writeFile(p, new Uint8Array(0));
     } else if (normalizedFlags.truncate) {
-      this.vfs.writeFile(p, new Uint8Array(0));
+      this.vfs.truncate(p, 0);
     }
 
     const stat = this.vfs.stat(p);
@@ -103,7 +143,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       path: p,
       flags: normalizedFlags,
       position: normalizedFlags.append ? stat.size : 0,
-      baseRevision: this.vfs.revision(),
+      baseRevision: this.vfs.revision(p),
       closed: false,
     };
     this.handles.set(handle.id, handle);
@@ -113,30 +153,25 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   async read(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
     const handle = this.getHandle(handleId);
     if (!handle.flags.read) throw fsError('EBADF', 'read', handle.path);
-    const data = this.vfs.readFile(handle.path);
     const start = offset == null ? handle.position : Math.max(0, offset);
-    const end = Math.min(data.byteLength, start + Math.max(0, length));
-    const out = data.slice(start, end);
-    if (offset == null) handle.position = end;
+    const out = this.vfs.readRange(handle.path, start, Math.max(0, length));
+    if (offset == null) handle.position = start + out.byteLength;
     return out;
   }
 
   async write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number> {
     const handle = this.getHandle(handleId);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
-    if (handle.baseRevision < this.vfs.revision()) {
+    if (handle.baseRevision < this.vfs.revision(handle.path)) {
       throw fsError('ESTALE', 'write', handle.path);
     }
-    const prior = this.vfs.exists(handle.path) ? this.vfs.readFile(handle.path) : new Uint8Array(0);
-    const start = handle.flags.append ? prior.byteLength : offset == null ? handle.position : Math.max(0, offset);
-    const size = Math.max(prior.byteLength, start + bytes.byteLength);
-    const next = new Uint8Array(size);
-    next.set(prior.subarray(0, Math.min(prior.byteLength, size)), 0);
-    next.set(bytes, start);
-    this.vfs.writeFile(handle.path, next);
+    const start = handle.flags.append
+      ? (this.vfs.exists(handle.path) ? this.vfs.stat(handle.path).size : 0)
+      : offset == null ? handle.position : Math.max(0, offset);
+    this.vfs.writeRange(handle.path, start, bytes);
     const end = start + bytes.byteLength;
     if (offset == null || handle.flags.append) handle.position = end;
-    handle.baseRevision = this.vfs.revision();
+    handle.baseRevision = this.vfs.revision(handle.path);
     return bytes.byteLength;
   }
 
@@ -202,8 +237,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     this.vfs.flushAll();
   }
 
-  async revision(): Promise<number> {
-    return this.vfs.revision();
+  async revision(path?: string): Promise<number> {
+    if (path === undefined) return this.vfs.revision();
+    const p = this.resolveDataPath(path, true) ?? normalizeVfsPath(path);
+    return this.vfs.revision(p);
   }
 
   subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
@@ -221,9 +258,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (parent && !this.vfs.exists(parent)) this.vfs.mkdir(parent, { recursive: true });
   }
 
-  private assertExpectedRevision(expectedRevision: number | undefined): void {
+  private assertExpectedRevision(path: string, expectedRevision: number | undefined): void {
     if (expectedRevision === undefined) return;
-    if (expectedRevision !== this.vfs.revision()) {
+    if (expectedRevision !== this.vfs.revision(path)) {
       throw fsError('ESTALE', 'write', `revision ${expectedRevision}`);
     }
   }

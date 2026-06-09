@@ -84,6 +84,7 @@ export declare class SqliteVFS {
     private _totalDirs;
     private _usedBytes;
     private _revision;
+    private _pathRevisions;
     private pendingWrites;
     /**
      * Sum of `data.length` across pendingWrites entries. Maintained
@@ -240,13 +241,48 @@ export declare class SqliteVFS {
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
-    revision(): number;
+    /**
+     * Without a path: the global mutation clock. With a path: the clock
+     * value at the last mutation inside that path's subtree (0 if nothing
+     * under it changed in this DO lifetime). `revision('')` equals the
+     * global clock by construction (every mutation stamps all ancestors).
+     */
+    revision(path?: string): number;
+    /** Advance the clock once and stamp every path + its ancestors. */
+    private bumpRevision;
     mkdir(path: string, options?: {
         recursive?: boolean;
     }): void;
     private _mkdirSingle;
     writeFile(path: string, content: string | Uint8Array): void;
+    /** Read one chunk via cache → pending writes → SQL, caching on miss. */
+    private readChunk;
     readFile(path: string): Uint8Array;
+    /**
+     * Read `length` bytes at `offset` without assembling the whole file —
+     * only the chunks overlapping the range are touched. Reads past EOF
+     * are clamped; chunks missing their SQL row read as zeroes.
+     */
+    readRange(path: string, offset: number, length: number): Uint8Array;
+    /**
+     * Overwrite `bytes` at `offset`, rewriting only the chunks the range
+     * (plus any EOF extension) touches — file-handle and page writers must
+     * not pay a whole-file rewrite. Writing past EOF zero-fills the gap so
+     * every chunk row up to the new EOF stays materialized at its
+     * positional length (readFile reassembles by plain concatenation).
+     * Creates the file when missing; callers own parent-dir creation
+     * (same contract as writeFile).
+     */
+    writeRange(path: string, offset: number, bytes: Uint8Array): void;
+    /**
+     * Truncate or zero-extend to `size`, touching only the boundary chunk.
+     * Shrinking drops trailing chunk rows (and any cache/pending entries
+     * for them, so a deferred flush cannot resurrect deleted rows) and
+     * trims the new last chunk; growing zero-fills like writeRange.
+     */
+    truncate(path: string, size: number): void;
+    /** Drop cache + pending-write entries for chunks >= fromChunkId. */
+    private dropChunksFrom;
     readFileString(path: string): string;
     stat(path: string): {
         type: string;

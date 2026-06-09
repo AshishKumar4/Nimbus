@@ -630,6 +630,12 @@ interface RuntimeFsBridge {
     createParents?: boolean;
     expectedRevision?: number;
   }): Promise<void>;
+  readRange(path: string, offset: number, length: number, options?: { followSymlinks?: boolean }): Promise<Uint8Array | null>;
+  writeRange(path: string, offset: number, bytes: Uint8Array, options?: {
+    createParents?: boolean;
+    expectedRevision?: number;
+  }): Promise<number>;
+  truncate(path: string, size: number, options?: { followSymlinks?: boolean }): Promise<void>;
   utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
   open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
@@ -648,13 +654,17 @@ interface RuntimeFsBridge {
 }
 ```
 
-This bridge is the current adapter boundary. Implementations may optimize with
-page caches, batching, or snapshots, but they must preserve coherence. Current
-production wiring uses it for supervisor file RPCs and Node async filesystem
-fallback. Python, Ruby, and WASI still need direct long-lived bridge
-integration, and the bridge should grow stateless range/revision primitives so
-runtime-owned FD tables do not depend on Durable Object-side handle ids across
-hibernation.
+This bridge is the contract. Implementations may optimize with page caches,
+batching, or snapshots, but they must preserve coherence. The stateless range
+operations (`readRange`/`writeRange`/`truncate`) update only the 64 KiB chunks
+a range touches — never whole-file rewrites — and carry no server-side handle
+state, so they remain correct across supervisor hibernation. `revision(path)`
+is a per-path subtree watermark: it changes iff that path or anything under it
+mutated, which is what runtime snapshot caches and page caches key on instead
+of the global counter. Current production wiring uses the bridge for
+supervisor file RPCs and Node async filesystem fallback; Node FileHandle
+positional IO, `fs.promises.truncate`, and live appends ride the range ops.
+Python, Ruby, and WASI still need direct long-lived bridge integration.
 
 ### Coherence Rules
 

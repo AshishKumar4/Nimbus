@@ -68,6 +68,9 @@ export declare function _rpcRename(self: RpcHost, from: string, to: string): Pro
 export declare function _rpcReadlink(self: RpcHost, path: string): Promise<string | null>;
 export declare function _rpcSymlink(self: RpcHost, target: string, path: string): Promise<void>;
 export declare function _rpcFsRevision(self: RpcHost, path?: string): Promise<number>;
+export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number): Promise<Uint8Array | null>;
+export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
+export declare function _rpcFsTruncate(self: RpcHost, path: string, size: number): Promise<void>;
 export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags): Promise<any>;
 export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
 export declare function _rpcFsWrite(self: RpcHost, handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;

@@ -16,6 +16,16 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         createParents?: boolean;
         expectedRevision?: number;
     }): Promise<void>;
+    readRange(path: string, offset: number, length: number, options?: {
+        followSymlinks?: boolean;
+    }): Promise<Uint8Array | null>;
+    writeRange(path: string, offset: number, bytes: Uint8Array, options?: {
+        createParents?: boolean;
+        expectedRevision?: number;
+    }): Promise<number>;
+    truncate(path: string, size: number, options?: {
+        followSymlinks?: boolean;
+    }): Promise<void>;
     utimes(path: string, atimeMs: number, mtimeMs: number, options?: {
         followSymlinks?: boolean;
     }): Promise<void>;
@@ -36,7 +46,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     readlink(path: string): Promise<string | null>;
     symlink(target: string, path: string): Promise<void>;
     fsync(): Promise<void>;
-    revision(): Promise<number>;
+    revision(path?: string): Promise<number>;
     subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void;
     private resolveDataPath;
     private ensureParent;

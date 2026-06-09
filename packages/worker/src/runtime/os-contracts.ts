@@ -9,6 +9,7 @@ export interface RuntimeVfsStat {
   atime: number;
   mtime: number;
   mode: number;
+  /** Per-path revision: changes iff this path (or its subtree) mutated. */
   revision: number;
 }
 
@@ -45,6 +46,19 @@ export interface RuntimeFsBridge {
     createParents?: boolean;
     expectedRevision?: number;
   }): Promise<void>;
+  /** Stateless ranged read: clamped at EOF; null when the path is absent. */
+  readRange(path: string, offset: number, length: number, options?: { followSymlinks?: boolean }): Promise<Uint8Array | null>;
+  /**
+   * Stateless ranged write: updates only the chunks the range touches
+   * (never a whole-file rewrite), zero-filling any gap past EOF.
+   * Creates the file when missing. Returns bytes written.
+   */
+  writeRange(path: string, offset: number, bytes: Uint8Array, options?: {
+    createParents?: boolean;
+    expectedRevision?: number;
+  }): Promise<number>;
+  /** Truncate or zero-extend to `size`, touching only the boundary chunk. */
+  truncate(path: string, size: number, options?: { followSymlinks?: boolean }): Promise<void>;
   utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
   open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
@@ -58,6 +72,11 @@ export interface RuntimeFsBridge {
   readlink(path: string): Promise<string | null>;
   symlink(target: string, path: string): Promise<void>;
   fsync(handleId?: number): Promise<void>;
+  /**
+   * Without a path: the global VFS mutation watermark. With a path: a
+   * per-path subtree watermark — it changes iff that path or anything
+   * under it mutated, so consumers can cache without global invalidation.
+   */
   revision(path?: string): Promise<number>;
   subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
 }

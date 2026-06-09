@@ -380,6 +380,38 @@ const __fsMod = (() => {
     }
   }
 
+  // Resize the local sync-view cell (bundle + pending write) to \`size\`
+  // bytes, zero-extending when growing. No-op when there is no cell.
+  function _truncateLocalCell(absPath, size) {
+    const k = _strip(absPath);
+    const cell = _writtenCell(absPath);
+    if (cell === undefined) return;
+    const buf = _asBytes(cell);
+    let next;
+    if (size <= buf.byteLength) {
+      next = buf.slice(0, size);
+    } else {
+      next = new Uint8Array(size);
+      next.set(buf, 0);
+    }
+    if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
+    if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
+  }
+
+  // Overlay \`bytes\` at \`pos\` into the local sync-view cell so sync reads
+  // stay coherent after a live ranged write. No-op when there is no cell.
+  function _overlayLocalCell(absPath, pos, bytes) {
+    const k = _strip(absPath);
+    const cell = _writtenCell(absPath);
+    if (cell === undefined) return;
+    const buf = _asBytes(cell);
+    const next = new Uint8Array(Math.max(buf.byteLength, pos + bytes.byteLength));
+    next.set(buf, 0);
+    next.set(bytes, pos);
+    if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
+    if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
+  }
+
   function _statObject(meta) {
     const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
     const isDir = type === "directory";
@@ -542,15 +574,42 @@ const __fsMod = (() => {
 
   async function _appendFileAsync(p, data, opts) {
     const absPath = _resolve(p);
+    const k = _strip(absPath);
+    // Snapshot BEFORE appendFileSync creates a local write cell: a
+    // pre-existing entry means unflushed sync writes that must flush
+    // whole (they may rewrite the file head, not just append).
+    const hadUnflushedLocal = !!(__vfsWrites && k in __vfsWrites);
+    const hadLocalCell = _bundleLookup(absPath) !== undefined;
+    const bytes = data instanceof Uint8Array ? data : _enc.encode(typeof data === "string" ? data : String(data));
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.writeFile === "function") {
-      const cell = _writtenCell(absPath);
-      if (cell !== undefined) {
-        await supervisor.writeFile(absPath, cell);
-        if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
+    if (!supervisor || typeof supervisor.writeFile !== "function") return;
+    if (!hadUnflushedLocal && typeof supervisor.fsWriteRange === "function" && typeof supervisor.stat === "function") {
+      // Live file exists → ranged append at the live EOF. Only the
+      // appended bytes cross the RPC boundary and only the EOF chunk is
+      // rewritten; a prefix written live by another process is preserved
+      // instead of clobbered by the local view.
+      const meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
+      if (meta && meta.type === "file") {
+        await __nimbusUseRpcResult(
+          supervisor.fsWriteRange(absPath, Number(meta.size) || 0, bytes),
+          () => undefined,
+        );
+        if (__vfsWrites) delete __vfsWrites[k];
+        // Live-only file: appendFileSync seeded a cell holding ONLY the
+        // appended bytes. Drop it so reads fall through to the live file
+        // instead of mistaking the fragment for the full content.
+        if (!hadLocalCell && __vfsBundle) delete __vfsBundle[k];
         _markVfsStale();
+        return;
       }
+    }
+    // Creation (no live file) or pending local writes: flush the merged cell.
+    const cell = _writtenCell(absPath);
+    if (cell !== undefined) {
+      await supervisor.writeFile(absPath, cell);
+      if (__vfsWrites) delete __vfsWrites[k];
+      _markVfsStale();
     }
   }
 
@@ -588,6 +647,32 @@ const __fsMod = (() => {
       await supervisor.rename(_resolve(oldP), _resolve(newP));
       _markVfsStale();
     }
+  }
+
+  async function _truncateAsync(p, len) {
+    const absPath = _resolve(p);
+    const size = Math.max(0, Math.trunc(Number(len) || 0));
+    const supervisor = _supervisor();
+    const localCell = _bundleLookup(absPath);
+    if (supervisor && typeof supervisor.fsTruncate === "function") {
+      const k = _strip(absPath);
+      if (__vfsWrites && k in __vfsWrites) {
+        // Unflushed sync writes: trim locally, then flush the pending
+        // cell whole (it was going to flush whole anyway).
+        if (localCell === undefined) throw _fsErr("ENOENT", "truncate", p);
+        _truncateLocalCell(absPath, size);
+        await _flushLocalPathToSupervisor(absPath, supervisor);
+        return;
+      }
+      // Live file is the source of truth — supervisor trims only the
+      // boundary chunk; ENOENT propagates when it does not exist.
+      await __nimbusUseRpcResult(supervisor.fsTruncate(absPath, size), () => undefined);
+      if (localCell !== undefined) _truncateLocalCell(absPath, size);
+      _markVfsStale();
+      return;
+    }
+    if (localCell === undefined) throw _fsErr("ENOENT", "truncate", p);
+    _truncateLocalCell(absPath, size);
   }
 
   function utimesSync(p, atime, mtime) {
@@ -924,55 +1009,168 @@ const __fsMod = (() => {
     }).catch((e) => cb(e));
   }
 
-  // ── FileHandle (W3) — returned from fs.promises.open ──
-  // VFS-backed minimal impl: read, write, readFile, writeFile, stat,
-  // truncate, close, asyncDispose. Sufficient for puppeteer-core,
-  // graceful-fs, and most module-level fs.promises.open patterns.
+  // ── open-flag parsing for fs.promises.open ──
+  function _parseOpenFlags(flags) {
+    if (typeof flags === "number") {
+      const O_WRONLY = 1, O_RDWR = 2, O_CREAT = 64, O_EXCL = 128, O_TRUNC = 512, O_APPEND = 1024;
+      return {
+        read: (flags & O_WRONLY) === 0,
+        write: (flags & (O_WRONLY | O_RDWR)) !== 0,
+        append: (flags & O_APPEND) !== 0,
+        create: (flags & O_CREAT) !== 0,
+        truncate: (flags & O_TRUNC) !== 0,
+        exclusive: (flags & O_EXCL) !== 0,
+      };
+    }
+    const s = String(flags === undefined || flags === null ? "r" : flags);
+    const plus = s.indexOf("+") !== -1;
+    const exclusive = s.indexOf("x") !== -1;
+    const base = s.charAt(0);
+    if (base === "w") return { read: plus, write: true, append: false, create: true, truncate: true, exclusive };
+    if (base === "a") return { read: plus, write: true, append: true, create: true, truncate: false, exclusive };
+    return { read: true, write: plus, append: false, create: false, truncate: false, exclusive };
+  }
+
+  // ── FileHandle — returned from fs.promises.open ──
+  // Stateless-live design: the handle owns path/flags/position FACET-side
+  // and issues ranged supervisor RPCs (fsReadRange/fsWriteRange/fsTruncate),
+  // so there is no server-side fd state to lose across supervisor
+  // hibernation and partial reads/writes never move whole files. Unflushed
+  // sync writes (__vfsWrites) take read precedence; the local sync view is
+  // overlaid on writes so readFileSync stays coherent.
   class __FileHandle {
-    constructor(path, flags) { this._path = path; this._flags = flags || 'r'; this._closed = false; this.fd = 0; }
+    constructor(path, flagInfo, size) {
+      this._path = path;
+      this._abs = _resolve(path);
+      this._flags = flagInfo;
+      this._position = 0;
+      this._size = size;
+      this._closed = false;
+      this.fd = 0;
+    }
+    _assertOpen(syscall) {
+      if (this._closed) throw _fsErr("EBADF", syscall, this._path);
+    }
     async read(buffer, offset, length, position) {
-      const absPath = _resolve(this._path);
-      let data = _bundleLookup(absPath);
-      if (data === undefined) data = await _liveReadFile(this._path);
-      // _bundleLookup may return string OR Uint8Array (binary-fs wave).
-      const buf = _isBytes(data) ? data : _enc.encode(data);
-      const start = position || 0;
-      const slice = buf.subarray(start, start + (length || (buf.length - start)));
-      buffer.set(slice, offset || 0);
+      this._assertOpen("read");
+      if (!this._flags.read) throw _fsErr("EBADF", "read", this._path);
+      if (buffer && !(buffer instanceof Uint8Array)) {
+        // options-object form: read({ buffer, offset, length, position })
+        const o = buffer;
+        buffer = o.buffer; offset = o.offset; length = o.length; position = o.position;
+      }
+      if (!buffer) buffer = __BufferMod.alloc(16384);
+      const off = offset || 0;
+      const want = (length === undefined || length === null) ? buffer.length - off : Math.max(0, Number(length));
+      const pos = (position === undefined || position === null) ? this._position : Math.max(0, Number(position));
+      let slice = null;
+      const k = _strip(this._abs);
+      if (__vfsWrites && k in __vfsWrites) {
+        const buf = _asBytes(__vfsWrites[k]);
+        slice = buf.subarray(Math.min(pos, buf.length), Math.min(buf.length, pos + want));
+      } else {
+        const supervisor = _supervisor();
+        if (supervisor && typeof supervisor.fsReadRange === "function") {
+          const bytes = await __nimbusUseRpcResult(supervisor.fsReadRange(this._abs, pos, want), (result) => result);
+          if (bytes !== null && bytes !== undefined) slice = bytes;
+        }
+        if (slice === null) {
+          const cell = _bundleLookup(this._abs);
+          if (cell === undefined) throw _fsErr("ENOENT", "read", this._path);
+          const buf = _asBytes(cell);
+          slice = buf.subarray(Math.min(pos, buf.length), Math.min(buf.length, pos + want));
+        }
+      }
+      buffer.set(slice, off);
+      if (position === undefined || position === null) this._position = pos + slice.length;
       return { bytesRead: slice.length, buffer };
     }
     async write(buffer, offset, length, position) {
-      // binary-fs: keep bytes as bytes through the write. Pre-fix this
-      // path UTF-8-decoded the chunk to a string, mangling non-ASCII
-      // bytes. Use appendFileSync's polymorphic concat so the existing
-      // cell's shape (string vs bytes) drives the merged shape.
-      let chunkBytesWritten;
+      this._assertOpen("write");
+      if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
+      let bytes;
+      let pos;
       if (typeof buffer === "string") {
-        const o = offset || 0;
-        const l = length === undefined ? buffer.length - o : length;
-        const sub = buffer.substr(o, l);
-        await _appendFileAsync(this._path, sub);
-        chunkBytesWritten = _enc.encode(sub).length;
+        // write(string[, position[, encoding]])
+        bytes = _enc.encode(buffer);
+        pos = (offset === undefined || offset === null) ? null : Math.max(0, Number(offset));
       } else {
         const o = offset || 0;
-        const l = length === undefined ? buffer.length - o : length;
-        const sub = buffer.subarray(o, o + l);
-        await _appendFileAsync(this._path, sub);
-        chunkBytesWritten = sub.byteLength;
+        const l = (length === undefined || length === null) ? buffer.length - o : Number(length);
+        bytes = buffer.subarray(o, o + l);
+        pos = (position === undefined || position === null) ? null : Math.max(0, Number(position));
       }
-      return { bytesWritten: chunkBytesWritten, buffer };
+      const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
+      const supervisor = _supervisor();
+      if (supervisor && typeof supervisor.fsWriteRange === "function") {
+        // Push any pending sync writes first so the ranged write lands on
+        // top of them, then write only the touched range live.
+        await _flushLocalPathToSupervisor(this._abs, supervisor);
+        await __nimbusUseRpcResult(supervisor.fsWriteRange(this._abs, at, bytes), () => undefined);
+        _overlayLocalCell(this._abs, at, bytes);
+        _markVfsStale();
+      } else {
+        const k = _strip(this._abs);
+        const cell = _writtenCell(this._abs);
+        const buf = cell === undefined ? new Uint8Array(0) : _asBytes(cell);
+        const next = new Uint8Array(Math.max(buf.byteLength, at + bytes.byteLength));
+        next.set(buf, 0);
+        next.set(bytes, at);
+        __vfsWrites[k] = next;
+        if (__vfsBundle) __vfsBundle[k] = next;
+      }
+      this._size = Math.max(this._size, at + bytes.byteLength);
+      if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      return { bytesWritten: bytes.byteLength, buffer };
     }
     async readFile(opts) { return _readFileAsync(this._path, opts); }
-    async writeFile(data, opts) { await _writeFileAsync(this._path, data, opts); }
-    async appendFile(data, opts) { await _appendFileAsync(this._path, data, opts); }
+    async writeFile(data, opts) {
+      await _writeFileAsync(this._path, data, opts);
+      this._size = _byteLen(typeof data === "string" || data instanceof Uint8Array ? data : String(data));
+    }
+    async appendFile(data, opts) {
+      await _appendFileAsync(this._path, data, opts);
+      this._size += _byteLen(typeof data === "string" || data instanceof Uint8Array ? data : String(data));
+    }
     async stat() { return _statAsync(this._path); }
     async truncate(len) {
-      const cur = readFileSync(this._path, "utf8");
-      await _writeFileAsync(this._path, cur.slice(0, len || 0));
+      this._assertOpen("ftruncate");
+      if (!this._flags.write) throw _fsErr("EBADF", "ftruncate", this._path);
+      const size = Math.max(0, Math.trunc(Number(len) || 0));
+      await _truncateAsync(this._path, size);
+      this._size = size;
     }
     async chmod() {} async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
     async close() { this._closed = true; }
     [Symbol.asyncDispose]() { return this.close(); }
+  }
+
+  async function _openAsync(path, flags) {
+    const fl = _parseOpenFlags(flags);
+    const absPath = _resolve(path);
+    const supervisor = _supervisor();
+    let liveMeta = null;
+    if (supervisor && typeof supervisor.stat === "function") {
+      liveMeta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
+    }
+    if (liveMeta && liveMeta.type === "directory") throw _fsErr("EISDIR", "open", path);
+    let localStat = null;
+    if (!liveMeta) {
+      try { localStat = statSync(path); } catch {}
+      if (localStat && localStat.isDirectory()) throw _fsErr("EISDIR", "open", path);
+    }
+    const exists = !!liveMeta || !!localStat;
+    if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
+    if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
+    let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
+    if (!exists) {
+      await _writeFileAsync(path, new Uint8Array(0));
+      size = 0;
+    } else if (fl.truncate) {
+      await _truncateAsync(path, 0);
+      size = 0;
+    }
+    return new __FileHandle(path, fl, size);
   }
 
   // ── promises namespace (W3: full surface, VFS-backed) ──
@@ -1032,10 +1230,7 @@ const __fsMod = (() => {
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
-    truncate: async (p, len) => {
-      const cur = (() => { try { return readFileSync(p, "utf8"); } catch { return ""; } })();
-      await _writeFileAsync(p, cur.slice(0, len || 0));
-    },
+    truncate: async (p, len) => { await _truncateAsync(p, len || 0); },
     chmod: async () => {}, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
     utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
     lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
@@ -1047,7 +1242,7 @@ const __fsMod = (() => {
       mkdirSync(name, { recursive: true });
       return name;
     },
-    open: async (path, flags, mode) => new __FileHandle(path, flags || 'r'),
+    open: async (path, flags, mode) => _openAsync(path, flags),
     watch: async function* (filename, opts) {
       // Minimal async iter — polls _bundleLookup every 500ms and yields
       // a single \`change\` event when content differs. Adequate for

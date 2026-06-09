@@ -76,8 +76,12 @@ cache for speed. The snapshot includes the entry dependency graph plus a bounded
 current-working-tree project snapshot, excluding `node_modules`, `.git`, and
 `.nimbus`. Async `fs` calls use the supervisor bridge for live SQLite VFS reads
 and common mutations (`writeFile`, `appendFile`, `mkdir`, `unlink`, `rename`,
-`rmdir`, `symlink`, `readlink`), while merging live directory entries so
-child-process writes are visible inside long-running Node processes.
+`rmdir`, `symlink`, `readlink`, `truncate`), while merging live directory
+entries so child-process writes are visible inside long-running Node
+processes. `fs.promises.open` FileHandles and live appends use the stateless
+range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which rewrite only the
+touched 64 KiB chunks; VFS revisions are per-path subtree watermarks
+(`SqliteVFS.revision(path?)`).
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within

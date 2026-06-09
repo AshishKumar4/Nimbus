@@ -518,6 +518,13 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcFsWrite(this, handleId, offset, bytes);
     }
     async _rpcFsClose(handleId) { return _rpc._rpcFsClose(this, handleId); }
+    async _rpcFsReadRange(path, offset, length) {
+        return _rpc._rpcFsReadRange(this, path, offset, length);
+    }
+    async _rpcFsWriteRange(path, offset, bytes) {
+        return _rpc._rpcFsWriteRange(this, path, offset, bytes);
+    }
+    async _rpcFsTruncate(path, size) { return _rpc._rpcFsTruncate(this, path, size); }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcUnlink(path) { return _rpc._rpcUnlink(this, path); }
     async _rpcWriteBatch(payload) { return _rpc._rpcWriteBatch(this, payload); }
