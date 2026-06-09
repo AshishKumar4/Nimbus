@@ -32,6 +32,22 @@ processInput.open(pid);
 }
 
 {
+  for (const [columns, rows] of [[121, 41], [122, 42], [123, 43]]) {
+    const frame = parseProcessLogClientFrame(JSON.stringify({ type: 'resize', columns, rows }));
+    assert.equal(frame?.type, 'resize');
+    const result = await applyProcessClientFrame(host, pid, frame);
+    assert.deepEqual(result, { ok: true, pid, type: 'resize' });
+  }
+  assert.deepEqual(processInput.terminalSize(pid), { columns: 123, rows: 43 });
+  assert.deepEqual(await processInput.read(pid, 0), {
+    data: '',
+    ended: false,
+    resize: { columns: 123, rows: 43 },
+  });
+  assert.deepEqual(await processInput.read(pid, 0), { data: '', ended: false });
+}
+
+{
   const frame = parseProcessLogClientFrame(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
   assert.equal(frame?.type, 'signal');
   const result = await applyProcessClientFrame(host, pid, frame);

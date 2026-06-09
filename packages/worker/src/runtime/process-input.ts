@@ -95,6 +95,12 @@ export class ProcessInputStore {
       return { ok: true };
     }
 
+    const last = state.packets[state.packets.length - 1];
+    if (packet.resize && last?.resize && !last.data && !last.ended && !last.signal) {
+      state.packets[state.packets.length - 1] = packet;
+      return { ok: true };
+    }
+
     state.packets.push(packet);
     state.bytes += bytes;
     return { ok: true };
