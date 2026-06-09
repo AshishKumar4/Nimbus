@@ -75,13 +75,16 @@ Nimbus already has a real base:
   command aliases, and install hints for missing commands.
 - WASI `snapshot_preview1` coverage for arguments, environment, clocks,
   random, stdio, file descriptors, directory traversal, path operations,
-  symlinks, hard links, file timestamps, `fd_allocate`, `proc_raise`,
-  `poll_oneoff`, and outbound TCP through a synthetic `/dev/tcp/host/port`
-  path.
+  symlinks, minimal `path_link` coverage, file timestamps, `fd_allocate`,
+  `proc_raise`, `poll_oneoff`, and outbound TCP through a synthetic
+  `/dev/tcp/host/port` path. Full hard-link inode/mutation semantics are not
+  complete.
 - Node-like compatibility shims for many common modules: `fs`, `path`, `os`,
   `process`, `Buffer`, `events`, streams, `crypto`, `zlib`, DNS, HTTP,
-  HTTPS, `net`, `child_process`, `readline`, `tty`, timers, and related
-  utility modules.
+  HTTPS, `child_process`, `readline`, `tty`, timers, and related utility
+  modules. `net` is only partially shaped today: HTTP preview bridging exists,
+  but general `net.Socket` connect/listen semantics remain honest unsupported
+  or transitional paths.
 - Node async filesystem calls (`fs.readFile`, `fs.stat`, `fs.readdir`,
   `fs.access`, `fs.promises.*`, and `FileHandle` reads/stats) can fall back
   to the session supervisor for live SQLite VFS data through the shared
@@ -95,12 +98,13 @@ Nimbus already has a real base:
 - Node sync filesystem calls run from a startup snapshot for speed. The
   snapshot includes the entry dependency graph and a bounded current-working
   tree project snapshot, excluding `node_modules`, `.git`, and `.nimbus`.
-- Real Request/Response preview routing through `PortRegistry`, including
-  streaming request and response bodies.
+- Real Request/Response preview routing through `PortRegistry` without JSON
+  serialization. Some current runtime adapters still buffer internally; the
+  final socket/preview adapters should stream end to end.
 - A VFS event bus with coalesced browser file-watch delivery.
-- Behavioral probes for SDK, runtime package install, npm/npx, child process
-  primitives, WASI, clang, Python basics, Ruby basics, file watching, and
-  preview ports.
+- Behavioral probes for SDK, shell compatibility, runtime package install,
+  npm/npx, child process primitives, WASI, clang, Python basics, Ruby basics,
+  file watching, and preview ports.
 
 ### Implemented But Not Final
 
@@ -135,14 +139,16 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   live supervisor bridge, but the final contract still needs a revision-aware
   file-handle/page-cache design for high-volume long-lived workloads.
 - Agentic CLI support has production probes for Node process primitives,
-  foreground attached npm-bin TTY tabs, Pi's official installer path, and the
-  Pi npm CLI path. Unverified agent CLIs such as opencode and local Proteus
-  still need live probes, and native-package shards still need Nimbus ABI
-  artifacts or precise diagnostics.
-- The shell has useful POSIX-like behavior, but several compatibility repairs
-  still live as line normalizers around the current parser. That is acceptable
-  as alpha debt, but the final OS shell needs a real parser/executor contract
-  for fd redirects, grouping, quoting, heredocs, traps, signals, and scripts.
+  foreground attached npm-bin TTY tabs, Pi's official installer path, the Pi
+  npm CLI path, package-bin exit/shebang behavior, and opencode's installer and
+  native npm package reaching explicit unsupported native ABI diagnostics.
+  Unmodified opencode and the local Proteus CLI are not
+  yet proven as working Nimbus workloads; native-package shards still need
+  Nimbus ABI artifacts or precise diagnostics.
+- The shell has a structured lexer/parser/interpreter for common POSIX-like
+  constructs, including many redirects and subshell/group forms, but it is not
+  complete POSIX shell parity. The final OS shell still needs broader structured
+  expansion, quoting, heredoc, trap, signal, job-control, and script semantics.
 
 ### Not Implemented Yet
 
@@ -165,10 +171,326 @@ behavior. They must stay documented until production probes prove otherwise.
 
 | Gap | Current behavior | Required OS behavior |
 |---|---|---|
-| opencode/Proteus CLIs | Pi's npm CLI path is production-probed, but opencode and the local Proteus CLI are not yet proven in live Nimbus. | JavaScript CLIs launched from the terminal should see TTY=true when attached, TTY=false when piped, and should run unmodified unless they require unsupported native shards. |
+| opencode/Proteus CLIs | Pi's npm CLI path is production-probed. opencode is production-probed only to the installer/native ABI boundary, not as an unmodified working CLI. The local Proteus CLI is not yet proven in live Nimbus. | JavaScript CLIs launched from the terminal should see TTY=true when attached, TTY=false when piped, and should run unmodified unless they require unsupported native shards. |
 | Python package breadth | Flask and MarkupSafe pure-source artifact paths are production-probed, and declared Pyodide startup-module package artifacts are supported by the runtime catalog. `pip` is not a complete upstream build system. | Nimbus pip must resolve/install only Nimbus-compatible artifacts, preloaded PyEmscripten modules, pure wheels, or curated pure source artifacts. Unsupported extension artifacts fail before import with an ABI diagnostic. |
-| Shell parser debt | Some unsupported shell syntax is normalized before the parser, including fd-to-fd redirects and limited subshell shapes. | Shell syntax should be represented in an AST and executed through structured semantics, not regex rewrites in the hot path. |
+| Shell parser debt | The shell has structured parser/interpreter support for common POSIX-like constructs, but final field splitting, alias/quote handling, heredoc behavior, trap/job-control semantics, and script parity still need hardening. | Shell syntax should be represented in an AST and executed through structured semantics, not regex rewrites in the hot path. |
 | Native platform packages | Native `linux-x64`, `darwin`, `win32`, manylinux wheels, and native gems cannot execute. | Package managers must select Nimbus ABI artifacts, pure packages, or fail early with exact unsupported ABI reasons. |
+
+## Completion Draft
+
+This is the implementation spec for completing Nimbus OS compatibility. It is
+deliberately a consolidation plan: it names existing source modules that must be
+hardened into single sources of truth, and it forbids adding parallel systems
+that merely restate the same process, file, network, package, or SDK concepts.
+The sections after this draft describe the same contracts in more detail; if a
+future edit finds drift, merge the duplicate wording instead of adding another
+plan section.
+
+Completion means Nimbus behaves like a small POSIX-like cloud OS for supported
+ABI surfaces:
+
+- JavaScript and TypeScript npm CLIs run with correct process, TTY,
+  stdin/stdout/stderr, signals, resize, child-process, and filesystem behavior
+  when they only require Nimbus-supported APIs.
+- Node, Python, Ruby, and WASI workloads share coherent VFS state in
+  long-running processes.
+- Node, Python, Ruby, and WASI web servers share one virtual socket and preview
+  substrate.
+- Shell scripts and installers run through structured parser/executor semantics,
+  not a stack of quote-sensitive rewrites.
+- Package managers install by ABI: pure packages, Nimbus-native Wasm,
+  Pyodide/PyEmscripten startup modules, ruby.wasm-compatible artifacts, or
+  precise unsupported-native diagnostics.
+- The hosted demo, programmatic SDK, remote API, React iframe, CLI, and Agent
+  use one public product surface with colocated/remote parity.
+
+### Reuse Map
+
+The following modules already exist and should be evolved. New work should route
+through these boundaries instead of creating new owners with overlapping state.
+
+| Completion area | Reuse as source of truth | Current role | Completion work |
+|---|---|---|---|
+| Process and PTY | `ProcessTable`, `ProcessLogStore`, `ProcessInputStore`, `process-logs-api.ts`, `FacetProcessManager`, `node-shims.ts` child process RPC, and `NimbusSession` ownership | Tracks PID lifecycle, logs, input packets, process terminals, child-process broker, attached npm-bin processes | Add a single session process/PTY supervisor facade over these modules, then add process groups, controlling TTY, raw/cooked mode, durable process metadata, and attach/detach replay |
+| Filesystem | `SqliteVFS`, `RuntimeFsBridge`, `SqliteRuntimeFsBridge`, VFS events, `fs-watch.ts` | Durable SQLite-backed VFS, runtime bridge, browser file-watch events | Add range/page operations, per-path revisions, hibernation-safe runtime handles, live runtime cache invalidation, and long-running runtime integration |
+| Networking and preview | `PortRegistry`, existing `VIRTUAL_SOCKET_KERNEL_SRC`, Python/Ruby socket shims, session `/port` and `/preview` routes | Request/Response preview gateway plus in-facet loopback sockets for Python/Ruby | Harden the existing virtual socket kernel into the shared loopback substrate, move Node and WASI onto it, add streaming/backpressure and hibernation-aware port metadata |
+| Shell | Nimbus-owned LIFO parser, lexer, interpreter, expander, `Shell`, shell entrypoints, and Unix command registry | POSIX-like shell substrate with useful parser/interpreter behavior and command shims | Complete structured expansion, redirection, job control, `source`, `set`, `trap`, `wait`, shebang, and process-kernel integration; remove hot-path normalizers when replaced by AST semantics |
+| Runtime packages and ABI | `runtime-catalog.ts`, `package-manager.ts`, `os-contracts.ts`, `python-pip.ts`, `ruby-gems.ts`, npm installer/fanout, `wasm-swap-registry.ts` | Runtime install, ABI descriptors, pure package paths, native diagnostics, npm package policy | Move ABI policy to catalog/typed metadata, keep resolver/facet policy generated from one source, classify extracted artifacts, and remove stale hardcoded runtime/bin lists |
+| SDK and product | `packages/sdk/src/sandbox.ts`, `router/remote-api.ts`, auth middleware, hosted demo, React package, CLI/config packages, Agent routes | Colocated/remote SDK, Worker embedder, hosted demo, React iframe, CLI, Agent tools | Fix iframe auth/readiness, CLI auth, remote preview auth, schema parity, quota hooks, and one public capability model |
+
+### Process And PTY Completion
+
+Do not add a second process table. The missing abstraction is a facade and
+policy layer over the existing process modules.
+
+Required model:
+
+- Process descriptor: `pid`, `pgrp`, command, argv, cwd, runtime kind, owning
+  facet, state, exit code/signal, `longRunning`, `attachedTty`, and controlling
+  terminal id.
+- PTY descriptor: terminal size, raw/cooked mode, echo/signal mode, foreground
+  process group, attach state, replay cursor, and bounded screen/log metadata.
+- I/O event model: stdin bytes, stdout/stderr bytes, resize, signal, exit,
+  attach, detach, and replay.
+- Integration points: browser process tabs, SDK process APIs, shell jobs,
+  foreground npm-bin CLIs, child-process `stdio: "inherit"`, and Agent tools all
+  go through the same supervisor contract.
+
+Implementation rules:
+
+- Keep `ProcessTable`, `ProcessLogStore`, and `ProcessInputStore` as the
+  storage primitives initially; expose them through one session process
+  supervisor facade before adding semantics.
+- Convert Ctrl-C/Ctrl-Z to signals only when the controlling PTY is in signal
+  mode. Raw-mode processes receive literal bytes.
+- `stdio: "inherit"` attaches a child to the parent controlling PTY when one
+  exists; it must not silently degrade to detached/null streams.
+- Process logs remain durable and bounded; process descriptors and PTY metadata
+  also need compact durable rows so hibernation can present honest state.
+- If a process/facet cannot be rehydrated after wake, mark it exited/dead with a
+  precise reason. Do not leave a routeable-looking zombie process.
+
+Scalability requirements:
+
+- Bound running PIDs, attached TTYs, process-log subscribers, input queue bytes,
+  output ring bytes, replay bytes, and child-process output queues.
+- Coalesce resize storms to the final dimensions plus one observable resize
+  event.
+- Persist logs and process metadata in batches; never write SQL per byte or per
+  keystroke.
+- Keep process terminal WebSockets hibernatable with `ctx.acceptWebSocket`.
+
+### Live VFS Completion
+
+`RuntimeFsBridge` is already the adapter boundary. Completion means revising and
+extending it into the live runtime contract for long-running workloads rather
+than leaving it as a supervisor convenience plus runtime snapshots.
+
+Required additions:
+
+- Stateless range operations: read range, write range, truncate, metadata patch,
+  and batched patch application.
+- Per-path or per-inode revisions so runtime caches do not invalidate on every
+  unrelated write.
+- Runtime-owned FD tables. The Durable Object should receive stateless path or
+  inode operations so hibernation does not lose server-side handle ids.
+- Shared runtime-side page cache/mirror helper with 64 KiB pages, dirty page
+  tracking, revision-aware invalidation, batched flush, and binary-safe transfer.
+- Conflict behavior for stale writes. Conflicts must be deterministic and noisy;
+  they must not silently overwrite newer supervisor state.
+
+Runtime rules:
+
+- Node async filesystem APIs should be live, including `FileHandle` positional
+  reads/writes, truncate, recursive operations, symlink paths, binary files, and
+  watch/invalidation paths.
+- Node sync filesystem APIs may keep a startup snapshot plus local write cache,
+  but that must be documented as a synchronous optimization. The runtime mirror
+  should invalidate or refresh at event-loop/request boundaries where possible.
+- WASI should use live bridge hostcalls where JSPI or `WebAssembly.Suspending`
+  allows async imports.
+- Ruby should converge through the live WASI path because ruby.wasm is
+  WASI-backed.
+- Python/Pyodide should use a live mirror strategy: pull deltas before command
+  or request handling, flush dirty changes after command/request handling, and
+  debounce flushes for long-running socket processes.
+
+Scalability requirements:
+
+- No whole-tree snapshots for long-running processes.
+- No per-byte Durable Object RPC.
+- Use 64 KiB page reads/writes unless probes show a better size.
+- Stream large writes and batch small writes plus metadata changes.
+- Keep dirty caches bounded with high-water flushing.
+- Emit diagnostics for cache hits, dirty bytes, flush latency, invalidation lag,
+  snapshot bytes, bridge RPC count, and dropped invalidations.
+
+### Virtual Sockets And Preview Completion
+
+`PortRegistry` is the supervisor Request/Response gateway. The existing
+`VIRTUAL_SOCKET_KERNEL_SRC` is the in-facet loopback socket service. Completion
+means hardening those two layers and moving every runtime adapter onto them.
+
+Required model:
+
+- Supervisor owns public port metadata, PID ownership, duplicate-bind policy,
+  port `0` allocation, preview default selection, hibernation metadata, stats,
+  and `/port`/`/preview` routing.
+- Facet virtual socket kernel owns `listen`, `accept`, loopback `connect`,
+  `read`, `write`, `shutdown`, `poll`, and `close`.
+- Preview requests should enter the facet as accepted HTTP/1.1 byte streams.
+  Runtime response bytes should become streaming Worker `Response` bodies.
+- Node `net`/`http`, Python `socket`/`select`/`socketserver`, Ruby
+  `TCPServer`/`TCPSocket`/`IO.select`, and WASI Nimbus socket imports bind to
+  the same kernel.
+
+Implementation rules:
+
+- Replace full-buffer request/response handling with streaming request bodies
+  and streaming responses.
+- Enforce listener and connection limits: max ports, backlog, active
+  connections, queued bytes, response-header timeout, idle timeout, and request
+  body limits.
+- Propagate aborts. Client abort, process exit, kill, or port unregister closes
+  queued connections and produces clear errors.
+- Node's current HTTP bridge is transitional. Final Node `net` and HTTP should
+  use the same virtual socket path as Python, Ruby, and WASI.
+- Static serving is explicit only. Do not hide static-server substitutions behind
+  language server paths.
+
+### Shell Completion
+
+Nimbus already owns the LIFO shell source. Complete that substrate instead of
+stacking more command-specific patches.
+
+Required behavior:
+
+- Quote-aware expansion results, not string rebuilding.
+- POSIX expansion ordering for parameter expansion, command substitution,
+  field splitting, globbing, and quote removal where Nimbus claims support.
+- Correct `$@`, `$*`, IFS splitting, `$?`, `$$`, `$0`, positional parameters,
+  env assignments, command substitution trimming, and shebang dispatch.
+- Redirection opens/truncates once and streams writes to the opened target.
+- `source`, `.`, `set`, `trap`, `wait`, `read`, background jobs, and foreground
+  process groups reach POSIX-compatible behavior and process-supervisor
+  integration instead of relying on registry no-op fallbacks.
+- Alias expansion happens before ordinary word expansion and preserves token
+  boundaries.
+
+Implementation rules:
+
+- Fix redirection stream semantics first.
+- Add field/quote-aware expansion types.
+- Replace hot-path line normalizers only after equivalent AST behavior is
+  implemented and probed.
+- Keep pipeline streaming and cancellation; do not buffer unbounded command
+  output.
+- Shell job control and process status report through the process supervisor.
+
+### ABI-Aware Package Completion
+
+Package managers must install by ABI rather than hope.
+
+Required artifact classes:
+
+- JavaScript/workerd-compatible package.
+- Pure Python wheel.
+- Curated pure Python source artifact.
+- Pyodide/PyEmscripten startup-loaded package artifact.
+- Pure Ruby gem.
+- ruby.wasm-compatible artifact.
+- `wasm32-wasi-nimbus` binary.
+- Unsupported native shard with exact diagnostic.
+
+Implementation rules:
+
+- Keep `wasm-swap-registry.ts` as the supervisor-side policy owner. The loader
+  preamble currently needs serialized policy because loader isolates cannot
+  import ordinary modules; prevent drift by generating or validating the
+  preamble policy from the same typed data.
+- Extend npm cache metadata for ABI decisions: optional dependencies, peer
+  dependencies, `os`, `cpu`, `libc`, package manager metadata, bin metadata, and
+  native shard evidence.
+- Classify extracted artifacts by content and shebang, not only extension.
+  Detect ELF, Mach-O, PE, `.node`, JS, shell, and Wasm bin targets.
+- Preserve optional dependency soft-skip semantics. Required native artifacts
+  fail early with exact reasons.
+- Runtime manifests should declare ABI descriptors, aliases, commands, package
+  managers, startup modules, and package artifact metadata. Hardcoded runtime
+  aliases and CLI runtime lists must become catalog-driven or mechanically
+  validated against the catalog.
+- Session Durable Objects install built Nimbus-compatible artifacts. They do not
+  compile large native C/C++ extension projects in constrained session CPU.
+
+Scalability requirements:
+
+- Keep the current fanout resolver and batch install architecture.
+- Do not buffer tarballs in the supervisor heap.
+- Version cache schemas. Treat stale rows as metadata misses or explicit
+  migrations, not broad compatibility fallbacks.
+- Use a runtime install completion marker or blob verification so a partially
+  written runtime manifest cannot make a corrupt runtime look installed.
+
+### SDK And Product Completion
+
+The SDK exists and should stay the public product surface. Completion means
+making the interactive app, hosted demo, remote API, React iframe, CLI, and
+Agent converge on that surface.
+
+Required behavior:
+
+- `Nimbus.fromEnv` and `Nimbus.connect` expose equivalent operations where a
+  remote deployment has the necessary permissions.
+- Remote operation schemas are centralized or mechanically checked so SDK and
+  server cannot drift.
+- Enforced-auth iframe embeds work from `/new` and `/s/<id>` without losing the
+  token after the first HTML request. The current core `/new?nimbus_token=...`
+  path validates the token, then redirects without wiring the existing cookie
+  helper, so this is not done yet.
+- The public shell emits `nimbus:ready` and `nimbus:error` messages that the
+  React package actually receives. The shell now emits both; a live probe that
+  asserts React-side reception is still required.
+- Browser session-id parsing accepts the same IDs the server accepts.
+- CLI session commands support `NIMBUS_TOKEN` and `--token` for enforced
+  deployments. Current session commands only target unauthenticated endpoints or
+  deployments where another auth layer is present.
+- `ports.expose()` has an explicit auth model: authenticated URL, signed
+  short-lived URL, or SDK fetch helper. The current SDK returns a plain
+  `/s/<id>/port/<port>/` path, which is only directly usable when the caller
+  already has browser/session auth.
+- Hosted-demo internal Nimbus JWTs stay server-side; browser users get demo
+  auth cookies and Agent OAuth cookies, not internal sandbox tokens.
+
+Security and scale requirements:
+
+- URL query tokens are stripped after validation and never forwarded to session
+  internals or logged in normal paths.
+- Cross-origin iframe cookies must have an explicit posture (`SameSite=None`,
+  `Secure`, and `Partitioned` where supported) or use an Authorization-bearing
+  iframe bootstrap handshake instead of assuming third-party cookies.
+- Hosted-demo auth cookies and Agent OAuth cookies remain `HttpOnly`; iframe
+  bootstrap/session tokens must not be confused with user OAuth token storage.
+- Token scopes, tenant/session pins, destroy permissions, runtime policy, and
+  preview access are enforced by server code, not only by SDK client code.
+- Public deployments need hooks for tenant/session rate limits, process caps,
+  port caps, runtime install quotas, and API request quotas.
+
+### Consolidation And Deletion Plan
+
+These are cleanup targets discovered during source review. They should be
+retired only after the replacement path is routed and probed.
+
+| Path or pattern | Why it is stale or parallel | Correct consolidation |
+|---|---|---|
+| LIFO shell `ProcessRegistry` and legacy `JobTable` as global process truth | They overlap with session `ProcessTable` but lack the browser/SDK/process-log ownership model | Keep shell-local state temporarily, then route global job/process state through the session process supervisor |
+| `LONG_RUNNING_CMD_RE` fallback in process logs | `ProcessEntry.longRunning` is the structured source when available | Keep as legacy fallback only until all launch paths set structured process flags |
+| Registry-level no-op shell fallbacks for real builtins | Some commands remain as compatibility stubs after real shell builtins exist | Move real behavior into shell builtins/interpreter and keep registry entries only for command discovery when needed |
+| `runtime/vfs-snapshot.ts` as long-running runtime IO | Snapshot/diff is bounded and stale for long-running processes | Keep only as short one-shot optimization; route long-running Node/Python/Ruby/WASI through live bridge or live mirrors |
+| Node local HTTP `globalThis.__portRegistry` bridge | It is a separate request bridge from Python/Ruby virtual sockets | Move Node `net`/HTTP to the shared virtual socket kernel |
+| `substrate/lifo/node-compat/child_process.ts` throwing stubs | It conflicts with the real `node-shims.ts` child-process path if treated as product surface | Keep only if shell-internal and clearly isolated; otherwise remove or redirect to the real broker |
+| `substrate/lifo/kernel/network/*` | It is a separate virtual network concept from `PortRegistry` and `VirtualSocketKernel` | Quarantine as internal/experimental or retire after shared virtual socket kernel covers runtime networking |
+| `runtime/static-server.ts` | Appears to be an unused legacy helper; hidden static fallbacks would fake language server support if wired later | Delete if unneeded, or keep only for explicit static-serving commands, not as fallback for Flask/Rack/Node/WASI servers |
+| Duplicated npm native policy in loader preamble | Loader isolates need serialized policy, and current tests only partially validate parity | Generate or validate full preamble policy from supervisor typed policy |
+| Hardcoded runtime aliases/defaults in CLI and package-manager | They can drift from runtime catalog manifests | Move to catalog-provided aliases/commands or add parity checks |
+| Stale comments describing real implementations as stubs, old runtime sizes, old WebSocket hibernation posture, or old concurrency | They mislead future implementation and docs | Clean comments when touching affected modules; do not change behavior only for comment cleanup unless in-scope |
+
+### Completion Order
+
+The order matters because each step removes a future source of duplication.
+
+1. Add the session process/PTY supervisor facade over existing process modules.
+2. Add live VFS range/revision operations under the existing runtime bridge.
+3. Harden the existing virtual socket kernel for streaming and backpressure.
+4. Fix SDK/embed auth, shell ready/error events, CLI token support, and preview
+   auth because those are product-facing and independent of runtime internals.
+5. Move Node async FS and Node HTTP/net onto the shared contracts.
+6. Move WASI, Ruby, and Python long-running runtime IO onto live bridge or live
+   mirror semantics.
+7. Complete shell AST expansion/redirection/job semantics and retire replaced
+   normalizers/stubs.
+8. Centralize ABI policy and make runtime/package defaults catalog-driven.
+9. Add probes for each completed capability and then update README/UI/support
+   claims.
 
 ## Compatibility Model
 
@@ -221,7 +543,7 @@ The runtime catalog must describe what each package provides:
 {
   "name": "python",
   "version": "3.13.2-pyodide-0.29.4",
-  "abi": "pyodide_0_29",
+  "abi": "pyodide",
   "provides": {
     "commands": ["python", "python3", "pip", "pip3"],
     "libraries": ["python-stdlib"],
@@ -286,27 +608,37 @@ is:
 
 ```ts
 interface RuntimeFsBridge {
-  stat(path: string): Promise<VfsStat | null>;
-  open(path: string, flags: OpenFlags, mode?: number): Promise<FileHandle>;
-  read(handle: number, offset: number, length: number): Promise<Uint8Array>;
-  write(handle: number, offset: number, bytes: Uint8Array): Promise<number>;
-  close(handle: number): Promise<void>;
-  readdir(path: string): Promise<VfsDirEntry[]>;
+  stat(path: string, options?: { followSymlinks?: boolean }): Promise<RuntimeVfsStat | null>;
+  readFile(path: string, options?: { followSymlinks?: boolean }): Promise<Uint8Array | null>;
+  writeFile(path: string, bytes: string | Uint8Array, options?: {
+    createParents?: boolean;
+    expectedRevision?: number;
+  }): Promise<void>;
+  utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
+  open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
+  read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
+  write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;
+  close(handleId: number): Promise<void>;
+  readdir(path: string, options?: { followSymlinks?: boolean }): Promise<RuntimeVfsDirEntry[]>;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void>;
   unlink(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
-  readlink(path: string): Promise<string>;
+  readlink(path: string): Promise<string | null>;
   symlink(target: string, path: string): Promise<void>;
   fsync(handle?: number): Promise<void>;
   revision(path?: string): Promise<number>;
+  subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
 }
 ```
 
-This bridge is the contract. Implementations may optimize with page caches,
-batching, or snapshots, but they must preserve coherence. Current production
-wiring uses it for supervisor file RPCs and Node async filesystem fallback.
-Python, Ruby, and WASI still need direct long-lived bridge integration.
+This bridge is the current adapter boundary. Implementations may optimize with
+page caches, batching, or snapshots, but they must preserve coherence. Current
+production wiring uses it for supervisor file RPCs and Node async filesystem
+fallback. Python, Ruby, and WASI still need direct long-lived bridge
+integration, and the bridge should grow stateless range/revision primitives so
+runtime-owned FD tables do not depend on Durable Object-side handle ids across
+hibernation.
 
 ### Coherence Rules
 
@@ -339,12 +671,16 @@ The live bridge must be fast enough for Durable Object constraints:
 
 ## Nimbus OS Kernel Plan
 
-The missing capabilities should be built as shared OS services, not as
-per-runtime patches.
+The missing capabilities should be completed as shared OS services by evolving
+the existing Nimbus modules named above. Do not create second process tables,
+filesystem bridges, socket routers, package policy registries, or public SDK
+surfaces unless the old owner is retired in the same workstream.
 
 ### Process And PTY Kernel
 
-Nimbus needs a first-class process IO contract:
+Nimbus already has process metadata, input queues, log rings, process-terminal
+WebSockets, and a child-process broker. These should be exposed through a
+first-class process IO contract:
 
 ```ts
 interface NimbusProcessIo {
@@ -367,13 +703,17 @@ Rules:
   tab.
 - The tab owns stdin, raw/cooked mode, terminal size, ANSI output, Ctrl-C,
   Ctrl-D, attach/detach, and scrollback replay.
-- Hibernation metadata stores the process id, command, terminal size, active
-  mode, and replay cursor. Durable process state remains in SQLite-backed
-  process/log tables.
+- Current hibernation persists process logs and exit records only. Full process
+  descriptors and PTY metadata still need compact durable rows before wake can
+  present honest process state, including process id, command, terminal size,
+  active mode, and replay cursor.
 - Process logs are still recorded, but logs are secondary to the live PTY for
   foreground TUIs.
 - The SDK must expose this as an explicit terminal/process attachment surface,
   not hide it behind `exec`.
+- The current regex fallback for long-running command detection is legacy only.
+  Structured process metadata should own process classification once all launch
+  paths set it.
 
 ### POSIX Shell Contract
 
@@ -397,7 +737,9 @@ normalizers for ordinary shell grammar.
 
 ### Virtual Socket Kernel
 
-Nimbus virtual sockets should be a shared kernel service:
+Nimbus virtual sockets should be completed by hardening the existing
+`VIRTUAL_SOCKET_KERNEL_SRC` and `PortRegistry` pair into a shared kernel
+service:
 
 ```ts
 interface NimbusSocketKernel {
@@ -437,8 +779,9 @@ Package managers must install by ABI, not by hope.
 Required registry dimensions:
 
 - runtime name and version
-- ABI name, such as `pyodide_0_29`, `ruby_wasm`, `wasm32-wasi-nimbus`, or
-  `node_workerd_nimbus`
+- ABI name, such as `javascript`, `wasm32-wasi-nimbus`,
+  `pyodide-emscripten-2025_0-wasm32`, `py3-none-any`,
+  `python-source-pure`, `pyodide`, `ruby-wasm`, or `native-unsupported`
 - provided commands
 - pure package compatibility
 - precompiled startup-loaded wasm modules
@@ -488,8 +831,8 @@ Correct engineering path:
 4. Add a Python runtime FS bridge instead of relying on per-command snapshots.
 5. Bind Python `socket`, `select`, `selectors`, `socketserver`, WSGI, and ASGI
    to the shared virtual socket kernel.
-6. Prove `pip install flask`, `python -m flask run`, direct `app.run(...)`,
-   and `python -m http.server` through production probes.
+6. Keep the existing Flask and `http.server` production probes green, and add
+   ASGI plus broader WSGI/framework probes as runtime socket support expands.
 
 ### Ruby
 
@@ -518,8 +861,9 @@ Correct engineering path:
 4. Add a Ruby runtime FS bridge instead of relying on per-command snapshots.
 5. Bind Ruby `socket.rb`, Rack, WEBrick-compatible flows, and pure Ruby web
    servers to the shared virtual socket kernel.
-6. Prove `gem install rack`, a Rack app, and a WEBrick-style hello-world app
-   through production probes.
+6. Keep the existing `gem install rack`, Rack, WEBrick, and `ruby -run -e httpd`
+   production probes green, and add broader pure-Ruby framework probes as socket
+   support expands.
 
 ### C, C++, And WASI
 
@@ -585,11 +929,15 @@ The port registry is already the right primitive for HTTP preview:
 - A process owns a port.
 - `/port/<n>/...` forwards a real `Request`.
 - The runtime returns a real `Response`.
-- Bodies stream without JSON serialization.
+- PortRegistry avoids JSON body serialization. Current Node and virtual-socket
+  adapters still buffer internally in places; completion means streaming through
+  the adapter layer too.
 
 Language web servers should plug into this model:
 
-- Node: `http.createServer().listen(port)` maps directly to the port registry.
+- Node: `http.createServer().listen(port)` currently maps to the port registry
+  through a Node-specific bridge; final Node `net` and HTTP should use the
+  shared virtual socket kernel for loopback and preview routing.
 - Python: `socketserver`, WSGI, and ASGI bind loopback virtual sockets and map
   app calls to `Request`/`Response`.
 - Ruby: `socket.rb`, Rack, and WEBrick-compatible flows bind loopback virtual
@@ -642,11 +990,28 @@ Existing probes cover:
 
 - SDK and remote SDK routing:
   `tests/behavioral/sdk/new/*`
+- shell compatibility and installer primitives:
+  `tests/behavioral/shell/*`, `tests/behavioral/shell/compat/**/*`, and
+  `tests/behavioral/shell-polish/**/*`
+- Agent panel and OAuth cookie handling:
+  `tests/behavioral/agent/new/session-agent-panel.mjs` and
+  `tests/behavioral/agent/new/session-agent-cookie-oauth.mjs`
 - agentic CLI Node primitives:
   `tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs`,
   `tests/behavioral/agentic-cli/new/node-live-vfs-async-fs.mjs`,
-  `tests/behavioral/agentic-cli/new/node-live-vfs-symlink.mjs`, and
-  `tests/behavioral/agentic-cli/new/node-sync-cwd-project-snapshot.mjs`
+  `tests/behavioral/agentic-cli/new/node-live-vfs-symlink.mjs`,
+  `tests/behavioral/agentic-cli/new/node-sync-cwd-project-snapshot.mjs`, and
+  `tests/behavioral/agentic-cli/new/node-fs-utimes.mjs`
+- attached npm-bin process terminals, Pi's npm path, and opencode's current
+  unsupported native boundary:
+  `tests/behavioral/agentic-cli/new/attached-npm-bin-tty.mjs`,
+  `tests/behavioral/agentic-cli/new/attached-process-tab-browser.mjs`,
+  `tests/behavioral/agentic-cli/new/npm-bin-explicit-process-exit.mjs`,
+  `tests/behavioral/agentic-cli/new/bun-shebang-npm-bin.mjs`,
+  `tests/behavioral/agentic-cli/new/pi-official-installer.mjs`,
+  `tests/behavioral/agentic-cli/new/pi-coding-agent-npm-bin.mjs`,
+  `tests/behavioral/agentic-cli/new/opencode-installer-native-boundary.mjs`,
+  and `tests/behavioral/agentic-cli/new/opencode-native-bin-diagnostic.mjs`
 - runtime package manager:
   `tests/behavioral/pkg-manager/*`
 - npm/npx primitives:
@@ -655,14 +1020,23 @@ Existing probes cover:
 - WASI:
   `tests/behavioral/wasi/*`, `tests/behavioral/wasi-files/*`, and
   `tests/behavioral/wasi-paths/*`
-- Python basics and provisional pure-package support:
+- Python basics, pure-package support, requirements/local-wheel installs,
+  PyPI resolver/constraint coverage, MarkupSafe pure-source fallback,
+  startup-module package artifacts, Flask and `http.server` previews, and
+  unsupported native diagnostics:
   `tests/behavioral/python/*`
-- Ruby basics and provisional pure-gem command support:
+- Ruby basics, pure-gem command support, Bundler pure-Gemfile support,
+  Rack/WEBrick/httpd previews, and unsupported native gem diagnostics:
   `tests/behavioral/ruby/*`
+- Python and Ruby REPLs:
+  `tests/behavioral/repl/python-hello-repl.mjs` and
+  `tests/behavioral/repl/ruby-hello-repl.mjs`
 - preview ports:
   `tests/behavioral/preview/*`
 - file-watch behavior:
   `tests/behavioral/file-tree-watch/*`
+- static parity checks for native executable loader policy:
+  `tests/behavioral/static-checks/native-executable-preamble-parity.mjs`
 
 This document did not rerun the full probe suite. It records source-backed
 current state and the test surfaces that should be used to prove future work.
@@ -673,35 +1047,64 @@ Add black-box probes for:
 
 - POSIX shell:
   - remaining shell grammar not covered by current `sh`/`bash` probes:
-    grouping, command substitution, `set -e`, `trap`, and shebang dispatch
+    IFS field splitting, `$*`, alias quoting, redirection multi-write
+    semantics, shell-script shebang dispatch, and edge cases beyond the covered
+    grouping, command-substitution, `set -e`, `trap`, `source`, `wait`, `$@`,
+    and heredoc probes
 - Live FS coherence:
   - long-running Node process observes editor writes without restart
   - long-running Python process observes file changes without snapshot stale
   - long-running Ruby process observes file changes without snapshot stale
+  - long-running WASI process observes file changes without snapshot stale
+  - cross-runtime writes and reads are visible without process restart
   - conflicting writes produce deterministic conflict behavior
 - Python package manager:
-  - complex resolver behavior and transitive pure-wheel installs
-  - unsupported manylinux wheel fails with ABI diagnostic
-  - declared Pyodide startup-module packages import without request-time wasm
-    instantiation failures
-  - simple WSGI app previews on a port
+  - resolver cases not covered by the current pure-wheel, requirements,
+    constraints, local-wheel, transitive dependency, and MarkupSafe fallback
+    probes, especially broader extras and marker combinations
+  - each newly declared Pyodide startup-module package imports without
+    request-time Wasm instantiation failures
   - simple ASGI app previews on a port
 - Ruby package manager:
-  - `gem install rack`
-  - unsupported native gem fails with ABI diagnostic
-  - Rack app previews on a port
+  - Bundler lockfile, group, source, and platform behavior beyond the current
+    pure-Gemfile coverage
+  - broader pure-Ruby framework previews as support is added beyond the current
+    Rack/WEBrick/httpd probes
+  - each newly supported unsupported-native-gem class fails with an exact ABI
+    diagnostic
 - POSIX/WASI:
   - `fd_sync` and process-exit flush
   - truncate and append behavior
   - symlink metadata behavior
   - large-file paged reads
-  - poll mixed file/socket/timer behavior under load
+  - mixed file/socket/timer polling under production load beyond the existing
+    single-session mixed-poll probe
+  - full hard-link inode, metadata, and mutation semantics if Nimbus chooses to
+    support more than minimal `path_link`
+  - inbound virtual socket bind/listen/accept through `wasm32-wasi-nimbus`
 - PTY and agentic CLIs:
-  - raw mode input
+  - Ctrl-C raw/cooked behavior
   - signal delivery
+  - resize coalescing under rapid resize streams
+  - `stdio: "inherit"`
+  - attach/detach replay
+  - hibernation wake with durable process metadata
   - log-only tabs still work for daemon processes
-  - opencode smoke
-  - Proteus CLI smoke
+  - unmodified opencode smoke beyond the current native-boundary probes
+  - Proteus CLI smoke or exact unsupported boundary
+- SDK and product:
+  - enforced-auth iframe `/new` and `/s/<id>` preserve authorization across
+    HTML, WebSocket, and API requests
+  - React `onReady` and `onError` fire from real shell events
+  - CLI session commands work with `NIMBUS_TOKEN` and `--token`
+  - remote preview URLs have documented authenticated or signed access behavior
+- Package/runtime integrity:
+  - partial runtime install with `manifest.json` but missing blobs is repaired
+    or fails loudly
+  - npm native policy parity is fully generated or validated between supervisor
+    registry and loader preamble; current parity coverage only checks the native
+    executable reject subset
+  - CLI runtime lists match the runtime catalog instead of stale constants
 
 Probes must assert user-visible behavior, not static strings or HTTP 200 alone.
 
@@ -740,29 +1143,43 @@ Nimbus OS compatibility is ready to market when these are true:
 
 ## Immediate Workstreams
 
-These are the concrete workstreams implied by the source audit.
+These are the concrete workstreams implied by the source audit. Treat this as
+the canonical execution list; earlier ordered lists summarize the same sequence
+at a higher level.
 
-1. Harden the PTY process kernel and browser process-tab attachment contract.
+1. Add a session process/PTY supervisor facade over the existing process table,
+   input store, log store, process-terminal WebSocket, and child-process broker.
    Foreground TUIs are interactive terminal tabs; daemon processes remain
    log-readable tabs.
-2. Keep package-bin launch based on structured shebang/bin metadata handling and
+2. Add live VFS range/revision operations under the existing runtime bridge and
+   keep snapshots only as bounded one-shot optimizations.
+3. Harden the existing virtual socket kernel and port registry with streaming,
+   backpressure, abort handling, limits, and hibernation-aware metadata.
+4. Fix SDK/embed auth, real shell `nimbus:ready`/`nimbus:error` events, CLI token
+   support, and remote preview auth.
+5. Keep package-bin launch based on structured shebang/bin metadata handling and
    terminal-context-aware TTY selection. Avoid regex parsing when package
    metadata or a JavaScript parser can identify the entrypoint.
-3. Continue replacing remaining shell parser debt with structured POSIX shell
+6. Continue replacing remaining shell parser debt with structured POSIX shell
    AST execution in the Nimbus-owned shell substrate.
-4. Move Node dynamic Worker `fs` shims to the live bridge while preserving fast
+7. Move Node dynamic Worker `fs` shims to the live bridge while preserving fast
    bundled reads for known immutable module sources.
-5. Move Python and Ruby from snapshot-only command IO to the live bridge.
-6. Expand the Python `pip` ABI planner and runtime catalog with more declared
+8. Move WASI, Ruby, and Python long-running runtime IO to live bridge or live
+   mirror semantics.
+9. Expand the Python `pip` ABI planner and runtime catalog with more declared
    Pyodide wheel/cache/module artifacts as demand and size budgets justify.
-7. Complete Bundler-compatible dependency resolution for pure Ruby gems.
-8. Promote the virtual socket kernel to the shared OS network service and bind
-   Node, Python, Ruby, and WASI adapters to it.
-9. Remove hidden static-server substitutions from user-facing language server
-   paths once the virtual socket path covers them.
-10. Add production probes for unsupported native Python wheels, opencode,
-    local Proteus CLI, and deeper shell grammar.
-11. Update README, SDK docs, and AGENTS from the support matrix proven by those
+10. Complete Bundler-compatible dependency resolution for pure Ruby gems.
+11. Promote the virtual socket kernel to the shared OS network service and bind
+    Node, Python, Ruby, and WASI adapters to it.
+12. Centralize ABI policy, validate loader-preamble parity, and make runtime
+    aliases/defaults catalog-driven.
+13. Verify and remove the apparently unused static-server helper, or keep it
+    only for explicit static-serving commands once the virtual socket path
+    covers language server previews.
+14. Add production probes for unmodified opencode/local Proteus behavior or
+    exact unsupported boundaries, live runtime VFS, deeper shell grammar, and
+    SDK/embed auth.
+15. Update README, SDK docs, and AGENTS from the support matrix proven by those
     probes.
 
 ## Design Guardrails
