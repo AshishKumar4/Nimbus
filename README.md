@@ -1,5 +1,7 @@
 # Nimbus
 
+> This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rought edges, and I only work on it in my spare time
+
 A free and open-source Linux-like development environment that runs entirely on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands. No Docker. No containers. No image pull.
 
 🌐 **Try it now:** https://nimbus.ashishkumarsingh.com
