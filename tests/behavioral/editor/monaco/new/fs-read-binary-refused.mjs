@@ -7,7 +7,7 @@
 // (`printf '\\xff\\xfe\\xfd' > path`). Then fs-read.
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, Terminal, makeAsserter, sleep, stripAnsi } from '../../../_driver.mjs';
+import { mintSession, WS_BASE, Terminal, makeAsserter, sleep, stripAnsi, wsHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/fs-read-binary-refused');
@@ -36,7 +36,7 @@ const sid = await mintSession();
 }
 
 // Now fetch via fs-read protocol.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 const messages = [];
 ws.on('message', (data) => {
   try { messages.push(JSON.parse(data.toString('utf8'))); } catch {}

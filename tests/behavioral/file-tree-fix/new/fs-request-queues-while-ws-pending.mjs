@@ -11,7 +11,7 @@
 // queue + drain logic is present.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep } from '../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-fix/new/fs-request-queues-while-ws-pending');
@@ -44,7 +44,7 @@ a.check('fsRequest still tries direct send when WS is OPEN',
 // Protocol round-trip: open WS, immediately send 3 fs-* frames in
 // rapid succession. Server should respond to ALL three with proper
 // reqId echo.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => {

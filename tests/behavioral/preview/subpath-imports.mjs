@@ -22,6 +22,7 @@
 // /preview/. Per-bug evidence saved by the parent task.
 
 import WebSocket from 'ws';
+import { wsHeaders } from '../_driver.mjs';
 
 const BASE = process.env.BASE;
 if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -45,7 +46,7 @@ const sid = loc.match(/\/s\/([^/]+)/)[1];
 console.log(`behavioral/preview/subpath-imports — BASE=${BASE} sid=${sid}`);
 
 // ── connect a terminal ──
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 let buf = '';
 let connected = false, closed = false;
 ws.on('open', () => { connected = true; });

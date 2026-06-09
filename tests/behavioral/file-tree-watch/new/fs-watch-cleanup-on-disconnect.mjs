@@ -12,7 +12,7 @@
 // drive a write → SECOND ws receives exactly the expected events
 // (no extras leaked from the first sub).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -23,7 +23,7 @@ const sid = await mintSession();
 
 // First subscriber — open, subscribe, then close.
 {
-  const w = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
+  const w = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
   let opened = false;
   let subbed = false;
   w.on('open', () => { opened = true; });
@@ -44,7 +44,7 @@ const sid = await mintSession();
 
 // Second subscriber — separate WS — should receive its own events
 // cleanly.
-const w2 = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
+const w2 = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
 const received2 = [];
 let opened2 = false;
 let subResult2 = null;

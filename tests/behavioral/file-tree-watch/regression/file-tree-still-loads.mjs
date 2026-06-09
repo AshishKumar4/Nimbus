@@ -5,7 +5,7 @@
 // The wave is additive to the existing fs-list handler. This probe
 // confirms fs-list responses still arrive correctly post-wave.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -13,7 +13,7 @@ const a = makeAsserter('file-tree-watch/regression/file-tree-still-loads');
 console.log(`file-tree-watch/regression/file-tree-still-loads — ${BASE}`);
 
 const sid = await mintSession();
-const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 let opened = false;
 let result = null;
 w.on('open', () => { opened = true; });

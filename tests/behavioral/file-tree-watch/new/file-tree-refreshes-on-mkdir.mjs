@@ -2,7 +2,7 @@
 // file-tree-watch/file-tree-refreshes-on-mkdir — `mkdir /home/user/X`
 // from terminal delivers fs-watch-event with type=addDir.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -11,7 +11,7 @@ console.log(`file-tree-watch/file-tree-refreshes-on-mkdir — ${BASE}`);
 
 const sid = await mintSession();
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
 const received = [];
 let opened = false;
 let subResult = null;

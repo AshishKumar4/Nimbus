@@ -14,7 +14,7 @@
 // the SEQUENTIAL contract (tab 2 sees what tab 1 wrote after tab 1
 // closes), which is what users actually do.
 
-import { mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, wsHeaders } from './_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -37,12 +37,12 @@ await tab1.close();
 {
   const sid2 = await mintSession();
   // Open WS A, then attempt WS B — observe close code 1002 if gated.
-  const wsA = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`);
+  const wsA = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders());
   await new Promise((res) => { wsA.on('open', res); wsA.on('error', () => res()); });
   await sleep(500);
   let secondClosed = false;
   let secondOpen = false;
-  const wsB = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`);
+  const wsB = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders());
   wsB.on('open', () => { secondOpen = true; });
   wsB.on('close', () => { secondClosed = true; });
   wsB.on('error', () => { /* eaten */ });

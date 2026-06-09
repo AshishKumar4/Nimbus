@@ -10,7 +10,7 @@
 //      that fs-list afterwards reports.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep } from '../../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-create-file');
@@ -32,7 +32,7 @@ a.check('newFile() refreshes parent folder after fs-write',
   `parent refresh wiring missing`);
 
 // Protocol round-trip.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

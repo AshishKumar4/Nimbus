@@ -1,0 +1,70 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Authenticated probe target for tests/behavioral. CI and local runs
+  // point BASE at this Worker so the public hosted demo can stay behind
+  // interactive Cloudflare login. Auth is the core JWT mode: set the
+  // secret once with `wrangler secret put JWT_SECRET` and mint run
+  // tokens with `tests/behavioral/_mint-probe-token.mjs`.
+  "name": "nimbus-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "preview_urls": false,
+  "vars": {
+    // Same public OAuth client as the hosted demo so the session agent
+    // surface (and its probes) behave identically here. Client id and
+    // scopes are public PKCE values, not secrets.
+    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "NIMBUS_AGENT_GATEWAY_ID": "default",
+    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
+    "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",
+    "NIMBUS_CF_OAUTH_SCOPES": "user-details.read account-settings.read ai.write aig.run"
+  },
+  "assets": {
+    "directory": "node_modules/@nimbus-sh/worker/public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/s/*", "/new"]
+  },
+  "alias": {
+    // Same workspace-local alias set as apps/hosted-demo: these
+    // dependencies are installed under the @nimbus-sh/worker workspace
+    // package, not hoisted to the repo root.
+    "clean-git-ref": "./node_modules/@nimbus-sh/worker/node_modules/clean-git-ref/lib/index.js",
+    "is-git-ref-name-valid": "./node_modules/@nimbus-sh/worker/node_modules/is-git-ref-name-valid/index.js",
+    "crc-32": "./node_modules/@nimbus-sh/worker/node_modules/crc-32",
+    "sha.js": "./node_modules/@nimbus-sh/worker/node_modules/sha.js",
+    "pako": "./node_modules/@nimbus-sh/worker/node_modules/pako",
+    "pify": "./node_modules/@nimbus-sh/worker/node_modules/pify",
+    "diff": "./node_modules/@nimbus-sh/worker/node_modules/diff",
+    "diff3": "./node_modules/@nimbus-sh/worker/node_modules/diff3",
+    "ignore": "./node_modules/@nimbus-sh/worker/node_modules/ignore",
+    "readable-stream": "./node_modules/@nimbus-sh/worker/node_modules/readable-stream",
+    "simple-get": "./node_modules/@nimbus-sh/worker/node_modules/simple-get",
+    "minimisted": "./node_modules/@nimbus-sh/worker/node_modules/minimisted"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["NimbusSession"] }
+  ],
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NPM_TARBALL_CACHE",
+      "bucket_name": "nimbus-npm-cache"
+    },
+    {
+      "binding": "NPM_PACKUMENT_CACHE",
+      "bucket_name": "nimbus-npm-packument-cache"
+    },
+    {
+      "binding": "NIMBUS_RUNTIME_CACHE",
+      "bucket_name": "nimbus-runtime-cache"
+    }
+  ]
+}

@@ -34,7 +34,7 @@
 
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
-import { mintSession, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE } from './_driver.mjs';
+import { mintSession, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE, AUTH_TOKEN } from './_driver.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
 
@@ -78,6 +78,9 @@ export async function launchBrowser(opts = {}) {
 }
 
 export async function applyProbeCookies(page, base = BASE) {
+  if (AUTH_TOKEN) {
+    await page.setExtraHTTPHeaders({ Authorization: `Bearer ${AUTH_TOKEN}` });
+  }
   if (!AUTH_COOKIE) return;
   const url = new URL(base);
   const cookies = AUTH_COOKIE

@@ -2,9 +2,18 @@
 
 ## `behavioral.yml`
 
-Drives `tests/behavioral/run-all.mjs` against the live prod deployment
-(`https://nimbus.ashishkmr472.workers.dev`). Discovers ~91 probes recursively
-under `tests/behavioral/` (since TST-2) and runs each sequentially.
+Drives `tests/behavioral/run-all.mjs` against the authenticated probe
+deployment (`https://nimbus-probe.ashishkmr472.workers.dev`, the
+`apps/probe` Worker). Discovers probes recursively under
+`tests/behavioral/` and runs each sequentially.
+
+Auth: the workflow mints a 1-hour probe token from the
+`NIMBUS_PROBE_JWT_SECRET` repo secret via
+`tests/behavioral/_mint-probe-token.mjs` and exports it as
+`NIMBUS_PROBE_TOKEN`; the driver sends it as `Authorization: Bearer` on
+every request and WebSocket. Hosted-demo-only probes and the expensive
+markflow probes are skipped via `NIMBUS_PROBE_SKIP` (see the workflow
+comments).
 
 ### When does it run?
 
@@ -26,15 +35,18 @@ Full run log uploaded as an artifact (`behavioral-log-pr-<N>` / `behavioral-log-
 ### Local reproduction
 
 ```bash
-# Match the CI PR-strict mode (no retry, hits prod):
-BASE=https://nimbus.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs --no-retry
+# Mint a token (secret lives in the probe Worker + GH repo secret):
+export NIMBUS_PROBE_TOKEN="$(NIMBUS_PROBE_JWT_SECRET=<secret> bun tests/behavioral/_mint-probe-token.mjs)"
+
+# Match the CI PR-strict mode (no retry):
+BASE=https://nimbus-probe.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs --no-retry
 
 # Match the CI main mode (retry-on-banner):
-BASE=https://nimbus.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs
+BASE=https://nimbus-probe.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs
 
 # Limit to a subset while debugging:
 NIMBUS_PROBE_ONLY=astro-real,sveltekit-real \
-  BASE=https://nimbus.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs
+  BASE=https://nimbus-probe.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs
 ```
 
 ### Required-check setup (one-time, manual)

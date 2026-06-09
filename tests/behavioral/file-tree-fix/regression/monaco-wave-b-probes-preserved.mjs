@@ -7,7 +7,7 @@
 // reqId echo, FileTree DOM + JS hooks present.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep } from '../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-fix/regression/file-tree/panel-probes-preserved');
@@ -39,7 +39,7 @@ a.check('Monaco config still uses Menlo 14px',
   `font config regressed`);
 
 // Protocol — round-trip fs-write → fs-read, fs-list.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

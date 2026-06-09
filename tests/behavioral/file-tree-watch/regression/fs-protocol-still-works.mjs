@@ -3,7 +3,7 @@
 // fs-write / fs-list round-trip still works through the existing
 // init.ts handler. Wave is additive; this is a guardrail.
 
-import { mintSession, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -11,7 +11,7 @@ const a = makeAsserter('file-tree-watch/regression/fs-protocol-still-works');
 console.log(`file-tree-watch/regression/fs-protocol-still-works — ${BASE}`);
 
 const sid = await mintSession();
-const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 const responses = new Map();
 let opened = false;
 w.on('open', () => { opened = true; });

@@ -9,7 +9,7 @@
 // assert the second WS received the event within 1500 ms (50 ms
 // server coalesce + ~300 ms network + safety margin).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -20,7 +20,7 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 
 // Subscriber WS (raw).
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
 let opened = false;
 const received = []; // fs-watch-event frames
 let subscribeResult = null;

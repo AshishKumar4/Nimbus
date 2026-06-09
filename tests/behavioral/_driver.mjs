@@ -15,6 +15,7 @@ import WebSocket from 'ws';
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
 export const WS_BASE = BASE.replace(/^http/, 'ws');
 export const AUTH_COOKIE = process.env.NIMBUS_PROBE_COOKIE || process.env.NIMBUS_AUTH_COOKIE || '';
+export const AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -22,12 +23,21 @@ export function stripAnsi(s) {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
 }
 
-export function requestHeaders(extra = {}) {
-  return AUTH_COOKIE ? { Cookie: AUTH_COOKIE, ...extra } : extra;
+function authHeaders() {
+  const headers = {};
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+  if (AUTH_COOKIE) headers.Cookie = AUTH_COOKIE;
+  return headers;
 }
 
-function wsHeaders() {
-  return AUTH_COOKIE ? { headers: { Cookie: AUTH_COOKIE } } : undefined;
+export function requestHeaders(extra = {}) {
+  return { ...authHeaders(), ...extra };
+}
+
+/** Options for `new WebSocket(url, wsHeaders())` carrying probe auth. */
+export function wsHeaders() {
+  const headers = authHeaders();
+  return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
 /** POST /new → 302 → sid. The only session-creation surface. */
@@ -83,7 +93,7 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, AUTH_COOKIE ? { headers: { Cookie: AUTH_COOKIE } } : undefined);
+    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, wsHeaders());
     this.connected = false;
     this.closed = false;
     this.ws.on('open', () => { this.connected = true; });

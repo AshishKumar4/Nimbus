@@ -26,6 +26,7 @@
 //     a few seconds of meaningful activity.
 
 import WebSocket from 'ws';
+import { wsHeaders } from '../_driver.mjs';
 
 const BASE = process.env.BASE;
 if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -45,7 +46,7 @@ const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual' });
 const sid = r.headers.get('location').match(/\/s\/([^/]+)/)[1];
 console.log(`behavioral/preview/process-logs-stream — BASE=${BASE} sid=${sid}`);
 
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 let buf = '';
 let tConn = false, tClosed = false;
 ws.on('open', () => { tConn = true; });
@@ -119,7 +120,7 @@ console.log(`  detected vite pid=${vitePid}`);
 // "post-banner state up to now"). Then trigger real dev-server work
 // (a /preview/ HEAD + a /preview/src/main.js GET + a file-write to
 // trigger HMR) and assert that NEW chunks arrive within 8 s.
-const logsWs = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${vitePid}`);
+const logsWs = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${vitePid}`, wsHeaders());
 let backlogSeen = false;
 let chunksSeen = 0;
 let postBacklogChunks = [];

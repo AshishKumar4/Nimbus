@@ -9,7 +9,7 @@
 // session reconnect.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep } from '../../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/ctrl-s-saves-file');
@@ -35,7 +35,7 @@ const path = '/home/user/probe-ctrl-s-' + Date.now() + '.txt';
 const PAYLOAD = 'ctrl-s-probe-' + Date.now() + '\nsecond line\n  indented';
 
 async function withWs(fn) {
-  const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+  const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
   const messages = [];
   ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
   await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

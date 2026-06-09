@@ -25,6 +25,17 @@
         "wrangler": "^4.0.0",
       },
     },
+    "apps/probe": {
+      "name": "@nimbus-sh/probe",
+      "version": "0.1.0",
+      "dependencies": {
+        "@nimbus-sh/sdk": "workspace:^",
+        "@nimbus-sh/worker": "workspace:^",
+      },
+      "devDependencies": {
+        "wrangler": "^4.0.0",
+      },
+    },
     "packages/cli": {
       "name": "@nimbus-sh/cli",
       "version": "0.1.7",
@@ -285,6 +296,8 @@
     "@nimbus-sh/config": ["@nimbus-sh/config@workspace:packages/config"],
 
     "@nimbus-sh/hosted-demo": ["@nimbus-sh/hosted-demo@workspace:apps/hosted-demo"],
+
+    "@nimbus-sh/probe": ["@nimbus-sh/probe@workspace:apps/probe"],
 
     "@nimbus-sh/react": ["@nimbus-sh/react@workspace:packages/react"],
 

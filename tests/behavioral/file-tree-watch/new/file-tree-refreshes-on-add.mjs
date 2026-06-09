@@ -10,7 +10,7 @@
 // directly, same shape as fs-watch-broadcasts-on-write but specific
 // to the 'add' event type).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -19,7 +19,7 @@ console.log(`file-tree-watch/file-tree-refreshes-on-add — ${BASE}`);
 
 const sid = await mintSession();
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
 const received = [];
 let opened = false;
 let subResult = null;

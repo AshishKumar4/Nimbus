@@ -8,7 +8,7 @@
 // Total event COUNT should still reflect every write (100 events
 // across the frames).
 
-import { mintSession, sleep, makeAsserter, BASE, WS_BASE } from '../../_driver.mjs';
+import { mintSession, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -17,7 +17,7 @@ console.log(`file-tree-watch/fs-watch-coalesces — ${BASE}`);
 
 const sid = await mintSession();
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`);
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
 const received = [];
 let opened = false;
 let subResult = null;
@@ -34,7 +34,7 @@ subWs.send(JSON.stringify({ type: 'fs-watch-subscribe', reqId: 93_000, paths: ['
 { const t0 = Date.now(); while (!subResult && Date.now() - t0 < 5_000) await sleep(25); }
 a.check('subscribed ok', subResult && subResult.ok === true, `subResult=${JSON.stringify(subResult)}`);
 
-const driverWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`);
+const driverWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 const driverResponses = new Map();
 let driverOpened = false;
 driverWs.on('open', () => { driverOpened = true; });
