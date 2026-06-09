@@ -4,14 +4,14 @@
 // Wave didn't touch resize logic; this guards against accidental
 // IIFE-shape damage that could break the layout JS.
 
-import { mintSession, makeAsserter, BASE } from '../../_driver.mjs';
+import { mintSession, makeAsserter, BASE, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-watch/regression/monaco-polish-resize-preserved');
 console.log(`file-tree-watch/regression/monaco-polish-resize-preserved — ${BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`);
+const r = await fetch(`${BASE}/s/${sid}/`, { headers: requestHeaders() });
 a.check('GET /s/<sid>/ returns 200', r.status === 200, `status=${r.status}`);
 const html = await r.text();
 

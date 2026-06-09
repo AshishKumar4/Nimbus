@@ -4,14 +4,14 @@
 //
 // User: "Make the editor tab the default view"
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/editor-is-default-mode');
 console.log(`monaco-polish/new/editor-is-default-mode — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // The shell has one workspace. The center surface defaults to editor and

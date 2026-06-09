@@ -9,14 +9,14 @@
 // session reconnect.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/ctrl-s-saves-file');
 console.log(`editor/monaco/new/ctrl-s-saves-file — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // HTML/JS: Ctrl+S global handler + Monaco addCommand binding.

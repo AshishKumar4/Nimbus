@@ -3,14 +3,14 @@
 // palette + protocol round-trip preserved.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/ctrl-p-still-works');
 console.log(`file-tree/panel/regression/ctrl-p-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 a.check('Ctrl+P global keydown handler still present',

@@ -15,14 +15,14 @@
 // rendered into the tree-body. This probe ensures that string is
 // no longer the user-visible failure for the race.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-fix/new/file-tree-loads-before-ws-ready');
 console.log(`file-tree-fix/new/file-tree-loads-before-ws-ready — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // Pre-fix code: `if (!ws || ws.readyState !== WebSocket.OPEN)

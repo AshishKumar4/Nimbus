@@ -7,7 +7,7 @@
 // reqId echo, FileTree DOM + JS hooks present.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-fix/regression/file-tree/panel-probes-preserved');
@@ -16,7 +16,7 @@ console.log(`file-tree-fix/regression/file-tree/panel-probes-preserved — ${pro
 const sid = await mintSession();
 
 // HTML — Wave-B FileTree + editor Editor surfaces intact.
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 a.check('FileTree IIFE module still declared',

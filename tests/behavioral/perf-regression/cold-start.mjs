@@ -13,7 +13,7 @@
 //   - SqliteVFS init regressed (boot path reads from DO storage).
 //   - First-request handler took on heavy synchronous work.
 
-import { mintSession, makeAsserter, BASE } from '../_driver.mjs';
+import { mintSession, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('perf-regression/cold-start');
@@ -23,7 +23,7 @@ const THRESHOLD_MS = 1200;
 
 const t0 = performance.now();
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`);
+const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, { headers: requestHeaders() });
 const body = await r.text();
 const elapsed = performance.now() - t0;
 

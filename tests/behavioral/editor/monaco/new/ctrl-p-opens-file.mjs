@@ -10,7 +10,7 @@
 //   5. Picking a result triggers openFile → fs-read.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/ctrl-p-opens-file');
@@ -19,7 +19,7 @@ console.log(`editor/monaco/new/ctrl-p-opens-file — ${process.env.BASE}`);
 const sid = await mintSession();
 
 // Probe 1-3: HTML/JS source-level checks.
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 a.check('Ctrl+P global keydown handler present',

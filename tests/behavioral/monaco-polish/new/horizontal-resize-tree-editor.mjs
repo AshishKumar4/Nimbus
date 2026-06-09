@@ -3,14 +3,14 @@
 // (tree ↔ editor stack). HTML-shape assertions for handle + drag
 // wiring; persistence covered by resize-persists-localStorage.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/horizontal-resize-tree-editor');
 console.log(`monaco-polish/new/horizontal-resize-tree-editor — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // DOM.

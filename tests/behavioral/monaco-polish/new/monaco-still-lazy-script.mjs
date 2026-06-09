@@ -6,14 +6,14 @@
 // The invariant is: no <script src="...monaco..."> tag in initial HTML.
 // Monaco loader is appended via document.head at runtime.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/monaco-still-lazy-script');
 console.log(`monaco-polish/new/monaco-still-lazy-script — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // Invariant: no eager <script src> for Monaco assets.

@@ -26,7 +26,7 @@
 //     a few seconds of meaningful activity.
 
 import WebSocket from 'ws';
-import { mintSession, wsHeaders } from '../_driver.mjs';
+import { mintSession, wsHeaders, requestHeaders } from '../_driver.mjs';
 
 const BASE = process.env.BASE;
 if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -153,10 +153,10 @@ await sleep(800);
 //   3. Append a byte to src/main.js to trigger an HMR full-reload
 {
   const url0 = `${BASE}/s/${sid}/preview/`;
-  const resp0 = await fetch(url0, { redirect: 'manual' });
+  const resp0 = await fetch(url0, { redirect: 'manual', headers: requestHeaders() });
   await resp0.text().catch(() => '');
   const url1 = `${BASE}/s/${sid}/preview/src/main.js`;
-  const resp1 = await fetch(url1, { redirect: 'manual' });
+  const resp1 = await fetch(url1, { redirect: 'manual', headers: requestHeaders() });
   await resp1.text().catch(() => '');
   console.log(`  triggered: GET / → ${resp0.status}, GET /src/main.js → ${resp1.status}`);
 }

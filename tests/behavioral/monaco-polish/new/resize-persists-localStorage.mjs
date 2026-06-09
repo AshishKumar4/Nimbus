@@ -2,14 +2,14 @@
 // monaco-polish/new/resize-persists-localStorage — pane dims
 // persisted via localStorage keyed per session.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/resize-persists-localStorage');
 console.log(`monaco-polish/new/resize-persists-localStorage — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 a.check('LS key uses nimbus.pane.dims namespace',

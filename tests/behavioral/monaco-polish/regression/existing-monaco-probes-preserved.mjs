@@ -11,14 +11,14 @@
 //   - Ctrl+P keydown + Ctrl+S keydown
 //   - Editor-mode CSS rules (file-tree | editor-stack | preview)
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/regression/existing-monaco-probes-preserved');
 console.log(`monaco-polish/regression/existing-monaco-probes-preserved — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // Module presence.

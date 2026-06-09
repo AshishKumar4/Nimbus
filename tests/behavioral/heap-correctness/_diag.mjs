@@ -5,10 +5,10 @@
 // regular black-box driver lives at tests/behavioral/_driver.mjs and
 // the heap-correctness probes import its public bits + add this file.
 
-import { BASE } from '../_driver.mjs';
+import { BASE, requestHeaders } from '../_driver.mjs';
 
 export async function diagMemory(sid) {
-  const r = await fetch(`${BASE}/s/${sid}/api/_diag/memory`, { cache: 'no-store' });
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/memory`, { cache: 'no-store', headers: requestHeaders() });
   if (!r.ok) throw new Error(`diagMemory ${sid}: HTTP ${r.status}`);
   return r.json();
 }

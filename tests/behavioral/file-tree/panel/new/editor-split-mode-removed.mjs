@@ -6,14 +6,14 @@
 // Asserts no toolbar button, no CSS rule, no setLayout call site.
 // Single canonical 'editor' mode replaces the old duo.
 
-import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/editor-split-mode-removed');
 console.log(`file-tree/panel/new/editor-split-mode-removed — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // No CSS rules for the removed modes.

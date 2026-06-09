@@ -19,7 +19,7 @@
 //   - cirrus-real proxy regressed.
 //   - Preview route lost the dev-server detection fast path.
 
-import { mintSession, Terminal, makeAsserter, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('perf-regression/first-paint');
@@ -48,7 +48,7 @@ const POLL_BUDGET_MS = 90_000;
 const POLL_INTERVAL_MS = 250;
 while (performance.now() - t0 < POLL_BUDGET_MS) {
   try {
-    const r = await fetch(`${BASE}/s/${sid}/preview/`, { redirect: 'manual' });
+    const r = await fetch(`${BASE}/s/${sid}/preview/`, { redirect: 'manual', headers: requestHeaders() });
     lastStatus = r.status;
     if (r.status === 200) {
       firstPaintMs = performance.now() - t0;

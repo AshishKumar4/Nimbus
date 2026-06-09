@@ -11,7 +11,7 @@
 // queue + drain logic is present.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../_driver.mjs';
+import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-fix/new/fs-request-queues-while-ws-pending');
@@ -20,7 +20,7 @@ console.log(`file-tree-fix/new/fs-request-queues-while-ws-pending — ${process.
 const sid = await mintSession();
 
 // HTML wiring — both Editor and FileTree expose drainFsQueue.
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 a.check('Editor exposes drainFsQueue in return-object',
   /return\s*\{[\s\S]{0,800}\bensureLoaded\b[\s\S]{0,800}\bdrainFsQueue\b[\s\S]{0,800}\}/.test(html),

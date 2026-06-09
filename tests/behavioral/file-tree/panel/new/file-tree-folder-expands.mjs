@@ -9,7 +9,7 @@
 //   - The reqId echo (editor hotfix) works for both calls
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
+import { mintSession, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-folder-expands');
@@ -55,7 +55,7 @@ if (dirEntry) {
 }
 
 // Probe 3: HTML wiring — clicking a folder triggers loadFolder().
-const r = await fetch(`${process.env.BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${process.env.BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 a.check('handleNodeClick toggles expanded state for directories',
   /handleNodeClick[\s\S]{0,400}type\s*===\s*['"]directory['"][\s\S]{0,200}expanded\.add/.test(html) ||

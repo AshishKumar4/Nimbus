@@ -13,14 +13,14 @@
 //   2. FileTree.ensureLoaded gated on editor-mode in setLayout.
 //   3. FileTree IIFE state-only (no fs-* fires until ensureLoaded).
 
-import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/monaco-lazy-not-on-cold');
 console.log(`file-tree/panel/regression/monaco-lazy-not-on-cold — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // No eager <script src> for Monaco.

@@ -7,14 +7,14 @@
 // if Wave-B's edits accidentally dropped the upgraded config, this
 // fails loudly.
 
-import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/monaco-vscode-features-preserved');
 console.log(`file-tree/panel/regression/monaco-vscode-features-preserved — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 const checks = [

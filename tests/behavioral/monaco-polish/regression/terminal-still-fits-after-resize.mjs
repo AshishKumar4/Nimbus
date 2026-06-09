@@ -3,14 +3,14 @@
 // resize handlers call fitAddon.fit() after drag end + mid-drag,
 // so the xterm always tracks the pane size.
 
-import { mintSession, BASE, makeAsserter } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/regression/terminal-still-fits-after-resize');
 console.log(`monaco-polish/regression/terminal-still-fits-after-resize — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 a.check('applyTerminalFit helper calls fitAddon.fit()',

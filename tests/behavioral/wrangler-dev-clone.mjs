@@ -20,7 +20,7 @@
 //
 // Black-box only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep, stripAnsi, fetchPort } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, stripAnsi, fetchPort, requestHeaders } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wrangler-dev-clone');
@@ -114,7 +114,7 @@ if (buildOutcome === 'success') {
   let body = '';
   let status = 0;
   try {
-    const resp = await fetch(workerUrl, { redirect: 'manual' });
+    const resp = await fetch(workerUrl, { redirect: 'manual', headers: requestHeaders() });
     status = resp.status;
     body = await resp.text();
   } catch (e) {

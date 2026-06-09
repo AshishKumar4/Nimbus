@@ -4,14 +4,14 @@
 // (just renamed editor-split-with-term → editor). Now ALSO has
 // the file tree as a 4th pane (covered by file-tree-renders).
 
-import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/editor-with-term-layout-still-works');
 console.log(`file-tree/panel/regression/editor-with-term-layout-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 // .main.editor shows editor + terminal + preview (3 of the 4 panes;

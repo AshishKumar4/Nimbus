@@ -2,14 +2,14 @@
 // editor/monaco/new/workspace-surface-toggle — HTML structural assertion for
 // the single workspace with editor/agent switching in the center pane.
 
-import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/workspace-surface-toggle');
 console.log(`editor/monaco/new/workspace-surface-toggle — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 a.check("setLayout('editor') wiring present",

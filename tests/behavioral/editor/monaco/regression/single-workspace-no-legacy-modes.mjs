@@ -2,14 +2,14 @@
 // editor/monaco/regression/single-workspace-no-legacy-modes — the shell has
 // one workspace. Terminal/Preview/Split are not top-level modes.
 
-import { mintSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/regression/single-workspace-no-legacy-modes');
 console.log(`editor/monaco/regression/single-workspace-no-legacy-modes — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow' });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
 const html = await r.text();
 
 for (const id of ['btnTerminal', 'btnPreview', 'btnSplit']) {
