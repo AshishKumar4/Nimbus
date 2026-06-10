@@ -33,6 +33,11 @@
  *                         ERR_METHOD_NOT_IMPLEMENTED. Hybrid shim:
  *                         forward surface, wrap eval methods with
  *                         honest error.
+ *   - node:inspector    — Session/console/url surface present; the V8
+ *                         debugger isn't attachable in workerd, so a
+ *                         constructed Session's connect/post are inert.
+ *                         Tools (e.g. nuxi) that open a Session purely
+ *                         for optional profiling degrade cleanly.
  */
 export declare function getRealNodeImportsCode(): string;
 //# sourceMappingURL=real-node-imports.d.ts.map

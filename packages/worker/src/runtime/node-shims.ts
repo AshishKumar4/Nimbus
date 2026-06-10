@@ -117,7 +117,26 @@ const __pathMod = (() => {
     while (c < f.length && c < t.length && f[c] === t[c]) c++;
     return [...Array(f.length - c).fill(".."), ...t.slice(c)].join("/") || ".";
   }
-  return { join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, sep: "/", delimiter: ":", posix: null, win32: null };
+  function parse(p) {
+    const str = String(p);
+    const root = str.startsWith("/") ? "/" : "";
+    const dir = dirname(str);
+    const base = basename(str);
+    const ext = extname(str);
+    const name = ext ? base.slice(0, base.length - ext.length) : base;
+    return { root, dir: dir === "." && !str.includes("/") ? "" : dir, base, ext, name };
+  }
+  function format(obj) {
+    const o = obj || {};
+    const dir = o.dir || o.root || "";
+    const base = o.base || ((o.name || "") + (o.ext || ""));
+    if (!dir) return base;
+    if (dir === o.root) return dir + base;
+    return dir + "/" + base;
+  }
+  function toNamespacedPath(p) { return p; }
+  function matchesGlob() { return false; }
+  return { join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, parse, format, toNamespacedPath, matchesGlob, sep: "/", delimiter: ":", posix: null, win32: null };
 })();
 __pathMod.posix = __pathMod;
 // X.5-Z5 §3 follow-on: enhanced-resolve (transitive via @tailwindcss/vite
@@ -2099,6 +2118,33 @@ const __asyncHooksMod = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  inspector module (forward to workerd) ──────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// workerd's nodejs_compat exposes node:inspector (Session/console/url).
+// The V8 inspector protocol isn't attachable inside a Worker, so a
+// constructed Session is inert: connect()/post() resolve/no-op rather
+// than driving a real debugger. Tools that import it for optional
+// profiling (e.g. nuxi's lockfile timing Session) degrade cleanly.
+const __inspectorMod = (() => {
+  const real = (typeof __real_inspector !== 'undefined') ? (__real_inspector.default ?? __real_inspector) : null;
+  if (real && typeof real.Session === 'function') return real;
+  // Defensive fallback when workerd doesn't surface node:inspector.
+  const noopSession = class {
+    connect() {} connectToMainThread() {} disconnect() {}
+    post(_method, _params, cb) { if (typeof _params === 'function') cb = _params; if (typeof cb === 'function') cb(null, {}); }
+    on() { return this; } once() { return this; } removeListener() { return this; } emit() { return false; }
+  };
+  return {
+    Session: noopSession,
+    console: globalThis.console,
+    url: () => undefined,
+    open: () => {},
+    close: () => {},
+    waitForDebugger: () => {},
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  assert module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __assertMod = Object.assign(
@@ -3116,7 +3162,20 @@ const __processMod = {
     return false;
   },
   umask: () => 0o022,
-  binding: () => { throw new Error("process.binding is not supported"); },
+  // process.binding is a deprecated internal API some bundled legacy
+  // packages still read at module init (e.g. minipass, bundled by degit
+  // → create-cloudflare, does process.binding('fs') for FS constants).
+  // Surface the constants those callers need; reject unknown bindings
+  // with the same shape Node uses so anything else fails loudly.
+  binding: (name) => {
+    if (name === "fs") return { constants: __constantsMod };
+    if (name === "constants") {
+      return { fs: __constantsMod, os: { errno: __constantsMod, signals: __constantsMod }, crypto: {} };
+    }
+    const err = new Error("No such module: " + name);
+    err.code = "ERR_UNKNOWN_BUILTIN_MODULE";
+    throw err;
+  },
 };
 
 function __nimbusRuntimeErrorTrace(error) {
@@ -3568,6 +3627,19 @@ builtins.repl = __replMod;
 builtins.diagnostics_channel = __diagChannelMod;
 builtins.tls = __tlsMod;
 builtins.async_hooks = __asyncHooksMod;
+builtins.inspector = __inspectorMod;
+// node:inspector/promises — the promisified Session surface. workerd
+// exposes it natively; fall back to a Promise-shaped wrapper otherwise.
+builtins["inspector/promises"] = (() => {
+  const real = (typeof __real_inspector !== 'undefined') ? (__real_inspector.default ?? __real_inspector) : null;
+  if (real && real.promises && typeof real.promises.Session === 'function') return real.promises;
+  return {
+    Session: class { connect() {} disconnect() {} post(_m, _p) { return Promise.resolve({}); } on() { return this; } },
+    console: __inspectorMod.console, url: __inspectorMod.url,
+    open: __inspectorMod.open, close: __inspectorMod.close, waitForDebugger: __inspectorMod.waitForDebugger,
+  };
+})();
+builtins["node:inspector/promises"] = builtins["inspector/promises"];
 // Subpath-style require() — the shim's __requireFrom strips a 'node:'
 // prefix to look up bare names, so we expose both bare and prefixed
 // keys explicitly for grep-friendliness and to handle any future call

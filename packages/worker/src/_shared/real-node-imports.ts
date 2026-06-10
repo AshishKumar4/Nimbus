@@ -33,6 +33,11 @@
  *                         ERR_METHOD_NOT_IMPLEMENTED. Hybrid shim:
  *                         forward surface, wrap eval methods with
  *                         honest error.
+ *   - node:inspector    — Session/console/url surface present; the V8
+ *                         debugger isn't attachable in workerd, so a
+ *                         constructed Session's connect/post are inert.
+ *                         Tools (e.g. nuxi) that open a Session purely
+ *                         for optional profiling degrade cleanly.
  */
 
 export function getRealNodeImportsCode(): string {
@@ -43,5 +48,6 @@ import * as __real_async_hooks from 'node:async_hooks';
 import * as __real_diagnostics_channel from 'node:diagnostics_channel';
 import * as __real_repl from 'node:repl';
 import * as __real_vm from 'node:vm';
+import * as __real_inspector from 'node:inspector';
 `.trim();
 }
