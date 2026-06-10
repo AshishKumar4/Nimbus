@@ -81,12 +81,20 @@ try {
     !appTabState.iframeHidden && appTabState.activeTab.includes('Preview') && /\/preview\/$/.test(appTabState.url),
     JSON.stringify(appTabState));
 
+  // Switching the app-preview tab points the iframe (still on about:blank)
+  // at /preview/. Chrome aborts the in-flight initial request as the
+  // about:blank context is replaced, then loads /preview/ successfully
+  // (verified live: the iframe renders the "Preview not available"
+  // waiting page, HTTP 200). That ERR_ABORTED is benign browser iframe
+  // behaviour, not a Nimbus failure — exclude it alongside favicon noise.
+  const benignPreviewAbort = (msg) =>
+    /net::ERR_ABORTED/.test(msg) && /\/preview\/?($|\s|\))/.test(msg);
   const serious = [
     ...ctx.pageErrors.map((e) => e.message),
     ...ctx.consoleMessages
       .filter((m) => ['error', 'request-failed'].includes(m.type))
       .map((m) => m.location?.url ? `${m.text} (${m.location.url})` : m.text),
-  ].filter((msg) => !/favicon/i.test(msg));
+  ].filter((msg) => !/favicon/i.test(msg) && !benignPreviewAbort(msg));
   a.check('no browser/runtime errors while opening markdown preview',
     serious.length === 0,
     serious.join('\n'));
