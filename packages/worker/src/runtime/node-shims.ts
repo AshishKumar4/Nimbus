@@ -818,7 +818,7 @@ const __fsMod = (() => {
   }
 
   // ── statSync ──
-  function statSync(p) {
+  function statSync(p, opts) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
     // Check if it's a known directory written this exec session
@@ -860,13 +860,16 @@ const __fsMod = (() => {
         }
       }
     }
+    // Node's statSync honors { throwIfNoEntry: false } by returning undefined
+    // for a missing path instead of throwing.
+    if (opts && opts.throwIfNoEntry === false) return undefined;
     const err = new Error("ENOENT: no such file or directory, stat '" + p + "'");
     err.code = "ENOENT"; err.errno = -2;
     throw err;
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
-  function lstatSync(p) { return statSync(p); }
+  function lstatSync(p, opts) { return statSync(p, opts); }
 
   // ── readdirSync ──
   // W2.5b root-cause fix: prefer the uncapped __vfsManifest for directory

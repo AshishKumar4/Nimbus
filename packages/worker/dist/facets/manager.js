@@ -28,7 +28,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle } from '../runtime/opencode-artifact.js';
-import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, OPENCODE_NODE_SQLITE_MODULE, } from '../runtime/opencode-facet-runner.js';
+import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, } from '../constants.js';
 /**
@@ -2492,6 +2492,10 @@ export class FacetManager {
             vfsBundle: _serializeBundleForFacet(vfsState.bundle),
             vfsManifest: JSON.stringify(vfsState.manifest),
         });
+        // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
+        // bridges it to the VFS-backed sql.js shim and statically imports the
+        // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
+        const sqliteModules = await this.sqliteModuleEntry(true);
         // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
         // live SQLite VFS (same wiring as the standard one-shot facet path).
         const ctxExports = getCtxExports();
@@ -2508,7 +2512,7 @@ export class FacetManager {
                 modules: {
                     'runner.js': runnerCode,
                     [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
-                    'node:sqlite': { js: OPENCODE_NODE_SQLITE_MODULE },
+                    ...sqliteModules,
                     ...opencodeBuiltinBridgeModules(),
                 },
                 ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),

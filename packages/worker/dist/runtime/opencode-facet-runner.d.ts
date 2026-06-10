@@ -30,18 +30,15 @@
  *
  * Builtins not bridged (path, process, util, url, crypto, stream, …) resolve
  * through workerd's nodejs_compat. node:sqlite is not provided by
- * nodejs_compat, so it is supplied as an override module in the facet map.
+ * nodejs_compat; it is bridged to the VFS-backed sql.js shim (the same
+ * DatabaseSync the CJS facet path uses), and its wasm rides in via the module
+ * map (see SQLITE_WASM_MODULE_NAME) and is booted before opencode opens the
+ * DB at ~/.local/share/opencode/*.db.
  */
 /** Map-module specifier for the opencode ESM bundle. */
 export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
-/**
- * node:sqlite override module placed in the facet map. opencode statically
- * imports node:sqlite; workerd's nodejs_compat does not provide it, so the
- * static import would fail at link time and the whole module would never
- * load. This module satisfies the import. DatabaseSync throws a precise
- * diagnostic if actually constructed (the bash-tool/serve DB paths).
- */
-export declare const OPENCODE_NODE_SQLITE_MODULE: string;
+/** Module-map specifier for the sql.js WebAssembly.Module. */
+export declare const SQLITE_WASM_MODULE_NAME = "sqlite.wasm";
 /**
  * Module-map entries for the VFS-backed node builtin bridges. The Worker
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the

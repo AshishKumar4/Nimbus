@@ -37,7 +37,6 @@ import {
   generateOpencodeRunnerCode,
   opencodeBuiltinBridgeModules,
   OPENCODE_BUNDLE_MODULE_NAME,
-  OPENCODE_NODE_SQLITE_MODULE,
   type OpencodeRunnerOptions,
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
@@ -2734,6 +2733,11 @@ export class FacetManager {
       vfsManifest: JSON.stringify(vfsState.manifest),
     });
 
+    // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
+    // bridges it to the VFS-backed sql.js shim and statically imports the
+    // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
+    const sqliteModules = await this.sqliteModuleEntry(true);
+
     // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
     // live SQLite VFS (same wiring as the standard one-shot facet path).
     const ctxExports = getCtxExports();
@@ -2751,7 +2755,7 @@ export class FacetManager {
         modules: {
           'runner.js': runnerCode,
           [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
-          'node:sqlite': { js: OPENCODE_NODE_SQLITE_MODULE },
+          ...sqliteModules,
           ...opencodeBuiltinBridgeModules(),
         },
         ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),

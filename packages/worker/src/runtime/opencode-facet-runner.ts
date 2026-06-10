@@ -30,39 +30,23 @@
  *
  * Builtins not bridged (path, process, util, url, crypto, stream, …) resolve
  * through workerd's nodejs_compat. node:sqlite is not provided by
- * nodejs_compat, so it is supplied as an override module in the facet map.
+ * nodejs_compat; it is bridged to the VFS-backed sql.js shim (the same
+ * DatabaseSync the CJS facet path uses), and its wasm rides in via the module
+ * map (see SQLITE_WASM_MODULE_NAME) and is booted before opencode opens the
+ * DB at ~/.local/share/opencode/*.db.
  */
 
 import { generateShimsCode } from './node-shims.js';
+import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
 
+/** Module-map specifier for the sql.js WebAssembly.Module. */
+export const SQLITE_WASM_MODULE_NAME = 'sqlite.wasm';
+
 /** Global key under which the runner parks the VFS-backed node builtins. */
 const BUILTINS_GLOBAL = '__nimbusOpencodeBuiltins';
-
-/**
- * node:sqlite override module placed in the facet map. opencode statically
- * imports node:sqlite; workerd's nodejs_compat does not provide it, so the
- * static import would fail at link time and the whole module would never
- * load. This module satisfies the import. DatabaseSync throws a precise
- * diagnostic if actually constructed (the bash-tool/serve DB paths).
- */
-export const OPENCODE_NODE_SQLITE_MODULE: string = `
-export class DatabaseSync {
-  constructor() {
-    throw new Error(
-      "node:sqlite (DatabaseSync) is not yet available to the opencode ESM " +
-      "runtime: the VFS-backed sql.js shim is wired into the CJS facet path, " +
-      "not the ESM mainModule path. This blocks opencode's persistent DB " +
-      "(~/.local/share/opencode/*.db) — bash-tool/serve paths. --version and " +
-      "other DB-free commands work."
-    );
-  }
-}
-export class StatementSync {}
-export default { DatabaseSync, StatementSync };
-`;
 
 /**
  * Bridge-module specifiers and the node builtin each forwards to. opencode
@@ -117,6 +101,8 @@ const BUILTIN_BRIDGES: readonly BuiltinBridge[] = [
   { specifier: 'node:fs', builtin: 'fs', names: FS_NAMES },
   { specifier: 'node:fs/promises', builtin: 'fs/promises', names: FS_PROMISES_NAMES },
   { specifier: 'node:os', builtin: 'os', names: OS_NAMES },
+  // node:sqlite is not in nodejs_compat; bridge to the VFS-backed sql.js shim.
+  { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
 ];
 
 /**
@@ -207,6 +193,15 @@ export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string 
     stdin: JSON.stringify(opts.stdin),
   };
   return `
+// ── sql.js wasm + glue factory (module-init scope) ─────────────────────────
+// The pre-compiled WebAssembly.Module rides in via the module map; the glue
+// factory is built with new Function at startup (request-time codegen is
+// blocked). globalThis.__nimbusInitSqlite (defined by the sqlite shim below)
+// is awaited inside fetch() before opencode opens its DB.
+import __nimbusSqliteWasmModule from "${SQLITE_WASM_MODULE_NAME}";
+globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;
+${generateSqliteFacetPreamble()}
+
 // ── VFS-backed node-compat shim scope (node-shims.ts) ──────────────────────
 // Declared at module-init so the node:fs / node:os bridge modules (which
 // evaluate when the opencode bundle is linked) find a populated builtins map.
@@ -291,6 +286,10 @@ export default {
   async fetch(request, workerEnv) {
     __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;
     try {
+      // Instantiate sql.js before opencode opens its DatabaseSync (the shim's
+      // constructor is synchronous and needs a ready engine). Runs in the
+      // handler, not module init (instantiation touches crypto for RNG).
+      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
       if (typeof __ocBundle.nimbusMain !== "function") {
         throw new Error(
