@@ -3126,17 +3126,20 @@ function __nimbusRuntimeErrorTrace(error) {
   return String(error);
 }
 
-function __nimbusFailUnhandledAsync(error) {
+function __nimbusFailUnhandledAsync(error, kind) {
   if (error instanceof __ProcessExit) {
     __nimbusReportProcessExit(error.code, "");
     return;
   }
-  const trace = __nimbusRuntimeErrorTrace(error);
-  stderr += trace + "\\n";
+  const label = kind === "rejection"
+    ? "Unhandled promise rejection: "
+    : "Uncaught exception: ";
+  const line = label + __nimbusRuntimeErrorTrace(error) + "\\n";
+  stderr += line;
   if (__supervisor && typeof __supervisor.stderr === "function") {
-    try { __nimbusUseRpcResult(__supervisor.stderr(trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+    try { __nimbusUseRpcResult(__supervisor.stderr(line), () => undefined).catch(() => {}); } catch {}
   }
-  __nimbusReportProcessExit(1, trace + "\\n");
+  __nimbusReportProcessExit(1, line);
 }
 
 if (typeof globalThis.addEventListener === "function") {
@@ -3145,14 +3148,14 @@ if (typeof globalThis.addEventListener === "function") {
     const promise = event && typeof event === "object" && "promise" in event ? event.promise : undefined;
     let handled = false;
     try { handled = __processEvents.emit("unhandledRejection", reason, promise); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(reason);
+    if (!handled) __nimbusFailUnhandledAsync(reason, "rejection");
     try { event.preventDefault?.(); } catch {}
   });
   globalThis.addEventListener("error", (event) => {
     const error = event && typeof event === "object" && "error" in event ? event.error : event;
     let handled = false;
     try { handled = __processEvents.emit("uncaughtException", error); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(error);
+    if (!handled) __nimbusFailUnhandledAsync(error, "exception");
     try { event.preventDefault?.(); } catch {}
   });
 }

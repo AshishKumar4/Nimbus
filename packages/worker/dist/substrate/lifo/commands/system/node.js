@@ -1100,7 +1100,7 @@ function createNodeImpl(kernelOrPortRegistry) {
         const rejectionHandler = (event) => {
             pendingRejection = event.reason;
             event.preventDefault(); // prevent browser default logging
-            ctx.stderr.write(`[unhandledRejection] ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+            ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
         };
         if (typeof globalThis.addEventListener === 'function') {
             globalThis.addEventListener('unhandledrejection', rejectionHandler);
