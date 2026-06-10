@@ -1660,23 +1660,35 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
         exitCode = globalThis.__nimbusExitCode;
       }
     } catch (e) {
-      // Check onExit-captured code first (set by Emscripten's ExitStatus
-      // path before the throw).
+      // onExit (Emscripten ExitStatus) does not fire here: noExitRuntime
+      // is true and sys.exit raises a Python SystemExit that Pyodide
+      // re-raises as a JS PythonError rather than calling _exit. So the
+      // exit status must be derived from the raised exception.
+      //
+      // PythonError.type carries the Python exception class name, and the
+      // message is a full traceback whose final line is "<Type>: <value>"
+      // (or just "<Type>" when the exception carries no argument).
       if (typeof globalThis.__nimbusExitCode === 'number') {
         exitCode = globalThis.__nimbusExitCode;
-      } else if (e && typeof e.message === 'string') {
-        const systemExitPrefix = 'SystemExit:';
-        if (e.message.startsWith(systemExitPrefix)) {
-          const rawCode = e.message.slice(systemExitPrefix.length).trim();
-          const parsedCode = rawCode ? Number(rawCode) : 0;
-          exitCode = Number.isFinite(parsedCode) ? parsedCode : 0;
-        } else if (e.message.includes('SystemExit')) {
-          // SystemExit with no numeric arg (e.g., sys.exit() or sys.exit(None))
+      } else if (e && e.type === 'SystemExit') {
+        // sys.exit semantics: int code → that code; None / no arg → 0;
+        // any other object → 1 with the object printed to stderr.
+        const lastLine = typeof e.message === 'string'
+          ? e.message.trimEnd().split('\\n').pop()
+          : '';
+        const sep = lastLine.indexOf(':');
+        const rawValue = sep >= 0 ? lastLine.slice(sep + 1).trim() : '';
+        if (!rawValue) {
           exitCode = 0;
+        } else if (/^-?\\d+$/.test(rawValue)) {
+          exitCode = Number(rawValue);
         } else {
-          globalThis.__nimbusPyStderr.push(e.message + (e.message.endsWith('\\n') ? '' : '\\n'));
+          globalThis.__nimbusPyStderr.push(rawValue + '\\n');
           exitCode = 1;
         }
+      } else if (e && typeof e.message === 'string') {
+        globalThis.__nimbusPyStderr.push(e.message + (e.message.endsWith('\\n') ? '' : '\\n'));
+        exitCode = 1;
       } else {
         globalThis.__nimbusPyStderr.push('[python-runner] unknown error: ' + e + '\\n');
         exitCode = 1;
