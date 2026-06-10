@@ -171,7 +171,7 @@ behavior. They must stay documented until production probes prove otherwise.
 
 | Gap | Current behavior | Required OS behavior |
 |---|---|---|
-| opencode/Proteus CLIs | Pi's npm CLI path is production-probed. opencode is production-probed only to the installer/native ABI boundary, not as an unmodified working CLI. The local Proteus CLI is not yet proven in live Nimbus. | JavaScript CLIs launched from the terminal should see TTY=true when attached, TTY=false when piped, and should run unmodified unless they require unsupported native shards. |
+| opencode/Proteus CLIs | Pi's npm CLI path is production-probed. opencode runs as a Nimbus-staged JS bundle through the ESM facet: `--version`, `--help`, and `models` are production-probed working, and `opencode run` drives its full DB-backed pipeline (sqlite via the VFS-backed sql.js shim, in-process server, session, tool registry, model resolution) to the model-dispatch boundary, surfacing opencode's own domain errors cleanly. A real model stream additionally requires opencode account auth, and the full interactive TUI (libopentui Zig FFI) is out of scope. opencode requires Nimbus-specific build flags + deferred-entry source patches (scripts/opencode/); it is not an unmodified upstream binary. The local Proteus CLI is not yet proven in live Nimbus. | JavaScript CLIs launched from the terminal should see TTY=true when attached, TTY=false when piped, and should run unmodified unless they require unsupported native shards. |
 | Python package breadth | Flask and MarkupSafe pure-source artifact paths are production-probed, and declared Pyodide startup-module package artifacts are supported by the runtime catalog. `pip` is not a complete upstream build system. | Nimbus pip must resolve/install only Nimbus-compatible artifacts, preloaded PyEmscripten modules, pure wheels, or curated pure source artifacts. Unsupported extension artifacts fail before import with an ABI diagnostic. |
 | Shell parser debt | The shell has structured parser/interpreter support for common POSIX-like constructs, but final field splitting, alias/quote handling, heredoc behavior, trap/job-control semantics, and script parity still need hardening. | Shell syntax should be represented in an AST and executed through structured semantics, not regex rewrites in the hot path. |
 | Native platform packages | Native `linux-x64`, `darwin`, `win32`, manylinux wheels, and native gems cannot execute. | Package managers must select Nimbus ABI artifacts, pure packages, or fail early with exact unsupported ABI reasons. |
@@ -1037,7 +1037,9 @@ Existing probes cover:
   `tests/behavioral/agentic-cli/new/pi-official-installer.mjs`,
   `tests/behavioral/agentic-cli/new/pi-coding-agent-npm-bin.mjs`,
   `tests/behavioral/agentic-cli/new/opencode-installer-native-boundary.mjs`,
-  and `tests/behavioral/agentic-cli/new/opencode-native-bin-diagnostic.mjs`
+  `tests/behavioral/agentic-cli/new/opencode-native-bin-diagnostic.mjs`,
+  `tests/behavioral/agentic-cli/new/opencode-cli-version-help.mjs`,
+  and `tests/behavioral/agentic-cli/new/opencode-run-pipeline.mjs`
 - runtime package manager:
   `tests/behavioral/pkg-manager/*`
 - npm/npx primitives:
