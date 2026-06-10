@@ -377,24 +377,32 @@ const __streamMod = (() => {
     return cleanup;
   }
 
-  // X.5-Z5 Defect-A fix: real Node's \`require('stream')\` returns the
-  // legacy Stream class (a function) with Readable/Writable/etc. as own
-  // properties. Userland code (notably readable-stream@2's
-  // _stream_writable.js:96 and \`send/index.js\`'s util.inherits(SendStream,
-  // require('stream'))) reads \`Stream.prototype\` for prototype chaining.
-  // Our namespace-object shape lacks it, so Object.create(stream.prototype, ...)
-  // throws "Object prototype may only be an Object or null: undefined".
-  // Plant a non-enumerable .prototype pointing at Readable.prototype to
-  // satisfy that contract without breaking any other access pattern.
-  const __streamMod = {
+  // Real Node's \`require('stream')\` IS the legacy \`Stream\` constructor
+  // (a function extending EventEmitter), carrying Readable/Writable/etc.
+  // as own properties. Userland relies on this in two ways:
+  //   - \`class X extends require('stream')\` / \`util.inherits(X, stream)\`
+  //     (minipass — bundled by degit/create-cloudflare — does
+  //     \`class Minipass extends Stream__default['default']\`).
+  //   - \`require('stream').prototype\` for prototype chaining
+  //     (readable-stream@2 _stream_writable.js, send/index.js).
+  // A plain namespace object satisfies neither: it is not a constructor,
+  // so \`class extends\` throws "Class extends value is not a constructor".
+  // Make the export the Stream constructor itself with the named exports
+  // attached, mirroring Node exactly.
+  class Stream extends __eventsMod {
+    pipe(dest, opts) {
+      const src = this;
+      src.on('data', (chunk) => { dest.write(chunk); });
+      src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
+      return dest;
+    }
+  }
+  const __streamMod = Object.assign(Stream, {
     Readable, Writable, Duplex, Transform, PassThrough,
-    Stream: Readable,
+    Stream,
     pipeline, finished,
     // Aliases for compatibility
     _Readable: Readable, _Writable: Writable, _Transform: Transform,
-  };
-  Object.defineProperty(__streamMod, 'prototype', {
-    value: Readable.prototype, enumerable: false,
   });
   return __streamMod;
 })();
