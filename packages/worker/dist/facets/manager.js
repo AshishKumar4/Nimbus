@@ -160,9 +160,18 @@ function __makeEntrypointPromiseTracker() {
       } catch {}
     },
     track: __track,
-    async drain(exitPromise, maxPasses = 12, minPasses = 0) {
+    // Drain floating entry promises until they settle, the process exits,
+    // or a wall-clock deadline is hit. \`minPasses\` guarantees a minimum
+    // number of ticks so freshly-scheduled work (microtasks that haven't
+    // registered yet) gets a chance to surface. The deadline — not a fixed
+    // tick count — bounds genuinely-pending promises (servers, intervals);
+    // a fixed tiny pass cap previously abandoned legitimate multi-tick
+    // async entrypoints (e.g. create-vite's clack-driven scaffold) before
+    // their synchronous file writes ran.
+    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
       const __exit = {};
-      for (let __pass = 0; __pass < maxPasses && (__tracked.size > 0 || __pass < minPasses); __pass++) {
+      const __start = Date.now();
+      for (let __pass = 0; (__tracked.size > 0 || __pass < minPasses) && Date.now() - __start < deadlineMs; __pass++) {
         if (exitPromise && typeof exitPromise.then === "function") {
           const __result = await Promise.race([
             new Promise((resolve) => setTimeout(() => resolve(null), 0)),
@@ -187,7 +196,7 @@ async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises) {
     ]);
     if (__result === __exit) return;
   }
-  await __entryPromises.drain(__nimbusProcessExitPromise, 12, 4);
+  await __entryPromises.drain(__nimbusProcessExitPromise, 8000, 4);
 }
 `;
 /**
@@ -675,7 +684,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
         if (attachedTty) __attachedCompletion = __entryResult;
       }
       if (attachedTty) {
-        await __entryPromises.drain(__nimbusProcessExitPromise, 32, 8);
+        await __entryPromises.drain(__nimbusProcessExitPromise, 1000, 8);
       } else {
         await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
