@@ -57,6 +57,15 @@ const fetchImpl = async (url, init) => {
       },
     });
   }
+  // Void ops (writeFile/mkdir/deleteFile) return Promise<void> on the DO;
+  // the real remote API wraps that as { ok: true } with NO result key
+  // (encodeWire strips the undefined result). The SDK validates these
+  // against z.undefined(), so the mock MUST omit `result` to match the
+  // live wire shape — see the live proof in remote-api.ts encodeWire.
+  if (body.op === 'writeFile' || body.op === 'mkdir' || body.op === 'deleteFile') {
+    return Response.json({ ok: true });
+  }
+  // Remaining handled op: ready → { ok: true, preinstalled: [] }.
   return Response.json({ ok: true, result: { ok: true, preinstalled: [] } });
 };
 
