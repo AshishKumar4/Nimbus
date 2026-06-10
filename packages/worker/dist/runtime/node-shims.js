@@ -36,9 +36,11 @@
  *   - stdout, stderr, exitCode: capture variables
  */
 import { generateStreamsCode } from './streams.js';
+import { generateSqliteShimCode } from './sqlite-shim.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../constants.js';
 const STREAMS_CODE = generateStreamsCode();
+const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const EXPORTS_RESOLVER_JS = getExportsResolverJS();
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
@@ -1616,6 +1618,11 @@ const __eventsMod = (() => {
 ${STREAMS_CODE}
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  node:sqlite module (sql.js-backed) ─────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+${SQLITE_SHIM_CODE}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __utilMod = {
@@ -3180,6 +3187,14 @@ builtins.crypto = __cryptoMod;
 builtins.assert = __assertMod;
 builtins.querystring = __qsMod;
 builtins.string_decoder = __stringDecoderMod;
+// node:sqlite (sql.js-backed). Dual-registered like node:fs/promises; the
+// resolver strips the node: prefix but the explicit key matches the
+// constants/util-types convention. The engine is booted (wasm
+// instantiated) by globalThis.__nimbusInitSqlite, which the facet
+// generators await before user code so the synchronous DatabaseSync
+// constructor finds a ready engine.
+builtins.sqlite = __sqliteMod;
+builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
