@@ -44,7 +44,7 @@ const innerCode = "module.exports = { val: 'INNER-PRESENT' };\n";
 const mainCode  = "var inner = require('./inner');\nconsole.log('SIBLING-OK:' + inner.val);\nprocess.exit(0);\n";
 const binCode   = "#!/usr/bin/env node\n" + "require('../lib/main');\n";
 const installerShim = "#!/usr/bin/env node\n" +
-                      "require('home/user/g3-probe/node_modules/sibling-cli/bin/sibling-cli');\n";
+                      "require('/home/user/g3-probe/node_modules/sibling-cli/bin/sibling-cli');\n";
 
 async function writeFile(path, content) {
   const b64 = Buffer.from(content, 'utf8').toString('base64');
