@@ -3915,6 +3915,18 @@ function __fileExists(path) {
   if (__vfsBundle && k in __vfsBundle) return true;
   if (__vfsWrites && k in __vfsWrites) return true;
   if (__vfsDirs && k in __vfsDirs) return true;
+  // Consult the uncapped manifest (directory shape) so resolution sees
+  // installed files whose content was excluded from the bounded snapshot
+  // (e.g. web-streams-polyfill's ponyfill/package.json, reached via a
+  // parent-relative main). Mirrors existsSync's manifest probe.
+  if (__vfsManifest) {
+    if (k in __vfsManifest) return true;
+    const slash = k.lastIndexOf("/");
+    const parent = slash >= 0 ? k.slice(0, slash) : "";
+    const name = slash >= 0 ? k.slice(slash + 1) : k;
+    const sib = __vfsManifest[parent];
+    if (sib && sib.indexOf(name) !== -1) return true;
+  }
   // Check for directory by looking for any key with this prefix
   if (__vfsBundle) {
     const prefix = k + "/";
@@ -3934,6 +3946,22 @@ function __pathIsFile(path) {
   const k = path.replace(/^\\/+/, "");
   if (__vfsBundle && k in __vfsBundle) return true;
   if (__vfsWrites && k in __vfsWrites) return true;
+  // Consult the manifest as a strict-file probe: a name listed in its
+  // parent's manifest entry is a file (directories are manifest KEYS).
+  // This lets resolution find files whose content was excluded from the
+  // bounded snapshot without re-introducing the directory short-circuit
+  // (__vfsManifest[k] being a directory key is deliberately NOT matched).
+  if (__vfsManifest) {
+    const slash = k.lastIndexOf("/");
+    const parent = slash >= 0 ? k.slice(0, slash) : "";
+    const name = slash >= 0 ? k.slice(slash + 1) : k;
+    const sib = __vfsManifest[parent];
+    if (sib && sib.indexOf(name) !== -1 && !(k in __vfsManifest)) return true;
+  }
+  // Last resort: the full fs view (live SQLite VFS) for paths outside the
+  // bounded snapshot/manifest entirely — e.g. the /tmp/.npx-cache tree,
+  // which the project snapshot never covers. stat-as-file only.
+  try { const st = __fsMod.statSync("/" + k); if (st && st.isFile && st.isFile()) return true; } catch {}
   // Deliberately does NOT consult __vfsDirs nor do the prefix scan.
   return false;
 }
@@ -3972,7 +4000,11 @@ function __resolveFile(base) {
     try { pkg = JSON.parse(__readFileOr(pkgJsonPath, "null")); } catch { /* fall through */ }
     if (pkg && typeof pkg.main === "string" && pkg.main.length > 0) {
       const mainStripped = pkg.main.replace(/^\\.\\/+/, "").replace(/^\\/+/, "");
-      const mainBase = base.replace(/\\/+$/, "") + "/" + mainStripped;
+      // Normalize so a parent-relative main (e.g. web-streams-polyfill's
+      // ponyfill/package.json declaring main "../dist/ponyfill") collapses
+      // its ".." segments instead of probing a literal "dir/../dist" path
+      // that __fileExists never matches.
+      const mainBase = __pathMod.normalize(base.replace(/\\/+$/, "") + "/" + mainStripped).replace(/^\\/+/, "");
       // Recurse: main itself may be a directory (e.g. main: "lib") or
       // a file without extension. Guard against pkg.main === "." which
       // would re-enter this same base and stack-overflow.
