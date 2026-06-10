@@ -57,27 +57,36 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(30_000);
 
-// Snapshot received count before the write.
+// Snapshot received count before the write. The boot seed emits its
+// own batch of fs-watch frames shortly after the shell becomes ready,
+// so the write event may land in a LATER frame than the seed batch —
+// we therefore poll for the specific event rather than breaking on the
+// first frame that arrives.
 const baseCount = received.length;
 await t.run('touch /home/user/probe-broadcast.txt', 10_000);
 
-// Wait up to 1500 ms for the fs-watch-event.
-{
-  const t0 = Date.now();
-  while (received.length === baseCount && Date.now() - t0 < 1500) await sleep(25);
-}
-
-// Find an event matching our touched file.
-const newFrames = received.slice(baseCount);
-const allEvents = newFrames.flatMap((f) => Array.isArray(f.events) ? f.events : []);
-const hit = allEvents.find((ev) =>
+const matchesTouch = (ev) =>
   ev && (ev.type === 'add' || ev.type === 'change')
   && typeof ev.path === 'string'
-  && ev.path.endsWith('probe-broadcast.txt'));
+  && ev.path.endsWith('probe-broadcast.txt');
 
-a.check('fs-watch-event received within 1500ms for new file',
+const collectEvents = () =>
+  received.slice(baseCount).flatMap((f) => Array.isArray(f.events) ? f.events : []);
+
+// Wait for the touched-file event specifically. 5 s headroom covers the
+// 50 ms server coalesce plus any frame that arrives behind the seed
+// batch under aggregate suite load.
+{
+  const t0 = Date.now();
+  while (!collectEvents().some(matchesTouch) && Date.now() - t0 < 5_000) await sleep(25);
+}
+
+const allEvents = collectEvents();
+const hit = allEvents.find(matchesTouch);
+
+a.check('fs-watch-event received for shell-created file',
   hit !== undefined,
-  `frameCount=${newFrames.length} eventCount=${allEvents.length} sample=${JSON.stringify(allEvents.slice(-3))}`);
+  `frameCount=${received.length - baseCount} eventCount=${allEvents.length} sample=${JSON.stringify(allEvents.slice(-3))}`);
 
 await t.close();
 try { subWs.close(); } catch {}
