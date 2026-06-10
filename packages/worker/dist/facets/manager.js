@@ -28,7 +28,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle } from '../runtime/opencode-artifact.js';
-import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
+import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, } from '../constants.js';
 /**
@@ -369,12 +369,6 @@ function bundleUsesNodeSqlite(entryCode, bundle) {
     }
     return false;
 }
-/**
- * Logical module name for the sql.js WebAssembly.Module in the facet
- * Worker Loader module map. The facet code statically imports this
- * specifier; the supervisor populates it with a `wasm` module entry.
- */
-const SQLITE_WASM_MODULE_NAME = 'sqlite.wasm';
 /**
  * Module-init block prepended to facet code only when the bundle uses
  * node:sqlite. Two parts, both at module-eval time (where workerd permits

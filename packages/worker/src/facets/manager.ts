@@ -37,6 +37,7 @@ import {
   generateOpencodeRunnerCode,
   opencodeBuiltinBridgeModules,
   OPENCODE_BUNDLE_MODULE_NAME,
+  SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
@@ -462,13 +463,6 @@ function bundleUsesNodeSqlite(
   }
   return false;
 }
-
-/**
- * Logical module name for the sql.js WebAssembly.Module in the facet
- * Worker Loader module map. The facet code statically imports this
- * specifier; the supervisor populates it with a `wasm` module entry.
- */
-const SQLITE_WASM_MODULE_NAME = 'sqlite.wasm';
 
 /**
  * Module-init block prepended to facet code only when the bundle uses
