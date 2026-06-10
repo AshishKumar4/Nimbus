@@ -1237,18 +1237,29 @@ const __fsMod = (() => {
         const err = new Error("EISDIR: cp without recursive on directory: " + src);
         err.code = "EISDIR"; throw err;
       }
-      // Recursive: copy every key under srcK/ to destK/
-      const prefix = srcK + "/";
-      const entries = [];
-      if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) entries.push([bk, __vfsBundle[bk]]);
-      if (__vfsWrites) for (const wk in __vfsWrites) if (wk.startsWith(prefix)) entries.push([wk, __vfsWrites[wk]]);
-      // Ensure destination directory tree
+      // Recursive: walk the source tree (merging the local sync view with
+      // the live VFS listing so files only present in SQLite — e.g. a
+      // just-extracted template tarball — are included) and persist every
+      // file through the async bridge. Writing through _writeFileAsync —
+      // not just the local cache — is required so a subsequent async fs op
+      // (e.g. fs.promises.rename of a copied file, as create-cloudflare
+      // does for __dot__gitignore) sees the copy in the VFS instead of
+      // ENOENT.
       __vfsDirs[destK] = true;
-      for (const [bk, v] of entries) {
-        const newK = destK + "/" + bk.slice(prefix.length);
-        __vfsWrites[newK] = v;
-        if (__vfsBundle) __vfsBundle[newK] = v;
-      }
+      const walk = async (relDir) => {
+        const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
+        const ents = await _readdirAsync(absDir, { withFileTypes: true });
+        for (const ent of ents) {
+          const rel = relDir ? relDir + "/" + ent.name : ent.name;
+          if (ent.isDirectory && ent.isDirectory()) {
+            __vfsDirs[destK + "/" + rel] = true;
+            await walk(rel);
+          } else {
+            await _writeFileAsync("/" + destK + "/" + rel, await _readFileAsync(srcAbs + "/" + rel));
+          }
+        }
+      };
+      await walk("");
     },
     copyFile: async (src, dest) => { await _writeFileAsync(dest, await _readFileAsync(src)); },
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
@@ -1312,7 +1323,60 @@ const __fsMod = (() => {
   // ── constants ──
   const constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 };
 
-  return {
+  // fs.ReadStream / fs.WriteStream classes. Real Node exposes these as
+  // constructors; graceful-fs (bundled by degit → create-cloudflare)
+  // re-parents its own patched stream off fs.ReadStream.prototype, so
+  // the classes must exist with readable prototypes and stream the file.
+  // __streamMod is defined later in the generated bundle than __fsMod,
+  // so the classes are built lazily on first access (post-init) and
+  // cached, exposed via getters to avoid a temporal-dead-zone reference.
+  let __ReadStreamClass = null;
+  let __WriteStreamClass = null;
+  function __getReadStream() {
+    if (__ReadStreamClass) return __ReadStreamClass;
+    __ReadStreamClass = class ReadStream extends __streamMod.Readable {
+      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._done = false; }
+      _read() {
+        if (this._done) return;
+        this._done = true;
+        try { this.push(readFileSync(this.path, this._opts)); this.push(null); }
+        catch (e) { this.destroy(e); }
+      }
+      open() {}
+      close(cb) { if (cb) cb(); }
+    };
+    return __ReadStreamClass;
+  }
+  function __getWriteStream() {
+    if (__WriteStreamClass) return __WriteStreamClass;
+    __WriteStreamClass = class WriteStream extends __streamMod.Writable {
+      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
+      _write(chunk, enc, cb) {
+        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
+        else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
+        cb();
+      }
+      _final(cb) {
+        try {
+          if (this._anyBytes) {
+            let total = 0;
+            for (const c of this._chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
+            const out = new Uint8Array(total); let off = 0;
+            for (const c of this._chunks) { const b = (c instanceof Uint8Array) ? c : _enc.encode(c); out.set(b, off); off += b.byteLength; }
+            writeFileSync(this.path, out);
+          } else {
+            writeFileSync(this.path, this._chunks.join(""));
+          }
+          cb();
+        } catch (e) { cb(e); }
+      }
+      open() {}
+      close(cb) { if (cb) cb(); }
+    };
+    return __WriteStreamClass;
+  }
+
+  const __fsExports = {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync, utimesSync, lutimesSync,
@@ -1398,6 +1462,23 @@ const __fsMod = (() => {
     },
     unwatchFile: () => {},
   };
+  // Lazy getters with setters: graceful-fs reads fs.ReadStream.prototype
+  // then reassigns fs.ReadStream / fs.FileReadStream to its patched
+  // subclass, so each slot must be both readable (lazily) and writable.
+  const __defLazyStream = (key, build) => {
+    let __set = false;
+    let __val;
+    Object.defineProperty(__fsExports, key, {
+      get() { return __set ? __val : build(); },
+      set(v) { __set = true; __val = v; },
+      enumerable: true, configurable: true,
+    });
+  };
+  __defLazyStream("ReadStream", __getReadStream);
+  __defLazyStream("WriteStream", __getWriteStream);
+  __defLazyStream("FileReadStream", __getReadStream);
+  __defLazyStream("FileWriteStream", __getWriteStream);
+  return __fsExports;
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3377,6 +3458,32 @@ builtins.net = (() => {
     isIPv6: () => false,
   };
 })();
+// dgram (UDP) — workerd has no UDP sockets. Some packages require it at
+// module init (dns2's server/udp.js, bundled by create-cloudflare) but
+// never open a UDP server during scaffolding. Expose the API surface so
+// module init succeeds; bind/send surface an honest error only if used.
+builtins.dgram = (() => {
+  class Socket extends __eventsMod {
+    constructor(opts) { super(); this.type = (opts && opts.type) || (typeof opts === "string" ? opts : "udp4"); }
+    bind(_port, _addr, cb) {
+      const err = new Error("UDP sockets are not supported in this runtime");
+      err.code = "ERR_SOCKET_BAD_PORT";
+      queueMicrotask(() => this.emit("error", err));
+      if (typeof cb === "function") queueMicrotask(cb);
+      return this;
+    }
+    send(_msg, ...args) {
+      const cb = args.find((a) => typeof a === "function");
+      const err = new Error("UDP sockets are not supported in this runtime");
+      if (cb) queueMicrotask(() => cb(err)); else queueMicrotask(() => this.emit("error", err));
+    }
+    address() { return { address: "0.0.0.0", port: 0, family: this.type === "udp6" ? "IPv6" : "IPv4" }; }
+    close(cb) { queueMicrotask(() => { this.emit("close"); if (typeof cb === "function") cb(); }); return this; }
+    setBroadcast() {} setTTL() {} setMulticastTTL() {} addMembership() {} dropMembership() {}
+    ref() { return this; } unref() { return this; }
+  }
+  return { Socket, createSocket: (opts, cb) => { const s = new Socket(opts); if (typeof cb === "function") s.on("message", cb); return s; } };
+})();
 builtins.dns = (() => {
   async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
   return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: (h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
@@ -3401,7 +3508,11 @@ builtins.tty = {
   },
 };
 	builtins.module = { get builtinModules() { return Object.keys(builtins); }, createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)), _resolveFilename: (id) => id, _cache: {} };
-builtins.timers = { setTimeout: globalThis.setTimeout, setInterval: globalThis.setInterval, clearTimeout: globalThis.clearTimeout, clearInterval: globalThis.clearInterval, setImmediate: (fn,...a) => setTimeout(fn,0,...a), clearImmediate: clearTimeout };
+// Bind to globalThis: workerd's timer globals throw "Illegal invocation"
+// when called with a receiver other than globalThis (i.e. as
+// timers.setInterval(...)), which clack's spinner — used by
+// create-cloudflare — triggers.
+builtins.timers = { setTimeout: globalThis.setTimeout.bind(globalThis), setInterval: globalThis.setInterval.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis), clearInterval: globalThis.clearInterval.bind(globalThis), setImmediate: (fn,...a) => globalThis.setTimeout(fn,0,...a), clearImmediate: globalThis.clearTimeout.bind(globalThis) };
 builtins.zlib = (() => {
   function _c(d,a) { const i=typeof d==="string"?new TextEncoder().encode(d):d; return new Response(new Blob([i]).stream().pipeThrough(new CompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
   function _d(d,a) { const i=d instanceof Uint8Array?d:new Uint8Array(d); return new Response(new Blob([i]).stream().pipeThrough(new DecompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
