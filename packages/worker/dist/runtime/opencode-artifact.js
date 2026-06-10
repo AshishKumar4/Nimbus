@@ -1,21 +1,21 @@
 /**
  * opencode-artifact.ts — supervisor-side fetcher for the staged opencode
- * CLI bundle and its tree-sitter wasm sidecars.
+ * CLI bundle.
  *
  * `npm install opencode-ai` resolves (via PACKAGE_ABI_POLICY.stagedArtifacts)
  * to the prebuilt JS bundle staged by scripts/bundle-opencode.mjs at
- * public/_assets/opencode/<version>/. This module fetches:
- *
- *   - the CLI bundle text (index.js) — installed as the package's `opencode`
- *     bin, executed by the node runtime;
- *   - a named tree-sitter wasm sidecar as ArrayBuffer — handed to the facet
- *     Worker Loader module map so opencode's bash-tool parser instantiates it
- *     via the emscripten `instantiateWasm` hook (request-time
- *     WebAssembly.compile is blocked inside facets).
+ * public/_assets/opencode/<version>/. This module fetches the CLI bundle text
+ * (index.js) — installed as the package's `opencode` bin, executed by the node
+ * runtime.
  *
  * Mirrors sqlite-wasm-bytes.ts: ASSETS is the source of truth; L2
  * (caches.default) keyed on a version-pinned synthetic URL; no module-scope
  * residency.
+ *
+ * Next boundary for real bash-tool execution: wiring opencode's tree-sitter
+ * wasm into the facet module map (the facet's emscripten `instantiateWasm`
+ * hook) the way sql.js is wired today. Until then only sql.js rides in, and
+ * the proven matrix is --version/--help/run-to-model-resolution.
  */
 import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
@@ -67,8 +67,4 @@ async function fetchAsset(env, file) {
 export async function fetchOpencodeBundle(env) {
     const ab = await fetchAsset(env, 'index.js');
     return new TextDecoder().decode(ab);
-}
-/** Fetch a tree-sitter wasm sidecar as ArrayBuffer for the facet module map. */
-export async function fetchOpencodeWasm(env, file) {
-    return fetchAsset(env, file);
 }
