@@ -19,6 +19,7 @@
 import type { ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { generateShimsCode } from '../runtime/node-shims.js';
+import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
@@ -30,6 +31,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability
 import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
+import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
@@ -117,6 +119,14 @@ interface NimbusWorkerLoader {
 
 interface FacetManagerEnv {
   LOADER: NimbusWorkerLoader;
+  /**
+   * Static-assets binding, used by the node:sqlite path to fetch the
+   * sql.js wasm bytes (sqlite-wasm-bytes.ts) and hand them to the facet
+   * via the Worker Loader module map. Absent in env shapes that never
+   * route node:sqlite (e.g. some test harnesses); the sqlite attach is a
+   * no-op then and the shim surfaces a clear unattached-module error.
+   */
+  ASSETS?: { fetch(req: Request): Promise<Response> };
 }
 
 interface ProcessRpcResources {
@@ -161,7 +171,16 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
   if (!isNimbusWorkerLoader(loader)) {
     throw new Error('FacetManager requires an env.LOADER binding with load() and get()');
   }
-  return { LOADER: loader };
+  const assetsCandidate = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+    ? Reflect.get(env, 'ASSETS')
+    : undefined;
+  const assets =
+    assetsCandidate !== null &&
+    typeof assetsCandidate === 'object' &&
+    typeof Reflect.get(assetsCandidate, 'fetch') === 'function'
+      ? (assetsCandidate as { fetch(req: Request): Promise<Response> })
+      : undefined;
+  return { LOADER: loader, ASSETS: assets };
 }
 
 async function createLoadedWorkerEntrypoint(
@@ -408,15 +427,79 @@ export default {
 }
 
 /**
+ * Detect whether a facet bundle imports node:sqlite. When true, the
+ * supervisor attaches the sql.js WebAssembly.Module to the facet's Worker
+ * Loader module map (request-time WebAssembly.compile is blocked) and the
+ * generated facet code statically imports it + boots the engine before
+ * user code (node:sqlite's DatabaseSync constructor is synchronous, so the
+ * wasm must be instantiated up front).
+ *
+ * Matches `require("node:sqlite")` / `require("sqlite")` (CJS, the
+ * resolver strips the node: prefix) and `from "node:sqlite"` (ESM). The
+ * scan covers the entry code plus every JS/CJS source already in the
+ * prefetch bundle so a transitive dependency that pulls in node:sqlite is
+ * also caught.
+ */
+const NODE_SQLITE_IMPORT_RE =
+  /(?:require\s*\(\s*['"](?:node:)?sqlite['"]\s*\)|from\s+['"]node:sqlite['"]|import\s+['"]node:sqlite['"])/;
+
+function bundleUsesNodeSqlite(
+  entryCode: string,
+  bundle: Record<string, string | Uint8Array>,
+): boolean {
+  if (NODE_SQLITE_IMPORT_RE.test(entryCode)) return true;
+  for (const [path, cell] of Object.entries(bundle)) {
+    if (typeof cell !== 'string') continue;
+    if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs'))) continue;
+    if (NODE_SQLITE_IMPORT_RE.test(cell)) return true;
+  }
+  return false;
+}
+
+/**
+ * Logical module name for the sql.js WebAssembly.Module in the facet
+ * Worker Loader module map. The facet code statically imports this
+ * specifier; the supervisor populates it with a `wasm` module entry.
+ */
+const SQLITE_WASM_MODULE_NAME = 'sqlite.wasm';
+
+/**
+ * Module-init block prepended to facet code only when the bundle uses
+ * node:sqlite. Two parts, both at module-eval time (where workerd permits
+ * `new Function` and module imports):
+ *   1. Static import of the pre-compiled sql.js WebAssembly.Module from
+ *      the facet module map, parked on globalThis for the shim's boot.
+ *   2. The sql.js glue-factory preamble (new Function at startup — request
+ *      time codegen-from-strings is blocked).
+ * Omitted otherwise (the import would fail — no sqlite.wasm in the map).
+ */
+const SQLITE_FACET_IMPORT =
+  `import __nimbusSqliteWasmModule from "${SQLITE_WASM_MODULE_NAME}";\n` +
+  `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
+  generateSqliteFacetPreamble();
+
+/**
+ * Awaited before user code runs so the synchronous DatabaseSync
+ * constructor finds an instantiated engine. No-op when sqlite isn't used
+ * (the global is undefined and the expression short-circuits).
+ */
+const SQLITE_FACET_BOOT =
+  `if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }`;
+
+/**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-function generateEntrypointCode(userCode: string, vfsState: FacetVfsState): string {
+function generateEntrypointCode(
+  userCode: string,
+  vfsState: FacetVfsState,
+  usesSqlite: boolean,
+): string {
   const safeCode = JSON.stringify(userCode);
   const safeBundle = _serializeBundleForFacet(vfsState.bundle);
   const safeManifest = JSON.stringify(vfsState.manifest);
   return `
 ${REAL_NODE_IMPORTS}
-
+${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 const USER_CODE = ${safeCode};
 const __NimbusHostResponse = globalThis.Response;
 
@@ -517,6 +600,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
+      ${usesSqlite ? SQLITE_FACET_BOOT : ''}
       if (__entryCompileFailure) throw new Error(__entryCompileFailure);
       if (!__compiledFn) throw new Error("entrypoint compile failed");
       const __entryPromises = __makeEntrypointPromiseTracker();
@@ -616,6 +700,7 @@ function generateLongRunningNodeCode(
     stdin?: string;
     attachedTty?: boolean;
   },
+  usesSqlite: boolean,
 ): string {
   const safeCode = JSON.stringify(userCode);
   const safeArgs = JSON.stringify({
@@ -632,7 +717,7 @@ function generateLongRunningNodeCode(
   return `
 import { WorkerEntrypoint } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
-
+${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 const USER_CODE = ${safeCode};
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
@@ -758,6 +843,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     try {
+      ${usesSqlite ? SQLITE_FACET_BOOT : ''}
       if (__entryCompileFailure) throw new Error(__entryCompileFailure);
       if (!__compiledFn) throw new Error("entrypoint compile failed");
       const __entryPromises = __makeEntrypointPromiseTracker();
@@ -2260,6 +2346,15 @@ export class FacetManager {
    * to avoid double-init.
    */
   private esbuild: EsbuildService | null = null;
+  /**
+   * Memoized sql.js wasm bytes for the node:sqlite facet path. Fetched
+   * once from env.ASSETS (sqlite-wasm-bytes.ts) on the first facet that
+   * imports node:sqlite, then reused for every subsequent sqlite facet in
+   * this isolate. Held as an ArrayBuffer because the Worker Loader module
+   * map needs a fresh `{ wasm }` entry per facet config.
+   */
+  private sqliteWasmBytes: ArrayBuffer | null = null;
+  private sqliteWasmBytesPromise: Promise<ArrayBuffer> | null = null;
 
   constructor(
     ctx: DurableObjectState,
@@ -2282,6 +2377,46 @@ export class FacetManager {
    * for the user-shell `node` runtime; sharing avoids paying init twice.
    */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
+
+  /**
+   * Build the Worker Loader module-map fragment that carries the sql.js
+   * WebAssembly.Module into a facet, when that facet imports node:sqlite.
+   * Returns `{}` for the common case (no sqlite) so the spread is free.
+   *
+   * The bytes are fetched once per isolate and reused (a fresh ArrayBuffer
+   * view per facet config). workerd compiles the `wasm` module ahead of
+   * dispatch, so the facet's static `import "sqlite.wasm"` resolves to a
+   * ready WebAssembly.Module — no request-time compile(bytes).
+   *
+   * Throws if env.ASSETS is unavailable: the facet code already imports
+   * `sqlite.wasm` (usesSqlite is true), so a missing module entry would
+   * fail facet load with an opaque resolver error; surfacing the cause
+   * here is clearer.
+   */
+  private async sqliteModuleEntry(
+    usesSqlite: boolean,
+  ): Promise<Record<string, { wasm: ArrayBuffer }>> {
+    if (!usesSqlite) return {};
+    if (!this.env.ASSETS) {
+      throw new Error(
+        'node:sqlite requires an env.ASSETS binding to load the sql.js wasm; ' +
+          'this Nimbus deployment is missing the static-assets binding',
+      );
+    }
+    if (!this.sqliteWasmBytes) {
+      if (!this.sqliteWasmBytesPromise) {
+        const assets = this.env.ASSETS;
+        this.sqliteWasmBytesPromise = fetchSqliteWasmBytes({ ASSETS: assets });
+      }
+      try {
+        this.sqliteWasmBytes = await this.sqliteWasmBytesPromise;
+      } catch (e) {
+        this.sqliteWasmBytesPromise = null;
+        throw e;
+      }
+    }
+    return { [SQLITE_WASM_MODULE_NAME]: { wasm: this.sqliteWasmBytes } };
+  }
 
   private trackProcessRpcResources(
     pid: number,
@@ -2490,7 +2625,9 @@ export class FacetManager {
     vfsState: FacetVfsState,
     signal: AbortSignal,
   ): Promise<FacetExecResult> {
-    const workerCode = generateEntrypointCode(code, vfsState);
+    const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
+    const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
+    const workerCode = generateEntrypointCode(code, vfsState, usesSqlite);
 
     // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
     const ctxExports = getCtxExports();
@@ -2515,7 +2652,7 @@ export class FacetManager {
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
         mainModule: 'runner.js',
-        modules: { 'runner.js': workerCode },
+        modules: { 'runner.js': workerCode, ...sqliteModules },
         ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
       });
 
@@ -2669,7 +2806,9 @@ export class FacetManager {
           FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
         }
       : opts.env;
-    const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv });
+    const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
+    const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
+    const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv }, usesSqlite);
 
     const ctxExports = getNimbusCtxExports();
     const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
@@ -2687,14 +2826,14 @@ export class FacetManager {
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
         mainModule: 'worker.js',
-        modules: { 'worker.js': workerCode },
+        modules: { 'worker.js': workerCode, ...sqliteModules },
         ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
       };
       const routeConfig = {
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
         mainModule: 'worker.js',
-        modules: { 'worker.js': workerCode },
+        modules: { 'worker.js': workerCode, ...sqliteModules },
       };
       const loadedWorker: { getEntrypoint(): LoadedWorkerEntrypointStub } =
         this.env.LOADER.get(workerKey, async () => workerConfig);

@@ -36,6 +36,7 @@ export interface FacetExecResult {
      */
     vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
 }
+export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPromiseTracker() {\n  const __tracked = new Set();\n  const __origThen = Promise.prototype.then;\n  const __origCatch = Promise.prototype.catch;\n  const __origFinally = Promise.prototype.finally;\n  let __active = false;\n  const __track = (p) => {\n    if (!p || typeof p.then !== \"function\") return p;\n    __tracked.add(p);\n    try {\n      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });\n    } catch {\n      __tracked.delete(p);\n    }\n    return p;\n  };\n  return {\n    start() {\n      __active = true;\n      try {\n        Promise.prototype.then = function(...args) {\n          const __next = __origThen.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.catch = function(...args) {\n          const __next = __origCatch.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.finally = function(...args) {\n          const __next = __origFinally.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n      } catch {\n        __active = false;\n      }\n    },\n    stop() {\n      __active = false;\n      try {\n        Promise.prototype.then = __origThen;\n        Promise.prototype.catch = __origCatch;\n        Promise.prototype.finally = __origFinally;\n      } catch {}\n    },\n    track: __track,\n    // Drain floating entry promises until they settle, the process exits,\n    // or a wall-clock deadline is hit. `minPasses` guarantees a minimum\n    // number of ticks so freshly-scheduled work (microtasks that haven't\n    // registered yet) gets a chance to surface. The deadline \u2014 not a fixed\n    // tick count \u2014 bounds genuinely-pending promises (servers, intervals);\n    // a fixed tiny pass cap previously abandoned legitimate multi-tick\n    // async entrypoints (e.g. create-vite's clack-driven scaffold) before\n    // their synchronous file writes ran.\n    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {\n      const __exit = {};\n      const __start = Date.now();\n      for (let __pass = 0; (__tracked.size > 0 || __pass < minPasses) && Date.now() - __start < deadlineMs; __pass++) {\n        if (exitPromise && typeof exitPromise.then === \"function\") {\n          const __result = await Promise.race([\n            new Promise((resolve) => setTimeout(() => resolve(null), 0)),\n            exitPromise.then(() => __exit, () => __exit),\n          ]);\n          if (__result === __exit) return;\n        } else {\n          await new Promise((resolve) => setTimeout(resolve, 0));\n        }\n      }\n    },\n  };\n}\n";
 /**
  * Greedy-oversample every installed package's main entry. The static
  * prefetch via require-resolver covers the require() chain literally
@@ -186,6 +187,15 @@ export declare class FacetManager {
      * to avoid double-init.
      */
     private esbuild;
+    /**
+     * Memoized sql.js wasm bytes for the node:sqlite facet path. Fetched
+     * once from env.ASSETS (sqlite-wasm-bytes.ts) on the first facet that
+     * imports node:sqlite, then reused for every subsequent sqlite facet in
+     * this isolate. Held as an ArrayBuffer because the Worker Loader module
+     * map needs a fresh `{ wasm }` entry per facet config.
+     */
+    private sqliteWasmBytes;
+    private sqliteWasmBytesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -194,6 +204,22 @@ export declare class FacetManager {
      * for the user-shell `node` runtime; sharing avoids paying init twice.
      */
     setEsbuildService(esbuild: EsbuildService): void;
+    /**
+     * Build the Worker Loader module-map fragment that carries the sql.js
+     * WebAssembly.Module into a facet, when that facet imports node:sqlite.
+     * Returns `{}` for the common case (no sqlite) so the spread is free.
+     *
+     * The bytes are fetched once per isolate and reused (a fresh ArrayBuffer
+     * view per facet config). workerd compiles the `wasm` module ahead of
+     * dispatch, so the facet's static `import "sqlite.wasm"` resolves to a
+     * ready WebAssembly.Module — no request-time compile(bytes).
+     *
+     * Throws if env.ASSETS is unavailable: the facet code already imports
+     * `sqlite.wasm` (usesSqlite is true), so a missing module entry would
+     * fail facet load with an opaque resolver error; surfacing the cause
+     * here is clearer.
+     */
+    private sqliteModuleEntry;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;
