@@ -89,7 +89,12 @@ export function createNpmBinShim(entry: NpmBinEntry): string {
     // the bin manifest. The shim body is only a marker for PATH discovery.
     return `#!/usr/bin/env node\n// nimbus staged artifact: ${entry.targetPath}\n`;
   }
-  return `#!/usr/bin/env node\nrequire(${JSON.stringify(entry.targetPath)});\n`;
+  // targetPath is a normalized VFS path with no leading slash. require()
+  // must receive it as absolute (leading "/"), otherwise the runtime's
+  // resolver treats "home/user/…" as a bare specifier and fails the
+  // node_modules lookup. Matches how npm-bin-entrypoints runs the manifest
+  // target ("/" + targetPath).
+  return `#!/usr/bin/env node\nrequire(${JSON.stringify('/' + entry.targetPath)});\n`;
 }
 
 export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[] {
