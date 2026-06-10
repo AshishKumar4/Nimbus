@@ -17,12 +17,15 @@
  * (caches.default) keyed on a version-pinned synthetic URL; no module-scope
  * residency.
  */
-import { OPENCODE_ARTIFACT_VERSION } from '../opencode-artifact.generated.js';
+import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 /** Base asset path of the staged opencode bundle directory. */
 export const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
+// The build id (content hash of the staged dist) is part of the L2 key so a
+// same-version rebuild with different bytes never serves stale content from a
+// warm colo cache.
 function l2Key(file) {
-    return `https://nimbus-cache.invalid${OPENCODE_ASSET_BASE}/${file}`;
+    return `https://nimbus-cache.invalid${OPENCODE_ASSET_BASE}/${OPENCODE_ARTIFACT_BUILD_ID}/${file}`;
 }
 function assetUrl(file) {
     return `https://nimbus-internal.invalid${OPENCODE_ASSET_BASE}/${file}`;

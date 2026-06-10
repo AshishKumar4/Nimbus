@@ -12,9 +12,14 @@
  * directory (the upstream clone build output). The worker still builds; the
  * install policy surfaces a precise "artifact not staged" diagnostic instead
  * of selecting a missing bundle.
+ *
+ * OPENCODE_ARTIFACT_BUILD_ID is a content hash over the staged files. The
+ * supervisor's L2 (caches.default) layer keys on it so a same-version rebuild
+ * with different content never serves stale bytes from a warm colo cache.
  */
 
 export const OPENCODE_ARTIFACT_VERSION: string = "1.16.2";
+export const OPENCODE_ARTIFACT_BUILD_ID: string = "19d7f2ff73a140cb";
 export const OPENCODE_ARTIFACT_PRESENT: boolean = true;
 export const OPENCODE_ARTIFACT_ENTRY: string = "/_assets/opencode/1.16.2/index.js";
 export const OPENCODE_ARTIFACT_FILES: readonly string[] = ["bip-bop-01-ga21wr3r.mp3","bip-bop-03-kgfd4rq4.mp3","highlights-eq9cgrbb.scm","highlights-ghv9g403.scm","highlights-hk7bwhj4.scm","highlights-r812a2qc.scm","highlights-x6tmsnaa.scm","injections-73j83es3.scm","nope-03-2z8weyjw.mp3","photon_rs_bg-bq08arze.wasm","staplebops-06-rz29m246.mp3","tree-sitter-3jzf13jk.wasm","tree-sitter-bash-hq5s6fxb.wasm","tree-sitter-javascript-nd0q4pe9.wasm","tree-sitter-markdown-411r6y9b.wasm","tree-sitter-markdown_inline-j5349f42.wasm","tree-sitter-powershell-ryb2ffqs.wasm","tree-sitter-typescript-zxjzwt75.wasm","tree-sitter-zig-e78zbjpm.wasm","yup-01-30ecpeh9.mp3"];

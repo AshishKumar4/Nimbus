@@ -12,8 +12,13 @@
  * directory (the upstream clone build output). The worker still builds; the
  * install policy surfaces a precise "artifact not staged" diagnostic instead
  * of selecting a missing bundle.
+ *
+ * OPENCODE_ARTIFACT_BUILD_ID is a content hash over the staged files. The
+ * supervisor's L2 (caches.default) layer keys on it so a same-version rebuild
+ * with different content never serves stale bytes from a warm colo cache.
  */
 export declare const OPENCODE_ARTIFACT_VERSION: string;
+export declare const OPENCODE_ARTIFACT_BUILD_ID: string;
 export declare const OPENCODE_ARTIFACT_PRESENT: boolean;
 export declare const OPENCODE_ARTIFACT_ENTRY: string;
 export declare const OPENCODE_ARTIFACT_FILES: readonly string[];

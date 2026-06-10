@@ -281,7 +281,7 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: OpencodeRunnerOptions & {
+    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest'> & {
         command?: string;
     }): Promise<FacetExecResult>;
     private opencodeBundleSource;

@@ -1,0 +1,130 @@
+diff --git a/packages/core/src/effect/observability.ts b/packages/core/src/effect/observability.ts
+index 0203079..dd9377c 100644
+--- a/packages/core/src/effect/observability.ts
++++ b/packages/core/src/effect/observability.ts
+@@ -8,7 +8,12 @@ import { ensureProcessMetadata } from "../util/opencode-process"
+ 
+ const base = Flag.OTEL_EXPORTER_OTLP_ENDPOINT
+ export const enabled = !!base
+-const processID = crypto.randomUUID()
++// Lazy: module top-level random generation is disallowed in workerd's global
++// scope (the Nimbus runtime). Computed on first use inside resource().
++let _processID: string | undefined
++function processID(): string {
++  return (_processID ??= crypto.randomUUID())
++}
+ 
+ const headers = Flag.OTEL_EXPORTER_OTLP_HEADERS
+   ? Flag.OTEL_EXPORTER_OTLP_HEADERS.split(",").reduce(
+@@ -48,7 +53,7 @@ export function resource(): { serviceName: string; serviceVersion: string; attri
+       "opencode.client": Flag.OPENCODE_CLIENT,
+       "opencode.process_role": processMetadata.processRole,
+       "opencode.run_id": processMetadata.runID,
+-      "service.instance.id": processID,
++      "service.instance.id": processID(),
+     },
+   }
+ }
+diff --git a/packages/core/src/global.ts b/packages/core/src/global.ts
+index 5f9799c..0f38f08 100644
+--- a/packages/core/src/global.ts
++++ b/packages/core/src/global.ts
+@@ -31,15 +31,26 @@ export const Path = paths
+ 
+ Flock.setGlobal({ state })
+ 
+-await Promise.all([
+-  fs.mkdir(Path.data, { recursive: true }),
+-  fs.mkdir(Path.config, { recursive: true }),
+-  fs.mkdir(Path.state, { recursive: true }),
+-  fs.mkdir(Path.tmp, { recursive: true }),
+-  fs.mkdir(Path.log, { recursive: true }),
+-  fs.mkdir(Path.bin, { recursive: true }),
+-  fs.mkdir(Path.repos, { recursive: true }),
+-])
++export async function ensureDirs() {
++  await Promise.all([
++    fs.mkdir(Path.data, { recursive: true }),
++    fs.mkdir(Path.config, { recursive: true }),
++    fs.mkdir(Path.state, { recursive: true }),
++    fs.mkdir(Path.tmp, { recursive: true }),
++    fs.mkdir(Path.log, { recursive: true }),
++    fs.mkdir(Path.bin, { recursive: true }),
++    fs.mkdir(Path.repos, { recursive: true }),
++  ])
++}
++
++// Nimbus runs this bundle inside a workerd Worker Loader, where module
++// top-level await runs in "global scope" and async I/O (the VFS supervisor
++// RPC backing fs.mkdir) is disallowed. The Nimbus runner sets the flag and
++// the CLI entry awaits ensureDirs() from inside its handler. Under Bun this
++// flag is unset and the dirs are created at import as before.
++if (!(globalThis as any).__NIMBUS_OPENCODE_DEFER) {
++  await ensureDirs()
++}
+ 
+ export class Service extends Context.Service<Service, Interface>()("@opencode/Global") {}
+ 
+diff --git a/packages/opencode/src/index.ts b/packages/opencode/src/index.ts
+index 0c22516..e17f523 100644
+--- a/packages/opencode/src/index.ts
++++ b/packages/opencode/src/index.ts
+@@ -1,5 +1,6 @@
+ import yargs from "yargs"
+ import { hideBin } from "yargs/helpers"
++import { Global } from "@opencode-ai/core/global"
+ import { RunCommand } from "./cli/cmd/run"
+ import { GenerateCommand } from "./cli/cmd/generate"
+ import * as Log from "@opencode-ai/core/util/log"
+@@ -35,7 +36,13 @@ import { Heap } from "./cli/heap"
+ import { ensureProcessMetadata } from "@opencode-ai/core/util/opencode-process"
+ import { isRecord } from "@/util/record"
+ 
+-const processMetadata = ensureProcessMetadata("main")
++// Lazy: ensureProcessMetadata() generates a UUID, which is disallowed at
++// module top level in workerd's global scope (the Nimbus runtime). Resolved
++// inside the yargs middleware, which runs from nimbusMain()'s handler context.
++let _processMetadata: ReturnType<typeof ensureProcessMetadata> | undefined
++function processMetadata() {
++  return (_processMetadata ??= ensureProcessMetadata("main"))
++}
+ 
+ process.on("unhandledRejection", (e) => {
+   Log.Default.error("rejection", {
+@@ -106,8 +113,8 @@ const cli = yargs(args)
+     Log.Default.info("opencode", {
+       version: InstallationVersion,
+       args: process.argv.slice(2),
+-      process_role: processMetadata.processRole,
+-      run_id: processMetadata.runID,
++      process_role: processMetadata().processRole,
++      run_id: processMetadata().runID,
+     })
+   })
+   .usage("")
+@@ -149,6 +156,10 @@ const cli = yargs(args)
+   })
+   .strict()
+ 
++export async function nimbusMain() {
++// Create opencode's XDG dirs here (handler I/O context) since global.ts
++// defers them under Nimbus (workerd global-scope I/O restriction).
++await Global.ensureDirs()
+ try {
+   if (args.includes("-h") || args.includes("--help")) {
+     await cli.parse(args, (err: Error | undefined, _argv: unknown, out: string) => {
+@@ -206,3 +217,14 @@ try {
+   // Explicitly exit to avoid any hanging subprocesses.
+   process.exit()
+ }
++}
++
++// Nimbus runs this bundle as an ESM module inside a workerd Worker Loader,
++// where module top-level await runs in "global scope" — async I/O (the VFS
++// supervisor RPC) is disallowed there. The Nimbus runner sets
++// __NIMBUS_OPENCODE_DEFER and invokes nimbusMain() from inside its fetch
++// handler. Under Bun (normal install) the flag is unset and the CLI runs at
++// import as before.
++if (!(globalThis as any).__NIMBUS_OPENCODE_DEFER) {
++  await nimbusMain()
++}

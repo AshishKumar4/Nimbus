@@ -28,7 +28,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle } from '../runtime/opencode-artifact.js';
-import { generateOpencodeRunnerCode, OPENCODE_BUNDLE_MODULE_NAME, OPENCODE_NODE_SQLITE_MODULE, } from '../runtime/opencode-facet-runner.js';
+import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, OPENCODE_NODE_SQLITE_MODULE, } from '../runtime/opencode-facet-runner.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, } from '../constants.js';
 /**
@@ -2474,10 +2474,30 @@ export class FacetManager {
                 'deployment is missing the static-assets binding');
         }
         const bundle = await this.opencodeBundleSource();
-        const runnerCode = generateOpencodeRunnerCode(opts);
         const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
         const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd);
         const pid = entry.pid;
+        // Snapshot the working tree so opencode's sync fs reads resolve, and a
+        // directory manifest so readdir/stat are coherent. opencode creates its
+        // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
+        // other writes flush live through the SUPERVISOR RPC bridge.
+        const vfsState = this.vfs
+            ? await buildPrefetchBundle(this.vfs, undefined, opts.cwd, '', this.esbuild || undefined)
+            : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+        const runnerCode = generateOpencodeRunnerCode({
+            argv: opts.argv,
+            env: opts.env,
+            cwd: opts.cwd,
+            stdin: opts.stdin,
+            vfsBundle: _serializeBundleForFacet(vfsState.bundle),
+            vfsManifest: JSON.stringify(vfsState.manifest),
+        });
+        // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
+        // live SQLite VFS (same wiring as the standard one-shot facet path).
+        const ctxExports = getCtxExports();
+        const supervisorBinding = ctxExports?.SupervisorRPC
+            ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid } })
+            : undefined;
         let worker;
         let entrypoint;
         try {
@@ -2489,7 +2509,9 @@ export class FacetManager {
                     'runner.js': runnerCode,
                     [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
                     'node:sqlite': { js: OPENCODE_NODE_SQLITE_MODULE },
+                    ...opencodeBuiltinBridgeModules(),
                 },
+                ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
             });
             entrypoint = worker.getEntrypoint();
             if (typeof entrypoint.fetch !== 'function') {
@@ -2499,6 +2521,7 @@ export class FacetManager {
             try {
                 const result = await response.json();
                 this.processes.exit(pid, result.exitCode);
+                this._flushVfsWrites(result);
                 return result;
             }
             finally {
@@ -2512,6 +2535,7 @@ export class FacetManager {
         finally {
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);
+            disposeRpcResource(supervisorBinding);
         }
     }
     async opencodeBundleSource() {
