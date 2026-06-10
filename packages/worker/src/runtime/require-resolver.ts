@@ -43,6 +43,15 @@ import { stripCommentsForImports } from './comment-strip.js';
 // well-known cases (esbuild plugins, vite internals).
 const REQUIRE_RE = /(?:require(?:\.resolve)?\s*\(\s*)(['"`])([^'"`]+?)\1\s*\)/g;
 
+// Static-string dynamic import: `import('literal')`. CLI entrypoints often
+// defer their real implementation through one (e.g. create-astro's
+// create-astro.mjs does `import('./dist/index.js').then(({main}) => main())`).
+// Without following it, the target file's content is excluded from the
+// bounded snapshot, so the runtime dynamic import resolves the path but
+// can't read it — the scaffolder exits silently. Only literal specifiers
+// are followed; computed `import(expr)` remains out of scope.
+const DYNIMPORT_RE = /\bimport\s*\(\s*(['"`])([^'"`]+?)\1\s*\)/g;
+
 // X.5-C Fix #1: match ESM `import` and `export … from` statements.
 //
 // Why a second regex (not a unified one): REQUIRE_RE matches require(…)
@@ -633,6 +642,18 @@ export function prefetchForRequire(
     // fails because `x` was never added.
     IMPORT_RE.lastIndex = 0;
     while ((match = IMPORT_RE.exec(stripped)) !== null) {
+      const specifier = match[2];
+      if (isBuiltin(specifier)) continue;
+      const r = resolveRequireEx(vfs, specifier, fromDir);
+      if (r) {
+        addFile(r.resolved);
+        if (r.stub) addStub(r.stub.path, r.stub.content);
+      }
+    }
+    // Follow static-string dynamic imports so a CLI entry that defers to
+    // import('./dist/index.js') has that subtree's content prefetched.
+    DYNIMPORT_RE.lastIndex = 0;
+    while ((match = DYNIMPORT_RE.exec(stripped)) !== null) {
       const specifier = match[2];
       if (isBuiltin(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir);

@@ -64,4 +64,47 @@ const vfs = new FakeVfs({
 const result = prefetchForRequire(vfs, "require('@scope/pkg/oauth');", '/home/user', '/home/user/app.js');
 assert.equal(result.bundle[`${nm}/@scope/pkg/dist/oauth.js`], 'export const ok = true;');
 
+// A CLI entry that defers via a static-string dynamic import must have the
+// imported subtree's content prefetched (regression: create-astro.mjs does
+// `import('./dist/index.js').then(({main}) => main())`; without following it
+// the runtime resolves the path but can't read the content → silent exit).
+const dynVfs = new FakeVfs({
+  'home/user/cli/create-astro.mjs': "import('./dist/index.js').then(({main}) => main());",
+  'home/user/cli/dist/index.js': "import './sibling.js'; export function main() {}",
+  'home/user/cli/dist/sibling.js': 'export const x = 1;',
+});
+const dynResult = prefetchForRequire(
+  dynVfs,
+  "import('./dist/index.js').then(({main}) => main());",
+  '/home/user/cli',
+  '/home/user/cli/create-astro.mjs',
+);
+assert.equal(
+  dynResult.bundle['home/user/cli/dist/index.js'],
+  "import './sibling.js'; export function main() {}",
+  'dynamic-import target not prefetched',
+);
+assert.equal(
+  dynResult.bundle['home/user/cli/dist/sibling.js'],
+  'export const x = 1;',
+  'dynamic-import target subtree not recursively prefetched',
+);
+
+// Parent-relative package main: a subdir package.json whose main points at
+// "../dist/x" must resolve through the normalized path (regression:
+// web-streams-polyfill's ponyfill/package.json -> "../dist/ponyfill").
+const relVfs = new FakeVfs({
+  'home/user/app2.js': "require('wsp/ponyfill');",
+  [`${nm}/wsp/package.json`]: JSON.stringify({ name: 'wsp', main: 'dist/polyfill' }),
+  [`${nm}/wsp/dist/polyfill.js`]: 'module.exports = {};',
+  [`${nm}/wsp/dist/ponyfill.js`]: 'module.exports = { ponyfill: true };',
+  [`${nm}/wsp/ponyfill/package.json`]: JSON.stringify({ name: 'wsp-ponyfill', main: '../dist/ponyfill' }),
+});
+const relResult = prefetchForRequire(relVfs, "require('wsp/ponyfill');", '/home/user', '/home/user/app2.js');
+assert.equal(
+  relResult.bundle[`${nm}/wsp/dist/ponyfill.js`],
+  'module.exports = { ponyfill: true };',
+  'parent-relative package main not resolved/prefetched',
+);
+
 console.log('require-resolver: ok');
