@@ -578,8 +578,12 @@ export function prefetchForRequire(
       }
     }
 
-    // Recursively resolve require() calls in this file
-    if (vfsPath.endsWith('.js') || vfsPath.endsWith('.mjs') || vfsPath.endsWith('.cjs')) {
+    // Recursively resolve require() calls in this file. Bin scripts and
+    // shims are commonly extensionless (e.g. node_modules/<pkg>/bin/<cli>
+    // with a `#!/usr/bin/env node` shebang), so an extension allowlist
+    // would drop their require chain. Treat .json as data (no requires);
+    // walk everything else as CJS/ESM.
+    if (!vfsPath.endsWith('.json')) {
       const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
       parseAndResolve(content, fromDir);
     }
