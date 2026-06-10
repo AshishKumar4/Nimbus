@@ -15,29 +15,36 @@ await t.waitForPrompt(60_000);
 
 await t.run('nimbus install python', 180_000);
 
-// Subcase 1: exit() → $? === 0.
-{
+// The shared prompt matcher accepts `>` so it also fires on the Python
+// `>>> ` REPL prompt. After sending an exit statement we must wait for
+// the SHELL prompt specifically (ends in `$`/`#`, not `>`); otherwise
+// the still-present `>>> ` satisfies waitForPrompt and the follow-up
+// `echo` is delivered into the live REPL as a second statement.
+const shellPromptReturned = (b) => /[$#]\s*$/.test(b.trimEnd().slice(-3));
+
+async function replExitCode(statement) {
   t.reset();
   t.cmd('python');
   await t.waitFor((b) => /^>>> /m.test(b), 30_000, 'python repl prompt');
-  t.cmd('exit()');
-  await t.waitForPrompt(15_000);
-  const { output } = await t.run('echo "EX=$?"', 10_000);
-  const m = stripAnsi(output).match(/EX=(\d+)/);
-  const got = m ? parseInt(m[1], 10) : -1;
+  t.reset();
+  t.cmd(statement);
+  await t.waitFor(shellPromptReturned, 15_000, 'shell prompt after REPL exit');
+  t.reset();
+  t.cmd('echo "EX=$?"');
+  await t.waitFor((b) => /EX=\d+/.test(b), 10_000, 'EX echo');
+  const m = stripAnsi(t.buf).match(/EX=(\d+)/);
+  return m ? parseInt(m[1], 10) : -1;
+}
+
+// Subcase 1: exit() → $? === 0.
+{
+  const got = await replExitCode('exit()');
   a.check('exit() → shell $? === 0', got === 0, `got=${got}`);
 }
 
 // Subcase 2: sys.exit(7) → $? === 7.
 {
-  t.reset();
-  t.cmd('python');
-  await t.waitFor((b) => /^>>> /m.test(b), 30_000, 'python repl prompt');
-  t.cmd('import sys; sys.exit(7)');
-  await t.waitForPrompt(15_000);
-  const { output } = await t.run('echo "EX=$?"', 10_000);
-  const m = stripAnsi(output).match(/EX=(\d+)/);
-  const got = m ? parseInt(m[1], 10) : -1;
+  const got = await replExitCode('import sys; sys.exit(7)');
   a.check('sys.exit(7) → shell $? === 7', got === 7, `got=${got}`);
 }
 
