@@ -1253,7 +1253,13 @@ export class Shell {
     }
 
     const line = await readLineStdin(stdin);
-    if (line === null) return 1;
+    if (line === null) {
+      // EOF: bash clears every named variable before returning non-zero.
+      for (const name of options.names) {
+        if (!this.assignEnv(name, '', stderr)) return 1;
+      }
+      return 1;
+    }
 
     const assignments = splitReadAssignments(line, options.names);
     for (const [name, value] of assignments) {

@@ -1126,8 +1126,14 @@ export class Shell {
             stderr.write(options.prompt);
         }
         const line = await readLineStdin(stdin);
-        if (line === null)
+        if (line === null) {
+            // EOF: bash clears every named variable before returning non-zero.
+            for (const name of options.names) {
+                if (!this.assignEnv(name, '', stderr))
+                    return 1;
+            }
             return 1;
+        }
         const assignments = splitReadAssignments(line, options.names);
         for (const [name, value] of assignments) {
             if (!this.assignEnv(name, value, stderr))
