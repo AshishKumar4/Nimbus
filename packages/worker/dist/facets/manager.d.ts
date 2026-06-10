@@ -37,6 +37,15 @@ export interface FacetExecResult {
      */
     vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
 }
+/**
+ * execStagedArtifact owns the process-table entry, so it returns the
+ * authoritative pid alongside the exec result. The shell caller emits the
+ * terminal exit / exec-done events against this pid instead of recovering it
+ * by string-matching the command line in the process table.
+ */
+export interface StagedArtifactExecResult extends FacetExecResult {
+    pid: number;
+}
 export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPromiseTracker() {\n  const __tracked = new Set();\n  const __origThen = Promise.prototype.then;\n  const __origCatch = Promise.prototype.catch;\n  const __origFinally = Promise.prototype.finally;\n  let __active = false;\n  const __track = (p) => {\n    if (!p || typeof p.then !== \"function\") return p;\n    __tracked.add(p);\n    try {\n      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });\n    } catch {\n      __tracked.delete(p);\n    }\n    return p;\n  };\n  return {\n    start() {\n      __active = true;\n      try {\n        Promise.prototype.then = function(...args) {\n          const __next = __origThen.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.catch = function(...args) {\n          const __next = __origCatch.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.finally = function(...args) {\n          const __next = __origFinally.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n      } catch {\n        __active = false;\n      }\n    },\n    stop() {\n      __active = false;\n      try {\n        Promise.prototype.then = __origThen;\n        Promise.prototype.catch = __origCatch;\n        Promise.prototype.finally = __origFinally;\n      } catch {}\n    },\n    track: __track,\n    // Drain floating entry promises until they settle, the process exits,\n    // or a wall-clock deadline is hit. `minPasses` guarantees a minimum\n    // number of ticks so freshly-scheduled work (microtasks that haven't\n    // registered yet) gets a chance to surface. The deadline \u2014 not a fixed\n    // tick count \u2014 bounds genuinely-pending promises (servers, intervals);\n    // a fixed tiny pass cap previously abandoned legitimate multi-tick\n    // async entrypoints (e.g. create-vite's clack-driven scaffold) before\n    // their synchronous file writes ran.\n    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {\n      const __exit = {};\n      const __start = Date.now();\n      for (let __pass = 0; (__tracked.size > 0 || __pass < minPasses) && Date.now() - __start < deadlineMs; __pass++) {\n        if (exitPromise && typeof exitPromise.then === \"function\") {\n          const __result = await Promise.race([\n            new Promise((resolve) => setTimeout(() => resolve(null), 0)),\n            exitPromise.then(() => __exit, () => __exit),\n          ]);\n          if (__result === __exit) return;\n        } else {\n          await new Promise((resolve) => setTimeout(resolve, 0));\n        }\n      }\n    },\n  };\n}\n";
 /**
  * Greedy-oversample every installed package's main entry. The static
@@ -283,7 +292,7 @@ export declare class FacetManager {
      */
     execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest'> & {
         command?: string;
-    }): Promise<FacetExecResult>;
+    }): Promise<StagedArtifactExecResult>;
     private opencodeBundleSource;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;

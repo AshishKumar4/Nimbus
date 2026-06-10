@@ -69,6 +69,16 @@ export interface FacetExecResult {
 }
 
 /**
+ * execStagedArtifact owns the process-table entry, so it returns the
+ * authoritative pid alongside the exec result. The shell caller emits the
+ * terminal exit / exec-done events against this pid instead of recovering it
+ * by string-matching the command line in the process table.
+ */
+export interface StagedArtifactExecResult extends FacetExecResult {
+  pid: number;
+}
+
+/**
  * Detect & restore a Uint8Array that's been JSON-mangled to a
  * {"0":n,"1":n,...} object during the result-envelope round-trip.
  * String inputs and already-Uint8Array inputs pass through unchanged.
@@ -2695,7 +2705,7 @@ export class FacetManager {
   async execStagedArtifact(
     artifact: string,
     opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest'> & { command?: string },
-  ): Promise<FacetExecResult> {
+  ): Promise<StagedArtifactExecResult> {
     if (artifact !== 'opencode') {
       throw new Error(`Nimbus: unknown staged artifact '${artifact}'`);
     }
@@ -2765,7 +2775,7 @@ export class FacetManager {
         const result = await response.json() as FacetExecResult;
         this.processes.exit(pid, result.exitCode);
         this._flushVfsWrites(result);
-        return result;
+        return { ...result, pid };
       } finally {
         disposeRpcResource(response);
       }

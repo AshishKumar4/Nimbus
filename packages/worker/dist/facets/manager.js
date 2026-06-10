@@ -2520,7 +2520,7 @@ export class FacetManager {
                 const result = await response.json();
                 this.processes.exit(pid, result.exitCode);
                 this._flushVfsWrites(result);
-                return result;
+                return { ...result, pid };
             }
             finally {
                 disposeRpcResource(response);

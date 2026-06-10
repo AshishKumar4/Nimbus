@@ -1,6 +1,6 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { FacetManager } from '../facets/manager.js';
+import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
   resolveNpmBin, resolveNpmBinFromPath,
   isStagedArtifactTarget, stagedArtifactId,
@@ -179,9 +179,7 @@ function resolveNpmBinForInvocation(
 
 async function runStagedArtifact(
   deps: {
-    processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
-    terminal?: Output | null;
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
   },
@@ -193,12 +191,14 @@ async function runStagedArtifact(
 ): Promise<number> {
   const shellLine = `${name} ${argv.join(' ')}`.trim();
   const startedAt = Date.now();
-  let result: { exitCode: number; stdout: string; stderr: string };
+  let result: StagedArtifactExecResult;
   try {
     result = await deps.getFacetManager().execStagedArtifact(artifact, {
       argv,
       env: ctx.env ?? {},
       cwd,
+      // Piped stdin is not yet wired for staged artifacts; the proven matrix
+      // is argv-based (--version/--help/run-to-model-resolution).
       stdin: '',
       command: shellLine,
     });
@@ -208,13 +208,11 @@ async function runStagedArtifact(
   }
   if (result.stdout) ctx.stdout.write(result.stdout);
   if (result.stderr) ctx.stderr.write(result.stderr);
-  // execStagedArtifact spawns + exits the process entry itself; surface the
-  // terminal/exec-done events here so the shell observes the same lifecycle
-  // signals as the node-bin path.
-  const proc = deps.processes.getAll().find((p) => p.command === shellLine);
-  const pid = proc?.pid ?? 0;
-  deps.notifyTerminalEvent({ type: 'exit', pid, code: result.exitCode, command: shellLine });
-  deps.emitShellExecDone(pid, shellLine, result.exitCode, Date.now() - startedAt);
+  // execStagedArtifact owns the process-table entry; it returns the
+  // authoritative pid so we surface the terminal/exec-done lifecycle events
+  // against the real pid (same signals as the node-bin path).
+  deps.notifyTerminalEvent({ type: 'exit', pid: result.pid, code: result.exitCode, command: shellLine });
+  deps.emitShellExecDone(result.pid, shellLine, result.exitCode, Date.now() - startedAt);
   return result.exitCode;
 }
 

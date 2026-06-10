@@ -137,6 +137,8 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx) {
             argv,
             env: ctx.env ?? {},
             cwd,
+            // Piped stdin is not yet wired for staged artifacts; the proven matrix
+            // is argv-based (--version/--help/run-to-model-resolution).
             stdin: '',
             command: shellLine,
         });
@@ -149,13 +151,11 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx) {
         ctx.stdout.write(result.stdout);
     if (result.stderr)
         ctx.stderr.write(result.stderr);
-    // execStagedArtifact spawns + exits the process entry itself; surface the
-    // terminal/exec-done events here so the shell observes the same lifecycle
-    // signals as the node-bin path.
-    const proc = deps.processes.getAll().find((p) => p.command === shellLine);
-    const pid = proc?.pid ?? 0;
-    deps.notifyTerminalEvent({ type: 'exit', pid, code: result.exitCode, command: shellLine });
-    deps.emitShellExecDone(pid, shellLine, result.exitCode, Date.now() - startedAt);
+    // execStagedArtifact owns the process-table entry; it returns the
+    // authoritative pid so we surface the terminal/exec-done lifecycle events
+    // against the real pid (same signals as the node-bin path).
+    deps.notifyTerminalEvent({ type: 'exit', pid: result.pid, code: result.exitCode, command: shellLine });
+    deps.emitShellExecDone(result.pid, shellLine, result.exitCode, Date.now() - startedAt);
     return result.exitCode;
 }
 function formatError(error) {
