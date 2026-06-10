@@ -36,6 +36,14 @@ export const NIMBUS_VERSION = '2.0.0';
 export const NODE_VERSION = 'v22.19.0';
 export const NODE_VERSIONS = { node: '22.19.0', v8: '12.4.254.21', modules: '127' };
 export const ESBUILD_VERSION = '0.24.2';
+//
+// sql.js (Emscripten SQLite) version, backing the node:sqlite shim. The
+// JS glue (~46 KiB) lives in the worker bundle as a string constant
+// (sqlite-wasm-bundle.generated.ts); the wasm binary (~648 KiB) is staged
+// to public/_assets/sqljs-<version>.wasm and fetched on demand by
+// runtime/sqlite-wasm-bytes.ts, then handed to the facet via the Worker
+// Loader module map (request-time WebAssembly.compile is blocked).
+export const SQLJS_VERSION = '1.14.1';
 // ── VFS Constants ───────────────────────────────────────────────────────
 export const CHUNK_SIZE = 65_536; // 64KB per content chunk
 export const LRU_MAX_ENTRIES = 512; // 512 × 64KB = 32MB hot cache
