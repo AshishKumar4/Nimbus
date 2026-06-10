@@ -21,8 +21,11 @@ await t.run('nimbus install python', 180_000);
 
 const install = await t.run('pip install markupsafe', 180_000);
 const cleanInstall = stripAnsi(install.output);
+// pip echoes the package's canonical PyPI project name ("MarkupSafe"),
+// matching upstream pip and the Pyodide lockfile casing. Assert
+// case-insensitively so the probe tracks the install, not the casing.
 a.check('pip install markupsafe completes',
-  /Successfully installed markupsafe/.test(cleanInstall),
+  /Successfully installed markupsafe/i.test(cleanInstall),
   JSON.stringify(cleanInstall.slice(-1000)));
 a.check('install output has no dynamic wasm load failure',
   !/Failed to load MarkupSafe|Failed to load dynamic library|Wasm code generation disallowed/i.test(cleanInstall),
