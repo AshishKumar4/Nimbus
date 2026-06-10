@@ -621,6 +621,17 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
     try { globalThis.global = globalThis; } catch {}
+    // undici's fetch (bundled by e.g. create-cloudflare) detaches
+    // performance.markResourceTiming and calls it with no receiver,
+    // which workerd rejects with "Illegal invocation" and crashes the
+    // process from an unhandled fetch-timing callback. Rebind it so a
+    // detached call keeps the correct receiver.
+    try {
+      const __perf = globalThis.performance;
+      if (__perf && typeof __perf.markResourceTiming === "function") {
+        __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
+      }
+    } catch {}
 
     const mod = { exports: {} };
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
@@ -860,6 +871,17 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
     try { globalThis.global = globalThis; } catch {}
+    // undici's fetch (bundled by e.g. create-cloudflare) detaches
+    // performance.markResourceTiming and calls it with no receiver,
+    // which workerd rejects with "Illegal invocation" and crashes the
+    // process from an unhandled fetch-timing callback. Rebind it so a
+    // detached call keeps the correct receiver.
+    try {
+      const __perf = globalThis.performance;
+      if (__perf && typeof __perf.markResourceTiming === "function") {
+        __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
+      }
+    } catch {}
     if (attachedTty) {
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
