@@ -396,10 +396,25 @@ const __streamMod = (() => {
       return dest;
     }
   }
+  // ── stream state introspection (node:stream named helpers) ─────────
+  // Modern libraries (e.g. those bundled by create-cloudflare) call these
+  // off the stream module. They read the public stream state flags.
+  const isErrored = (s) => !!(s && (s.errored || (s._readableState && s._readableState.errored) || (s._writableState && s._writableState.errored)));
+  const isReadable = (s) => !!(s && s.readable && !(s._readableState && s._readableState.endEmitted));
+  const isWritable = (s) => !!(s && s.writable && !(s._writableState && s._writableState.finished));
+  const isDisturbed = (s) => !!(s && (s.readableDidRead || (s._readableState && (s._readableState.dataEmitted || s._readableState.endEmitted))));
+  const addAbortSignal = (signal, stream) => {
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', () => { stream.destroy(new Error('AbortError')); }, { once: true });
+    }
+    return stream;
+  };
+
   const __streamMod = Object.assign(Stream, {
     Readable, Writable, Duplex, Transform, PassThrough,
     Stream,
     pipeline, finished,
+    isErrored, isReadable, isWritable, isDisturbed, addAbortSignal,
     // Aliases for compatibility
     _Readable: Readable, _Writable: Writable, _Transform: Transform,
   });
