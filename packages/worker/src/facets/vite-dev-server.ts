@@ -41,7 +41,7 @@ import { injectRouterBasename, shouldProcessForRouter } from '../runtime/router-
 import { rewriteJavaScriptModuleSource, type StaticModuleSpecifierContext } from '../runtime/module-source-rewriter.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import {
-  TAILWIND_PLAY_BUNDLE,
+  getTailwindPlayBundle,
   TAILWIND_PLAY_VERSION,
 } from '../tailwind-play.generated.js';
 
@@ -1630,7 +1630,8 @@ export class ViteDevServer {
       // Bundle is embedded at build time via scripts/bundle-tailwind-play.mjs;
       // see src/tailwind-play.generated.ts for the source URL + integrity.
       if (pathname === '/__nimbus_assets/tailwind-play.js') {
-        return new Response(TAILWIND_PLAY_BUNDLE, {
+        const body = await getTailwindPlayBundle(this.env);
+        return new Response(body, {
           headers: {
             ...headers,
             'Content-Type': 'application/javascript; charset=utf-8',

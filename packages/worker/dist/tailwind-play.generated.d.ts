@@ -7,13 +7,30 @@
  * Tailwind JIT without fetching from cdn.tailwindcss.com (100% edge
  * contract).
  *
+ * The ~408 KiB bundle ships as a static asset (public/_assets/tailwind-play.js)
+ * and is fetched lazily via the ASSETS binding rather than inlined into the
+ * supervisor bundle. Use {@link getTailwindPlayBundle}.
+ *
  * Source: https://cdn.tailwindcss.com/3.4.17 (downloaded at build time).
  * SHA-256: 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15
  *
  * If you change this file by hand it WILL be overwritten by the next
  * predev / predeploy / postinstall.
  */
+import { type AssetsFetcher } from './runtime/assets-loader.js';
 export declare const TAILWIND_PLAY_VERSION: string;
 export declare const TAILWIND_PLAY_INTEGRITY: string;
-export declare const TAILWIND_PLAY_BUNDLE: string;
+/** Asset path for the vendored Tailwind Play bundle. Use {@link getTailwindPlayBundle}. */
+export declare const TAILWIND_PLAY_BUNDLE_PATH: string;
+/**
+ * Fetch the vendored Tailwind Play CDN bundle from the ASSETS binding.
+ * Cached per-isolate.
+ *
+ * @param env Object exposing the `ASSETS` binding (Fetcher).
+ * @returns The Tailwind Play bundle as a UTF-8 string.
+ * @throws {NimbusAssetLoadError} when the binding is missing or fetch fails.
+ */
+export declare function getTailwindPlayBundle(env: {
+    ASSETS: AssetsFetcher;
+}): Promise<string>;
 //# sourceMappingURL=tailwind-play.generated.d.ts.map
