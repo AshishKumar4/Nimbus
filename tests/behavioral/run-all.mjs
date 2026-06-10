@@ -47,8 +47,27 @@
 //
 //   `--no-retry` disables this for CI diagnostic runs where the
 //   operator wants to see flakes directly.
+//
+// Orphan-browser reaping:
+//   Browser probes launch a real headless Chrome via puppeteer and rely
+//   on `browser.close()` in a `finally` to tear it down. A hard runtime
+//   crash (the bun panic banner above) kills the probe process WITHOUT
+//   running `finally`, so its Chrome is reparented to init and survives.
+//   Across a long sequential run these orphans accumulate (each Chrome
+//   holds hundreds of MiB), pressuring the host until subsequent probes
+//   — and the immediate retry of a crashed probe — crash at startup too.
+//   That is why a banner-crashed browser probe can stay FAIL after the
+//   retry: the retry inherits the leaked Chrome.
+//
+//   The runner reaps any orphaned puppeteer Chrome between probes. Since
+//   probes run strictly sequentially, no probe is in flight at the reap
+//   point, so any Chrome carrying puppeteer's temp-profile + `--headless`
+//   signature is an orphan from a crashed probe and is killed. This keeps
+//   each probe (and each retry) starting from a clean process baseline.
+//   The user's own desktop Chrome is never matched (real profile dir, not
+//   headless). Reaping is system infrastructure, not assertion logic.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, basename } from 'node:path';
@@ -144,6 +163,51 @@ function isRetryableCrash(stderr, exitCode) {
 }
 
 /**
+ * puppeteer launches Chrome with a temp profile under this prefix and
+ * `--headless`. A normal desktop Chrome has neither, so matching both is
+ * a safe signature for "Chrome that a probe spawned". The match is keyed
+ * on the chrome executable in argv[0] so a shell line that merely mentions
+ * the flags is never killed.
+ */
+const PUPPETEER_PROFILE_PREFIX = '--user-data-dir=/tmp/puppeteer_dev_chrome_profile';
+
+function findOrphanedProbeBrowsers() {
+  const res = spawnSync('ps', ['-eo', 'pid=,args='], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (res.status !== 0 || !res.stdout) return [];
+  const pids = [];
+  for (const line of res.stdout.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\S+)\s*(.*)$/);
+    if (!m) continue;
+    const [, pid, argv0, rest] = m;
+    if (!/chrome/i.test(argv0)) continue;
+    const full = `${argv0} ${rest}`;
+    if (!full.includes('--headless')) continue;
+    if (!full.includes(PUPPETEER_PROFILE_PREFIX)) continue;
+    pids.push(Number(pid));
+  }
+  return pids;
+}
+
+/**
+ * Kill any orphaned puppeteer Chrome left behind by a crashed probe.
+ * Killing the main Chrome process cascades to its renderer children
+ * (same process group). Returns the number reaped. Loud — logs when it
+ * reaps anything so an operator sees that a crash leaked a browser.
+ */
+function reapOrphanedProbeBrowsers() {
+  const pids = findOrphanedProbeBrowsers();
+  if (pids.length === 0) return 0;
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+  console.log(`    reaped ${pids.length} orphaned probe browser process${pids.length === 1 ? '' : 'es'} (crashed probe leaked Chrome)`);
+  return pids.length;
+}
+
+/**
  * Spawn one probe; collect stdout/stderr/exit. Returns {ok, code,
  * stdout, stderr, elapsedMs}. Pure I/O — no decision making.
  */
@@ -180,7 +244,11 @@ for (const probe of targets) {
   let retried = false;
 
   if (!r.ok && !NO_RETRY && isRetryableCrash(r.stderr, r.code)) {
-    // First attempt crashed on a known runtime banner. Retry once.
+    // First attempt crashed on a known runtime banner. The crash may
+    // have leaked a browser (no `finally` on a hard crash); reap it so
+    // the retry starts from a clean process baseline rather than
+    // inheriting the resource pressure that caused the crash.
+    reapOrphanedProbeBrowsers();
     process.stdout.write(`FLAKE (${(r.elapsedMs/1000).toFixed(1)}s) → retry... `);
     retried = true;
     r = await runProbeOnce(probePath);
@@ -196,6 +264,10 @@ for (const probe of targets) {
   }
 
   results.push({ probe, ok: r.ok, elapsed: Number(elapsedS), retried });
+
+  // Reap any browser the probe leaked (a hard crash bypasses the probe's
+  // own teardown). Probes run sequentially, so nothing is in flight here.
+  reapOrphanedProbeBrowsers();
 }
 
 const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
