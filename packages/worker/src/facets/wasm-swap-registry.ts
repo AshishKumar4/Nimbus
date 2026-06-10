@@ -36,6 +36,7 @@ import {
   PYODIDE_PACKAGE_ABI,
   type PackageAbiPolicy,
   type PackageRejectEntry,
+  type PackageStagedArtifactEntry,
   type PackageSwapEntry,
 } from '../runtime/os-contracts.js';
 
@@ -74,6 +75,25 @@ const SWAPS: ReadonlyArray<PackageSwapEntry> = [
       'and ships .node binaries that workerd cannot load. @rollup/wasm-node is the upstream ' +
       'pure-WASM build with identical exports.',
     compat: 'drop-in',
+  },
+];
+
+/**
+ * Sentinel bin target the installer writes for a staged-artifact package.
+ * `bin/<name>` is rewritten to `<prefix><artifact-id>`; the .bin runner
+ * (init.ts) recognizes the scheme and dispatches the staged opencode bundle
+ * through the node runtime instead of trying to exec the native launcher.
+ */
+export const STAGED_ARTIFACT_BIN_PREFIX = 'nimbus-staged:';
+
+const STAGED_ARTIFACTS: ReadonlyArray<PackageStagedArtifactEntry> = [
+  {
+    from: 'opencode-ai',
+    bin: 'opencode',
+    artifact: 'opencode',
+    reason:
+      'opencode-ai ships a native launcher (bin/opencode.exe) and 12 platform-native shards; ' +
+      'Nimbus runs the prebuilt opencode JS bundle instead.',
   },
 ];
 
@@ -376,6 +396,7 @@ export const PACKAGE_ABI_POLICY: PackageAbiPolicy = {
   ],
   nativeArtifactClass: NATIVE_UNSUPPORTED_ABI,
   swaps: SWAPS,
+  stagedArtifacts: STAGED_ARTIFACTS,
   rejects: REJECTS,
   skipPackages: SKIP_PACKAGES,
   skipPrefixes: SKIP_PREFIXES,
@@ -432,6 +453,31 @@ export function policyLookupReject(
   return policy.rejects.find((entry) => entry.from === name);
 }
 
+export function policyLookupStagedArtifact(
+  policy: PackageAbiPolicy,
+  name: string,
+): PackageStagedArtifactEntry | undefined {
+  return policy.stagedArtifacts.find((entry) => entry.from === name);
+}
+
+/**
+ * Mutate a resolved-package shape so a staged-artifact package installs as
+ * a Nimbus JS bundle instead of its native launcher: rewrite `bin` to the
+ * single `nimbus-staged:<artifact>` sentinel and drop the platform-native
+ * `optionalDependencies` (shards) so the resolver never enqueues them.
+ *
+ * Self-contained (parameters + globals only) so it serializes into the
+ * resolver facet preamble. `pkg` is mutated in place and returned.
+ */
+export function policyApplyStagedArtifact(
+  pkg: { bin?: Record<string, string>; optionalDependencies?: Record<string, string> },
+  entry: PackageStagedArtifactEntry,
+  binPrefix: string,
+): void {
+  pkg.bin = { [entry.bin]: `${binPrefix}${entry.artifact}` };
+  pkg.optionalDependencies = undefined;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Supervisor lookup API
 // ─────────────────────────────────────────────────────────────────────────
@@ -442,6 +488,18 @@ export function lookupSwap(name: string): PackageSwapEntry | undefined {
 
 export function lookupReject(name: string): PackageRejectEntry | undefined {
   return policyLookupReject(PACKAGE_ABI_POLICY, name);
+}
+
+export function lookupStagedArtifact(name: string): PackageStagedArtifactEntry | undefined {
+  return policyLookupStagedArtifact(PACKAGE_ABI_POLICY, name);
+}
+
+/** Apply the staged-artifact bin/optionalDeps rewrite in supervisor scope. */
+export function applyStagedArtifact(
+  pkg: { bin?: Record<string, string>; optionalDependencies?: Record<string, string> },
+  entry: PackageStagedArtifactEntry,
+): void {
+  policyApplyStagedArtifact(pkg, entry, STAGED_ARTIFACT_BIN_PREFIX);
 }
 
 /** Check if a package should be skipped (build-only, types). */

@@ -23,6 +23,7 @@ import {
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
   isOptionalNativeBinding, classifyInstallError, nativeExecutableReject,
+  lookupStagedArtifact, applyStagedArtifact,
 } from '../facets/wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
@@ -574,6 +575,13 @@ function versionToResolved(vData: any, installName?: string): ResolvedPackage {
   if (allPeers && Object.keys(allPeers).length > 0) {
     out.__allPeerDependencies = allPeers;
   }
+  // Staged-artifact packages (e.g. opencode-ai) ship only a native launcher.
+  // Rewrite the bin to the Nimbus staged-bundle sentinel and drop the
+  // platform-native shards so the resolver never enqueues them and the
+  // native-executable reject never fires. Baked into the ResolvedPackage so
+  // it round-trips through the registry cache.
+  const staged = lookupStagedArtifact(packageName);
+  if (staged) applyStagedArtifact(out, staged);
   return out;
 }
 

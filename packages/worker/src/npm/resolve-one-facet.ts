@@ -75,6 +75,15 @@ declare function NATIVE_EXECUTABLE_REJECT(pkg: ResolvedPackage): {
   transitive: 'fail';
 } | undefined;
 
+declare function STAGED_ARTIFACT(name: string): {
+  from: string;
+  bin: string;
+  artifact: string;
+  reason: string;
+} | undefined;
+
+declare const STAGED_ARTIFACT_BIN_PREFIX: string;
+
 /**
  * Argument shape: ONE package's resolution work.
  *
@@ -562,6 +571,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       bin,
     };
     if (allPeers) resolvedOut.__allPeerDependencies = allPeers;
+    // Staged-artifact rewrite (mirror of supervisor versionToResolved):
+    // native-launcher packages install as their prebuilt Nimbus JS bundle.
+    const staged = STAGED_ARTIFACT(packageName);
+    if (staged) {
+      resolvedOut.bin = { [staged.bin]: `${STAGED_ARTIFACT_BIN_PREFIX}${staged.artifact}` };
+      resolvedOut.optionalDependencies = undefined;
+    }
     return resolvedOut as ResolvedPackage;
   };
   const pkg = versionToResolved(vData);

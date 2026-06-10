@@ -46,6 +46,14 @@ export const ESBUILD_VERSION = '0.24.2';
 // Loader module map (request-time WebAssembly.compile is blocked).
 export const SQLJS_VERSION = '1.14.1';
 
+// opencode-ai version whose Nimbus JS artifact is staged in
+// public/_assets/opencode-<version>.js. `npm install opencode-ai` is a
+// native-shard package (bin/opencode.exe + 12 platform optionalDependencies);
+// the install policy maps it to this prebuilt JS bundle instead of the native
+// launcher. Staged by scripts/bundle-opencode.mjs; fetched on demand by
+// runtime/opencode-artifact.ts and served as the package's `opencode` bin.
+export const OPENCODE_VERSION = '1.16.2';
+
 // ── VFS Constants ───────────────────────────────────────────────────────
 export const CHUNK_SIZE = 65_536;        // 64KB per content chunk
 export const LRU_MAX_ENTRIES = 512;      // 512 × 64KB = 32MB hot cache

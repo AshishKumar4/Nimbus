@@ -1,7 +1,21 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import type { ResolvedPackage } from './resolver.js';
+import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';
+
+/**
+ * A staged-artifact bin target (`nimbus-staged:<artifact>`) is a sentinel,
+ * not a VFS path: the runnable bundle lives in the static-assets layer and is
+ * fetched at exec time. It must NOT be resolved against the VFS.
+ */
+export function isStagedArtifactTarget(target: string): boolean {
+  return target.startsWith(STAGED_ARTIFACT_BIN_PREFIX);
+}
+
+export function stagedArtifactId(target: string): string {
+  return target.slice(STAGED_ARTIFACT_BIN_PREFIX.length);
+}
 
 export const NPM_BIN_MANIFEST_VERSION = 1;
 export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
@@ -69,6 +83,12 @@ export function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest {
 }
 
 export function createNpmBinShim(entry: NpmBinEntry): string {
+  if (isStagedArtifactTarget(entry.targetPath)) {
+    // The runnable bundle is staged in the assets layer; the shell dispatches
+    // it through the staged-artifact runtime by recognizing the sentinel in
+    // the bin manifest. The shim body is only a marker for PATH discovery.
+    return `#!/usr/bin/env node\n// nimbus staged artifact: ${entry.targetPath}\n`;
+  }
   return `#!/usr/bin/env node\nrequire(${JSON.stringify(entry.targetPath)});\n`;
 }
 
@@ -85,7 +105,11 @@ export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string)
       packageName: pkg.name,
       packageVersion,
       packagePath,
-      targetPath: resolveVfsPath(rawTarget, packagePath),
+      // Staged-artifact sentinels pass through verbatim; everything else
+      // resolves to a concrete VFS path under the package dir.
+      targetPath: isStagedArtifactTarget(rawTarget)
+        ? rawTarget
+        : resolveVfsPath(rawTarget, packagePath),
     });
   }
   return entries;
