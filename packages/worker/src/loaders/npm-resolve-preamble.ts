@@ -37,6 +37,7 @@
 
 import {
   PACKAGE_ABI_POLICY,
+  policyApplyStagedArtifact,
   policyIsOptionalNativeBinding,
   policyLookupReject,
   policyLookupStagedArtifact,
@@ -57,6 +58,7 @@ const __policyLookupReject = ${policyLookupReject.toString()};
 const __policyNativeArtifactReject = ${policyNativeArtifactReject.toString()};
 const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
 const __policyLookupStagedArtifact = ${policyLookupStagedArtifact.toString()};
+const __policyApplyStagedArtifact = ${policyApplyStagedArtifact.toString()};
 function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
   return __policyShouldSkipPackage(__NIMBUS_PACKAGE_ABI_POLICY, name, !!frameworkAware);
 }
@@ -83,6 +85,9 @@ function STAGED_ARTIFACT(name) {
   return __policyLookupStagedArtifact(__NIMBUS_PACKAGE_ABI_POLICY, name);
 }
 const STAGED_ARTIFACT_BIN_PREFIX = ${JSON.stringify(STAGED_ARTIFACT_BIN_PREFIX)};
+function STAGED_ARTIFACT_APPLY(pkg, entry) {
+  __policyApplyStagedArtifact(pkg, entry, STAGED_ARTIFACT_BIN_PREFIX);
+}
 
 // ── Registry telemetry: facet-side event collection ──────────────────────
 // The facet cannot import the registry's emitRegistryEvent (preamble has

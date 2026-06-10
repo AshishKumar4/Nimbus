@@ -456,16 +456,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         };
         if (allPeers)
             resolvedOut.__allPeerDependencies = allPeers;
-        // Staged-artifact rewrite (mirror of supervisor versionToResolved):
-        // native-launcher packages install as their prebuilt Nimbus JS bundle.
+        // Staged-artifact rewrite: native-launcher packages install as their
+        // prebuilt Nimbus JS bundle. STAGED_ARTIFACT_APPLY is the preamble copy
+        // of the supervisor's policyApplyStagedArtifact (package-abi-policy.mjs
+        // enforces parity), so the facet performs the identical rewrite.
         const staged = STAGED_ARTIFACT(packageName);
-        if (staged) {
-            resolvedOut.bin = { [staged.bin]: `${STAGED_ARTIFACT_BIN_PREFIX}${staged.artifact}` };
-            resolvedOut.optionalDependencies = undefined;
-            resolvedOut.os = undefined;
-            resolvedOut.cpu = undefined;
-            resolvedOut.libc = undefined;
-        }
+        if (staged)
+            STAGED_ARTIFACT_APPLY(resolvedOut, staged);
         return resolvedOut;
     };
     const pkg = versionToResolved(vData);

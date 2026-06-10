@@ -75,14 +75,19 @@ declare function NATIVE_EXECUTABLE_REJECT(pkg: ResolvedPackage): {
   transitive: 'fail';
 } | undefined;
 
-declare function STAGED_ARTIFACT(name: string): {
+type StagedArtifactEntry = {
   from: string;
   bin: string;
   artifact: string;
   reason: string;
-} | undefined;
+};
 
-declare const STAGED_ARTIFACT_BIN_PREFIX: string;
+declare function STAGED_ARTIFACT(name: string): StagedArtifactEntry | undefined;
+
+declare function STAGED_ARTIFACT_APPLY(
+  pkg: { bin?: Record<string, string>; optionalDependencies?: Record<string, string>; os?: string[]; cpu?: string[]; libc?: string[] },
+  entry: StagedArtifactEntry,
+): void;
 
 /**
  * Argument shape: ONE package's resolution work.
@@ -571,16 +576,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       bin,
     };
     if (allPeers) resolvedOut.__allPeerDependencies = allPeers;
-    // Staged-artifact rewrite (mirror of supervisor versionToResolved):
-    // native-launcher packages install as their prebuilt Nimbus JS bundle.
+    // Staged-artifact rewrite: native-launcher packages install as their
+    // prebuilt Nimbus JS bundle. STAGED_ARTIFACT_APPLY is the preamble copy
+    // of the supervisor's policyApplyStagedArtifact (package-abi-policy.mjs
+    // enforces parity), so the facet performs the identical rewrite.
     const staged = STAGED_ARTIFACT(packageName);
-    if (staged) {
-      resolvedOut.bin = { [staged.bin]: `${STAGED_ARTIFACT_BIN_PREFIX}${staged.artifact}` };
-      resolvedOut.optionalDependencies = undefined;
-      resolvedOut.os = undefined;
-      resolvedOut.cpu = undefined;
-      resolvedOut.libc = undefined;
-    }
+    if (staged) STAGED_ARTIFACT_APPLY(resolvedOut, staged);
     return resolvedOut as ResolvedPackage;
   };
   const pkg = versionToResolved(vData);

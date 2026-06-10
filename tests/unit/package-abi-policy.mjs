@@ -28,6 +28,8 @@ import {
   shouldSkipPackageWithFramework,
   nativeExecutableReject,
   isOptionalNativeBinding,
+  lookupStagedArtifact,
+  applyStagedArtifact,
 } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 import { registryEntryFromResolved } from '../../packages/worker/src/npm/resolver.ts';
@@ -43,6 +45,8 @@ return {
   SHOULD_WARN_SKIP_TRANSITIVE,
   NATIVE_EXECUTABLE_REJECT,
   IS_OPTIONAL_NATIVE_BINDING,
+  STAGED_ARTIFACT,
+  STAGED_ARTIFACT_APPLY,
 };`)();
 
 assert.deepEqual(
@@ -213,6 +217,53 @@ for (const fixture of [
     `optional-binding parity: ${fixture.name}`,
   );
 }
+
+// ── 3b. Staged-artifact lookup + rewrite parity ─────────────────────────
+// The facet rewrites native-launcher packages (opencode-ai) into the Nimbus
+// staged-bundle sentinel via the injected __policyApplyStagedArtifact. Assert
+// the facet's lookup and rewrite produce the identical pkg as the supervisor's
+// applyStagedArtifact, so the two paths can never drift.
+for (const entry of PACKAGE_ABI_POLICY.stagedArtifacts) {
+  assert.deepEqual(
+    facet.STAGED_ARTIFACT(entry.from),
+    lookupStagedArtifact(entry.from),
+    `staged-artifact lookup parity: ${entry.from}`,
+  );
+
+  // Realistic native-launcher shape: a native bin + platform-native shards +
+  // os/cpu/libc allowlists — exactly what the rewrite must clear.
+  const makePkg = () => ({
+    name: entry.from,
+    bin: { [entry.bin]: 'bin/opencode.exe' },
+    optionalDependencies: { 'opencode-linux-x64': '1.16.2', 'opencode-darwin-arm64': '1.16.2' },
+    os: ['darwin', 'linux', 'win32'],
+    cpu: ['arm64', 'x64'],
+    libc: ['glibc'],
+  });
+
+  const supervisorPkg = makePkg();
+  const staged = lookupStagedArtifact(entry.from);
+  assert.ok(staged, `supervisor must resolve staged entry for ${entry.from}`);
+  applyStagedArtifact(supervisorPkg, staged);
+
+  const facetPkg = makePkg();
+  facet.STAGED_ARTIFACT_APPLY(facetPkg, facet.STAGED_ARTIFACT(entry.from));
+
+  assert.deepEqual(
+    facetPkg,
+    supervisorPkg,
+    `staged-artifact rewrite parity: ${entry.from}`,
+  );
+  // Spot-check the rewrite actually fired (sentinel bin, cleared natives).
+  assert.equal(facetPkg.bin[entry.bin], `nimbus-staged:${entry.artifact}`);
+  assert.equal(facetPkg.optionalDependencies, undefined);
+  assert.equal(facetPkg.os, undefined);
+  assert.equal(facetPkg.cpu, undefined);
+  assert.equal(facetPkg.libc, undefined);
+}
+// Names with no staged entry are left untouched by both paths.
+assert.equal(facet.STAGED_ARTIFACT('left-pad'), undefined);
+assert.deepEqual(facet.STAGED_ARTIFACT('left-pad'), lookupStagedArtifact('left-pad'));
 
 // ── 4. Registry-cache entries persist ABI-relevant metadata ────────────
 
