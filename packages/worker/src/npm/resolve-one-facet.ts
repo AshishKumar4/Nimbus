@@ -577,6 +577,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (staged) {
       resolvedOut.bin = { [staged.bin]: `${STAGED_ARTIFACT_BIN_PREFIX}${staged.artifact}` };
       resolvedOut.optionalDependencies = undefined;
+      resolvedOut.os = undefined;
+      resolvedOut.cpu = undefined;
+      resolvedOut.libc = undefined;
     }
     return resolvedOut as ResolvedPackage;
   };

@@ -29,7 +29,14 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with this module.
  */
-import { type PackageAbiPolicy, type PackageRejectEntry, type PackageSwapEntry } from '../runtime/os-contracts.js';
+import { type PackageAbiPolicy, type PackageRejectEntry, type PackageStagedArtifactEntry, type PackageSwapEntry } from '../runtime/os-contracts.js';
+/**
+ * Sentinel bin target the installer writes for a staged-artifact package.
+ * `bin/<name>` is rewritten to `<prefix><artifact-id>`; the .bin runner
+ * (init.ts) recognizes the scheme and dispatches the staged opencode bundle
+ * through the node runtime instead of trying to exec the native launcher.
+ */
+export declare const STAGED_ARTIFACT_BIN_PREFIX = "nimbus-staged:";
 /**
  * The single typed package-ABI policy (see `PackageAbiPolicy` in
  * runtime/os-contracts.ts). Everything the npm resolver/installer needs
@@ -41,8 +48,31 @@ export declare const PACKAGE_ABI_POLICY: PackageAbiPolicy;
 export declare function policyShouldSkipPackage(policy: PackageAbiPolicy, name: string, frameworkAware: boolean): boolean;
 export declare function policyLookupSwap(policy: PackageAbiPolicy, name: string): PackageSwapEntry | undefined;
 export declare function policyLookupReject(policy: PackageAbiPolicy, name: string): PackageRejectEntry | undefined;
+export declare function policyLookupStagedArtifact(policy: PackageAbiPolicy, name: string): PackageStagedArtifactEntry | undefined;
+/**
+ * Mutate a resolved-package shape so a staged-artifact package installs as
+ * a Nimbus JS bundle instead of its native launcher: rewrite `bin` to the
+ * single `nimbus-staged:<artifact>` sentinel and drop the platform-native
+ * `optionalDependencies` (shards) so the resolver never enqueues them.
+ *
+ * Self-contained (parameters + globals only) so it serializes into the
+ * resolver facet preamble. `pkg` is mutated in place and returned.
+ */
+export declare function policyApplyStagedArtifact(pkg: {
+    bin?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    os?: string[];
+    cpu?: string[];
+    libc?: string[];
+}, entry: PackageStagedArtifactEntry, binPrefix: string): void;
 export declare function lookupSwap(name: string): PackageSwapEntry | undefined;
 export declare function lookupReject(name: string): PackageRejectEntry | undefined;
+export declare function lookupStagedArtifact(name: string): PackageStagedArtifactEntry | undefined;
+/** Apply the staged-artifact bin/optionalDeps rewrite in supervisor scope. */
+export declare function applyStagedArtifact(pkg: {
+    bin?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+}, entry: PackageStagedArtifactEntry): void;
 /** Check if a package should be skipped (build-only, types). */
 export declare function shouldSkipPackage(name: string): boolean;
 /**

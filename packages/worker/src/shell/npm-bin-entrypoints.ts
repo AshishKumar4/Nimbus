@@ -1,6 +1,10 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { resolveNpmBin, resolveNpmBinFromPath } from '../npm/bin-links.js';
+import type { FacetManager } from '../facets/manager.js';
+import {
+  resolveNpmBin, resolveNpmBinFromPath,
+  isStagedArtifactTarget, stagedArtifactId,
+} from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { DEFAULT_PATH } from '../constants.js';
@@ -46,6 +50,7 @@ export function installNpmBinFallbackResolver(
     vfs: SqliteVFS;
     getCwd(): string;
     processes: SessionProcessSupervisor;
+    getFacetManager(): FacetManager;
     terminal?: Output | null;
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
@@ -86,6 +91,16 @@ export function installNpmBinFallbackResolver(
       }
 
       const argv = Array.isArray(ctx.args) ? ctx.args.map(String) : [];
+
+      // Staged-artifact sentinel (e.g. opencode): the runnable bundle lives in
+      // the static-assets layer, not the VFS. Dispatch it through the
+      // FacetManager's ESM-mainModule path instead of the node CJS runner.
+      if (isStagedArtifactTarget(bin.targetPath)) {
+        return await runStagedArtifact(
+          deps, name, stagedArtifactId(bin.targetPath), argv, invocationCwd, ctx,
+        );
+      }
+
       const bundleProfile = bundleProfileForNpmBin(bin);
       const metadata = readNpmBinPackageMetadata(deps.vfs, bin.packagePath);
       const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
@@ -160,6 +175,47 @@ function resolveNpmBinForInvocation(
 ) {
   return resolveNpmBinFromPath(vfs, cwd, envPath, name)
     ?? resolveNpmBin(vfs, cwd, name);
+}
+
+async function runStagedArtifact(
+  deps: {
+    processes: SessionProcessSupervisor;
+    getFacetManager(): FacetManager;
+    terminal?: Output | null;
+    notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
+    emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
+  },
+  name: string,
+  artifact: string,
+  argv: string[],
+  cwd: string,
+  ctx: CommandContext,
+): Promise<number> {
+  const shellLine = `${name} ${argv.join(' ')}`.trim();
+  const startedAt = Date.now();
+  let result: { exitCode: number; stdout: string; stderr: string };
+  try {
+    result = await deps.getFacetManager().execStagedArtifact(artifact, {
+      argv,
+      env: ctx.env ?? {},
+      cwd,
+      stdin: '',
+      command: shellLine,
+    });
+  } catch (e: unknown) {
+    ctx.stderr.write(`${name}: ${formatError(e)}\n`);
+    return 1;
+  }
+  if (result.stdout) ctx.stdout.write(result.stdout);
+  if (result.stderr) ctx.stderr.write(result.stderr);
+  // execStagedArtifact spawns + exits the process entry itself; surface the
+  // terminal/exec-done events here so the shell observes the same lifecycle
+  // signals as the node-bin path.
+  const proc = deps.processes.getAll().find((p) => p.command === shellLine);
+  const pid = proc?.pid ?? 0;
+  deps.notifyTerminalEvent({ type: 'exit', pid, code: result.exitCode, command: shellLine });
+  deps.emitShellExecDone(pid, shellLine, result.exitCode, Date.now() - startedAt);
+  return result.exitCode;
 }
 
 function formatError(error: unknown): string {

@@ -731,6 +731,14 @@ function registerLocalBins(vfs: VFS, cwd: string, registry: CommandRegistry, ker
 	return count;
 }
 
+function isNativeExecutableBin(binPath: string): boolean {
+	const clean = binPath.split(/[?#]/)[0];
+	const base = clean.slice(clean.lastIndexOf('/') + 1);
+	const dot = base.lastIndexOf('.');
+	const ext = dot > 0 ? base.slice(dot).toLowerCase() : '';
+	return ext === '.exe' || ext === '.node';
+}
+
 function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegistry, kernel?: Kernel): number {
 	const pkgJsonPath = join(pkgDir, 'package.json');
 	if (!vfs.exists(pkgJsonPath)) return 0;
@@ -739,6 +747,12 @@ function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegistry, ke
 		const pkg: PackageJson = JSON.parse(vfs.readFileString(pkgJsonPath));
 		const bins = getBinEntries(pkg);
 		for (const [binName, binPath] of Object.entries(bins)) {
+			// Native-executable bins (.exe/.node) are not runnable here; skip
+			// them so a package whose only bin is a native launcher (e.g.
+			// opencode-ai's bin/opencode.exe) is handled by the npm-bin
+			// fallback resolver, which reads the authoritative bin manifest
+			// (including staged-artifact sentinels) instead of this raw scan.
+			if (isNativeExecutableBin(binPath)) continue;
 			// Only register if not already in registry
 			if (!registry.has(binName)) {
 				const scriptPath = resolve(pkgDir, binPath);

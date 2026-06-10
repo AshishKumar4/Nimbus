@@ -10,6 +10,7 @@ export declare const NODE_VERSIONS: {
 };
 export declare const ESBUILD_VERSION = "0.24.2";
 export declare const SQLJS_VERSION = "1.14.1";
+export declare const OPENCODE_VERSION = "1.16.2";
 export declare const CHUNK_SIZE = 65536;
 export declare const LRU_MAX_ENTRIES = 512;
 export declare const BATCH_SIZE = 64;

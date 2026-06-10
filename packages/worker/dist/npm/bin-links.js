@@ -1,5 +1,17 @@
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';
+/**
+ * A staged-artifact bin target (`nimbus-staged:<artifact>`) is a sentinel,
+ * not a VFS path: the runnable bundle lives in the static-assets layer and is
+ * fetched at exec time. It must NOT be resolved against the VFS.
+ */
+export function isStagedArtifactTarget(target) {
+    return target.startsWith(STAGED_ARTIFACT_BIN_PREFIX);
+}
+export function stagedArtifactId(target) {
+    return target.slice(STAGED_ARTIFACT_BIN_PREFIX.length);
+}
 export const NPM_BIN_MANIFEST_VERSION = 1;
 export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
 const NpmBinEntrySchema = z.object({
@@ -34,6 +46,12 @@ export function createNpmBinManifest(entries) {
     return { version: NPM_BIN_MANIFEST_VERSION, bins };
 }
 export function createNpmBinShim(entry) {
+    if (isStagedArtifactTarget(entry.targetPath)) {
+        // The runnable bundle is staged in the assets layer; the shell dispatches
+        // it through the staged-artifact runtime by recognizing the sentinel in
+        // the bin manifest. The shim body is only a marker for PATH discovery.
+        return `#!/usr/bin/env node\n// nimbus staged artifact: ${entry.targetPath}\n`;
+    }
     return `#!/usr/bin/env node\nrequire(${JSON.stringify(entry.targetPath)});\n`;
 }
 export function packageBinEntries(pkg, nodeModulesPath) {
@@ -50,7 +68,11 @@ export function packageBinEntries(pkg, nodeModulesPath) {
             packageName: pkg.name,
             packageVersion,
             packagePath,
-            targetPath: resolveVfsPath(rawTarget, packagePath),
+            // Staged-artifact sentinels pass through verbatim; everything else
+            // resolves to a concrete VFS path under the package dir.
+            targetPath: isStagedArtifactTarget(rawTarget)
+                ? rawTarget
+                : resolveVfsPath(rawTarget, packagePath),
         });
     }
     return entries;
@@ -300,6 +322,18 @@ function validateEntry(vfs, entry) {
     if (!parsed.success)
         return null;
     const candidate = parsed.data;
+    // Staged-artifact sentinels are not VFS paths: the runnable bundle lives in
+    // the assets layer. Pass them through verbatim so the manifest entry is
+    // honoured and the shell dispatches via the staged-artifact runtime.
+    if (isStagedArtifactTarget(candidate.targetPath)) {
+        return {
+            name: candidate.name,
+            packageName: candidate.packageName,
+            packageVersion: candidate.packageVersion,
+            packagePath: normalizeVfsPath(candidate.packagePath),
+            targetPath: candidate.targetPath,
+        };
+    }
     const targetPath = normalizeVfsPath(candidate.targetPath);
     const resolvedTarget = resolveExistingTarget(vfs, targetPath);
     if (!resolvedTarget)

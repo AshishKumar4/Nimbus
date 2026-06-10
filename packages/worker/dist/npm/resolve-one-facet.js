@@ -456,6 +456,16 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         };
         if (allPeers)
             resolvedOut.__allPeerDependencies = allPeers;
+        // Staged-artifact rewrite (mirror of supervisor versionToResolved):
+        // native-launcher packages install as their prebuilt Nimbus JS bundle.
+        const staged = STAGED_ARTIFACT(packageName);
+        if (staged) {
+            resolvedOut.bin = { [staged.bin]: `${STAGED_ARTIFACT_BIN_PREFIX}${staged.artifact}` };
+            resolvedOut.optionalDependencies = undefined;
+            resolvedOut.os = undefined;
+            resolvedOut.cpu = undefined;
+            resolvedOut.libc = undefined;
+        }
         return resolvedOut;
     };
     const pkg = versionToResolved(vData);

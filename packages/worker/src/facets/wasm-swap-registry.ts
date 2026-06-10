@@ -470,12 +470,24 @@ export function policyLookupStagedArtifact(
  * resolver facet preamble. `pkg` is mutated in place and returned.
  */
 export function policyApplyStagedArtifact(
-  pkg: { bin?: Record<string, string>; optionalDependencies?: Record<string, string> },
+  pkg: {
+    bin?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    os?: string[];
+    cpu?: string[];
+    libc?: string[];
+  },
   entry: PackageStagedArtifactEntry,
   binPrefix: string,
 ): void {
   pkg.bin = { [entry.bin]: `${binPrefix}${entry.artifact}` };
   pkg.optionalDependencies = undefined;
+  // The staged bundle is platform-independent; clear the package's native
+  // os/cpu/libc allowlists so the native-artifact reject does not fire on
+  // them (opencode-ai declares os=[darwin,linux,win32] cpu=[arm64,x64]).
+  pkg.os = undefined;
+  pkg.cpu = undefined;
+  pkg.libc = undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

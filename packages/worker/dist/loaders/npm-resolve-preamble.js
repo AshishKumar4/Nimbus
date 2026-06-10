@@ -34,7 +34,7 @@
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */
-import { PACKAGE_ABI_POLICY, policyIsOptionalNativeBinding, policyLookupReject, policyLookupSwap, policyNativeArtifactReject, policyShouldSkipPackage, } from '../facets/wasm-swap-registry.js';
+import { PACKAGE_ABI_POLICY, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeArtifactReject, policyShouldSkipPackage, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
 export const NPM_RESOLVE_PREAMBLE = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
@@ -45,6 +45,7 @@ const __policyLookupSwap = ${policyLookupSwap.toString()};
 const __policyLookupReject = ${policyLookupReject.toString()};
 const __policyNativeArtifactReject = ${policyNativeArtifactReject.toString()};
 const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
+const __policyLookupStagedArtifact = ${policyLookupStagedArtifact.toString()};
 function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
   return __policyShouldSkipPackage(__NIMBUS_PACKAGE_ABI_POLICY, name, !!frameworkAware);
 }
@@ -67,6 +68,10 @@ function NATIVE_EXECUTABLE_REJECT(pkg) {
 function IS_OPTIONAL_NATIVE_BINDING(pkg) {
   return __policyIsOptionalNativeBinding(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
 }
+function STAGED_ARTIFACT(name) {
+  return __policyLookupStagedArtifact(__NIMBUS_PACKAGE_ABI_POLICY, name);
+}
+const STAGED_ARTIFACT_BIN_PREFIX = ${JSON.stringify(STAGED_ARTIFACT_BIN_PREFIX)};
 
 // ── Registry telemetry: facet-side event collection ──────────────────────
 // The facet cannot import the registry's emitRegistryEvent (preamble has

@@ -19,6 +19,7 @@ import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -196,6 +197,9 @@ export declare class FacetManager {
      */
     private sqliteWasmBytes;
     private sqliteWasmBytesPromise;
+    /** Memoized opencode ESM bundle source (fetched once per isolate). */
+    private opencodeBundle;
+    private opencodeBundlePromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -267,6 +271,20 @@ export declare class FacetManager {
      */
     private _w5RecordTermination;
     private _execViaLoader;
+    /**
+     * Run a staged-artifact bundle (currently opencode) as an ESM mainModule.
+     *
+     * The bundle is ESM-only and imports node:sqlite, so it cannot use the
+     * `new Function` CJS facet path. It rides into the Worker Loader module map
+     * as a real ESM module; the generated runner (mainModule) installs the
+     * Bun-global polyfill, seeds process state, imports the bundle, and returns
+     * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
+     * module so the static import links.
+     */
+    execStagedArtifact(artifact: string, opts: OpencodeRunnerOptions & {
+        command?: string;
+    }): Promise<FacetExecResult>;
+    private opencodeBundleSource;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
     /** Execution timeout. */

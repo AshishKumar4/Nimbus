@@ -153,6 +153,24 @@ export interface PackageSwapEntry {
      */
     compat: 'drop-in' | 'shim' | 'manual';
 }
+/**
+ * Staged-artifact entry: a package whose only published runnable form is a
+ * platform-native binary (so it would otherwise hit the native-artifact
+ * reject), but for which Nimbus ships a prebuilt JS/WASM bundle in the
+ * static-assets layer. At resolve time the package's native shards
+ * (optionalDependencies) and lifecycle scripts are dropped and its `bin` is
+ * rewritten to a Nimbus shim that loads the staged bundle.
+ */
+export interface PackageStagedArtifactEntry {
+    /** Package name the user installs (e.g. `opencode-ai`). */
+    from: string;
+    /** Bin name the staged artifact provides (e.g. `opencode`). */
+    bin: string;
+    /** Stable artifact id the node runtime resolves to a staged asset path. */
+    artifact: string;
+    /** One-line reason shown to the user. */
+    reason: string;
+}
 /** Deny-list entry with a helpful, always-actionable message. */
 export interface PackageRejectEntry {
     from: string;
@@ -185,6 +203,8 @@ export interface PackageAbiPolicy {
     nativeArtifactClass: typeof NATIVE_UNSUPPORTED_ABI;
     /** Drop-in name rewrites (native package → published WASM build). */
     swaps: readonly PackageSwapEntry[];
+    /** Native-only packages Nimbus ships a prebuilt JS/WASM artifact for. */
+    stagedArtifacts: readonly PackageStagedArtifactEntry[];
     /** Known-native deny list with per-entry transitive policy. */
     rejects: readonly PackageRejectEntry[];
     /** Build-only packages skipped at transitive depth. */

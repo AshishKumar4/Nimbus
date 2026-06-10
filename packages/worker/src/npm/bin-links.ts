@@ -366,6 +366,18 @@ function validateEntry(vfs: VfsLike, entry: unknown): NpmBinEntry | null {
   if (!parsed.success) return null;
 
   const candidate = parsed.data;
+  // Staged-artifact sentinels are not VFS paths: the runnable bundle lives in
+  // the assets layer. Pass them through verbatim so the manifest entry is
+  // honoured and the shell dispatches via the staged-artifact runtime.
+  if (isStagedArtifactTarget(candidate.targetPath)) {
+    return {
+      name: candidate.name,
+      packageName: candidate.packageName,
+      packageVersion: candidate.packageVersion,
+      packagePath: normalizeVfsPath(candidate.packagePath),
+      targetPath: candidate.targetPath,
+    };
+  }
   const targetPath = normalizeVfsPath(candidate.targetPath);
   const resolvedTarget = resolveExistingTarget(vfs, targetPath);
   if (!resolvedTarget) return null;

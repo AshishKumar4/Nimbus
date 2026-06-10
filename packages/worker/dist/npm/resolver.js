@@ -12,7 +12,7 @@
 import { retryableFetch, DEFAULT_RETRIES } from '../_shared/retry.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { setResolverPhase, packumentFetchStart, packumentFetchEnd, responseStubDisposed, } from '../observability/diag-counters.js';
-import { lookupSwap, lookupReject, shouldWarnSkipTransitive, shouldSkipPackageWithFramework, formatSwapNotice, formatTransitiveSkip, RegistryRejectError, emitRegistryEvent, isOptionalNativeBinding, classifyInstallError, nativeExecutableReject, } from '../facets/wasm-swap-registry.js';
+import { lookupSwap, lookupReject, shouldWarnSkipTransitive, shouldSkipPackageWithFramework, formatSwapNotice, formatTransitiveSkip, RegistryRejectError, emitRegistryEvent, isOptionalNativeBinding, classifyInstallError, nativeExecutableReject, lookupStagedArtifact, applyStagedArtifact, } from '../facets/wasm-swap-registry.js';
 // W2.6a D6: resolver-unification. The single source of truth for
 // exports-field / package-entry resolution lives in
 // src/_shared/exports-resolver.ts. Callers that need these helpers
@@ -474,6 +474,14 @@ function versionToResolved(vData, installName) {
     if (allPeers && Object.keys(allPeers).length > 0) {
         out.__allPeerDependencies = allPeers;
     }
+    // Staged-artifact packages (e.g. opencode-ai) ship only a native launcher.
+    // Rewrite the bin to the Nimbus staged-bundle sentinel and drop the
+    // platform-native shards so the resolver never enqueues them and the
+    // native-executable reject never fires. Baked into the ResolvedPackage so
+    // it round-trips through the registry cache.
+    const staged = lookupStagedArtifact(packageName);
+    if (staged)
+        applyStagedArtifact(out, staged);
     return out;
 }
 /**

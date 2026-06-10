@@ -64,6 +64,22 @@ const SWAPS = [
         compat: 'drop-in',
     },
 ];
+/**
+ * Sentinel bin target the installer writes for a staged-artifact package.
+ * `bin/<name>` is rewritten to `<prefix><artifact-id>`; the .bin runner
+ * (init.ts) recognizes the scheme and dispatches the staged opencode bundle
+ * through the node runtime instead of trying to exec the native launcher.
+ */
+export const STAGED_ARTIFACT_BIN_PREFIX = 'nimbus-staged:';
+const STAGED_ARTIFACTS = [
+    {
+        from: 'opencode-ai',
+        bin: 'opencode',
+        artifact: 'opencode',
+        reason: 'opencode-ai ships a native launcher (bin/opencode.exe) and 12 platform-native shards; ' +
+            'Nimbus runs the prebuilt opencode JS bundle instead.',
+    },
+];
 const REJECTS = [
     // ── Same-require-name natives that crash at load time ────────────────
     {
@@ -320,6 +336,7 @@ export const PACKAGE_ABI_POLICY = {
     ],
     nativeArtifactClass: NATIVE_UNSUPPORTED_ABI,
     swaps: SWAPS,
+    stagedArtifacts: STAGED_ARTIFACTS,
     rejects: REJECTS,
     skipPackages: SKIP_PACKAGES,
     skipPrefixes: SKIP_PREFIXES,
@@ -364,6 +381,28 @@ export function policyLookupSwap(policy, name) {
 export function policyLookupReject(policy, name) {
     return policy.rejects.find((entry) => entry.from === name);
 }
+export function policyLookupStagedArtifact(policy, name) {
+    return policy.stagedArtifacts.find((entry) => entry.from === name);
+}
+/**
+ * Mutate a resolved-package shape so a staged-artifact package installs as
+ * a Nimbus JS bundle instead of its native launcher: rewrite `bin` to the
+ * single `nimbus-staged:<artifact>` sentinel and drop the platform-native
+ * `optionalDependencies` (shards) so the resolver never enqueues them.
+ *
+ * Self-contained (parameters + globals only) so it serializes into the
+ * resolver facet preamble. `pkg` is mutated in place and returned.
+ */
+export function policyApplyStagedArtifact(pkg, entry, binPrefix) {
+    pkg.bin = { [entry.bin]: `${binPrefix}${entry.artifact}` };
+    pkg.optionalDependencies = undefined;
+    // The staged bundle is platform-independent; clear the package's native
+    // os/cpu/libc allowlists so the native-artifact reject does not fire on
+    // them (opencode-ai declares os=[darwin,linux,win32] cpu=[arm64,x64]).
+    pkg.os = undefined;
+    pkg.cpu = undefined;
+    pkg.libc = undefined;
+}
 // ─────────────────────────────────────────────────────────────────────────
 // Supervisor lookup API
 // ─────────────────────────────────────────────────────────────────────────
@@ -372,6 +411,13 @@ export function lookupSwap(name) {
 }
 export function lookupReject(name) {
     return policyLookupReject(PACKAGE_ABI_POLICY, name);
+}
+export function lookupStagedArtifact(name) {
+    return policyLookupStagedArtifact(PACKAGE_ABI_POLICY, name);
+}
+/** Apply the staged-artifact bin/optionalDeps rewrite in supervisor scope. */
+export function applyStagedArtifact(pkg, entry) {
+    policyApplyStagedArtifact(pkg, entry, STAGED_ARTIFACT_BIN_PREFIX);
 }
 /** Check if a package should be skipped (build-only, types). */
 export function shouldSkipPackage(name) {

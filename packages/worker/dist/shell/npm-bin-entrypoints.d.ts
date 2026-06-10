@@ -1,5 +1,6 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { FacetManager } from '../facets/manager.js';
 type Output = {
     write(data: string): void;
 };
@@ -13,6 +14,7 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
     vfs: SqliteVFS;
     getCwd(): string;
     processes: SessionProcessSupervisor;
+    getFacetManager(): FacetManager;
     terminal?: Output | null;
     notifyTerminalEvent(event: {
         type: 'spawn' | 'exit';

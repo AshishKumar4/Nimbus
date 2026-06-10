@@ -32,6 +32,13 @@ import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
+import { fetchOpencodeBundle } from '../runtime/opencode-artifact.js';
+import {
+  generateOpencodeRunnerCode,
+  OPENCODE_BUNDLE_MODULE_NAME,
+  OPENCODE_NODE_SQLITE_MODULE,
+  type OpencodeRunnerOptions,
+} from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
@@ -2356,6 +2363,10 @@ export class FacetManager {
   private sqliteWasmBytes: ArrayBuffer | null = null;
   private sqliteWasmBytesPromise: Promise<ArrayBuffer> | null = null;
 
+  /** Memoized opencode ESM bundle source (fetched once per isolate). */
+  private opencodeBundle: string | null = null;
+  private opencodeBundlePromise: Promise<string> | null = null;
+
   constructor(
     ctx: DurableObjectState,
     env: unknown,
@@ -2674,6 +2685,87 @@ export class FacetManager {
       disposeRpcResource(entrypoint);
       disposeRpcResource(worker);
       disposeRpcResource(supervisorBinding);
+    }
+  }
+
+  /**
+   * Run a staged-artifact bundle (currently opencode) as an ESM mainModule.
+   *
+   * The bundle is ESM-only and imports node:sqlite, so it cannot use the
+   * `new Function` CJS facet path. It rides into the Worker Loader module map
+   * as a real ESM module; the generated runner (mainModule) installs the
+   * Bun-global polyfill, seeds process state, imports the bundle, and returns
+   * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
+   * module so the static import links.
+   */
+  async execStagedArtifact(
+    artifact: string,
+    opts: OpencodeRunnerOptions & { command?: string },
+  ): Promise<FacetExecResult> {
+    if (artifact !== 'opencode') {
+      throw new Error(`Nimbus: unknown staged artifact '${artifact}'`);
+    }
+    if (!this.env.ASSETS) {
+      throw new Error(
+        'staged opencode artifact requires an env.ASSETS binding; this Nimbus ' +
+          'deployment is missing the static-assets binding',
+      );
+    }
+    const bundle = await this.opencodeBundleSource();
+    const runnerCode = generateOpencodeRunnerCode(opts);
+
+    const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
+    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd);
+    const pid = entry.pid;
+
+    let worker: LoadedWorkerStub | undefined;
+    let entrypoint: LoadedWorkerEntrypointStub | undefined;
+    try {
+      worker = this.env.LOADER.load({
+        compatibilityDate: CF_COMPAT_DATE,
+        compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+        mainModule: 'runner.js',
+        modules: {
+          'runner.js': runnerCode,
+          [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
+          'node:sqlite': { js: OPENCODE_NODE_SQLITE_MODULE },
+        },
+      });
+      entrypoint = worker.getEntrypoint();
+      if (typeof entrypoint.fetch !== 'function') {
+        throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
+      }
+      const response = await entrypoint.fetch(
+        new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
+      );
+      try {
+        const result = await response.json() as FacetExecResult;
+        this.processes.exit(pid, result.exitCode);
+        return result;
+      } finally {
+        disposeRpcResource(response);
+      }
+    } catch (e) {
+      this.processes.exit(pid, 1);
+      throw e;
+    } finally {
+      disposeRpcResource(entrypoint);
+      disposeRpcResource(worker);
+    }
+  }
+
+  private async opencodeBundleSource(): Promise<string> {
+    if (this.opencodeBundle) return this.opencodeBundle;
+    if (!this.opencodeBundlePromise) {
+      const assets = this.env.ASSETS!;
+      this.opencodeBundlePromise = fetchOpencodeBundle({ ASSETS: assets });
+    }
+    try {
+      this.opencodeBundle = await this.opencodeBundlePromise;
+      return this.opencodeBundle;
+    } catch (e) {
+      this.opencodeBundlePromise = null;
+      throw e;
     }
   }
 

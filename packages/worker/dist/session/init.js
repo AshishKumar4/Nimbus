@@ -1903,6 +1903,10 @@ export function initSession(self, ws) {
         vfs: sqliteFs,
         getCwd: () => self.shell?.cwd || '/home/user',
         processes: self.processes,
+        getFacetManager: () => {
+            self.ensureFacetManager();
+            return self.facetManager;
+        },
         terminal: self.terminal,
         notifyTerminalEvent: (event) => notifyTerminalEvent(self.terminal, event),
         runtimeCommandHint,

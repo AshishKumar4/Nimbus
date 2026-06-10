@@ -1983,6 +1983,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       vfs: sqliteFs,
       getCwd: () => (self.shell as any)?.cwd || '/home/user',
       processes: self.processes,
+      getFacetManager: () => {
+        self.ensureFacetManager();
+        return self.facetManager!;
+      },
       terminal: self.terminal,
       notifyTerminalEvent: (event) => notifyTerminalEvent(self.terminal, event),
       runtimeCommandHint,
