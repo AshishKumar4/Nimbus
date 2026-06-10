@@ -402,6 +402,13 @@ const USER_CODE = ${safeCode};
 const __NimbusHostResponse = globalThis.Response;
 
 function __mkCompiledFn(code) {
+  // Node strips a leading shebang from every module before evaluation;
+  // bin scripts are commonly bundled verbatim with their
+  // "#!/usr/bin/env node" line, which is a SyntaxError under new Function.
+  if (typeof code === "string" && code.charCodeAt(0) === 35 && code.charCodeAt(1) === 33) {
+    const __nl = code.indexOf("\\n");
+    code = __nl >= 0 ? code.slice(__nl + 1) : "";
+  }
   function renameIfDeclared(name) {
     const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
     return re.test(code) ? name + "__nimbus_unused" : name;
@@ -428,7 +435,15 @@ const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
+  // Precompile JS modules AND extensionless CJS entries (bin scripts and
+  // shims). workerd forbids new Function at request time, so anything not
+  // precompiled here surfaces the misleading "file was not pre-bundled".
+  // .json is data; skip it (it loads via JSON.parse, not as a function).
+  const __base = __p.slice(__p.lastIndexOf("/") + 1);
+  const __dot = __base.lastIndexOf(".");
+  const __ext = __dot > 0 ? __base.slice(__dot) : "";
+  if (__ext === ".js" || __ext === ".mjs" || __ext === ".cjs" || __ext === "") {
+    if (typeof __c !== "string") continue;
     try {
       __compiledModules.set(__p, __mkCompiledFn(__c));
     } catch (__e) {
