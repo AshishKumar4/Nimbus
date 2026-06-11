@@ -21,47 +21,53 @@
 // install reaches a different failure mode entirely (which would
 // mean F4 secondarily helps too).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, deleteSession } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('npm-create/new/create-astro-esbuild-diagnostic');
 console.log(`npm-create/new/create-astro-esbuild-diagnostic — ${process.env.BASE}`);
 
-const sid = await mintSession();
-const t = new Terminal(sid);
-await t.connect();
-await t.waitForPrompt(60_000);
-
 function tail(s, n = 1000) { return s.length > n ? '…' + s.slice(-n) : s; }
 
-const r = await t.run(
-  'npm create astro@latest test-astro -- --template minimal --no-install --no-typescript --no-git --no-houston --yes 2>&1; echo RC=$?',
-  240_000,
-);
-const out = stripAnsi(r.output);
+const sid = await mintSession();
+const t = new Terminal(sid);
+try {
+  await t.connect();
+  await t.waitForPrompt(60_000);
 
-// The probe accepts EITHER of two post-fix shapes:
-//   (a) F4 diagnostic surfaced: trace mentions "esbuild transform"
-//   (b) F4 also accidentally healed (transform succeeded): no ESM
-//       parse error at all (create-astro proceeds past the
-//       @bluwy/giget-core module-init point).
-// Pre-fix, NEITHER would hold — instead we'd see the bare
-// "Cannot use import statement outside a module" with no diagnostic.
-const hasDiagnostic = /esbuild transform failed/.test(out);
-const noEsmParseError = !/Cannot use import statement outside a module/.test(out);
+  const r = await t.run(
+    'npm create astro@latest test-astro -- --template minimal --no-install --no-typescript --no-git --no-houston --yes 2>&1; echo RC=$?',
+    240_000,
+  );
+  const out = stripAnsi(r.output);
 
-a.check('F4 diagnostic OR transform-success: at least one holds',
-  hasDiagnostic || noEsmParseError,
-  `hasDiagnostic=${hasDiagnostic} noEsmParseError=${noEsmParseError} tail=${JSON.stringify(tail(out))}`);
+  // The probe accepts EITHER of two post-fix shapes:
+  //   (a) F4 diagnostic surfaced: trace mentions "esbuild transform"
+  //   (b) the ESM→CJS transform now covers giget-core (top-level-await
+  //       AST detection no longer false-positives on its default-value
+  //       object params), so there is NO ESM parse error at all and
+  //       create-astro proceeds past the @bluwy/giget-core load.
+  // Pre-fix, NEITHER held — instead the bare "Cannot use import
+  // statement outside a module" surfaced with no diagnostic.
+  const hasDiagnostic = /esbuild transform failed/.test(out);
+  const noEsmParseError = !/Cannot use import statement outside a module/.test(out);
 
-// Stricter assertion: pre-fix the user saw a useless error; post-fix
-// they must see SOMETHING actionable. Either a diagnostic OR
-// progression past the prior failure point.
-a.check('Post-fix: user-visible error is improved (diagnostic OR new failure surface)',
-  hasDiagnostic || /node_modules\/[^@]+\/[^/]+\/[^/]+/.test(out),
-  `tail=${JSON.stringify(tail(out))}`);
+  a.check('F4 diagnostic OR transform-success: at least one holds',
+    hasDiagnostic || noEsmParseError,
+    `hasDiagnostic=${hasDiagnostic} noEsmParseError=${noEsmParseError} tail=${JSON.stringify(tail(out))}`);
 
-await t.close();
+  // Stricter assertion: pre-fix the user saw a useless error; post-fix
+  // they must see SOMETHING actionable. Either a diagnostic OR
+  // progression past the prior failure point.
+  a.check('Post-fix: user-visible error is improved (diagnostic OR new failure surface)',
+    hasDiagnostic || /node_modules\/[^@]+\/[^/]+\/[^/]+/.test(out) || /Launch sequence initiated/.test(out),
+    `tail=${JSON.stringify(tail(out))}`);
+} finally {
+  await t.close();
+  const cleanup = await deleteSession(sid);
+  a.check('probe session deleted', cleanup.ok,
+    `status=${cleanup.status} body=${JSON.stringify(cleanup.body.slice(0, 300))}`);
+}
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
