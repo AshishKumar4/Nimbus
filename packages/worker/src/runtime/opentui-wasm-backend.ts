@@ -162,6 +162,12 @@ interface OpenTUIWasmExports extends WebAssembly.Exports {
   nimbus_free(ptr: number, size: number): void;
 }
 
+/** A registered callback: the JS fn the imports dispatch to + its handle. */
+interface OpenTUICallbackEntry {
+  readonly fn: (...args: unknown[]) => unknown;
+  readonly instance: OpenTUIFfiCallbackInstance;
+}
+
 const ARENA_ALIGN = 16;
 
 /**
@@ -178,9 +184,8 @@ export class OpenTUIWasmBackend {
   readonly #encoder = new TextEncoder();
   readonly #decoder = new TextDecoder();
 
-  /** Live callback registry: token → JS fn, dispatched by the `opentui` imports. */
-  readonly #callbacks = new Map<number, OpenTUIFfiCallbackInstance>();
-  readonly #callbackFns = new Map<number, (...args: unknown[]) => unknown>();
+  /** Live callback registry: token → registered instance, dispatched by `opentui` imports. */
+  readonly #callbacks = new Map<number, OpenTUICallbackEntry>();
   #nextToken = 1; // tokens must be non-zero (0 === null fn pointer)
 
   /**
@@ -257,7 +262,7 @@ export class OpenTUIWasmBackend {
   // current buffer (grow-safe by construction).
   #opentuiImports(): WebAssembly.ModuleImports {
     const dispatch = (token: number): ((...a: unknown[]) => unknown) | undefined =>
-      this.#callbackFns.get(token >>> 0);
+      this.#callbacks.get(token >>> 0)?.fn;
     return {
       logCallback: (token: number, level: number, msgPtr: number, msgLen: number): void => {
         dispatch(token)?.(level, msgPtr >>> 0, msgLen >>> 0);
@@ -467,34 +472,29 @@ export class OpenTUIWasmBackend {
   //
   // A wasm host cannot install JS functions in the module's indirect table, so
   // the "fn pointer" Zig stores is an opaque non-zero u32 token we mint. The
-  // three `opentui` imports (#opentuiImports) receive `(token, ...rawArgs)` and
-  // route here. We wrap the user's fn so that the raw (ptr,len) pairs Zig passes
-  // are decoded into the FFI-typed values zig.ts's callbacks expect: a `ptr`
-  // callback-arg becomes the numeric offset (zig.ts reads it via toArrayBuffer),
-  // a `usize` stays numeric, a `u64` stays BigInt.
+  // three `opentui` imports (#opentuiImports) receive `(token, ...rawArgs)`,
+  // decode the raw (ptr,len) pairs into the FFI-typed positional shape zig.ts's
+  // callbacks consume (a `ptr` arg → numeric offset read via toArrayBuffer, a
+  // `usize` → numeric, a `u64` → BigInt), and forward to the registered fn.
+  // `definition` is unused: the import shims already deliver the decoded shape.
   #createCallback(
     callback: (...args: unknown[]) => unknown,
     _definition: OpenTUIFfiFunction,
   ): OpenTUIFfiCallbackInstance {
     const token = this.#nextToken++;
-    // The import shims (#opentuiImports) already deliver decoded numeric offsets
-    // and BigInt(s) positionally; the callback signature in zig.ts consumes the
-    // same positional shape, so we forward directly.
-    this.#callbackFns.set(token, (...rawArgs: unknown[]) => callback(...rawArgs));
     const instance: OpenTUIFfiCallbackInstance = {
       ptr: token,
       threadsafe: false,
       close: () => {
         this.#callbacks.delete(token);
-        this.#callbackFns.delete(token);
       },
     };
-    this.#callbacks.set(token, instance);
+    this.#callbacks.set(token, { fn: callback, instance });
     return instance;
   }
 
   #closeAllCallbacks(): void {
-    for (const cb of [...this.#callbacks.values()]) cb.close();
+    for (const entry of [...this.#callbacks.values()]) entry.instance.close();
   }
 
   #alloc(byteLength: number): number {
