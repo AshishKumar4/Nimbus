@@ -176,7 +176,7 @@ interface OpenTUICallbackEntry {
   readonly instance: OpenTUIFfiCallbackInstance;
 }
 
-const ARENA_ALIGN = 16;
+export const ARENA_ALIGN = 16;
 
 /**
  * The Nimbus OpenTUI wasm FFI backend. Constructed from a compiled module + the
@@ -535,12 +535,12 @@ export class OpenTUIWasmBackend {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function toOffset(pointer: OpenTUIPointer): number {
+export function toOffset(pointer: OpenTUIPointer): number {
   return (typeof pointer === 'bigint' ? Number(pointer) : pointer) >>> 0;
 }
 
 /** Normalize an ArrayBuffer/ArrayBufferView to a byte view + offset + length. */
-function viewBytes(value: ArrayBuffer | ArrayBufferView): {
+export function viewBytes(value: ArrayBuffer | ArrayBufferView): {
   bytes: Uint8Array;
   byteOffset: number;
   byteLength: number;
