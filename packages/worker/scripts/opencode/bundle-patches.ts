@@ -181,6 +181,48 @@ if (!globalThis.__nimbusOpenTUIBackend && !existsSync2(targetLibPath)) {
     file,
   )
 
+  // Seam 5 — pointer width for the FFI struct marshaler. @opentui/core derives
+  // `pointerSize` from `process.arch` (8 on x64/arm64, 4 elsewhere), which sizes
+  // and aligns every `pointer`/`cstring`/`char*` struct field. The Nimbus backend
+  // runs the wasm32 reactor, whose pointers are 4 bytes — so a host arch of x64
+  // would lay out every OUT-struct with 8-byte pointers and misread the 4-byte
+  // structs the Zig core writes (e.g. SpanInfoStruct: chunkPtr/offset/len/index
+  // shift by 4 bytes → len reads 0, the span-feed drain emits nothing). Force the
+  // wasm32 pointer width whenever the registry backend is active; absent it
+  // (a normal Bun run) the upstream arch detection stands.
+  source = replaceOnce(
+    source,
+    `var pointerSize = process.arch === "x64" || process.arch === "arm64" ? 8 : 4;`,
+    `var pointerSize = globalThis.__nimbusOpenTUIBackend ? 4 : (process.arch === "x64" || process.arch === "arm64" ? 8 : 4);`,
+    label,
+    file,
+  )
+
+  // Seam 6 — the native span-feed chunk read. NativeSpanFeed caches each chunk
+  // ArrayBuffer in `chunkMap` at ChunkAdded time and slices frame spans out of it
+  // later at drain time. On native FFI `toArrayBuffer(chunkPtr,…)` is a LIVE
+  // window into the chunk's ring-buffer memory, so the cached entry reflects the
+  // ANSI bytes the Zig core writes AFTER ChunkAdded. The Nimbus `toArrayBuffer`
+  // is a detach-safe SNAPSHOT (correct for every read-then-decode caller), so an
+  // early snapshot freezes the chunk as zeros and the drain emits blank frames.
+  // When the registry backend is active, build the per-span slice as a LIVE view
+  // over linear memory at `chunkPtr + span.offset` (re-derived over the current
+  // memory.buffer, grow-safe) so the drain reads the bytes Zig actually wrote.
+  // Absent the backend the read stays on upstream's cached toArrayBuffer slice.
+  source = replaceOnce(
+    source,
+    `        if (span.offset + span.len > buffer.byteLength)
+          continue;
+        const slice = new Uint8Array(buffer, span.offset, span.len);`,
+    `        if (!globalThis.__nimbusOpenTUIBackend && span.offset + span.len > buffer.byteLength)
+          continue;
+        const slice = globalThis.__nimbusOpenTUIBackend
+          ? globalThis.__nimbusOpenTUIBackend.liveView(Uint8Array, span.chunkPtr, span.offset + span.len).subarray(span.offset, span.offset + span.len)
+          : new Uint8Array(buffer, span.offset, span.len);`,
+    label,
+    file,
+  )
+
   // Seam 4 — the four cell-array views. liveView returns a typed array backed by
   // the CURRENT memory.buffer (element count, not bytes); char/attributes are
   // u32 (size elements), fg/bg are u16 RGBA quads (size*4 elements).

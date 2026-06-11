@@ -83,12 +83,12 @@ try {
     if (!src.includes(OPENTUI_FFI_CHUNK_MARKER)) continue;
     const out = nimbusPatchOpenTUI(src, f); // throws if any anchor is missing/ambiguous
     assert.ok(out.length > src.length, `patch produced no growth for ${f}`);
-    assert.ok(out.split('__nimbusOpenTUIBackend').length - 1 >= 4, `expected ≥4 registry seams in ${f}`);
+    assert.ok(out.split('__nimbusOpenTUIBackend').length - 1 >= 6, `expected ≥6 registry seams in ${f}`);
     writeFileSync(p, out);
     patchedChunks++;
   }
   assert.equal(patchedChunks, 1, `expected exactly one @opentui FFI chunk, patched ${patchedChunks}`);
-  console.log('  [1] @opentui/core FFI chunk patched — 4 init seams applied fail-loud');
+  console.log('  [1] @opentui/core FFI chunk patched — backend/pointerSize/span-feed/buffer seams applied fail-loud');
 
   // ── build the wasm backend over the staged Stage A artifact + real WASI host ──
   const prePath = path.join(tmp, '__wasi-preamble.mjs');
