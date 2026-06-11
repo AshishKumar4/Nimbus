@@ -148,6 +148,14 @@ export function getSharedRuntimeExternals(specifier) {
  * ESM→require rewrite, whose assembled output still carried export/import
  * statements → "Cannot use import statement outside a module" at startup.
  *
+ * Arrow bodies are distinguished from arrow expression bodies (the
+ * `arrowPending` flag): only a `{` immediately following `=>` opens a
+ * function scope. The idiomatic object-returning arrow `x => ({ ... })`
+ * has its `{` at parenDepth 1, so it opens no body slot — otherwise the
+ * leaked slot would be consumed by a later top-level `{ ... }` block,
+ * making a real top-level `await` inside it read as non-TLA (false
+ * negative) and routing genuine ESM-with-TLA into the wrong transform.
+ *
  * A regex/token scan (not acorn) is kept here deliberately: pulling
  * acorn into the esbuild-service bundle chunk duplicates its ~15 KiB
  * Unicode identifier tables.
@@ -165,8 +173,19 @@ export function hasTopLevelAwait(src) {
     let depth = 0;
     let parenDepth = 0;
     let pendingFn = 0;
+    // An arrow can have either a block body (`=> { ... }`) — which opens a
+    // function scope — or an expression body (`=> expr`), which does not.
+    // We can only tell which by looking at the token right after `=>`: a
+    // block body has `{` as its very next token. `arrowPending` carries
+    // that "the next `{` (and only an immediately-following `{`) is this
+    // arrow's body" intent, separately from `pendingFn` so the idiomatic
+    // `x => ({ ... })` (object-returning expression body, `{` at parenDepth
+    // 1) does not leak a body slot onto a later top-level block.
+    let arrowPending = false;
     while ((m = re.exec(stripped)) !== null) {
         const tok = m[0];
+        if (arrowPending && tok !== '{')
+            arrowPending = false;
         if (tok === '(') {
             parenDepth++;
         }
@@ -176,7 +195,11 @@ export function hasTopLevelAwait(src) {
         }
         else if (tok === '{') {
             depth++;
-            if (pendingFn > 0 && parenDepth === 0) {
+            if (arrowPending) {
+                fnEntryDepths.push(depth);
+                arrowPending = false;
+            }
+            else if (pendingFn > 0 && parenDepth === 0) {
                 fnEntryDepths.push(depth);
                 pendingFn--;
             }
@@ -186,8 +209,11 @@ export function hasTopLevelAwait(src) {
                 fnEntryDepths.pop();
             depth--;
         }
-        else if (tok === 'function' || tok === '=>' || tok === 'class') {
+        else if (tok === 'function' || tok === 'class') {
             pendingFn++;
+        }
+        else if (tok === '=>') {
+            arrowPending = true;
         }
         else if (tok === 'await') {
             if (fnEntryDepths.length === 0)

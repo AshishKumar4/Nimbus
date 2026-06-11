@@ -82,6 +82,14 @@ export declare function getSharedRuntimeExternals(specifier: string): string[];
  * ESM→require rewrite, whose assembled output still carried export/import
  * statements → "Cannot use import statement outside a module" at startup.
  *
+ * Arrow bodies are distinguished from arrow expression bodies (the
+ * `arrowPending` flag): only a `{` immediately following `=>` opens a
+ * function scope. The idiomatic object-returning arrow `x => ({ ... })`
+ * has its `{` at parenDepth 1, so it opens no body slot — otherwise the
+ * leaked slot would be consumed by a later top-level `{ ... }` block,
+ * making a real top-level `await` inside it read as non-TLA (false
+ * negative) and routing genuine ESM-with-TLA into the wrong transform.
+ *
  * A regex/token scan (not acorn) is kept here deliberately: pulling
  * acorn into the esbuild-service bundle chunk duplicates its ~15 KiB
  * Unicode identifier tables.

@@ -281,16 +281,31 @@ function __makeEntrypointPromiseTracker() {
       } catch {}
     },
     track: __track,
-    // Drain floating entry promises until they settle, the process exits,
-    // or a wall-clock deadline is hit. \`minPasses\` guarantees a minimum
-    // number of ticks so freshly-scheduled work (microtasks that haven't
-    // registered yet) gets a chance to surface. The deadline — not a fixed
-    // tick count — bounds genuinely-pending promises (servers, intervals);
-    // a fixed tiny pass cap previously abandoned legitimate multi-tick
-    // async entrypoints (e.g. create-vite's clack-driven scaffold) before
-    // their synchronous file writes ran.
+    // Drain floating entry work until it settles, the process exits, or a
+    // bound is hit. Two distinct kinds of pending work need different
+    // treatment to match Node's event-loop semantics:
+    //
+    //   - Unsettled tracked PROMISES are microtask chains. Per Node a pending
+    //     promise does NOT keep the process alive — only handles/timers do.
+    //     A settling chain (create-vite's clack scaffold spans many ticks)
+    //     must be allowed to finish, but a NEVER-settling chain
+    //     (\`Promise.resolve().then(() => new Promise(() => {}))\`) must not
+    //     pin the facet. So tracked promises are drained only up to a finite
+    //     \`maxPromisePasses\` budget — generous enough for multi-tick
+    //     scaffolders, finite enough that a stuck chain still exits.
+    //
+    //   - Pending macrotask TIMERS/intervals (\`__timersPending\`) DO keep the
+    //     loop alive (create-astro / nuxi settle through setTimeout-driven
+    //     steps), bounded by the wall-clock deadline.
+    //
+    // The wall-clock deadline alone is NOT a reliable bound: workerd does not
+    // advance \`Date.now()\` while an isolate spins without I/O, so a no-I/O
+    // promise-only drain would loop forever against the deadline. The pass
+    // budget is the hard termination guarantee; the deadline is the timer
+    // ceiling.
     async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
       const __start = Date.now();
+      const __maxPromisePasses = 4096;
       const __timersPending = () => (typeof globalThis.__nimbusPendingTimers === "number" ? globalThis.__nimbusPendingTimers : 0);
       let __exited = false;
       if (exitPromise && typeof exitPromise.then === "function") {
@@ -299,7 +314,14 @@ function __makeEntrypointPromiseTracker() {
       const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
         ? globalThis.__nimbusRawSetTimeout
         : globalThis.setTimeout;
-      for (let __pass = 0; (__tracked.size > 0 || __timersPending() > 0 || __pass < minPasses) && !__exited && Date.now() - __start < deadlineMs; __pass++) {
+      for (
+        let __pass = 0;
+        !__exited
+          && (__pass < minPasses
+            || (__timersPending() > 0 && Date.now() - __start < deadlineMs)
+            || (__tracked.size > 0 && __pass < __maxPromisePasses));
+        __pass++
+      ) {
         await new Promise((resolve) => __rawSetTimeout(resolve, 0));
       }
     },
