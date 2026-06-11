@@ -1,0 +1,307 @@
+diff --git a/packages/core/src/zig/audio_stub.zig b/packages/core/src/zig/audio_stub.zig
+new file mode 100644
+index 00000000..5c2e9930
+--- /dev/null
++++ b/packages/core/src/zig/audio_stub.zig
+@@ -0,0 +1,168 @@
++//! WASM stub for audio.zig: same public surface, no miniaudio. All operations
++//! report failure (-1) or empty results; create returns null (no engine).
++const std = @import("std");
++
++pub const CreateOptions = extern struct {
++    sample_rate: u32 = 48000,
++    playback_channels: u32 = 2,
++};
++
++pub const StartOptions = extern struct {
++    period_size_in_frames: u32 = 0,
++    period_size_in_milliseconds: u32 = 0,
++    periods: u32 = 0,
++    performance_profile: u8 = 0,
++    share_mode: u8 = 0,
++    no_pre_silenced_output_buffer: bool = false,
++    no_clip: bool = false,
++    no_disable_denormals: bool = false,
++    no_fixed_sized_callback: bool = false,
++    wasapi_no_auto_convert_src: bool = false,
++    wasapi_no_default_quality_src: bool = false,
++    alsa_no_mmap: bool = false,
++    alsa_no_auto_format: bool = false,
++    alsa_no_auto_channels: bool = false,
++    alsa_no_auto_resample: bool = false,
++};
++
++pub const VoiceOptions = extern struct {
++    volume: f32,
++    pan: f32,
++    loop: bool,
++    group_id: u32,
++};
++
++pub const Stats = extern struct {
++    sounds_loaded: u32,
++    voices_active: u32,
++    frames_mixed: u64,
++    lock_misses: u32,
++    last_peak: f32,
++    last_rms: f32,
++};
++
++pub const Engine = struct {};
++
++pub fn create(allocator: std.mem.Allocator, options_ptr: ?*const CreateOptions) ?*Engine {
++    _ = allocator;
++    _ = options_ptr;
++    return null;
++}
++pub fn destroy(engine: *Engine) void {
++    _ = engine;
++}
++pub fn refreshPlaybackDevices(engine: *Engine) i32 {
++    _ = engine;
++    return -1;
++}
++pub fn getPlaybackDeviceCount(engine: *Engine) u32 {
++    _ = engine;
++    return 0;
++}
++pub fn getPlaybackDeviceName(engine: *Engine, index: u32, out_ptr: ?[*]u8, max_len: usize) usize {
++    _ = engine;
++    _ = index;
++    _ = out_ptr;
++    _ = max_len;
++    return 0;
++}
++pub fn isPlaybackDeviceDefault(engine: *Engine, index: u32) bool {
++    _ = engine;
++    _ = index;
++    return false;
++}
++pub fn selectPlaybackDevice(engine: *Engine, index: u32) i32 {
++    _ = engine;
++    _ = index;
++    return -1;
++}
++pub fn clearPlaybackDeviceSelection(engine: *Engine) void {
++    _ = engine;
++}
++pub fn start(engine: *Engine, options_ptr: ?*const StartOptions) i32 {
++    _ = engine;
++    _ = options_ptr;
++    return -1;
++}
++pub fn startMixer(engine: *Engine) i32 {
++    _ = engine;
++    return -1;
++}
++pub fn stop(engine: *Engine) i32 {
++    _ = engine;
++    return -1;
++}
++pub fn load(engine: *Engine, data_ptr: ?[*]const u8, data_len: usize, out_sound_id: ?*u32) i32 {
++    _ = engine;
++    _ = data_ptr;
++    _ = data_len;
++    _ = out_sound_id;
++    return -1;
++}
++pub fn unload(engine: *Engine, sound_id: u32) i32 {
++    _ = engine;
++    _ = sound_id;
++    return -1;
++}
++pub fn createGroup(engine: *Engine, name_ptr: ?[*]const u8, name_len: usize, out_group_id: ?*u32) i32 {
++    _ = engine;
++    _ = name_ptr;
++    _ = name_len;
++    _ = out_group_id;
++    return -1;
++}
++pub fn play(engine: *Engine, sound_id: u32, options_ptr: ?*const VoiceOptions, out_voice_id: ?*u32) i32 {
++    _ = engine;
++    _ = sound_id;
++    _ = options_ptr;
++    _ = out_voice_id;
++    return -1;
++}
++pub fn stopVoice(engine: *Engine, voice_id: u32) i32 {
++    _ = engine;
++    _ = voice_id;
++    return -1;
++}
++pub fn setVoiceGroup(engine: *Engine, voice_id: u32, group_id: u32) i32 {
++    _ = engine;
++    _ = voice_id;
++    _ = group_id;
++    return -1;
++}
++pub fn setGroupVolume(engine: *Engine, group_id: u32, volume: f32) i32 {
++    _ = engine;
++    _ = group_id;
++    _ = volume;
++    return -1;
++}
++pub fn setMasterVolume(engine: *Engine, volume: f32) i32 {
++    _ = engine;
++    _ = volume;
++    return -1;
++}
++pub fn enableTap(engine: *Engine, enabled: bool, capacity_frames: u32) i32 {
++    _ = engine;
++    _ = enabled;
++    _ = capacity_frames;
++    return -1;
++}
++pub fn readTap(engine: *Engine, out_ptr: ?[*]f32, frame_count: u32, channels: u8, out_frames_read: ?*u32) i32 {
++    _ = engine;
++    _ = out_ptr;
++    _ = frame_count;
++    _ = channels;
++    _ = out_frames_read;
++    return -1;
++}
++pub fn mixToBuffer(engine: *Engine, out_ptr: ?[*]f32, frame_count: u32, channels: u8) i32 {
++    _ = engine;
++    _ = out_ptr;
++    _ = frame_count;
++    _ = channels;
++    return -1;
++}
++pub fn getStats(engine: *Engine, out_stats: ?*Stats) i32 {
++    _ = engine;
++    _ = out_stats;
++    return -1;
++}
+diff --git a/packages/core/src/zig/build.zig b/packages/core/src/zig/build.zig
+index 90347572..5ebfe2f2 100644
+--- a/packages/core/src/zig/build.zig
++++ b/packages/core/src/zig/build.zig
+@@ -157,6 +157,15 @@ fn addNativeAudioDependencies(
+     target: std.Build.ResolvedTarget,
+     macos_sdk_path: ?[]const u8,
+ ) void {
++    // wasm has no system audio device: lib.zig swaps audio.zig for
++    // audio_stub.zig on wasm targets, so miniaudio (which needs pthreads and
++    // a real OS audio backend) must not be compiled in. wasi-libc is still
++    // linked for the libc surface the rest of the core uses.
++    if (target.result.cpu.arch.isWasm()) {
++        if (target.result.os.tag == .wasi) artifact.linkLibC();
++        return;
++    }
++
+     addMiniaudioShim(b, artifact, target, macos_sdk_path);
+ 
+     switch (target.result.os.tag) {
+@@ -443,7 +452,20 @@ fn buildTarget(
+ 
+     applyDependencies(b, module, optimize, target, build_options);
+ 
+-    const lib = b.addLibrary(.{
++    // wasm cannot be linked as a dynamic library. Build a WASI reactor
++    // instead: an entry-less executable that exports `_initialize` plus (via
++    // rdynamic) the full FFI surface, and stays resident after init — the
++    // same lifecycle the dylib has under Bun FFI.
++    const lib = if (target.result.cpu.arch.isWasm()) blk: {
++        const exe = b.addExecutable(.{
++            .name = LIB_NAME,
++            .root_module = module,
++        });
++        exe.entry = .disabled;
++        exe.rdynamic = true;
++        if (target.result.os.tag == .wasi) exe.wasi_exec_model = .reactor;
++        break :blk exe;
++    } else b.addLibrary(.{
+         .name = LIB_NAME,
+         .root_module = module,
+         .linkage = .dynamic,
+diff --git a/packages/core/src/zig/lib.zig b/packages/core/src/zig/lib.zig
+index 8129c302..5f33e48b 100644
+--- a/packages/core/src/zig/lib.zig
++++ b/packages/core/src/zig/lib.zig
+@@ -18,7 +18,9 @@ const utf8 = @import("utf8.zig");
+ const logger = @import("logger.zig");
+ const event_bus = @import("event-bus.zig");
+ const native_span_feed = @import("native-span-feed.zig");
+-const native_audio = @import("audio.zig");
++// wasm builds have no system audio device or miniaudio; audio_stub.zig keeps
++// the audio FFI surface with every operation reporting failure.
++const native_audio = if (@import("builtin").target.cpu.arch.isWasm()) @import("audio_stub.zig") else @import("audio.zig");
+ const buffer_effects = @import("buffer-methods.zig");
+ 
+ pub const OptimizedBuffer = buffer.OptimizedBuffer;
+diff --git a/packages/core/src/zig/renderer-output.zig b/packages/core/src/zig/renderer-output.zig
+index 7986fbd2..d4e77fc5 100644
+--- a/packages/core/src/zig/renderer-output.zig
++++ b/packages/core/src/zig/renderer-output.zig
+@@ -16,6 +16,7 @@
+ //! writer without scattering backend-specific switches across the codebase.
+ 
+ const std = @import("std");
++const builtin = @import("builtin");
+ const Allocator = std.mem.Allocator;
+ const NativeSpanFeed = @import("native-span-feed.zig");
+ 
+@@ -228,21 +229,23 @@ pub const BufferedBackend = struct {
+     }
+ 
+     pub fn deinit(self: *BufferedBackend, allocator: Allocator) void {
+-        if (self.renderThread) |thread| {
+-            self.renderMutex.lock();
+-            while (self.renderInProgress) {
+-                self.renderCondition.wait(&self.renderMutex);
++        if (comptime !builtin.single_threaded) {
++            if (self.renderThread) |thread| {
++                self.renderMutex.lock();
++                while (self.renderInProgress) {
++                    self.renderCondition.wait(&self.renderMutex);
++                }
++                self.shouldTerminate = true;
++                // Do NOT set renderRequested — the thread should wake, see
++                // shouldTerminate, and exit without a final spurious write of
++                // the stale last-frame buffer. Previously setting renderRequested
++                // here caused a stale frame to be emitted AFTER the shutdown
++                // ANSI sequence had already restored the terminal.
++                self.renderCondition.signal();
++                self.renderMutex.unlock();
++                thread.join();
++                self.renderThread = null;
+             }
+-            self.shouldTerminate = true;
+-            // Do NOT set renderRequested — the thread should wake, see
+-            // shouldTerminate, and exit without a final spurious write of
+-            // the stale last-frame buffer. Previously setting renderRequested
+-            // here caused a stale frame to be emitted AFTER the shutdown
+-            // ANSI sequence had already restored the terminal.
+-            self.renderCondition.signal();
+-            self.renderMutex.unlock();
+-            thread.join();
+-            self.renderThread = null;
+         }
+ 
+         allocator.free(self.outputA);
+@@ -275,6 +278,9 @@ pub const BufferedBackend = struct {
+     }
+ 
+     pub fn setUseThread(self: *BufferedBackend, use_thread: bool) void {
++        // On single-threaded targets (wasm) the spawn path below must not be
++        // analyzed: std.Thread.spawn is a compile error there.
++        if (comptime builtin.single_threaded) return;
+         if (use_thread and !self.supportsThreading()) return;
+         if (self.useThread == use_thread) return;
+ 
+diff --git a/packages/core/src/zig/text-buffer.zig b/packages/core/src/zig/text-buffer.zig
+index 3686150e..870238ae 100644
+--- a/packages/core/src/zig/text-buffer.zig
++++ b/packages/core/src/zig/text-buffer.zig
+@@ -1198,7 +1198,10 @@ pub const UnifiedTextBuffer = struct {
+ 
+         self.clear();
+ 
+-        const content = self.allocator.alloc(u8, file_size) catch return TextBufferError.OutOfMemory;
++        // getEndPos() is u64; on 32-bit targets (wasm32) allocating needs a
++        // checked cast. The guard folds away where usize is 64-bit.
++        if (file_size > std.math.maxInt(usize)) return TextBufferError.OutOfMemory;
++        const content = self.allocator.alloc(u8, @intCast(file_size)) catch return TextBufferError.OutOfMemory;
+         const bytes_read = file.readAll(content) catch return TextBufferError.OutOfMemory;
+         const text = content[0..bytes_read];
+         const mem_id = try self.mem_registry.register(text, false);

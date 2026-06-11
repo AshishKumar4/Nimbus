@@ -1,0 +1,179 @@
+diff --git a/packages/core/src/zig/event-bus.zig b/packages/core/src/zig/event-bus.zig
+index 2dd0586a..3cd7b5ee 100644
+--- a/packages/core/src/zig/event-bus.zig
++++ b/packages/core/src/zig/event-bus.zig
+@@ -1,7 +1,21 @@
+ const std = @import("std");
++const builtin = @import("builtin");
+ 
+ pub const EventCallback = *const fn (namePtr: [*]const u8, nameLen: usize, dataPtr: [*]const u8, dataLen: usize) callconv(.c) void;
+ 
++/// On wasm the callback registered via `createEventSink` is an opaque
++/// non-null host token, not a callable pointer (see logger.zig); emission
++/// routes through this import with the token. Never referenced on native.
++extern "opentui" fn eventSinkCallback(token: usize, namePtr: [*]const u8, nameLen: usize, dataPtr: [*]const u8, dataLen: usize) void;
++
++inline fn invokeEventCallback(callback: EventCallback, name: []const u8, data: []const u8) void {
++    if (comptime builtin.target.cpu.arch.isWasm()) {
++        eventSinkCallback(@intFromPtr(callback), name.ptr, name.len, data.ptr, data.len);
++    } else {
++        callback(name.ptr, name.len, data.ptr, data.len);
++    }
++}
++
+ pub const EventSink = struct {
+     callback: ?EventCallback,
+ };
+@@ -19,6 +33,6 @@ pub fn destroyEventSink(allocator: std.mem.Allocator, sink: *EventSink) void {
+ 
+ pub fn emit(sink: ?*EventSink, name: []const u8, data: []const u8) void {
+     if (sink) |event_sink| {
+-        if (event_sink.callback) |callback| callback(name.ptr, name.len, data.ptr, data.len);
++        if (event_sink.callback) |callback| invokeEventCallback(callback, name, data);
+     }
+ }
+diff --git a/packages/core/src/zig/lib.zig b/packages/core/src/zig/lib.zig
+index 5f33e48b..3d919a33 100644
+--- a/packages/core/src/zig/lib.zig
++++ b/packages/core/src/zig/lib.zig
+@@ -72,6 +72,29 @@ const globalAllocator = gpa.allocator();
+ var arena = std.heap.ArenaAllocator.init(globalAllocator);
+ const globalArena = arena.allocator();
+ 
++/// wasm copy-in/copy-back arena protocol: the host has no FFI views into
++/// linear memory, so it allocates scratch regions through these exports,
++/// writes arguments in, calls the FFI, reads results back, and frees.
++/// 16-byte alignment covers every extern struct and scalar layout in the
++/// FFI surface. wasm-only: the native dylib export surface is unchanged.
++fn nimbusAlloc(size: usize) callconv(.c) ?[*]u8 {
++    const mem = globalAllocator.alignedAlloc(u8, .@"16", size) catch return null;
++    return mem.ptr;
++}
++
++fn nimbusFree(ptr: ?[*]u8, size: usize) callconv(.c) void {
++    const base = ptr orelse return;
++    const slice: []align(16) u8 = @alignCast(base[0..size]);
++    globalAllocator.free(slice);
++}
++
++comptime {
++    if (@import("builtin").target.cpu.arch.isWasm()) {
++        @export(&nimbusAlloc, .{ .name = "nimbus_alloc" });
++        @export(&nimbusFree, .{ .name = "nimbus_free" });
++    }
++}
++
+ pub const ExternalBuildOptions = extern struct {
+     gpa_safe_stats: bool,
+     gpa_memory_limit_tracking: bool,
+diff --git a/packages/core/src/zig/logger.zig b/packages/core/src/zig/logger.zig
+index b9b72c07..fae1f755 100644
+--- a/packages/core/src/zig/logger.zig
++++ b/packages/core/src/zig/logger.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const builtin = @import("builtin");
+ 
+ pub const LogLevel = enum(u8) {
+     err = 0,
+@@ -7,22 +8,39 @@ pub const LogLevel = enum(u8) {
+     debug = 3,
+ };
+ 
+-var global_log_callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void = null;
++pub const LogCallback = *const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void;
+ 
+-pub fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void) void {
++var global_log_callback: ?LogCallback = null;
++
++pub fn setLogCallback(callback: ?LogCallback) void {
+     global_log_callback = callback;
+ }
+ 
++/// On wasm the host cannot place its functions in the module's indirect
++/// function table, so the "pointer" registered via `setLogCallback` is an
++/// opaque non-null token minted by the host. Invocation routes through this
++/// import, handing the token back; native builds call the fn pointer
++/// directly and never reference (or import) this symbol.
++extern "opentui" fn logCallback(token: usize, level: u8, msgPtr: [*]const u8, msgLen: usize) void;
++
++inline fn invokeLogCallback(callback: LogCallback, level: u8, msgPtr: [*]const u8, msgLen: usize) void {
++    if (comptime builtin.target.cpu.arch.isWasm()) {
++        logCallback(@intFromPtr(callback), level, msgPtr, msgLen);
++    } else {
++        callback(level, msgPtr, msgLen);
++    }
++}
++
+ // Helper function to log messages - can be used directly throughout the codebase
+ pub fn logMessage(level: LogLevel, comptime format: []const u8, args: anytype) void {
+     if (global_log_callback) |callback| {
+         var buf: [4096]u8 = undefined;
+         const msg = std.fmt.bufPrint(&buf, format, args) catch {
+             const fallback = "Log formatting failed";
+-            callback(@intFromEnum(LogLevel.err), fallback.ptr, fallback.len);
++            invokeLogCallback(callback, @intFromEnum(LogLevel.err), fallback.ptr, fallback.len);
+             return;
+         };
+-        callback(@intFromEnum(level), msg.ptr, msg.len);
++        invokeLogCallback(callback, @intFromEnum(level), msg.ptr, msg.len);
+     }
+ }
+ 
+diff --git a/packages/core/src/zig/native-span-feed.zig b/packages/core/src/zig/native-span-feed.zig
+index 9ffd9212..2ba38928 100644
+--- a/packages/core/src/zig/native-span-feed.zig
++++ b/packages/core/src/zig/native-span-feed.zig
+@@ -1,7 +1,22 @@
+ const std = @import("std");
++const builtin = @import("builtin");
+ 
+ pub const CallbackFn = fn (stream_ptr: usize, event_id: u32, arg0: usize, arg1: u64) callconv(.c) void;
+ 
++/// On wasm the callback registered via `streamSetCallback` is an opaque
++/// non-null host token, not a callable pointer (see logger.zig); span-feed
++/// events route through this import with the token. Never referenced on
++/// native.
++extern "opentui" fn streamCallback(token: usize, stream_ptr: usize, event_id: u32, arg0: usize, arg1: u64) void;
++
++inline fn invokeStreamCallback(callback: *const CallbackFn, stream_ptr: usize, event_id: u32, arg0: usize, arg1: u64) void {
++    if (comptime builtin.target.cpu.arch.isWasm()) {
++        streamCallback(@intFromPtr(callback), stream_ptr, event_id, arg0, arg1);
++    } else {
++        callback(stream_ptr, event_id, arg0, arg1);
++    }
++}
++
+ pub const GrowthPolicy = enum(u8) {
+     grow = 0,
+     block = 1,
+@@ -546,25 +561,25 @@ pub const Stream = struct {
+ 
+     fn emitChunkAdded(self: *Stream, chunk: Chunk) void {
+         if (self.callback) |cb| {
+-            cb(@intFromPtr(self), Event.ChunkAdded, @intFromPtr(chunk.ptr), chunk.len);
++            invokeStreamCallback(cb, @intFromPtr(self), Event.ChunkAdded, @intFromPtr(chunk.ptr), chunk.len);
+         }
+     }
+ 
+     fn emitDataAvailable(self: *Stream, count: u32) void {
+         if (self.callback) |cb| {
+-            cb(@intFromPtr(self), Event.DataAvailable, count, 0);
++            invokeStreamCallback(cb, @intFromPtr(self), Event.DataAvailable, count, 0);
+         }
+     }
+ 
+     fn emitStateBuffer(self: *Stream) void {
+         if (self.callback) |cb| {
+-            cb(@intFromPtr(self), Event.StateBuffer, @intFromPtr(self.state_buffer.ptr), self.state_capacity);
++            invokeStreamCallback(cb, @intFromPtr(self), Event.StateBuffer, @intFromPtr(self.state_buffer.ptr), self.state_capacity);
+         }
+     }
+ 
+     fn emitClosed(self: *Stream) void {
+         if (self.callback) |cb| {
+-            cb(@intFromPtr(self), Event.Closed, 0, 0);
++            invokeStreamCallback(cb, @intFromPtr(self), Event.Closed, 0, 0);
+         }
+     }
+ };
