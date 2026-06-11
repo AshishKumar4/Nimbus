@@ -1,0 +1,17 @@
+diff --git a/packages/opencode/src/index.ts b/packages/opencode/src/index.ts
+index e17f523..d83b08f 100644
+--- a/packages/opencode/src/index.ts
++++ b/packages/opencode/src/index.ts
+@@ -36,6 +36,12 @@ import { Heap } from "./cli/heap"
+ import { ensureProcessMetadata } from "@opencode-ai/core/util/opencode-process"
+ import { isRecord } from "@/util/record"
+ 
++// Nimbus: re-export web-tree-sitter's entry points so the Nimbus facet
++// runner's tree-sitter diagnostic exercises the SAME module instance the
++// bash tool's parser uses (web-tree-sitter is otherwise bundle-internal).
++// Passive re-export — inert under a normal Bun install.
++export { Parser, Language } from "web-tree-sitter"
++
+ // Lazy: ensureProcessMetadata() generates a UUID, which is disallowed at
+ // module top level in workerd's global scope (the Nimbus runtime). Resolved
+ // inside the yargs middleware, which runs from nimbusMain()'s handler context.
