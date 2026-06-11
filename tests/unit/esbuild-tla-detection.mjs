@@ -37,4 +37,23 @@ assert.equal(
 // `await` only inside a string / comment must not count.
 assert.equal(hasTopLevelAwait('const s = "await foo()"; // await bar()'), false);
 
+// Regression: arrow with an object-returning expression body (`x => ({...})`)
+// must NOT leak a function-body slot onto a later top-level block, which would
+// make a genuine top-level await read as non-TLA (false negative). This routed
+// real ESM-with-TLA into the ESM→require rewrite → "Cannot use import statement
+// outside a module" at facet startup — the very failure the TLA fix targeted.
+assert.equal(hasTopLevelAwait('m=>({});if(1){await x()}'), true, 'arrow object body must not leak a body slot');
+assert.equal(
+  hasTopLevelAwait('const r = a.map(x => ({ x })); if (b) { await go(); }'),
+  true,
+  'arrow object body before a top-level block must not hide a real TLA',
+);
+assert.equal(
+  hasTopLevelAwait('const c = k.reduce((a, k) => ({ ...a, [k]: 1 }), {}); await boot();'),
+  true,
+  'reduce with arrow object body + trailing await must read as TLA',
+);
+// Default-param-brace cases must STAY false after the arrow distinction.
+assert.equal(hasTopLevelAwait('async function f(x = {}) { await g(); }'), false);
+
 console.log('esbuild-tla-detection: ok');
