@@ -1,4 +1,5 @@
 import { parse, type AnyNode } from 'acorn';
+import { ancestor } from 'acorn-walk';
 
 export type AstNode = AnyNode & Record<string, unknown>;
 
@@ -7,7 +8,52 @@ export function parseJavaScriptModule(source: string): AstNode {
     ecmaVersion: 'latest',
     sourceType: 'module',
     allowHashBang: true,
+    allowAwaitOutsideFunction: true,
   }) as AstNode;
+}
+
+const FUNCTION_NODE_TYPES = new Set([
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ArrowFunctionExpression',
+]);
+
+/**
+ * True iff the module contains a genuine top-level `await` — an
+ * `AwaitExpression` (or `for await` loop) with no enclosing function in
+ * its ancestor chain. AST-based so default-value parameter braces
+ * (`async function f(opts = {})`), destructured params, and
+ * arrow-expression bodies can't confuse a brace-depth heuristic.
+ *
+ * Returns false when parsing fails — callers treat that as "not TLA"
+ * and the plain single-pass transform handles it.
+ */
+export function hasTopLevelAwait(source: string): boolean {
+  if (!source || source.indexOf('await') === -1) return false;
+  let ast: AstNode;
+  try {
+    ast = parseJavaScriptModule(source);
+  } catch {
+    return false;
+  }
+  let found = false;
+  const isTopLevel = (ancestors: AnyNode[]): boolean => {
+    // ancestors includes the node itself at the tail; scan the rest for
+    // any enclosing function scope.
+    for (let i = 0; i < ancestors.length - 1; i++) {
+      if (FUNCTION_NODE_TYPES.has(ancestors[i].type)) return false;
+    }
+    return true;
+  };
+  ancestor(ast as AnyNode, {
+    AwaitExpression(_node, _state, ancestors) {
+      if (!found && isTopLevel(ancestors as AnyNode[])) found = true;
+    },
+    ForOfStatement(node, _state, ancestors) {
+      if (!found && (node as { await?: boolean }).await && isTopLevel(ancestors as AnyNode[])) found = true;
+    },
+  });
+  return found;
 }
 
 export function hasTopLevelModuleSyntax(source: string): boolean {

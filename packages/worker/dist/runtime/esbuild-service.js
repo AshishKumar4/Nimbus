@@ -18,6 +18,7 @@
  */
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { hasTopLevelAwait as astHasTopLevelAwait } from './javascript-ast.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -133,103 +134,23 @@ export function getSharedRuntimeExternals(specifier) {
     });
 }
 /**
- * Cheap heuristic to detect top-level await in source. Used by
- * `EsbuildService.transform` to decide whether to async-IIFE-wrap
- * CJS-target sources (see transform()'s header comment).
+ * Detect top-level await in source. Used by `EsbuildService.transform`
+ * to decide whether to async-IIFE-wrap CJS-target sources (see
+ * transform()'s header comment).
  *
- * Why a regex (not a real parser):
- *   - We only need to know "is there an `await` outside any
- *     function body?". A regex over a comment-stripped source is
- *     cheap and the false-positive class is harmless (an async-
- *     IIFE wrap around code that didn't need it is a no-op).
- *   - Real parsing would require shipping a JS parser to the
- *     supervisor isolate — adds tens of KiB to the worker bundle
- *     and a fraction-of-a-millisecond per call. Not worth it.
- *
- * Heuristic:
- *   1. Strip line and block comments (avoid matching commented-out
- *      `// await foo` strings).
- *   2. Strip string and template literals (avoid matching `"await x"`
- *      in error messages or user-data strings).
- *   3. Scan token-by-token tracking brace/paren/function-keyword
- *      depth. An `await` at depth-0 OUTSIDE any `function`/`=>` body
- *      is top-level.
- *
- * Misses (accepted):
- *   - Await inside a class static initializer block at depth 0 —
- *     real Node treats that as a syntax error anyway.
- *   - Heavily-minified sources where function boundaries are
- *     packed onto a single line — we false-positive (wrap when
- *     not needed). Harmless.
- *
- * NEVER false-negatives a real top-level await in normal source;
- * the wrap is the safe direction.
+ * AST-based via acorn (already in the supervisor bundle for
+ * `hasTopLevelModuleSyntax`). The prior brace-depth token heuristic
+ * false-positived on a default-value object parameter
+ * (`async function f(opts = {}) { … await … }`): the `= {}` braces
+ * consumed the function-body tracking slot, leaving the real body
+ * untracked so the internal `await` read as top-level. That wrongly
+ * routed such files (e.g. @bluwy/giget-core's download-template.js,
+ * reached by create-astro) into the two-pass ESM→require rewrite,
+ * whose assembled output still carried `export`/`import` statements →
+ * "Cannot use import statement outside a module" at facet startup.
  */
 function hasTopLevelAwait(src) {
-    if (!src || src.indexOf('await') === -1)
-        return false;
-    // Strip comments + string/template literals so the depth-tracker
-    // only sees real syntax. Shared helper preserves `${...}`
-    // interpolation expressions so `\`${await foo}\`` at module top
-    // level is still detected as TLA.
-    const stripped = stripCommentsAndStrings(src);
-    // Now walk tokens. Track function depth: `function` / `=>` opens a
-    // function scope; entering `{` increments; matching `}` decrements.
-    // For arrow funcs the body may be an expression (no braces) —
-    // in that case the function body ends at the next `;` or top-level
-    // comma. Approximation: count `function` keyword occurrences as
-    // "entered fn scope" and assume the first balanced `{ ... }` after
-    // it is the body.
-    //
-    // We use a simpler approach: scan for the keyword `await`, then
-    // count `function`-keywords + `=>` arrows up to that point, minus
-    // matching scope-closes via brace depth. If the await is at depth 0
-    // (no enclosing function), it's TLA.
-    //
-    // For robustness across formatting, we just track brace depth and
-    // a 'inFunctionAt' stack: when we see `function`, push the next `{`'s
-    // depth onto the stack. When we see `}` and it matches the stack's
-    // top, pop. Await at depth not matching any function-stack entry
-    // is TLA.
-    const re = /\b(await|function|class)\b|=>|\{|\}|\(|\)/g;
-    let m;
-    const fnEntryDepths = [];
-    let depth = 0;
-    let pendingFnAtNextBrace = 0;
-    while ((m = re.exec(stripped)) !== null) {
-        const tok = m[0];
-        if (tok === '{') {
-            depth++;
-            if (pendingFnAtNextBrace > 0) {
-                fnEntryDepths.push(depth);
-                pendingFnAtNextBrace--;
-            }
-        }
-        else if (tok === '}') {
-            if (fnEntryDepths.length > 0 &&
-                fnEntryDepths[fnEntryDepths.length - 1] === depth) {
-                fnEntryDepths.pop();
-            }
-            depth--;
-        }
-        else if (tok === 'function' || tok === '=>') {
-            // The next `{` opens the function body. Arrow functions may
-            // have an expression body (no brace) — accepted false-positive.
-            pendingFnAtNextBrace++;
-        }
-        else if (tok === 'class') {
-            // Class bodies use `{}` too, but `await` inside a class field
-            // initializer would be inside a method or value — those open
-            // their own braces. Treat `class` like `function` for depth.
-            pendingFnAtNextBrace++;
-        }
-        else if (tok === 'await') {
-            // TLA iff no enclosing function scope is open at current depth.
-            if (fnEntryDepths.length === 0)
-                return true;
-        }
-    }
-    return false;
+    return astHasTopLevelAwait(src);
 }
 /**
  * Cheap heuristic: does the source contain a top-level ESM `import`
