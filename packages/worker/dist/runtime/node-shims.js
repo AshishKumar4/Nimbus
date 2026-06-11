@@ -72,6 +72,34 @@ async function __nimbusUseRpcResult(promise, use) {
   finally { __nimbusDisposeRpcResult(value); }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ──  fetch default User-Agent ───────────────────────────────────────
+// workerd's global fetch sends no User-Agent by default, but Node's
+// undici fetch adds \`User-Agent: node\`. Servers that require a UA
+// (notably GitHub's API, used by giget/create-* template downloaders)
+// answer 403 to a UA-less request. Match Node by injecting the default
+// UA only when the caller supplied none, preserving any explicit value.
+// This also covers the http/https \`request\`/\`get\` shims, which route
+// through this same global fetch.
+(() => {
+  if (typeof globalThis.fetch !== "function" || globalThis.__nimbusFetchUaInstalled) return;
+  globalThis.__nimbusFetchUaInstalled = true;
+  const __origFetch = globalThis.fetch.bind(globalThis);
+  const __hasUa = (h) => {
+    if (!h) return false;
+    if (typeof h.get === "function") return h.get("user-agent") != null;
+    if (Array.isArray(h)) return h.some((p) => String(p?.[0]).toLowerCase() === "user-agent");
+    return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
+  };
+  globalThis.fetch = function fetch(input, init) {
+    const reqHasUa = typeof Request !== "undefined" && input instanceof Request && __hasUa(input.headers);
+    if (reqHasUa || __hasUa(init && init.headers)) return __origFetch(input, init);
+    const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+    headers.set("user-agent", "node");
+    return __origFetch(input, { ...(init || {}), headers });
+  };
+})();
+
 let __nimbusLiveStdinPump = null;
 let __nimbusProcessExitReported = false;
 let __nimbusProcessExitResolve = null;
