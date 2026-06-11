@@ -287,25 +287,30 @@ function __makeEntrypointPromiseTracker() {
     //
     //   - Unsettled tracked PROMISES are microtask chains. Per Node a pending
     //     promise does NOT keep the process alive — only handles/timers do.
-    //     A settling chain (create-vite's clack scaffold spans many ticks)
-    //     must be allowed to finish, but a NEVER-settling chain
+    //     A settling chain (create-vite's clack scaffold, c3 / create-astro
+    //     streaming their project to the live VFS) must be allowed to finish,
+    //     but a NEVER-settling chain
     //     (\`Promise.resolve().then(() => new Promise(() => {}))\`) must not
     //     pin the facet. So tracked promises are drained only up to a finite
-    //     \`maxPromisePasses\` budget — generous enough for multi-tick
+    //     \`maxPromisePasses\` budget — generous enough for the multi-tick
     //     scaffolders, finite enough that a stuck chain still exits.
     //
     //   - Pending macrotask TIMERS/intervals (\`__timersPending\`) DO keep the
-    //     loop alive (create-astro / nuxi settle through setTimeout-driven
-    //     steps), bounded by the wall-clock deadline.
+    //     loop alive (nuxi settles through setTimeout-driven steps), bounded
+    //     by the wall-clock deadline.
     //
-    // The wall-clock deadline alone is NOT a reliable bound: workerd does not
-    // advance \`Date.now()\` while an isolate spins without I/O, so a no-I/O
-    // promise-only drain would loop forever against the deadline. The pass
-    // budget is the hard termination guarantee; the deadline is the timer
-    // ceiling.
+    // The pass budget — NOT the wall-clock deadline — is the real bound on
+    // the promise drain: workerd does not advance \`Date.now()\` while an
+    // isolate spins without I/O (measured \`elapsed=0\` across the whole
+    // drain), so a no-I/O promise-only drain loops forever against a deadline
+    // that never trips. Each pass is one untracked-setTimeout(0) macrotask;
+    // the scaffolders complete their RPC-streamed writes within a few
+    // thousand passes, while a stuck never-settling chain exhausts the budget
+    // in well under a second (~1.8s for 50k passes, far below the facet
+    // timeout). The deadline still ceilings genuinely-pending timers.
     async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
       const __start = Date.now();
-      const __maxPromisePasses = 4096;
+      const __maxPromisePasses = 50000;
       const __timersPending = () => (typeof globalThis.__nimbusPendingTimers === "number" ? globalThis.__nimbusPendingTimers : 0);
       let __exited = false;
       if (exitPromise && typeof exitPromise.then === "function") {
