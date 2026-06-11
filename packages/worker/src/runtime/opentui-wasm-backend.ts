@@ -422,12 +422,13 @@ export class OpenTUIWasmBackend {
       try {
         result = fn(...marshaled);
       } finally {
-        // Copy-back out-params, then free, in reverse alloc order.
+        // Copy-back out-params, then free, in reverse alloc order. The copy-back
+        // spans the view's own byteLength (which may be < the padded alloc size).
         for (let i = scratch.length - 1; i >= 0; i--) {
           const s = scratch[i];
-          if (s.view) {
+          if (s.view && s.view.byteLength > 0) {
             const dst = new Uint8Array(s.view.buffer, s.view.byteOffset, s.view.byteLength);
-            dst.set(this.#u8().subarray(s.offset, s.offset + s.size));
+            dst.set(this.#u8().subarray(s.offset, s.offset + s.view.byteLength));
           }
           this.#exports.nimbus_free(s.offset, s.size);
         }
