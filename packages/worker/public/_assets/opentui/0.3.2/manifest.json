@@ -1,0 +1,53 @@
+{
+  "name": "@opentui/core zig renderer (wasm32-wasi reactor)",
+  "version": "0.3.2",
+  "sourceCommit": "0d449d4c170a703197f0321f48c7e3bd38dcbd31",
+  "zigVersion": "0.15.2",
+  "target": "wasm32-wasi",
+  "optimize": "ReleaseSmall",
+  "patches": [
+    {
+      "file": "nimbus-wasm-reactor-target.patch",
+      "sha256": "3e8b903c1493cef640668cc495d9f1a8e317c0f2a62c79e11ec8609f294a0f45"
+    },
+    {
+      "file": "nimbus-wasm-ffi-abi.patch",
+      "sha256": "27d059261ef3540b4e40d2a67a4ef8e9127eae7ab7486d20502d771736c5adf2"
+    }
+  ],
+  "wasmOpt": "wasm-opt version 112 (version_112)",
+  "artifact": {
+    "file": "opentui.wasm",
+    "sha256": "24c363560adfa44171bcf4b7c0e281a5ebce9e31e9b6ebdc4be79938aad13efb",
+    "size": 487536,
+    "gzipSize": 122060,
+    "preWasmOptSha256": "b958463e590d8adea0af4088e4f27bb1a67736074525184107fac48fd94261df",
+    "preWasmOptSize": 529273
+  },
+  "imports": {
+    "wasi_snapshot_preview1": [
+      "clock_time_get",
+      "environ_get",
+      "environ_sizes_get",
+      "fd_close",
+      "fd_fdstat_get",
+      "fd_filestat_get",
+      "fd_prestat_dir_name",
+      "fd_prestat_get",
+      "fd_pwrite",
+      "fd_read",
+      "fd_seek",
+      "fd_write",
+      "path_create_directory",
+      "path_open",
+      "poll_oneoff",
+      "proc_exit"
+    ],
+    "opentui": [
+      "eventSinkCallback",
+      "logCallback",
+      "streamCallback"
+    ]
+  },
+  "exportCount": 290
+}
