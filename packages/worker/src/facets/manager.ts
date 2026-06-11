@@ -297,18 +297,23 @@ function __makeEntrypointPromiseTracker() {
     //     scaffolders, finite enough that a stuck chain still exits.
     //
     //   - Pending macrotask TIMERS/intervals (\`__timersPending\`) DO keep the
-    //     loop alive (nuxi settles through setTimeout-driven steps), bounded
-    //     by the wall-clock deadline.
+    //     loop alive (nuxi settles through setTimeout-driven steps).
     //
     // The pass budget — NOT the wall-clock deadline — is the real bound on
-    // the promise drain: workerd does not advance \`Date.now()\` while an
-    // isolate spins without I/O (measured \`elapsed=0\` across the whole
-    // drain), so a no-I/O promise-only drain loops forever against a deadline
-    // that never trips. Each pass is one untracked-setTimeout(0) macrotask;
-    // the scaffolders complete their RPC-streamed writes within a few
-    // thousand passes, while a stuck never-settling chain exhausts the budget
-    // in well under a second (~1.8s for 50k passes, far below the facet
-    // timeout). The deadline still ceilings genuinely-pending timers.
+    // BOTH branches: workerd does not advance \`Date.now()\` while an isolate
+    // spins without I/O (measured \`elapsed=0\` across the whole drain), so a
+    // no-I/O drain loops forever against a deadline that never trips. The
+    // promise branch was already pass-bounded; the timer branch must be too,
+    // or a foreground facet that leaves a pending timer/interval (a listening
+    // server's keep-alive, a TTL timeout, a \`--watch\` poller) spins the drain
+    // forever and the shell never redraws the prompt. Each pass is one
+    // untracked-setTimeout(0) macrotask; the scaffolders complete their
+    // RPC-streamed writes within a few thousand passes, while a stuck chain or
+    // idle long-running server exhausts the budget in well under a second
+    // (~1.8s for 50k passes, far below the facet timeout). Under a live clock
+    // (scaffolders doing real RPC I/O) the deadline still trips first — 50k
+    // setTimeout(0) passes take far longer than \`deadlineMs\` — so it only
+    // backstops the frozen-clock case and leaves scaffolder behavior unchanged.
     async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
       const __start = Date.now();
       const __maxPromisePasses = 50000;
@@ -324,7 +329,7 @@ function __makeEntrypointPromiseTracker() {
         let __pass = 0;
         !__exited
           && (__pass < minPasses
-            || (__timersPending() > 0 && Date.now() - __start < deadlineMs)
+            || (__timersPending() > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses)
             || (__tracked.size > 0 && __pass < __maxPromisePasses));
         __pass++
       ) {
