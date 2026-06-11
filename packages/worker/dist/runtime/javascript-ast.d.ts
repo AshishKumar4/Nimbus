@@ -1,17 +1,6 @@
 import { type AnyNode } from 'acorn';
 export type AstNode = AnyNode & Record<string, unknown>;
 export declare function parseJavaScriptModule(source: string): AstNode;
-/**
- * True iff the module contains a genuine top-level `await` — an
- * `AwaitExpression` (or `for await` loop) with no enclosing function in
- * its ancestor chain. AST-based so default-value parameter braces
- * (`async function f(opts = {})`), destructured params, and
- * arrow-expression bodies can't confuse a brace-depth heuristic.
- *
- * Returns false when parsing fails — callers treat that as "not TLA"
- * and the plain single-pass transform handles it.
- */
-export declare function hasTopLevelAwait(source: string): boolean;
 export declare function hasTopLevelModuleSyntax(source: string): boolean;
 export declare function nodeList(node: AstNode, key: string): AstNode[];
 export declare function nodeProp(node: AstNode | undefined, key: string): AstNode | undefined;

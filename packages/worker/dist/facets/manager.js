@@ -123,6 +123,16 @@ async function createLoadedWorkerEntrypoint(ctxExports, code, supervisor, name =
         },
     });
 }
+// `await` on a promise created inside an async entrypoint bypasses the
+// monkey-patched Promise.prototype.then, so sequential awaited work (timers,
+// retry backoffs, giget template fetches) leaves __tracked empty and the
+// drain would exit early — abandoning real in-flight work (create-astro /
+// nuxi settle their CLI through setTimeout-driven steps). The drain therefore
+// also keeps going while __nimbusPendingTimers > 0. It subscribes to the exit
+// promise ONCE (a per-pass exitPromise.then() would leak a never-settling
+// tracked promise each iteration, which the timers-pending condition would
+// spin on until OOM) and yields via the untracked raw setTimeout so its own
+// ticks don't inflate the pending-timer count it watches.
 export const ENTRYPOINT_PROMISE_TRACKER = `
 function __makeEntrypointPromiseTracker() {
   const __tracked = new Set();
@@ -182,24 +192,11 @@ function __makeEntrypointPromiseTracker() {
     // their synchronous file writes ran.
     async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
       const __start = Date.now();
-      // \`await\` on a promise created inside an async entrypoint bypasses the
-      // monkey-patched Promise.prototype.then, so sequential awaited work
-      // (timers, retry backoffs, giget template fetches) leaves \`__tracked\`
-      // empty and the loop would exit early — abandoning real in-flight
-      // work (create-astro / nuxi scaffolders settle their CLI through
-      // setTimeout-driven steps). Keep draining while timers are pending too.
       const __timersPending = () => (typeof globalThis.__nimbusPendingTimers === "number" ? globalThis.__nimbusPendingTimers : 0);
-      // Subscribe to process exit ONCE — attaching exitPromise.then() every
-      // pass leaks a tracked, never-settling promise into __tracked per
-      // iteration (exitPromise stays pending for the whole drain), which the
-      // timers-pending condition would then spin on until OOM.
       let __exited = false;
       if (exitPromise && typeof exitPromise.then === "function") {
         exitPromise.then(() => { __exited = true; }, () => { __exited = true; });
       }
-      // Use the unpatched setTimeout for the loop's own yield so the drain's
-      // ticks don't inflate __nimbusPendingTimers (which would self-sustain
-      // the loop).
       const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
         ? globalThis.__nimbusRawSetTimeout
         : globalThis.setTimeout;
@@ -220,49 +217,25 @@ function __makeEntrypointPromiseTracker() {
  * timer-driven CLIs (create-astro, nuxi) finish scaffolding.
  */
 const ENTRYPOINT_TIMER_TRACKER = `
-(function __nimbusInstallTimerTracker() {
-  if (globalThis.__nimbusTimerTrackerInstalled) return;
-  globalThis.__nimbusTimerTrackerInstalled = true;
-  globalThis.__nimbusPendingTimers = 0;
-  const __origSetTimeout = globalThis.setTimeout;
-  const __origClearTimeout = globalThis.clearTimeout;
-  const __origSetInterval = globalThis.setInterval;
-  const __origClearInterval = globalThis.clearInterval;
-  if (typeof __origSetTimeout !== "function") return;
-  // Expose the untracked setTimeout so the startup drain can yield without
-  // inflating the pending-timer count it watches.
-  globalThis.__nimbusRawSetTimeout = __origSetTimeout;
-  const __oneShot = new Set();
-  const __intervals = new Set();
-  globalThis.setTimeout = function(fn, ms, ...args) {
-    if (typeof fn !== "function") return __origSetTimeout(fn, ms, ...args);
-    let __id;
-    globalThis.__nimbusPendingTimers++;
-    const __wrapped = function() {
-      if (__oneShot.has(__id)) { __oneShot.delete(__id); globalThis.__nimbusPendingTimers--; }
-      return fn.apply(this, arguments);
-    };
-    __id = __origSetTimeout(__wrapped, ms, ...args);
-    __oneShot.add(__id);
-    return __id;
+(function(g){
+  if (g.__nimbusTimerTrackerInstalled) return;
+  g.__nimbusTimerTrackerInstalled = true; g.__nimbusPendingTimers = 0;
+  const st = g.setTimeout, ct = g.clearTimeout, si = g.setInterval, ci = g.clearInterval;
+  if (typeof st !== "function") return;
+  g.__nimbusRawSetTimeout = st;
+  const one = new Set(), iv = new Set();
+  g.setTimeout = function(fn, ms, ...a){
+    if (typeof fn !== "function") return st(fn, ms, ...a);
+    let id; g.__nimbusPendingTimers++;
+    id = st(function(){ if (one.delete(id)) g.__nimbusPendingTimers--; return fn.apply(this, arguments); }, ms, ...a);
+    one.add(id); return id;
   };
-  globalThis.clearTimeout = function(id) {
-    if (__oneShot.has(id)) { __oneShot.delete(id); globalThis.__nimbusPendingTimers--; }
-    return __origClearTimeout(id);
-  };
-  if (typeof __origSetInterval === "function") {
-    globalThis.setInterval = function(fn, ms, ...args) {
-      const __id = __origSetInterval(fn, ms, ...args);
-      __intervals.add(__id);
-      globalThis.__nimbusPendingTimers++;
-      return __id;
-    };
-    globalThis.clearInterval = function(id) {
-      if (__intervals.has(id)) { __intervals.delete(id); globalThis.__nimbusPendingTimers--; }
-      return __origClearInterval(id);
-    };
+  g.clearTimeout = function(id){ if (one.delete(id)) g.__nimbusPendingTimers--; return ct(id); };
+  if (typeof si === "function") {
+    g.setInterval = function(fn, ms, ...a){ const id = si(fn, ms, ...a); iv.add(id); g.__nimbusPendingTimers++; return id; };
+    g.clearInterval = function(id){ if (iv.delete(id)) g.__nimbusPendingTimers--; return ci(id); };
   }
-})();
+})(globalThis);
 `;
 const ENTRYPOINT_STARTUP_DRAIN = `
 async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises) {

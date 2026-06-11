@@ -66,6 +66,27 @@ export declare const BUNDLER_VERSION = "v7";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
+/**
+ * Detect top-level await in source. Used by `EsbuildService.transform`
+ * to decide whether to async-IIFE-wrap CJS-target sources (see
+ * transform()'s header comment).
+ *
+ * Token scan over a comment-and-string-stripped source. Tracks paren
+ * depth AND function-body depth so a `{` inside a parameter list (a
+ * default-value object literal — `async function f(opts = {})`) is NOT
+ * mistaken for the function body. The earlier heuristic lacked the paren
+ * guard: the `= {}` braces consumed the body-tracking slot, leaving the
+ * real body untracked so an internal `await` read as top-level. That
+ * wrongly routed such files (e.g. @bluwy/giget-core's
+ * download-template.js, reached by create-astro) into the two-pass
+ * ESM→require rewrite, whose assembled output still carried export/import
+ * statements → "Cannot use import statement outside a module" at startup.
+ *
+ * A regex/token scan (not acorn) is kept here deliberately: pulling
+ * acorn into the esbuild-service bundle chunk duplicates its ~15 KiB
+ * Unicode identifier tables.
+ */
+export declare function hasTopLevelAwait(src: string): boolean;
 export interface TransformResult {
     code: string;
     map: string;

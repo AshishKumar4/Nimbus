@@ -18,7 +18,6 @@
  */
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
-import { hasTopLevelAwait as astHasTopLevelAwait } from './javascript-ast.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -138,19 +137,64 @@ export function getSharedRuntimeExternals(specifier) {
  * to decide whether to async-IIFE-wrap CJS-target sources (see
  * transform()'s header comment).
  *
- * AST-based via acorn (already in the supervisor bundle for
- * `hasTopLevelModuleSyntax`). The prior brace-depth token heuristic
- * false-positived on a default-value object parameter
- * (`async function f(opts = {}) { … await … }`): the `= {}` braces
- * consumed the function-body tracking slot, leaving the real body
- * untracked so the internal `await` read as top-level. That wrongly
- * routed such files (e.g. @bluwy/giget-core's download-template.js,
- * reached by create-astro) into the two-pass ESM→require rewrite,
- * whose assembled output still carried `export`/`import` statements →
- * "Cannot use import statement outside a module" at facet startup.
+ * Token scan over a comment-and-string-stripped source. Tracks paren
+ * depth AND function-body depth so a `{` inside a parameter list (a
+ * default-value object literal — `async function f(opts = {})`) is NOT
+ * mistaken for the function body. The earlier heuristic lacked the paren
+ * guard: the `= {}` braces consumed the body-tracking slot, leaving the
+ * real body untracked so an internal `await` read as top-level. That
+ * wrongly routed such files (e.g. @bluwy/giget-core's
+ * download-template.js, reached by create-astro) into the two-pass
+ * ESM→require rewrite, whose assembled output still carried export/import
+ * statements → "Cannot use import statement outside a module" at startup.
+ *
+ * A regex/token scan (not acorn) is kept here deliberately: pulling
+ * acorn into the esbuild-service bundle chunk duplicates its ~15 KiB
+ * Unicode identifier tables.
  */
-function hasTopLevelAwait(src) {
-    return astHasTopLevelAwait(src);
+export function hasTopLevelAwait(src) {
+    if (!src || src.indexOf('await') === -1)
+        return false;
+    const stripped = stripCommentsAndStrings(src);
+    // Tokens: keywords, arrow, and each bracket kind. `parenDepth` rises
+    // inside `(...)`; a `{` only opens a function body when a `function`/
+    // `=>` is pending AND we're at parenDepth 0 (past the param list).
+    const re = /\b(await|function|class)\b|=>|\{|\}|\(|\)/g;
+    let m;
+    const fnEntryDepths = [];
+    let depth = 0;
+    let parenDepth = 0;
+    let pendingFn = 0;
+    while ((m = re.exec(stripped)) !== null) {
+        const tok = m[0];
+        if (tok === '(') {
+            parenDepth++;
+        }
+        else if (tok === ')') {
+            if (parenDepth > 0)
+                parenDepth--;
+        }
+        else if (tok === '{') {
+            depth++;
+            if (pendingFn > 0 && parenDepth === 0) {
+                fnEntryDepths.push(depth);
+                pendingFn--;
+            }
+        }
+        else if (tok === '}') {
+            if (fnEntryDepths.length > 0 && fnEntryDepths[fnEntryDepths.length - 1] === depth)
+                fnEntryDepths.pop();
+            depth--;
+        }
+        else if (tok === 'function' || tok === '=>' || tok === 'class') {
+            pendingFn++;
+        }
+        else if (tok === 'await') {
+            if (fnEntryDepths.length === 0)
+                return true;
+        }
+    }
+    return false;
 }
 /**
  * Cheap heuristic: does the source contain a top-level ESM `import`
