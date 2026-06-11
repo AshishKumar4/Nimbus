@@ -38,6 +38,11 @@
 
 import { generateShimsCode } from './node-shims.js';
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
+import {
+  OPENTUI_BACKEND_FACET_SRC,
+  OPENTUI_WASM_MODULE_NAME,
+  generateOpenTUIBackendBootCode,
+} from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
 
 /** Map-module specifier for the opencode ESM bundle. */
@@ -247,6 +252,15 @@ globalThis.${TREE_SITTER_REGISTRY_GLOBAL} = new Map([
   [${JSON.stringify(treeSitter.powershell)}, __nimbusTsPowershell],
 ]);
 
+// ── OpenTUI wasm FFI backend module (module-init scope) ─────────────────────
+// The pre-compiled OpenTUI wasm32-wasi reactor Module rides in via the module
+// map; the WASI host preamble + the backend class are injected below, and the
+// backend is constructed + parked on globalThis right after env is seeded (the
+// boot block) so it is in place before the opencode bundle (which inlines the
+// Nimbus-patched @opentui/core) is imported in fetch().
+import __nimbusOpenTUIWasmModule from "${OPENTUI_WASM_MODULE_NAME}";
+${OPENTUI_BACKEND_FACET_SRC}
+
 // ── VFS-backed node-compat shim scope (node-shims.ts) ──────────────────────
 // Declared at module-init so the node:fs / node:os bridge modules (which
 // evaluate when the opencode bundle is linked) find a populated builtins map.
@@ -272,6 +286,7 @@ const __pendingIO = [];
 ${generateShimsCode()}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
+${generateOpenTUIBackendBootCode()}
 // Defer opencode's CLI so it runs inside fetch() (handler I/O context), not at
 // module top-level await (workerd "global scope", where the VFS supervisor RPC
 // is a disallowed operation). The bundle reads this flag and exports

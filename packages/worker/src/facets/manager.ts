@@ -33,6 +33,8 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle, fetchOpencodeTreeSitterWasm } from '../runtime/opencode-artifact.js';
+import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
+import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
 import {
   generateOpencodeRunnerCode,
@@ -2487,6 +2489,15 @@ export class FacetManager {
   private opencodeTreeSitterBytes: Record<string, ArrayBuffer> | null = null;
   private opencodeTreeSitterBytesPromise: Promise<Record<string, ArrayBuffer>> | null = null;
 
+  /**
+   * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
+   * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
+   * against OPENTUI_WASM_SHA256 in fetchOpenTUIWasmBytes); each facet config
+   * gets a fresh `{ wasm }` entry over the shared buffer.
+   */
+  private openTuiWasmBytes: ArrayBuffer | null = null;
+  private openTuiWasmBytesPromise: Promise<ArrayBuffer> | null = null;
+
   constructor(
     ctx: DurableObjectState,
     env: unknown,
@@ -2591,6 +2602,36 @@ export class FacetManager {
     return Object.fromEntries(
       Object.entries(this.opencodeTreeSitterBytes).map(([file, bytes]) => [file, { wasm: bytes }]),
     );
+  }
+
+  /**
+   * Build the Worker Loader module-map fragment carrying the staged OpenTUI
+   * wasm32-wasi reactor into the opencode facet as a pre-compiled
+   * WebAssembly.Module under OPENTUI_WASM_MODULE_NAME. The runner instantiates
+   * it via OpenTUIWasmBackend (the patched @opentui/core seams resolve their
+   * render library from the parked backend) — request-time
+   * WebAssembly.compile(bytes) is blocked in facets.
+   */
+  private async openTuiModuleEntry(): Promise<Record<string, { wasm: ArrayBuffer }>> {
+    if (!this.env.ASSETS) {
+      throw new Error(
+        'opencode OpenTUI render backend requires an env.ASSETS binding; this ' +
+          'Nimbus deployment is missing the static-assets binding',
+      );
+    }
+    if (!this.openTuiWasmBytes) {
+      if (!this.openTuiWasmBytesPromise) {
+        const assets = this.env.ASSETS;
+        this.openTuiWasmBytesPromise = fetchOpenTUIWasmBytes({ ASSETS: assets });
+      }
+      try {
+        this.openTuiWasmBytes = await this.openTuiWasmBytesPromise;
+      } catch (e) {
+        this.openTuiWasmBytesPromise = null;
+        throw e;
+      }
+    }
+    return { [OPENTUI_WASM_MODULE_NAME]: { wasm: this.openTuiWasmBytes } };
   }
 
   private trackProcessRpcResources(
@@ -2902,9 +2943,10 @@ export class FacetManager {
     // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
     // The tree-sitter core + bash/powershell grammar wasm ride in the same
     // way for the bash tool's command parser.
-    const [sqliteModules, treeSitterModules] = await Promise.all([
+    const [sqliteModules, treeSitterModules, openTuiModules] = await Promise.all([
       this.sqliteModuleEntry(true),
       this.treeSitterModuleEntries(),
+      this.openTuiModuleEntry(),
     ]);
 
     // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
@@ -2926,6 +2968,7 @@ export class FacetManager {
           [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
           ...sqliteModules,
           ...treeSitterModules,
+          ...openTuiModules,
           ...opencodeBuiltinBridgeModules(),
         },
         ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
