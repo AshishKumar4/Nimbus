@@ -171,6 +171,39 @@ const __streamMod = (() => {
     }
   }
 
+  // ── Readable.from / Readable.fromWeb ────────────────────────────────
+  // Node exposes these statics; libraries that stream a fetch
+  // \`response.body\` (a web ReadableStream) into a Node pipeline rely on
+  // \`Readable.fromWeb\` (giget's template download:
+  // \`pipeline(response.body, createWriteStream(...))\`). A web
+  // ReadableStream has no \`.pipe\`, so it must be adapted first.
+  Readable.from = function from(iterable, opts) {
+    const r = new Readable({ objectMode: opts?.objectMode ?? false, ...opts });
+    r._read = () => {};
+    (async () => {
+      try {
+        for await (const chunk of iterable) r.push(chunk);
+        r.push(null);
+      } catch (err) { r.destroy(err); }
+    })();
+    return r;
+  };
+  Readable.fromWeb = function fromWeb(webStream, opts) {
+    const r = new Readable({ ...opts });
+    const reader = webStream.getReader();
+    r._read = () => {};
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) { r.push(null); break; }
+          r.push(value);
+        }
+      } catch (err) { r.destroy(err); }
+    })();
+    return r;
+  };
+
   // ── Writable ────────────────────────────────────────────────────────
   class Writable extends __eventsMod {
     constructor(opts) {
@@ -345,6 +378,16 @@ const __streamMod = (() => {
       return streams[0];
     }
     let error = null;
+    // Adapt non-Node sources (web ReadableStream from fetch, async
+    // iterables) to a Node Readable so \`.pipe\` exists. Node's pipeline
+    // performs the same normalization via Readable.from/fromWeb.
+    for (let i = 0; i < streams.length; i++) {
+      const s = streams[i];
+      if (s && typeof s.pipe !== 'function') {
+        if (typeof s.getReader === 'function') streams[i] = Readable.fromWeb(s);
+        else if (s[Symbol.asyncIterator] || s[Symbol.iterator]) streams[i] = Readable.from(s);
+      }
+    }
     for (let i = 0; i < streams.length - 1; i++) {
       const src = streams[i];
       const dst = streams[i + 1];
