@@ -209,6 +209,14 @@ export declare class FacetManager {
     /** Memoized opencode ESM bundle source (fetched once per isolate). */
     private opencodeBundle;
     private opencodeBundlePromise;
+    /**
+     * Memoized tree-sitter wasm sidecar bytes (core + bash + powershell
+     * grammars) for the opencode facet, keyed by staged filename. Fetched once
+     * per isolate from env.ASSETS; each facet config gets fresh `{ wasm }`
+     * entries over the shared buffers.
+     */
+    private opencodeTreeSitterBytes;
+    private opencodeTreeSitterBytesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -233,6 +241,15 @@ export declare class FacetManager {
      * here is clearer.
      */
     private sqliteModuleEntry;
+    /**
+     * Build the Worker Loader module-map fragment that carries the opencode
+     * tree-sitter wasm sidecars (core + bash + powershell grammars) into the
+     * opencode facet as pre-compiled WebAssembly.Modules, keyed by staged
+     * filename. The runner registers them on the facet's tree-sitter registry
+     * global so the bash tool's command parser instantiates them instead of
+     * hitting the blocked request-time WebAssembly.compile path.
+     */
+    private treeSitterModuleEntries;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;

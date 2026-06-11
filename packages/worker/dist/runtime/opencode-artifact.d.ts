@@ -12,10 +12,10 @@
  * (caches.default) keyed on a version-pinned synthetic URL; no module-scope
  * residency.
  *
- * Next boundary for real bash-tool execution: wiring opencode's tree-sitter
- * wasm into the facet module map (the facet's emscripten `instantiateWasm`
- * hook) the way sql.js is wired today. Until then only sql.js rides in, and
- * the proven matrix is --version/--help/run-to-model-resolution.
+ * Besides the CLI bundle this also fetches the tree-sitter wasm sidecars
+ * (core + bash + powershell grammars) that ride into the facet module map as
+ * pre-compiled WebAssembly.Modules for opencode's bash-tool command parser
+ * (see OPENCODE_TREE_SITTER_WASMS and FacetManager.treeSitterModuleEntries).
  */
 /** Base asset path of the staged opencode bundle directory. */
 export declare const OPENCODE_ASSET_BASE: string;
@@ -27,4 +27,6 @@ export interface OpencodeAssetEnv {
 }
 /** Fetch the opencode CLI bundle source as text. */
 export declare function fetchOpencodeBundle(env: OpencodeAssetEnv): Promise<string>;
+/** Fetch a staged tree-sitter wasm sidecar (raw bytes for a `{ wasm }` module). */
+export declare function fetchOpencodeTreeSitterWasm(env: OpencodeAssetEnv, file: string): Promise<ArrayBuffer>;
 //# sourceMappingURL=opencode-artifact.d.ts.map

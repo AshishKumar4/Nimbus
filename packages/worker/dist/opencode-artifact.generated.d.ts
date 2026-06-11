@@ -22,4 +22,16 @@ export declare const OPENCODE_ARTIFACT_BUILD_ID: string;
 export declare const OPENCODE_ARTIFACT_PRESENT: boolean;
 export declare const OPENCODE_ARTIFACT_ENTRY: string;
 export declare const OPENCODE_ARTIFACT_FILES: readonly string[];
+/**
+ * Staged wasm sidecar filenames the facet runner pre-registers as
+ * pre-compiled WebAssembly.Modules on `globalThis.__nimbusTreeSitterModules`
+ * (request-time WebAssembly.compile is blocked in facets). Core + bash +
+ * powershell cover opencode's bash tool. Null when the artifact is unstaged.
+ */
+export interface OpencodeTreeSitterWasms {
+    readonly core: string;
+    readonly bash: string;
+    readonly powershell: string;
+}
+export declare const OPENCODE_TREE_SITTER_WASMS: OpencodeTreeSitterWasms | null;
 //# sourceMappingURL=opencode-artifact.generated.d.ts.map

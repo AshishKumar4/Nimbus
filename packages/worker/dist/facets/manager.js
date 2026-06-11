@@ -27,7 +27,8 @@ import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
-import { fetchOpencodeBundle } from '../runtime/opencode-artifact.js';
+import { fetchOpencodeBundle, fetchOpencodeTreeSitterWasm } from '../runtime/opencode-artifact.js';
+import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
 import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, } from '../constants.js';
@@ -2308,6 +2309,14 @@ export class FacetManager {
     /** Memoized opencode ESM bundle source (fetched once per isolate). */
     opencodeBundle = null;
     opencodeBundlePromise = null;
+    /**
+     * Memoized tree-sitter wasm sidecar bytes (core + bash + powershell
+     * grammars) for the opencode facet, keyed by staged filename. Fetched once
+     * per isolate from env.ASSETS; each facet config gets fresh `{ wasm }`
+     * entries over the shared buffers.
+     */
+    opencodeTreeSitterBytes = null;
+    opencodeTreeSitterBytesPromise = null;
     constructor(ctx, env, processes, portRegistry, hooks = {}) {
         this.ctx = ctx;
         this.env = parseFacetManagerEnv(env);
@@ -2358,6 +2367,39 @@ export class FacetManager {
             }
         }
         return { [SQLITE_WASM_MODULE_NAME]: { wasm: this.sqliteWasmBytes } };
+    }
+    /**
+     * Build the Worker Loader module-map fragment that carries the opencode
+     * tree-sitter wasm sidecars (core + bash + powershell grammars) into the
+     * opencode facet as pre-compiled WebAssembly.Modules, keyed by staged
+     * filename. The runner registers them on the facet's tree-sitter registry
+     * global so the bash tool's command parser instantiates them instead of
+     * hitting the blocked request-time WebAssembly.compile path.
+     */
+    async treeSitterModuleEntries() {
+        const wasms = OPENCODE_TREE_SITTER_WASMS;
+        if (!wasms) {
+            throw new Error('opencode tree-sitter wasm sidecars are not staged — rerun ' +
+                'scripts/bundle-opencode.mjs with the opencode dist present');
+        }
+        if (!this.env.ASSETS) {
+            throw new Error('opencode tree-sitter wasm requires an env.ASSETS binding; this Nimbus ' +
+                'deployment is missing the static-assets binding');
+        }
+        if (!this.opencodeTreeSitterBytes) {
+            if (!this.opencodeTreeSitterBytesPromise) {
+                const assets = this.env.ASSETS;
+                this.opencodeTreeSitterBytesPromise = Promise.all([wasms.core, wasms.bash, wasms.powershell].map(async (file) => [file, await fetchOpencodeTreeSitterWasm({ ASSETS: assets }, file)])).then((entries) => Object.fromEntries(entries));
+            }
+            try {
+                this.opencodeTreeSitterBytes = await this.opencodeTreeSitterBytesPromise;
+            }
+            catch (e) {
+                this.opencodeTreeSitterBytesPromise = null;
+                throw e;
+            }
+        }
+        return Object.fromEntries(Object.entries(this.opencodeTreeSitterBytes).map(([file, bytes]) => [file, { wasm: bytes }]));
     }
     trackProcessRpcResources(pid, resources, options = {}) {
         this.releaseProcessRpcResources(pid);
@@ -2594,7 +2636,12 @@ export class FacetManager {
         // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
         // bridges it to the VFS-backed sql.js shim and statically imports the
         // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
-        const sqliteModules = await this.sqliteModuleEntry(true);
+        // The tree-sitter core + bash/powershell grammar wasm ride in the same
+        // way for the bash tool's command parser.
+        const [sqliteModules, treeSitterModules] = await Promise.all([
+            this.sqliteModuleEntry(true),
+            this.treeSitterModuleEntries(),
+        ]);
         // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
         // live SQLite VFS (same wiring as the standard one-shot facet path).
         const ctxExports = getCtxExports();
@@ -2612,6 +2659,7 @@ export class FacetManager {
                     'runner.js': runnerCode,
                     [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
                     ...sqliteModules,
+                    ...treeSitterModules,
                     ...opencodeBuiltinBridgeModules(),
                 },
                 ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),

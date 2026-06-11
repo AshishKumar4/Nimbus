@@ -38,12 +38,35 @@
 
 import { generateShimsCode } from './node-shims.js';
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
+import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
 
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
 
 /** Module-map specifier for the sql.js WebAssembly.Module. */
 export const SQLITE_WASM_MODULE_NAME = 'sqlite.wasm';
+
+/**
+ * Runner argv sentinel for the tree-sitter wasm diagnostic. `opencode
+ * __nimbus-tree-sitter-diag [command]` runs web-tree-sitter core init +
+ * bash/powershell grammar loads + a bash parse through the bundle's OWN
+ * (Nimbus-patched) web-tree-sitter instance — the exact module-map/registry
+ * path the bash tool's parser uses — without needing a model. Reported as
+ * JSON on stdout; probed by
+ * tests/behavioral/agentic-cli/new/opencode-tree-sitter-bash-parse.mjs.
+ */
+export const OPENCODE_TREE_SITTER_DIAG_ARG = '__nimbus-tree-sitter-diag';
+
+/**
+ * The registry contract with the Nimbus-patched opencode bundle: the runner
+ * parks `Map<wasm basename, WebAssembly.Module>` on this global at
+ * module-init; web-tree-sitter's two byte→compile seams (Emscripten
+ * createWasm for the core, Language.load for grammars) consult it instead of
+ * compiling bytes (request-time WebAssembly.compile is blocked in facets)
+ * and fail loud on unregistered wasm names. See
+ * scripts/opencode/build-node.ts (nimbusPatchWebTreeSitter).
+ */
+const TREE_SITTER_REGISTRY_GLOBAL = '__nimbusTreeSitterModules';
 
 /** Global key under which the runner parks the VFS-backed node builtins. */
 const BUILTINS_GLOBAL = '__nimbusOpencodeBuiltins';
@@ -186,6 +209,13 @@ export interface OpencodeRunnerOptions {
  * stdout/stderr are buffered and returned in the JSON response.
  */
 export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string {
+  const treeSitter = OPENCODE_TREE_SITTER_WASMS;
+  if (!treeSitter) {
+    throw new Error(
+      'opencode tree-sitter wasm sidecars are not staged — rerun ' +
+        'scripts/bundle-opencode.mjs with the opencode dist present',
+    );
+  }
   const safe = {
     argv: JSON.stringify(opts.argv),
     env: JSON.stringify(opts.env),
@@ -201,6 +231,21 @@ export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string 
 import __nimbusSqliteWasmModule from "${SQLITE_WASM_MODULE_NAME}";
 globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;
 ${generateSqliteFacetPreamble()}
+
+// ── tree-sitter wasm registry (module-init scope) ───────────────────────────
+// Pre-compiled core + bash + powershell grammar WebAssembly.Modules from the
+// module map, keyed by staged basename. The Nimbus-patched web-tree-sitter
+// inside the opencode bundle instantiates these (workerd allows Instance-of-
+// precompiled-Module) instead of the blocked request-time compile, and fails
+// loud on any wasm name missing from this registry.
+import __nimbusTsCore from "${treeSitter.core}";
+import __nimbusTsBash from "${treeSitter.bash}";
+import __nimbusTsPowershell from "${treeSitter.powershell}";
+globalThis.${TREE_SITTER_REGISTRY_GLOBAL} = new Map([
+  [${JSON.stringify(treeSitter.core)}, __nimbusTsCore],
+  [${JSON.stringify(treeSitter.bash)}, __nimbusTsBash],
+  [${JSON.stringify(treeSitter.powershell)}, __nimbusTsPowershell],
+]);
 
 // ── VFS-backed node-compat shim scope (node-shims.ts) ──────────────────────
 // Declared at module-init so the node:fs / node:os bridge modules (which
@@ -291,13 +336,47 @@ export default {
       // handler, not module init (instantiation touches crypto for RNG).
       if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
-      if (typeof __ocBundle.nimbusMain !== "function") {
-        throw new Error(
-          "opencode bundle does not export nimbusMain() — the staged build is " +
-          "missing the Nimbus deferred-entry patch (see build-node.ts)"
-        );
+      if (argv[2] === "${OPENCODE_TREE_SITTER_DIAG_ARG}") {
+        // Model-free diagnostic: drive the bundle's OWN web-tree-sitter
+        // (the instance the bash tool's parser uses) through core init +
+        // grammar loads + a bash parse, via the module-map registry.
+        const { Parser, Language } = __ocBundle;
+        if (!Parser || typeof Parser.init !== "function" || !Language || typeof Language.load !== "function") {
+          throw new Error(
+            "opencode bundle does not export Parser/Language — the staged build is " +
+            "missing the Nimbus tree-sitter export patch (see nimbus-tree-sitter-exports.patch)"
+          );
+        }
+        await Parser.init({ locateFile: () => "/opencode/${treeSitter.core}" });
+        const [__tsBashLang, __tsPsLang] = await Promise.all([
+          Language.load("/opencode/${treeSitter.bash}"),
+          Language.load("/opencode/${treeSitter.powershell}"),
+        ]);
+        const __tsParser = new Parser();
+        __tsParser.setLanguage(__tsBashLang);
+        const __tsCommand = argv[3] || "echo hello | wc -l";
+        const __tsTree = __tsParser.parse(__tsCommand);
+        const __tsRoot = __tsTree && __tsTree.rootNode;
+        if (!__tsRoot) throw new Error("tree-sitter bash parse returned no tree");
+        const __tsOk = __tsRoot.type === "program" && !__tsRoot.hasError;
+        stdout += JSON.stringify({
+          ok: __tsOk,
+          command: __tsCommand,
+          rootType: __tsRoot.type,
+          childCount: __tsRoot.childCount,
+          sexpr: __tsRoot.toString(),
+          powershellLoaded: !!__tsPsLang,
+        }) + "\\n";
+        if (!__tsOk) exitCode = 1;
+      } else {
+        if (typeof __ocBundle.nimbusMain !== "function") {
+          throw new Error(
+            "opencode bundle does not export nimbusMain() — the staged build is " +
+            "missing the Nimbus deferred-entry patch (see build-node.ts)"
+          );
+        }
+        await __ocBundle.nimbusMain();
       }
-      await __ocBundle.nimbusMain();
       // Let the CLI's microtasks/timers settle so deferred writes flush.
       for (let i = 0; i < 8 && !__ocExited; i++) {
         await new Promise((r) => setTimeout(r, 0));

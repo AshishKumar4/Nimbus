@@ -40,6 +40,16 @@ export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
 /** Module-map specifier for the sql.js WebAssembly.Module. */
 export declare const SQLITE_WASM_MODULE_NAME = "sqlite.wasm";
 /**
+ * Runner argv sentinel for the tree-sitter wasm diagnostic. `opencode
+ * __nimbus-tree-sitter-diag [command]` runs web-tree-sitter core init +
+ * bash/powershell grammar loads + a bash parse through the bundle's OWN
+ * (Nimbus-patched) web-tree-sitter instance — the exact module-map/registry
+ * path the bash tool's parser uses — without needing a model. Reported as
+ * JSON on stdout; probed by
+ * tests/behavioral/agentic-cli/new/opencode-tree-sitter-bash-parse.mjs.
+ */
+export declare const OPENCODE_TREE_SITTER_DIAG_ARG = "__nimbus-tree-sitter-diag";
+/**
  * Module-map entries for the VFS-backed node builtin bridges. The Worker
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the
  * explicit `{ js }` content form.
