@@ -57,10 +57,15 @@ try {
     `hasDiagnostic=${hasDiagnostic} noEsmParseError=${noEsmParseError} tail=${JSON.stringify(tail(out))}`);
 
   // Stricter assertion: pre-fix the user saw a useless error; post-fix
-  // they must see SOMETHING actionable. Either a diagnostic OR
-  // progression past the prior failure point.
-  a.check('Post-fix: user-visible error is improved (diagnostic OR new failure surface)',
-    hasDiagnostic || /node_modules\/[^@]+\/[^/]+\/[^/]+/.test(out) || /Launch sequence initiated/.test(out),
+  // they must see SOMETHING actionable. The deterministic proof that the
+  // bundle compiled past the ESM-transform boundary is that create-astro
+  // actually LAUNCHES as a facet (the F4 transform/diagnostic let the
+  // pre-compile loop finish instead of dying on "Cannot use import
+  // statement outside a module"). create-astro's own post-launch banner
+  // flushes non-deterministically, so accept the facet-launch marker too.
+  const launched = /facet started: pid=\d+ cmd="node[^"]*create-astro/.test(out);
+  a.check('Post-fix: user-visible error is improved (diagnostic OR progressed past the ESM boundary)',
+    hasDiagnostic || launched || /Launch sequence initiated/.test(out),
     `tail=${JSON.stringify(tail(out))}`);
 } finally {
   await t.close();
