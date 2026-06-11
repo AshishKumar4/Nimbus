@@ -16,10 +16,18 @@
  * `ArrayBuffer` (copied into a scratch arena via the module's `nimbus_alloc`,
  * passed as a u32 offset, copied back if the view is writable, then freed).
  *
- * `toArrayBuffer` returns a LIVE window over linear memory, and every accessor
- * re-derives from the CURRENT `memory.buffer` so a `memory.grow` (which detaches
- * the old `ArrayBuffer`) can never strand a cached view — mirroring upstream's
- * post-resize re-fetch discipline (buffer.ts `ensureRawBufferViews`).
+ * `toArrayBuffer` returns a detach-safe SNAPSHOT copy of a linear-memory range
+ * (every zig.ts caller reads-then-decodes synchronously). The five live
+ * cell-array views that must track Zig's writes use `liveView()` instead, always
+ * re-derived from the CURRENT `memory.buffer` so a `memory.grow` (which detaches
+ * the old `ArrayBuffer`) can never strand them — mirroring upstream's post-resize
+ * re-fetch discipline (buffer.ts `ensureRawBufferViews`).
+ *
+ * A `ptr(view)` result is transient scratch for the immediately-following symbol
+ * call — exactly like a native FFI pointer into JS memory, which is only valid
+ * for the duration of the call it is passed to. Each `dlopen`'d symbol call
+ * frees the `ptr()` allocations made before it, so a 60fps `rgbaPtr(color)`
+ * render loop does not leak linear memory.
  *
  * Stage B: this module is standalone and unwired. Nothing in the running worker
  * imports it; Stage C patches it into the @opentui/core bundle.
@@ -189,6 +197,14 @@ export class OpenTUIWasmBackend {
   #nextToken = 1; // tokens must be non-zero (0 === null fn pointer)
 
   /**
+   * Transient `ptr()` allocations awaiting release by the next symbol call.
+   * A `ptr(view)` pointer is only valid for the call it is passed to (native FFI
+   * semantics), so each `dlopen`'d symbol call frees what was allocated before
+   * it. Without this a per-frame `rgbaPtr(color)` would leak linear memory.
+   */
+  readonly #pendingPtrScratch: Array<{ offset: number; size: number }> = [];
+
+  /**
    * Cached `Uint8Array` over `memory.buffer`, invalidated whenever a grow may
    * have detached it. `#u8()` always returns a view backed by the live buffer.
    */
@@ -290,21 +306,21 @@ export class OpenTUIWasmBackend {
 
   // ── ptr(view): copy a view/buffer into the arena, return its u32 offset ─────
   //
-  // The persistent-pointer path used when zig.ts pre-materializes an address
-  // (rgbaPtr → ptr(rgba.buffer), ptr(outCountBuf), ptr(reserveBuffer), …). The
-  // caller owns the lifetime; we expose `free` so Stage C can release it, but
-  // OpenTUI's call sites create these per-call and let them be reclaimed when
-  // the renderer/buffer is torn down, matching native FFI lifetime.
+  // Used when zig.ts pre-materializes an address (rgbaPtr → ptr(rgba.buffer),
+  // ptr(outCountBuf), ptr(reserveBuffer), …) and passes the numeric offset into
+  // the very next symbol call. Native FFI hands the callee a raw pointer into JS
+  // memory valid only for that call; we mirror that lifetime by queuing the
+  // allocation as transient scratch that the next symbol call frees (see
+  // `#bindSymbol`). This keeps a per-frame `rgbaPtr(color)` loop leak-free.
   ptr(value: ArrayBuffer | ArrayBufferView): OpenTUIPointer {
     const { bytes, byteOffset, byteLength } = viewBytes(value);
-    const offset = this.#alloc(byteLength);
-    this.#u8().set(bytes.subarray(byteOffset, byteOffset + byteLength), offset);
+    const size = byteLength === 0 ? ARENA_ALIGN : byteLength;
+    const offset = this.#alloc(size);
+    if (byteLength > 0) {
+      this.#u8().set(bytes.subarray(byteOffset, byteOffset + byteLength), offset);
+    }
+    this.#pendingPtrScratch.push({ offset, size });
     return offset;
-  }
-
-  /** Release a pointer obtained from `ptr()` (size must match the original view). */
-  free(pointer: OpenTUIPointer, byteLength: number): void {
-    this.#exports.nimbus_free(toOffset(pointer), byteLength);
   }
 
   // ── toArrayBuffer(ptr, offset, length): a snapshot copy of linear memory ────
@@ -398,6 +414,11 @@ export class OpenTUIWasmBackend {
     }
 
     return (...args: unknown[]): unknown => {
+      // Claim the transient ptr() scratch allocated while zig.ts evaluated this
+      // call's args. Claiming (vs. draining the shared list) scopes the frees to
+      // this call, so a callback that re-enters another symbol mid-execution
+      // cannot free a pointer this call is still reading.
+      const claimedPtr = this.#pendingPtrScratch.splice(0);
       const scratch: Array<{ offset: number; size: number; view: ArrayBufferView | null }> = [];
       const marshaled: unknown[] = new Array(argTypes.length);
 
@@ -431,6 +452,10 @@ export class OpenTUIWasmBackend {
             dst.set(this.#u8().subarray(s.offset, s.offset + s.view.byteLength));
           }
           this.#exports.nimbus_free(s.offset, s.size);
+        }
+        // Release this call's transient ptr() scratch (reverse alloc order).
+        for (let i = claimedPtr.length - 1; i >= 0; i--) {
+          this.#exports.nimbus_free(claimedPtr[i].offset, claimedPtr[i].size);
         }
       }
 

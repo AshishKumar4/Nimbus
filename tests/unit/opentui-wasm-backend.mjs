@@ -140,15 +140,16 @@ const fgView0 = backend.liveView(Uint16Array, fgPtr, size * 4);
 assert.ok([...fgView0].some((v) => v === 65535), 'fg RGBA live view missing the drawn white channel');
 
 const bytesBefore = backend.memory.buffer.byteLength;
-// Force a real memory.grow by exhausting the heap through the public arena.
-const grewPtrs = [];
+// Force a real memory.grow through a LEGITIMATE large FFI allocation — big
+// renderer cell buffers — not by abusing ptr() as a manual allocator (ptr()
+// scratch is transient and reclaimed by the next symbol call).
 let grew = false;
-for (let i = 0; i < 64 && !grew; i++) {
-  const block = new Uint8Array(4 * 1024 * 1024);
-  grewPtrs.push({ p: backend.ptr(block), n: block.byteLength });
+for (let i = 0; i < 16 && !grew; i++) {
+  const ballast = s.createRenderer(1024, 512, 1 /* memory */, 1 /* local */, null);
+  assert.notEqual(ballast, 0, 'ballast renderer alloc failed');
   if (backend.memory.buffer.byteLength > bytesBefore) grew = true;
 }
-assert.ok(grew, 'failed to force a memory.grow via the arena');
+assert.ok(grew, 'failed to force a memory.grow via large renderer allocation');
 
 // The pre-grow view is now over a DETACHED ArrayBuffer — proving the staleness
 // footgun is real. A detached buffer reports byteLength 0 and its elements read
@@ -163,7 +164,6 @@ const recovered = drawnChars(charView1);
 assert.ok(recovered.includes('hello wasm'), `re-derived live view lost cell data: ${JSON.stringify(recovered)}`);
 // toArrayBuffer (the copy path) must also be detach-safe after a grow.
 assert.equal(backend.toArrayBuffer(s.bufferGetCharPtr(frame), 0, size * 4).byteLength, size * 4);
-for (const { p, n } of grewPtrs) backend.free(p, n);
 console.log(`  [3] memory.grow detached the stale view; re-derived live view valid ('${recovered}')`);
 
 // Render swaps the back buffer to current; subsequent checks use the span feed.
@@ -198,8 +198,32 @@ assert.ok(feedBytes.includes('['), 'span-feed chunk has no ANSI escape sequence
 assert.ok(feedBytes.includes('hello wasm'), 'span-feed chunk does not contain the drawn text');
 console.log(`  [5] full cycle through backend → span-feed produced ${feedBytes.length} ANSI bytes with the drawn text`);
 
+// ── Check 6: sustained ptr() scratch is reclaimed (no per-frame leak) ─────────
+// zig.ts calls ptr() (rgbaPtr) inline on every draw and never frees — native FFI
+// pointers into JS memory are transient. The backend must reclaim each ptr()
+// allocation on the consuming symbol call, or a render loop leaks linear memory.
+// Allocate a large transient block per iteration and immediately consume it with
+// a symbol call; if reclaimed, the same arena slot is reused and memory stays
+// flat — a leak would force 256×1MB of growth.
+{
+  const block = new Uint8Array(1024 * 1024);
+  backend.ptr(block);
+  s.getBufferWidth(feedFrame); // warmup: absorbs any one-time growth for this size
+  const baseBytes = backend.memory.buffer.byteLength;
+  for (let i = 0; i < 256; i++) {
+    backend.ptr(block); // transient 1MB scratch...
+    s.getBufferWidth(feedFrame); // ...reclaimed by this consuming call
+  }
+  assert.equal(
+    backend.memory.buffer.byteLength,
+    baseBytes,
+    `transient ptr() scratch leaked: memory grew ${baseBytes} → ${backend.memory.buffer.byteLength} over 256×1MB allocations`,
+  );
+  console.log(`  [6] 256×1MB transient ptr() allocations reclaimed — linear memory flat (no leak)`);
+}
+
 lib.close();
 console.log(
   `opentui-wasm-backend OK: ${names.length} symbols, ` +
-    `arena copy-in/out, grow-safe live views, 3 token callbacks, full render cycle`,
+    `arena copy-in/out, grow-safe live views, 3 token callbacks, full render cycle, leak-free ptr()`,
 );
