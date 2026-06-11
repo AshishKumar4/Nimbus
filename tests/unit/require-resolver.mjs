@@ -106,5 +106,14 @@ assert.equal(
   'module.exports = { ponyfill: true };',
   'parent-relative package main not resolved/prefetched',
 );
+// The nested package.json consulted during LOAD_AS_DIRECTORY must have its
+// CONTENT in the bundle, not just the manifest: the runtime resolver reads
+// ponyfill/package.json#main to repeat the resolution, and for npx-cache
+// trees outside cwd that file is in neither the snapshot nor the manifest.
+assert.equal(
+  relResult.bundle[`${nm}/wsp/ponyfill/package.json`],
+  JSON.stringify({ name: 'wsp-ponyfill', main: '../dist/ponyfill' }),
+  'nested package.json content not shipped — runtime resolution will ENOENT',
+);
 
 console.log('require-resolver: ok');

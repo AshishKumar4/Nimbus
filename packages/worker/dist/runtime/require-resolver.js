@@ -105,7 +105,7 @@ const normalizePath = normalizeVfsPath;
  * a directory-style require (e.g. `require('./mod')` where mod has
  * main='entry.js' and no index.js).
  */
-function resolveFile(vfs, base) {
+function resolveFile(vfs, base, sink) {
     const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
     for (const ext of fileExts) {
         const p = normalizePath(base + ext);
@@ -122,11 +122,14 @@ function resolveFile(vfs, base) {
         }
         catch { /* fall through */ }
         if (pkg && typeof pkg.main === 'string' && pkg.main.length > 0) {
+            // Record this package.json so the bundle carries the content the
+            // runtime resolver needs to repeat this directory resolution.
+            sink?.(pkgJsonPath);
             const mainStripped = pkg.main.replace(/^\.\/+/, '').replace(/^\/+/, '');
             const mainBase = baseTrim + '/' + mainStripped;
             // Guard against pkg.main === '.' or empty → would re-enter same base.
             if (mainBase !== base && mainBase !== baseTrim) {
-                const resolved = resolveFile(vfs, mainBase);
+                const resolved = resolveFile(vfs, mainBase, sink);
                 if (resolved)
                     return resolved;
             }
@@ -167,27 +170,27 @@ function resolveFile(vfs, base) {
  *      finds it through its extension-probe loop without needing
  *      a runtime-side fix.
  */
-function resolvePkgSubpathEx(vfs, pkgDir, subpath) {
+function resolvePkgSubpathEx(vfs, pkgDir, subpath, sink) {
     const pkgJsonPath = pkgDir + '/package.json';
     if (!vfs.exists(pkgJsonPath)) {
         // No package.json — direct probe (matches node-shims fallback).
         if (subpath === '.') {
-            const r = resolveFile(vfs, pkgDir + '/index');
+            const r = resolveFile(vfs, pkgDir + '/index', sink);
             return r ? { resolved: r } : null;
         }
-        const r = resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''));
+        const r = resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink);
         if (r)
             return { resolved: r };
         // Even with no parent package.json, attempt the legacy nested-pkg
         // fallback (consistent behaviour across the no-pkgjson branch).
-        return tryLegacyDirectorySubpath(vfs, pkgDir, subpath);
+        return tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink);
     }
     let pkg;
     try {
         pkg = JSON.parse(vfs.readFileString(pkgJsonPath));
     }
     catch {
-        const r = resolveFile(vfs, pkgDir + '/index');
+        const r = resolveFile(vfs, pkgDir + '/index', sink);
         return r ? { resolved: r } : null;
     }
     let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
@@ -195,7 +198,7 @@ function resolvePkgSubpathEx(vfs, pkgDir, subpath) {
         entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
     }
     if (entry != null) {
-        const resolved = resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''));
+        const resolved = resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''), sink);
         if (resolved)
             return { resolved };
         // W2.6a D2 (mirror of node-shims:__resolvePkgSubpath): exports/main
@@ -205,21 +208,21 @@ function resolvePkgSubpathEx(vfs, pkgDir, subpath) {
     }
     if (subpath === '.') {
         if (typeof pkg.main === 'string') {
-            const r = resolveFile(vfs, pkgDir + '/' + pkg.main.replace(/^\.\//, ''));
+            const r = resolveFile(vfs, pkgDir + '/' + pkg.main.replace(/^\.\//, ''), sink);
             if (r)
                 return { resolved: r };
         }
-        const idx = resolveFile(vfs, pkgDir + '/index');
+        const idx = resolveFile(vfs, pkgDir + '/index', sink);
         return idx ? { resolved: idx } : null;
     }
     // Non-root subpath: extension-probe first (most common path).
-    const direct = resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''));
+    const direct = resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink);
     if (direct)
         return { resolved: direct };
     // X.5-L: legacy directory-with-nested-package.json fallback. Only
     // engaged when the standard probes have failed AND
     // `<pkgDir>/<subpath>` exists as a directory.
-    return tryLegacyDirectorySubpath(vfs, pkgDir, subpath);
+    return tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink);
 }
 /**
  * X.5-L: legacy pre-`exports`-field subpath convention.
@@ -239,7 +242,7 @@ function resolvePkgSubpathEx(vfs, pkgDir, subpath) {
  * Returns null if there's no directory match or no readable nested
  * package.json (caller falls through to its existing null return).
  */
-function tryLegacyDirectorySubpath(vfs, pkgDir, subpath) {
+function tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink) {
     if (subpath === '.' || !subpath.startsWith('./'))
         return null;
     const subRelative = subpath.replace(/^\.\//, '');
@@ -261,6 +264,9 @@ function tryLegacyDirectorySubpath(vfs, pkgDir, subpath) {
     catch {
         return null;
     }
+    // The runtime resolver reads this nested package.json to repeat the
+    // resolution; record it so its content ships in the bundle.
+    sink?.(nestedPkgJson);
     // Prefer `main` for CJS conditions; fall back to `module` if no main.
     // (resolvePackageEntry would do the same prioritisation, but nested
     // package.json files often only declare one of the two.)
@@ -272,7 +278,7 @@ function tryLegacyDirectorySubpath(vfs, pkgDir, subpath) {
     // Resolve relative to the subpath dir; nestedEntry can be
     // up-pointing (`../dist/x.js`) or relative-down (`./dist/x.js`).
     const targetPath = normalizePath(subDir + '/' + nestedEntry.replace(/^\.\//, ''));
-    const resolved = resolveFile(vfs, targetPath);
+    const resolved = resolveFile(vfs, targetPath, sink);
     if (!resolved)
         return null;
     // Build the stub. The stub lives at `<pkgDir>/<subRelative>.js`
@@ -318,7 +324,7 @@ function relativeFrom(fromDir, toPath) {
  * X.5-L: extended bare-spec resolver that also returns any synthetic
  * stub emitted by resolvePkgSubpathEx's legacy-directory branch.
  */
-function resolveNodeModuleEx(vfs, name, fromDir) {
+function resolveNodeModuleEx(vfs, name, fromDir, sink) {
     let pkgName;
     let subpath;
     if (name.startsWith('@')) {
@@ -347,7 +353,7 @@ function resolveNodeModuleEx(vfs, name, fromDir) {
         visited.add(dir);
         const nmDir = (dir ? dir + '/' : '') + 'node_modules/' + pkgName;
         if (vfs.exists(nmDir)) {
-            const r = resolvePkgSubpathEx(vfs, nmDir, subpath);
+            const r = resolvePkgSubpathEx(vfs, nmDir, subpath, sink);
             if (r)
                 return r;
         }
@@ -364,12 +370,12 @@ function resolveNodeModuleEx(vfs, name, fromDir) {
  * the legacy directory-subpath pattern. Relative paths never need
  * stubs, so for those we just return `{ resolved }` with no stub.
  */
-function resolveRequireEx(vfs, id, fromDir) {
+function resolveRequireEx(vfs, id, fromDir, sink) {
     if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
         const base = id.startsWith('/')
             ? strip(id)
             : normalizePath(strip(fromDir) + '/' + id);
-        const r = resolveFile(vfs, base);
+        const r = resolveFile(vfs, base, sink);
         return r ? { resolved: r } : null;
     }
     // package.json#imports field — `#name` specifiers resolved against
@@ -384,17 +390,17 @@ function resolveRequireEx(vfs, id, fromDir) {
     // "Cannot find module '#name' (from ...)" error.
     //
     if (id.startsWith('#')) {
-        const r = resolveImportsField(vfs, id, fromDir);
+        const r = resolveImportsField(vfs, id, fromDir, sink);
         return r ? { resolved: r } : null;
     }
-    return resolveNodeModuleEx(vfs, id, fromDir);
+    return resolveNodeModuleEx(vfs, id, fromDir, sink);
 }
 /**
  * Resolve an imports-field specifier `#name` against the nearest
  * enclosing package.json. Returns the resolved file path (or null
  * if not found). Mirrors node-shims.ts:__resolveImportsField.
  */
-function resolveImportsField(vfs, name, fromDir) {
+function resolveImportsField(vfs, name, fromDir, sink) {
     let dir = strip(fromDir);
     while (true) {
         const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
@@ -411,13 +417,13 @@ function resolveImportsField(vfs, name, fromDir) {
                     // imports targets are relative to the package root (`dir`).
                     if (target.startsWith('./')) {
                         const base = (dir ? dir + '/' : '') + target.slice(2);
-                        return resolveFile(vfs, normalizePath(base));
+                        return resolveFile(vfs, normalizePath(base), sink);
                     }
                     if (target.startsWith('/')) {
-                        return resolveFile(vfs, strip(target));
+                        return resolveFile(vfs, strip(target), sink);
                     }
                     // Bare specifier — re-resolve as a node_module from `dir`.
-                    const r = resolveNodeModuleEx(vfs, target, dir);
+                    const r = resolveNodeModuleEx(vfs, target, dir, sink);
                     return r ? r.resolved : null;
                 }
             }
@@ -573,7 +579,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             const specifier = match[2];
             if (isBuiltin(specifier))
                 continue;
-            const r = resolveRequireEx(vfs, specifier, fromDir);
+            const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
                 addFile(r.resolved);
                 if (r.stub)
@@ -591,7 +597,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             const specifier = match[2];
             if (isBuiltin(specifier))
                 continue;
-            const r = resolveRequireEx(vfs, specifier, fromDir);
+            const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
                 addFile(r.resolved);
                 if (r.stub)
@@ -605,7 +611,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             const specifier = match[2];
             if (isBuiltin(specifier))
                 continue;
-            const r = resolveRequireEx(vfs, specifier, fromDir);
+            const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
                 addFile(r.resolved);
                 if (r.stub)
@@ -646,6 +652,36 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         totalBytes += content.length;
         fileCount++;
         trackPkgDir(stubPath);
+    }
+    /**
+     * Sink for intermediate package.json files consulted during
+     * LOAD_AS_DIRECTORY resolution (see PkgJsonSink). Adds the content
+     * verbatim — package.json carries no requires, so no recursion and no
+     * enclosing-package piggyback is needed. Bounded by the same budget.
+     */
+    function addPkgJson(pkgJsonPath) {
+        const k = strip(pkgJsonPath);
+        if (visited.has(k) || k in bundle)
+            return;
+        if (fileCount >= MAX_FILES || totalBytes >= MAX_BYTES) {
+            truncated = true;
+            return;
+        }
+        let content;
+        try {
+            content = vfs.readFileString(k);
+        }
+        catch {
+            return;
+        }
+        if (totalBytes + content.length > MAX_BYTES) {
+            truncated = true;
+            return;
+        }
+        visited.add(k);
+        bundle[k] = content;
+        totalBytes += content.length;
+        fileCount++;
     }
     // Start from entry code.
     //
