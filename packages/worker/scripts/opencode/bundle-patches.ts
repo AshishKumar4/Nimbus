@@ -249,6 +249,36 @@ if (!globalThis.__nimbusOpenTUIBackend && !existsSync2(targetLibPath)) {
     file,
   )
 
+  // Seam 7 — TUI output target + render clock for the Nimbus facet. The wasm32
+  // reactor performs NO terminal syscalls of its own (build-wasm README): ANSI
+  // frames surface ONLY through the NativeSpanFeed, and the renderer allocates
+  // that feed iff `stdout !== process.stdout` (CliRenderer ctor:
+  // `_usesProcessStdout`). opencode launches the TUI WITHOUT a custom stdout, so
+  // on the facet it would default to process.stdout, skip the feed, and emit
+  // nothing. When the registry backend is active and the caller didn't pass an
+  // explicit stdout, default it to the Nimbus facet's TTY stdout
+  // (`__nimbusOpenTUITtyStdout` — a distinct stream that forwards writes to the
+  // facet's process.stdout RPC), so the renderer takes the span-feed path and
+  // its onData streams ANSI to the terminal. Likewise default the render
+  // `clock` to the Nimbus clock when supplied: workerd advances timers only
+  // across real I/O yields, so the facet drives ticks through the attached-TTY
+  // stdin round-trips rather than wall-clock setTimeout. Absent the backend (a
+  // normal Bun run) the upstream `config.stdin ?? process.stdin` /
+  // `config.stdout ?? process.stdout` defaults stand untouched.
+  source = replaceOnce(
+    source,
+    `  const stdin = config.stdin ?? process.stdin;
+  const stdout = config.stdout ?? process.stdout;`,
+    `  if (globalThis.__nimbusOpenTUIBackend) {
+    if (config.stdout == null && globalThis.__nimbusOpenTUITtyStdout) config.stdout = globalThis.__nimbusOpenTUITtyStdout;
+    if (config.clock == null && globalThis.__nimbusOpenTUIClock) config.clock = globalThis.__nimbusOpenTUIClock;
+  }
+  const stdin = config.stdin ?? process.stdin;
+  const stdout = config.stdout ?? process.stdout;`,
+    label,
+    file,
+  )
+
   return source
 }
 
