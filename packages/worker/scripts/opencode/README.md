@@ -21,6 +21,23 @@ clone, so the staged bundle is reproducible.
   files: `bun-shim.ts`, `bun-ffi-shim.ts`, `bun-sqlite-shim.ts`, `pty-stub.ts`,
   `opentui-native-stub.ts`, and `script/generate.ts`).
 
+  It builds THREE self-contained entrypoints (splitting off, so each is one
+  flat file with predictable specifiers): `index.js` (the CLI), `worker.js`
+  (the TUI API server, `cli/cmd/tui/worker.ts`), and `parser.worker.js`
+  (OpenTUI's tree-sitter parser). opencode's interactive TUI is a client/server
+  split — the bare `opencode` client spawns its server as
+  `new Worker("./worker.js")` and OpenTUI its parser as
+  `new Worker("./parser.worker.js")` — which Nimbus runs in one facet isolate
+  via the in-isolate Worker polyfill (`opencode-facet-runner.ts`). The two
+  worker bundles get a build-time banner + `define` (and a fail-loud
+  `parser.worker.js` patch) that rebind their web-scope messaging
+  (`postMessage` / `onmessage` / `self`) to a per-worker context the polyfill
+  claims via `globalThis.__nimbusWorkerClaim`, so the two workers + client never
+  collide on `globalThis`. The recipe also extracts `yoga.wasm` (OpenTUI's
+  frame-layout engine, inlined as base64 in `@opentui/core`) so it can ride in
+  pre-compiled — request-time `WebAssembly.instantiate(bytes)` is blocked in
+  facets.
+
   Nimbus-relevant defines:
   - `import.meta.url` → a synthetic absolute file URL so the bundle's
     top-level `createRequire(import.meta.url)` constructs (in a Worker Loader
@@ -43,6 +60,13 @@ clone, so the staged bundle is reproducible.
   the blocked compile path. When the registry global is absent (a normal Bun
   run) both seams behave exactly as upstream. The patterns are exact-match
   against web-tree-sitter 0.25.10; the build throws if they drift.
+
+  `bundle-patches.ts` (`nimbusPatchOpenTUI`) carries the `@opentui/core` seams
+  for the TUI render path, the same pre-compiled-module way: the FFI backend
+  (the wasm32-wasi reactor), the renderer's stdout/clock defaults, and the
+  yoga-layout loader — its request-time `WebAssembly.instantiate(bytes)` is
+  rerouted to the `globalThis.__nimbusYogaModule` the runner parks. All seams
+  are exact-match fail-loud and inert under a normal Bun run.
 
 - `nimbus-defer-global-io.patch` — source patches that defer opencode's
   module-top-level side effects out of workerd's "global scope" (where async
