@@ -183,6 +183,7 @@ function resolveNpmBinForInvocation(
 async function runStagedArtifact(
   deps: {
     getFacetManager(): FacetManager;
+    terminal?: Output | null;
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
   },
@@ -215,9 +216,11 @@ async function runStagedArtifact(
   }
   // Attached-TTY TUI: the facet is now resident, streaming frames live to the
   // terminal and reading keystrokes; it reports its own exit through the
-  // supervisor. Emit only the long-running spawn event and hand off (no exit /
-  // exec-done here) — the same lifecycle as a long-running attached node bin.
+  // supervisor. Surface the long-running spawn (visible line + structured event)
+  // and hand off (no exit / exec-done here) — the same lifecycle as a
+  // long-running attached node bin.
   if (attachedTty) {
+    deps.terminal?.write(`\x1b[2m[bin started (long-running): pid=${result.pid} cmd="${shellLine}"]\x1b[0m\r\n`);
     deps.notifyTerminalEvent({ type: 'spawn', pid: result.pid, command: shellLine, longRunning: true });
     return 0;
   }
