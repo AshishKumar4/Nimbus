@@ -15,7 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import { generateShimsCode } from '../runtime/node-shims.js';
+import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import { getCtxExports } from '../session/ctx-exports.js';
@@ -79,8 +79,6 @@ function _reviveVfsWriteCell(v) {
     }
     return String(v);
 }
-// ── Code generators ─────────────────────────────────────────────────────
-const SHIMS = generateShimsCode();
 function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -344,7 +342,7 @@ const SQLITE_FACET_BOOT = `if (globalThis.__nimbusInitSqlite) { await globalThis
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-function generateEntrypointCode(userCode, vfsState, usesSqlite) {
+function generateEntrypointCode(userCode, vfsState, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
     const safeBundle = vfsState.serializedBundle ?? _serializeBundleForFacet(vfsState.bundle);
     const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
@@ -445,7 +443,7 @@ export default {
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${SHIMS}
+${shims}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
 ${ENTRYPOINT_STARTUP_DRAIN}
@@ -569,7 +567,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
  * compiled user entry is booted once and the exported entrypoint keeps
  * serving HTTP requests from the shimmed http.Server registry.
  */
-function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite) {
+function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
@@ -686,7 +684,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${SHIMS}
+${shims}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
 ${ENTRYPOINT_STARTUP_DRAIN}
@@ -2642,8 +2640,11 @@ export class FacetManager {
     // ── One-shot dynamic Worker entrypoint ────────────────────────────────
     async _execViaLoader(code, opts, entry, vfsState, signal, diagSink) {
         const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
-        const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
-        const workerCode = generateEntrypointCode(code, vfsState, usesSqlite);
+        const [sqliteModules, shims] = await Promise.all([
+            this.sqliteModuleEntry(usesSqlite),
+            fetchNodeShimsCode(this.env),
+        ]);
+        const workerCode = generateEntrypointCode(code, vfsState, usesSqlite, shims);
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
@@ -2758,6 +2759,7 @@ export class FacetManager {
             env: runnerEnv,
             cwd: opts.cwd,
             stdin: opts.stdin,
+            shimsCode: await fetchNodeShimsCode(this.env),
             vfsBundle: _serializeBundleForFacet(vfsState.bundle),
             vfsManifest: JSON.stringify(vfsState.manifest),
             attachedTty,
@@ -3003,8 +3005,11 @@ export class FacetManager {
             }
             : opts.env;
         const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
-        const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
-        const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv }, usesSqlite);
+        const [sqliteModules, shims] = await Promise.all([
+            this.sqliteModuleEntry(usesSqlite),
+            fetchNodeShimsCode(this.env),
+        ]);
+        const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv }, usesSqlite, shims);
         const ctxExports = getNimbusCtxExports();
         const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
         const supervisorBinding = ctxExports?.SupervisorRPC

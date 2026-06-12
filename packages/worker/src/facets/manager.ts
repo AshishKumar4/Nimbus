@@ -18,7 +18,7 @@
 
 import type { ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { generateShimsCode } from '../runtime/node-shims.js';
+import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -136,8 +136,12 @@ function _reviveVfsWriteCell(v: unknown): string | Uint8Array {
 }
 
 // ── Code generators ─────────────────────────────────────────────────────
-
-const SHIMS = generateShimsCode();
+//
+// The ~230 KiB node-compat shim source is staged as a static asset
+// (scripts/bundle-node-shims.mjs) and fetched once per isolate via
+// fetchNodeShimsCode — it no longer lives in the worker bundle (≤6 MiB
+// gate). The codegen functions take it as the `shims` parameter; the async
+// exec/spawn callers await the memoized fetch.
 
 interface LoadedWorkerEntrypointStub {
   startProcess?: (args?: unknown) => Promise<unknown>;
@@ -472,6 +476,7 @@ function generateEntrypointCode(
   userCode: string,
   vfsState: FacetVfsState,
   usesSqlite: boolean,
+  shims: string,
 ): string {
   const safeCode = JSON.stringify(userCode);
   const safeBundle = vfsState.serializedBundle ?? _serializeBundleForFacet(vfsState.bundle);
@@ -573,7 +578,7 @@ export default {
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${SHIMS}
+${shims}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
 ${ENTRYPOINT_STARTUP_DRAIN}
@@ -711,6 +716,7 @@ function generateLongRunningNodeCode(
     attachedTty?: boolean;
   },
   usesSqlite: boolean,
+  shims: string,
 ): string {
   const safeCode = JSON.stringify(userCode);
   const safeArgs = JSON.stringify({
@@ -828,7 +834,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${SHIMS}
+${shims}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
 ${ENTRYPOINT_STARTUP_DRAIN}
@@ -2952,8 +2958,11 @@ export class FacetManager {
     diagSink?: { loadMs: number; runMs: number; moduleMapBytes: number },
   ): Promise<FacetExecResult> {
     const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
-    const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
-    const workerCode = generateEntrypointCode(code, vfsState, usesSqlite);
+    const [sqliteModules, shims] = await Promise.all([
+      this.sqliteModuleEntry(usesSqlite),
+      fetchNodeShimsCode(this.env),
+    ]);
+    const workerCode = generateEntrypointCode(code, vfsState, usesSqlite, shims);
 
     // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
     const ctxExports = getCtxExports();
@@ -3028,7 +3037,7 @@ export class FacetManager {
    */
   async execStagedArtifact(
     artifact: string,
-    opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest'> & { command?: string },
+    opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode'> & { command?: string },
   ): Promise<StagedArtifactExecResult> {
     if (artifact !== 'opencode') {
       throw new Error(`Nimbus: unknown staged artifact '${artifact}'`);
@@ -3078,6 +3087,7 @@ export class FacetManager {
       env: runnerEnv,
       cwd: opts.cwd,
       stdin: opts.stdin,
+      shimsCode: await fetchNodeShimsCode(this.env),
       vfsBundle: _serializeBundleForFacet(vfsState.bundle),
       vfsManifest: JSON.stringify(vfsState.manifest),
       attachedTty,
@@ -3341,8 +3351,11 @@ export class FacetManager {
         }
       : opts.env;
     const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
-    const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
-    const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv }, usesSqlite);
+    const [sqliteModules, shims] = await Promise.all([
+      this.sqliteModuleEntry(usesSqlite),
+      fetchNodeShimsCode(this.env),
+    ]);
+    const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv }, usesSqlite, shims);
 
     const ctxExports = getNimbusCtxExports();
     const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };

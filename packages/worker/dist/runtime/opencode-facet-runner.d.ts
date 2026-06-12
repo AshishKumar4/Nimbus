@@ -69,6 +69,8 @@ export interface OpencodeRunnerOptions {
     env: Record<string, string>;
     cwd: string;
     stdin: string;
+    /** The node-compat shim source (fetchNodeShimsCode — the staged asset). */
+    shimsCode: string;
     /**
      * Serialized VFS snapshot bundle (the `_serializeBundleForFacet` IIFE
      * string). Provides sync VFS reads; async writes/mkdir flush live through

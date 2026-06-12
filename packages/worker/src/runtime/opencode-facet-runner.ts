@@ -36,7 +36,6 @@
  * DB at ~/.local/share/opencode/*.db.
  */
 
-import { generateShimsCode } from './node-shims.js';
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
@@ -45,12 +44,10 @@ import {
 } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
 
-/**
- * The ~238 KiB node-compat shim source is deterministic and arg-free, so
- * compute it once per isolate rather than on every opencode runner build
- * (facets/manager.ts memoizes the same string as its SHIMS const).
- */
-const SHIMS = generateShimsCode();
+// The ~230 KiB node-compat shim source is staged as a static asset
+// (scripts/bundle-node-shims.mjs) — promoted out of the worker bundle for the
+// ≤6 MiB gate. The caller (FacetManager.execStagedArtifact) awaits the
+// memoized fetchNodeShimsCode and threads it in via opts.shimsCode.
 
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
@@ -258,6 +255,8 @@ export interface OpencodeRunnerOptions {
   env: Record<string, string>;
   cwd: string;
   stdin: string;
+  /** The node-compat shim source (fetchNodeShimsCode — the staged asset). */
+  shimsCode: string;
   /**
    * Serialized VFS snapshot bundle (the `_serializeBundleForFacet` IIFE
    * string). Provides sync VFS reads; async writes/mkdir flush live through
@@ -640,7 +639,7 @@ class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
 }
 
-${SHIMS}
+${opts.shimsCode}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
 // Interactive TUI: make the Nimbus shim process authoritative for the bundle's
