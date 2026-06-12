@@ -25,6 +25,7 @@ import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle, fetchOpencodeTreeSitterWasm } from '../runtime/opencode-artifact.js';
@@ -226,8 +227,9 @@ function __makeEntrypointPromiseTracker() {
       const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
         ? globalThis.__nimbusRawSetTimeout
         : globalThis.setTimeout;
+      let __pass = 0;
       for (
-        let __pass = 0;
+        ;
         !__exited
           && (__pass < minPasses
             || (__timersPending() > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses)
@@ -236,6 +238,7 @@ function __makeEntrypointPromiseTracker() {
       ) {
         await new Promise((resolve) => __rawSetTimeout(resolve, 0));
       }
+      return __pass;
     },
   };
 }
@@ -278,9 +281,9 @@ async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises) {
       __entryResult.then(() => null),
       __nimbusProcessExitPromise.then(() => __exit, () => __exit),
     ]);
-    if (__result === __exit) return;
+    if (__result === __exit) return 0;
   }
-  await __entryPromises.drain(__nimbusProcessExitPromise, 8000, 4);
+  return await __entryPromises.drain(__nimbusProcessExitPromise, 8000, 4);
 }
 `;
 /**
@@ -531,7 +534,8 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, diag: __diag } = args;
+    let __drainPasses = 0;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __supervisor = workerEnv?.SUPERVISOR || null;
@@ -547,7 +551,9 @@ export default {
       if (e) { __rpcLastError = (e && e.message) || String(e); }
     };
     let __rpcWriteChain = Promise.resolve();
+    let __rpcWriteCount = 0;
     const __queueRpcWrite = (method, s) => {
+      __rpcWriteCount++;
       const __task = __rpcWriteChain
         .then(() => __supervisor[method](s))
         .catch((e) => __onRpcDrop(s.length, e));
@@ -611,7 +617,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
         __entryPromises.stop();
       }
       __entryPromises.track(__entryResult);
-      await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
+      __drainPasses = await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
     } catch (e) {
@@ -672,6 +678,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
+      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount } } : {}),
     });
   }
 };
@@ -785,7 +792,9 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
       if (e) __rpcLastError = (e && e.message) || String(e);
     };
     let __rpcWriteChain = Promise.resolve();
+    let __rpcWriteCount = 0;
     const __queueRpcWrite = (method, s) => {
+      __rpcWriteCount++;
       const __task = __rpcWriteChain
         .then(() => __supervisor[method](s))
         .catch((e) => __onRpcDrop(s.length, e));
@@ -2474,15 +2483,33 @@ export class FacetManager {
                 this.esbuild = null;
             }
         }
+        const diagOn = isExecDiagEnabled();
+        const __bundleStart = diagOn ? Date.now() : 0;
         const vfsState = this.vfs
             ? await buildPrefetchBundle(this.vfs, opts.filename, opts.cwd || '/home/user', code, this.esbuild || undefined, opts.bundleProfile)
             : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+        const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
+        const diagSink = diagOn ? { loadMs: 0, runMs: 0, moduleMapBytes: 0 } : undefined;
         const abortController = new AbortController();
         try {
-            const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal), entry, () => abortController.abort());
+            const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink), entry, () => abortController.abort());
             this.processes.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
                 this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
+            }
+            if (diagOn && diagSink) {
+                recordExecTelemetry({
+                    command,
+                    bundleMs,
+                    loadMs: diagSink.loadMs,
+                    runMs: diagSink.runMs,
+                    drainPasses: result.diag?.drainPasses ?? 0,
+                    moduleMapBytes: diagSink.moduleMapBytes,
+                    rpcWrites: result.diag?.rpcWrites ?? 0,
+                    cacheHit: vfsState.cacheHit ?? false,
+                    exitCode: result.exitCode,
+                    at: Date.now(),
+                });
             }
             this._flushVfsWrites(result);
             return result;
@@ -2551,7 +2578,7 @@ export class FacetManager {
         }
     }
     // ── One-shot dynamic Worker entrypoint ────────────────────────────────
-    async _execViaLoader(code, opts, entry, vfsState, signal) {
+    async _execViaLoader(code, opts, entry, vfsState, signal, diagSink) {
         const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
         const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
         const workerCode = generateEntrypointCode(code, vfsState, usesSqlite);
@@ -2568,10 +2595,18 @@ export class FacetManager {
             dirname: opts.dirname || '/home/user',
             stdin: opts.stdin || '',
             captureOutput: !!opts.captureOutput,
+            ...(diagSink ? { diag: true } : {}),
         });
+        if (diagSink) {
+            diagSink.moduleMapBytes = new TextEncoder().encode(workerCode).length;
+            for (const m of Object.values(sqliteModules)) {
+                diagSink.moduleMapBytes += m.wasm.byteLength;
+            }
+        }
         let worker;
         let entrypoint;
         try {
+            const __loadStart = diagSink ? Date.now() : 0;
             worker = this.env.LOADER.load({
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
@@ -2583,13 +2618,19 @@ export class FacetManager {
             if (typeof entrypoint.fetch !== 'function') {
                 throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
             }
+            if (diagSink)
+                diagSink.loadMs = Date.now() - __loadStart;
+            const __runStart = diagSink ? Date.now() : 0;
             const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', {
                 method: 'POST',
                 body,
                 signal,
             }));
             try {
-                return await response.json();
+                const result = await response.json();
+                if (diagSink)
+                    diagSink.runMs = Date.now() - __runStart;
+                return result;
             }
             finally {
                 disposeRpcResource(response);
