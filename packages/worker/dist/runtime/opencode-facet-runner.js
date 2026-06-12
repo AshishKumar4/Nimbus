@@ -38,6 +38,12 @@
 import { generateShimsCode } from './node-shims.js';
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
+/**
+ * The ~238 KiB node-compat shim source is deterministic and arg-free, so
+ * compute it once per isolate rather than on every opencode runner build
+ * (facets/manager.ts memoizes the same string as its SHIMS const).
+ */
+const SHIMS = generateShimsCode();
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
 /** Module-map specifier for the sql.js WebAssembly.Module. */
@@ -225,7 +231,7 @@ const __vfsDirs = {};
 const __vfsBaseUrl = "";
 const __pendingIO = [];
 
-${generateShimsCode()}
+${SHIMS}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
 // Defer opencode's CLI so it runs inside fetch() (handler I/O context), not at
