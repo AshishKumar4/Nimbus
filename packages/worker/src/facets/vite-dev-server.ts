@@ -27,6 +27,7 @@ import type { VfsEvent } from '../vfs/events.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from '../npm/cache.js';
+import { sha256Base64Url } from '../_shared/crypto.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import {
   scanNamedImports,
@@ -1536,6 +1537,19 @@ export class ViteDevServer {
         this.moduleCache.delete(path.substring(this.root.length + 1));
       }
 
+      // Drop persisted transforms for removed paths so they don't orphan.
+      // Content edits don't need eager deletion — the content hash makes
+      // a changed file a cache miss and the row is overwritten on reserve.
+      // For renames, the original path is the one that goes away.
+      if (this.npmCache && (event.type === 'unlink' || event.type === 'rename')) {
+        const gone = event.type === 'rename' ? (event.oldPath ?? path) : path;
+        this.npmCache.deleteUserModuleTransform(gone);
+        this.npmCache.deleteUserModuleTransform(this.root + '/' + gone);
+        if (gone.startsWith(this.root + '/')) {
+          this.npmCache.deleteUserModuleTransform(gone.substring(this.root.length + 1));
+        }
+      }
+
       if (path.includes('node_modules/')) {
         nodeModulesChanged = true;
       }
@@ -2659,6 +2673,21 @@ export class ViteDevServer {
 
     let code = this.vfs.readFileString(vfsPath);
 
+    // Persistent transform cache (survives DO hibernation; content-hashed
+    // so a write whose VFS event was missed still invalidates). Keyed on
+    // (vfsPath, contentHash, BUNDLER_VERSION). On hit, repopulate the
+    // in-memory cache and serve without re-running esbuild.
+    const contentHash = this.npmCache ? await sha256Base64Url(code) : null;
+    if (this.npmCache && contentHash) {
+      const persisted = this.npmCache.getUserModuleTransform(vfsPath, contentHash, BUNDLER_VERSION);
+      if (persisted) {
+        this.moduleCache.set(vfsPath, { code: persisted.code, timestamp: Date.now() });
+        return new Response(persisted.code, {
+          headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
+        });
+      }
+    }
+
     // Auto-inject React Router `basename` into entry files so user links
     // like <NavLink to="/x"> correctly resolve to `${basePath}/x`. Safe
     // no-op if the file doesn't reference createBrowserRouter/<BrowserRouter>
@@ -2721,6 +2750,21 @@ if (!document.getElementById('nimbus-error-overlay')) {
     }
 
     this.moduleCache.set(vfsPath, { code, timestamp: Date.now() });
+    if (this.npmCache && contentHash) {
+      try {
+        this.npmCache.putUserModuleTransform({
+          vfsPath,
+          contentHash,
+          bundlerVersion: BUNDLER_VERSION,
+          code,
+          builtAt: Date.now(),
+        });
+      } catch (e: any) {
+        // Persistence is best-effort; an SQLite write failure must never
+        // break serving (the in-memory cache already holds the result).
+        this.log('warn', `[vite-dev] transform cache write failed for ${vfsPath}: ${e?.message || e}`);
+      }
+    }
     return new Response(code, {
       headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
     });
