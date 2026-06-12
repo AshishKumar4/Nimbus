@@ -68,7 +68,19 @@ export async function fetchOpencodeBundle(env) {
     const ab = await fetchAsset(env, 'index.js');
     return new TextDecoder().decode(ab);
 }
-/** Fetch a staged tree-sitter wasm sidecar (raw bytes for a `{ wasm }` module). */
-export async function fetchOpencodeTreeSitterWasm(env, file) {
+/**
+ * Fetch a staged opencode wasm sidecar (raw bytes for a `{ wasm }` module) —
+ * the tree-sitter grammars and the yoga-layout engine.
+ */
+export async function fetchOpencodeWasmBytes(env, file) {
     return fetchAsset(env, file);
+}
+/**
+ * Fetch a staged TUI worker bundle source as text (the API server worker.js or
+ * the OpenTUI parser.worker.js). Rides into the facet module map as an ESM
+ * module the in-isolate Worker polyfill imports.
+ */
+export async function fetchOpencodeWorkerSource(env, file) {
+    const ab = await fetchAsset(env, file);
+    return new TextDecoder().decode(ab);
 }

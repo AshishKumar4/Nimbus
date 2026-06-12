@@ -244,6 +244,30 @@ export declare class FacetManager {
      */
     private opencodeTreeSitterBytes;
     private opencodeTreeSitterBytesPromise;
+    /**
+     * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
+     * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
+     * against OPENTUI_WASM_SHA256 in fetchOpenTUIWasmBytes); each facet config
+     * gets a fresh `{ wasm }` entry over the shared buffer.
+     */
+    private openTuiWasmBytes;
+    private openTuiWasmBytesPromise;
+    /**
+     * Staged opencode TUI worker bundle sources (the API server worker.js + the
+     * OpenTUI parser.worker.js), keyed by module-map specifier. Fetched once per
+     * isolate from env.ASSETS; the interactive-TUI facet config carries them so
+     * the in-isolate Worker polyfill can import them.
+     */
+    private opencodeTuiWorkerSources;
+    private opencodeTuiWorkerSourcesPromise;
+    /**
+     * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
+     * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
+     * carries them as a pre-compiled `{ wasm }` module so the patched yoga loader
+     * instantiates a Module instead of doing the blocked request-time compile.
+     */
+    private opencodeYogaWasmBytes;
+    private opencodeYogaWasmBytesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -289,6 +313,32 @@ export declare class FacetManager {
      * hitting the blocked request-time WebAssembly.compile path.
      */
     private treeSitterModuleEntries;
+    /**
+     * Build the Worker Loader module-map fragment carrying the staged OpenTUI
+     * wasm32-wasi reactor into the opencode facet as a pre-compiled
+     * WebAssembly.Module under OPENTUI_WASM_MODULE_NAME. The runner instantiates
+     * it via OpenTUIWasmBackend (the patched @opentui/core seams resolve their
+     * render library from the parked backend) — request-time
+     * WebAssembly.compile(bytes) is blocked in facets.
+     */
+    private openTuiModuleEntry;
+    /**
+     * Build the Worker Loader module-map fragment carrying the opencode TUI
+     * worker bundles (the API server worker.js + the OpenTUI parser.worker.js)
+     * into the interactive-TUI facet as ESM modules. The in-isolate Worker
+     * polyfill (opencode-facet-runner.ts) dynamically imports them by specifier
+     * when the TUI client calls `new Worker(...)`. Only needed for the attached
+     * TUI; the one-shot `opencode run` path never spawns these.
+     */
+    private opencodeWorkerModuleEntries;
+    /**
+     * Build the Worker Loader module-map fragment carrying the yoga-layout wasm
+     * into the interactive-TUI facet as a pre-compiled WebAssembly.Module. The
+     * runner parks it on globalThis.__nimbusYogaModule and the patched OpenTUI
+     * yoga loader instantiates it (request-time WebAssembly.instantiate of bytes
+     * is blocked in facets). Attached-TTY only — `opencode run` never renders.
+     */
+    private opencodeYogaModuleEntry;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;
@@ -349,6 +399,15 @@ export declare class FacetManager {
     execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest'> & {
         command?: string;
     }): Promise<StagedArtifactExecResult>;
+    /**
+     * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
+     * the runner's startProcess() — which holds the facet open via ctx.waitUntil
+     * while opencode's createCliRenderer loop streams ANSI frames to the terminal
+     * RPC and the live stdin pump feeds keystrokes — and returns immediately with
+     * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
+     * release on report-exit, the same contract the long-running node path uses.
+     */
+    private _execStagedArtifactAttached;
     private opencodeBundleSource;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;

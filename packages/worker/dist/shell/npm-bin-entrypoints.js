@@ -1,5 +1,6 @@
 import { resolveNpmBin, resolveNpmBinFromPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
+import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { DEFAULT_PATH } from '../constants.js';
 import { z } from 'zod/v4';
@@ -50,7 +51,9 @@ export function installNpmBinFallbackResolver(registry, deps) {
             // the static-assets layer, not the VFS. Dispatch it through the
             // FacetManager's ESM-mainModule path instead of the node CJS runner.
             if (isStagedArtifactTarget(bin.targetPath)) {
-                return await runStagedArtifact(deps, name, stagedArtifactId(bin.targetPath), argv, invocationCwd, ctx);
+                const artifact = stagedArtifactId(bin.targetPath);
+                const attachedTty = looksAttachedTtyStagedArtifact(artifact, argv, ctx.env);
+                return await runStagedArtifact(deps, name, artifact, argv, invocationCwd, ctx, attachedTty);
             }
             const bundleProfile = bundleProfileForNpmBin(bin);
             const metadata = readNpmBinPackageMetadata(deps.vfs, bin.packagePath);
@@ -128,7 +131,7 @@ function resolveNpmBinForInvocation(vfs, cwd, envPath, name) {
     return resolveNpmBinFromPath(vfs, cwd, envPath, name)
         ?? resolveNpmBin(vfs, cwd, name);
 }
-async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx) {
+async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, attachedTty) {
     const shellLine = `${name} ${argv.join(' ')}`.trim();
     const startedAt = Date.now();
     let result;
@@ -138,14 +141,27 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx) {
             env: ctx.env ?? {},
             cwd,
             // Piped stdin is not yet wired for staged artifacts; the proven matrix
-            // is argv-based (--version/--help/run-to-model-resolution).
+            // is argv-based (--version/--help/run-to-model-resolution). The
+            // interactive TUI reads keystrokes from the live ProcessInputStore via
+            // the attached-TTY stdin pump rather than this seed string.
             stdin: '',
             command: shellLine,
+            attachedTty,
         });
     }
     catch (e) {
         ctx.stderr.write(`${name}: ${formatError(e)}\n`);
         return 1;
+    }
+    // Attached-TTY TUI: the facet is now resident, streaming frames live to the
+    // terminal and reading keystrokes; it reports its own exit through the
+    // supervisor. Surface the long-running spawn (visible line + structured event)
+    // and hand off (no exit / exec-done here) — the same lifecycle as a
+    // long-running attached node bin.
+    if (attachedTty) {
+        deps.terminal?.write(`\x1b[2m[bin started (long-running): pid=${result.pid} cmd="${shellLine}"]\x1b[0m\r\n`);
+        deps.notifyTerminalEvent({ type: 'spawn', pid: result.pid, command: shellLine, longRunning: true });
+        return 0;
     }
     if (result.stdout)
         ctx.stdout.write(result.stdout);
@@ -158,6 +174,31 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx) {
     deps.emitShellExecDone(result.pid, shellLine, result.exitCode, Date.now() - startedAt);
     return result.exitCode;
 }
+/**
+ * Whether a staged-artifact invocation launches an interactive attached TUI.
+ * For opencode: the default `opencode` command and `opencode attach` render the
+ * TUI; `opencode run <prompt>`, `--version`/`--help`/`-v`/`-h`, and the Nimbus
+ * tree-sitter diagnostic are non-interactive and stay on the one-shot path. An
+ * explicit `--interactive` flag forces the TUI; FORCE_TTY/NIMBUS_ATTACHED_TTY
+ * override for probes.
+ */
+function looksAttachedTtyStagedArtifact(artifact, argv, env) {
+    if (artifact !== 'opencode')
+        return false;
+    if (argv.some(isNonInteractiveBinArg))
+        return false;
+    if (argv.includes(OPENCODE_TREE_SITTER_DIAG_ARG))
+        return false;
+    if (env?.NIMBUS_ATTACHED_TTY === '1' || env?.FORCE_TTY === '1')
+        return true;
+    if (argv.includes('--interactive'))
+        return true;
+    const sub = argv.find((a) => !a.startsWith('-'));
+    if (sub === undefined)
+        return true; // bare `opencode` → TUI
+    return OPENCODE_TUI_SUBCOMMANDS.has(sub);
+}
+const OPENCODE_TUI_SUBCOMMANDS = new Set(['attach']);
 function formatError(error) {
     if (error instanceof Error)
         return error.stack || error.message;

@@ -2950,6 +2950,39 @@ const __childProcessMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  console shim ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// The Console constructor workerd's node:console does not implement (it throws
+// "The Console method is not implemented"). OpenTUI's console capture
+// (setupConsoleCapture) constructs \`new Console({ stdout, stderr, ... })\` to
+// redirect console output into a captured stream; without a working
+// constructor the TUI renderer setup throws and the program exits before its
+// first frame. This shim writes to the supplied streams via util.format /
+// inspect — the Node Console contract OpenTUI relies on.
+class __NimbusConsole {
+  constructor(options, stderrArg) {
+    let out, err, inspectOptions;
+    if (options && typeof options === "object" && !options.write) {
+      out = options.stdout; err = options.stderr || options.stdout; inspectOptions = options.inspectOptions;
+    } else {
+      out = options; err = stderrArg || options;
+    }
+    const fmt = (a) => a.map((x) => typeof x === "string" ? x : __utilMod.inspect(x, inspectOptions)).join(" ");
+    const write = (stream, s) => { try { if (stream && typeof stream.write === "function") stream.write(s); } catch {} };
+    this.log = (...a) => write(out, fmt(a) + "\\n");
+    this.info = (...a) => write(out, fmt(a) + "\\n");
+    this.debug = (...a) => write(out, fmt(a) + "\\n");
+    this.dir = (o, opts) => write(out, __utilMod.inspect(o, opts || inspectOptions) + "\\n");
+    this.error = (...a) => write(err, fmt(a) + "\\n");
+    this.warn = (...a) => write(err, fmt(a) + "\\n");
+    this.trace = (...a) => write(err, "Trace: " + fmt(a) + "\\n");
+    this.assert = (c, ...a) => { if (!c) write(err, "Assertion failed: " + fmt(a) + "\\n"); };
+    this.table = (d) => write(out, __utilMod.inspect(d, inspectOptions) + "\\n");
+    this.group = (...a) => { if (a.length) write(out, fmt(a) + "\\n"); };
+    this.groupCollapsed = this.group;
+    this.time = () => {}; this.timeEnd = () => {}; this.timeLog = () => {}; this.timeStamp = () => {};
+    this.clear = () => {}; this.count = () => {}; this.countReset = () => {}; this.groupEnd = () => {};
+    this.Console = __NimbusConsole;
+  }
+}
 const __consoleMod = {
   log: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
   error: (...a) => { stderr += __utilMod.format(...a) + "\\n"; },
@@ -2962,6 +2995,7 @@ const __consoleMod = {
   time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
   count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
   table: (d) => { stdout += __utilMod.inspect(d) + "\\n"; },
+  Console: __NimbusConsole,
 };
 
 // ═══════════════════════════════════════════════════════════════════════

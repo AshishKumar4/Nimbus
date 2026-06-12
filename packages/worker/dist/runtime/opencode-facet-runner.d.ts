@@ -37,6 +37,13 @@
  */
 /** Map-module specifier for the opencode ESM bundle. */
 export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
+/**
+ * Module-map specifier for the yoga-layout WebAssembly.Module. OpenTUI lays
+ * out every TUI frame with yoga; the runner parks the pre-compiled Module on
+ * `globalThis.__nimbusYogaModule` so the bundle's patched loader instantiates
+ * it instead of doing the blocked request-time WebAssembly.instantiate(bytes).
+ */
+export declare const YOGA_WASM_MODULE_NAME = "yoga.wasm";
 /** Module-map specifier for the sql.js WebAssembly.Module. */
 export declare const SQLITE_WASM_MODULE_NAME = "sqlite.wasm";
 /**
@@ -54,7 +61,7 @@ export declare const OPENCODE_TREE_SITTER_DIAG_ARG = "__nimbus-tree-sitter-diag"
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the
  * explicit `{ js }` content form.
  */
-export declare function opencodeBuiltinBridgeModules(): Record<string, {
+export declare function opencodeBuiltinBridgeModules(attachedTty?: boolean): Record<string, {
     js: string;
 }>;
 export interface OpencodeRunnerOptions {
@@ -70,10 +77,58 @@ export interface OpencodeRunnerOptions {
     vfsBundle: string;
     /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
     vfsManifest: string;
+    /**
+     * Interactive TUI mode. When set, the runner drives opencode's real
+     * createCliRenderer path: stdout/stderr stream LIVE to the SUPERVISOR
+     * (→ xterm) instead of being buffered, the live stdin pump
+     * (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/resize/signal)
+     * feeds keystrokes, and the facet stays alive on workerCtx.waitUntil until
+     * opencode exits — the same attached-TTY substrate the long-running node
+     * path (manager.ts) uses, but over the ESM bundle. The env must carry
+     * NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY (node-shims.ts)
+     * activates its raw-mode stdin and columns/rows.
+     */
+    attachedTty?: boolean;
 }
 /**
+ * In-isolate Web Worker polyfill for the opencode TUI client/server split.
+ *
+ * opencode's TUI (the bare `opencode` process) is a CLIENT that spawns its API
+ * SERVER as `new Worker("./worker.js", {env})` and talks to it over birpc
+ * (cli/cmd/tui/worker.ts). OpenTUI's syntax-highlight tree-sitter parser
+ * likewise runs in `new Worker("./parser.worker.js")`. On a real platform each
+ * is a separate OS thread / V8 isolate; on workerd there is one isolate per
+ * facet and no real `Worker` global (node-shims stubs worker_threads.Worker as
+ * a no-op), so `client.call(...)` hangs forever before the renderer mounts.
+ *
+ * This polyfill runs BOTH the client and the worker module in the same isolate,
+ * cooperating over an in-memory MessageChannel. `new Worker(file, opts)`:
+ *
+ *   1. Maps the worker `file` (`./worker.js` / `./parser.worker.js`) to its
+ *      staged module-map specifier.
+ *   2. Builds a worker-side context (the `__nimbusWorker` the worker bundle's
+ *      build-time banner claims via globalThis.__nimbusWorkerClaim) carrying
+ *      the worker's own `postMessage` (→ the Worker instance's message
+ *      listeners) and `onmessage` (← messages the client posts). `self` members
+ *      other than messaging fall through to globalThis.
+ *   3. Parks that context for the claim, then dynamically imports the staged
+ *      worker module — running its top-level (Rpc.listen / OTUI parser setup),
+ *      which installs `context.onmessage`.
+ *   4. Bridges the two directions: the Worker instance's postMessage delivers to
+ *      the worker context's onmessage; the worker's postMessage delivers to the
+ *      instance's message listeners. Messages sent before the worker installs
+ *      its handler are buffered and flushed on install.
+ *
+ * The Worker instance exposes the EventEmitter + DOM surface opencode uses:
+ * `onmessage`, `onerror`, `postMessage`, `terminate`, and `on/once/off/
+ * addEventListener/removeEventListener` for `message`/`error`. Only wired in
+ * attachedTty mode (the one-shot path never reaches the TUI command).
+ */
+export declare const WORKER_POLYFILL_SRC: string;
+/**
  * Generate the mainModule that boots the opencode ESM bundle in a facet.
- * stdout/stderr are buffered and returned in the JSON response.
+ * One-shot mode buffers stdout/stderr into the JSON response; attachedTty mode
+ * streams them live and keeps the facet alive for the interactive TUI.
  */
 export declare function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string;
 //# sourceMappingURL=opencode-facet-runner.d.ts.map
