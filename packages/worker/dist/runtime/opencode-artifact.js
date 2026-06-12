@@ -72,3 +72,12 @@ export async function fetchOpencodeBundle(env) {
 export async function fetchOpencodeTreeSitterWasm(env, file) {
     return fetchAsset(env, file);
 }
+/**
+ * Fetch a staged TUI worker bundle source as text (the API server worker.js or
+ * the OpenTUI parser.worker.js). Rides into the facet module map as an ESM
+ * module the in-isolate Worker polyfill imports.
+ */
+export async function fetchOpencodeWorkerSource(env, file) {
+    const ab = await fetchAsset(env, file);
+    return new TextDecoder().decode(ab);
+}

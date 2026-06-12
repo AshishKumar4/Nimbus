@@ -32,10 +32,14 @@ import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
-import { fetchOpencodeBundle, fetchOpencodeTreeSitterWasm } from '../runtime/opencode-artifact.js';
+import {
+  fetchOpencodeBundle,
+  fetchOpencodeTreeSitterWasm,
+  fetchOpencodeWorkerSource,
+} from '../runtime/opencode-artifact.js';
 import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
-import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
+import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_TUI_WORKERS } from '../opencode-artifact.generated.js';
 import {
   generateOpencodeRunnerCode,
   opencodeBuiltinBridgeModules,
@@ -2503,6 +2507,15 @@ export class FacetManager {
   private openTuiWasmBytes: ArrayBuffer | null = null;
   private openTuiWasmBytesPromise: Promise<ArrayBuffer> | null = null;
 
+  /**
+   * Staged opencode TUI worker bundle sources (the API server worker.js + the
+   * OpenTUI parser.worker.js), keyed by module-map specifier. Fetched once per
+   * isolate from env.ASSETS; the interactive-TUI facet config carries them so
+   * the in-isolate Worker polyfill can import them.
+   */
+  private opencodeTuiWorkerSources: Record<string, string> | null = null;
+  private opencodeTuiWorkerSourcesPromise: Promise<Record<string, string>> | null = null;
+
   constructor(
     ctx: DurableObjectState,
     env: unknown,
@@ -2637,6 +2650,49 @@ export class FacetManager {
       }
     }
     return { [OPENTUI_WASM_MODULE_NAME]: { wasm: this.openTuiWasmBytes } };
+  }
+
+  /**
+   * Build the Worker Loader module-map fragment carrying the opencode TUI
+   * worker bundles (the API server worker.js + the OpenTUI parser.worker.js)
+   * into the interactive-TUI facet as ESM modules. The in-isolate Worker
+   * polyfill (opencode-facet-runner.ts) dynamically imports them by specifier
+   * when the TUI client calls `new Worker(...)`. Only needed for the attached
+   * TUI; the one-shot `opencode run` path never spawns these.
+   */
+  private async opencodeWorkerModuleEntries(): Promise<Record<string, string>> {
+    const workers = OPENCODE_TUI_WORKERS;
+    if (!workers) {
+      throw new Error(
+        'opencode TUI worker bundles are not staged — rerun ' +
+          'scripts/bundle-opencode.mjs with an opencode dist that built ' +
+          'worker.js + parser.worker.js (build-node.ts entrypoints)',
+      );
+    }
+    if (!this.env.ASSETS) {
+      throw new Error(
+        'opencode TUI workers require an env.ASSETS binding; this Nimbus ' +
+          'deployment is missing the static-assets binding',
+      );
+    }
+    if (!this.opencodeTuiWorkerSources) {
+      if (!this.opencodeTuiWorkerSourcesPromise) {
+        const assets = this.env.ASSETS;
+        this.opencodeTuiWorkerSourcesPromise = Promise.all(
+          [workers.server, workers.parser].map(
+            async (file) =>
+              [file, await fetchOpencodeWorkerSource({ ASSETS: assets }, file)] as const,
+          ),
+        ).then((entries) => Object.fromEntries(entries));
+      }
+      try {
+        this.opencodeTuiWorkerSources = await this.opencodeTuiWorkerSourcesPromise;
+      } catch (e) {
+        this.opencodeTuiWorkerSourcesPromise = null;
+        throw e;
+      }
+    }
+    return { ...this.opencodeTuiWorkerSources };
   }
 
   private trackProcessRpcResources(
@@ -2970,10 +3026,14 @@ export class FacetManager {
     // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
     // The tree-sitter core + bash/powershell grammar wasm ride in the same
     // way for the bash tool's command parser.
-    const [sqliteModules, treeSitterModules, openTuiModules] = await Promise.all([
+    const [sqliteModules, treeSitterModules, openTuiModules, tuiWorkerModules] = await Promise.all([
       this.sqliteModuleEntry(true),
       this.treeSitterModuleEntries(),
       this.openTuiModuleEntry(),
+      // The TUI client spawns its API server + OpenTUI parser as in-isolate
+      // Workers; the polyfill imports these staged bundles. One-shot runs never
+      // reach the TUI command, so they are fetched only for the attached path.
+      attachedTty ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
     ]);
 
     // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
@@ -2993,6 +3053,7 @@ export class FacetManager {
         ...sqliteModules,
         ...treeSitterModules,
         ...openTuiModules,
+        ...tuiWorkerModules,
         ...opencodeBuiltinBridgeModules(attachedTty),
       },
       ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),

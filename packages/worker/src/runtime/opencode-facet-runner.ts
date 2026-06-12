@@ -299,6 +299,199 @@ globalThis.__nimbusOpenTUIClock = {
 `;
 
 /**
+ * In-isolate Web Worker polyfill for the opencode TUI client/server split.
+ *
+ * opencode's TUI (the bare `opencode` process) is a CLIENT that spawns its API
+ * SERVER as `new Worker("./worker.js", {env})` and talks to it over birpc
+ * (cli/cmd/tui/worker.ts). OpenTUI's syntax-highlight tree-sitter parser
+ * likewise runs in `new Worker("./parser.worker.js")`. On a real platform each
+ * is a separate OS thread / V8 isolate; on workerd there is one isolate per
+ * facet and no real `Worker` global (node-shims stubs worker_threads.Worker as
+ * a no-op), so `client.call(...)` hangs forever before the renderer mounts.
+ *
+ * This polyfill runs BOTH the client and the worker module in the same isolate,
+ * cooperating over an in-memory MessageChannel. `new Worker(file, opts)`:
+ *
+ *   1. Maps the worker `file` (`./worker.js` / `./parser.worker.js`) to its
+ *      staged module-map specifier.
+ *   2. Builds a worker-side context (the `__nimbusWorker` the worker bundle's
+ *      build-time banner claims via globalThis.__nimbusWorkerClaim) carrying
+ *      the worker's own `postMessage` (→ the Worker instance's message
+ *      listeners) and `onmessage` (← messages the client posts). `self` members
+ *      other than messaging fall through to globalThis.
+ *   3. Parks that context for the claim, then dynamically imports the staged
+ *      worker module — running its top-level (Rpc.listen / OTUI parser setup),
+ *      which installs `context.onmessage`.
+ *   4. Bridges the two directions: the Worker instance's postMessage delivers to
+ *      the worker context's onmessage; the worker's postMessage delivers to the
+ *      instance's message listeners. Messages sent before the worker installs
+ *      its handler are buffered and flushed on install.
+ *
+ * The Worker instance exposes the EventEmitter + DOM surface opencode uses:
+ * `onmessage`, `onerror`, `postMessage`, `terminate`, and `on/once/off/
+ * addEventListener/removeEventListener` for `message`/`error`. Only wired in
+ * attachedTty mode (the one-shot path never reaches the TUI command).
+ */
+export const WORKER_POLYFILL_SRC: string = `
+{
+  // Dynamic import of a staged worker module, resolved against the facet's
+  // Worker Loader module map (this block is injected into the runner's module
+  // scope, so a bare import() resolves the map specifiers). Overridable by
+  // unit tests that exercise the message bridge without a real module map.
+  if (typeof globalThis.__nimbusWorkerImport !== "function") {
+    globalThis.__nimbusWorkerImport = (specifier) => import(specifier);
+  }
+
+  // Map a Worker spec (a baked "./worker.js" string, a URL, or a file URL the
+  // bundle constructs) to its staged module-map specifier. Fail loud on an
+  // unrecognized worker so a future opencode worker is not silently no-op'd.
+  const __nimbusWorkerSpecifier = (spec) => {
+    let s = "";
+    if (typeof spec === "string") s = spec;
+    else if (spec && typeof spec.href === "string") s = spec.href;
+    else if (spec && typeof spec.pathname === "string") s = spec.pathname;
+    else s = String(spec);
+    const base = s.split(/[\\\\/]/).pop() || s;
+    if (base === "worker.js") return "worker.js";
+    if (base === "parser.worker.js") return "parser.worker.js";
+    throw new Error("Nimbus: unsupported in-isolate Worker target: " + s);
+  };
+
+  // self/globalThis fall-through for the worker context: messaging is owned by
+  // the context; everything else (location, crypto, indexedDB, …) reads the
+  // real global so the worker bundle's feature detection behaves as upstream.
+  const __nimbusWorkerCtx = (worker) => {
+    const own = {
+      onmessage: null,
+      postMessage(data) {
+        // worker → client. Deliver asynchronously (a real Worker never calls
+        // the client's listener synchronously inside postMessage).
+        queueMicrotask(() => worker.__nimbusDeliverToClient(data));
+      },
+      addEventListener(type, fn) {
+        if (type === "message") own.onmessage = (e) => fn(e);
+      },
+      removeEventListener(type) {
+        if (type === "message") own.onmessage = null;
+      },
+      close() { worker.terminate(); },
+    };
+    return new Proxy(own, {
+      get(t, p) {
+        if (p in t) return t[p];
+        const g = globalThis[p];
+        return typeof g === "function" ? g.bind(globalThis) : g;
+      },
+      set(t, p, v) {
+        if (p === "onmessage" || p in t) { t[p] = v; return true; }
+        try { globalThis[p] = v; } catch {}
+        return true;
+      },
+      has(t, p) { return (p in t) || (p in globalThis); },
+    });
+  };
+
+  class NimbusWorker {
+    constructor(spec, opts) {
+      this.onmessage = null;
+      this.onerror = null;
+      this.onmessageerror = null;
+      this.__listeners = { message: new Set(), error: new Set() };
+      this.__terminated = false;
+      // Messages the client posts before the worker installs its handler.
+      this.__inbox = [];
+      this.__ctx = __nimbusWorkerCtx(this);
+      const specifier = __nimbusWorkerSpecifier(spec);
+      // The worker bundle's banner reads this synchronously at module-init.
+      globalThis.__nimbusWorkerClaim = () => this.__ctx;
+      this.__ready = (async () => {
+        try {
+          // The worker env (OPENCODE_PROCESS_ROLE/RUN_ID) rides the shared
+          // process.env; apply additively so OPENCODE_RUN_ID etc. are present.
+          if (opts && opts.env) { try { Object.assign(process.env, opts.env); } catch {} }
+          // Dynamic import of the staged worker module (resolved against the
+          // facet module map). Indirected through a global hook so unit tests
+          // can substitute a fake worker module without the module map.
+          await globalThis.__nimbusWorkerImport(specifier);
+          // Flush any buffered inbound messages now that onmessage is wired.
+          const pending = this.__inbox;
+          this.__inbox = null;
+          for (const m of pending) this.__deliverToWorker(m);
+        } catch (e) {
+          this.__emitError(e);
+        }
+      })();
+    }
+    __deliverToWorker(data) {
+      const handler = this.__ctx.onmessage;
+      if (typeof handler === "function") {
+        try { handler({ data }); } catch (e) { this.__emitError(e); }
+      }
+    }
+    // client → worker
+    postMessage(data) {
+      if (this.__terminated) return;
+      if (this.__inbox) { this.__inbox.push(data); return; }
+      queueMicrotask(() => this.__deliverToWorker(data));
+    }
+    // worker → client (invoked by the worker context's postMessage)
+    __nimbusDeliverToClient(data) {
+      if (this.__terminated) return;
+      const evt = { data };
+      if (typeof this.onmessage === "function") {
+        try { this.onmessage(evt); } catch (e) { this.__emitError(e); }
+      }
+      for (const fn of this.__listeners.message) {
+        try { fn(evt); } catch (e) { this.__emitError(e); }
+      }
+    }
+    __emitError(error) {
+      const evt = { message: (error && error.message) || String(error), error, filename: "", lineno: 0, colno: 0 };
+      if (typeof this.onerror === "function") { try { this.onerror(evt); } catch {} }
+      for (const fn of this.__listeners.error) { try { fn(evt); } catch {} }
+    }
+    addEventListener(type, fn) {
+      if (this.__listeners[type]) this.__listeners[type].add(fn);
+    }
+    removeEventListener(type, fn) {
+      if (this.__listeners[type]) this.__listeners[type].delete(fn);
+    }
+    // node:worker_threads EventEmitter surface (some code paths use .on).
+    on(type, fn) {
+      const t = type === "message" ? "message" : type === "error" ? "error" : null;
+      if (t) this.__listeners[t].add(fn);
+      return this;
+    }
+    once(type, fn) {
+      const wrap = (e) => { this.removeEventListener(type, wrap); fn(e); };
+      this.addEventListener(type, wrap);
+      return this;
+    }
+    off(type, fn) { this.removeEventListener(type, fn); return this; }
+    removeListener(type, fn) { this.removeEventListener(type, fn); return this; }
+    terminate() {
+      this.__terminated = true;
+      this.__listeners.message.clear();
+      this.__listeners.error.clear();
+      return Promise.resolve(0);
+    }
+    ref() { return this; }
+    unref() { return this; }
+  }
+  globalThis.Worker = NimbusWorker;
+  try {
+    const __wt = globalThis.process && globalThis.process.binding;
+    // worker_threads.Worker is consulted by some libraries; point it at the
+    // same in-isolate implementation so they cooperate over the channel too.
+    if (globalThis.__nimbusOpencodeBuiltins) {
+      const __wtMod = globalThis.__nimbusOpencodeBuiltins["worker_threads"];
+      if (__wtMod) __wtMod.Worker = NimbusWorker;
+    }
+  } catch {}
+}
+`;
+
+/**
  * Generate the mainModule that boots the opencode ESM bundle in a facet.
  * One-shot mode buffers stdout/stderr into the JSON response; attachedTty mode
  * streams them live and keeps the facet alive for the interactive TUI.
@@ -400,6 +593,15 @@ if (${opts.attachedTty ? 'true' : 'false'}) {
   try { globalThis.process = __processMod; } catch {}
 }
 ${generateOpenTUIBackendBootCode()}
+// Interactive TUI: install the in-isolate Worker polyfill so opencode's TUI
+// client can spawn its API server (cli/cmd/tui/worker.ts → ./worker.js) and
+// OpenTUI its syntax-highlight parser (./parser.worker.js) inside this facet.
+// Without it \`new Worker(...)\` is a no-op and the client's first RPC hangs
+// before the renderer mounts. One-shot \`opencode run\` never reaches the TUI
+// command, so the polyfill is attachedTty-only.
+if (${opts.attachedTty ? 'true' : 'false'}) {
+${WORKER_POLYFILL_SRC}
+}
 // Defer opencode's CLI so it runs inside fetch() (handler I/O context), not at
 // module top-level await (workerd "global scope", where the VFS supervisor RPC
 // is a disallowed operation). The bundle reads this flag and exports

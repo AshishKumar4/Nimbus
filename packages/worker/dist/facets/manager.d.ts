@@ -225,6 +225,14 @@ export declare class FacetManager {
      */
     private openTuiWasmBytes;
     private openTuiWasmBytesPromise;
+    /**
+     * Staged opencode TUI worker bundle sources (the API server worker.js + the
+     * OpenTUI parser.worker.js), keyed by module-map specifier. Fetched once per
+     * isolate from env.ASSETS; the interactive-TUI facet config carries them so
+     * the in-isolate Worker polyfill can import them.
+     */
+    private opencodeTuiWorkerSources;
+    private opencodeTuiWorkerSourcesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -267,6 +275,15 @@ export declare class FacetManager {
      * WebAssembly.compile(bytes) is blocked in facets.
      */
     private openTuiModuleEntry;
+    /**
+     * Build the Worker Loader module-map fragment carrying the opencode TUI
+     * worker bundles (the API server worker.js + the OpenTUI parser.worker.js)
+     * into the interactive-TUI facet as ESM modules. The in-isolate Worker
+     * polyfill (opencode-facet-runner.ts) dynamically imports them by specifier
+     * when the TUI client calls `new Worker(...)`. Only needed for the attached
+     * TUI; the one-shot `opencode run` path never spawns these.
+     */
+    private opencodeWorkerModuleEntries;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;
