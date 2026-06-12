@@ -67,6 +67,14 @@ export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
 // limit. Persistent caches back any eviction at near-zero cost.
 export const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 
+// Max bytes shipped to a facet for one on-demand /@modules/ bundle. Also
+// the supervisor-resident slice ceiling. 28 MiB fits under workerd's
+// 32 MiB RPC arg limit (~6% structured-clone overhead) and, with the
+// on-demand byte-budget gate, caps peak supervisor slice memory at one
+// slice — the same envelope the install-time pre-bundler proved safe on
+// shared DO isolates (concurrency=2 of max slices crashed Mossaic-scale).
+export const ON_DEMAND_SLICE_CAP_BYTES = 28 * 1024 * 1024;
+
 // ── Facet Constants ─────────────────────────────────────────────────────
 export const FACET_TIMEOUT_MS = 30_000;  // 30s execution timeout
 //
