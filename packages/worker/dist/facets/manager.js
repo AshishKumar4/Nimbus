@@ -468,8 +468,8 @@ const SQLITE_FACET_BOOT = `if (globalThis.__nimbusInitSqlite) { await globalThis
  */
 function generateEntrypointCode(userCode, vfsState, usesSqlite) {
     const safeCode = JSON.stringify(userCode);
-    const safeBundle = _serializeBundleForFacet(vfsState.bundle);
-    const safeManifest = JSON.stringify(vfsState.manifest);
+    const safeBundle = vfsState.serializedBundle ?? _serializeBundleForFacet(vfsState.bundle);
+    const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
     return `
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
@@ -1049,6 +1049,19 @@ function _serializeBundleForFacet(bundle) {
     // source code is all text) the IIFE collapses to a JSON literal,
     // costing only the IIFE wrapper bytes (~30) per facet boot.
     return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}return __b;})()`;
+}
+/**
+ * FNV-1a 32-bit hash, returned as an unsigned hex string. Used only to
+ * fold the (possibly large) entry code into a compact, collision-resistant
+ * prefetch-bundle cache-key component — not a security primitive.
+ */
+function _fnv1a(s) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(16);
 }
 const MANIFEST_MAX_DEPTH = 12;
 /**
@@ -2320,6 +2333,24 @@ export class FacetManager {
      */
     sqliteWasmBytes = null;
     sqliteWasmBytesPromise = null;
+    /**
+     * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
+     * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+     * exec — dominant wall-clock on large node_modules. This memoizes the
+     * result (including the serialized facet bundle + manifest) keyed on
+     * (bundleProfile, cwd, scriptPath, entryCode identity).
+     *
+     * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
+     * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
+     * pulls absolute-path literals like /tmp/x; buildManifest walks from '/'),
+     * so a cwd-scoped subtree revision cannot guarantee invalidation. The
+     * global revision bumps on ANY write, so the cache invalidates on every
+     * mutation that could change any file the bundle reads — provably
+     * conservative. Bounded to a small LRU; the working set per session is a
+     * handful of bins (tsc/vite/eslint) plus repeated `node -e` shapes.
+     */
+    prefetchBundleCache = new Map();
+    static PREFETCH_CACHE_MAX = 16;
     /** Memoized opencode ESM bundle source (fetched once per isolate). */
     opencodeBundle = null;
     opencodeBundlePromise = null;
@@ -2345,6 +2376,40 @@ export class FacetManager {
      * for the user-shell `node` runtime; sharing avoids paying init twice.
      */
     setEsbuildService(esbuild) { this.esbuild = esbuild; }
+    /**
+     * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
+     * (same key AND the VFS hasn't been mutated since) it returns the memoized
+     * bundle + pre-serialized facet source, skipping the full VFS walk +
+     * esbuild pass + re-serialization. See `prefetchBundleCache` for the
+     * correctness argument behind the conservative global-revision watermark.
+     *
+     * The serialized bundle/manifest are computed once on the miss path (the
+     * caller would build them anyway via generateEntrypointCode) and stored so
+     * subsequent hits skip re-serialization too.
+     */
+    async _buildPrefetchBundleCached(vfs, scriptPath, cwd, entryCode, bundleProfile) {
+        const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
+        const key = `${profile} ${cwd} ${scriptPath ?? ''} ${_fnv1a(entryCode)}`;
+        const revision = vfs.revision();
+        const cached = this.prefetchBundleCache.get(key);
+        if (cached && cached.revision === revision) {
+            // Refresh LRU recency.
+            this.prefetchBundleCache.delete(key);
+            this.prefetchBundleCache.set(key, cached);
+            return { ...cached.vfsState, cacheHit: true };
+        }
+        const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile);
+        vfsState.serializedBundle = _serializeBundleForFacet(vfsState.bundle);
+        vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
+        vfsState.cacheHit = false;
+        this.prefetchBundleCache.set(key, { revision, vfsState });
+        if (this.prefetchBundleCache.size > FacetManager.PREFETCH_CACHE_MAX) {
+            const oldest = this.prefetchBundleCache.keys().next().value;
+            if (oldest !== undefined)
+                this.prefetchBundleCache.delete(oldest);
+        }
+        return vfsState;
+    }
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
@@ -2486,7 +2551,7 @@ export class FacetManager {
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
         const vfsState = this.vfs
-            ? await buildPrefetchBundle(this.vfs, opts.filename, opts.cwd || '/home/user', code, this.esbuild || undefined, opts.bundleProfile)
+            ? await this._buildPrefetchBundleCached(this.vfs, opts.filename, opts.cwd || '/home/user', code, opts.bundleProfile)
             : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const diagSink = diagOn ? { loadMs: 0, runMs: 0, moduleMapBytes: 0 } : undefined;

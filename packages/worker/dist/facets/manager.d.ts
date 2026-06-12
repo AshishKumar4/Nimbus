@@ -215,6 +215,24 @@ export declare class FacetManager {
      */
     private sqliteWasmBytes;
     private sqliteWasmBytesPromise;
+    /**
+     * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
+     * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+     * exec — dominant wall-clock on large node_modules. This memoizes the
+     * result (including the serialized facet bundle + manifest) keyed on
+     * (bundleProfile, cwd, scriptPath, entryCode identity).
+     *
+     * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
+     * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
+     * pulls absolute-path literals like /tmp/x; buildManifest walks from '/'),
+     * so a cwd-scoped subtree revision cannot guarantee invalidation. The
+     * global revision bumps on ANY write, so the cache invalidates on every
+     * mutation that could change any file the bundle reads — provably
+     * conservative. Bounded to a small LRU; the working set per session is a
+     * handful of bins (tsc/vite/eslint) plus repeated `node -e` shapes.
+     */
+    private prefetchBundleCache;
+    private static readonly PREFETCH_CACHE_MAX;
     /** Memoized opencode ESM bundle source (fetched once per isolate). */
     private opencodeBundle;
     private opencodeBundlePromise;
@@ -234,6 +252,18 @@ export declare class FacetManager {
      * for the user-shell `node` runtime; sharing avoids paying init twice.
      */
     setEsbuildService(esbuild: EsbuildService): void;
+    /**
+     * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
+     * (same key AND the VFS hasn't been mutated since) it returns the memoized
+     * bundle + pre-serialized facet source, skipping the full VFS walk +
+     * esbuild pass + re-serialization. See `prefetchBundleCache` for the
+     * correctness argument behind the conservative global-revision watermark.
+     *
+     * The serialized bundle/manifest are computed once on the miss path (the
+     * caller would build them anyway via generateEntrypointCode) and stored so
+     * subsequent hits skip re-serialization too.
+     */
+    private _buildPrefetchBundleCached;
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
