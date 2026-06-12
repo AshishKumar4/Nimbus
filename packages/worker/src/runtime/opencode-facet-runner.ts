@@ -165,6 +165,23 @@ const PROCESS_BRIDGE: BuiltinBridge = {
   names: PROCESS_NAMES,
 };
 
+// node:console. workerd's node:console does not implement the `Console`
+// constructor (it throws "The Console method is not implemented"); OpenTUI's
+// console capture does `new Console({ stdout, stderr, ... })` during renderer
+// setup, so the TUI aborts before its first frame. Bridge node:console to the
+// shim's console (which provides a working Console writing to the supplied
+// streams). attachedTty-only — the one-shot path never sets up the TUI console.
+const CONSOLE_NAMES: readonly string[] = [
+  'Console', 'log', 'info', 'debug', 'dir', 'error', 'warn', 'trace', 'assert',
+  'table', 'group', 'groupEnd', 'time', 'timeEnd', 'timeLog', 'clear', 'count',
+  'countReset',
+];
+const CONSOLE_BRIDGE: BuiltinBridge = {
+  specifier: 'node:console',
+  builtin: 'console',
+  names: CONSOLE_NAMES,
+};
+
 /**
  * One bridge module: re-export a VFS-backed shim builtin (parked on
  * globalThis by the runner at module-init, BEFORE any bridge evaluates) as a
@@ -188,7 +205,9 @@ ${names}
  */
 export function opencodeBuiltinBridgeModules(attachedTty = false): Record<string, { js: string }> {
   const out: Record<string, { js: string }> = {};
-  const bridges = attachedTty ? [...BUILTIN_BRIDGES, PROCESS_BRIDGE] : BUILTIN_BRIDGES;
+  const bridges = attachedTty
+    ? [...BUILTIN_BRIDGES, PROCESS_BRIDGE, CONSOLE_BRIDGE]
+    : BUILTIN_BRIDGES;
   for (const bridge of bridges) {
     out[bridge.specifier] = { js: generateBuiltinBridge(bridge) };
   }
