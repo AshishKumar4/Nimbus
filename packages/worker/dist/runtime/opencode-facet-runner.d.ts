@@ -54,7 +54,7 @@ export declare const OPENCODE_TREE_SITTER_DIAG_ARG = "__nimbus-tree-sitter-diag"
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the
  * explicit `{ js }` content form.
  */
-export declare function opencodeBuiltinBridgeModules(): Record<string, {
+export declare function opencodeBuiltinBridgeModules(attachedTty?: boolean): Record<string, {
     js: string;
 }>;
 export interface OpencodeRunnerOptions {

@@ -105,6 +105,29 @@ const BUILTIN_BRIDGES = [
     // node:sqlite is not in nodejs_compat; bridge to the VFS-backed sql.js shim.
     { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
 ];
+// node:process public surface opencode/OpenTUI consume by name. The bundle uses
+// both bare global `process` and `import … from "node:process"` (default +
+// `{ stdin, stdout }`). For the interactive TUI, both MUST resolve to the Nimbus
+// shim process — whose stdin carries the raw-mode live-input pump, whose
+// stdout/stderr stream live to the terminal, and whose SIGWINCH/columns/rows
+// drive OpenTUI's resize — not workerd's nodejs_compat process. This bridge
+// covers the `node:process` imports; the boot block sets globalThis.process for
+// the bare refs. Only wired in attachedTty mode (the one-shot path keeps
+// workerd's proven process).
+const PROCESS_NAMES = [
+    'argv', 'argv0', 'env', 'platform', 'arch', 'version', 'versions', 'pid',
+    'ppid', 'title', 'execPath', 'execArgv', 'stdin', 'stdout', 'stderr',
+    'cwd', 'chdir', 'exit', 'exitCode', 'nextTick', 'hrtime', 'memoryUsage',
+    'uptime', 'kill', 'on', 'once', 'off', 'addListener', 'removeListener',
+    'removeAllListeners', 'prependListener', 'emit', 'listeners', 'listenerCount',
+    'eventNames', 'setMaxListeners', 'getMaxListeners', 'umask', 'getuid',
+    'getgid', 'features', 'config', 'release', 'binding',
+];
+const PROCESS_BRIDGE = {
+    specifier: 'node:process',
+    builtin: 'process',
+    names: PROCESS_NAMES,
+};
 /**
  * One bridge module: re-export a VFS-backed shim builtin (parked on
  * globalThis by the runner at module-init, BEFORE any bridge evaluates) as a
@@ -125,9 +148,10 @@ ${names}
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the
  * explicit `{ js }` content form.
  */
-export function opencodeBuiltinBridgeModules() {
+export function opencodeBuiltinBridgeModules(attachedTty = false) {
     const out = {};
-    for (const bridge of BUILTIN_BRIDGES) {
+    const bridges = attachedTty ? [...BUILTIN_BRIDGES, PROCESS_BRIDGE] : BUILTIN_BRIDGES;
+    for (const bridge of bridges) {
         out[bridge.specifier] = { js: generateBuiltinBridge(bridge) };
     }
     return out;
@@ -291,9 +315,27 @@ const __vfsDirs = {};
 const __vfsBaseUrl = "";
 const __pendingIO = [];
 
+// The shim (node-shims.ts) throws/catches this sentinel for process.exit and
+// the SIGINT stdin-pump teardown; the host runner must provide the class (same
+// contract as the long-running node entrypoint). Only exercised when the shim
+// process is authoritative (attachedTty), but defined unconditionally so the
+// shim's references always resolve.
+class __ProcessExit extends Error {
+  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+}
+
 ${generateShimsCode()}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
+// Interactive TUI: make the Nimbus shim process authoritative for the bundle's
+// BARE \`process\` references (raw-mode stdin pump, live stdout/stderr,
+// SIGWINCH/columns/rows). The node:process bridge (module map) covers the
+// aliased \`import … from "node:process"\` refs; together they ensure OpenTUI
+// reads the attached-TTY process, not workerd's nodejs_compat one. The one-shot
+// path leaves workerd's proven process in place.
+if (${opts.attachedTty ? 'true' : 'false'}) {
+  try { globalThis.process = __processMod; } catch {}
+}
 ${generateOpenTUIBackendBootCode()}
 // Defer opencode's CLI so it runs inside fetch() (handler I/O context), not at
 // module top-level await (workerd "global scope", where the VFS supervisor RPC
@@ -326,11 +368,17 @@ try { process.argv = argv; } catch {}
 try { Object.assign(process.env, env); } catch {}
 try { process.chdir(cwd); } catch {}
 
-process.exit = (code) => {
-  exitCode = typeof code === "number" ? code : 0;
-  __ocExited = true;
-  throw { __ocProcessExit: true, code: exitCode };
-};
+// One-shot: capture process.exit as a throw the fetch handler unwinds. Attached
+// TUI: keep the shim's native exit (it emits "exit", reports to the supervisor,
+// and throws __ProcessExit) so the resident-facet lifecycle and the shim's own
+// SIGINT/stdin-pump exit path stay coherent.
+if (!__ocAttachedTty) {
+  process.exit = (code) => {
+    exitCode = typeof code === "number" ? code : 0;
+    __ocExited = true;
+    throw { __ocProcessExit: true, code: exitCode };
+  };
+}
 if (__ocAttachedTty) {
   // Live TUI: span-feed ANSI flows process.stdout.write → SUPERVISOR.stdout →
   // xterm. Keep the buffer mirror so a teardown error tail can still surface.
@@ -416,13 +464,16 @@ async function __ocRunAttachedTui() {
     }
     await __ocBundle.nimbusMain();
   } catch (e) {
-    if (e && e.__ocProcessExit) { exitCode = e.code; }
+    if (e instanceof __ProcessExit) { exitCode = e.code; }
+    else if (e && e.__ocProcessExit) { exitCode = e.code; }
     else {
       __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
       stderr += __ocLoadError + "\\n";
       if (exitCode === 0) exitCode = 1;
     }
   }
+  // Apply the shim's recorded exit code (the native process.exit path sets it).
+  if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
   await __drainPendingIO();
   const __failedWrites = {};
   if (__supervisor && Object.keys(__vfsWrites).length > 0) {
@@ -431,7 +482,9 @@ async function __ocRunAttachedTui() {
     }
   }
   await __drainPendingIO();
-  if (__supervisor) {
+  // The shim's native exit already reported via __nimbusReportProcessExit;
+  // report here only if it did not (load error / external teardown).
+  if (__supervisor && !__nimbusProcessExitReported) {
     try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
   }
 }

@@ -2723,7 +2723,7 @@ export class FacetManager {
                 ...sqliteModules,
                 ...treeSitterModules,
                 ...openTuiModules,
-                ...opencodeBuiltinBridgeModules(),
+                ...opencodeBuiltinBridgeModules(attachedTty),
             },
             ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
         };
