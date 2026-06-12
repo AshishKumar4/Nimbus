@@ -45,8 +45,18 @@ export const OPENTUI_BACKEND_GLOBAL = '__nimbusOpenTUIBackend';
  * (tests/unit/opentui-facet-backend-parity.mjs) evaluates this string and drives
  * the full backend contract through it. Mirrors npm-resolve-preamble (policy fns
  * embedded via fn.toString() + a parity test).
+ *
+ * esbuild (`keepNames`, via wrangler) wraps every named function/class as
+ * `__name(fn, "fn")`, so `.toString()` of the BUNDLED class/helpers references
+ * `__name` by bare identifier — a binding that does NOT cross the facet isolate
+ * boundary. We re-declare it (and `__defProp` it depends on) at the top of the
+ * injected source, exactly as loader-pool's ESBUILD_RUNTIME_SHIM does for the
+ * resolver/git facets. (Parity tests load un-bundled TS source, so they never
+ * surface this — only the deployed, esbuild-bundled worker does.)
  */
 const OPENTUI_BACKEND_CLASS_SRC = [
+  'const __defProp = Object.defineProperty;',
+  'const __name = (target, value) => __defProp(target, "name", { value, configurable: true });',
   `const FFI_TYPE_SET = new Set(${JSON.stringify(OPENTUI_FFI_TYPES)});`,
   `const ARENA_ALIGN = ${ARENA_ALIGN};`,
   `const toOffset = ${toOffset.toString()};`,
