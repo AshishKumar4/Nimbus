@@ -37,6 +37,13 @@
  */
 /** Map-module specifier for the opencode ESM bundle. */
 export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
+/**
+ * Module-map specifier for the yoga-layout WebAssembly.Module. OpenTUI lays
+ * out every TUI frame with yoga; the runner parks the pre-compiled Module on
+ * `globalThis.__nimbusYogaModule` so the bundle's patched loader instantiates
+ * it instead of doing the blocked request-time WebAssembly.instantiate(bytes).
+ */
+export declare const YOGA_WASM_MODULE_NAME = "yoga.wasm";
 /** Module-map specifier for the sql.js WebAssembly.Module. */
 export declare const SQLITE_WASM_MODULE_NAME = "sqlite.wasm";
 /**

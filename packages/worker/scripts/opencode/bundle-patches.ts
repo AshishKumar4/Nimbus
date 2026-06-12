@@ -279,6 +279,36 @@ if (!globalThis.__nimbusOpenTUIBackend && !existsSync2(targetLibPath)) {
     file,
   )
 
+  // Seam 8 — yoga-layout wasm. OpenTUI lays out every frame with yoga-layout
+  // (an Emscripten wasm inlined as a base64 data URI in this chunk). Its loader
+  // does request-time WebAssembly.instantiate(bytes), which workerd blocks in a
+  // facet ("Wasm code generation disallowed by embedder") — so the TUI aborts
+  // before its first frame. The pre-compiled yoga WebAssembly.Module rides in
+  // via the Worker Loader module map (the sql.js / tree-sitter / opentui
+  // pattern), parked on globalThis.__nimbusYogaModule by the runner; instantiate
+  // THAT instead (instantiate-from-Module needs no codegen). Match the
+  // {module,instance} shape the success callback reads. Absent the registry (a
+  // normal Bun run) the upstream byte-instantiate path stands untouched.
+  source = replaceOnce(
+    source,
+    `        return ya().then(function(f) {
+          return WebAssembly.instantiate(f, d);
+        }).then(function(f) {`,
+    `        if (globalThis.__nimbusYogaModule) {
+          return WebAssembly.instantiate(globalThis.__nimbusYogaModule, d).then(function(i) {
+            return { instance: i, module: globalThis.__nimbusYogaModule };
+          }).then(e, function(f) {
+            v("failed to asynchronously prepare wasm: " + f);
+            x(f);
+          });
+        }
+        return ya().then(function(f) {
+          return WebAssembly.instantiate(f, d);
+        }).then(function(f) {`,
+    label,
+    file,
+  )
+
   return source
 }
 

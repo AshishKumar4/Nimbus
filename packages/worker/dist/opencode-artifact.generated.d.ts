@@ -46,4 +46,11 @@ export interface OpencodeTuiWorkers {
     readonly parser: string;
 }
 export declare const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null;
+/**
+ * Staged yoga-layout wasm filename. OpenTUI lays out every TUI frame with
+ * yoga; the runner pre-registers this as a pre-compiled WebAssembly.Module on
+ * `globalThis.__nimbusYogaModule` (request-time WebAssembly.instantiate of
+ * bytes is blocked in facets). Null when the artifact is unstaged.
+ */
+export declare const OPENCODE_YOGA_WASM: string | null;
 //# sourceMappingURL=opencode-artifact.generated.d.ts.map

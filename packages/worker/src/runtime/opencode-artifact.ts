@@ -85,8 +85,11 @@ export async function fetchOpencodeBundle(env: OpencodeAssetEnv): Promise<string
   return new TextDecoder().decode(ab);
 }
 
-/** Fetch a staged tree-sitter wasm sidecar (raw bytes for a `{ wasm }` module). */
-export async function fetchOpencodeTreeSitterWasm(
+/**
+ * Fetch a staged opencode wasm sidecar (raw bytes for a `{ wasm }` module) —
+ * the tree-sitter grammars and the yoga-layout engine.
+ */
+export async function fetchOpencodeWasmBytes(
   env: OpencodeAssetEnv,
   file: string,
 ): Promise<ArrayBuffer> {

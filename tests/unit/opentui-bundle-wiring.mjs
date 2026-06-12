@@ -84,6 +84,9 @@ try {
     const out = nimbusPatchOpenTUI(src, f); // throws if any anchor is missing/ambiguous
     assert.ok(out.length > src.length, `patch produced no growth for ${f}`);
     assert.ok(out.split('__nimbusOpenTUIBackend').length - 1 >= 6, `expected ≥6 registry seams in ${f}`);
+    // The yoga-layout seam routes OpenTUI's frame-layout wasm through the
+    // pre-compiled module (request-time instantiate is blocked in facets).
+    assert.ok(out.includes('globalThis.__nimbusYogaModule'), `yoga-layout seam missing in ${f}`);
     writeFileSync(p, out);
     patchedChunks++;
   }

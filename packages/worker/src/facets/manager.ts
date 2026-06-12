@@ -34,17 +34,22 @@ import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import {
   fetchOpencodeBundle,
-  fetchOpencodeTreeSitterWasm,
+  fetchOpencodeWasmBytes,
   fetchOpencodeWorkerSource,
 } from '../runtime/opencode-artifact.js';
 import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
-import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_TUI_WORKERS } from '../opencode-artifact.generated.js';
+import {
+  OPENCODE_TREE_SITTER_WASMS,
+  OPENCODE_TUI_WORKERS,
+  OPENCODE_YOGA_WASM,
+} from '../opencode-artifact.generated.js';
 import {
   generateOpencodeRunnerCode,
   opencodeBuiltinBridgeModules,
   OPENCODE_BUNDLE_MODULE_NAME,
   SQLITE_WASM_MODULE_NAME,
+  YOGA_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
@@ -2516,6 +2521,15 @@ export class FacetManager {
   private opencodeTuiWorkerSources: Record<string, string> | null = null;
   private opencodeTuiWorkerSourcesPromise: Promise<Record<string, string>> | null = null;
 
+  /**
+   * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
+   * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
+   * carries them as a pre-compiled `{ wasm }` module so the patched yoga loader
+   * instantiates a Module instead of doing the blocked request-time compile.
+   */
+  private opencodeYogaWasmBytes: ArrayBuffer | null = null;
+  private opencodeYogaWasmBytesPromise: Promise<ArrayBuffer> | null = null;
+
   constructor(
     ctx: DurableObjectState,
     env: unknown,
@@ -2606,7 +2620,7 @@ export class FacetManager {
         this.opencodeTreeSitterBytesPromise = Promise.all(
           [wasms.core, wasms.bash, wasms.powershell].map(
             async (file) =>
-              [file, await fetchOpencodeTreeSitterWasm({ ASSETS: assets }, file)] as const,
+              [file, await fetchOpencodeWasmBytes({ ASSETS: assets }, file)] as const,
           ),
         ).then((entries) => Object.fromEntries(entries));
       }
@@ -2693,6 +2707,43 @@ export class FacetManager {
       }
     }
     return { ...this.opencodeTuiWorkerSources };
+  }
+
+  /**
+   * Build the Worker Loader module-map fragment carrying the yoga-layout wasm
+   * into the interactive-TUI facet as a pre-compiled WebAssembly.Module. The
+   * runner parks it on globalThis.__nimbusYogaModule and the patched OpenTUI
+   * yoga loader instantiates it (request-time WebAssembly.instantiate of bytes
+   * is blocked in facets). Attached-TTY only — `opencode run` never renders.
+   */
+  private async opencodeYogaModuleEntry(): Promise<Record<string, { wasm: ArrayBuffer }>> {
+    const yoga = OPENCODE_YOGA_WASM;
+    if (!yoga) {
+      throw new Error(
+        'opencode yoga-layout wasm is not staged — rerun ' +
+          'scripts/bundle-opencode.mjs with an opencode dist that extracted ' +
+          'yoga.wasm (build-node.ts)',
+      );
+    }
+    if (!this.env.ASSETS) {
+      throw new Error(
+        'opencode yoga-layout wasm requires an env.ASSETS binding; this Nimbus ' +
+          'deployment is missing the static-assets binding',
+      );
+    }
+    if (!this.opencodeYogaWasmBytes) {
+      if (!this.opencodeYogaWasmBytesPromise) {
+        const assets = this.env.ASSETS;
+        this.opencodeYogaWasmBytesPromise = fetchOpencodeWasmBytes({ ASSETS: assets }, yoga);
+      }
+      try {
+        this.opencodeYogaWasmBytes = await this.opencodeYogaWasmBytesPromise;
+      } catch (e) {
+        this.opencodeYogaWasmBytesPromise = null;
+        throw e;
+      }
+    }
+    return { [YOGA_WASM_MODULE_NAME]: { wasm: this.opencodeYogaWasmBytes } };
   }
 
   private trackProcessRpcResources(
@@ -3026,15 +3077,19 @@ export class FacetManager {
     // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
     // The tree-sitter core + bash/powershell grammar wasm ride in the same
     // way for the bash tool's command parser.
-    const [sqliteModules, treeSitterModules, openTuiModules, tuiWorkerModules] = await Promise.all([
-      this.sqliteModuleEntry(true),
-      this.treeSitterModuleEntries(),
-      this.openTuiModuleEntry(),
-      // The TUI client spawns its API server + OpenTUI parser as in-isolate
-      // Workers; the polyfill imports these staged bundles. One-shot runs never
-      // reach the TUI command, so they are fetched only for the attached path.
-      attachedTty ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
-    ]);
+    const [sqliteModules, treeSitterModules, openTuiModules, tuiWorkerModules, yogaModules] =
+      await Promise.all([
+        this.sqliteModuleEntry(true),
+        this.treeSitterModuleEntries(),
+        this.openTuiModuleEntry(),
+        // The TUI client spawns its API server + OpenTUI parser as in-isolate
+        // Workers, and OpenTUI lays out frames with yoga-layout. The polyfill
+        // imports the worker bundles + the runner instantiates the yoga Module.
+        // One-shot runs never render, so both are fetched only for the attached
+        // path.
+        attachedTty ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
+        attachedTty ? this.opencodeYogaModuleEntry() : Promise.resolve({}),
+      ]);
 
     // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
     // live SQLite VFS (same wiring as the standard one-shot facet path).
@@ -3054,6 +3109,7 @@ export class FacetManager {
         ...treeSitterModules,
         ...openTuiModules,
         ...tuiWorkerModules,
+        ...yogaModules,
         ...opencodeBuiltinBridgeModules(attachedTty),
       },
       ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),

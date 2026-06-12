@@ -233,6 +233,14 @@ export declare class FacetManager {
      */
     private opencodeTuiWorkerSources;
     private opencodeTuiWorkerSourcesPromise;
+    /**
+     * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
+     * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
+     * carries them as a pre-compiled `{ wasm }` module so the patched yoga loader
+     * instantiates a Module instead of doing the blocked request-time compile.
+     */
+    private opencodeYogaWasmBytes;
+    private opencodeYogaWasmBytesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -284,6 +292,14 @@ export declare class FacetManager {
      * TUI; the one-shot `opencode run` path never spawns these.
      */
     private opencodeWorkerModuleEntries;
+    /**
+     * Build the Worker Loader module-map fragment carrying the yoga-layout wasm
+     * into the interactive-TUI facet as a pre-compiled WebAssembly.Module. The
+     * runner parks it on globalThis.__nimbusYogaModule and the patched OpenTUI
+     * yoga loader instantiates it (request-time WebAssembly.instantiate of bytes
+     * is blocked in facets). Attached-TTY only — `opencode run` never renders.
+     */
+    private opencodeYogaModuleEntry;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;

@@ -159,3 +159,34 @@ for (const { label, entry, worker } of builds) {
   console.log(`built ${label}: ${result.outputs.length} outputs`)
 }
 console.log("built", total, "outputs total")
+
+// Extract the yoga-layout wasm that @opentui/core inlines as a base64 data URI.
+// OpenTUI lays out every TUI frame with yoga; its Emscripten loader does
+// request-time WebAssembly.instantiate(bytes), which workerd blocks in a facet.
+// The bundle patch (bundle-patches.ts seam 8) routes the loader to a
+// pre-compiled WebAssembly.Module the runner parks on globalThis.__nimbusYogaModule;
+// that Module rides in via the Worker Loader module map, so stage the raw bytes
+// here alongside the workers (deterministically from the same source the bundle
+// embeds — no drift). Fail loud if the inlined wasm cannot be found.
+const opentuiCore = Bun.resolveSync("@opentui/core", dir)
+const opentuiChunk = (() => {
+  // The FFI/yoga chunk is a sibling index-<hash>.js of the resolved entry.
+  const coreDir = path.dirname(opentuiCore)
+  for (const f of fs.readdirSync(coreDir)) {
+    if (/^index(-[a-z0-9]+)?\.js$/.test(f)) {
+      const src = fs.readFileSync(path.join(coreDir, f), "utf8")
+      if (src.includes(OPENTUI_FFI_CHUNK_MARKER)) return src
+    }
+  }
+  throw new Error("opentui yoga extract: no @opentui/core chunk carrying the FFI/yoga marker")
+})()
+const yogaMatch = opentuiChunk.match(/data:application\/octet-stream;base64,([A-Za-z0-9+/=]+)/)
+if (!yogaMatch) {
+  throw new Error("opentui yoga extract: no base64 wasm data URI in the @opentui/core chunk")
+}
+const yogaBytes = Buffer.from(yogaMatch[1], "base64")
+if (yogaBytes.length < 4 || yogaBytes.readUInt32BE(0) !== 0x0061736d) {
+  throw new Error("opentui yoga extract: decoded data URI is not a wasm module (\\0asm magic missing)")
+}
+fs.writeFileSync(path.join(outdir, "yoga.wasm"), yogaBytes)
+console.log(`extracted yoga.wasm: ${yogaBytes.length} bytes`)

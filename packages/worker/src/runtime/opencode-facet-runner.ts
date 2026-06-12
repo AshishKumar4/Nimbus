@@ -43,10 +43,18 @@ import {
   OPENTUI_WASM_MODULE_NAME,
   generateOpenTUIBackendBootCode,
 } from './opentui-facet-backend.js';
-import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
+import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
 
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
+
+/**
+ * Module-map specifier for the yoga-layout WebAssembly.Module. OpenTUI lays
+ * out every TUI frame with yoga; the runner parks the pre-compiled Module on
+ * `globalThis.__nimbusYogaModule` so the bundle's patched loader instantiates
+ * it instead of doing the blocked request-time WebAssembly.instantiate(bytes).
+ */
+export const YOGA_WASM_MODULE_NAME = 'yoga.wasm';
 
 /** Module-map specifier for the sql.js WebAssembly.Module. */
 export const SQLITE_WASM_MODULE_NAME = 'sqlite.wasm';
@@ -492,6 +500,31 @@ export const WORKER_POLYFILL_SRC: string = `
 `;
 
 /**
+ * Module-init source that imports the pre-compiled yoga-layout
+ * WebAssembly.Module from the module map and parks it on
+ * globalThis.__nimbusYogaModule for the bundle's patched yoga loader (the TUI
+ * lays out every frame with yoga). Empty when yoga is not staged — fail loud at
+ * generation so a TUI facet never boots without its layout engine.
+ */
+function yogaImportSrc(): string {
+  if (!OPENCODE_YOGA_WASM) {
+    throw new Error(
+      'opencode yoga-layout wasm is not staged — rerun scripts/bundle-opencode.mjs ' +
+        'with an opencode dist that extracted yoga.wasm (build-node.ts)',
+    );
+  }
+  return `
+// ── yoga-layout wasm (module-init scope) ────────────────────────────────────
+// OpenTUI lays out every TUI frame with yoga-layout (an Emscripten wasm). Its
+// loader does request-time WebAssembly.instantiate(bytes), which workerd blocks
+// in a facet; the pre-compiled Module rides in via the module map and the
+// patched loader (bundle-patches.ts seam 8) instantiates THIS instead.
+import __nimbusYogaModule from "${YOGA_WASM_MODULE_NAME}";
+globalThis.__nimbusYogaModule = __nimbusYogaModule;
+`;
+}
+
+/**
  * Generate the mainModule that boots the opencode ESM bundle in a facet.
  * One-shot mode buffers stdout/stderr into the JSON response; attachedTty mode
  * streams them live and keeps the facet alive for the interactive TUI.
@@ -548,6 +581,7 @@ globalThis.${TREE_SITTER_REGISTRY_GLOBAL} = new Map([
 // Nimbus-patched @opentui/core) is imported in fetch().
 import __nimbusOpenTUIWasmModule from "${OPENTUI_WASM_MODULE_NAME}";
 ${OPENTUI_BACKEND_FACET_SRC}
+${opts.attachedTty ? yogaImportSrc() : ''}
 
 // ── VFS-backed node-compat shim scope (node-shims.ts) ──────────────────────
 // Declared at module-init so the node:fs / node:os bridge modules (which
