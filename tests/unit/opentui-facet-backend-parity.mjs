@@ -31,6 +31,16 @@ const module = new WebAssembly.Module(
 // Evaluate the facet source the way the runner does: the WASI preamble + the
 // serialized backend class become module locals. Export the class + WASI host
 // helpers so we can construct exactly as generateOpenTUIBackendBootCode() does.
+// Bundled-shape guards. This test loads UN-bundled TS, but in the deployed
+// worker esbuild (keepNames) compiles the serialized helpers/class to reference
+// `__name` and emits the class as `var X = class _X {…}` (so `.toString()` is a
+// bare class expression). The injected source must therefore (a) declare the
+// `__name`/`__defProp` helpers and (b) bind the class to `OpenTUIWasmBackend`
+// explicitly — otherwise the facet dies with `__name is not defined` /
+// `OpenTUIWasmBackend is not defined` only once deployed. Guard both here.
+assert.match(OPENTUI_BACKEND_FACET_SRC, /\bconst __name =/, 'facet src must declare the esbuild __name helper');
+assert.match(OPENTUI_BACKEND_FACET_SRC, /\bconst OpenTUIWasmBackend =/, 'facet src must bind the class to OpenTUIWasmBackend explicitly (esbuild renames the class expression)');
+
 const facetModuleSrc = `${OPENTUI_BACKEND_FACET_SRC}
 export { OpenTUIWasmBackend, __wasiMakeImports, __wasiInitFS };`;
 const facetPath = path.join(os.tmpdir(), `opentui-facet-parity-${process.pid}.mjs`);

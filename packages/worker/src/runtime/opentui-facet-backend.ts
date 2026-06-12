@@ -61,7 +61,11 @@ const OPENTUI_BACKEND_CLASS_SRC = [
   `const ARENA_ALIGN = ${ARENA_ALIGN};`,
   `const toOffset = ${toOffset.toString()};`,
   `const viewBytes = ${viewBytes.toString()};`,
-  OpenTUIWasmBackend.toString(),
+  // esbuild emits `var OpenTUIWasmBackend = class _OpenTUIWasmBackend {…}`, so
+  // `.toString()` is a class EXPRESSION bound to the internal name — injected
+  // bare it would not define `OpenTUIWasmBackend`. Bind it explicitly so the
+  // boot code's `OpenTUIWasmBackend.create(...)` resolves.
+  `const OpenTUIWasmBackend = ${OpenTUIWasmBackend.toString()};`,
 ].join('\n');
 
 /**
