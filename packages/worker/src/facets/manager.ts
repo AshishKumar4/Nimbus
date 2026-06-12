@@ -2924,8 +2924,29 @@ export class FacetManager {
     const bundle = await this.opencodeBundleSource();
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
+    const attachedTty = opts.attachedTty === true;
     const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd);
     const pid = entry.pid;
+    if (attachedTty) {
+      this.processes.setLongRunning(pid);
+      this.processes.setAttachedTty(pid);
+      this.processes.openInput(pid);
+    }
+
+    // attachedTty: opencode's shim TTY (node-shims.ts) keys raw-mode stdin and
+    // columns/rows off these env vars, exactly like the long-running node path.
+    const runnerEnv = attachedTty
+      ? {
+          ...opts.env,
+          NIMBUS_ATTACHED_TTY: '1',
+          NIMBUS_CP_CHILD_PID: String(pid),
+          TERM: opts.env.TERM || 'xterm-256color',
+          COLORTERM: opts.env.COLORTERM || 'truecolor',
+          COLUMNS: opts.env.COLUMNS || '80',
+          LINES: opts.env.LINES || '24',
+          FORCE_COLOR: opts.env.FORCE_COLOR || '1',
+        }
+      : opts.env;
 
     // Snapshot the working tree so opencode's sync fs reads resolve, and a
     // directory manifest so readdir/stat are coherent. opencode creates its
@@ -2936,11 +2957,12 @@ export class FacetManager {
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
     const runnerCode = generateOpencodeRunnerCode({
       argv: opts.argv,
-      env: opts.env,
+      env: runnerEnv,
       cwd: opts.cwd,
       stdin: opts.stdin,
       vfsBundle: _serializeBundleForFacet(vfsState.bundle),
       vfsManifest: JSON.stringify(vfsState.manifest),
+      attachedTty,
     });
 
     // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
@@ -2961,23 +2983,31 @@ export class FacetManager {
       ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid } })
       : undefined;
 
+    const workerConfig = {
+      compatibilityDate: CF_COMPAT_DATE,
+      compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+      mainModule: 'runner.js',
+      modules: {
+        'runner.js': runnerCode,
+        [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
+        ...sqliteModules,
+        ...treeSitterModules,
+        ...openTuiModules,
+        ...opencodeBuiltinBridgeModules(),
+      },
+      ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+    };
+
+    if (attachedTty) {
+      return await this._execStagedArtifactAttached(
+        pid, command, workerConfig, supervisorBinding,
+      );
+    }
+
     let worker: LoadedWorkerStub | undefined;
     let entrypoint: LoadedWorkerEntrypointStub | undefined;
     try {
-      worker = this.env.LOADER.load({
-        compatibilityDate: CF_COMPAT_DATE,
-        compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-        mainModule: 'runner.js',
-        modules: {
-          'runner.js': runnerCode,
-          [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
-          ...sqliteModules,
-          ...treeSitterModules,
-          ...openTuiModules,
-          ...opencodeBuiltinBridgeModules(),
-        },
-        ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-      });
+      worker = this.env.LOADER.load(workerConfig);
       entrypoint = worker.getEntrypoint();
       if (typeof entrypoint.fetch !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
@@ -3000,6 +3030,55 @@ export class FacetManager {
       disposeRpcResource(entrypoint);
       disposeRpcResource(worker);
       disposeRpcResource(supervisorBinding);
+    }
+  }
+
+  /**
+   * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
+   * the runner's startProcess() — which holds the facet open via ctx.waitUntil
+   * while opencode's createCliRenderer loop streams ANSI frames to the terminal
+   * RPC and the live stdin pump feeds keystrokes — and returns immediately with
+   * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
+   * release on report-exit, the same contract the long-running node path uses.
+   */
+  private async _execStagedArtifactAttached(
+    pid: number,
+    command: string,
+    workerConfig: WorkerCode,
+    supervisorBinding: unknown,
+  ): Promise<StagedArtifactExecResult> {
+    let worker: LoadedWorkerStub | undefined;
+    let startStub: LoadedWorkerEntrypointStub | undefined;
+    try {
+      worker = this.env.LOADER.load(workerConfig);
+      startStub = worker.getEntrypoint();
+      if (typeof startStub.startProcess !== 'function') {
+        throw new Error('Nimbus: opencode runner entrypoint has no startProcess method');
+      }
+      this.trackProcessRpcResources(
+        pid,
+        [startStub, worker, supervisorBinding],
+        { releaseOnReportExit: false },
+      );
+      const startPromise = startStub.startProcess();
+      this.ctx.waitUntil(
+        startPromise
+          .catch((e: unknown) => {
+            const reason = 'opencode TUI process failed: ' + errorMessage(e);
+            try { this.processes.exit(pid, 1); } catch {}
+            try { this._w5RecordTermination(pid, 1, 'facet', reason); } catch {}
+            try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
+          })
+          .finally(() => {
+            this.releaseProcessRpcResources(pid);
+          }),
+      );
+      return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+    } catch (e) {
+      this.releaseProcessRpcResources(pid);
+      disposeRpcResources([startStub, worker, supervisorBinding]);
+      this.processes.exit(pid, 1);
+      throw e;
     }
   }
 

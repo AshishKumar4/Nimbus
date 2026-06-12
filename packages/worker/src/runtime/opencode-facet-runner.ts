@@ -207,11 +207,76 @@ export interface OpencodeRunnerOptions {
   vfsBundle: string;
   /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
   vfsManifest: string;
+  /**
+   * Interactive TUI mode. When set, the runner drives opencode's real
+   * createCliRenderer path: stdout/stderr stream LIVE to the SUPERVISOR
+   * (→ xterm) instead of being buffered, the live stdin pump
+   * (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/resize/signal)
+   * feeds keystrokes, and the facet stays alive on workerCtx.waitUntil until
+   * opencode exits — the same attached-TTY substrate the long-running node
+   * path (manager.ts) uses, but over the ESM bundle. The env must carry
+   * NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY (node-shims.ts)
+   * activates its raw-mode stdin and columns/rows.
+   */
+  attachedTty?: boolean;
 }
 
 /**
+ * The facet-side TTY stdout for the OpenTUI span-feed path. createCliRenderer
+ * allocates the NativeSpanFeed iff `stdout !== process.stdout`; opencode passes
+ * no custom stdout, so bundle seam 7 defaults config.stdout to this global. It
+ * is a DISTINCT object (≠ process.stdout) that forwards every write to the
+ * facet's process.stdout (which streams live to the terminal RPC). The feed
+ * emits Uint8Array chunks; they are decoded latin1 (byte-preserving) so the raw
+ * ANSI bytes reach xterm intact. columns/rows/isTTY mirror the shim TTY so the
+ * renderer reads the live terminal geometry.
+ */
+const OPENTUI_TTY_STDOUT_SRC: string = `
+globalThis.__nimbusOpenTUITtyStdout = {
+  isTTY: true,
+  get columns() { return __nimbusTtyColumns; },
+  get rows() { return __nimbusTtyRows; },
+  write(chunk, enc, cb) {
+    const s = typeof chunk === "string"
+      ? chunk
+      : __BufferMod.from(chunk).toString("latin1");
+    process.stdout.write(s);
+    const done = typeof enc === "function" ? enc : cb;
+    if (typeof done === "function") done();
+    return true;
+  },
+  getColorDepth: () => 24,
+  hasColors: () => true,
+  on() { return this; },
+  once() { return this; },
+  removeListener() { return this; },
+  emit() { return false; },
+};
+`;
+
+/**
+ * The render clock OpenTUI's loop schedules against. Bundle seam 7 defaults
+ * config.clock to this when present. It delegates to the facet's real timers
+ * (workerd provides performance.now + setTimeout/setInterval). The render loop
+ * self-reschedules via clock.setTimeout; workerd only advances timers across
+ * real I/O yields, and the attached-TTY stdin pump (cpReadStdin round-trips)
+ * supplies them — so frames flush on keystrokes and at the idle pump cadence.
+ * Owning the clock here keeps the facet tick policy in one seam.
+ */
+const OPENTUI_CLOCK_SRC: string = `
+globalThis.__nimbusOpenTUIClock = {
+  now: () => globalThis.performance.now(),
+  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+  clearTimeout: (h) => globalThis.clearTimeout(h),
+  setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
+  clearInterval: (h) => globalThis.clearInterval(h),
+};
+`;
+
+/**
  * Generate the mainModule that boots the opencode ESM bundle in a facet.
- * stdout/stderr are buffered and returned in the JSON response.
+ * One-shot mode buffers stdout/stderr into the JSON response; attachedTty mode
+ * streams them live and keeps the facet alive for the interactive TUI.
  */
 export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string {
   const treeSitter = OPENCODE_TREE_SITTER_WASMS;
@@ -228,6 +293,11 @@ export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string 
     stdin: JSON.stringify(opts.stdin),
   };
   return `
+// WorkerEntrypoint base: the attached-TTY TUI runs as a resident process whose
+// startProcess() holds the facet open via this.ctx.waitUntil — the same
+// lifecycle the long-running node path (manager.ts) uses.
+import { WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
+
 // ── sql.js wasm + glue factory (module-init scope) ─────────────────────────
 // The pre-compiled WebAssembly.Module rides in via the module map; the glue
 // factory is built with new Function at startup (request-time codegen is
@@ -298,6 +368,20 @@ ${BUN_GLOBAL_POLYFILL}
 const __ocHostResponse = globalThis.Response;
 let __ocExited = false;
 let __ocLoadError = null;
+const __ocAttachedTty = ${opts.attachedTty ? 'true' : 'false'};
+
+// Live-stream RPC chain for the attached-TTY TUI: serialize SUPERVISOR.stdout/
+// stderr writes so the ANSI frames reach xterm in order (same ordering the
+// long-running node path uses).
+let __rpcWriteChain = Promise.resolve();
+const __queueRpcWrite = (method, s) => {
+  if (!__supervisor) return;
+  const __task = __rpcWriteChain
+    .then(() => __supervisor[method](s))
+    .catch(() => {});
+  __rpcWriteChain = __task.then(() => {}, () => {});
+  __pendingIO.push(__task);
+};
 
 // process state seeding (argv/env/cwd) + stdout/stderr/exit capture.
 try { process.argv = argv; } catch {}
@@ -309,27 +393,60 @@ process.exit = (code) => {
   __ocExited = true;
   throw { __ocProcessExit: true, code: exitCode };
 };
-process.stdout.write = (d, enc, cb) => {
-  if (typeof enc === "function") cb = enc;
-  stdout += String(d);
-  if (typeof cb === "function") queueMicrotask(cb);
-  return true;
-};
-process.stderr.write = (d, enc, cb) => {
-  if (typeof enc === "function") cb = enc;
-  stderr += String(d);
-  if (typeof cb === "function") queueMicrotask(cb);
-  return true;
-};
+if (__ocAttachedTty) {
+  // Live TUI: span-feed ANSI flows process.stdout.write → SUPERVISOR.stdout →
+  // xterm. Keep the buffer mirror so a teardown error tail can still surface.
+  process.stdout.write = (d, enc, cb) => {
+    if (typeof enc === "function") cb = enc;
+    const s = String(d);
+    stdout += s;
+    __queueRpcWrite("stdout", s);
+    if (typeof cb === "function") queueMicrotask(cb);
+    return true;
+  };
+  process.stderr.write = (d, enc, cb) => {
+    if (typeof enc === "function") cb = enc;
+    const s = String(d);
+    stderr += s;
+    __queueRpcWrite("stderr", s);
+    if (typeof cb === "function") queueMicrotask(cb);
+    return true;
+  };
+} else {
+  process.stdout.write = (d, enc, cb) => {
+    if (typeof enc === "function") cb = enc;
+    stdout += String(d);
+    if (typeof cb === "function") queueMicrotask(cb);
+    return true;
+  };
+  process.stderr.write = (d, enc, cb) => {
+    if (typeof enc === "function") cb = enc;
+    stderr += String(d);
+    if (typeof cb === "function") queueMicrotask(cb);
+    return true;
+  };
+}
 const __ocFmt = (...a) => a.map((x) => {
   if (typeof x === "string") return x;
   try { return JSON.stringify(x); } catch { return String(x); }
 }).join(" ");
-console.log = (...a) => { stdout += __ocFmt(...a) + "\\n"; };
+if (__ocAttachedTty) {
+  console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
+  console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
+} else {
+  console.log = (...a) => { stdout += __ocFmt(...a) + "\\n"; };
+  console.error = (...a) => { stderr += __ocFmt(...a) + "\\n"; };
+}
 console.info = console.log;
 console.debug = console.log;
-console.error = (...a) => { stderr += __ocFmt(...a) + "\\n"; };
 console.warn = console.error;
+
+// Park the OpenTUI span-feed stdout + render clock for bundle seam 7. Only in
+// attachedTty mode — the one-shot path never reaches createCliRenderer.
+if (__ocAttachedTty) {
+${OPENTUI_TTY_STDOUT_SRC}
+${OPENTUI_CLOCK_SRC}
+}
 
 async function __drainPendingIO(maxPasses = 12) {
   let __settledIO = 0;
@@ -342,8 +459,59 @@ async function __drainPendingIO(maxPasses = 12) {
   }
 }
 
-export default {
-  async fetch(request, workerEnv) {
+// Interactive TUI lifecycle: stream live, run opencode's createCliRenderer path,
+// and stay resident until the user quits. opencode's nimbusMain() resolves only
+// when the TUI tears down (it awaits the render lifecycle), so awaiting it keeps
+// the facet alive; the session keeps the request open via ctx.waitUntil.
+async function __ocRunAttachedTui() {
+  // Activate the shim's raw-mode stdin pump (SUPERVISOR.cpReadStdin →
+  // process.stdin, with setRawMode/resize→SIGWINCH/signal handling).
+  try { process.stdin.__nimbusStartLivePump?.(); } catch {}
+  try {
+    if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
+    const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
+    if (typeof __ocBundle.nimbusMain !== "function") {
+      throw new Error(
+        "opencode bundle does not export nimbusMain() — the staged build is " +
+        "missing the Nimbus deferred-entry patch (see build-node.ts)"
+      );
+    }
+    await __ocBundle.nimbusMain();
+  } catch (e) {
+    if (e && e.__ocProcessExit) { exitCode = e.code; }
+    else {
+      __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
+      stderr += __ocLoadError + "\\n";
+      if (exitCode === 0) exitCode = 1;
+    }
+  }
+  await __drainPendingIO();
+  const __failedWrites = {};
+  if (__supervisor && Object.keys(__vfsWrites).length > 0) {
+    for (const [path, content] of Object.entries(__vfsWrites)) {
+      __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+    }
+  }
+  await __drainPendingIO();
+  if (__supervisor) {
+    try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
+  }
+}
+
+class NimbusOpencodeProcess extends __NimbusWorkerEntrypoint {
+  async startProcess() {
+    __supervisor = (this.env && this.env.SUPERVISOR) || null;
+    // Hold the facet open for the interactive TUI's lifetime.
+    this.ctx.waitUntil(__ocRunAttachedTui());
+    return { ok: true };
+  }
+  async fetch(request) {
+    return __ocOneShotFetch(request, this.env);
+  }
+}
+export default NimbusOpencodeProcess;
+
+async function __ocOneShotFetch(request, workerEnv) {
     __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;
     try {
       // Instantiate sql.js before opencode opens its DatabaseSync (the shim's
@@ -418,7 +586,6 @@ export default {
       stderr,
       vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
     });
-  },
-};
+}
 `;
 }
