@@ -60,6 +60,13 @@ export const LRU_MAX_ENTRIES = 512;      // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64;            // rows per batch INSERT
 export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
 
+// ── Vite Dev Server Constants ───────────────────────────────────────────
+// In-memory transformed-module cache cap. Transformed user modules and
+// /@modules/ bundles are also persisted (SQLite) — this LRU is just the
+// hot in-isolate tier, bounded so a large project can't grow it without
+// limit. Persistent caches back any eviction at near-zero cost.
+export const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
+
 // ── Facet Constants ─────────────────────────────────────────────────────
 export const FACET_TIMEOUT_MS = 30_000;  // 30s execution timeout
 //

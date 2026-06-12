@@ -28,6 +28,8 @@ import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '../_shared/crypto.js';
+import { LruMap } from '../_shared/lru-map.js';
+import { VITE_MODULE_CACHE_MAX_ENTRIES } from '../constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import {
   scanNamedImports,
@@ -1251,7 +1253,7 @@ export class ViteDevServer {
   private port: number;
   private basePath: string;
   private running = false;
-  private moduleCache = new Map<string, { code: string; timestamp: number; inputHash?: string }>();
+  private moduleCache = new LruMap<string, { code: string; timestamp: number; inputHash?: string }>(VITE_MODULE_CACHE_MAX_ENTRIES);
   private unsubVfs: (() => void) | null = null;
   /** True if index.html has an importmap (browser handles bare specifiers) */
   private hasImportmap = false;
