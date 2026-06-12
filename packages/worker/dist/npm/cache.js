@@ -1,11 +1,15 @@
 /**
  * npm-cache.ts — SQLite-backed package cache for Nimbus npm v2.
  *
- * Four tables:
+ * Five tables:
  *   1. pkg_registry_cache — packument metadata (avoids re-fetching full JSON)
  *   2. pkg_tarball_cache  — extracted file contents per name@version
  *   3. pkg_lockfile        — resolved dependency graph per project
  *   4. pkg_esm_bundles     — pre-bundled ESM for /@modules/ serving
+ *   5. user_module_transforms — transformed user .ts/.tsx/.jsx output,
+ *      keyed by content hash so it survives DO hibernation (the dev
+ *      server's in-memory moduleCache does not) and never serves stale
+ *      output after an unobserved write.
  *
  * All tables live in the same DO SQLite as the VFS. Schema is created lazily
  * on first use (not at VFS init, to avoid penalizing sessions that don't npm install).
@@ -94,6 +98,13 @@ export class NpmCache {
       esm_code    TEXT NOT NULL,
       built_at    INTEGER NOT NULL DEFAULT 0,
       input_hash  TEXT NOT NULL DEFAULT ''
+    )`);
+        this.sql.exec(`CREATE TABLE IF NOT EXISTS user_module_transforms (
+      vfs_path        TEXT PRIMARY KEY,
+      content_hash    TEXT NOT NULL,
+      bundler_version TEXT NOT NULL,
+      code            TEXT NOT NULL,
+      built_at        INTEGER NOT NULL DEFAULT 0
     )`);
         this.initialized = true;
     }
@@ -385,6 +396,46 @@ export class NpmCache {
         this.ensureSchema();
         this.sql.exec(`DELETE FROM pkg_esm_bundles`);
     }
+    // ── User-module transforms ────────────────────────────────────────────
+    /**
+     * Read a persisted transform for a user module. Returns the entry only
+     * when BOTH the content hash and bundler version still match the
+     * caller's request — a hash/version mismatch is reported as a miss so
+     * the caller re-transforms (the stale row is overwritten on the next
+     * put). This makes the cache content-addressed: a source edit whose
+     * VFS event the dev server missed still invalidates here, because the
+     * content hash no longer matches.
+     */
+    getUserModuleTransform(vfsPath, contentHash, bundlerVersion) {
+        this.ensureSchema();
+        const rows = [...this.sql.exec(`SELECT vfs_path, content_hash, bundler_version, code, built_at
+       FROM user_module_transforms WHERE vfs_path = ?`, vfsPath)];
+        if (rows.length === 0)
+            return null;
+        const r = rows[0];
+        if (String(r.content_hash) !== contentHash || String(r.bundler_version) !== bundlerVersion) {
+            return null;
+        }
+        return {
+            vfsPath: String(r.vfs_path),
+            contentHash: String(r.content_hash),
+            bundlerVersion: String(r.bundler_version),
+            code: String(r.code),
+            builtAt: Number(r.built_at),
+        };
+    }
+    /** Persist a transformed user module (INSERT OR REPLACE on vfs_path). */
+    putUserModuleTransform(entry) {
+        this.ensureSchema();
+        this.sql.exec(`INSERT OR REPLACE INTO user_module_transforms
+       (vfs_path, content_hash, bundler_version, code, built_at)
+       VALUES (?, ?, ?, ?, ?)`, entry.vfsPath, entry.contentHash, entry.bundlerVersion, entry.code, entry.builtAt);
+    }
+    /** Drop a persisted transform (e.g. when a file is deleted). */
+    deleteUserModuleTransform(vfsPath) {
+        this.ensureSchema();
+        this.sql.exec(`DELETE FROM user_module_transforms WHERE vfs_path = ?`, vfsPath);
+    }
     // ── Stats ─────────────────────────────────────────────────────────────
     getStats() {
         this.ensureSchema();
@@ -393,12 +444,14 @@ export class NpmCache {
         const files = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_tarball_cache`)];
         const locks = [...this.sql.exec(`SELECT COUNT(DISTINCT project_path) as cnt FROM pkg_lockfile`)];
         const esm = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_esm_bundles`)];
+        const xforms = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM user_module_transforms`)];
         return {
             registryEntries: Number(reg[0]?.cnt ?? 0),
             cachedPackages: Number(pkgs[0]?.cnt ?? 0),
             cachedFiles: Number(files[0]?.cnt ?? 0),
             lockfileProjects: Number(locks[0]?.cnt ?? 0),
             esmBundles: Number(esm[0]?.cnt ?? 0),
+            userModuleTransforms: Number(xforms[0]?.cnt ?? 0),
         };
     }
 }

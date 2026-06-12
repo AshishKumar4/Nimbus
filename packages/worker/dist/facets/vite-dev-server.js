@@ -23,6 +23,10 @@
  */
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from '../npm/cache.js';
+import { sha256Base64Url } from '../_shared/crypto.js';
+import { LruMap } from '../_shared/lru-map.js';
+import { OnDemandBundleGate } from './on-demand-bundle-gate.js';
+import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '../constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
@@ -1146,7 +1150,7 @@ export class ViteDevServer {
     port;
     basePath;
     running = false;
-    moduleCache = new Map();
+    moduleCache = new LruMap(VITE_MODULE_CACHE_MAX_ENTRIES);
     unsubVfs = null;
     /** True if index.html has an importmap (browser handles bare specifiers) */
     hasImportmap = false;
@@ -1189,20 +1193,20 @@ export class ViteDevServer {
      */
     pendingBundles = new Map();
     /**
-     * Single-slot semaphore for the on-demand bundle slow path. Serializes
-     * slice-walk + facet-dispatch ACROSS DIFFERENT specs so the
-     * supervisor holds at most ONE 28 MiB slice in memory at any time
-     * during a flurry of /preview/@modules/* requests. Coupled with
-     * pendingBundles (same-spec coalescing) this caps peak supervisor
-     * slice memory at 28 MiB regardless of browser parallelism.
+     * Byte-budget admission gate for the on-demand bundle slow path.
+     * Replaces the former single-slot semaphore: instead of serializing
+     * every cold bundle (which made a fresh-React first load multi-second
+     * because each distinct /@modules/ spec waited for the previous), it
+     * bounds the TOTAL slice BYTES resident in the supervisor at once.
      *
-     * Implementation: a chain of Promise<void> — each waiter awaits the
-     * previous, runs its critical section, then releases. Latency
-     * impact is bounded by per-spec bundle wall time (typically <1 s
-     * for non-barrel packages); the browser's module-fetch parallelism
-     * just becomes serialized at the bundler boundary, not at the wire.
+     * Many small slices' facet RPC round-trips overlap; a single large
+     * (~28 MiB) slice still serializes the rest. Peak resident slice bytes
+     * never exceed ON_DEMAND_SLICE_CAP_BYTES — the same one-slice envelope
+     * the install-time pre-bundler proved safe on shared DO isolates — so
+     * this is a latency win with no supervisor-heap regression. Coupled
+     * with pendingBundles (same-spec coalescing) as before.
      */
-    onDemandQueue = Promise.resolve();
+    onDemandGate = new OnDemandBundleGate(ON_DEMAND_SLICE_CAP_BYTES);
     /**
      * process diagnostics support: the supervisor's per-PID log store. When set
      * (alongside `pid`), every diagnostic emitted by the dev server is
@@ -1430,6 +1434,18 @@ export class ViteDevServer {
             this.moduleCache.delete(this.root + '/' + path);
             if (path.startsWith(this.root + '/')) {
                 this.moduleCache.delete(path.substring(this.root.length + 1));
+            }
+            // Drop persisted transforms for removed paths so they don't orphan.
+            // Content edits don't need eager deletion — the content hash makes
+            // a changed file a cache miss and the row is overwritten on reserve.
+            // For renames, the original path is the one that goes away.
+            if (this.npmCache && (event.type === 'unlink' || event.type === 'rename')) {
+                const gone = event.type === 'rename' ? (event.oldPath ?? path) : path;
+                this.npmCache.deleteUserModuleTransform(gone);
+                this.npmCache.deleteUserModuleTransform(this.root + '/' + gone);
+                if (gone.startsWith(this.root + '/')) {
+                    this.npmCache.deleteUserModuleTransform(gone.substring(this.root.length + 1));
+                }
             }
             if (path.includes('node_modules/')) {
                 nodeModulesChanged = true;
@@ -1692,28 +1708,17 @@ export class ViteDevServer {
                 });
             }
         }
-        // ── Cold path coalescing + serialization ──────────────────────
+        // ── Cold path coalescing + byte-budget admission ──────────────
         // Multiple parallel browser requests for the same module are
         // common on first preview load; coalesce so exactly ONE bundle
-        // attempt runs per spec. Across DIFFERENT specs, serialize via a
-        // single-slot semaphore so peak supervisor slice memory stays at
-        // ~28 MiB regardless of browser parallelism. See
-        // `pendingBundles` and `onDemandQueue` field docs for context.
+        // attempt runs per spec. Across DIFFERENT specs, the byte-budget
+        // gate bounds total resident slice bytes so small slices overlap
+        // while peak supervisor memory stays at one slice. See
+        // `pendingBundles` and `onDemandGate` field docs for context.
         const inflight = this.pendingBundles.get(cacheKey);
         if (inflight)
             return inflight;
-        const coldPromise = (async () => {
-            const prev = this.onDemandQueue;
-            let releaseSlot;
-            this.onDemandQueue = new Promise((res) => { releaseSlot = res; });
-            try {
-                await prev;
-                return await this.serveModuleCold(specifier, headers, barrelInfo);
-            }
-            finally {
-                releaseSlot();
-            }
-        })();
+        const coldPromise = this.onDemandGate.run((admit) => this.serveModuleCold(specifier, headers, barrelInfo, admit));
         this.pendingBundles.set(cacheKey, coldPromise);
         coldPromise.finally(() => {
             // Drop the coalescing entry once settled. Subsequent requests
@@ -1727,10 +1732,15 @@ export class ViteDevServer {
      * Cold path of serveModule: package resolution → on-demand facet
      * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
      * NO CDN fallback (100% edge contract). Extracted so the coalescing
-     * + semaphore wrapper in serveModule() reads cleanly. Always runs
-     * inside the on-demand semaphore — see serveModule's wrapper.
+     * + gate wrapper in serveModule() reads cleanly. Always runs inside
+     * the on-demand byte-budget gate — see serveModule's wrapper.
+     *
+     * `admit` reserves the built slice's real byte size against the gate's
+     * budget and releases the build lock for the next spec. It is called
+     * exactly once, right after the slice is built and before the facet
+     * submit; bail-out paths that never build a slice simply never call it.
      */
-    async serveModuleCold(specifier, headers, knownBarrelInfo = null) {
+    async serveModuleCold(specifier, headers, knownBarrelInfo = null, admit) {
         const JS_CT = 'application/javascript; charset=utf-8';
         const cacheKey = `@modules/${specifier}`;
         // 3. On-demand bundle (cold path — resolve from node_modules, bundle via esbuild)
@@ -1840,7 +1850,7 @@ export class ViteDevServer {
                 // Facet path — supervisor stays at 0 esbuild bytes.
                 try {
                     const { buildSliceForSpecifierWithCap, prebundleOne, BUNDLER_VERSION, } = await import('../npm/pre-bundle-facet.js');
-                    const SLICE_CAP_BYTES = 28 * 1024 * 1024;
+                    const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
                     const projDir = this.root;
                     const nmDir = projDir + '/node_modules';
                     let slice = null;
@@ -1874,12 +1884,18 @@ export class ViteDevServer {
                         slice = buildSliceForSpecifierWithCap(this.vfs, specifier, nmDir, SLICE_CAP_BYTES);
                     }
                     if (slice) {
+                        // Slice is built and its real size is known — reserve that
+                        // many bytes against the gate's budget (blocking if a large
+                        // slice is already in flight) and release the build lock so
+                        // the next spec can build while this one's facet RPC runs.
+                        if (admit)
+                            await admit(slice.totalBytes);
                         // Build the spec, then drop our supervisor-side handle to
                         // the slice array immediately — `spec` is the only thing
                         // that needs to keep it alive until the RPC structured-clone
                         // completes. Mirrors the install-time runSlot pattern (see
                         // commit 40cfc01) so peak supervisor heap during a flurry of
-                        // /preview/@modules/* requests stays at <(1 × 28 MiB).
+                        // /preview/@modules/* requests stays bounded by the gate.
                         let spec = {
                             specifier,
                             entryPath: bundleEntryPath,
@@ -2481,6 +2497,20 @@ export class ViteDevServer {
             });
         }
         let code = this.vfs.readFileString(vfsPath);
+        // Persistent transform cache (survives DO hibernation; content-hashed
+        // so a write whose VFS event was missed still invalidates). Keyed on
+        // (vfsPath, contentHash, BUNDLER_VERSION). On hit, repopulate the
+        // in-memory cache and serve without re-running esbuild.
+        const contentHash = this.npmCache ? await sha256Base64Url(code) : null;
+        if (this.npmCache && contentHash) {
+            const persisted = this.npmCache.getUserModuleTransform(vfsPath, contentHash, BUNDLER_VERSION);
+            if (persisted) {
+                this.moduleCache.set(vfsPath, { code: persisted.code, timestamp: Date.now() });
+                return new Response(persisted.code, {
+                    headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
+                });
+            }
+        }
         // Auto-inject React Router `basename` into entry files so user links
         // like <NavLink to="/x"> correctly resolve to `${basePath}/x`. Safe
         // no-op if the file doesn't reference createBrowserRouter/<BrowserRouter>
@@ -2541,6 +2571,22 @@ if (!document.getElementById('nimbus-error-overlay')) {
             code = rewriteAllImports(code, this.aliases, this.basePath, importerCtx);
         }
         this.moduleCache.set(vfsPath, { code, timestamp: Date.now() });
+        if (this.npmCache && contentHash) {
+            try {
+                this.npmCache.putUserModuleTransform({
+                    vfsPath,
+                    contentHash,
+                    bundlerVersion: BUNDLER_VERSION,
+                    code,
+                    builtAt: Date.now(),
+                });
+            }
+            catch (e) {
+                // Persistence is best-effort; an SQLite write failure must never
+                // break serving (the in-memory cache already holds the result).
+                this.log('warn', `[vite-dev] transform cache write failed for ${vfsPath}: ${e?.message || e}`);
+            }
+        }
         return new Response(code, {
             headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
         });

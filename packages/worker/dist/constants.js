@@ -56,6 +56,19 @@ export const CHUNK_SIZE = 65_536; // 64KB per content chunk
 export const LRU_MAX_ENTRIES = 512; // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64; // rows per batch INSERT
 export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
+// ── Vite Dev Server Constants ───────────────────────────────────────────
+// In-memory transformed-module cache cap. Transformed user modules and
+// /@modules/ bundles are also persisted (SQLite) — this LRU is just the
+// hot in-isolate tier, bounded so a large project can't grow it without
+// limit. Persistent caches back any eviction at near-zero cost.
+export const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
+// Max bytes shipped to a facet for one on-demand /@modules/ bundle. Also
+// the supervisor-resident slice ceiling. 28 MiB fits under workerd's
+// 32 MiB RPC arg limit (~6% structured-clone overhead) and, with the
+// on-demand byte-budget gate, caps peak supervisor slice memory at one
+// slice — the same envelope the install-time pre-bundler proved safe on
+// shared DO isolates (concurrency=2 of max slices crashed Mossaic-scale).
+export const ON_DEMAND_SLICE_CAP_BYTES = 28 * 1024 * 1024;
 // ── Facet Constants ─────────────────────────────────────────────────────
 export const FACET_TIMEOUT_MS = 30_000; // 30s execution timeout
 //

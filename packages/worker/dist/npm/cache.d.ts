@@ -58,6 +58,17 @@ export interface EsmBundleEntry {
     builtAt: number;
     inputHash: string;
 }
+export interface UserModuleTransformEntry {
+    /** VFS path of the source module (e.g. "home/user/projects/src/App.tsx"). */
+    vfsPath: string;
+    /** SHA-256 (base64url) of the source bytes the transform was built from. */
+    contentHash: string;
+    /** BUNDLER_VERSION the transform output was produced with. */
+    bundlerVersion: string;
+    /** Final served JS (esbuild transform + import rewrites). */
+    code: string;
+    builtAt: number;
+}
 export declare class NpmCache {
     private sql;
     private initialized;
@@ -143,12 +154,27 @@ export declare class NpmCache {
     deleteEsmBundle(specifier: string): void;
     /** Delete all ESM bundles (e.g., after full reinstall). */
     clearEsmBundles(): void;
+    /**
+     * Read a persisted transform for a user module. Returns the entry only
+     * when BOTH the content hash and bundler version still match the
+     * caller's request — a hash/version mismatch is reported as a miss so
+     * the caller re-transforms (the stale row is overwritten on the next
+     * put). This makes the cache content-addressed: a source edit whose
+     * VFS event the dev server missed still invalidates here, because the
+     * content hash no longer matches.
+     */
+    getUserModuleTransform(vfsPath: string, contentHash: string, bundlerVersion: string): UserModuleTransformEntry | null;
+    /** Persist a transformed user module (INSERT OR REPLACE on vfs_path). */
+    putUserModuleTransform(entry: UserModuleTransformEntry): void;
+    /** Drop a persisted transform (e.g. when a file is deleted). */
+    deleteUserModuleTransform(vfsPath: string): void;
     getStats(): {
         registryEntries: number;
         cachedPackages: number;
         cachedFiles: number;
         lockfileProjects: number;
         esmBundles: number;
+        userModuleTransforms: number;
     };
 }
 //# sourceMappingURL=cache.d.ts.map

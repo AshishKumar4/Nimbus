@@ -154,20 +154,20 @@ export declare class ViteDevServer {
      */
     private pendingBundles;
     /**
-     * Single-slot semaphore for the on-demand bundle slow path. Serializes
-     * slice-walk + facet-dispatch ACROSS DIFFERENT specs so the
-     * supervisor holds at most ONE 28 MiB slice in memory at any time
-     * during a flurry of /preview/@modules/* requests. Coupled with
-     * pendingBundles (same-spec coalescing) this caps peak supervisor
-     * slice memory at 28 MiB regardless of browser parallelism.
+     * Byte-budget admission gate for the on-demand bundle slow path.
+     * Replaces the former single-slot semaphore: instead of serializing
+     * every cold bundle (which made a fresh-React first load multi-second
+     * because each distinct /@modules/ spec waited for the previous), it
+     * bounds the TOTAL slice BYTES resident in the supervisor at once.
      *
-     * Implementation: a chain of Promise<void> — each waiter awaits the
-     * previous, runs its critical section, then releases. Latency
-     * impact is bounded by per-spec bundle wall time (typically <1 s
-     * for non-barrel packages); the browser's module-fetch parallelism
-     * just becomes serialized at the bundler boundary, not at the wire.
+     * Many small slices' facet RPC round-trips overlap; a single large
+     * (~28 MiB) slice still serializes the rest. Peak resident slice bytes
+     * never exceed ON_DEMAND_SLICE_CAP_BYTES — the same one-slice envelope
+     * the install-time pre-bundler proved safe on shared DO isolates — so
+     * this is a latency win with no supervisor-heap regression. Coupled
+     * with pendingBundles (same-spec coalescing) as before.
      */
-    private onDemandQueue;
+    private onDemandGate;
     /**
      * process diagnostics support: the supervisor's per-PID log store. When set
      * (alongside `pid`), every diagnostic emitted by the dev server is
@@ -252,8 +252,13 @@ export declare class ViteDevServer {
      * Cold path of serveModule: package resolution → on-demand facet
      * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
      * NO CDN fallback (100% edge contract). Extracted so the coalescing
-     * + semaphore wrapper in serveModule() reads cleanly. Always runs
-     * inside the on-demand semaphore — see serveModule's wrapper.
+     * + gate wrapper in serveModule() reads cleanly. Always runs inside
+     * the on-demand byte-budget gate — see serveModule's wrapper.
+     *
+     * `admit` reserves the built slice's real byte size against the gate's
+     * budget and releases the build lock for the next spec. It is called
+     * exactly once, right after the slice is built and before the facet
+     * submit; bail-out paths that never build a slice simply never call it.
      */
     private serveModuleCold;
     /**

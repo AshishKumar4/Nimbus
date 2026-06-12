@@ -355,19 +355,6 @@ export declare class FacetManager {
     /** Execution timeout. */
     private _execWithTimeout;
     /**
-     * Run npm install in a dedicated facet.
-     * All writes go through SUPERVISOR.writeFile (live VFS),
-     * progress streams via SUPERVISOR.stdout.
-     */
-    /**
-     * Spawn a vite dev server facet.
-     * Returns immediately with the facet stub for HTTP routing.
-     */
-    spawnVite(root: string, basePath?: string): Promise<{
-        pid: number;
-        facetStub: any;
-    }>;
-    /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
      */
