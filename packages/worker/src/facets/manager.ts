@@ -30,6 +30,7 @@ import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
+import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle, fetchOpencodeTreeSitterWasm } from '../runtime/opencode-artifact.js';
@@ -67,6 +68,12 @@ export interface FacetExecResult {
    * bytes.
    */
   vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
+  /**
+   * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses and
+   * rpcWrites originate inside the facet (see exec-telemetry.ts); the
+   * supervisor folds them with its own phase timings before recording.
+   */
+  diag?: { drainPasses: number; rpcWrites: number };
 }
 
 /**
@@ -325,8 +332,9 @@ function __makeEntrypointPromiseTracker() {
       const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
         ? globalThis.__nimbusRawSetTimeout
         : globalThis.setTimeout;
+      let __pass = 0;
       for (
-        let __pass = 0;
+        ;
         !__exited
           && (__pass < minPasses
             || (__timersPending() > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses)
@@ -335,6 +343,7 @@ function __makeEntrypointPromiseTracker() {
       ) {
         await new Promise((resolve) => __rawSetTimeout(resolve, 0));
       }
+      return __pass;
     },
   };
 }
@@ -379,9 +388,9 @@ async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises) {
       __entryResult.then(() => null),
       __nimbusProcessExitPromise.then(() => __exit, () => __exit),
     ]);
-    if (__result === __exit) return;
+    if (__result === __exit) return 0;
   }
-  await __entryPromises.drain(__nimbusProcessExitPromise, 8000, 4);
+  return await __entryPromises.drain(__nimbusProcessExitPromise, 8000, 4);
 }
 `;
 
@@ -579,8 +588,8 @@ function generateEntrypointCode(
   usesSqlite: boolean,
 ): string {
   const safeCode = JSON.stringify(userCode);
-  const safeBundle = _serializeBundleForFacet(vfsState.bundle);
-  const safeManifest = JSON.stringify(vfsState.manifest);
+  const safeBundle = vfsState.serializedBundle ?? _serializeBundleForFacet(vfsState.bundle);
+  const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
   return `
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
@@ -645,7 +654,8 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, diag: __diag } = args;
+    let __drainPasses = 0;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __supervisor = workerEnv?.SUPERVISOR || null;
@@ -661,7 +671,9 @@ export default {
       if (e) { __rpcLastError = (e && e.message) || String(e); }
     };
     let __rpcWriteChain = Promise.resolve();
+    let __rpcWriteCount = 0;
     const __queueRpcWrite = (method, s) => {
+      __rpcWriteCount++;
       const __task = __rpcWriteChain
         .then(() => __supervisor[method](s))
         .catch((e) => __onRpcDrop(s.length, e));
@@ -725,7 +737,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
         __entryPromises.stop();
       }
       __entryPromises.track(__entryResult);
-      await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
+      __drainPasses = await __nimbusDrainEntrypointStartup(__entryResult, __entryPromises);
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
     } catch (e) {
@@ -786,6 +798,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
+      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount } } : {}),
     });
   }
 };
@@ -913,7 +926,9 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
       if (e) __rpcLastError = (e && e.message) || String(e);
     };
     let __rpcWriteChain = Promise.resolve();
+    let __rpcWriteCount = 0;
     const __queueRpcWrite = (method, s) => {
+      __rpcWriteCount++;
       const __task = __rpcWriteChain
         .then(() => __supervisor[method](s))
         .catch((e) => __onRpcDrop(s.length, e));
@@ -1139,6 +1154,16 @@ interface FacetVfsState {
   reachableCount: number;
   /** Diagnostics: was the bundle truncated by the encoded-size cap? */
   truncated: boolean;
+  /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
+  cacheHit?: boolean;
+  /**
+   * Memoized `_serializeBundleForFacet(bundle)` — the base64+JSON facet
+   * source string. Cached alongside the bundle so a cache hit skips the
+   * (potentially multi-MB) re-serialization, not just the VFS walk.
+   */
+  serializedBundle?: string;
+  /** Memoized `JSON.stringify(manifest)`, cached for the same reason. */
+  serializedManifest?: string;
 }
 
 /**
@@ -1213,6 +1238,20 @@ function _serializeBundleForFacet(bundle: Record<string, string | Uint8Array>): 
   // source code is all text) the IIFE collapses to a JSON literal,
   // costing only the IIFE wrapper bytes (~30) per facet boot.
   return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}return __b;})()`;
+}
+
+/**
+ * FNV-1a 32-bit hash, returned as an unsigned hex string. Used only to
+ * fold the (possibly large) entry code into a compact, collision-resistant
+ * prefetch-bundle cache-key component — not a security primitive.
+ */
+function _fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16);
 }
 
 const MANIFEST_MAX_DEPTH = 12;
@@ -2479,6 +2518,28 @@ export class FacetManager {
   private sqliteWasmBytes: ArrayBuffer | null = null;
   private sqliteWasmBytesPromise: Promise<ArrayBuffer> | null = null;
 
+  /**
+   * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
+   * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+   * exec — dominant wall-clock on large node_modules. This memoizes the
+   * result (including the serialized facet bundle + manifest) keyed on
+   * (bundleProfile, cwd, scriptPath, entryCode identity).
+   *
+   * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
+   * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
+   * pulls absolute-path literals like /tmp/x; buildManifest walks from '/'),
+   * so a cwd-scoped subtree revision cannot guarantee invalidation. The
+   * global revision bumps on ANY write, so the cache invalidates on every
+   * mutation that could change any file the bundle reads — provably
+   * conservative. Bounded to a small LRU; the working set per session is a
+   * handful of bins (tsc/vite/eslint) plus repeated `node -e` shapes.
+   */
+  private prefetchBundleCache = new Map<string, {
+    revision: number;
+    vfsState: FacetVfsState;
+  }>();
+  private static readonly PREFETCH_CACHE_MAX = 16;
+
   /** Memoized opencode ESM bundle source (fetched once per isolate). */
   private opencodeBundle: string | null = null;
   private opencodeBundlePromise: Promise<string> | null = null;
@@ -2513,6 +2574,50 @@ export class FacetManager {
    * for the user-shell `node` runtime; sharing avoids paying init twice.
    */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
+
+  /**
+   * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
+   * (same key AND the VFS hasn't been mutated since) it returns the memoized
+   * bundle + pre-serialized facet source, skipping the full VFS walk +
+   * esbuild pass + re-serialization. See `prefetchBundleCache` for the
+   * correctness argument behind the conservative global-revision watermark.
+   *
+   * The serialized bundle/manifest are computed once on the miss path (the
+   * caller would build them anyway via generateEntrypointCode) and stored so
+   * subsequent hits skip re-serialization too.
+   */
+  private async _buildPrefetchBundleCached(
+    vfs: SqliteVFS,
+    scriptPath: string | undefined,
+    cwd: string,
+    entryCode: string,
+    bundleProfile?: FacetBundleProfile,
+  ): Promise<FacetVfsState> {
+    const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
+    const key = `${profile} ${cwd} ${scriptPath ?? ''} ${_fnv1a(entryCode)}`;
+    const revision = vfs.revision();
+    const cached = this.prefetchBundleCache.get(key);
+    if (cached && cached.revision === revision) {
+      // Refresh LRU recency.
+      this.prefetchBundleCache.delete(key);
+      this.prefetchBundleCache.set(key, cached);
+      return { ...cached.vfsState, cacheHit: true };
+    }
+
+    const vfsState = await buildPrefetchBundle(
+      vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile,
+    );
+    vfsState.serializedBundle = _serializeBundleForFacet(vfsState.bundle);
+    vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
+    vfsState.cacheHit = false;
+
+    this.prefetchBundleCache.set(key, { revision, vfsState });
+    if (this.prefetchBundleCache.size > FacetManager.PREFETCH_CACHE_MAX) {
+      const oldest = this.prefetchBundleCache.keys().next().value;
+      if (oldest !== undefined) this.prefetchBundleCache.delete(oldest);
+    }
+    return vfsState;
+  }
 
   /**
    * Build the Worker Loader module-map fragment that carries the sql.js
@@ -2696,21 +2801,24 @@ export class FacetManager {
     if (this.vfs && !this.esbuild) {
       try { this.esbuild = new EsbuildService(this.vfs as any); } catch { this.esbuild = null; }
     }
+    const diagOn = isExecDiagEnabled();
+    const __bundleStart = diagOn ? Date.now() : 0;
     const vfsState: FacetVfsState = this.vfs
-      ? await buildPrefetchBundle(
+      ? await this._buildPrefetchBundleCached(
           this.vfs,
           opts.filename,
           opts.cwd || '/home/user',
           code,
-          this.esbuild || undefined,
           opts.bundleProfile,
         )
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+    const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
+    const diagSink = diagOn ? { loadMs: 0, runMs: 0, moduleMapBytes: 0 } : undefined;
 
     const abortController = new AbortController();
     try {
       const result = await this._execWithTimeout(
-        this._execViaLoader(code, opts, entry, vfsState, abortController.signal),
+        this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink),
         entry,
         () => abortController.abort(),
       );
@@ -2720,6 +2828,20 @@ export class FacetManager {
           entry.pid, result.exitCode, 'runtime-worker',
           result.stderr || `exit ${result.exitCode}`,
         );
+      }
+      if (diagOn && diagSink) {
+        recordExecTelemetry({
+          command,
+          bundleMs,
+          loadMs: diagSink.loadMs,
+          runMs: diagSink.runMs,
+          drainPasses: result.diag?.drainPasses ?? 0,
+          moduleMapBytes: diagSink.moduleMapBytes,
+          rpcWrites: result.diag?.rpcWrites ?? 0,
+          cacheHit: vfsState.cacheHit ?? false,
+          exitCode: result.exitCode,
+          at: Date.now(),
+        });
       }
       this._flushVfsWrites(result);
       return result;
@@ -2804,6 +2926,7 @@ export class FacetManager {
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     signal: AbortSignal,
+    diagSink?: { loadMs: number; runMs: number; moduleMapBytes: number },
   ): Promise<FacetExecResult> {
     const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
     const sqliteModules = await this.sqliteModuleEntry(usesSqlite);
@@ -2823,11 +2946,20 @@ export class FacetManager {
       dirname: opts.dirname || '/home/user',
       stdin: opts.stdin || '',
       captureOutput: !!opts.captureOutput,
+      ...(diagSink ? { diag: true } : {}),
     });
+
+    if (diagSink) {
+      diagSink.moduleMapBytes = new TextEncoder().encode(workerCode).length;
+      for (const m of Object.values(sqliteModules)) {
+        diagSink.moduleMapBytes += m.wasm.byteLength;
+      }
+    }
 
     let worker: LoadedWorkerStub | undefined;
     let entrypoint: LoadedWorkerEntrypointStub | undefined;
     try {
+      const __loadStart = diagSink ? Date.now() : 0;
       worker = this.env.LOADER.load({
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
@@ -2840,13 +2972,17 @@ export class FacetManager {
       if (typeof entrypoint.fetch !== 'function') {
         throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
       }
+      if (diagSink) diagSink.loadMs = Date.now() - __loadStart;
+      const __runStart = diagSink ? Date.now() : 0;
       const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', {
         method: 'POST',
         body,
         signal,
       }));
       try {
-        return await response.json() as FacetExecResult;
+        const result = await response.json() as FacetExecResult;
+        if (diagSink) diagSink.runMs = Date.now() - __runStart;
+        return result;
       } finally {
         disposeRpcResource(response);
       }

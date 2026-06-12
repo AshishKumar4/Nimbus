@@ -1132,6 +1132,15 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     // POST /reset zeros the counters in-place for fresh measurement
     // windows; the dual-endpoint pattern mirrors /api/_test/* reset
     // helpers used by the recovery-event probe.
+    if (url.pathname === '/api/_diag/exec' && request.method === 'GET') {
+      const { readExecTelemetry } = await import('../facets/exec-telemetry.js');
+      return Response.json({ records: readExecTelemetry() });
+    }
+    if (url.pathname === '/api/_diag/exec/reset' && request.method === 'POST') {
+      const { resetExecTelemetry } = await import('../facets/exec-telemetry.js');
+      resetExecTelemetry();
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === '/api/_diag/cache' && request.method === 'GET') {
       const { snapshot } = await import('../_shared/cache-stats.js');
       const snap = snapshot();
