@@ -15,7 +15,7 @@
  *
  * Two buckets, two key shapes:
  *   tarball:    `${R2_CACHE_PREFIX}/t/<name>/<version>.tgz`
- *   packument:  `${R2_CACHE_PREFIX}/p/<name>.json`
+ *   packument:  `${R2_CACHE_PREFIX}/pc/<name>.json  (corgi/abbreviated format)`
  *
  * Why two buckets:
  *   Tarballs are immutable (npm name@version is content-fixed since 2018).
@@ -166,7 +166,7 @@ function packumentL2Key(name: string): Request {
   // encodeURIComponent on the name so '@scope/pkg' becomes a single
   // path segment — matches our R2 key shape's `${name}.json` (R2 keys
   // allow any UTF-8, but URL paths need encoding).
-  return new Request(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/p/${encodeURIComponent(name)}.json`);
+  return new Request(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/pc/${encodeURIComponent(name)}.json`);
 }
 
 /** Build the L2 cache-key Request for a tarball name+version. */
@@ -247,7 +247,7 @@ export function tarballKey(name: string, version: string): string {
 
 /** Compose the R2 object key for a packument. */
 export function packumentKey(name: string): string {
-  return `${R2_CACHE_PREFIX}/p/${name}.json`;
+  return `${R2_CACHE_PREFIX}/pc/${name}.json`;
 }
 
 // ── Client ──────────────────────────────────────────────────────────────
