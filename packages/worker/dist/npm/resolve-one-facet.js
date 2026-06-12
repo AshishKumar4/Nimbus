@@ -330,7 +330,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
                 const t = setTimeout(() => ctl.abort(), fetchTimeoutMs);
                 let resp;
                 try {
-                    resp = await fetch(url, { headers: { Accept: 'application/json' }, signal: ctl.signal });
+                    // Corgi (abbreviated) packument — up to ~17x smaller than the full
+                    // doc (vite: 38MB→2.2MB). Carries every field the resolver reads
+                    // (dependencies/peer/peerMeta/optional/dist/bin/os/cpu/libc). It omits
+                    // `exports`; that is read from the tarball's package.json in the VFS at
+                    // require time, where the resolver's packument copy is `?? null` anyway.
+                    resp = await fetch(url, { headers: { Accept: 'application/vnd.npm.install-v1+json' }, signal: ctl.signal });
                 }
                 finally {
                     clearTimeout(t);

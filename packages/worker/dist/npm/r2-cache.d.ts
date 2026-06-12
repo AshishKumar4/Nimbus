@@ -15,7 +15,7 @@
  *
  * Two buckets, two key shapes:
  *   tarball:    `${R2_CACHE_PREFIX}/t/<name>/<version>.tgz`
- *   packument:  `${R2_CACHE_PREFIX}/p/<name>.json`
+ *   packument:  `${R2_CACHE_PREFIX}/pc/<name>.json  (corgi/abbreviated format)`
  *
  * Why two buckets:
  *   Tarballs are immutable (npm name@version is content-fixed since 2018).

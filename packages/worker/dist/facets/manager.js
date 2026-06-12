@@ -28,6 +28,8 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { fetchOpencodeBundle, fetchOpencodeTreeSitterWasm } from '../runtime/opencode-artifact.js';
+import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
+import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS } from '../opencode-artifact.generated.js';
 import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
@@ -2322,6 +2324,14 @@ export class FacetManager {
      */
     opencodeTreeSitterBytes = null;
     opencodeTreeSitterBytesPromise = null;
+    /**
+     * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
+     * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
+     * against OPENTUI_WASM_SHA256 in fetchOpenTUIWasmBytes); each facet config
+     * gets a fresh `{ wasm }` entry over the shared buffer.
+     */
+    openTuiWasmBytes = null;
+    openTuiWasmBytesPromise = null;
     constructor(ctx, env, processes, portRegistry, hooks = {}) {
         this.ctx = ctx;
         this.env = parseFacetManagerEnv(env);
@@ -2405,6 +2415,34 @@ export class FacetManager {
             }
         }
         return Object.fromEntries(Object.entries(this.opencodeTreeSitterBytes).map(([file, bytes]) => [file, { wasm: bytes }]));
+    }
+    /**
+     * Build the Worker Loader module-map fragment carrying the staged OpenTUI
+     * wasm32-wasi reactor into the opencode facet as a pre-compiled
+     * WebAssembly.Module under OPENTUI_WASM_MODULE_NAME. The runner instantiates
+     * it via OpenTUIWasmBackend (the patched @opentui/core seams resolve their
+     * render library from the parked backend) — request-time
+     * WebAssembly.compile(bytes) is blocked in facets.
+     */
+    async openTuiModuleEntry() {
+        if (!this.env.ASSETS) {
+            throw new Error('opencode OpenTUI render backend requires an env.ASSETS binding; this ' +
+                'Nimbus deployment is missing the static-assets binding');
+        }
+        if (!this.openTuiWasmBytes) {
+            if (!this.openTuiWasmBytesPromise) {
+                const assets = this.env.ASSETS;
+                this.openTuiWasmBytesPromise = fetchOpenTUIWasmBytes({ ASSETS: assets });
+            }
+            try {
+                this.openTuiWasmBytes = await this.openTuiWasmBytesPromise;
+            }
+            catch (e) {
+                this.openTuiWasmBytesPromise = null;
+                throw e;
+            }
+        }
+        return { [OPENTUI_WASM_MODULE_NAME]: { wasm: this.openTuiWasmBytes } };
     }
     trackProcessRpcResources(pid, resources, options = {}) {
         this.releaseProcessRpcResources(pid);
@@ -2621,8 +2659,28 @@ export class FacetManager {
         }
         const bundle = await this.opencodeBundleSource();
         const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
+        const attachedTty = opts.attachedTty === true;
         const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd);
         const pid = entry.pid;
+        if (attachedTty) {
+            this.processes.setLongRunning(pid);
+            this.processes.setAttachedTty(pid);
+            this.processes.openInput(pid);
+        }
+        // attachedTty: opencode's shim TTY (node-shims.ts) keys raw-mode stdin and
+        // columns/rows off these env vars, exactly like the long-running node path.
+        const runnerEnv = attachedTty
+            ? {
+                ...opts.env,
+                NIMBUS_ATTACHED_TTY: '1',
+                NIMBUS_CP_CHILD_PID: String(pid),
+                TERM: opts.env.TERM || 'xterm-256color',
+                COLORTERM: opts.env.COLORTERM || 'truecolor',
+                COLUMNS: opts.env.COLUMNS || '80',
+                LINES: opts.env.LINES || '24',
+                FORCE_COLOR: opts.env.FORCE_COLOR || '1',
+            }
+            : opts.env;
         // Snapshot the working tree so opencode's sync fs reads resolve, and a
         // directory manifest so readdir/stat are coherent. opencode creates its
         // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
@@ -2632,20 +2690,22 @@ export class FacetManager {
             : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
         const runnerCode = generateOpencodeRunnerCode({
             argv: opts.argv,
-            env: opts.env,
+            env: runnerEnv,
             cwd: opts.cwd,
             stdin: opts.stdin,
             vfsBundle: _serializeBundleForFacet(vfsState.bundle),
             vfsManifest: JSON.stringify(vfsState.manifest),
+            attachedTty,
         });
         // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
         // bridges it to the VFS-backed sql.js shim and statically imports the
         // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
         // The tree-sitter core + bash/powershell grammar wasm ride in the same
         // way for the bash tool's command parser.
-        const [sqliteModules, treeSitterModules] = await Promise.all([
+        const [sqliteModules, treeSitterModules, openTuiModules] = await Promise.all([
             this.sqliteModuleEntry(true),
             this.treeSitterModuleEntries(),
+            this.openTuiModuleEntry(),
         ]);
         // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
         // live SQLite VFS (same wiring as the standard one-shot facet path).
@@ -2653,22 +2713,27 @@ export class FacetManager {
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid } })
             : undefined;
+        const workerConfig = {
+            compatibilityDate: CF_COMPAT_DATE,
+            compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+            mainModule: 'runner.js',
+            modules: {
+                'runner.js': runnerCode,
+                [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
+                ...sqliteModules,
+                ...treeSitterModules,
+                ...openTuiModules,
+                ...opencodeBuiltinBridgeModules(),
+            },
+            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+        };
+        if (attachedTty) {
+            return await this._execStagedArtifactAttached(pid, command, workerConfig, supervisorBinding);
+        }
         let worker;
         let entrypoint;
         try {
-            worker = this.env.LOADER.load({
-                compatibilityDate: CF_COMPAT_DATE,
-                compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-                mainModule: 'runner.js',
-                modules: {
-                    'runner.js': runnerCode,
-                    [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
-                    ...sqliteModules,
-                    ...treeSitterModules,
-                    ...opencodeBuiltinBridgeModules(),
-                },
-                ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-            });
+            worker = this.env.LOADER.load(workerConfig);
             entrypoint = worker.getEntrypoint();
             if (typeof entrypoint.fetch !== 'function') {
                 throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
@@ -2692,6 +2757,53 @@ export class FacetManager {
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);
             disposeRpcResource(supervisorBinding);
+        }
+    }
+    /**
+     * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
+     * the runner's startProcess() — which holds the facet open via ctx.waitUntil
+     * while opencode's createCliRenderer loop streams ANSI frames to the terminal
+     * RPC and the live stdin pump feeds keystrokes — and returns immediately with
+     * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
+     * release on report-exit, the same contract the long-running node path uses.
+     */
+    async _execStagedArtifactAttached(pid, command, workerConfig, supervisorBinding) {
+        let worker;
+        let startStub;
+        try {
+            worker = this.env.LOADER.load(workerConfig);
+            startStub = worker.getEntrypoint();
+            if (typeof startStub.startProcess !== 'function') {
+                throw new Error('Nimbus: opencode runner entrypoint has no startProcess method');
+            }
+            this.trackProcessRpcResources(pid, [startStub, worker, supervisorBinding], { releaseOnReportExit: false });
+            const startPromise = startStub.startProcess();
+            this.ctx.waitUntil(startPromise
+                .catch((e) => {
+                const reason = 'opencode TUI process failed: ' + errorMessage(e);
+                try {
+                    this.processes.exit(pid, 1);
+                }
+                catch { }
+                try {
+                    this._w5RecordTermination(pid, 1, 'facet', reason);
+                }
+                catch { }
+                try {
+                    this.hooks.onExternalExit?.(pid, 1, reason);
+                }
+                catch { }
+            })
+                .finally(() => {
+                this.releaseProcessRpcResources(pid);
+            }));
+            return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+        }
+        catch (e) {
+            this.releaseProcessRpcResources(pid);
+            disposeRpcResources([startStub, worker, supervisorBinding]);
+            this.processes.exit(pid, 1);
+            throw e;
         }
     }
     async opencodeBundleSource() {

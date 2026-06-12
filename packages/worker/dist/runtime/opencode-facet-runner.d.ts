@@ -70,10 +70,23 @@ export interface OpencodeRunnerOptions {
     vfsBundle: string;
     /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
     vfsManifest: string;
+    /**
+     * Interactive TUI mode. When set, the runner drives opencode's real
+     * createCliRenderer path: stdout/stderr stream LIVE to the SUPERVISOR
+     * (→ xterm) instead of being buffered, the live stdin pump
+     * (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/resize/signal)
+     * feeds keystrokes, and the facet stays alive on workerCtx.waitUntil until
+     * opencode exits — the same attached-TTY substrate the long-running node
+     * path (manager.ts) uses, but over the ESM bundle. The env must carry
+     * NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY (node-shims.ts)
+     * activates its raw-mode stdin and columns/rows.
+     */
+    attachedTty?: boolean;
 }
 /**
  * Generate the mainModule that boots the opencode ESM bundle in a facet.
- * stdout/stderr are buffered and returned in the JSON response.
+ * One-shot mode buffers stdout/stderr into the JSON response; attachedTty mode
+ * streams them live and keeps the facet alive for the interactive TUI.
  */
 export declare function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string;
 //# sourceMappingURL=opencode-facet-runner.d.ts.map
