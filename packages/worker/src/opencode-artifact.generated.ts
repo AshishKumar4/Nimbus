@@ -19,10 +19,10 @@
  */
 
 export const OPENCODE_ARTIFACT_VERSION: string = "1.16.2";
-export const OPENCODE_ARTIFACT_BUILD_ID: string = "9c1e352d75978f55";
+export const OPENCODE_ARTIFACT_BUILD_ID: string = "cb5dfa3e0780fd88";
 export const OPENCODE_ARTIFACT_PRESENT: boolean = true;
 export const OPENCODE_ARTIFACT_ENTRY: string = "/_assets/opencode/1.16.2/index.js";
-export const OPENCODE_ARTIFACT_FILES: readonly string[] = ["bip-bop-01-ga21wr3r.mp3","bip-bop-03-kgfd4rq4.mp3","highlights-eq9cgrbb.scm","highlights-ghv9g403.scm","highlights-hk7bwhj4.scm","highlights-r812a2qc.scm","highlights-x6tmsnaa.scm","injections-73j83es3.scm","nope-03-2z8weyjw.mp3","photon_rs_bg-bq08arze.wasm","staplebops-06-rz29m246.mp3","tree-sitter-3jzf13jk.wasm","tree-sitter-bash-hq5s6fxb.wasm","tree-sitter-javascript-nd0q4pe9.wasm","tree-sitter-markdown-411r6y9b.wasm","tree-sitter-markdown_inline-j5349f42.wasm","tree-sitter-powershell-ryb2ffqs.wasm","tree-sitter-typescript-zxjzwt75.wasm","tree-sitter-zig-e78zbjpm.wasm","yup-01-30ecpeh9.mp3"];
+export const OPENCODE_ARTIFACT_FILES: readonly string[] = ["bip-bop-01-ga21wr3r.mp3","bip-bop-03-kgfd4rq4.mp3","highlights-eq9cgrbb.scm","highlights-ghv9g403.scm","highlights-hk7bwhj4.scm","highlights-r812a2qc.scm","highlights-x6tmsnaa.scm","injections-73j83es3.scm","nope-03-2z8weyjw.mp3","parser.worker.js","photon_rs_bg-bq08arze.wasm","staplebops-06-rz29m246.mp3","tree-sitter-3jzf13jk.wasm","tree-sitter-bash-hq5s6fxb.wasm","tree-sitter-javascript-nd0q4pe9.wasm","tree-sitter-markdown-411r6y9b.wasm","tree-sitter-markdown_inline-j5349f42.wasm","tree-sitter-powershell-ryb2ffqs.wasm","tree-sitter-typescript-zxjzwt75.wasm","tree-sitter-zig-e78zbjpm.wasm","worker.js","yup-01-30ecpeh9.mp3"];
 
 /**
  * Staged wasm sidecar filenames the facet runner pre-registers as
@@ -36,3 +36,16 @@ export interface OpencodeTreeSitterWasms {
   readonly powershell: string;
 }
 export const OPENCODE_TREE_SITTER_WASMS: OpencodeTreeSitterWasms | null = {"core":"tree-sitter-3jzf13jk.wasm","bash":"tree-sitter-bash-hq5s6fxb.wasm","powershell":"tree-sitter-powershell-ryb2ffqs.wasm"};
+
+/**
+ * Staged TUI worker bundle filenames. The opencode TUI client spawns its API
+ * server (`server`) and OpenTUI its syntax-highlight parser (`parser`) via
+ * `new Worker(...)`; the in-isolate Worker polyfill imports these from the
+ * facet module map (FacetManager.opencodeWorkerModuleEntries). Null when the
+ * artifact is unstaged or the workers were not built.
+ */
+export interface OpencodeTuiWorkers {
+  readonly server: string;
+  readonly parser: string;
+}
+export const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null = {"server":"worker.js","parser":"parser.worker.js"};

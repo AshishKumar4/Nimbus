@@ -34,4 +34,16 @@ export interface OpencodeTreeSitterWasms {
     readonly powershell: string;
 }
 export declare const OPENCODE_TREE_SITTER_WASMS: OpencodeTreeSitterWasms | null;
+/**
+ * Staged TUI worker bundle filenames. The opencode TUI client spawns its API
+ * server (`server`) and OpenTUI its syntax-highlight parser (`parser`) via
+ * `new Worker(...)`; the in-isolate Worker polyfill imports these from the
+ * facet module map (FacetManager.opencodeWorkerModuleEntries). Null when the
+ * artifact is unstaged or the workers were not built.
+ */
+export interface OpencodeTuiWorkers {
+    readonly server: string;
+    readonly parser: string;
+}
+export declare const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null;
 //# sourceMappingURL=opencode-artifact.generated.d.ts.map

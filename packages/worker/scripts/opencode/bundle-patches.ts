@@ -288,3 +288,23 @@ if (!globalThis.__nimbusOpenTUIBackend && !existsSync2(targetLibPath)) {
  * hash, so the build's onLoad hook matches by this content marker, not by name.
  */
 export const OPENTUI_FFI_CHUNK_MARKER = 'OpenTUI native FFI is not available'
+
+// @opentui/core's parser.worker.js (a Bun-prebuilt `@bun` file) opens with a
+// worker-scope prelude `var self = globalThis;` and drives its message channel
+// through that local `self` (self.onmessage / self.postMessage). On a real
+// platform `self` is the DedicatedWorkerGlobalScope; on Nimbus the worker runs
+// in the client's facet isolate, so it must use the per-worker context the
+// Worker polyfill claims — NOT the shared globalThis (which would collide with
+// the opencode API-server worker). The build-time `define: { self }` can't
+// reach this ref because the `var self` local shadows the global identifier, so
+// patch the initializer to claim the context when the polyfill is active. Inert
+// under a normal Bun run (no __nimbusWorkerClaim → falls back to globalThis).
+export function nimbusPatchParserWorker(source: string, file: string): string {
+  return replaceOnce(
+    source,
+    'var self = globalThis;',
+    'var self = globalThis.__nimbusWorkerClaim ? globalThis.__nimbusWorkerClaim() : globalThis;',
+    'nimbus parser.worker self-scope patch',
+    file,
+  )
+}
