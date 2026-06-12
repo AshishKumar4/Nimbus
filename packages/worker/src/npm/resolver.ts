@@ -357,7 +357,7 @@ export async function resolvePackage(
     // slow failure doesn't eat the whole retry window. fetchFn is
     // forwarded so proxy-fetch paths keep working.
     const resp: Response = await retryableFetch(url, {
-      headers: { 'Accept': 'application/json' },
+      headers: { 'Accept': 'application/vnd.npm.install-v1+json' },
     }, {
       retries: DEFAULT_RETRIES,
       name: registryName,
