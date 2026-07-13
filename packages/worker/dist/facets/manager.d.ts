@@ -233,17 +233,6 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
-    /** Memoized opencode ESM bundle source (fetched once per isolate). */
-    private opencodeBundle;
-    private opencodeBundlePromise;
-    /**
-     * Memoized tree-sitter wasm sidecar bytes (core + bash + powershell
-     * grammars) for the opencode facet, keyed by staged filename. Fetched once
-     * per isolate from env.ASSETS; each facet config gets fresh `{ wasm }`
-     * entries over the shared buffers.
-     */
-    private opencodeTreeSitterBytes;
-    private opencodeTreeSitterBytesPromise;
     /**
      * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
      * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
@@ -252,14 +241,6 @@ export declare class FacetManager {
      */
     private openTuiWasmBytes;
     private openTuiWasmBytesPromise;
-    /**
-     * Staged opencode TUI worker bundle sources (the API server worker.js + the
-     * OpenTUI parser.worker.js), keyed by module-map specifier. Fetched once per
-     * isolate from env.ASSETS; the interactive-TUI facet config carries them so
-     * the in-isolate Worker polyfill can import them.
-     */
-    private opencodeTuiWorkerSources;
-    private opencodeTuiWorkerSourcesPromise;
     /**
      * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
      * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
@@ -313,6 +294,12 @@ export declare class FacetManager {
      * hitting the blocked request-time WebAssembly.compile path.
      */
     private treeSitterModuleEntries;
+    /**
+     * Build the Worker Loader module-map fragment carrying the split-build
+     * shared chunks (chunk-<hash>.js) both opencode entry bundles import. One
+     * pack asset fetch (L2-cached), expanded into per-chunk ESM module entries.
+     */
+    private opencodeChunkModuleEntries;
     /**
      * Build the Worker Loader module-map fragment carrying the staged OpenTUI
      * wasm32-wasi reactor into the opencode facet as a pre-compiled

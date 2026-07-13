@@ -165,6 +165,13 @@ export class SessionProcessSupervisor {
         this.logs.setPersist(adapter);
         this.logActivity = onActivity;
     }
+    /**
+     * Install the instance-level chunk/exit broadcast (the hibernation-safe
+     * process-terminal WS fan-out — see ProcessLogStore.setBroadcast).
+     */
+    setLogBroadcast(onChunk, onExit) {
+        this.logs.setBroadcast(onChunk, onExit);
+    }
     flushLogs() {
         this.logs.flush();
     }

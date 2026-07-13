@@ -84,3 +84,22 @@ export async function fetchOpencodeWorkerSource(env, file) {
     const ab = await fetchAsset(env, file);
     return new TextDecoder().decode(ab);
 }
+/**
+ * Fetch and expand the split-build chunk pack (chunks.json): one JSON asset
+ * mapping every `chunk-<hash>.js` module name to its ESM source. index.js and
+ * worker.js import these shared chunks; the facet module map carries each as
+ * its own module.
+ */
+export async function fetchOpencodeChunkSources(env, packFile) {
+    const ab = await fetchAsset(env, packFile);
+    const parsed = JSON.parse(new TextDecoder().decode(ab));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`opencode chunk pack ${packFile} is not a name→source object`);
+    }
+    for (const [name, source] of Object.entries(parsed)) {
+        if (typeof source !== 'string') {
+            throw new Error(`opencode chunk pack ${packFile} entry ${name} is not a source string`);
+        }
+    }
+    return parsed;
+}

@@ -116,14 +116,16 @@ const BUILTIN_BRIDGES = [
     { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
 ];
 // node:process public surface opencode/OpenTUI consume by name. The bundle uses
-// both bare global `process` and `import … from "node:process"` (default +
-// `{ stdin, stdout }`). For the interactive TUI, both MUST resolve to the Nimbus
-// shim process — whose stdin carries the raw-mode live-input pump, whose
-// stdout/stderr stream live to the terminal, and whose SIGWINCH/columns/rows
-// drive OpenTUI's resize — not workerd's nodejs_compat process. This bridge
-// covers the `node:process` imports; the boot block sets globalThis.process for
-// the bare refs. Only wired in attachedTty mode (the one-shot path keeps
-// workerd's proven process).
+// bare global `process`, `import … from "node:process"`, AND runtime
+// `require("process")` (split-build chunks force some CJS dependencies, e.g.
+// OpenTelemetry's resource detectors, to evaluate their requires at chunk
+// init). workerd aliases the bare require to `node:process` but provides NO
+// such module for require — so the facet module map must carry the bridge in
+// BOTH modes or any chunk that requires process dies with `No such module
+// "node:process"`. The bridge reads `globalThis.process`, which is
+// mode-correct by construction: the attached-TTY boot block parks the Nimbus
+// shim process there (raw-mode stdin pump, live stdout, SIGWINCH) before the
+// bundle links, and the one-shot path keeps workerd's process.
 const PROCESS_NAMES = [
     'argv', 'argv0', 'env', 'platform', 'arch', 'version', 'versions', 'pid',
     'ppid', 'title', 'execPath', 'execArgv', 'stdin', 'stdout', 'stderr',
@@ -133,27 +135,18 @@ const PROCESS_NAMES = [
     'eventNames', 'setMaxListeners', 'getMaxListeners', 'umask', 'getuid',
     'getgid', 'features', 'config', 'release', 'binding',
 ];
-const PROCESS_BRIDGE = {
-    specifier: 'node:process',
-    builtin: 'process',
-    names: PROCESS_NAMES,
-};
 // node:console. workerd's node:console does not implement the `Console`
 // constructor (it throws "The Console method is not implemented"); OpenTUI's
 // console capture does `new Console({ stdout, stderr, ... })` during renderer
-// setup, so the TUI aborts before its first frame. Bridge node:console to the
-// shim's console (which provides a working Console writing to the supplied
-// streams). attachedTty-only — the one-shot path never sets up the TUI console.
+// setup, so the TUI aborts before its first frame. The attached path bridges
+// node:console to the shim's console (which provides a working Console writing
+// to the supplied streams); the one-shot path bridges the global console so
+// runtime `require("console")` resolves.
 const CONSOLE_NAMES = [
     'Console', 'log', 'info', 'debug', 'dir', 'error', 'warn', 'trace', 'assert',
     'table', 'group', 'groupEnd', 'time', 'timeEnd', 'timeLog', 'clear', 'count',
     'countReset',
 ];
-const CONSOLE_BRIDGE = {
-    specifier: 'node:console',
-    builtin: 'console',
-    names: CONSOLE_NAMES,
-};
 /**
  * One bridge module: re-export a VFS-backed shim builtin (parked on
  * globalThis by the runner at module-init, BEFORE any bridge evaluates) as a
@@ -170,18 +163,39 @@ ${names}
 `;
 }
 /**
+ * A bridge module that re-exports a GLOBAL (process, console) as a proper ESM
+ * module. Evaluates when the opencode bundle links — after the runner's boot
+ * block, so `globalThis.process` is already the mode-correct object (the shim
+ * process in attached-TTY mode, workerd's process one-shot).
+ */
+function generateGlobalBridge(globalName, names) {
+    const exports = names
+        .map((n) => `export const ${n} = __m[${JSON.stringify(n)}];`)
+        .join('\n');
+    return `
+const __m = globalThis.${globalName};
+export default __m;
+${exports}
+`;
+}
+/**
  * Module-map entries for the VFS-backed node builtin bridges. The Worker
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the
  * explicit `{ js }` content form.
  */
 export function opencodeBuiltinBridgeModules(attachedTty = false) {
     const out = {};
-    const bridges = attachedTty
-        ? [...BUILTIN_BRIDGES, PROCESS_BRIDGE, CONSOLE_BRIDGE]
-        : BUILTIN_BRIDGES;
-    for (const bridge of bridges) {
+    for (const bridge of BUILTIN_BRIDGES) {
         out[bridge.specifier] = { js: generateBuiltinBridge(bridge) };
     }
+    // Both modes: workerd resolves bare `require("process")` to node:process
+    // but ships no such require-able module, so the map must provide it.
+    out['node:process'] = { js: generateGlobalBridge('process', PROCESS_NAMES) };
+    // console: the attached TUI needs the shim's working `Console` class; the
+    // one-shot path re-exports the global so runtime requires resolve.
+    out['node:console'] = attachedTty
+        ? { js: generateBuiltinBridge({ specifier: 'node:console', builtin: 'console', names: CONSOLE_NAMES }) }
+        : { js: generateGlobalBridge('console', CONSOLE_NAMES) };
     return out;
 }
 /** The Bun-global polyfill, as a facet module-init block. */
@@ -604,15 +618,27 @@ const __ocAttachedTty = ${opts.attachedTty ? 'true' : 'false'};
 
 // Live-stream RPC chain for the attached-TTY TUI: serialize SUPERVISOR.stdout/
 // stderr writes so the ANSI frames reach xterm in order (same ordering the
-// long-running node path uses).
+// long-running node path uses). Settled write tasks are dropped from the
+// pending set — a resident TUI writes frames for hours, and retaining every
+// settled promise (or every frame byte) would grow without bound inside a
+// memory-limited facet.
 let __rpcWriteChain = Promise.resolve();
+const __pendingWrites = new Set();
 const __queueRpcWrite = (method, s) => {
   if (!__supervisor) return;
   const __task = __rpcWriteChain
     .then(() => __supervisor[method](s))
     .catch(() => {});
   __rpcWriteChain = __task.then(() => {}, () => {});
-  __pendingIO.push(__task);
+  __pendingWrites.add(__task);
+  __task.finally(() => { __pendingWrites.delete(__task); });
+};
+// Bounded tail mirror for the attached path: keeps enough context for a
+// teardown error tail without retaining the whole frame stream.
+const __ocTailCap = 64 * 1024;
+const __ocTail = (buf, s) => {
+  const merged = buf + s;
+  return merged.length > __ocTailCap ? merged.slice(merged.length - __ocTailCap) : merged;
 };
 
 // process state seeding (argv/env/cwd) + stdout/stderr/exit capture.
@@ -633,11 +659,12 @@ if (!__ocAttachedTty) {
 }
 if (__ocAttachedTty) {
   // Live TUI: span-feed ANSI flows process.stdout.write → SUPERVISOR.stdout →
-  // xterm. Keep the buffer mirror so a teardown error tail can still surface.
+  // xterm. Keep a BOUNDED tail mirror so a teardown error tail can still
+  // surface — the full stream would grow without bound over a TUI session.
   process.stdout.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
     const s = String(d);
-    stdout += s;
+    stdout = __ocTail(stdout, s);
     __queueRpcWrite("stdout", s);
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
@@ -645,7 +672,7 @@ if (__ocAttachedTty) {
   process.stderr.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
     const s = String(d);
-    stderr += s;
+    stderr = __ocTail(stderr, s);
     __queueRpcWrite("stderr", s);
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
@@ -669,8 +696,8 @@ const __ocFmt = (...a) => a.map((x) => {
   try { return JSON.stringify(x); } catch { return String(x); }
 }).join(" ");
 if (__ocAttachedTty) {
-  console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
-  console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
+  console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout = __ocTail(stdout, s); __queueRpcWrite("stdout", s); };
+  console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr = __ocTail(stderr, s); __queueRpcWrite("stderr", s); };
 } else {
   console.log = (...a) => { stdout += __ocFmt(...a) + "\\n"; };
   console.error = (...a) => { stderr += __ocFmt(...a) + "\\n"; };
@@ -690,8 +717,11 @@ async function __drainPendingIO(maxPasses = 12) {
   let __settledIO = 0;
   for (let __pass = 0; __pass < maxPasses; __pass++) {
     await new Promise((r) => setTimeout(r, 0));
-    if (__pendingIO.length <= __settledIO) break;
-    const __slice = __pendingIO.slice(__settledIO);
+    // In-flight live writes (attached path) drain alongside the one-shot
+    // pendingIO ledger; settled writes have already removed themselves.
+    const __live = [...__pendingWrites];
+    if (__pendingIO.length <= __settledIO && __live.length === 0) break;
+    const __slice = __pendingIO.slice(__settledIO).concat(__live);
     __settledIO = __pendingIO.length;
     await Promise.allSettled(__slice);
   }
@@ -744,8 +774,17 @@ async function __ocRunAttachedTui() {
 class NimbusOpencodeProcess extends __NimbusWorkerEntrypoint {
   async startProcess() {
     __supervisor = (this.env && this.env.SUPERVISOR) || null;
-    // Hold the facet open for the interactive TUI's lifetime.
-    this.ctx.waitUntil(__ocRunAttachedTui());
+    // Run the TUI and hold THIS RPC open until it exits — the same
+    // lifecycle contract the long-running node path uses (its
+    // startProcess awaits the attached lifecycle). The open call keeps
+    // the caller's stubs live for the resident process's lifetime, and a
+    // facet death (e.g. an OOM kill) rejects it so the supervisor can
+    // report the real reason; resolving immediately instead released the
+    // stubs ~3s after spawn and turned any facet death into a silent,
+    // unattributed stall (zero frames, nothing in any log).
+    const __lifecycle = __ocRunAttachedTui();
+    this.ctx.waitUntil(__lifecycle);
+    await __lifecycle;
     return { ok: true };
   }
   async fetch(request) {

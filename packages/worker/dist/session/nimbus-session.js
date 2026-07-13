@@ -33,7 +33,7 @@ import { seedProject } from '../vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX } from './keys.js';
 import { dec } from '../_shared/bytes.js';
-import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
+import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState, } from './replica-routes.js';
 // S5: storage-key constants moved to ./nimbus-session-keys.ts; consumed by
@@ -247,7 +247,7 @@ export class NimbusSession extends CloudflareDurableObject {
      *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
      *  prevented hibernation per CF DO docs). The alarm itself lives in
      *  DO storage at key `w1_next_alarm_reasons`. */
-    processLogsJanitorWired = false;
+    _w1JanitorArmed = false;
     // ── W9 — hibernation persistence + auto-response config ───────────────
     /**
      * Result of `configureWsHibernation` at constructor time. Exposed via
@@ -363,12 +363,11 @@ export class NimbusSession extends CloudflareDurableObject {
         if (ctxExports)
             setCtxExports(ctxExports);
         this.portRegistry = new PortRegistry();
-        // W1: log-janitor moved to alarm-driven scheduling (was a
-        // self-renewing setTimeout chain at rpc.ts:_ensureLogJanitor;
-        // per CF DO docs that prevented hibernation, billing duration
-        // continuously). The delegator below forwards `this.ctx` so
-        // scheduleAlarm can write to ctx.storage.
-        this._ensureLogJanitor();
+        // W1: the log-janitor alarm is armed on log ACTIVITY (see
+        // hibernation.ts ensureLogJanitor), NOT here. Arming it in the
+        // constructor made every boot re-arm the cycle — including boots
+        // caused by a destroyed session's own leftover alarm — so every
+        // session DO ever created kept firing an alarm every ~60s forever.
         // ── W9 (CF research §C.3 + §C.4) ──────────────────────────────────
         //
         // Configure WS auto-response (`ping`/`pong`) so vite HMR + xterm
@@ -388,6 +387,11 @@ export class NimbusSession extends CloudflareDurableObject {
         // happens here so any subsequent call (including initSession) sees
         // the adapter in place.
         this._w9WireProcessLogPersist();
+        // Wire the attachment-driven process-terminal WS fan-out. Must run on
+        // EVERY instance boot: accepted process-log sockets survive instance
+        // resets/hibernation, but any per-instance subscription state does not
+        // (see wireProcessLogSocketBroadcast).
+        wireProcessLogSocketBroadcast(this.processes, this.ctx);
         // ── W12 — Lever 12 / G3 / H1 — DO read replicas (best-effort).
         //
         // Constructor runs on EVERY isolate (primary + replica alike). Replicas
@@ -536,7 +540,6 @@ export class NimbusSession extends CloudflareDurableObject {
     _emitExitDump(pid, code) { return _rpc._emitExitDump(this, pid, code); }
     _emitShellExecDone(pid, cmd, code, durationMs) { return _rpc._emitShellExecDone(this, pid, cmd, code, durationMs); }
     _reportExternalExit(pid, code, reason) { return _rpc._reportExternalExit(this, pid, code, reason); }
-    _ensureLogJanitor() { return _rpc._ensureLogJanitor(this, this.ctx); }
     // Misc supervisor RPC
     async _rpcPrefetch(cwd, entryCode) { return _rpc._rpcPrefetch(this, cwd, entryCode); }
     async _rpcRegisterPort(pid, port) { return _rpc._rpcRegisterPort(this, pid, port); }

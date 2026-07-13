@@ -68,6 +68,16 @@ export declare function notifyTerminalEvent(terminal: TerminalLike | null, event
  *     client disconnects abruptly.
  */
 export declare function handleLogsWebSocketRequest(request: Request, pid: number, deps: LogsWebSocketDeps): Response;
+/**
+ * Install the instance-level fan-out from the process log store to every
+ * accepted process-terminal WebSocket. Called once per DO instance (from
+ * the NimbusSession constructor), so sockets accepted by a PREVIOUS
+ * instance — which survive resets/hibernation via the hibernation API —
+ * keep streaming after the in-memory world is rebuilt.
+ */
+export declare function wireProcessLogSocketBroadcast(processes: SessionProcessSupervisor, ctx: {
+    getWebSockets?(tag?: string): WebSocket[];
+}): void;
 export declare function handleProcessesListRequest(processes: SessionProcessSupervisor): Response;
 /**
  * Utility: does this pathname match `/api/logs/<pid>`? Returns the pid

@@ -186,33 +186,11 @@ export declare function _emitShellExecDone(self: RpcHost, pid: number, cmd: stri
  */
 export declare function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void;
 /**
- * W1: bootstrap the log-janitor alarm cycle.
- *
- * Schedules an alarm for `Date.now() + 60_000` with reason
- * `'log-janitor'`. When it fires, `dispatchAlarm` (in
- * ./hibernation.ts) runs `processes.dropLogsOlderThan(orphanCheck)` and
- * re-schedules the next 60s alarm — fully replacing the setTimeout
- * chain we used to run.
- *
- * Why alarm-based instead of setTimeout: per Cloudflare DO docs
- * (https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/),
- * a recurring `setTimeout`/`setInterval` PREVENTS the DO from
- * hibernating. That left every Nimbus session billed for duration
- * continuously while in memory. Alarms persist across hibernation;
- * the DO sleeps between fires, dropping per-session billable
- * duration by ~99% during idle windows.
- *
- * Idempotent: guarded by `self.processLogsJanitorWired`. Safe to
- * call repeatedly. Fail-soft: scheduleAlarm warn+returns on
- * runtimes without setAlarm (older wrangler-dev).
- */
-export declare function _ensureLogJanitor(self: RpcHost, ctx: any): void;
-/**
- * W1: orphan-pid predicate exposed for the alarm dispatcher. A pid is
- * "orphaned" if the process table has no record of it — either reap()
- * already removed it, or it never fully registered. Long-running
- * facets that hang and get GC'd fall into this category.
- */
+* W1: orphan-pid predicate exposed for the alarm dispatcher. A pid is
+* "orphaned" if the process table has no record of it — either reap()
+* already removed it, or it never fully registered. Long-running
+* facets that hang and get GC'd fall into this category.
+*/
 export declare function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => boolean;
 export declare function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>>;
 export declare function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void>;

@@ -14,8 +14,6 @@
  * The ring buffer keeps state for 10 min post-exit so a tab that's still
  * open after a crash continues to show the final output.
  */
-import { parseProcessLogClientFrame } from './process-io-protocol.js';
-import { applyProcessClientFrame } from './process-input-routing.js';
 /**
  * Send a structured JSON event to the main terminal WebSocket, if one is
  * attached. Used for out-of-band process lifecycle notifications
@@ -87,12 +85,16 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     // banner users saw on EVERY short-lived process.
     const pidKnown = processes.hasLogs(pid) || !!processes.get(pid);
     if (!pidKnown) {
+        // Informational only — do NOT close. A pid can be legitimately
+        // unknown to THIS instance: the spawn record is in-memory, so a DO
+        // instance reset between the spawn and this connect loses it while
+        // the process facet keeps running. The socket stays subscribed via
+        // the attachment-driven broadcast below, so output flows the moment
+        // the process writes. (A typo'd pid gets a silent open socket —
+        // the same tradeoff the racy spawn-vs-first-write window already
+        // chose.)
         try {
             server.send(JSON.stringify({ type: 'notfound', pid }));
-        }
-        catch { }
-        try {
-            server.close(1000, 'unknown pid');
         }
         catch { }
         return new Response(null, { status: 101, webSocket: client });
@@ -108,9 +110,9 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     try {
         server.send(JSON.stringify({ type: 'backlog', pid, chunks }));
     }
-    catch { /* socket died during handshake — fall through, cleanup below */ }
+    catch { /* socket died during handshake */ }
     // 2. If the process already exited, tell the client now. Idempotent
-    //    with the subscribeExit callback below (client tolerates duplicates).
+    //    with the exit broadcast (client tolerates duplicates).
     const existingExit = processes.getExit(pid);
     if (existingExit) {
         try {
@@ -123,74 +125,76 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
         }
         catch { }
     }
-    // 3. Live stream. `subscribe` fires synchronously from append — no
-    //    buffering fights with WebSocketTerminal's 5 ms flush timer.
-    let unsubChunk = null;
-    let unsubExit = null;
-    const cleanup = () => {
+    // 3. Live stream: no per-connection subscription. Chunks and exits
+    //    reach this socket via the instance-level broadcast installed by
+    //    wireProcessLogSocketBroadcast — routed by the serialized
+    //    attachment, which (unlike a subscription closure) survives DO
+    //    instance resets and hibernation. Client → server frames (input /
+    //    resize / signal) are routed the same attachment-driven way by the
+    //    class-level webSocketMessage handler (session/ws.ts).
+    return new Response(null, { status: 101, webSocket: client });
+}
+/**
+ * Install the instance-level fan-out from the process log store to every
+ * accepted process-terminal WebSocket. Called once per DO instance (from
+ * the NimbusSession constructor), so sockets accepted by a PREVIOUS
+ * instance — which survive resets/hibernation via the hibernation API —
+ * keep streaming after the in-memory world is rebuilt.
+ */
+export function wireProcessLogSocketBroadcast(processes, ctx) {
+    if (typeof ctx.getWebSockets !== 'function')
+        return;
+    const attachedPid = new WeakMap();
+    const socketsFor = (pid) => {
+        let sockets = [];
         try {
-            unsubChunk?.();
-        }
-        catch { }
-        try {
-            unsubExit?.();
-        }
-        catch { }
-        unsubChunk = null;
-        unsubExit = null;
-    };
-    unsubChunk = processes.subscribeLogs(pid, (c) => {
-        try {
-            server.send(JSON.stringify({
-                type: 'chunk',
-                stream: c.stream,
-                data: c.data,
-                ts: c.ts,
-                binary: c.binary,
-            }));
+            sockets = ctx.getWebSockets('process-logs');
         }
         catch {
-            // Socket is dead — cleanup so the subscriber set doesn't leak.
-            cleanup();
+            return [];
+        }
+        return sockets.filter((ws) => {
+            const cached = attachedPid.get(ws);
+            if (cached !== undefined)
+                return cached === pid;
+            let wsPid = -1;
+            try {
+                const deserialize = Reflect.get(ws, 'deserializeAttachment');
+                const att = typeof deserialize === 'function' ? deserialize.call(ws) : null;
+                if (att && typeof att.pid === 'number')
+                    wsPid = att.pid;
+            }
+            catch { /* unreadable attachment — treat as unmatched */ }
+            attachedPid.set(ws, wsPid);
+            return wsPid === pid;
+        });
+    };
+    processes.setLogBroadcast((pid, chunk) => {
+        for (const ws of socketsFor(pid)) {
+            try {
+                ws.send(JSON.stringify({
+                    type: 'chunk',
+                    stream: chunk.stream,
+                    data: chunk.data,
+                    ts: chunk.ts,
+                    binary: chunk.binary,
+                }));
+            }
+            catch { /* socket closed — hibernation API reaps it */ }
+        }
+    }, (pid, exit) => {
+        for (const ws of socketsFor(pid)) {
+            try {
+                ws.send(JSON.stringify({
+                    type: 'exit',
+                    code: exit.code,
+                    at: exit.at,
+                    reason: exit.reason,
+                }));
+            }
+            catch { /* socket closed */ }
         }
     });
-    unsubExit = processes.subscribeExit(pid, (e) => {
-        try {
-            server.send(JSON.stringify({
-                type: 'exit',
-                code: e.code,
-                at: e.at,
-                reason: e.reason,
-            }));
-        }
-        catch { }
-    });
-    server.addEventListener('close', cleanup);
-    server.addEventListener('error', cleanup);
-    server.addEventListener('message', async (event) => {
-        const entry = processes.get(pid);
-        if (!entry || entry.state !== 'running')
-            return;
-        const msg = parseProcessLogClientFrame(String(event.data ?? ''));
-        if (!msg)
-            return;
-        let ok = false;
-        try {
-            const result = await applyProcessClientFrame(processes, pid, msg);
-            ok = result.ok;
-        }
-        catch { }
-        try {
-            server.send(JSON.stringify({
-                type: 'stdin-ack',
-                pid,
-                ok,
-                action: msg.type,
-            }));
-        }
-        catch { }
-    });
-    return new Response(null, { status: 101, webSocket: client });
 }
 /**
  * GET /api/processes — lightweight listing for the tabs UI's hydrate-

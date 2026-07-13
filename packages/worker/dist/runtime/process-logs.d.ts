@@ -178,6 +178,21 @@ export declare class ProcessLogStore {
      * adapter in the constructor, before any append happens.
      */
     setPersist(adapter: PersistAdapter): void;
+    /**
+     * Fire for EVERY appended chunk / recorded exit, across all pids, in
+     * addition to the per-pid `subscribe`/`subscribeExit` callbacks.
+     *
+     * This is the hibernation-safe fan-out seam for the process-terminal
+     * WebSockets: per-connection subscriptions are closures on ONE DO
+     * instance and silently vanish when the instance is reset or restarted
+     * (the accepted WebSocket itself survives via the hibernation API, so
+     * a surviving client would otherwise stream nothing forever). The DO
+     * wires one broadcast hook per instance that routes chunks to accepted
+     * sockets by their serialized attachment — state that survives resets.
+     */
+    private _broadcastChunk;
+    private _broadcastExit;
+    setBroadcast(onChunk: (pid: number, chunk: LogChunk) => void, onExit: (pid: number, exit: ProcessExitInfo) => void): void;
     /** Is there ANY state for this pid (including exit-only)? */
     has(pid: number): boolean;
     /** Current buffered bytes for this PID (post-eviction). */

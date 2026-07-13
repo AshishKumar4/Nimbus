@@ -32,6 +32,7 @@ interface ProgrammaticContext {
     storage: {
         delete(key: string): Promise<void>;
         deleteAll(): Promise<void>;
+        deleteAlarm(): Promise<void>;
     };
 }
 interface ProgrammaticFacetManager {

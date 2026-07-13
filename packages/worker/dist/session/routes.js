@@ -34,7 +34,7 @@ import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState
 import { isWarmRejoin, joinExistingSession } from './init-phases.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
-import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
+import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
@@ -623,9 +623,11 @@ export async function handleFetch(self, request) {
             }
             catch { }
             self.processes.resetLogStore();
-            // Re-wire persist on the new store (mirrors constructor path).
+            // Re-wire persist + WS broadcast on the new store (mirrors the
+            // constructor path).
             self._w9PersistWired = false;
             self._w9WireProcessLogPersist();
+            wireProcessLogSocketBroadcast(self.processes, self.ctx);
             return Response.json({ cleared: true, ts: Date.now() });
         }
         if (url.pathname === '/api/_test/spawn-emitter' && request.method === 'POST') {

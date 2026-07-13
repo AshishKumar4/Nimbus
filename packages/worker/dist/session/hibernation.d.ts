@@ -51,6 +51,8 @@ export interface HibHost {
     _w9SchemaInit: boolean;
     _w9PersistWired: boolean;
     _w9FlushTimer: any;
+    /** W1: log-janitor alarm believed armed for this instance (cheap guard). */
+    _w1JanitorArmed: boolean;
 }
 /**
  * Run at DO ctor time. Returns the result for the class to assign to
@@ -73,6 +75,18 @@ export declare function wireHibernationOnConstruct(ctx: any): WsHibernationConfi
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export declare function wireProcessLogPersist(host: HibHost, ctx: any): void;
+/**
+ * W1: arm the log-janitor alarm cycle for this instance. Called from the
+ * log-activity hook so only sessions that actually produce process logs
+ * carry the sweep alarm. Idempotent per instance via `_w1JanitorArmed`;
+ * dispatchAlarm clears the flag when it stops re-arming (idle session)
+ * so the next burst of log activity re-arms the cycle.
+ *
+ * Why alarm-based instead of setTimeout: a recurring setTimeout prevents
+ * the DO from hibernating (billed duration continuously). Alarms persist
+ * across hibernation; the DO sleeps between fires.
+ */
+export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: HibHost, ctx: any): void;
 /**

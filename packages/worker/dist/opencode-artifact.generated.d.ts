@@ -53,4 +53,13 @@ export declare const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null;
  * bytes is blocked in facets). Null when the artifact is unstaged.
  */
 export declare const OPENCODE_YOGA_WASM: string | null;
+/**
+ * Staged chunk-pack filename: one JSON asset mapping every split-build
+ * `chunk-<hash>.js` module name to its ESM source. index.js and worker.js
+ * share these chunks (code-splitting deduplicates the API-server code that,
+ * bundled twice, pushed the TUI facet over the Worker memory limit); the
+ * supervisor expands the pack into facet module-map entries per spawn. Null
+ * when the artifact is unstaged.
+ */
+export declare const OPENCODE_CHUNKS_PACK: string | null;
 //# sourceMappingURL=opencode-artifact.generated.d.ts.map

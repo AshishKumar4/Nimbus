@@ -123,6 +123,25 @@ export class ProcessLogStore {
     setPersist(adapter) {
         this._persist = adapter;
     }
+    // ── Instance-level broadcast hooks ──────────────────────────────────
+    /**
+     * Fire for EVERY appended chunk / recorded exit, across all pids, in
+     * addition to the per-pid `subscribe`/`subscribeExit` callbacks.
+     *
+     * This is the hibernation-safe fan-out seam for the process-terminal
+     * WebSockets: per-connection subscriptions are closures on ONE DO
+     * instance and silently vanish when the instance is reset or restarted
+     * (the accepted WebSocket itself survives via the hibernation API, so
+     * a surviving client would otherwise stream nothing forever). The DO
+     * wires one broadcast hook per instance that routes chunks to accepted
+     * sockets by their serialized attachment — state that survives resets.
+     */
+    _broadcastChunk = null;
+    _broadcastExit = null;
+    setBroadcast(onChunk, onExit) {
+        this._broadcastChunk = onChunk;
+        this._broadcastExit = onExit;
+    }
     /** Is there ANY state for this pid (including exit-only)? */
     has(pid) {
         if (this.pids.has(pid))
@@ -207,6 +226,12 @@ export class ProcessLogStore {
         }
         this._evict(state, pid);
         this._fanout(state, chunk);
+        if (this._broadcastChunk) {
+            try {
+                this._broadcastChunk(pid, chunk);
+            }
+            catch { /* swallow broadcast errors */ }
+        }
     }
     /**
      * Return chunks with stable per-PID sequence numbers. `cursor` is an
@@ -306,6 +331,12 @@ export class ProcessLogStore {
                 cb(info);
             }
             catch { /* swallow subscriber errors */ }
+        }
+        if (this._broadcastExit) {
+            try {
+                this._broadcastExit(pid, info);
+            }
+            catch { /* swallow broadcast errors */ }
         }
     }
     /**

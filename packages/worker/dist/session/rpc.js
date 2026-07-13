@@ -596,49 +596,11 @@ export function _reportExternalExit(self, pid, code, reason) {
     }
 }
 /**
- * W1: bootstrap the log-janitor alarm cycle.
- *
- * Schedules an alarm for `Date.now() + 60_000` with reason
- * `'log-janitor'`. When it fires, `dispatchAlarm` (in
- * ./hibernation.ts) runs `processes.dropLogsOlderThan(orphanCheck)` and
- * re-schedules the next 60s alarm — fully replacing the setTimeout
- * chain we used to run.
- *
- * Why alarm-based instead of setTimeout: per Cloudflare DO docs
- * (https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/),
- * a recurring `setTimeout`/`setInterval` PREVENTS the DO from
- * hibernating. That left every Nimbus session billed for duration
- * continuously while in memory. Alarms persist across hibernation;
- * the DO sleeps between fires, dropping per-session billable
- * duration by ~99% during idle windows.
- *
- * Idempotent: guarded by `self.processLogsJanitorWired`. Safe to
- * call repeatedly. Fail-soft: scheduleAlarm warn+returns on
- * runtimes without setAlarm (older wrangler-dev).
- */
-export function _ensureLogJanitor(self, ctx) {
-    if (self.processLogsJanitorWired)
-        return;
-    self.processLogsJanitorWired = true;
-    // Fire-and-forget: scheduleAlarm is async (storage IO) but the
-    // alarm bootstrap is non-blocking from the ctor's POV. Any throw
-    // is swallowed inside scheduleAlarm.
-    void (async () => {
-        try {
-            const { scheduleAlarm } = await import('./hibernation.js');
-            await scheduleAlarm(ctx, 'log-janitor', Date.now() + 60_000);
-        }
-        catch (e) {
-            console.warn('[nimbus/W1] _ensureLogJanitor bootstrap threw:', e?.message);
-        }
-    })();
-}
-/**
- * W1: orphan-pid predicate exposed for the alarm dispatcher. A pid is
- * "orphaned" if the process table has no record of it — either reap()
- * already removed it, or it never fully registered. Long-running
- * facets that hang and get GC'd fall into this category.
- */
+* W1: orphan-pid predicate exposed for the alarm dispatcher. A pid is
+* "orphaned" if the process table has no record of it — either reap()
+* already removed it, or it never fully registered. Long-running
+* facets that hang and get GC'd fall into this category.
+*/
 export function _logJanitorOrphanCheck(self) {
     return (pid) => !self.processes.get(pid);
 }

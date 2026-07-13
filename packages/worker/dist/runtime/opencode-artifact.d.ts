@@ -38,4 +38,11 @@ export declare function fetchOpencodeWasmBytes(env: OpencodeAssetEnv, file: stri
  * module the in-isolate Worker polyfill imports.
  */
 export declare function fetchOpencodeWorkerSource(env: OpencodeAssetEnv, file: string): Promise<string>;
+/**
+ * Fetch and expand the split-build chunk pack (chunks.json): one JSON asset
+ * mapping every `chunk-<hash>.js` module name to its ESM source. index.js and
+ * worker.js import these shared chunks; the facet module map carries each as
+ * its own module.
+ */
+export declare function fetchOpencodeChunkSources(env: OpencodeAssetEnv, packFile: string): Promise<Record<string, string>>;
 //# sourceMappingURL=opencode-artifact.d.ts.map

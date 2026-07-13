@@ -401,6 +401,14 @@ export async function rpcDestroy(self, options = {}) {
         const message = e instanceof Error ? e.message : String(e);
         throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);
     }
+    // deleteAll() does NOT delete a pending alarm (per CF docs). Without
+    // this, every destroyed session left an alarm behind that kept booting
+    // its DO forever (the W1 janitor cycle), and the accumulated zombie
+    // fleet's storage churn intermittently reset live session DOs.
+    try {
+        await self.ctx.storage.deleteAlarm();
+    }
+    catch { /* best-effort */ }
     resetInMemorySessionState(self);
     return { ok: true, killed, destroyedAt, reason };
 }

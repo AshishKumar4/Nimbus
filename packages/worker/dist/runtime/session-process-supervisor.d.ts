@@ -113,6 +113,11 @@ export declare class SessionProcessSupervisor {
      * flushes without the store knowing about timers.
      */
     setLogPersist(adapter: PersistAdapter, onActivity: () => void): void;
+    /**
+     * Install the instance-level chunk/exit broadcast (the hibernation-safe
+     * process-terminal WS fan-out — see ProcessLogStore.setBroadcast).
+     */
+    setLogBroadcast(onChunk: (pid: number, chunk: LogChunk) => void, onExit: (pid: number, exit: ProcessExitInfo) => void): void;
     flushLogs(): void;
     dropLogsOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number;
     logHibStats(): ReturnType<ProcessLogStore['hibStats']>;

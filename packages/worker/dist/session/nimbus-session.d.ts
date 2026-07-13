@@ -95,7 +95,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
      *  prevented hibernation per CF DO docs). The alarm itself lives in
      *  DO storage at key `w1_next_alarm_reasons`. */
-    processLogsJanitorWired: boolean;
+    _w1JanitorArmed: boolean;
     /**
      * Result of `configureWsHibernation` at constructor time. Exposed via
      * `/api/_diag/memory` under `hib.autoResponseConfigured`,
@@ -261,7 +261,6 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _emitExitDump(pid: number, code: number): void;
     _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void;
     _reportExternalExit(pid: number, code: number, reason: string): void;
-    _ensureLogJanitor(): void;
     _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     _rpcRegisterPort(pid: number, port: number): Promise<void>;
     _rpcUnregisterPort(port: number): Promise<void>;

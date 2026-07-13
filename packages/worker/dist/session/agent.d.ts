@@ -13,6 +13,7 @@ interface AgentStorage {
     put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<void>;
     deleteAll(): Promise<void>;
+    deleteAlarm(): Promise<void>;
 }
 interface AgentVfs {
     exists(path: string): boolean;
