@@ -338,3 +338,82 @@ export function nimbusPatchParserWorker(source: string, file: string): string {
     file,
   )
 }
+
+// opencode's TUI API server (src/cli/cmd/tui/worker.ts) drives its message
+// channel through the BARE Web-Worker scope refs `onmessage`/`postMessage`
+// (src/util/rpc.ts listen/emit — in a real Worker these are the
+// DedicatedWorkerGlobalScope's members). On Nimbus the client and both workers
+// share one facet isolate, and the split build shares chunks between index.js
+// and worker.js — so the pre-split approach (a build-level `define` rebinding
+// those identifiers across the whole worker bundle) would clobber the client's
+// copy of the shared code. Instead the two seams take an EXPLICIT scope
+// parameter: the worker entry claims its per-worker context and threads it
+// through (see nimbusPatchTuiWorkerEntry). When no scope is passed — a normal
+// Bun run, where the module top-level IS the worker scope — the seams write to
+// globalThis, which is exactly what the bare refs resolved to upstream.
+export function nimbusPatchRpcWorkerScope(source: string, file: string): string {
+  const label = 'nimbus rpc worker-scope patch'
+  source = replaceOnce(
+    source,
+    `export function listen(rpc: Definition) {
+  onmessage = async (evt) => {`,
+    `export function listen(rpc: Definition, scope?: { onmessage: any; postMessage: (data: string) => void }) {
+  const target: any = scope ?? globalThis
+  target.onmessage = async (evt: MessageEvent) => {`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `      postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
+    `      target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `export function emit(event: string, data: unknown) {
+  postMessage(JSON.stringify({ type: "rpc.event", event, data }))`,
+    `export function emit(event: string, data: unknown, scope?: { postMessage: (data: string) => void }) {
+  ;((scope ?? globalThis) as any).postMessage(JSON.stringify({ type: "rpc.event", event, data }))`,
+    label,
+    file,
+  )
+  return source
+}
+
+// The worker entry claims the per-worker messaging context the in-isolate
+// Worker polyfill parks on `globalThis.__nimbusWorkerClaim` during this
+// module's import. The claim is read at MODULE-BODY START — before the entry's
+// top-level awaits — so a parser worker constructed while those awaits are
+// pending cannot overwrite the claim first. Undefined under a normal Bun run
+// (real Worker scope), which makes the Rpc seams fall back to globalThis.
+export function nimbusPatchTuiWorkerEntry(source: string, file: string): string {
+  const label = 'nimbus tui worker-entry scope patch'
+  source = replaceOnce(
+    source,
+    `ensureProcessMetadata("worker")`,
+    `ensureProcessMetadata("worker")
+
+const __nimbusWorkerScope = (globalThis as any).__nimbusWorkerClaim
+  ? (globalThis as any).__nimbusWorkerClaim()
+  : undefined`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `  Rpc.emit("global.event", event)`,
+    `  Rpc.emit("global.event", event, __nimbusWorkerScope)`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `Rpc.listen(rpc)`,
+    `Rpc.listen(rpc, __nimbusWorkerScope)`,
+    label,
+    file,
+  )
+  return source
+}

@@ -17,23 +17,40 @@ clone, so the staged bundle is reproducible.
 
 - `build-node.ts` — the `Bun.build` recipe (target node, `conditions:["node"]`,
   `format:"esm"`). Reference copy; runs from inside the opencode clone at
-  `packages/opencode/build-node.ts` (it needs the clone's resolve-hook stub
-  files: `bun-shim.ts`, `bun-ffi-shim.ts`, `bun-sqlite-shim.ts`, `pty-stub.ts`,
-  `opentui-native-stub.ts`, and `script/generate.ts`).
+  `packages/opencode/build-node.ts` (copy `bundle-patches.ts` and the
+  `stubs/*.ts` resolve-hook stubs alongside it; `script/generate.ts` is
+  opencode's own).
 
-  It builds THREE self-contained entrypoints (splitting off, so each is one
-  flat file with predictable specifiers): `index.js` (the CLI), `worker.js`
-  (the TUI API server, `cli/cmd/tui/worker.ts`), and `parser.worker.js`
-  (OpenTUI's tree-sitter parser). opencode's interactive TUI is a client/server
-  split — the bare `opencode` client spawns its server as
-  `new Worker("./worker.js")` and OpenTUI its parser as
-  `new Worker("./parser.worker.js")` — which Nimbus runs in one facet isolate
-  via the in-isolate Worker polyfill (`opencode-facet-runner.ts`). The two
-  worker bundles get a build-time banner + `define` (and a fail-loud
-  `parser.worker.js` patch) that rebind their web-scope messaging
-  (`postMessage` / `onmessage` / `self`) to a per-worker context the polyfill
-  claims via `globalThis.__nimbusWorkerClaim`, so the two workers + client never
-  collide on `globalThis`. The recipe also extracts `yoga.wasm` (OpenTUI's
+- `stubs/` — the five resolve-hook stub modules the build aliases in:
+  `bun-shim.ts` (Bun globals available on node), `bun-ffi-shim.ts` /
+  `bun-sqlite-shim.ts` (fail-loud: workerd has no native FFI; node:sqlite is
+  the supported driver), `pty-stub.ts` (no PTY subsystem), and
+  `opentui-native-stub.ts` (the wasm backend replaces the Zig dylib).
+
+  The build produces `index.js` (the CLI/TUI client) and `worker.js` (the TUI
+  API server, `cli/cmd/tui/worker.ts`) in ONE code-splitting build — they are
+  two entrypoints over the same opencode server code, and building them
+  standalone duplicated ~12 MB of it; inside the single Nimbus facet isolate
+  both bundles load together and the duplicate copy pushed the isolate over
+  the Worker memory limit (the intermittent opencode-tui-render first-frame
+  OOM). The shared `chunk-<hash>.js` modules evaluate once for both entries;
+  `scripts/bundle-opencode.mjs` aggregates them into one `chunks.json` pack
+  asset that the supervisor expands into facet module-map entries per spawn.
+  `parser.worker.js` (OpenTUI's tree-sitter parser) stays a standalone build.
+
+  opencode's interactive TUI is a client/server split — the bare `opencode`
+  client spawns its server as `new Worker("./worker.js")` and OpenTUI its
+  parser as `new Worker("./parser.worker.js")` — which Nimbus runs in one facet
+  isolate via the in-isolate Worker polyfill (`opencode-facet-runner.ts`).
+  Because the split build shares the messaging code between client and server,
+  the worker-scope rebind is an explicit runtime parameter, not a build-level
+  `define`: the worker entry claims its per-worker context
+  (`globalThis.__nimbusWorkerClaim`) at module-body start and threads it
+  through the shared `Rpc.listen`/`Rpc.emit` seams
+  (`nimbusPatchTuiWorkerEntry` / `nimbusPatchRpcWorkerScope`, fail-loud), with
+  a `globalThis` fallback that preserves upstream Worker behavior under Bun.
+  `parser.worker.js` keeps the banner + `define` rebind (plus its fail-loud
+  self-scope patch). The recipe also extracts `yoga.wasm` (OpenTUI's
   frame-layout engine, inlined as base64 in `@opentui/core`) so it can ride in
   pre-compiled — request-time `WebAssembly.instantiate(bytes)` is blocked in
   facets.
@@ -94,10 +111,23 @@ clone, so the staged bundle is reproducible.
 ## Rebuild
 
 ```
-# In the opencode clone:
+# Fresh clone + deps (bun's isolated linker breaks Bun.build resolution of
+# transitive CJS deps; postinstall scripts try to compile native grammars):
+git clone --depth 1 --branch v<version> https://github.com/sst/opencode \
+  /tmp/opencode-research/opencode
+cd /tmp/opencode-research/opencode
+bun install --ignore-scripts --linker=hoisted
+
+# Apply the Nimbus source patches + copy the build recipe in:
 git apply <this-dir>/nimbus-defer-global-io.patch
 git apply <this-dir>/nimbus-tree-sitter-exports.patch
-bun run packages/opencode/build-node.ts        # → /tmp/opencode-research/dist-nimbus
+cp <this-dir>/build-node.ts <this-dir>/bundle-patches.ts \
+   <this-dir>/stubs/*.ts packages/opencode/
+
+# Build (→ /tmp/opencode-research/dist-nimbus). Requires bun >= 1.3.14:
+# earlier bun versions emit broken cross-chunk live bindings under
+# code-splitting ("X is not a function" at runtime, e.g. SessionPrompt.getModel).
+cd packages/opencode && bun build-node.ts
 
 # In Nimbus:
 node packages/worker/scripts/bundle-opencode.mjs   # restage into public/_assets

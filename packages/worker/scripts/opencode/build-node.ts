@@ -6,8 +6,16 @@ import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 // The fail-loud bundle-source transforms live in a side-effect-free sibling
 // module so the unit tests can import the exact same patch logic. When this
 // reference build-node.ts is copied into the opencode clone to run, copy
-// bundle-patches.ts alongside it (same directory).
-import { nimbusPatchWebTreeSitter, nimbusPatchOpenTUI, nimbusPatchParserWorker, OPENTUI_FFI_CHUNK_MARKER } from "./bundle-patches"
+// bundle-patches.ts AND the stubs/*.ts resolve-hook modules alongside it
+// (same directory) — see README.md "Rebuild".
+import {
+  nimbusPatchWebTreeSitter,
+  nimbusPatchOpenTUI,
+  nimbusPatchParserWorker,
+  nimbusPatchRpcWorkerScope,
+  nimbusPatchTuiWorkerEntry,
+  OPENTUI_FFI_CHUNK_MARKER,
+} from "./bundle-patches"
 
 const dir = "/tmp/opencode-research/opencode/packages/opencode"
 process.chdir(dir)
@@ -52,6 +60,24 @@ const nimbusParserWorkerRegistry = {
   },
 }
 
+// The API-server worker's bare Web-Worker scope refs live in src/util/rpc.ts,
+// which the SPLIT build shares between index.js and worker.js — so the scope
+// rebind must be an explicit runtime parameter, not a bundle-wide `define`.
+// See nimbusPatchRpcWorkerScope / nimbusPatchTuiWorkerEntry (fail-loud).
+const nimbusWorkerScopeRegistry = {
+  name: "nimbus-tui-worker-scope",
+  setup(build: any) {
+    build.onLoad({ filter: /src[\\/]util[\\/]rpc\.ts$/ }, async (args: any) => {
+      const source = await Bun.file(args.path).text()
+      return { contents: nimbusPatchRpcWorkerScope(source, args.path), loader: "ts" }
+    })
+    build.onLoad({ filter: /src[\\/]cli[\\/]cmd[\\/]tui[\\/]worker\.ts$/ }, async (args: any) => {
+      const source = await Bun.file(args.path).text()
+      return { contents: nimbusPatchTuiWorkerEntry(source, args.path), loader: "ts" }
+    })
+  },
+}
+
 const generated = await import(path.join(dir, "script/generate.ts"))
 const plugin = createSolidTransformPlugin()
 const bunAlias = {
@@ -83,17 +109,28 @@ const parserWorkerRoot = path.resolve(dir, "../../node_modules/@opentui/core/par
 const parserWorker = fs.realpathSync(fs.existsSync(parserWorkerLocal) ? parserWorkerLocal : parserWorkerRoot)
 const tuiServerWorker = path.join(dir, "src/cli/cmd/tui/worker.ts")
 
-// Each entrypoint is built as a SEPARATE, self-contained bundle (splitting
-// off). Bun's code-splitting names the entry+chunk outputs after their
-// source-relative paths (deep node_modules/src trees), which breaks both the
-// flat `_assets/opencode/<ver>/` staging layout and the `./worker.js` /
-// `./parser.worker.js` module specifiers the runtime maps. Standalone builds
-// keep one flat file per worker at the cost of duplicating shared code — the
-// same tradeoff index.js already makes.
+// index.js (the CLI/TUI client) and worker.js (the TUI API server) are built
+// in ONE call with code-splitting: they are two entrypoints over the SAME
+// opencode server code, and the standalone builds duplicated ~12 MB of it.
+// Inside the single Nimbus facet isolate both bundles load together, and the
+// duplicated copy pushed the isolate over the Worker memory limit — the
+// intermittent opencode-tui-render first-frame OOM kill. Shared chunks
+// evaluate once for both entries. Flat output names (`naming` below) keep the
+// `_assets/opencode/<ver>/` staging layout and the `./worker.js` specifier the
+// runtime maps. parser.worker.js stays a standalone build — it is @opentui
+// code sharing nothing with opencode, and its scope rebind uses the per-entry
+// define config that a shared build cannot express.
 const sharedConfig = {
   conditions: ["node"],
   tsconfig: path.join(dir, "tsconfig.json"),
-  plugins: [plugin, bunAlias, nimbusTreeSitterWasmRegistry, nimbusOpenTUIBackendRegistry, nimbusParserWorkerRegistry],
+  plugins: [
+    plugin,
+    bunAlias,
+    nimbusTreeSitterWasmRegistry,
+    nimbusOpenTUIBackendRegistry,
+    nimbusParserWorkerRegistry,
+    nimbusWorkerScopeRegistry,
+  ],
   external: ["node-gyp"],
   format: "esm" as const,
   target: "node" as const,
@@ -140,23 +177,41 @@ const workerScopeConfig = {
   },
 }
 
-const builds: Array<{ label: string; entry: string; worker?: boolean }> = [
-  { label: "index.js", entry: path.join(dir, "src/index.ts") },
-  { label: "worker.js (tui api server)", entry: tuiServerWorker, worker: true },
-  { label: "parser.worker.js (opentui tree-sitter)", entry: parserWorker, worker: true },
-]
-
 let total = 0
-for (const { label, entry, worker } of builds) {
-  const config = worker ? { ...sharedConfig, ...workerScopeConfig } : sharedConfig
-  const result = await Bun.build({ ...config, entrypoints: [entry] })
+
+// Split build: index.js + worker.js share chunk-<hash>.js modules. Entry
+// names stay flat so the module map's `opencode-bundle.js` / `worker.js`
+// specifiers and their relative `./chunk-*.js` imports resolve.
+{
+  const result = await Bun.build({
+    ...sharedConfig,
+    splitting: true,
+    naming: { entry: "[name].js", chunk: "chunk-[hash].js", asset: "[name]-[hash].[ext]" },
+    entrypoints: [path.join(dir, "src/index.ts"), tuiServerWorker],
+  })
   if (!result.success) {
-    console.error(`build failed: ${label}`)
+    console.error("build failed: index.js + worker.js (split)")
     for (const log of result.logs) console.error(log)
     process.exit(1)
   }
   total += result.outputs.length
-  console.log(`built ${label}: ${result.outputs.length} outputs`)
+  console.log(`built index.js + worker.js (split): ${result.outputs.length} outputs`)
+}
+
+// parser.worker.js: standalone, with the per-entry worker-scope define.
+{
+  const result = await Bun.build({
+    ...sharedConfig,
+    ...workerScopeConfig,
+    entrypoints: [parserWorker],
+  })
+  if (!result.success) {
+    console.error("build failed: parser.worker.js (opentui tree-sitter)")
+    for (const log of result.logs) console.error(log)
+    process.exit(1)
+  }
+  total += result.outputs.length
+  console.log(`built parser.worker.js: ${result.outputs.length} outputs`)
 }
 console.log("built", total, "outputs total")
 

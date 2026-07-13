@@ -35,12 +35,14 @@ import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import {
   fetchOpencodeBundle,
+  fetchOpencodeChunkSources,
   fetchOpencodeWasmBytes,
   fetchOpencodeWorkerSource,
 } from '../runtime/opencode-artifact.js';
 import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import {
+  OPENCODE_CHUNKS_PACK,
   OPENCODE_TREE_SITTER_WASMS,
   OPENCODE_TUI_WORKERS,
   OPENCODE_YOGA_WASM,
@@ -2430,18 +2432,14 @@ export class FacetManager {
   }>();
   private static readonly PREFETCH_CACHE_MAX = 16;
 
-  /** Memoized opencode ESM bundle source (fetched once per isolate). */
-  private opencodeBundle: string | null = null;
-  private opencodeBundlePromise: Promise<string> | null = null;
-
-  /**
-   * Memoized tree-sitter wasm sidecar bytes (core + bash + powershell
-   * grammars) for the opencode facet, keyed by staged filename. Fetched once
-   * per isolate from env.ASSETS; each facet config gets fresh `{ wasm }`
-   * entries over the shared buffers.
-   */
-  private opencodeTreeSitterBytes: Record<string, ArrayBuffer> | null = null;
-  private opencodeTreeSitterBytesPromise: Promise<Record<string, ArrayBuffer>> | null = null;
+  // NOTE: the opencode bundle source (20.9 MB), the TUI worker sources
+  // (12 MB), and the tree-sitter sidecar bytes (2.6 MB) are deliberately NOT
+  // memoized on this manager. Pinning ~35 MB of artifact content on every
+  // session DO both wastes memory and shrinks headroom around the TUI facet,
+  // which boots close to the Worker memory limit (its OOM kill was the
+  // opencode-tui-render first-frame stall). fetchAsset already L2-caches
+  // these in caches.default, so a per-spawn refetch is a ~100 ms colo-cache
+  // hit. Only the sub-MB wasm byte buffers below stay memoized.
 
   /**
    * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
@@ -2451,15 +2449,6 @@ export class FacetManager {
    */
   private openTuiWasmBytes: ArrayBuffer | null = null;
   private openTuiWasmBytesPromise: Promise<ArrayBuffer> | null = null;
-
-  /**
-   * Staged opencode TUI worker bundle sources (the API server worker.js + the
-   * OpenTUI parser.worker.js), keyed by module-map specifier. Fetched once per
-   * isolate from env.ASSETS; the interactive-TUI facet config carries them so
-   * the in-isolate Worker polyfill can import them.
-   */
-  private opencodeTuiWorkerSources: Record<string, string> | null = null;
-  private opencodeTuiWorkerSourcesPromise: Promise<Record<string, string>> | null = null;
 
   /**
    * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
@@ -2598,26 +2587,35 @@ export class FacetManager {
           'deployment is missing the static-assets binding',
       );
     }
-    if (!this.opencodeTreeSitterBytes) {
-      if (!this.opencodeTreeSitterBytesPromise) {
-        const assets = this.env.ASSETS;
-        this.opencodeTreeSitterBytesPromise = Promise.all(
-          [wasms.core, wasms.bash, wasms.powershell].map(
-            async (file) =>
-              [file, await fetchOpencodeWasmBytes({ ASSETS: assets }, file)] as const,
-          ),
-        ).then((entries) => Object.fromEntries(entries));
-      }
-      try {
-        this.opencodeTreeSitterBytes = await this.opencodeTreeSitterBytesPromise;
-      } catch (e) {
-        this.opencodeTreeSitterBytesPromise = null;
-        throw e;
-      }
-    }
-    return Object.fromEntries(
-      Object.entries(this.opencodeTreeSitterBytes).map(([file, bytes]) => [file, { wasm: bytes }]),
+    const assets = this.env.ASSETS;
+    const entries = await Promise.all(
+      [wasms.core, wasms.bash, wasms.powershell].map(
+        async (file) =>
+          [file, { wasm: await fetchOpencodeWasmBytes({ ASSETS: assets }, file) }] as const,
+      ),
     );
+    return Object.fromEntries(entries);
+  }
+
+  /**
+   * Build the Worker Loader module-map fragment carrying the split-build
+   * shared chunks (chunk-<hash>.js) both opencode entry bundles import. One
+   * pack asset fetch (L2-cached), expanded into per-chunk ESM module entries.
+   */
+  private async opencodeChunkModuleEntries(): Promise<Record<string, string>> {
+    if (!OPENCODE_CHUNKS_PACK) {
+      throw new Error(
+        'opencode chunk pack is not staged — rerun scripts/bundle-opencode.mjs ' +
+          'with a split-build opencode dist (build-node.ts)',
+      );
+    }
+    if (!this.env.ASSETS) {
+      throw new Error(
+        'opencode chunk pack requires an env.ASSETS binding; this Nimbus ' +
+          'deployment is missing the static-assets binding',
+      );
+    }
+    return fetchOpencodeChunkSources({ ASSETS: this.env.ASSETS }, OPENCODE_CHUNKS_PACK);
   }
 
   /**
@@ -2673,24 +2671,14 @@ export class FacetManager {
           'deployment is missing the static-assets binding',
       );
     }
-    if (!this.opencodeTuiWorkerSources) {
-      if (!this.opencodeTuiWorkerSourcesPromise) {
-        const assets = this.env.ASSETS;
-        this.opencodeTuiWorkerSourcesPromise = Promise.all(
-          [workers.server, workers.parser].map(
-            async (file) =>
-              [file, await fetchOpencodeWorkerSource({ ASSETS: assets }, file)] as const,
-          ),
-        ).then((entries) => Object.fromEntries(entries));
-      }
-      try {
-        this.opencodeTuiWorkerSources = await this.opencodeTuiWorkerSourcesPromise;
-      } catch (e) {
-        this.opencodeTuiWorkerSourcesPromise = null;
-        throw e;
-      }
-    }
-    return { ...this.opencodeTuiWorkerSources };
+    const assets = this.env.ASSETS;
+    const entries = await Promise.all(
+      [workers.server, workers.parser].map(
+        async (file) =>
+          [file, await fetchOpencodeWorkerSource({ ASSETS: assets }, file)] as const,
+      ),
+    );
+    return Object.fromEntries(entries);
   }
 
   /**
@@ -3080,6 +3068,29 @@ export class FacetManager {
     const vfsState: FacetVfsState = this.vfs
       ? await buildPrefetchBundle(this.vfs, undefined, opts.cwd, '', this.esbuild || undefined)
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+    // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
+    // bridges it to the VFS-backed sql.js shim and statically imports the
+    // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
+    // The tree-sitter core + bash/powershell grammar wasm ride in the same
+    // way for the bash tool's command parser.
+    const [sqliteModules, treeSitterModules, openTuiModules, chunkModules, tuiWorkerModules, yogaModules] =
+      await Promise.all([
+        this.sqliteModuleEntry(true),
+        this.treeSitterModuleEntries(),
+        this.openTuiModuleEntry(),
+        // Split-build shared chunks — imported by the entry bundle (and the
+        // TUI server worker), so both the one-shot and attached paths carry
+        // them.
+        this.opencodeChunkModuleEntries(),
+        // The TUI client spawns its API server + OpenTUI parser as in-isolate
+        // Workers, and OpenTUI lays out frames with yoga-layout. The polyfill
+        // imports the worker bundles + the runner instantiates the yoga Module.
+        // One-shot runs never render, so both are fetched only for the attached
+        // path.
+        attachedTty ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
+        attachedTty ? this.opencodeYogaModuleEntry() : Promise.resolve({}),
+      ]);
+
     const runnerCode = generateOpencodeRunnerCode({
       argv: opts.argv,
       env: runnerEnv,
@@ -3090,25 +3101,6 @@ export class FacetManager {
       vfsManifest: JSON.stringify(vfsState.manifest),
       attachedTty,
     });
-
-    // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
-    // bridges it to the VFS-backed sql.js shim and statically imports the
-    // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
-    // The tree-sitter core + bash/powershell grammar wasm ride in the same
-    // way for the bash tool's command parser.
-    const [sqliteModules, treeSitterModules, openTuiModules, tuiWorkerModules, yogaModules] =
-      await Promise.all([
-        this.sqliteModuleEntry(true),
-        this.treeSitterModuleEntries(),
-        this.openTuiModuleEntry(),
-        // The TUI client spawns its API server + OpenTUI parser as in-isolate
-        // Workers, and OpenTUI lays out frames with yoga-layout. The polyfill
-        // imports the worker bundles + the runner instantiates the yoga Module.
-        // One-shot runs never render, so both are fetched only for the attached
-        // path.
-        attachedTty ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
-        attachedTty ? this.opencodeYogaModuleEntry() : Promise.resolve({}),
-      ]);
 
     // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
     // live SQLite VFS (same wiring as the standard one-shot facet path).
@@ -3127,6 +3119,7 @@ export class FacetManager {
         ...sqliteModules,
         ...treeSitterModules,
         ...openTuiModules,
+        ...chunkModules,
         ...tuiWorkerModules,
         ...yogaModules,
         ...opencodeBuiltinBridgeModules(attachedTty),
@@ -3186,7 +3179,11 @@ export class FacetManager {
     let worker: LoadedWorkerStub | undefined;
     let startStub: LoadedWorkerEntrypointStub | undefined;
     try {
-      worker = this.env.LOADER.load(workerConfig);
+      // Named loader entry, exactly like the long-running node path
+      // (spawnNode): the resident TUI facet's isolate is keyed, and the
+      // startProcess RPC below stays open for the process lifetime.
+      const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
+      worker = this.env.LOADER.get(workerKey, async () => workerConfig);
       startStub = worker.getEntrypoint();
       if (typeof startStub.startProcess !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no startProcess method');
@@ -3219,18 +3216,9 @@ export class FacetManager {
   }
 
   private async opencodeBundleSource(): Promise<string> {
-    if (this.opencodeBundle) return this.opencodeBundle;
-    if (!this.opencodeBundlePromise) {
-      const assets = this.env.ASSETS!;
-      this.opencodeBundlePromise = fetchOpencodeBundle({ ASSETS: assets });
-    }
-    try {
-      this.opencodeBundle = await this.opencodeBundlePromise;
-      return this.opencodeBundle;
-    } catch (e) {
-      this.opencodeBundlePromise = null;
-      throw e;
-    }
+    // Fetched per spawn (L2-cached in caches.default) — see the memoization
+    // note above the wasm byte fields.
+    return fetchOpencodeBundle({ ASSETS: this.env.ASSETS! });
   }
 
   /** Flush files written by the script back to the supervisor's VFS. */
