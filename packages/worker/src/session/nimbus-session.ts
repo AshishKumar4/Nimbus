@@ -84,6 +84,7 @@ import {
   wireProcessLogPersist as _w9DoWireProcessLogPersist,
   ensureHibSchema as _w9DoEnsureHibSchema,
   scheduleHibFlush as _w9DoScheduleHibFlush,
+  clearDestroyedTombstone as _w1ClearDestroyedTombstone,
   dispatchAlarm as _w9DoDispatchAlarm,
   maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen,
   flushOnClose as _w9DoFlushOnClose,
@@ -1251,6 +1252,11 @@ export class NimbusSession extends CloudflareDurableObject {
   // as a delegator per plan §IX.4 R1. Visibility relaxed (was `private`)
   // so the SessionInternal interface declares it.
   initSession(ws: WebSocket): void {
+    // A destroyed session id being legitimately re-initialized (shell WS
+    // attach, or SDK ready via ensureProgrammaticReady which routes here)
+    // lifts the tombstone so the recreated session's log-janitor can arm
+    // again. Straggler facet RPCs never reach this seam.
+    _w1ClearDestroyedTombstone(this, this.ctx);
     // Cast pattern (per plan §IX recommendation 1, used here only because
     // initSession reads this.ctx + this.env extensively; siblings that need
     // ctx/env take them as separate explicit args per DEFECT-D1).

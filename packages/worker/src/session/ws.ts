@@ -51,6 +51,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { Kernel, Shell } from '../substrate/lifo/index.js';
+import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 
 /**
  * Minimal host shape for WS lifecycle. Per plan §IX.1 b': fields here
@@ -285,7 +286,7 @@ async function routeProcessLogClientMessage(
       try {
         ws.send(JSON.stringify({
           type: 'exit', pid, code: 137, at: Date.now(),
-          reason: 'process lost: instance reset',
+          reason: PRIOR_GENERATION_EXIT_REASON,
         }));
       } catch { /* socket closing */ }
     }

@@ -427,7 +427,7 @@ function isPriorGenerationPid(self: RpcHost, pid: number): boolean {
   return pid > 0 && pid <= self.processes.pidBase;
 }
 
-const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
+export const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
 
 export async function _rpcStdout(self: RpcHost, pid: number, data: string): Promise<void> {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —

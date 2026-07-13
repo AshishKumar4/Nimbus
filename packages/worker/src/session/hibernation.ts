@@ -38,7 +38,7 @@
 import type { LogChunk, PersistAdapter, ProcessExitInfo } from '../runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from './ws-hibernation-config.js';
-import { W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS, W1_NEXT_ALARM_REASONS_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS, W1_NEXT_ALARM_REASONS_KEY } from './keys.js';
 
 export type { WsHibernationConfigResult };
 
@@ -219,6 +219,23 @@ export function wireProcessLogPersist(host: HibHost, ctx: any): void {
  * the DO from hibernating (billed duration continuously). Alarms persist
  * across hibernation; the DO sleeps between fires.
  */
+/**
+ * W1: lift the destroyed-session tombstone when a destroyed session id is
+ * LEGITIMATELY re-initialized (documented SDK flow: stable job ids reuse a
+ * session id after destroy — the id maps deterministically to the same DO).
+ * Without this the recreated session would work but never re-arm the
+ * log-janitor, so its persisted w9_proc_logs would grow unswept forever.
+ * Called only from the session-init seams (shell WS attach / SDK ready) —
+ * straggler facet RPCs never reach them, so a dead session stays inert.
+ */
+export function clearDestroyedTombstone(host: HibHost, ctx: any): void {
+  if (!host._w1SessionDestroyed) return;
+  host._w1SessionDestroyed = false;
+  void Promise.resolve(ctx?.storage?.delete?.(SESSION_DESTROYED_KEY)).catch((e: any) => {
+    console.warn('[nimbus/W1] tombstone clear failed:', e?.message);
+  });
+}
+
 export function ensureLogJanitor(host: HibHost, ctx: any): void {
   if (host._w1JanitorArmed) return;
   // A destroyed session must stay inert: a straggler facet RPC that wakes
@@ -473,9 +490,16 @@ export async function maybeBumpIsolateGen(host: HibHost, ctx: any): Promise<void
   host._w9IsolateGenPersisted = true;
   try {
     const prev = (await ctx.storage.get(W9_ISOLATE_GEN_KEY)) as number | undefined;
-    const next = (typeof prev === 'number' ? prev : 0) + 1;
-    host._w9IsolateGen = next;
+    // Adopt the persisted truth first; only adopt the bump after it is
+    // durably written. An unpersisted `next` would be re-read as `prev` by
+    // the NEXT boot and re-issued — two instances sharing one generation is
+    // exactly the pid-aliasing this counter exists to prevent. Running on
+    // the previous persisted generation is the lesser lapse, and the
+    // put-failure case is replica-only in practice (replicas never spawn).
+    host._w9IsolateGen = typeof prev === 'number' ? prev : 0;
+    const next = host._w9IsolateGen + 1;
     await ctx.storage.put(W9_ISOLATE_GEN_KEY, next);
+    host._w9IsolateGen = next;
   } catch (e: any) {
     console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);
   }

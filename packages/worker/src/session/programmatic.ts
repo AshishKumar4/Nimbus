@@ -26,7 +26,7 @@ import {
   writeProcessInput,
 } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { SESSION_DESTROYED_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
 
 interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -594,6 +594,12 @@ export async function rpcDestroy(
   // (hydrated in the constructor).
   self._w1SessionDestroyed = true;
   try { await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt); } catch { /* best-effort */ }
+  // deleteAll also wiped the isolate-generation counter; without
+  // re-persisting it the next boot would restart at generation 1, and a
+  // straggler facet from a HIGHER pre-destroy generation would classify as
+  // current-generation (pid > pidBase) — landing its output on the
+  // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
+  try { await self.ctx.storage.put(W9_ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0); } catch { /* best-effort */ }
 
   resetInMemorySessionState(self);
   return { ok: true, killed, destroyedAt, reason };

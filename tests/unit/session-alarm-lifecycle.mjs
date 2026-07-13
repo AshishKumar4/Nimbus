@@ -15,8 +15,9 @@ import {
   scheduleAlarm,
   ensureLogJanitor,
   dispatchAlarm,
+  clearDestroyedTombstone,
 } from '../../packages/worker/src/session/hibernation.ts';
-import { W1_NEXT_ALARM_REASONS_KEY, SESSION_DESTROYED_KEY } from '../../packages/worker/src/session/keys.ts';
+import { W1_NEXT_ALARM_REASONS_KEY, SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY } from '../../packages/worker/src/session/keys.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 
@@ -148,12 +149,31 @@ function makeHost() {
     _cirrusHmrWsClients: null,
     _w9PersistWired: true,
   };
+  host._w9IsolateGen = 3;
   const result = await rpcDestroy(host, { reason: 'test' });
   assert.equal(result.ok, true);
   assert.ok(storage.deleteAlarmCalls >= 1, 'destroy deletes the pending alarm');
   assert.ok(storage.map.has(SESSION_DESTROYED_KEY), 'destroy writes the tombstone (survives deleteAll)');
   assert.equal(host._w1SessionDestroyed, true, 'destroy flags the live instance');
-  console.log('  [5] rpcDestroy deletes the alarm and leaves the destroyed tombstone');
+  assert.equal(storage.map.get(W9_ISOLATE_GEN_KEY), 3,
+    'destroy re-persists the isolate generation (deleteAll wiped it; a gen-1 restart would misclassify pre-destroy stragglers as current-generation)');
+  console.log('  [5] rpcDestroy deletes the alarm, re-persists isolateGen, and leaves the tombstone');
+
+  // Legitimate re-initialization of the SAME session id (documented SDK
+  // flow) lifts the tombstone so the recreated session's janitor arms again.
+  clearDestroyedTombstone(host, { storage });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(host._w1SessionDestroyed, false, 're-init clears the destroyed flag');
+  assert.ok(!storage.map.has(SESSION_DESTROYED_KEY), 're-init deletes the tombstone key');
+  host._w1JanitorArmed = false;
+  ensureLogJanitor(host, { storage });
+  await host._w1AlarmChain;
+  assert.ok(storage.alarm !== null, 'the recreated session arms the janitor again');
+  // And a no-op on a live session (no spurious deletes).
+  const deletes = [];
+  clearDestroyedTombstone(host, { storage: { delete: async (k) => { deletes.push(k); } } });
+  assert.equal(deletes.length, 0, 'clear is a no-op when the session was never destroyed');
+  console.log('  [5b] a recreated session id lifts the tombstone and can arm the janitor again');
 }
 
 // ── [6] broadcast survives a log-store reset/rewire ────────────────────────

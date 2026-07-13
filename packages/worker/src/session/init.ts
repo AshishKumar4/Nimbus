@@ -2423,8 +2423,12 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
     // ── Register process commands (enhanced with facet process tracking) ──
     registry.register('ps', async (ctx: any) => {
-      ctx.stdout.write('  PID  STATUS              COMMAND\n');
-      for (const proc of self.processes.getAll()) {
+      // Pids are generation-strided (see PID_GEN_STRIDE) so they can be 7+
+      // digits; size the column to the widest pid in this listing.
+      const procs = self.processes.getAll();
+      const pidWidth = Math.max(3, ...procs.map((p: any) => String(p.pid).length));
+      ctx.stdout.write(`  ${'PID'.padStart(pidWidth)}  STATUS              COMMAND\n`);
+      for (const proc of procs) {
         // Prefer log-store exit info over ProcessTable's: the store has
         // the authoritative code and survives reap. For `running`, rely
         // on ProcessTable (store has no "running" concept).
@@ -2440,7 +2444,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             ? `\x1b[2mexited(0)\x1b[0m`
             : `\x1b[31mcrashed(${code})\x1b[0m`;
         }
-        ctx.stdout.write(`  ${String(proc.pid).padStart(3)}  ${status.padEnd(26)}  ${proc.command}\n`);
+        ctx.stdout.write(`  ${String(proc.pid).padStart(pidWidth)}  ${status.padEnd(26)}  ${proc.command}\n`);
       }
       // Show vite dev server
       if (self.viteDevServer?.isRunning) {
