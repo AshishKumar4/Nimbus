@@ -26,6 +26,7 @@ import {
   writeProcessInput,
 } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
+import { SESSION_DESTROYED_KEY } from './keys.js';
 
 interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -49,6 +50,7 @@ interface ProgrammaticContext {
     delete(key: string): Promise<void>;
     deleteAll(): Promise<void>;
     deleteAlarm(): Promise<void>;
+    put(key: string, value: unknown): Promise<void>;
   };
 }
 
@@ -67,6 +69,7 @@ interface ProgrammaticCirrusServer {
 }
 
 export interface ProgrammaticHost {
+  _w1SessionDestroyed: boolean;
   env: RuntimeCatalogEnv;
   ctx: ProgrammaticContext;
   shell: ProgrammaticShell | null;
@@ -584,6 +587,13 @@ export async function rpcDestroy(
   // its DO forever (the W1 janitor cycle), and the accumulated zombie
   // fleet's storage churn intermittently reset live session DOs.
   try { await self.ctx.storage.deleteAlarm(); } catch { /* best-effort */ }
+  // Tombstone (written AFTER the wipe, deliberately surviving it): a
+  // straggler facet RPC can wake this DO again, and its log activity must
+  // not re-arm the janitor alarm cycle on a destroyed session — this
+  // instance via the flag, any FUTURE instance via the persisted key
+  // (hydrated in the constructor).
+  self._w1SessionDestroyed = true;
+  try { await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt); } catch { /* best-effort */ }
 
   resetInMemorySessionState(self);
   return { ok: true, killed, destroyedAt, reason };
