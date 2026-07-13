@@ -18,25 +18,36 @@ const PIN_THRESHOLD = 40;
 export function usePinToBottom<T extends HTMLElement>(content: unknown): (node: T | null) => void {
   const el = useRef<T | null>(null);
   const pinned = useRef(true);
+  // scrollTop as of our last observation. Content growth changes
+  // scrollHeight but never scrollTop, so a differing value at effect time
+  // means the user scrolled even if their scroll event hasn't fired yet
+  // (renders committed from stream microtasks land before scroll events).
+  const lastTop = useRef(0);
 
-  const onScroll = useCallback(() => {
+  const observe = useCallback(() => {
     const node = el.current;
-    if (node) pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < PIN_THRESHOLD;
+    if (!node) return;
+    pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < PIN_THRESHOLD;
+    lastTop.current = node.scrollTop;
   }, []);
 
   const containerRef = useCallback((node: T | null) => {
-    el.current?.removeEventListener('scroll', onScroll);
+    el.current?.removeEventListener('scroll', observe);
     el.current = node;
     if (node) {
       pinned.current = true;
       node.scrollTop = node.scrollHeight;
-      node.addEventListener('scroll', onScroll, { passive: true });
+      lastTop.current = node.scrollTop;
+      node.addEventListener('scroll', observe, { passive: true });
     }
-  }, [onScroll]);
+  }, [observe]);
 
   useLayoutEffect(() => {
     const node = el.current;
-    if (node && pinned.current) node.scrollTop = node.scrollHeight;
+    if (!node) return;
+    if (node.scrollTop !== lastTop.current) observe();
+    if (pinned.current) node.scrollTop = node.scrollHeight;
+    lastTop.current = node.scrollTop;
   }, [content]);
 
   return containerRef;

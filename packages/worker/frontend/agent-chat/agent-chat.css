@@ -129,6 +129,10 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Pin-to-bottom (hooks.ts) is the sole scroll authority; browser scroll
+     anchoring would silently move scrollTop when messages re-key and read
+     as a user scroll. */
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
   padding: 18px 16px 22px;
