@@ -418,16 +418,47 @@ function agentChatStream(
   applyAuthCookieResult(headers, credentialResult.authResult);
 
   const credentials = credentialResult.credentials!;
+  // Client cancel (Stop button, closed tab) aborts the model turn and
+  // persists the partial assistant message so history stays truthful.
+  const abort = new AbortController();
+  let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
       const emit = (event: AgentStreamEvent) => {
-        controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+        if (cancelled) return;
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+        } catch {
+          // The consumer is gone; the abort path below persists the turn.
+          cancelled = true;
+          abort.abort();
+        }
       };
 
       const parts: StoredTurnPart[] = [];
       const assistantMessageId = crypto.randomUUID();
       const assistantCreatedAt = Date.now();
+
+      const persistPartialTurn = async () => {
+        if (parts.length === 0) return;
+        for (const part of parts) {
+          if (part.type === 'tool' && part.status === 'running') {
+            part.status = 'error';
+            part.error = 'Stopped by user';
+            if (part.output === undefined) part.output = { error: part.error };
+          }
+        }
+        const assistantMessage: StoredMessage = {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: textFromParts(parts),
+          createdAt: assistantCreatedAt,
+          parts,
+          aborted: true,
+        };
+        await saveMessages(self, [...messages, assistantMessage]);
+      };
 
       emit({ type: 'start', messages: trimMessagesForClient(messages) });
       emit({ type: 'message', message: userMessage });
@@ -441,9 +472,17 @@ function agentChatStream(
           tools: createAiSdkTools(self),
           stopWhen: isLoopFinished(),
           maxRetries: 0,
+          abortSignal: abort.signal,
         });
 
         for await (const chunk of result.fullStream) {
+          if (chunk.type === 'abort') {
+            cancelled = true;
+            break;
+          }
+          if (chunk.type === 'error') {
+            throw chunk.error instanceof Error ? chunk.error : new Error(stringifyError(chunk.error));
+          }
           if (chunk.type === 'text-delta') {
             appendTextPart(parts, 'text', chunk.text);
             emit({ type: 'text-delta', delta: chunk.text });
@@ -508,6 +547,11 @@ function agentChatStream(
           }
         }
 
+        if (cancelled) {
+          await persistPartialTurn();
+          return;
+        }
+
         const assistantMessage = {
           id: assistantMessageId,
           role: 'assistant' as const,
@@ -523,6 +567,11 @@ function agentChatStream(
           messages: trimMessagesForClient(nextMessages),
         });
       } catch (e: any) {
+        if (cancelled || e?.name === 'AbortError') {
+          cancelled = true;
+          await persistPartialTurn();
+          return;
+        }
         emit({
           type: 'error',
           error: e?.message || String(e),
@@ -530,8 +579,14 @@ function agentChatStream(
           messages: trimMessagesForClient(messages),
         });
       } finally {
-        controller.close();
+        if (!cancelled) {
+          try { controller.close(); } catch {}
+        }
       }
+    },
+    cancel() {
+      cancelled = true;
+      abort.abort();
     },
   });
 
