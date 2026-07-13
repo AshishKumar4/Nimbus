@@ -273,7 +273,24 @@ async function routeProcessLogClientMessage(
   const pid = attach.pid;
   if (!pid) return;
   const entry = self.processes.get(pid);
-  if (!entry || entry.state !== 'running') return;
+  if (!entry || entry.state !== 'running') {
+    // The process is gone. For a tab that survived a DO instance reset
+    // (its attached pid predates this generation's pid floor) be explicit:
+    // a refused ack plus an honest exit frame, instead of silence under a
+    // frozen frame.
+    let frame;
+    try { frame = parseProcessLogClientFrame(typeof message === 'string' ? message : dec.decode(message)); } catch { frame = null; }
+    if (frame) sendProcessInputAck(ws, pid, false, frame.type);
+    if (pid <= self.processes.pidBase) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'exit', pid, code: 137, at: Date.now(),
+          reason: 'process lost: instance reset',
+        }));
+      } catch { /* socket closing */ }
+    }
+    return;
+  }
 
   let frame: ReturnType<typeof parseProcessLogClientFrame>;
   try {

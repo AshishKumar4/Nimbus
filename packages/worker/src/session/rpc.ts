@@ -414,7 +414,25 @@ export async function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): Pro
     return npmCache.putRegistryEntries(entries);
 }
 
+/**
+ * Post-reset semantics: a pid at or below the current generation's pid floor
+ * belongs to a facet spawned by a PREVIOUS DO instance (see PID_GEN_STRIDE).
+ * The in-memory process state that owned it — table entry, input store, shell
+ * association — died with that instance, so the coherent contract is a clean,
+ * attributed death: refuse its output, kill its stdin pump, and mark/broadcast
+ * an honest exit so a surviving process-terminal tab shows what happened
+ * instead of a silent half-alive display.
+ */
+function isPriorGenerationPid(self: RpcHost, pid: number): boolean {
+  return pid > 0 && pid <= self.processes.pidBase;
+}
+
+const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
+
 export async function _rpcStdout(self: RpcHost, pid: number, data: string): Promise<void> {
+    // Prior-generation straggler (facet outlived a DO instance reset): drop —
+    // its output must not merge into this generation's logs or shell.
+    if (isPriorGenerationPid(self, pid)) return;
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
     // output. Skip pid=0 (the supervisor-rpc fallback when no props.pid
@@ -435,6 +453,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
 }
 
 export async function _rpcStderr(self: RpcHost, pid: number, data: string): Promise<void> {
+    if (isPriorGenerationPid(self, pid)) return;
     try {
       if (pid > 0) self.processes.appendOutput(pid, 'stderr', data);
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
@@ -449,7 +468,14 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: string): Prom
 
 function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
   if (pid <= 0) return true;
-  return self.processes.get(pid)?.attachedTty !== true;
+  const entry = self.processes.get(pid);
+  // No table entry: either a reaped process's late flush or a facet that
+  // outlived an instance reset. Neither owns the user's shell anymore — the
+  // output still lands in the log ring above, never on the shell WS (an
+  // attached-TTY straggler would otherwise spray alternate-screen ANSI over
+  // the prompt).
+  if (!entry) return false;
+  return entry.attachedTty !== true;
 }
 
   /**
@@ -462,6 +488,14 @@ function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
    */
 export async function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string): Promise<void> {
     if (pid <= 0) return; // Ignore the pid-0 sentinel.
+    // Prior-generation straggler unwinding after an instance reset: this
+    // instance never owned the pid, so skip the table/lifecycle plumbing and
+    // record ONLY the honest exit — the log store broadcast reaches any
+    // surviving process-terminal tab still attached to the old pid.
+    if (isPriorGenerationPid(self, pid)) {
+      self.processes.markExit(pid, code, PRIOR_GENERATION_EXIT_REASON);
+      return;
+    }
     try { self.processes.closeInput(pid); } catch {}
     if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -731,6 +765,13 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<v
 }
 
 export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number) {
+    // Prior-generation straggler: its ProcessInputStore died with the old
+    // instance. Deliver a kill so the facet's stdin pump unwinds immediately
+    // with explicit semantics (__ProcessExit(137) → reportExit → the honest
+    // prior-generation exit mark above) instead of polling a void.
+    if (isPriorGenerationPid(self, childPid)) {
+      return { signal: 'SIGKILL', ended: true };
+    }
     if (self.processes.hasInput(childPid)) {
       return self.processes.readInput(childPid, waitMs);
     }

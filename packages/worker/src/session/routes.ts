@@ -136,11 +136,6 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     // served app's module URLs, HMR paths, <base href>, and router basename
     // all resolve under `/s/<id>/preview/...`.
     await self.hydrateSessionBasePath(request);
-    // W9: bump the isolate generation counter on the FIRST request of a
-    // new isolate (cold start or post-hibernation wake). Cheap — one
-    // storage.get + one storage.put per isolate. Subsequent calls in the
-    // same isolate are a fast no-op (gated by _w9IsolateGenPersisted).
-    await self._w9MaybeBumpIsolateGen();
 
     // ── W12 — DO read replica preflight ─────────────────────────────────
     //
