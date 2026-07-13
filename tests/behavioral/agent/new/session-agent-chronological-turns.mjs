@@ -123,7 +123,7 @@ try {
       .filter((el) => !el.classList.contains('agent-meta'))
       .map((el) => {
         if (el.classList.contains('agent-reasoning')) return 'reasoning';
-        if (el.classList.contains('agent-bubble')) return `text:${el.textContent.trim()}`;
+        if (el.classList.contains('agent-text')) return `text:${el.textContent.trim()}`;
         if (el.classList.contains('agent-tool')) {
           const name = el.querySelector('.tool-name')?.textContent || '';
           const state = el.classList.contains('error') ? 'error' : el.classList.contains('done') ? 'done' : 'running';

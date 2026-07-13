@@ -14,6 +14,7 @@ import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Ur
 import { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CLOUDFLARE_API, readNimbusCookie, readNimbusAgentCookieSecret, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { appendTextPart, textFromParts, upsertToolPart, } from './agent-contract.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
@@ -94,7 +95,7 @@ async function agentStatus(self, request, url) {
     const connected = !!auth?.accessToken || ownerConfigured;
     const headers = new Headers();
     applyAuthCookieResult(headers, authResult);
-    return json({
+    const payload = {
         ok: true,
         configured: oauthConfigured || ownerConfigured,
         model: config.model,
@@ -123,7 +124,8 @@ async function agentStatus(self, request, url) {
             'processes',
             'ports',
         ],
-    }, 200, headers);
+    };
+    return json(payload, 200, headers);
 }
 async function oauthStart(self, request, url) {
     const config = readConfig(self, url);
@@ -241,8 +243,9 @@ async function selectAccount(self, request) {
 }
 async function agentChat(self, request, url) {
     const body = await readJson(request);
+    const retry = body?.retry === true;
     const text = String(body?.message || '').trim();
-    if (!text)
+    if (!retry && !text)
         return json({ error: 'message is required' }, 400);
     const credentialResult = await loadAiCredentials(self, request, url);
     if (!credentialResult.credentials) {
@@ -255,9 +258,24 @@ async function agentChat(self, request, url) {
     }
     const config = readConfig(self, url);
     const messages = await loadMessages(self);
-    const userMessage = makeMessage('user', text);
-    messages.push(userMessage);
-    await saveMessages(self, messages);
+    let userMessage;
+    if (retry) {
+        // Re-run the last user turn: drop the trailing assistant answer (if
+        // any) and stream a fresh one. No duplicate user message is stored.
+        if (messages[messages.length - 1]?.role === 'assistant')
+            messages.pop();
+        const last = messages[messages.length - 1];
+        if (!last || last.role !== 'user') {
+            return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
+        }
+        userMessage = last;
+        await saveMessages(self, messages);
+    }
+    else {
+        userMessage = makeMessage('user', text);
+        messages.push(userMessage);
+        await saveMessages(self, messages);
+    }
     if (body?.stream === false) {
         return agentChatJson(self, config, credentialResult, messages);
     }
@@ -294,15 +312,57 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
     headers.set('Content-Type', 'application/x-ndjson; charset=utf-8');
     applyAuthCookieResult(headers, credentialResult.authResult);
     const credentials = credentialResult.credentials;
+    // Client cancel (Stop button, closed tab) aborts the model turn and
+    // persists the partial assistant message so history stays truthful.
+    const abort = new AbortController();
+    let cancelled = false;
     const stream = new ReadableStream({
         async start(controller) {
             const encoder = new TextEncoder();
             const emit = (event) => {
-                controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+                if (cancelled)
+                    return;
+                try {
+                    controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+                }
+                catch {
+                    // The consumer is gone; the abort path below persists the turn.
+                    cancelled = true;
+                    abort.abort();
+                }
             };
             const parts = [];
             const assistantMessageId = crypto.randomUUID();
             const assistantCreatedAt = Date.now();
+            // Persist whatever the turn produced before terminating abnormally
+            // (client Stop or terminal stream error) so history stays truthful:
+            // executed tools and streamed text are recorded and the message
+            // carries the terminal marker. Returns the persisted list, or null
+            // when nothing had streamed yet.
+            const persistPartialTurn = async (terminalError) => {
+                if (parts.length === 0)
+                    return null;
+                const reason = terminalError ?? 'Stopped by user';
+                for (const part of parts) {
+                    if (part.type === 'tool' && part.status === 'running') {
+                        part.status = 'error';
+                        part.error = reason;
+                        if (part.output === undefined)
+                            part.output = { error: reason };
+                    }
+                }
+                const assistantMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: textFromParts(parts),
+                    createdAt: assistantCreatedAt,
+                    parts,
+                    ...(terminalError === undefined ? { aborted: true } : { error: terminalError }),
+                };
+                const nextMessages = [...messages, assistantMessage];
+                await saveMessages(self, nextMessages);
+                return nextMessages;
+            };
             emit({ type: 'start', messages: trimMessagesForClient(messages) });
             emit({ type: 'message', message: userMessage });
             emit({ type: 'assistant-start', messageId: assistantMessageId, createdAt: assistantCreatedAt });
@@ -314,8 +374,16 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                     tools: createAiSdkTools(self),
                     stopWhen: isLoopFinished(),
                     maxRetries: 0,
+                    abortSignal: abort.signal,
                 });
                 for await (const chunk of result.fullStream) {
+                    if (chunk.type === 'abort') {
+                        cancelled = true;
+                        break;
+                    }
+                    if (chunk.type === 'error') {
+                        throw chunk.error instanceof Error ? chunk.error : new Error(stringifyError(chunk.error));
+                    }
                     if (chunk.type === 'text-delta') {
                         appendTextPart(parts, 'text', chunk.text);
                         emit({ type: 'text-delta', delta: chunk.text });
@@ -384,6 +452,10 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                         });
                     }
                 }
+                if (cancelled) {
+                    await persistPartialTurn();
+                    return;
+                }
                 const assistantMessage = {
                     id: assistantMessageId,
                     role: 'assistant',
@@ -400,16 +472,32 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                 });
             }
             catch (e) {
+                if (cancelled || e?.name === 'AbortError') {
+                    cancelled = true;
+                    await persistPartialTurn();
+                    return;
+                }
+                const errorText = e?.message || String(e);
+                const persisted = await persistPartialTurn(errorText);
                 emit({
                     type: 'error',
-                    error: e?.message || String(e),
+                    error: errorText,
                     code: 'E_AGENT_TURN_FAILED',
-                    messages: trimMessagesForClient(messages),
+                    messages: trimMessagesForClient(persisted ?? messages),
                 });
             }
             finally {
-                controller.close();
+                if (!cancelled) {
+                    try {
+                        controller.close();
+                    }
+                    catch { }
+                }
             }
+        },
+        cancel() {
+            cancelled = true;
+            abort.abort();
         },
     });
     return new Response(stream, { status: 200, headers });
@@ -589,41 +677,6 @@ function collectTurnParts(result) {
     if (parts.length === 0 && result.text)
         appendTextPart(parts, 'text', String(result.text));
     return parts;
-}
-function appendTextPart(parts, type, delta) {
-    if (!delta)
-        return;
-    const last = parts[parts.length - 1];
-    if (last?.type === type) {
-        last.text += delta;
-        return;
-    }
-    parts.push({ type, text: delta });
-}
-function upsertToolPart(parts, patch) {
-    let part = parts.find((item) => (item.type === 'tool' && item.toolCallId === patch.toolCallId));
-    if (!part) {
-        part = {
-            type: 'tool',
-            toolCallId: patch.toolCallId,
-            toolName: patch.toolName,
-            status: patch.status || 'running',
-        };
-        parts.push(part);
-    }
-    const startedAt = part.startedAt;
-    Object.assign(part, patch);
-    if (startedAt && patch.status && patch.status !== 'running' && !part.durationMs) {
-        part.durationMs = Date.now() - startedAt;
-    }
-    return part;
-}
-function textFromParts(parts) {
-    return parts
-        .filter((part) => part.type === 'text')
-        .map((part) => part.text)
-        .join('')
-        .trim();
 }
 function appendAssistantModelMessages(modelMessages, message) {
     const parts = normalizeMessageParts(message);
