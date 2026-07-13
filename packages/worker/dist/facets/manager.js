@@ -201,21 +201,19 @@ function __makeEntrypointPromiseTracker() {
     //   - Pending macrotask TIMERS/intervals (\`__timersPending\`) DO keep the
     //     loop alive (nuxi settles through setTimeout-driven steps).
     //
-    // The pass budget — NOT the wall-clock deadline — is the real bound on
-    // BOTH branches: workerd does not advance \`Date.now()\` while an isolate
-    // spins without I/O (measured \`elapsed=0\` across the whole drain), so a
-    // no-I/O drain loops forever against a deadline that never trips. The
-    // promise branch was already pass-bounded; the timer branch must be too,
-    // or a foreground facet that leaves a pending timer/interval (a listening
-    // server's keep-alive, a TTL timeout, a \`--watch\` poller) spins the drain
-    // forever and the shell never redraws the prompt. Each pass is one
-    // untracked-setTimeout(0) macrotask; the scaffolders complete their
-    // RPC-streamed writes within a few thousand passes, while a stuck chain or
-    // idle long-running server exhausts the budget in well under a second
-    // (~1.8s for 50k passes, far below the facet timeout). Under a live clock
-    // (scaffolders doing real RPC I/O) the deadline still trips first — 50k
-    // setTimeout(0) passes take far longer than \`deadlineMs\` — so it only
-    // backstops the frozen-clock case and leaves scaffolder behavior unchanged.
+    // BOTH branches are bounded by the wall-clock deadline AND the pass
+    // budget, because each bound covers the other's blind spot: workerd does
+    // not advance \`Date.now()\` while an isolate spins without I/O (measured
+    // \`elapsed=0\` across the whole drain), so a no-I/O drain loops forever
+    // against a deadline that never trips — the pass budget is the frozen-
+    // clock backstop. Under a live clock (host tests, drains interleaved with
+    // real I/O) a setTimeout(0) pass costs ~1ms of clamped timer, so the 50k
+    // budget alone would spin for tens of seconds — the deadline is the
+    // live-clock bound, tripping long before the budget. Scaffolders settle
+    // their multi-tick chains well inside both bounds, so a stuck chain, an
+    // idle long-running server's keep-alive, a TTL timeout, or a \`--watch\`
+    // poller ends the drain promptly instead of pinning the facet and the
+    // shell prompt.
     async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
       const __start = Date.now();
       const __maxPromisePasses = 50000;
@@ -233,7 +231,7 @@ function __makeEntrypointPromiseTracker() {
         !__exited
           && (__pass < minPasses
             || (__timersPending() > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses)
-            || (__tracked.size > 0 && __pass < __maxPromisePasses));
+            || (__tracked.size > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses));
         __pass++
       ) {
         await new Promise((resolve) => __rawSetTimeout(resolve, 0));
