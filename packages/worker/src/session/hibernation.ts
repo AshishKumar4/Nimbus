@@ -56,6 +56,8 @@ export interface HibHost {
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
+  /** W1: log-janitor alarm believed armed for this instance (cheap guard). */
+  _w1JanitorArmed: boolean;
 }
 
 /**
@@ -190,7 +192,36 @@ export function wireProcessLogPersist(host: HibHost, ctx: any): void {
   // exit-after-spawn doesn't double-fire. The store doesn't (and
   // shouldn't) know about timers — flush scheduling is the host's
   // responsibility.
-  host.processes.setLogPersist(adapter, () => scheduleHibFlush(host, ctx));
+  //
+  // The W1 log-janitor sweep is armed here too — on log ACTIVITY, not in
+  // the DO constructor. A constructor-armed janitor re-armed itself on
+  // every boot, including boots caused by a destroyed session's own
+  // leftover alarm, making every session DO ever created fire an alarm
+  // every ~60s forever (see dispatchAlarm's re-arm condition below).
+  host.processes.setLogPersist(adapter, () => {
+    scheduleHibFlush(host, ctx);
+    ensureLogJanitor(host, ctx);
+  });
+}
+
+/**
+ * W1: arm the log-janitor alarm cycle for this instance. Called from the
+ * log-activity hook so only sessions that actually produce process logs
+ * carry the sweep alarm. Idempotent per instance via `_w1JanitorArmed`;
+ * dispatchAlarm clears the flag when it stops re-arming (idle session)
+ * so the next burst of log activity re-arms the cycle.
+ *
+ * Why alarm-based instead of setTimeout: a recurring setTimeout prevents
+ * the DO from hibernating (billed duration continuously). Alarms persist
+ * across hibernation; the DO sleeps between fires.
+ */
+export function ensureLogJanitor(host: HibHost, ctx: any): void {
+  if (host._w1JanitorArmed) return;
+  host._w1JanitorArmed = true;
+  // Fire-and-forget: scheduleAlarm is async (storage IO) but the append
+  // hot path must not block on it. Any throw is swallowed inside
+  // scheduleAlarm.
+  void scheduleAlarm(ctx, 'log-janitor', Date.now() + 60_000);
 }
 
 /** W9: idempotent SQL schema bootstrap. */
@@ -357,8 +388,23 @@ export async function dispatchAlarm(
           host.processes.flushLogs();
         } else if (reason === 'log-janitor') {
           host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);
-          // Self-renew: schedule next sweep 60s out.
-          map['log-janitor'] = now + 60_000;
+          // Re-arm only while the session still has running processes or
+          // buffered logs to sweep. An idle, abandoned, or destroyed
+          // session must NOT keep an eternal 60s alarm loop alive: the
+          // janitor used to self-renew unconditionally (and the DO
+          // constructor re-armed it on every alarm-triggered boot), so
+          // every session ever created kept booting its DO every ~60s
+          // forever. The accumulated fleet of deleted probe sessions
+          // produced continuous DO-storage churn (measured ~24 zombie
+          // boots/s on 2026-07-13) that intermittently reset LIVE
+          // session DOs mid-run ("Internal error in Durable Object
+          // storage caused object to be reset"). The next log append
+          // re-arms the cycle via ensureLogJanitor.
+          if (host.processes.stats.running > 0 || host.processes.logStats.totalPids > 0) {
+            map['log-janitor'] = now + 60_000;
+          } else {
+            host._w1JanitorArmed = false;
+          }
         }
         // Unknown reasons silently dropped (forward-compat).
       } catch (e: any) {

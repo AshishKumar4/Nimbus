@@ -46,7 +46,7 @@ import { seedProject } from '../vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX } from './keys.js';
 import { enc, dec } from '../_shared/bytes.js';
-import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
+import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // ── W12 — Lever 12/G3/H1 + Lever 7/G4 — DO read replicas + Smart Placement
 //
 // `replica-routing.ts` is a pure module (no `cloudflare:workers` import) so it
@@ -323,7 +323,7 @@ export class NimbusSession extends CloudflareDurableObject {
    *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
    *  prevented hibernation per CF DO docs). The alarm itself lives in
    *  DO storage at key `w1_next_alarm_reasons`. */
-  processLogsJanitorWired: boolean = false;
+  _w1JanitorArmed: boolean = false;
 
   // ── W9 — hibernation persistence + auto-response config ───────────────
   /**
@@ -441,12 +441,11 @@ export class NimbusSession extends CloudflareDurableObject {
     const ctxExports = (ctx as any)?.exports;
     if (ctxExports) setCtxExports(ctxExports);
     this.portRegistry = new PortRegistry();
-    // W1: log-janitor moved to alarm-driven scheduling (was a
-    // self-renewing setTimeout chain at rpc.ts:_ensureLogJanitor;
-    // per CF DO docs that prevented hibernation, billing duration
-    // continuously). The delegator below forwards `this.ctx` so
-    // scheduleAlarm can write to ctx.storage.
-    this._ensureLogJanitor();
+    // W1: the log-janitor alarm is armed on log ACTIVITY (see
+    // hibernation.ts ensureLogJanitor), NOT here. Arming it in the
+    // constructor made every boot re-arm the cycle — including boots
+    // caused by a destroyed session's own leftover alarm — so every
+    // session DO ever created kept firing an alarm every ~60s forever.
 
     // ── W9 (CF research §C.3 + §C.4) ──────────────────────────────────
     //
@@ -468,6 +467,12 @@ export class NimbusSession extends CloudflareDurableObject {
     // happens here so any subsequent call (including initSession) sees
     // the adapter in place.
     this._w9WireProcessLogPersist();
+
+    // Wire the attachment-driven process-terminal WS fan-out. Must run on
+    // EVERY instance boot: accepted process-log sockets survive instance
+    // resets/hibernation, but any per-instance subscription state does not
+    // (see wireProcessLogSocketBroadcast).
+    wireProcessLogSocketBroadcast(this.processes, this.ctx as any);
 
     // ── W12 — Lever 12 / G3 / H1 — DO read replicas (best-effort).
     //
@@ -627,7 +632,6 @@ export class NimbusSession extends CloudflareDurableObject {
   _emitExitDump(pid: number, code: number): void { return _rpc._emitExitDump(this as any, pid, code); }
   _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void { return _rpc._emitShellExecDone(this as any, pid, cmd, code, durationMs); }
   _reportExternalExit(pid: number, code: number, reason: string): void { return _rpc._reportExternalExit(this as any, pid, code, reason); }
-  _ensureLogJanitor(): void { return _rpc._ensureLogJanitor(this as any, this.ctx); }
 
   // Misc supervisor RPC
   async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return _rpc._rpcPrefetch(this as any, cwd, entryCode); }

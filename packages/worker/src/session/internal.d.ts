@@ -175,7 +175,6 @@ export interface SessionInternal {
   _emitExitDump(pid: number, code: number): void;
   _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void;
   _reportExternalExit(pid: number, code: number, reason: string): void;
-  _ensureLogJanitor(): void;
 
   // Programmatic sandbox SDK RPC.
   _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;

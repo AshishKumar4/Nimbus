@@ -3079,11 +3079,28 @@ function __makeProcessStdin() {
     } catch {}
   }
   async function pumpLiveStdin() {
+    let readFailures = 0;
     while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
-      const packet = await __nimbusUseRpcResult(
-        __supervisor.cpReadStdin(liveChildPid, 1000),
-        (result) => result,
-      );
+      let packet;
+      try {
+        packet = await __nimbusUseRpcResult(
+          __supervisor.cpReadStdin(liveChildPid, 1000),
+          (result) => result,
+        );
+        readFailures = 0;
+      } catch (pumpErr) {
+        // Transient supervisor failure — e.g. the session Durable Object
+        // instance was reset mid-flight ("Internal error in Durable Object
+        // storage caused object to be reset"). The binding routes by DO id,
+        // so the next call lands on the fresh instance; killing the pump
+        // (and falsely reporting exit 1) on the first rejection turned a
+        // recoverable blip into a dead TUI. Retry with a short pause and
+        // give up only on persistent failure.
+        readFailures++;
+        if (readFailures > 10) throw pumpErr;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
       if (packet && packet.resize) {
         __nimbusTtyColumns = Number(packet.resize.columns) || __nimbusTtyColumns;
         __nimbusTtyRows = Number(packet.resize.rows) || __nimbusTtyRows;
