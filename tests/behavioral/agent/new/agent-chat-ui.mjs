@@ -205,23 +205,37 @@ try {
   const status = await statusResponse.json();
   a.check('agent status API returns ok', statusResponse.status === 200 && status.ok === true, JSON.stringify(status));
 
+  const expectedStatusText = status.connected
+    ? `${status.oauth?.connected ? 'Cloudflare connected' : status.ownerToken?.configured ? 'Owner token' : 'Ready'} · ${status.model}`
+    : status.configured
+      ? 'Connect Cloudflare'
+      : 'AI not configured';
+  const expectedConnectVisible = !!status.oauth?.configured && !status.oauth.connected;
+
   await page.evaluate(() => window.NimbusAgent.ensureLoaded());
-  await page.waitForFunction(() => {
-    const text = document.getElementById('agentStatus')?.textContent || '';
-    return text && text !== 'Checking...';
-  }, { timeout: 30_000 });
+  await page.waitForFunction((expected) => (
+    document.getElementById('agentStatus')?.textContent === expected
+  ), { timeout: 30_000 }, expectedStatusText);
+
+  const readGate = () => page.evaluate(() => ({
+    inputDisabled: document.getElementById('agentInput')?.disabled ?? false,
+    sendDisabled: document.getElementById('agentSend')?.disabled ?? false,
+    composerDisabled: document.querySelector('.composer-card')?.classList.contains('disabled') ?? false,
+    connectVisible: !!document.getElementById('agentConnect'),
+    statusText: document.getElementById('agentStatus')?.textContent || '',
+  }));
 
   if (!status.connected) {
-    const gate = await page.evaluate(() => ({
-      inputDisabled: document.getElementById('agentInput')?.disabled ?? false,
-      sendDisabled: document.getElementById('agentSend')?.disabled ?? false,
-      connectVisible: !!document.getElementById('agentConnect'),
-      statusText: document.getElementById('agentStatus')?.textContent || '',
-    }));
+    const gate = await readGate();
     a.check('connect gate disables the composer when AI is unavailable',
-      gate.inputDisabled && gate.sendDisabled, JSON.stringify(gate));
-    a.check('connect gate surfaces the Connect affordance or config warning',
-      gate.connectVisible || /not configured/i.test(gate.statusText), JSON.stringify(gate));
+      gate.inputDisabled && gate.sendDisabled && gate.composerDisabled, JSON.stringify(gate));
+    if (status.oauth?.configured) {
+      a.check('OAuth mode surfaces the Connect affordance',
+        gate.connectVisible && gate.statusText === expectedStatusText, JSON.stringify(gate));
+    } else {
+      a.check('unconfigured mode surfaces the configuration warning',
+        !gate.connectVisible && gate.statusText === expectedStatusText, JSON.stringify(gate));
+    }
 
     // Stop/abort against the real backend needs a live model turn; without
     // credentials the endpoint must refuse cleanly instead.
@@ -241,6 +255,20 @@ try {
     });
     a.check('unauthenticated retry also refuses cleanly', retryResponse.status === 409, `status=${retryResponse.status}`);
   } else {
+    await page.type('#agentInput', 'mode check');
+    const gate = await readGate();
+    a.check('configured credential mode enables the composer',
+      !gate.inputDisabled && !gate.sendDisabled && !gate.composerDisabled,
+      JSON.stringify(gate));
+    a.check('configured credential mode shows only the applicable OAuth affordance and identifies the active mode',
+      gate.connectVisible === expectedConnectVisible && gate.statusText === expectedStatusText,
+      JSON.stringify(gate));
+    await page.$eval('#agentInput', (input) => {
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.getElementById('agentSend')?.disabled === true);
+
     // Live credentials: exercise a real send + stop; the backend must
     // persist the partial turn (or a complete one if it finished first).
     await page.evaluate(() => window.NimbusAgent.ensureLoaded());

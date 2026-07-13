@@ -61,9 +61,9 @@ export function setPhase(
 }
 
 /**
- * [B'.5] Determine whether the next /ws upgrade should run the warm-
- * rejoin path (Phase R + Phase W only) or the full cold-init path
- * (R + B + W + O + hydrated).
+ * [B'.5] Identify the original phase-based warm-rejoin case. The /ws
+ * upgrade classifier below also recognizes headless sessions whose
+ * lifecycle phase does not describe a real terminal attachment.
  *
  * Conditions for warm rejoin:
  *   1. Phase = 'drained' (a wsClose / wsError fired since last init).
@@ -71,7 +71,6 @@ export function setPhase(
  *      [B'.5] change to wsClose stopped nulling them).
  *   3. Same isolate (no DO eviction since the close).
  *
- * If ANY condition fails, the full cold-init path is the safe choice.
  */
 export function isWarmRejoin(self: {
   _b4Phase: SessionState | null;
@@ -81,6 +80,40 @@ export function isWarmRejoin(self: {
       && self.shell != null
       && self.terminal != null
       && self.kernel != null;
+}
+
+type WsUpgradeDecision = 'warm-join' | 'conflict' | 'cold';
+
+/**
+ * Classify a shell WebSocket upgrade from the actual attachment state.
+ * A non-null Shell can belong to a headless programmatic boot, so only an
+ * open socket tagged as `shell` proves that another browser terminal is
+ * currently attached.
+ */
+export function classifyWsUpgrade(self: {
+  _b4Phase: SessionState | null;
+  shell: unknown;
+  terminal: unknown;
+  kernel: unknown;
+}, sockets: readonly WebSocket[]): WsUpgradeDecision {
+  if (isWarmRejoin(self)) return 'warm-join';
+  if (self.shell == null) return 'cold';
+  if (self.terminal == null || self.kernel == null) return 'conflict';
+
+  const hasOpenShellSocket = sockets.some((socket) => {
+    if (socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      const attachment: unknown = socket.deserializeAttachment();
+      return typeof attachment === 'object'
+        && attachment !== null
+        && 'kind' in attachment
+        && attachment.kind === 'shell';
+    } catch {
+      return false;
+    }
+  });
+
+  return hasOpenShellSocket ? 'conflict' : 'warm-join';
 }
 
 /**

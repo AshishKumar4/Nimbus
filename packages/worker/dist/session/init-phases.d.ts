@@ -43,9 +43,9 @@ export declare function setPhase(self: {
     _w9IsolateGen?: number;
 }, toState: SessionState, trigger: string): void;
 /**
- * [B'.5] Determine whether the next /ws upgrade should run the warm-
- * rejoin path (Phase R + Phase W only) or the full cold-init path
- * (R + B + W + O + hydrated).
+ * [B'.5] Identify the original phase-based warm-rejoin case. The /ws
+ * upgrade classifier below also recognizes headless sessions whose
+ * lifecycle phase does not describe a real terminal attachment.
  *
  * Conditions for warm rejoin:
  *   1. Phase = 'drained' (a wsClose / wsError fired since last init).
@@ -53,7 +53,6 @@ export declare function setPhase(self: {
  *      [B'.5] change to wsClose stopped nulling them).
  *   3. Same isolate (no DO eviction since the close).
  *
- * If ANY condition fails, the full cold-init path is the safe choice.
  */
 export declare function isWarmRejoin(self: {
     _b4Phase: SessionState | null;
@@ -61,6 +60,19 @@ export declare function isWarmRejoin(self: {
     terminal: any;
     kernel: any;
 }): boolean;
+type WsUpgradeDecision = 'warm-join' | 'conflict' | 'cold';
+/**
+ * Classify a shell WebSocket upgrade from the actual attachment state.
+ * A non-null Shell can belong to a headless programmatic boot, so only an
+ * open socket tagged as `shell` proves that another browser terminal is
+ * currently attached.
+ */
+export declare function classifyWsUpgrade(self: {
+    _b4Phase: SessionState | null;
+    shell: unknown;
+    terminal: unknown;
+    kernel: unknown;
+}, sockets: readonly WebSocket[]): WsUpgradeDecision;
 /**
  * [B'.5] Run the warm-rejoin path. Skips Phase B (kernel + shell are
  * already built and alive in-memory). Phase R loads any state that
@@ -84,4 +96,5 @@ export declare function joinExistingSession(self: {
     _w9IsolateGen?: number;
     _b4WarmJoinCount: number;
 }, ws: WebSocket, appendScrollback: (ctx: any, data: string, atMs: number) => void, loadScrollback: (ctx: any) => string): void;
+export {};
 //# sourceMappingURL=init-phases.d.ts.map

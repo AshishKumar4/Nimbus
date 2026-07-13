@@ -31,7 +31,7 @@ import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, record
 import { LRU_MAX_ENTRIES } from '../constants.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '../observability/heap-estimate.js';
 import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
-import { isWarmRejoin, joinExistingSession } from './init-phases.js';
+import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -166,15 +166,28 @@ export async function handleFetch(self, request) {
             return new Response(null, { status: 101, webSocket: client });
         }
         // [B'.5] Three-way decision on a /ws upgrade:
-        //   1. Warm rejoin: a wsClose/wsError fired earlier and left
-        //      kernel/shell/terminal alive in-memory. Re-attach the
-        //      new ws to the existing Shell — Phase B skipped.
+        //   1. Warm join: kernel/shell/terminal are alive in-memory and
+        //      no real open shell socket is attached. This includes both
+        //      a drained browser session and a headless programmatic boot.
+        //      The lifecycle phase alone does not prove that a browser
+        //      terminal socket is currently attached.
         //   2. Cold init: no shell yet (first connect, or post-DO-
         //      eviction). Run the full R/B/W/O sequence.
-        //   3. Active conflict: Shell is non-null AND phase != drained,
-        //      meaning some other /ws is already attached. 409 to
-        //      prevent two-tab cross-wiring (multi-tab share is a
-        //      separate feature; B'.5 doesn't enable it).
+        //   3. Active conflict: an open socket tagged `shell` proves
+        //      another browser terminal is attached. 409 prevents
+        //      two-tab cross-wiring (multi-tab share is separate).
+        // Decide before accepting/tagging the incoming server socket so
+        // it cannot be mistaken for an already-attached terminal.
+        const wsUpgrade = classifyWsUpgrade(self, self.ctx.getWebSockets());
+        if (wsUpgrade === 'conflict') {
+            return new Response(JSON.stringify({
+                error: 'session already has active terminal',
+                hint: 'open a new /new session',
+            }), {
+                status: 409,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
         self.ctx.acceptWebSocket(server);
@@ -182,7 +195,7 @@ export async function handleFetch(self, request) {
             server.serializeAttachment?.({ kind: 'shell' });
         }
         catch { }
-        if (isWarmRejoin(self)) {
+        if (wsUpgrade === 'warm-join') {
             // Warm rejoin path. The existing Shell is alive; we just
             // swap the WebSocketTerminal's ws ref + replay scrollback.
             try {
@@ -193,17 +206,6 @@ export async function handleFetch(self, request) {
                 return new Response('Rejoin failed: ' + err?.message, { status: 500 });
             }
             return new Response(null, { status: 101, webSocket: client });
-        }
-        if (self.shell != null) {
-            // Active conflict — Shell exists and isn't drained. Some
-            // other /ws is attached; reject this one.
-            return new Response(JSON.stringify({
-                error: 'session already has active terminal',
-                hint: 'open a new /new session',
-            }), {
-                status: 409,
-                headers: { 'Content-Type': 'application/json' },
-            });
         }
         // Cold init path — first ever /ws (or post-DO-eviction).
         try {
