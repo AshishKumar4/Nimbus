@@ -96,6 +96,9 @@ export declare class NimbusSession extends CloudflareDurableObject {
      *  prevented hibernation per CF DO docs). The alarm itself lives in
      *  DO storage at key `w1_next_alarm_reasons`. */
     _w1JanitorArmed: boolean;
+    /** Destroyed-session tombstone (SESSION_DESTROYED_KEY), hydrated at boot.
+     *  While set, log activity never re-arms the janitor alarm cycle. */
+    _w1SessionDestroyed: boolean;
     /**
      * Result of `configureWsHibernation` at constructor time. Exposed via
      * `/api/_diag/memory` under `hib.autoResponseConfigured`,

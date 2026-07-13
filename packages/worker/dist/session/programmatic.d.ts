@@ -33,6 +33,7 @@ interface ProgrammaticContext {
         delete(key: string): Promise<void>;
         deleteAll(): Promise<void>;
         deleteAlarm(): Promise<void>;
+        put(key: string, value: unknown): Promise<void>;
     };
 }
 interface ProgrammaticFacetManager {
@@ -47,6 +48,7 @@ interface ProgrammaticCirrusServer {
     stop(ctx: ProgrammaticContext): void;
 }
 export interface ProgrammaticHost {
+    _w1SessionDestroyed: boolean;
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
     shell: ProgrammaticShell | null;

@@ -241,6 +241,8 @@ export declare class FacetManager {
      */
     private openTuiWasmBytes;
     private openTuiWasmBytesPromise;
+    /** In-flight (never resident) opencode chunk-pack fetch+parse dedupe. */
+    private opencodeChunkEntriesInflight;
     /**
      * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
      * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config

@@ -11,6 +11,7 @@ import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
@@ -31,7 +32,7 @@ import { setCtxExports } from './ctx-exports.js';
 import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '../constants.js';
 import { seedProject } from '../vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
-import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX } from './keys.js';
+import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
 import { dec } from '../_shared/bytes.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
@@ -248,6 +249,9 @@ export class NimbusSession extends CloudflareDurableObject {
      *  prevented hibernation per CF DO docs). The alarm itself lives in
      *  DO storage at key `w1_next_alarm_reasons`. */
     _w1JanitorArmed = false;
+    /** Destroyed-session tombstone (SESSION_DESTROYED_KEY), hydrated at boot.
+     *  While set, log activity never re-arms the janitor alarm cycle. */
+    _w1SessionDestroyed = false;
     // ── W9 — hibernation persistence + auto-response config ───────────────
     /**
      * Result of `configureWsHibernation` at constructor time. Exposed via
@@ -363,6 +367,23 @@ export class NimbusSession extends CloudflareDurableObject {
         if (ctxExports)
             setCtxExports(ctxExports);
         this.portRegistry = new PortRegistry();
+        // Generation-unique pids + destroyed tombstone, BEFORE any event runs.
+        // Pid-keyed state outlives instance resets (hibernatable process-log WS
+        // attachments, persisted w9_proc_logs rows, named loader isolates, and
+        // still-running facets from the previous instance), so each instance
+        // allocates pids from its own isolateGen range — a pid at or below
+        // processes.pidBase is by construction from a PREVIOUS generation and is
+        // refused/attributed accordingly (see session/rpc.ts). One storage
+        // read+write per instance boot; fail-soft (replicas cannot put).
+        ctx.blockConcurrencyWhile(async () => {
+            await this._w9MaybeBumpIsolateGen();
+            this.processes.setPidBase(this._w9IsolateGen * PID_GEN_STRIDE);
+            try {
+                this._w1SessionDestroyed =
+                    (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
+            }
+            catch { /* storage unavailable — treat as live */ }
+        });
         // W1: the log-janitor alarm is armed on log ACTIVITY (see
         // hibernation.ts ensureLogJanitor), NOT here. Arming it in the
         // constructor made every boot re-arm the cycle — including boots

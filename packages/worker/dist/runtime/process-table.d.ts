@@ -24,9 +24,28 @@ export interface ProcessEntry {
     /** Output is owned by a process-terminal attachment, not the parent shell. */
     attachedTty?: boolean;
 }
+/**
+ * Pid-space stride per DO instance generation. Pids are allocated as
+ * `generation * PID_GEN_STRIDE + seq`, so pid-keyed state that OUTLIVES an
+ * instance reset — hibernatable process-terminal WebSocket attachments,
+ * persisted w9_proc_logs rows, named Worker Loader isolate keys, and
+ * still-running facets from the previous instance — can never collide with
+ * (or bleed into) a pid allocated by the next instance. A pid at or below
+ * the current base is by construction from a PREVIOUS generation.
+ */
+export declare const PID_GEN_STRIDE = 1000000;
 export declare class ProcessTable {
     private nextPid;
+    private base;
     private processes;
+    /**
+     * Move the pid space onto this instance generation's range. Called once at
+     * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.
+     * Monotonic and idempotent — never moves pids backwards.
+     */
+    setPidBase(base: number): void;
+    /** The current generation's pid floor: pids <= base are prior-generation. */
+    get pidBase(): number;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string): ProcessEntry;
     /** child-process isolation: mark an existing entry as long-running. Idempotent. */

@@ -188,11 +188,20 @@ export function wireProcessLogPersist(host, ctx) {
 export function ensureLogJanitor(host, ctx) {
     if (host._w1JanitorArmed)
         return;
+    // A destroyed session must stay inert: a straggler facet RPC that wakes
+    // the dead DO and appends output would otherwise re-arm the alarm cycle
+    // on a session that no longer exists (the zombie-alarm hazard).
+    if (host._w1SessionDestroyed)
+        return;
+    // Optimistic flag (dedupes same-tick appends), CONFIRMED by the schedule
+    // outcome: scheduleAlarm swallows storage errors, and a failure with the
+    // flag left set would mean no alarm AND nothing ever re-arming until the
+    // instance recycles.
     host._w1JanitorArmed = true;
-    // Fire-and-forget: scheduleAlarm is async (storage IO) but the append
-    // hot path must not block on it. Any throw is swallowed inside
-    // scheduleAlarm.
-    void scheduleAlarm(ctx, 'log-janitor', Date.now() + 60_000);
+    void scheduleAlarm(host, ctx, 'log-janitor', Date.now() + 60_000).then((ok) => {
+        if (!ok)
+            host._w1JanitorArmed = false;
+    });
 }
 /** W9: idempotent SQL schema bootstrap. */
 export function ensureHibSchema(host, ctx) {
@@ -237,25 +246,36 @@ export function ensureHibSchema(host, ctx) {
  * wrangler-dev where setAlarm is unavailable, this is a no-op (the
  * subsystem's in-isolate setTimeout fallback continues to work).
  */
-export async function scheduleAlarm(ctx, reason, whenMs) {
-    try {
-        const setAlarmFn = ctx?.storage?.setAlarm;
-        if (typeof setAlarmFn !== 'function')
-            return;
-        const existing = (await ctx.storage.get(W1_NEXT_ALARM_REASONS_KEY));
-        const map = { ...(existing || {}) };
-        // Earliest-deadline-first: only update if new request is sooner or
-        // this reason has no pending entry.
-        if (!(reason in map) || whenMs < map[reason]) {
-            map[reason] = whenMs;
-            await ctx.storage.put(W1_NEXT_ALARM_REASONS_KEY, map);
+export function scheduleAlarm(host, ctx, reason, whenMs) {
+    // Serialize every read-modify-write of the reasons map through one
+    // per-instance chain: scheduleHibFlush and ensureLogJanitor fire
+    // back-to-back from the same log-activity hook, and two interleaved
+    // get→put cycles would silently drop whichever reason wrote first.
+    const run = async () => {
+        try {
+            const setAlarmFn = ctx?.storage?.setAlarm;
+            if (typeof setAlarmFn !== 'function')
+                return false;
+            const existing = (await ctx.storage.get(W1_NEXT_ALARM_REASONS_KEY));
+            const map = { ...(existing || {}) };
+            // Earliest-deadline-first: only update if new request is sooner or
+            // this reason has no pending entry.
+            if (!(reason in map) || whenMs < map[reason]) {
+                map[reason] = whenMs;
+                await ctx.storage.put(W1_NEXT_ALARM_REASONS_KEY, map);
+            }
+            const earliest = Math.min(...Object.values(map));
+            setAlarmFn.call(ctx.storage, earliest);
+            return true;
         }
-        const earliest = Math.min(...Object.values(map));
-        setAlarmFn.call(ctx.storage, earliest);
-    }
-    catch (e) {
-        console.warn('[nimbus/W1] scheduleAlarm threw:', e?.message);
-    }
+        catch (e) {
+            console.warn('[nimbus/W1] scheduleAlarm threw:', e?.message);
+            return false;
+        }
+    };
+    const chained = (host._w1AlarmChain ?? Promise.resolve()).then(run, run);
+    host._w1AlarmChain = chained;
+    return chained;
 }
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
@@ -285,7 +305,7 @@ export function scheduleHibFlush(host, ctx) {
     // before the 250ms debounce expired). Coordinated via scheduleAlarm
     // so W1's log-janitor doesn't clobber it (or vice-versa).
     // Fire-and-forget — scheduleAlarm is fail-soft.
-    void scheduleAlarm(ctx, 'w9-flush', Date.now() + W9_FLUSH_DEBOUNCE_MS * 4);
+    void scheduleAlarm(host, ctx, 'w9-flush', Date.now() + W9_FLUSH_DEBOUNCE_MS * 4);
 }
 /**
  * W1: multi-reason alarm dispatcher. Called from the DO's `alarm()`
@@ -308,7 +328,14 @@ export function scheduleHibFlush(host, ctx) {
  *
  * Forward/back-compat: unknown reasons silently dropped.
  */
-export async function dispatchAlarm(host, ctx, janitorOrphanCheck) {
+export function dispatchAlarm(host, ctx, janitorOrphanCheck) {
+    // Same serialization as scheduleAlarm: the dispatcher's read→handlers→write
+    // cycle must not interleave with a log-activity scheduleAlarm.
+    const chained = (host._w1AlarmChain ?? Promise.resolve()).then(() => dispatchAlarmBody(host, ctx, janitorOrphanCheck), () => dispatchAlarmBody(host, ctx, janitorOrphanCheck));
+    host._w1AlarmChain = chained;
+    return chained;
+}
+async function dispatchAlarmBody(host, ctx, janitorOrphanCheck) {
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(W1_NEXT_ALARM_REASONS_KEY));

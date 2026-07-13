@@ -67,6 +67,10 @@ export declare class SessionProcessSupervisor {
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge?: number): number;
     get stats(): ProcessTable['stats'];
+    /** See ProcessTable.setPidBase — generation-unique pid allocation. */
+    setPidBase(base: number): void;
+    /** The current generation's pid floor: pids <= base are prior-generation. */
+    get pidBase(): number;
     /** Open the process's input channel. Until opened, input writes fail. */
     openInput(pid: number): void;
     hasInput(pid: number): boolean;

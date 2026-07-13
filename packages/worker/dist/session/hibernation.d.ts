@@ -53,6 +53,10 @@ export interface HibHost {
     _w9FlushTimer: any;
     /** W1: log-janitor alarm believed armed for this instance (cheap guard). */
     _w1JanitorArmed: boolean;
+    /** W1: destroyed-session tombstone — never re-arm alarms while set. */
+    _w1SessionDestroyed: boolean;
+    /** W1: serializes every alarm-map read-modify-write (see scheduleAlarm). */
+    _w1AlarmChain?: Promise<unknown>;
 }
 /**
  * Run at DO ctor time. Returns the result for the class to assign to
@@ -118,7 +122,7 @@ export type AlarmReason = 'w9-flush' | 'log-janitor';
  * wrangler-dev where setAlarm is unavailable, this is a no-op (the
  * subsystem's in-isolate setTimeout fallback continues to work).
  */
-export declare function scheduleAlarm(ctx: any, reason: AlarmReason, whenMs: number): Promise<void>;
+export declare function scheduleAlarm(host: HibHost, ctx: any, reason: AlarmReason, whenMs: number): Promise<boolean>;
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if

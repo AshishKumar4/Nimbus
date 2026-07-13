@@ -53,6 +53,13 @@ export const VITE_CONFIG_KEY = 'vite-config';
  *  leave the alarm stuck.
  */
 export const W1_NEXT_ALARM_REASONS_KEY = 'w1_next_alarm_reasons';
+/**
+ * Destroyed-session tombstone. Written AFTER `storage.deleteAll()` in the
+ * destroy flow so a straggler facet RPC that wakes the dead DO cannot re-arm
+ * the log-janitor alarm cycle (the zombie-alarm hazard). One small row of
+ * metadata is the deliberate cost of keeping destroyed sessions inert.
+ */
+export const SESSION_DESTROYED_KEY = 'session_destroyed';
 /** Prefix for consumed single-use attach bootstrap token ids (`jti`).
  *  Written set-if-absent by `_rpcConsumeAttachBootstrap` on the attach
  *  exchange; an existing row means the bootstrap URL was replayed.

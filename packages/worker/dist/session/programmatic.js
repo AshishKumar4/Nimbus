@@ -10,6 +10,7 @@ import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.
 import { PortRegistry } from '../runtime/port-registry.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
+import { SESSION_DESTROYED_KEY } from './keys.js';
 const ProcessLogsOptionsSchema = z.object({
     cursor: z.number().int().nonnegative().optional(),
     lines: z.number().int().nonnegative().optional(),
@@ -407,6 +408,16 @@ export async function rpcDestroy(self, options = {}) {
     // fleet's storage churn intermittently reset live session DOs.
     try {
         await self.ctx.storage.deleteAlarm();
+    }
+    catch { /* best-effort */ }
+    // Tombstone (written AFTER the wipe, deliberately surviving it): a
+    // straggler facet RPC can wake this DO again, and its log activity must
+    // not re-arm the janitor alarm cycle on a destroyed session — this
+    // instance via the flag, any FUTURE instance via the persisted key
+    // (hydrated in the constructor).
+    self._w1SessionDestroyed = true;
+    try {
+        await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt);
     }
     catch { /* best-effort */ }
     resetInMemorySessionState(self);

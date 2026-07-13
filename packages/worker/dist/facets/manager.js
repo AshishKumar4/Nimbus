@@ -2241,6 +2241,8 @@ export class FacetManager {
      */
     openTuiWasmBytes = null;
     openTuiWasmBytesPromise = null;
+    /** In-flight (never resident) opencode chunk-pack fetch+parse dedupe. */
+    opencodeChunkEntriesInflight = null;
     /**
      * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
      * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
@@ -2370,7 +2372,17 @@ export class FacetManager {
             throw new Error('opencode chunk pack requires an env.ASSETS binding; this Nimbus ' +
                 'deployment is missing the static-assets binding');
         }
-        return fetchOpencodeChunkSources({ ASSETS: this.env.ASSETS }, OPENCODE_CHUNKS_PACK);
+        // In-flight dedupe ONLY: concurrent spawns share one fetch + 21 MB JSON
+        // parse, but nothing stays pinned on the DO once it settles (permanent
+        // per-DO residency of the artifact sources is what crowded the memory
+        // envelope in the first place; the L2 cache makes refetches cheap).
+        if (!this.opencodeChunkEntriesInflight) {
+            const assets = this.env.ASSETS;
+            this.opencodeChunkEntriesInflight = fetchOpencodeChunkSources({ ASSETS: assets }, OPENCODE_CHUNKS_PACK).finally(() => {
+                this.opencodeChunkEntriesInflight = null;
+            });
+        }
+        return this.opencodeChunkEntriesInflight;
     }
     /**
      * Build the Worker Loader module-map fragment carrying the staged OpenTUI
@@ -2846,6 +2858,13 @@ export class FacetManager {
             const startPromise = startStub.startProcess();
             this.ctx.waitUntil(startPromise
                 .catch((e) => {
+                // A pid that is already terminal (killed by session teardown, or
+                // exited via its own reportExit) rejects the held-open call as a
+                // teardown ECHO — recording it again would double-count the
+                // termination with a misleading code-1 entry.
+                const entry = this.processes.get(pid);
+                if (!entry || entry.state !== 'running')
+                    return;
                 const reason = 'opencode TUI process failed: ' + errorMessage(e);
                 try {
                     this.processes.exit(pid, 1);

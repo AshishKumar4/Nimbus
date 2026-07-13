@@ -75,6 +75,14 @@ export class SessionProcessSupervisor {
     get stats() {
         return this.table.stats;
     }
+    /** See ProcessTable.setPidBase — generation-unique pid allocation. */
+    setPidBase(base) {
+        this.table.setPidBase(base);
+    }
+    /** The current generation's pid floor: pids <= base are prior-generation. */
+    get pidBase() {
+        return this.table.pidBase;
+    }
     // ── Controlling terminal / stdin ──────────────────────────────────────
     /** Open the process's input channel. Until opened, input writes fail. */
     openInput(pid) {
