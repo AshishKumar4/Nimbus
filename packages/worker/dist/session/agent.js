@@ -14,6 +14,7 @@ import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Ur
 import { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CLOUDFLARE_API, readNimbusCookie, readNimbusAgentCookieSecret, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { appendTextPart, textFromParts, upsertToolPart, } from './agent-contract.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
@@ -94,7 +95,7 @@ async function agentStatus(self, request, url) {
     const connected = !!auth?.accessToken || ownerConfigured;
     const headers = new Headers();
     applyAuthCookieResult(headers, authResult);
-    return json({
+    const payload = {
         ok: true,
         configured: oauthConfigured || ownerConfigured,
         model: config.model,
@@ -123,7 +124,8 @@ async function agentStatus(self, request, url) {
             'processes',
             'ports',
         ],
-    }, 200, headers);
+    };
+    return json(payload, 200, headers);
 }
 async function oauthStart(self, request, url) {
     const config = readConfig(self, url);
@@ -589,41 +591,6 @@ function collectTurnParts(result) {
     if (parts.length === 0 && result.text)
         appendTextPart(parts, 'text', String(result.text));
     return parts;
-}
-function appendTextPart(parts, type, delta) {
-    if (!delta)
-        return;
-    const last = parts[parts.length - 1];
-    if (last?.type === type) {
-        last.text += delta;
-        return;
-    }
-    parts.push({ type, text: delta });
-}
-function upsertToolPart(parts, patch) {
-    let part = parts.find((item) => (item.type === 'tool' && item.toolCallId === patch.toolCallId));
-    if (!part) {
-        part = {
-            type: 'tool',
-            toolCallId: patch.toolCallId,
-            toolName: patch.toolName,
-            status: patch.status || 'running',
-        };
-        parts.push(part);
-    }
-    const startedAt = part.startedAt;
-    Object.assign(part, patch);
-    if (startedAt && patch.status && patch.status !== 'running' && !part.durationMs) {
-        part.durationMs = Date.now() - startedAt;
-    }
-    return part;
-}
-function textFromParts(parts) {
-    return parts
-        .filter((part) => part.type === 'text')
-        .map((part) => part.text)
-        .join('')
-        .trim();
 }
 function appendAssistantModelMessages(modelMessages, message) {
     const parts = normalizeMessageParts(message);

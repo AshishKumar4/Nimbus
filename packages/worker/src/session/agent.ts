@@ -58,6 +58,15 @@ import {
   type ProgrammaticHost,
 } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import {
+  appendTextPart,
+  textFromParts,
+  upsertToolPart,
+  type AgentStreamEvent,
+  type AgentStatusPayload,
+  type StoredMessage,
+  type StoredTurnPart,
+} from './agent-contract.js';
 
 interface AgentStorage {
   get(key: string): Promise<unknown>;
@@ -93,46 +102,6 @@ interface OAuthStateCookie extends OAuthStatePayload {
   createdAt: number;
   expiresAt: number;
 }
-
-type StoredTurnPart =
-  | { type: 'text'; text: string }
-  | { type: 'reasoning'; text: string }
-  | {
-      type: 'tool';
-      toolCallId: string;
-      toolName: string;
-      input?: unknown;
-      output?: unknown;
-      error?: string;
-      status: 'running' | 'done' | 'error';
-      startedAt?: number;
-      durationMs?: number;
-    };
-
-type StoredToolPart = Extract<StoredTurnPart, { type: 'tool' }>;
-type StoredToolPartPatch = Omit<StoredToolPart, 'type'>;
-
-interface StoredMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'tool';
-  content: string;
-  createdAt: number;
-  name?: string;
-  parts?: StoredTurnPart[];
-}
-
-type AgentStreamEvent =
-  | { type: 'start'; messages: StoredMessage[] }
-  | { type: 'message'; message: StoredMessage }
-  | { type: 'assistant-start'; messageId: string; createdAt: number }
-  | { type: 'text-delta'; delta: string }
-  | { type: 'reasoning-delta'; delta: string }
-  | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
-  | { type: 'tool-result'; toolCallId: string; toolName: string; input: unknown; output: unknown; status: 'done' | 'error' }
-  | { type: 'tool-error'; toolCallId: string; toolName: string; input: unknown; error: string }
-  | { type: 'finish-step'; finishReason?: string; usage?: unknown }
-  | { type: 'done'; message: StoredMessage; messages: StoredMessage[] }
-  | { type: 'error'; error: string; code: string; messages: StoredMessage[] };
 
 interface AiCredentials {
   mode: 'oauth' | 'owner-token';
@@ -227,7 +196,7 @@ async function agentStatus(self: Host, request: Request, url: URL): Promise<Resp
   const connected = !!auth?.accessToken || ownerConfigured;
   const headers = new Headers();
   applyAuthCookieResult(headers, authResult);
-  return json({
+  const payload: AgentStatusPayload = {
     ok: true,
     configured: oauthConfigured || ownerConfigured,
     model: config.model,
@@ -256,7 +225,8 @@ async function agentStatus(self: Host, request: Request, url: URL): Promise<Resp
       'processes',
       'ports',
     ],
-  }, 200, headers);
+  };
+  return json(payload, 200, headers);
 }
 
 async function oauthStart(self: Host, request: Request, url: URL): Promise<Response> {
@@ -746,45 +716,6 @@ function collectTurnParts(result: { text?: string; steps?: Array<{ content?: any
   }
   if (parts.length === 0 && result.text) appendTextPart(parts, 'text', String(result.text));
   return parts;
-}
-
-function appendTextPart(parts: StoredTurnPart[], type: 'text' | 'reasoning', delta: string): void {
-  if (!delta) return;
-  const last = parts[parts.length - 1];
-  if (last?.type === type) {
-    last.text += delta;
-    return;
-  }
-  parts.push({ type, text: delta });
-}
-
-function upsertToolPart(parts: StoredTurnPart[], patch: StoredToolPartPatch): StoredToolPart {
-  let part = parts.find((item): item is StoredToolPart => (
-    item.type === 'tool' && item.toolCallId === patch.toolCallId
-  ));
-  if (!part) {
-    part = {
-      type: 'tool',
-      toolCallId: patch.toolCallId,
-      toolName: patch.toolName,
-      status: patch.status || 'running',
-    };
-    parts.push(part);
-  }
-  const startedAt = part.startedAt;
-  Object.assign(part, patch);
-  if (startedAt && patch.status && patch.status !== 'running' && !part.durationMs) {
-    part.durationMs = Date.now() - startedAt;
-  }
-  return part;
-}
-
-function textFromParts(parts: StoredTurnPart[]): string {
-  return parts
-    .filter((part): part is Extract<StoredTurnPart, { type: 'text' }> => part.type === 'text')
-    .map((part) => part.text)
-    .join('')
-    .trim();
 }
 
 function appendAssistantModelMessages(modelMessages: ModelMessage[], message: StoredMessage): void {
