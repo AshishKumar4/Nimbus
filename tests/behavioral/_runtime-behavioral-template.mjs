@@ -123,7 +123,16 @@ export async function exchangeAttachCookie(page, sid) {
   const attachPath = attachPathFor(sid);
   if (!attachPath.includes('nimbus_token=')) return;
   exchangedSessions.add(sid);
-  await page.goto(`${BASE}${attachPath}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  // The exchange only needs the Set-Cookie from the token-bearing shell
+  // URL. Load it with scripts disabled so the shell doesn't dial the
+  // session WebSocket only to be canceled by the follow-up navigation —
+  // that orphaned mid-upgrade socket made the real page's /ws 409.
+  await page.setJavaScriptEnabled(false);
+  try {
+    await page.goto(`${BASE}${attachPath}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  } finally {
+    await page.setJavaScriptEnabled(true);
+  }
 }
 
 export async function openPage(browser, sid, opts = {}) {
