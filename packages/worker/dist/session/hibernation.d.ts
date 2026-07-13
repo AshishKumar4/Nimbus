@@ -90,6 +90,16 @@ export declare function wireProcessLogPersist(host: HibHost, ctx: any): void;
  * the DO from hibernating (billed duration continuously). Alarms persist
  * across hibernation; the DO sleeps between fires.
  */
+/**
+ * W1: lift the destroyed-session tombstone when a destroyed session id is
+ * LEGITIMATELY re-initialized (documented SDK flow: stable job ids reuse a
+ * session id after destroy — the id maps deterministically to the same DO).
+ * Without this the recreated session would work but never re-arm the
+ * log-janitor, so its persisted w9_proc_logs would grow unswept forever.
+ * Called only from the session-init seams (shell WS attach / SDK ready) —
+ * straggler facet RPCs never reach them, so a dead session stays inert.
+ */
+export declare function clearDestroyedTombstone(host: HibHost, ctx: any): void;
 export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: HibHost, ctx: any): void;

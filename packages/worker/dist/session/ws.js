@@ -39,6 +39,7 @@ import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose
 import { parseProcessLogClientFrame } from '../runtime/process-io-protocol.js';
 import { applyProcessClientFrame } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
+import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 /**
  * Snapshot the live Shell state and write it through to DO SQLite
  * [Phase 3 B'.1].
@@ -236,7 +237,7 @@ async function routeProcessLogClientMessage(self, ws, attach, message) {
             try {
                 ws.send(JSON.stringify({
                     type: 'exit', pid, code: 137, at: Date.now(),
-                    reason: 'process lost: instance reset',
+                    reason: PRIOR_GENERATION_EXIT_REASON,
                 }));
             }
             catch { /* socket closing */ }

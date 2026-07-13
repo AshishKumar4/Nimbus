@@ -3046,6 +3046,13 @@ export class FacetManager {
             if (opts.attachedTty) {
                 this.ctx.waitUntil(startPromise
                     .catch((e) => {
+                    // Teardown echo guard (same as the staged-artifact path): a pid
+                    // that is already terminal rejects the held-open call as an
+                    // ECHO of its own kill — don't double-record it as a code-1
+                    // failure.
+                    const current = this.processes.get(entry.pid);
+                    if (!current || current.state !== 'running')
+                        return;
                     const reason = 'long-running node process failed: ' + errorMessage(e);
                     try {
                         this.processes.exit(entry.pid, 1);

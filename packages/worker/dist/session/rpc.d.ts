@@ -130,6 +130,7 @@ export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): P
     written: number;
     failed: number;
 }>;
+export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
 export declare function _rpcStdout(self: RpcHost, pid: number, data: string): Promise<void>;
 export declare function _rpcStderr(self: RpcHost, pid: number, data: string): Promise<void>;
 /**

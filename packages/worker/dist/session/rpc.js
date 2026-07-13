@@ -354,7 +354,7 @@ export async function _rpcPutRegistryEntries(self, entries) {
 function isPriorGenerationPid(self, pid) {
     return pid > 0 && pid <= self.processes.pidBase;
 }
-const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
+export const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
 export async function _rpcStdout(self, pid, data) {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —
     // its output must not merge into this generation's logs or shell.
