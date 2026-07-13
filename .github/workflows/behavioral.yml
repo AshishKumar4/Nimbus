@@ -70,6 +70,9 @@ jobs:
         shell: bash
         env:
           NIMBUS_PROBE_JWT_SECRET: ${{ secrets.NIMBUS_PROBE_JWT_SECRET }}
+          # The full suite runs ~1h; the default 1h TTL expires mid-run and
+          # the alphabetical tail fails with 401s at mint-session.
+          NIMBUS_PROBE_TOKEN_TTL_MS: "10800000"
         run: |
           TOKEN="$(bun tests/behavioral/_mint-probe-token.mjs)"
           echo "::add-mask::$TOKEN"
@@ -117,6 +120,9 @@ jobs:
         shell: bash
         env:
           NIMBUS_PROBE_JWT_SECRET: ${{ secrets.NIMBUS_PROBE_JWT_SECRET }}
+          # The full suite runs ~1h; the default 1h TTL expires mid-run and
+          # the alphabetical tail fails with 401s at mint-session.
+          NIMBUS_PROBE_TOKEN_TTL_MS: "10800000"
         run: |
           TOKEN="$(bun tests/behavioral/_mint-probe-token.mjs)"
           echo "::add-mask::$TOKEN"
