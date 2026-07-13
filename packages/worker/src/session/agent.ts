@@ -116,7 +116,7 @@ const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_STORED_MESSAGES = 80;
 const MAX_TOOL_RESULT_CHARS = 8000;
-const DEFAULT_MODEL = '@cf/moonshotai/kimi-k2.6';
+const DEFAULT_MODEL = '@cf/zai-org/glm-5.2';
 const DEFAULT_GATEWAY_ID = 'default';
 const SYSTEM_PROMPT = [
   'You are Nimbus Agent, an autonomous software builder inside a persistent Nimbus cloud dev sandbox.',

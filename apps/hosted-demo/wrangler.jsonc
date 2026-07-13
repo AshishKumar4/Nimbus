@@ -97,7 +97,7 @@
     // packages/worker/src/vfs/sqlite-vfs.ts
     // (cheap, hot-path-clean) for future investigations.
 	    "NIMBUS_DIAG_INSTALL_PIPELINE": "",
-	    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+	    "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
 	    "NIMBUS_AGENT_GATEWAY_ID": "default",
 	    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
 	    "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",
@@ -239,7 +239,7 @@
       ],
 	      "vars": {
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
-	        "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+	        "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
 	        "NIMBUS_AGENT_GATEWAY_ID": "default",
 	        "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
 	        "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",

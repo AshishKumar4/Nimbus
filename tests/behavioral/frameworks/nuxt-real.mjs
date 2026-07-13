@@ -6,20 +6,20 @@
 // User scenario:
 //   npx nuxi@latest init mvp --no-install --packageManager=npm
 //
-// Boundary (documented, not faked): nuxi@3.35's `init` ALWAYS presents
-// an interactive @clack/prompts template picker ("Which template would
-// you like to use?") and ignores `-t/--template` for skipping it — every
-// `-t <name>` and even `-t github:nuxt/starter/v3` still drops into the
-// picker. There is no flag combination that scaffolds non-interactively,
-// so a fully-automated scaffold is genuinely out of reach for this tool.
+// Boundary (documented, not faked): nuxi@3.36 added an explicit
+// non-interactive mode. Nimbus has no native TTY, so nuxi now requires every
+// prompt-backed argument and rejects this invocation because it omits
+// `--gitInit`. In June, nuxi@3.35 instead reached the interactive template
+// picker. Nimbus' thrown process.exit(2) sentinel is caught by citty's
+// runMain and printed as a Consola error trace after the useful diagnostic.
 //
 // What this probe PROVES (the real, useful capability): nuxi runs under
 // Nimbus, loads its template registry over the network ("Templates
-// loaded"), and reaches the picker — exercising outbound fetch plus the
-// startup-drain timer tracking that keeps the facet alive across the
-// registry fetch (without it the facet exited at "Loading available
-// templates" before the fetch settled). The interactive picker itself is
-// the honest boundary.
+// loaded"), and reaches its current argument validation — exercising
+// outbound fetch plus the startup-drain timer tracking that keeps the facet
+// alive across the registry fetch (without it the facet exited at "Loading
+// available templates" before the fetch settled). nuxi's exact
+// missing-argument diagnostic is the current honest boundary.
 
 import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 
@@ -54,18 +54,21 @@ try {
   a.check('nuxi loaded its template registry over the network ("Templates loaded")',
     templatesLoaded, JSON.stringify(stripAnsi(t.buf).slice(-500)));
 
-  // nuxi then drops into the interactive template picker — the honest
-  // boundary. Assert we reach it (proving nuxi ran end-to-end up to the
-  // point where only interactive input remains).
-  let reachedPicker = false;
+  // Since nuxi 3.36, a terminal without a native TTY is handled as explicitly
+  // non-interactive instead of entering the template picker.
+  let reachedNonInteractiveBoundary = false;
   try {
-    await t.waitFor((b) => /Which template would you like to use/i.test(b), 30_000, 'nuxi-picker');
-    reachedPicker = true;
+    await t.waitFor(
+      (b) => /Non-interactive terminal detected[\s\S]*Missing required argument:\s*--gitInit/i.test(b),
+      30_000,
+      'nuxi-missing-git-init',
+    );
+    reachedNonInteractiveBoundary = true;
   } catch (e) {
-    console.log('[nuxt-real] picker not reached:', e?.message);
+    console.log('[nuxt-real] non-interactive boundary not reached:', e?.message);
   }
-  a.check('nuxi reaches the interactive template picker (honest non-interactive boundary)',
-    reachedPicker, JSON.stringify(stripAnsi(t.buf).slice(-500)));
+  a.check('nuxi reports --gitInit as required in Nimbus non-interactive mode (current honest boundary)',
+    reachedNonInteractiveBoundary, JSON.stringify(stripAnsi(t.buf).slice(-800)));
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);
