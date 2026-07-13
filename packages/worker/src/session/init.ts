@@ -2448,7 +2448,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
       // Show vite dev server
       if (self.viteDevServer?.isRunning) {
-        ctx.stdout.write('  \x1b[33m---\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (' + self.viteBasePath + '/)\n');
+        ctx.stdout.write(`  \x1b[33m${'---'.padStart(pidWidth)}\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (${self.viteBasePath}/)\n`);
       }
       if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
         ctx.stdout.write('  (no processes)\n');
