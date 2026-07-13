@@ -34,6 +34,8 @@ export interface StoredMessage {
     parts?: StoredTurnPart[];
     /** Present when the turn was stopped by the client before it finished. */
     aborted?: true;
+    /** Present when the turn ended in a terminal provider/stream error. */
+    error?: string;
 }
 /** Per-step token usage as reported by the model provider. */
 export interface AgentTurnUsage {

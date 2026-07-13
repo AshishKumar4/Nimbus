@@ -120,6 +120,7 @@ export const Message = memo(function Message({ message, live, usage }: MessagePr
           <div class="agent-meta">
             {formatTime(message.createdAt)}
             {message.aborted && <span class="agent-stopped">stopped</span>}
+            {message.error && <span class="agent-failed" title={message.error}>failed</span>}
             {tokens && <span class="agent-usage">{tokens}</span>}
           </div>
         )}

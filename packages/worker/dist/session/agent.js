@@ -334,15 +334,21 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
             const parts = [];
             const assistantMessageId = crypto.randomUUID();
             const assistantCreatedAt = Date.now();
-            const persistPartialTurn = async () => {
+            // Persist whatever the turn produced before terminating abnormally
+            // (client Stop or terminal stream error) so history stays truthful:
+            // executed tools and streamed text are recorded and the message
+            // carries the terminal marker. Returns the persisted list, or null
+            // when nothing had streamed yet.
+            const persistPartialTurn = async (terminalError) => {
                 if (parts.length === 0)
-                    return;
+                    return null;
+                const reason = terminalError ?? 'Stopped by user';
                 for (const part of parts) {
                     if (part.type === 'tool' && part.status === 'running') {
                         part.status = 'error';
-                        part.error = 'Stopped by user';
+                        part.error = reason;
                         if (part.output === undefined)
-                            part.output = { error: part.error };
+                            part.output = { error: reason };
                     }
                 }
                 const assistantMessage = {
@@ -351,9 +357,11 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                     content: textFromParts(parts),
                     createdAt: assistantCreatedAt,
                     parts,
-                    aborted: true,
+                    ...(terminalError === undefined ? { aborted: true } : { error: terminalError }),
                 };
-                await saveMessages(self, [...messages, assistantMessage]);
+                const nextMessages = [...messages, assistantMessage];
+                await saveMessages(self, nextMessages);
+                return nextMessages;
             };
             emit({ type: 'start', messages: trimMessagesForClient(messages) });
             emit({ type: 'message', message: userMessage });
@@ -469,11 +477,13 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                     await persistPartialTurn();
                     return;
                 }
+                const errorText = e?.message || String(e);
+                const persisted = await persistPartialTurn(errorText);
                 emit({
                     type: 'error',
-                    error: e?.message || String(e),
+                    error: errorText,
                     code: 'E_AGENT_TURN_FAILED',
-                    messages: trimMessagesForClient(messages),
+                    messages: trimMessagesForClient(persisted ?? messages),
                 });
             }
             finally {

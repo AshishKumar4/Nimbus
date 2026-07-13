@@ -44,11 +44,12 @@ function sseChunk(content, finishReason = null) {
 }
 
 /**
- * Mock the provider fetch: emits the given SSE chunks. With hang=true the
- * stream then stays open until the request signal aborts (erroring the
- * body with AbortError, matching native fetch cancellation).
+ * Mock the provider fetch: emits two SSE text chunks, then per mode either
+ * completes ('complete'), stays open until the request signal aborts
+ * ('hang', erroring the body with AbortError like native fetch
+ * cancellation), or errors the body mid-stream ('fail').
  */
-function mockProviderFetch({ hang }) {
+function mockProviderFetch(mode = 'complete') {
   const encoder = new TextEncoder();
   return async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -58,12 +59,20 @@ function mockProviderFetch({ hang }) {
       start(controller) {
         controller.enqueue(encoder.encode(sseChunk('Hello')));
         controller.enqueue(encoder.encode(sseChunk(' world')));
-        if (hang) {
+        if (mode === 'hang') {
           const onAbort = () => {
             try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch {}
           };
           if (signal?.aborted) onAbort();
           else signal?.addEventListener('abort', onAbort, { once: true });
+          return;
+        }
+        if (mode === 'fail') {
+          // Delay so the queued chunks are consumed first; error() would
+          // otherwise discard them before the SSE parser sees them.
+          setTimeout(() => {
+            try { controller.error(new Error('provider exploded')); } catch {}
+          }, 50);
           return;
         }
         controller.enqueue(encoder.encode(sseChunk(null, 'stop')));
@@ -124,7 +133,7 @@ const realFetch = globalThis.fetch;
 // ── Abort: cancelling the stream persists the partial turn ──────────
 {
   const { host, store } = makeHost();
-  globalThis.fetch = mockProviderFetch({ hang: true });
+  globalThis.fetch = mockProviderFetch('hang');
   try {
     const response = await postChat(host, { message: 'hi there', stream: true });
     assert.equal(response.status, 200);
@@ -159,7 +168,7 @@ const realFetch = globalThis.fetch;
 // ── Abort with no streamed parts persists nothing ────────────────────
 {
   const { host, store } = makeHost();
-  globalThis.fetch = mockProviderFetch({ hang: true });
+  globalThis.fetch = mockProviderFetch('hang');
   try {
     const response = await postChat(host, { message: 'hi', stream: true });
     const [, reader] = await readEventsUntil(
@@ -186,7 +195,7 @@ const realFetch = globalThis.fetch;
 // ── Retry: empty history is rejected ─────────────────────────────────
 {
   const { host } = makeHost();
-  globalThis.fetch = mockProviderFetch({ hang: false });
+  globalThis.fetch = mockProviderFetch();
   try {
     const response = await postChat(host, { retry: true, stream: true });
     assert.equal(response.status, 400);
@@ -205,7 +214,7 @@ const realFetch = globalThis.fetch;
     { id: 'u1', role: 'user', content: 'run it', createdAt: 1 },
     { id: 't1', role: 'tool', content: '{}', createdAt: 2 },
   ]);
-  globalThis.fetch = mockProviderFetch({ hang: false });
+  globalThis.fetch = mockProviderFetch();
   try {
     const response = await postChat(host, { retry: true, stream: true });
     assert.equal(response.status, 400);
@@ -223,7 +232,7 @@ const realFetch = globalThis.fetch;
     { id: 'u1', role: 'user', content: 'say hello', createdAt: 1 },
     { id: 'a1', role: 'assistant', content: 'old answer', createdAt: 2, parts: [{ type: 'text', text: 'old answer' }] },
   ]);
-  globalThis.fetch = mockProviderFetch({ hang: false });
+  globalThis.fetch = mockProviderFetch();
   try {
     const response = await postChat(host, { retry: true, stream: true });
     assert.equal(response.status, 200);
@@ -250,7 +259,7 @@ const realFetch = globalThis.fetch;
   store.set(MESSAGES_KEY, [
     { id: 'u1', role: 'user', content: 'say hello', createdAt: 1 },
   ]);
-  globalThis.fetch = mockProviderFetch({ hang: false });
+  globalThis.fetch = mockProviderFetch();
   try {
     const response = await postChat(host, { retry: true, stream: true });
     assert.equal(response.status, 200);
@@ -263,6 +272,46 @@ const realFetch = globalThis.fetch;
     globalThis.fetch = realFetch;
   }
   console.log('ok - retry after a failed turn re-runs the trailing user message');
+}
+
+// ── Terminal error: partial turn persists with the error surfaced ────
+{
+  const { host, store } = makeHost();
+  globalThis.fetch = mockProviderFetch('fail');
+  try {
+    const response = await postChat(host, { message: 'hi there', stream: true });
+    assert.equal(response.status, 200);
+    const [events] = await readEventsUntil(response, (list) => list.some((event) => event.type === 'error'));
+    const errorEvent = events.find((event) => event.type === 'error');
+    assert.ok(errorEvent, 'terminal error event emitted');
+    assert.equal(errorEvent.code, 'E_AGENT_TURN_FAILED');
+    assert.ok(events.filter((event) => event.type === 'text-delta').length >= 2, 'deltas streamed before the failure');
+
+    const persisted = store.get(MESSAGES_KEY);
+    assert.deepEqual(persisted.map((m) => m.role), ['user', 'assistant'], 'partial turn persisted on error');
+    const partial = persisted[1];
+    assert.equal(partial.content, 'Hello world');
+    assert.deepEqual(partial.parts, [{ type: 'text', text: 'Hello world' }]);
+    assert.equal(typeof partial.error, 'string', 'terminal error marker stored');
+    assert.equal(partial.aborted, undefined, 'error is not mislabelled as a user stop');
+    assert.equal(errorEvent.error, partial.error, 'event error matches the stored marker');
+
+    const eventLast = errorEvent.messages[errorEvent.messages.length - 1];
+    assert.equal(eventLast.id, partial.id, 'error event message list reflects the persisted partial');
+
+    // Retry stays coherent: it drops the errored partial and re-runs.
+    globalThis.fetch = mockProviderFetch();
+    const retryResponse = await postChat(host, { retry: true, stream: true });
+    assert.equal(retryResponse.status, 200);
+    await readEventsUntil(retryResponse, (list) => list.some((event) => event.type === 'done'));
+    const after = store.get(MESSAGES_KEY);
+    assert.deepEqual(after.map((m) => m.role), ['user', 'assistant']);
+    assert.equal(after[1].error, undefined, 'errored partial replaced by the fresh turn');
+    assert.equal(after[1].content, 'Hello world');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - terminal stream error persists the partial turn and retry replaces it');
 }
 
 console.log('agent-chat-turns: all assertions passed');
