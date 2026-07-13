@@ -8,7 +8,11 @@ export interface MessageProps {
   message: StoredMessage;
   /** True for the in-flight assistant turn (cursor + thinking affordances). */
   live?: boolean;
-  /** Monotonic stream tick - defeats memo for the live message only. */
+  /**
+   * Live message only: the LiveTurn snapshot keeps a stable identity while
+   * its parts mutate, so this bumped counter is what re-renders it past
+   * memo. Settled messages never pass it and skip re-renders entirely.
+   */
   tick?: number;
   usage?: AgentTurnUsage | null;
 }

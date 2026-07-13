@@ -14,9 +14,13 @@ import {
 } from '../../src/session/agent-contract.js';
 
 export interface LiveTurn {
-  id: string;
-  createdAt: number;
-  parts: StoredTurnPart[];
+  /**
+   * Renderable snapshot of the in-flight assistant turn. The object keeps a
+   * stable identity for the whole turn (parts mutate in place), so memoized
+   * settled messages skip re-renders and the live message re-renders via an
+   * explicit tick prop.
+   */
+  message: StoredMessage & { parts: StoredTurnPart[] };
   usage: AgentTurnUsage;
 }
 
@@ -32,17 +36,15 @@ export interface StreamCallbacks {
 }
 
 export function createLiveTurn(): LiveTurn {
-  return { id: crypto.randomUUID(), createdAt: Date.now(), parts: [], usage: {} };
-}
-
-/** The streamed assistant turn as a renderable StoredMessage snapshot. */
-export function liveTurnMessage(live: LiveTurn): StoredMessage {
   return {
-    id: live.id,
-    role: 'assistant',
-    content: '',
-    createdAt: live.createdAt,
-    parts: live.parts,
+    message: {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      parts: [],
+    },
+    usage: {},
   };
 }
 
@@ -82,20 +84,20 @@ export function applyStreamEvent(event: AgentStreamEvent, live: LiveTurn, callba
       // authoritative copy arrives with the done/error message list.
       return;
     case 'assistant-start':
-      live.id = event.messageId || live.id;
-      live.createdAt = event.createdAt || live.createdAt;
+      live.message.id = event.messageId || live.message.id;
+      live.message.createdAt = event.createdAt || live.message.createdAt;
       callbacks.onLiveChange();
       return;
     case 'text-delta':
-      appendTextPart(live.parts, 'text', event.delta);
+      appendTextPart(live.message.parts, 'text', event.delta);
       callbacks.onLiveChange();
       return;
     case 'reasoning-delta':
-      appendTextPart(live.parts, 'reasoning', event.delta);
+      appendTextPart(live.message.parts, 'reasoning', event.delta);
       callbacks.onLiveChange();
       return;
     case 'tool-call':
-      upsertToolPart(live.parts, {
+      upsertToolPart(live.message.parts, {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         input: event.input,
@@ -105,7 +107,7 @@ export function applyStreamEvent(event: AgentStreamEvent, live: LiveTurn, callba
       callbacks.onLiveChange();
       return;
     case 'tool-result':
-      upsertToolPart(live.parts, {
+      upsertToolPart(live.message.parts, {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         input: event.input,
@@ -115,7 +117,7 @@ export function applyStreamEvent(event: AgentStreamEvent, live: LiveTurn, callba
       callbacks.onLiveChange();
       return;
     case 'tool-error':
-      upsertToolPart(live.parts, {
+      upsertToolPart(live.message.parts, {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         input: event.input,

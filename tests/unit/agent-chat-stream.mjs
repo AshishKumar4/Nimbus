@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import {
   applyStreamEvent,
   createLiveTurn,
-  liveTurnMessage,
   readAgentStream,
 } from '../../packages/worker/frontend/agent-chat/stream.ts';
 
@@ -42,22 +41,19 @@ function collector() {
   ];
   for (const event of events) applyStreamEvent(event, live, callbacks);
 
-  assert.equal(live.id, 'a1');
-  assert.equal(live.createdAt, 123);
-  assert.equal(live.parts.length, 4, 'reasoning, text, tool, text');
-  assert.deepEqual(live.parts[0], { type: 'reasoning', text: 'thinking hard' });
-  assert.deepEqual(live.parts[1], { type: 'text', text: 'Let me check.' });
-  assert.equal(live.parts[2].type, 'tool');
-  assert.equal(live.parts[2].status, 'done');
-  assert.deepEqual(live.parts[2].output, { stdout: 'app' });
-  assert.deepEqual(live.parts[3], { type: 'text', text: 'Done.' });
+  assert.equal(live.message.id, 'a1');
+  assert.equal(live.message.createdAt, 123);
+  assert.equal(live.message.role, 'assistant');
+  const parts = live.message.parts;
+  assert.equal(parts.length, 4, 'reasoning, text, tool, text');
+  assert.deepEqual(parts[0], { type: 'reasoning', text: 'thinking hard' });
+  assert.deepEqual(parts[1], { type: 'text', text: 'Let me check.' });
+  assert.equal(parts[2].type, 'tool');
+  assert.equal(parts[2].status, 'done');
+  assert.deepEqual(parts[2].output, { stdout: 'app' });
+  assert.deepEqual(parts[3], { type: 'text', text: 'Done.' });
   assert.deepEqual(live.usage, { inputTokens: 30, outputTokens: 12, totalTokens: 42 });
   assert.ok(seen.liveChanges >= events.length - 1, 'every mutation schedules a repaint');
-
-  const snapshot = liveTurnMessage(live);
-  assert.equal(snapshot.role, 'assistant');
-  assert.equal(snapshot.id, 'a1');
-  assert.equal(snapshot.parts, live.parts);
 }
 
 // Tool errors settle the matching tool part.
@@ -65,13 +61,13 @@ function collector() {
   const live = createLiveTurn();
   const { callbacks } = collector();
   applyStreamEvent({ type: 'tool-call', toolCallId: 't1', toolName: 'exec', input: {} }, live, callbacks);
-  assert.equal(live.parts[0].status, 'running');
-  assert.ok(live.parts[0].startedAt > 0);
+  assert.equal(live.message.parts[0].status, 'running');
+  assert.ok(live.message.parts[0].startedAt > 0);
   applyStreamEvent({ type: 'tool-error', toolCallId: 't1', toolName: 'exec', input: {}, error: 'boom' }, live, callbacks);
-  assert.equal(live.parts.length, 1);
-  assert.equal(live.parts[0].status, 'error');
-  assert.equal(live.parts[0].error, 'boom');
-  assert.deepEqual(live.parts[0].output, { error: 'boom' });
+  assert.equal(live.message.parts.length, 1);
+  assert.equal(live.message.parts[0].status, 'error');
+  assert.equal(live.message.parts[0].error, 'boom');
+  assert.deepEqual(live.message.parts[0].output, { error: 'boom' });
 }
 
 // Terminal events hand over the authoritative message list.
@@ -109,7 +105,7 @@ function collector() {
   const live = createLiveTurn();
   const { seen, callbacks } = collector();
   await readAgentStream(body, live, callbacks);
-  assert.deepEqual(live.parts, [{ type: 'text', text: 'Hello' }]);
+  assert.deepEqual(live.message.parts, [{ type: 'text', text: 'Hello' }]);
   assert.deepEqual(live.usage, { totalTokens: 3 });
   assert.equal(seen.done?.id, 'a1');
 }

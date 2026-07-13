@@ -91,9 +91,7 @@ export type AgentStreamEvent = {
     code: string;
     messages: StoredMessage[];
 };
-export type StoredToolPartPatch = Omit<StoredToolPart, 'type' | 'status'> & {
-    status?: StoredToolPart['status'];
-};
+export type StoredToolPartPatch = Omit<StoredToolPart, 'type'>;
 /**
  * Append a text/reasoning delta, coalescing into the trailing part of the
  * same type so a turn stays [reasoning, text, tool, text, ...] in order.

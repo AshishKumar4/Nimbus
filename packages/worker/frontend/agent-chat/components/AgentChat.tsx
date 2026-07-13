@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { AgentStatusPayload, AgentTurnUsage, StoredMessage } from '../../../src/session/agent-contract.js';
 import * as api from '../api.js';
 import { usePinToBottom } from '../hooks.js';
-import { createLiveTurn, liveTurnMessage, readAgentStream, type LiveTurn } from '../stream.js';
+import { createLiveTurn, readAgentStream, type LiveTurn } from '../stream.js';
 import { Composer } from './Composer.js';
 import { ErrorCard } from './ErrorCard.js';
 import { Message } from './Message.js';
@@ -14,6 +14,16 @@ interface StatusPill {
   tone: '' | 'ready' | 'warn' | 'streaming';
 }
 
+interface TurnError {
+  message: string;
+  /**
+   * Set when the failed send never reached the server (rejected before the
+   * stream opened): the retry affordance re-sends this exact text. Null
+   * means the server saw the turn, so retry uses { retry: true }.
+   */
+  resendText: string | null;
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
@@ -23,8 +33,9 @@ function errorMessage(error: unknown): string {
 }
 
 function livePhase(live: LiveTurn | null): string {
-  if (!live || live.parts.length === 0) return 'Thinking';
-  const last = live.parts[live.parts.length - 1];
+  const parts = live?.message.parts ?? [];
+  if (parts.length === 0) return 'Thinking';
+  const last = parts[parts.length - 1];
   if (last.type === 'tool' && last.status === 'running') return `Running ${last.toolName}`;
   return last.type === 'text' ? 'Streaming' : 'Thinking';
 }
@@ -33,14 +44,18 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
   const [status, setStatus] = useState<AgentStatusPayload | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
+  const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const [turnError, setTurnError] = useState<string | null>(null);
+  const [turnError, setTurnError] = useState<TurnError | null>(null);
   const [lastUsage, setLastUsage] = useState<{ id: string; usage: AgentTurnUsage } | null>(null);
   const [waitingOAuth, setWaitingOAuth] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
 
   const liveRef = useRef<LiveTurn | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Monotonic turn counter: async reconciliation from an older turn (the
+  // post-stop re-fetch) must never clobber state a newer turn owns.
+  const turnSeqRef = useRef(0);
   const oauthPollRef = useRef<number | null>(null);
   const clearTimerRef = useRef<number | null>(null);
 
@@ -158,28 +173,68 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
     }
   }, [confirmClear]);
 
-  const runTurn = useCallback(async (body: api.ChatRequestBody) => {
+  // After a Stop the server persists the partial turn from its detached
+  // stream, racing our GET. Keep the locally-accumulated partial rendered
+  // and accept a fetched list only once it contains it (one bounded
+  // re-fetch); otherwise the local snapshot stands until the next refresh.
+  const syncAfterAbort = useCallback(async (partial: StoredMessage | null, seq: number) => {
+    if (partial) setMessages((current) => [...current, partial]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let list: StoredMessage[];
+      try {
+        list = await api.fetchMessages();
+      } catch {
+        return;
+      }
+      if (turnSeqRef.current !== seq) return;
+      if (!partial || list.some((message) => message.id === partial.id)) {
+        setMessages(list);
+        return;
+      }
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }, []);
+
+  const runTurn = useCallback(async (
+    body: api.ChatRequestBody,
+    sendCtx?: { optimisticId: string; text: string },
+  ) => {
     const controller = new AbortController();
     abortRef.current = controller;
+    const seq = ++turnSeqRef.current;
     const live = createLiveTurn();
     liveRef.current = live;
     setTurnError(null);
     setBusy(true);
     scheduleTick();
+    // A resolved postChatTurn means the server accepted the turn and
+    // persisted the user message; before that, nothing exists server-side.
+    let accepted = false;
     try {
-      const response = await api.postChatTurn(body, controller.signal);
-      await readAgentStream(response.body!, live, {
+      const stream = await api.postChatTurn(body, controller.signal);
+      accepted = true;
+      await readAgentStream(stream, live, {
         onMessages: setMessages,
         onLiveChange: scheduleTick,
         onDone: (message) => setLastUsage({ id: message.id, usage: live.usage }),
-        onError: setTurnError,
+        onError: (error) => setTurnError({ message: error, resendText: null }),
       });
     } catch (error) {
-      if (isAbortError(error)) {
-        // The backend persists the partial turn on cancel - re-sync to it.
-        await refreshMessages().catch(() => {});
+      if (!accepted && sendCtx) {
+        // The server never saw this send: drop the phantom optimistic
+        // message and put the text back in the user's hands.
+        setMessages((current) => current.filter((message) => message.id !== sendCtx.optimisticId));
+        setDraft((current) => current || sendCtx.text);
+        if (!isAbortError(error)) {
+          setTurnError({ message: errorMessage(error), resendText: sendCtx.text });
+        }
+      } else if (isAbortError(error)) {
+        const partial: StoredMessage | null = live.message.parts.length > 0
+          ? { ...live.message, aborted: true }
+          : null;
+        await syncAfterAbort(partial, seq);
       } else {
-        setTurnError(errorMessage(error));
+        setTurnError({ message: errorMessage(error), resendText: null });
       }
     } finally {
       liveRef.current = null;
@@ -187,21 +242,24 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
       setBusy(false);
       scheduleTick();
     }
-  }, [scheduleTick, refreshMessages]);
+  }, [scheduleTick, syncAfterAbort]);
 
   const send = useCallback((text: string) => {
+    const optimisticId = `optimistic-${crypto.randomUUID()}`;
+    setDraft((current) => (current.trim() === text ? '' : current));
     setMessages((current) => [...current, {
-      id: 'pending-user',
+      id: optimisticId,
       role: 'user',
       content: text,
       createdAt: Date.now(),
     }]);
-    void runTurn({ message: text, stream: true });
+    void runTurn({ message: text, stream: true }, { optimisticId, text });
   }, [runTurn]);
 
-  const retry = useCallback(() => {
-    void runTurn({ retry: true, stream: true });
-  }, [runTurn]);
+  const retryTurn = useCallback((resendText: string | null) => {
+    if (resendText !== null) send(resendText);
+    else void runTurn({ retry: true, stream: true });
+  }, [send, runTurn]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -210,7 +268,6 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
   const oauth = status?.oauth;
   const canChat = !!status?.configured && !!status.connected;
   const live = liveRef.current;
-  const liveMessage = live ? liveTurnMessage(live) : null;
   const pill = derivePill(status, statusError, waitingOAuth, busy, live);
   const subtitle = !status
     ? 'Workspace operator'
@@ -227,8 +284,8 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
         ? 'Ask Nimbus to inspect or change this session.'
         : 'Connect Cloudflare to use Workers AI.';
 
-  const pinRef = usePinToBottom<HTMLDivElement>([messages, turnError, tick]);
-  const isEmpty = messages.length === 0 && !liveMessage && !turnError;
+  const pinRef = usePinToBottom<HTMLDivElement>();
+  const isEmpty = messages.length === 0 && !live && !turnError;
 
   return (
     <div class="agent-chat">
@@ -287,12 +344,13 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
                 usage={lastUsage && lastUsage.id === message.id ? lastUsage.usage : null}
               />
             ))}
-            {liveMessage && <Message message={liveMessage} live />}
+            {live && <Message message={live.message} live tick={tick} />}
             {turnError && (
               <ErrorCard
-                message={turnError}
+                message={turnError.message}
                 streaming={busy}
-                onRetry={retry}
+                retryLabel={turnError.resendText !== null ? 'Send again' : 'Retry last message'}
+                onRetry={() => retryTurn(turnError.resendText)}
                 onDismiss={() => setTurnError(null)}
               />
             )}
@@ -300,6 +358,8 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
         )}
       </div>
       <Composer
+        value={draft}
+        onChange={setDraft}
         disabled={!canChat}
         hint={!status || status.configured ? 'Connect Cloudflare to start chatting' : 'Configure Cloudflare OAuth or an owner API token'}
         streaming={busy}

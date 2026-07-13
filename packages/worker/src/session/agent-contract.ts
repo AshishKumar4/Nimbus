@@ -56,8 +56,7 @@ export type AgentStreamEvent =
   | { type: 'done'; message: StoredMessage; messages: StoredMessage[] }
   | { type: 'error'; error: string; code: string; messages: StoredMessage[] };
 
-export type StoredToolPartPatch =
-  Omit<StoredToolPart, 'type' | 'status'> & { status?: StoredToolPart['status'] };
+export type StoredToolPartPatch = Omit<StoredToolPart, 'type'>;
 
 /**
  * Append a text/reasoning delta, coalescing into the trailing part of the
@@ -86,13 +85,13 @@ export function upsertToolPart(parts: StoredTurnPart[], patch: StoredToolPartPat
       type: 'tool',
       toolCallId: patch.toolCallId,
       toolName: patch.toolName,
-      status: patch.status || 'running',
+      status: patch.status,
     };
     parts.push(part);
   }
   const startedAt = part.startedAt;
   Object.assign(part, patch);
-  if (startedAt && patch.status && patch.status !== 'running' && !part.durationMs) {
+  if (startedAt && patch.status !== 'running' && !part.durationMs) {
     part.durationMs = Date.now() - startedAt;
   }
   return part;

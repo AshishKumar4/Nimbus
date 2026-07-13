@@ -188,12 +188,14 @@ try {
   await page.waitForFunction(() => !document.querySelector('.agent-error-card'), { timeout: 15_000 });
   a.check('retry clears the error card and completes', !(await page.$('.agent-error-card')));
 
-  // Unified markdown pipeline serves the preview pane too.
+  // Unified markdown pipeline serves the preview pane too (the shell uses
+  // the same module export; no window global).
   const md = await page.evaluate(async () => {
-    const html = await window.__nimbusMarkdown.render('```js\nconst x = 1;\n```');
+    const island = await import('/_assets/agent-chat/agent-chat.js');
+    const html = island.renderMarkdown('```js\nconst x = 1;\n```');
     return { hasHighlight: html.includes('hljs-keyword'), hasCopy: html.includes('code-copy') };
   });
-  a.check('window.__nimbusMarkdown renders highlighted, copyable code', md.hasHighlight && md.hasCopy, JSON.stringify(md));
+  a.check('module renderMarkdown produces highlighted, copyable code', md.hasHighlight && md.hasCopy, JSON.stringify(md));
 
   // ── Phase 2: real backend, model-auth boundary honored honestly ─────
   interceptAgentApis = false;

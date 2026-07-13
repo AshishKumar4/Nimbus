@@ -1,8 +1,11 @@
-import { useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useLayoutEffect, useRef } from 'preact/hooks';
 
 const MAX_HEIGHT_PX = 220;
 
 export interface ComposerProps {
+  /** Draft text - owned by the parent so failed sends can restore it. */
+  value: string;
+  onChange(value: string): void;
   /** Chat is unavailable (not configured / not connected). */
   disabled: boolean;
   /** Inline hint shown when disabled (e.g. connect prompt). */
@@ -12,8 +15,7 @@ export interface ComposerProps {
   onStop(): void;
 }
 
-export function Composer({ disabled, hint, streaming, onSend, onStop }: ComposerProps) {
-  const [draft, setDraft] = useState('');
+export function Composer({ value, onChange, disabled, hint, streaming, onSend, onStop }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-grow with the draft, clamped; beyond the clamp the textarea
@@ -23,18 +25,15 @@ export function Composer({ disabled, hint, streaming, onSend, onStop }: Composer
     if (!node) return;
     node.style.height = 'auto';
     node.style.height = `${Math.min(node.scrollHeight, MAX_HEIGHT_PX)}px`;
-  }, [draft]);
+  }, [value]);
 
-  const canSend = !disabled && !streaming && draft.trim().length > 0;
+  const canSend = !disabled && !streaming && value.trim().length > 0;
 
-  const submit = () => {
-    if (streaming) {
-      onStop();
-      return;
-    }
-    const text = draft.trim();
-    if (disabled || !text) return;
-    setDraft('');
+  // Enter never stops an in-flight turn - composing the next message and
+  // hitting Enter while streaming is a no-op. Stop is button-only.
+  const trySend = () => {
+    const text = value.trim();
+    if (disabled || streaming || !text) return;
     onSend(text);
   };
 
@@ -43,7 +42,8 @@ export function Composer({ disabled, hint, streaming, onSend, onStop }: Composer
       class="agent-composer"
       onSubmit={(event) => {
         event.preventDefault();
-        submit();
+        if (streaming) onStop();
+        else trySend();
       }}
     >
       <div class={`composer-card${disabled ? ' disabled' : ''}`}>
@@ -52,13 +52,13 @@ export function Composer({ disabled, hint, streaming, onSend, onStop }: Composer
           ref={textareaRef}
           rows={2}
           placeholder="Message Nimbus"
-          value={draft}
+          value={value}
           disabled={disabled}
-          onInput={(event) => setDraft(event.currentTarget.value)}
+          onInput={(event) => onChange(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
-              submit();
+              trySend();
             }
           }}
         />

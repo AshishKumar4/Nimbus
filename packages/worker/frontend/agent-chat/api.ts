@@ -62,18 +62,23 @@ export async function selectAccount(accountId: string): Promise<void> {
 
 export type ChatRequestBody = { message: string; stream: true } | { retry: true; stream: true };
 
-/** POST a chat turn; the caller consumes the NDJSON body via stream.ts. */
-export async function postChatTurn(body: ChatRequestBody, signal: AbortSignal): Promise<Response> {
+/**
+ * POST a chat turn and return the NDJSON stream (consumed via stream.ts).
+ * A resolved promise means the server accepted the turn (and persisted the
+ * user message); a rejection means the server never saw it.
+ */
+export async function postChatTurn(body: ChatRequestBody, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
   const response = await fetch(MESSAGES_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
     body: JSON.stringify(body),
     signal,
   });
-  if (!response.ok || !response.body) {
+  const stream = response.body;
+  if (!response.ok || !stream) {
     const payload: unknown = await response.json().catch(() => ({}));
     const error = (payload as { error?: string })?.error;
     throw new Error(error || `Agent request failed (${response.status})`);
   }
-  return response;
+  return stream;
 }

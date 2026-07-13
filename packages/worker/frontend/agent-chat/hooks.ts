@@ -12,10 +12,12 @@ const PIN_THRESHOLD = 40;
  * is at/near the bottom every content growth keeps the view glued there;
  * scrolling up unpins (no yanking mid-stream); returning re-pins.
  *
- * @param content value whose identity changes when the content grows
+ * The layout effect deliberately runs after every render of the owning
+ * component - any commit can change the container's content height.
+ *
  * @returns callback ref for the scroll container
  */
-export function usePinToBottom<T extends HTMLElement>(content: unknown): (node: T | null) => void {
+export function usePinToBottom<T extends HTMLElement>(): (node: T | null) => void {
   const el = useRef<T | null>(null);
   const pinned = useRef(true);
   // scrollTop as of our last observation. Content growth changes
@@ -48,7 +50,7 @@ export function usePinToBottom<T extends HTMLElement>(content: unknown): (node: 
     if (node.scrollTop !== lastTop.current) observe();
     if (pinned.current) node.scrollTop = node.scrollHeight;
     lastTop.current = node.scrollTop;
-  }, [content]);
+  });
 
   return containerRef;
 }
