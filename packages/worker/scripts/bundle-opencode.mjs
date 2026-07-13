@@ -33,8 +33,13 @@
  *
  * Source dir:
  *   NIMBUS_OPENCODE_DIST env var, else /tmp/opencode-research/dist-nimbus
- *   (the research build output). Skips with a clear notice if absent so a
- *   fresh checkout without the clone still builds the worker.
+ *   (the research build output). When neither exists but the pinned version
+ *   is already staged under public/_assets/opencode/<version>/, staging is
+ *   re-derived from those committed assets — they are the deterministic
+ *   build output (content-addressed via OPENCODE_ARTIFACT_BUILD_ID), so a
+ *   host without the upstream clone must not silently unstage the artifact.
+ *   Only when no source exists at all does the script skip with a clear
+ *   notice so a fresh checkout still builds the worker.
  *
  * Output:
  *   src/opencode-artifact.generated.ts
@@ -204,19 +209,32 @@ async function main() {
   const assetRel = path.join('_assets', 'opencode', version);
   const assetDir = path.join(ROOT, 'public', assetRel);
 
-  if (!(await exists(DIST_DIR))) {
-    console.warn(
-      `[bundle-opencode] dist dir not found: ${DIST_DIR}\n` +
-        `   skipping staging — set NIMBUS_OPENCODE_DIST to the opencode build output.\n` +
-        `   The worker still builds; opencode install will report "artifact not staged".`,
-    );
-    await emitGenerated(version, null, [], '', null, null, null);
-    return;
+  // Prefer the research build output; fall back to the already-staged assets
+  // for the pinned version (byte-identical to the dist they were staged from)
+  // so a host without the clone re-derives the same staging instead of
+  // silently unstaging the artifact.
+  let distDir = DIST_DIR;
+  if (!(await exists(distDir))) {
+    if (await exists(path.join(assetDir, 'index.js'))) {
+      distDir = assetDir;
+      console.log(
+        `[bundle-opencode] dist dir not found: ${DIST_DIR} — re-deriving from staged public/${assetRel}`,
+      );
+    } else {
+      console.warn(
+        `[bundle-opencode] dist dir not found: ${DIST_DIR}\n` +
+          `   skipping staging — set NIMBUS_OPENCODE_DIST to the opencode build output.\n` +
+          `   The worker still builds; opencode install will report "artifact not staged".`,
+      );
+      await emitGenerated(version, null, [], '', null, null, null);
+      return;
+    }
   }
+  const restaging = path.resolve(distDir) === path.resolve(assetDir);
 
-  const indexSrc = path.join(DIST_DIR, 'index.js');
+  const indexSrc = path.join(distDir, 'index.js');
   if (!(await exists(indexSrc))) {
-    throw new Error(`[bundle-opencode] ${DIST_DIR} has no index.js — not an opencode dist dir`);
+    throw new Error(`[bundle-opencode] ${distDir} has no index.js — not an opencode dist dir`);
   }
 
   // Clean stale-versioned dirs.
@@ -229,19 +247,21 @@ async function main() {
     }
   }
 
-  await fs.rm(assetDir, { recursive: true, force: true });
-  await fs.mkdir(assetDir, { recursive: true });
+  if (!restaging) {
+    await fs.rm(assetDir, { recursive: true, force: true });
+    await fs.mkdir(assetDir, { recursive: true });
+  }
 
   // Stage every file in the dist dir (index.js + tree-sitter .wasm + .scm +
   // the few embedded assets the bundle references by name).
-  const entries = await fs.readdir(DIST_DIR, { withFileTypes: true });
+  const entries = await fs.readdir(distDir, { withFileTypes: true });
   const files = entries.filter((e) => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
   const sidecars = [];
   let totalBytes = 0;
   const hash = createHash('sha256');
   for (const e of files) {
-    const bytes = await fs.readFile(path.join(DIST_DIR, e.name));
-    await fs.writeFile(path.join(assetDir, e.name), bytes);
+    const bytes = await fs.readFile(path.join(distDir, e.name));
+    if (!restaging) await fs.writeFile(path.join(assetDir, e.name), bytes);
     totalBytes += bytes.length;
     hash.update(e.name);
     hash.update(bytes);
