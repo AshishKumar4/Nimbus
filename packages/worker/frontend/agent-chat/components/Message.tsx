@@ -91,7 +91,10 @@ export const Message = memo(function Message({ message, live, usage }: MessagePr
   }
 
   const cursorIndex = live ? lastTextIndex(parts) : -1;
-  const trailingThinking = live && parts.length > 0 && parts[parts.length - 1].type !== 'text';
+  // Between a settled tool and the model's next token there is nothing
+  // visibly in flight - show the thinking dots in that gap only.
+  const lastPart = parts[parts.length - 1];
+  const trailingThinking = live && lastPart?.type === 'tool' && lastPart.status !== 'running';
   const tokens = usageLabel(usage);
 
   return (
