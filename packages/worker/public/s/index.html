@@ -160,8 +160,14 @@
       font-size: 0.92em;
     }
     /* Fenced code renders as .code-block cards from the shared island
-       pipeline (agent-chat.css owns their look). */
+       pipeline (agent-chat.css owns their look). Raw-HTML <pre> in the
+       markdown keeps the plain document treatment. */
     .markdown-body .code-block { margin: 0 0 16px; }
+    .markdown-body pre:not(.code-block pre) {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 14px 16px; overflow: auto; margin: 0 0 16px;
+    }
+    .markdown-body pre:not(.code-block pre) code { background: transparent; padding: 0; color: #c9d1d9; }
     .markdown-body blockquote {
       border-left: 3px solid #3fb950; color: #8b949e; padding: 4px 0 4px 14px;
     }
@@ -596,9 +602,19 @@
     // mounts the chat, and the markdown preview pane shares its
     // renderMarkdown pipeline. One module, one renderer.
     let agentChatModulePromise = null;
+    let agentChatRetries = 0;
     function ensureAgentChat() {
       if (!agentChatModulePromise) {
-        agentChatModulePromise = import('/_assets/agent-chat/agent-chat.js');
+        // A failed load (offline, transient 5xx) must not stick forever.
+        // Browsers cache FAILED module fetches in the page's module map,
+        // so a retry has to bust the URL, not just re-import it.
+        const url = '/_assets/agent-chat/agent-chat.js'
+          + (agentChatRetries > 0 ? '?retry=' + agentChatRetries : '');
+        agentChatModulePromise = import(url);
+        agentChatModulePromise.catch(() => {
+          agentChatRetries++;
+          agentChatModulePromise = null;
+        });
       }
       return agentChatModulePromise;
     }
@@ -627,7 +643,7 @@
       if (workSurface === 'agent') {
         ensureAgentChat().then((island) => island.ensureLoaded()).catch((e) => {
           const panel = document.getElementById('agentPanel');
-          if (panel && !panel.firstChild) {
+          if (panel && !panel.querySelector('.agent-chat')) {
             panel.textContent = 'Agent chat failed to load: ' + (e?.message || e);
           }
         });

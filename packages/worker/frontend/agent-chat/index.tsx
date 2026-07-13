@@ -29,6 +29,9 @@ export function ensureLoaded(): void {
   const host = document.getElementById('agentPanel');
   if (!host) throw new Error('agent-chat: #agentPanel mount node is missing');
   mounted = true;
+  // The mount node may hold the shell's failure text from an earlier
+  // island load that this (retried) load supersedes.
+  host.textContent = '';
   render(
     <AgentChat onReady={(refresh) => { refreshChat = refresh; }} />,
     host,
@@ -38,9 +41,7 @@ export function ensureLoaded(): void {
 declare global {
   interface Window {
     NimbusAgent: { ensureLoaded(): void };
-    __nimbusMarkdown: { render(text: string): string };
   }
 }
 
 window.NimbusAgent = { ensureLoaded };
-window.__nimbusMarkdown = { render: renderMarkdown };
