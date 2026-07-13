@@ -349,8 +349,9 @@ async function selectAccount(self: Host, request: Request): Promise<Response> {
 
 async function agentChat(self: Host, request: Request, url: URL): Promise<Response> {
   const body = await readJson(request);
+  const retry = body?.retry === true;
   const text = String(body?.message || '').trim();
-  if (!text) return json({ error: 'message is required' }, 400);
+  if (!retry && !text) return json({ error: 'message is required' }, 400);
 
   const credentialResult = await loadAiCredentials(self, request, url);
   if (!credentialResult.credentials) {
@@ -364,9 +365,22 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
 
   const config = readConfig(self, url);
   const messages = await loadMessages(self);
-  const userMessage = makeMessage('user', text);
-  messages.push(userMessage);
-  await saveMessages(self, messages);
+  let userMessage: StoredMessage;
+  if (retry) {
+    // Re-run the last user turn: drop the trailing assistant answer (if
+    // any) and stream a fresh one. No duplicate user message is stored.
+    if (messages[messages.length - 1]?.role === 'assistant') messages.pop();
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'user') {
+      return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
+    }
+    userMessage = last;
+    await saveMessages(self, messages);
+  } else {
+    userMessage = makeMessage('user', text);
+    messages.push(userMessage);
+    await saveMessages(self, messages);
+  }
 
   if (body?.stream === false) {
     return agentChatJson(self, config, credentialResult, messages);

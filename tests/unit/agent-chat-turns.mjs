@@ -183,4 +183,86 @@ const realFetch = globalThis.fetch;
   console.log('ok - cancel never persists an empty assistant shell');
 }
 
+// ── Retry: empty history is rejected ─────────────────────────────────
+{
+  const { host } = makeHost();
+  globalThis.fetch = mockProviderFetch({ hang: false });
+  try {
+    const response = await postChat(host, { retry: true, stream: true });
+    assert.equal(response.status, 400);
+    const payload = await response.json();
+    assert.equal(payload.code, 'E_AGENT_NOTHING_TO_RETRY');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - retry on empty history returns 400');
+}
+
+// ── Retry: history ending in a legacy tool row is rejected ───────────
+{
+  const { host, store } = makeHost();
+  store.set(MESSAGES_KEY, [
+    { id: 'u1', role: 'user', content: 'run it', createdAt: 1 },
+    { id: 't1', role: 'tool', content: '{}', createdAt: 2 },
+  ]);
+  globalThis.fetch = mockProviderFetch({ hang: false });
+  try {
+    const response = await postChat(host, { retry: true, stream: true });
+    assert.equal(response.status, 400);
+    assert.deepEqual(store.get(MESSAGES_KEY).map((m) => m.id), ['u1', 't1'], 'history untouched');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - retry rejects history that does not end at a user turn');
+}
+
+// ── Retry: drops the trailing assistant turn and re-runs, no dup user ─
+{
+  const { host, store } = makeHost();
+  store.set(MESSAGES_KEY, [
+    { id: 'u1', role: 'user', content: 'say hello', createdAt: 1 },
+    { id: 'a1', role: 'assistant', content: 'old answer', createdAt: 2, parts: [{ type: 'text', text: 'old answer' }] },
+  ]);
+  globalThis.fetch = mockProviderFetch({ hang: false });
+  try {
+    const response = await postChat(host, { retry: true, stream: true });
+    assert.equal(response.status, 200);
+    const [events] = await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+    const done = events.find((event) => event.type === 'done');
+    assert.ok(done, 'retry stream completes');
+    assert.equal(done.message.role, 'assistant');
+    assert.equal(done.message.content, 'Hello world');
+
+    const persisted = store.get(MESSAGES_KEY);
+    assert.deepEqual(persisted.map((m) => m.role), ['user', 'assistant'], 'exactly one user + one assistant');
+    assert.equal(persisted[0].id, 'u1', 'user message not duplicated');
+    assert.equal(persisted[1].content, 'Hello world', 'old assistant answer replaced');
+    assert.notEqual(persisted[1].id, 'a1');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - retry replaces the trailing assistant turn without duplicating the user turn');
+}
+
+// ── Retry: history ending at a user turn re-runs it as-is ────────────
+{
+  const { host, store } = makeHost();
+  store.set(MESSAGES_KEY, [
+    { id: 'u1', role: 'user', content: 'say hello', createdAt: 1 },
+  ]);
+  globalThis.fetch = mockProviderFetch({ hang: false });
+  try {
+    const response = await postChat(host, { retry: true, stream: true });
+    assert.equal(response.status, 200);
+    await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+    const persisted = store.get(MESSAGES_KEY);
+    assert.deepEqual(persisted.map((m) => m.role), ['user', 'assistant']);
+    assert.equal(persisted[0].id, 'u1');
+    assert.equal(persisted[1].content, 'Hello world');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - retry after a failed turn re-runs the trailing user message');
+}
+
 console.log('agent-chat-turns: all assertions passed');
