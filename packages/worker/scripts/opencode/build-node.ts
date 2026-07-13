@@ -17,6 +17,24 @@ import {
   OPENTUI_FFI_CHUNK_MARKER,
 } from "./bundle-patches"
 
+// bun >= 1.3.14 REQUIRED: earlier bundlers emit broken cross-chunk live
+// bindings under code-splitting ("X is not a function" at runtime, e.g.
+// SessionPrompt.getModel) — silent artifact corruption, so fail loud here.
+const MIN_BUN = [1, 3, 14] as const
+{
+  const parts = Bun.version.split(".").map((n) => Number.parseInt(n, 10))
+  const ok =
+    parts[0] > MIN_BUN[0] ||
+    (parts[0] === MIN_BUN[0] &&
+      (parts[1] > MIN_BUN[1] || (parts[1] === MIN_BUN[1] && parts[2] >= MIN_BUN[2])))
+  if (!ok) {
+    throw new Error(
+      `build-node.ts requires bun >= ${MIN_BUN.join(".")} (splitting emits broken ` +
+        `cross-chunk bindings on older bundlers); running ${Bun.version}`,
+    )
+  }
+}
+
 const dir = "/tmp/opencode-research/opencode/packages/opencode"
 process.chdir(dir)
 
@@ -96,6 +114,9 @@ const bunAlias = {
 }
 
 const outdir = "/tmp/opencode-research/dist-nimbus"
+// Clean the outdir: chunk names are content-hashed, so stale chunks from a
+// previous build would accumulate and be packed into chunks.json blindly.
+fs.rmSync(outdir, { recursive: true, force: true })
 
 // The opencode TUI is a client/server split: the bare `opencode` TUI process
 // (the client + renderer) spawns its API server as `new Worker("./worker.js")`

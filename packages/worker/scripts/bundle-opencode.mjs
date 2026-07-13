@@ -252,7 +252,7 @@ async function main() {
           `   skipping staging — set NIMBUS_OPENCODE_DIST to the opencode build output.\n` +
           `   The worker still builds; opencode install will report "artifact not staged".`,
       );
-      await emitGenerated(version, null, [], '', null, null, null);
+      await emitGenerated(version, null, [], '', null, null, null, null);
       return;
     }
   }
@@ -301,6 +301,46 @@ async function main() {
     staged.sort((a, b) => a.name.localeCompare(b.name));
     console.log(`[bundle-opencode] packed ${chunkNames.length} split chunks into ${CHUNKS_PACK}`);
   }
+  // Fail-loud closure check: the pack must contain EXACTLY the chunk set
+  // reachable (statically or dynamically) from index.js + worker.js + the
+  // chunks themselves. A missing chunk is a runtime module-not-found inside
+  // the facet; an extra chunk is dead weight shipped into every spawn.
+  {
+    const packEntry = staged.find((f) => f.name === CHUNKS_PACK);
+    if (packEntry) {
+      const pack = JSON.parse(packEntry.bytes.toString('utf8'));
+      const sources = new Map(Object.entries(pack));
+      for (const f of staged) {
+        if (f.name === 'index.js' || f.name === 'worker.js') {
+          sources.set(f.name, f.bytes.toString('utf8'));
+        }
+      }
+      const CHUNK_REF_RE = /["']\.\/(chunk-[a-z0-9]+\.js)["']/g;
+      const reachable = new Set();
+      const queue = ['index.js', 'worker.js'];
+      while (queue.length > 0) {
+        const src = sources.get(queue.pop());
+        if (!src) continue;
+        for (const m of src.matchAll(CHUNK_REF_RE)) {
+          if (!reachable.has(m[1])) {
+            reachable.add(m[1]);
+            queue.push(m[1]);
+          }
+        }
+      }
+      const packed = new Set(Object.keys(pack));
+      const missing = [...reachable].filter((n) => !packed.has(n));
+      const extra = [...packed].filter((n) => !reachable.has(n));
+      if (missing.length > 0 || extra.length > 0) {
+        throw new Error(
+          `[bundle-opencode] ${CHUNKS_PACK} does not match the entry import closure — ` +
+            `missing: ${missing.join(', ') || 'none'}; unreachable: ${extra.join(', ') || 'none'}`,
+        );
+      }
+      console.log(`[bundle-opencode] chunk closure verified: ${packed.size} chunks reachable from index.js + worker.js`);
+    }
+  }
+
   const sidecars = [];
   let totalBytes = 0;
   const hash = createHash('sha256');
