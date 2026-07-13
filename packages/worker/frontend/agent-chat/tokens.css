@@ -1,0 +1,29 @@
+/*
+ * tokens.css - Semantic design tokens for the Nimbus shell's GitHub-dark
+ * palette. The chat island styles against these variables only; the rest
+ * of the shell can adopt the same layer over time.
+ */
+:root {
+  --nim-bg: #0d1117;
+  --nim-surface: #161b22;
+  --nim-raised: #21262d;
+  --nim-border: #30363d;
+  --nim-overlay: rgba(22, 27, 34, 0.7);
+
+  --nim-text: #c9d1d9;
+  --nim-text-bright: #f0f6fc;
+  --nim-text-muted: #8b949e;
+  --nim-text-faint: #6e7681;
+
+  --nim-accent: #58a6ff;
+  --nim-accent-muted: rgba(88, 166, 255, 0.16);
+  --nim-green: #3fb950;
+  --nim-green-bright: #7ee787;
+  --nim-amber: #d29922;
+  --nim-red: #ff7b72;
+  --nim-user-bubble: rgba(31, 111, 235, 0.16);
+  --nim-user-bubble-border: rgba(88, 166, 255, 0.4);
+
+  --nim-font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --nim-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
