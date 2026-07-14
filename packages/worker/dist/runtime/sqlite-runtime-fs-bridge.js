@@ -204,7 +204,7 @@ export class SqliteRuntimeFsBridge {
         this.symlinks.set(p, target);
     }
     async fsync() {
-        this.vfs.flushAll();
+        // SqliteVFS writes are synchronously durable before their calls return.
     }
     async revision(path) {
         if (path === undefined)

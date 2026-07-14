@@ -9,7 +9,7 @@
  * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
  * │  ─────────────────────────────────────── │
  * │  On cache miss → SQLite read             │
- * │  Pending writes own durability bytes     │
+ * │  Writes commit synchronously to SQLite   │
  * │  On npm install → batch SQLite writes    │
  * └─────────────────────────────────────────┘
  *          │                    │
@@ -23,19 +23,16 @@
  *            DO SQLite (10 GB)
  *
  * Key design from do86's SqlPageStore:
- * - Disposable read cache; pending writes own unflushed bytes
- * - Microtask-deferred batch writes (64 rows per INSERT)
+ * - Disposable read cache; SQLite owns every accepted write durably
+ * - Bounded batch writes (33 chunk rows per INSERT)
  * - All operations SYNCHRONOUS (DO sql.exec() is sync)
  *
- * Durability (audit C1):
+ * Durability:
  * - writeFile() returns void (sync) — preserved to match LIFO's
  *   MountProvider.writeFile(subpath, content): void contract.
- * - Deferred-flush failures retry the same complete transaction once.
- *   Entries that fail both attempts remain pending and are also surfaced
- *   through failedWrites/onWriteError(). flushAll() throws until the
- *   retained snapshot is durably retried or failures are acknowledged.
- * - Callers that need a hard guarantee can use flushAndWait() (async)
- *   at explicit persistence boundaries.
+ * - Every write returns only after its SQLite transaction commits. Large
+ *   replacements stage bounded chunk groups and atomically publish the new
+ *   content generation before returning.
  *
  * Key design decisions:
  * - 64KB chunks (not 4KB): file access is sequential, fewer rows
@@ -48,6 +45,7 @@ import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MA
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { enc, dec } from '../_shared/bytes.js';
+const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
 const INODE_ROWS_PER_SQL_EXEC = 11;
 const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
@@ -217,8 +215,8 @@ export class SqliteVFS {
     // ── W5 Lever 8: runtime-mutable LRU cap + shrink refcount ─────────
     // Default seeded from LRU_MAX_ENTRIES (32 MiB). Heavy-alloc owners
     // (npm install, git clone, pre-bundle) call shrinkForInstall() to
-    // drop the cap to ~8 MiB and free heap headroom for the in-flight
-    // RPC payloads + pending-writes queue. Refcount-based: nested
+    // drop the cap to ~8 MiB and free heap headroom for in-flight RPC and
+    // streamed-write payloads. Refcount-based: nested
     // acquires stack; only the OUTERMOST restoreAfterInstall() actually
     // raises the cap back to the default.
     //
@@ -250,36 +248,19 @@ export class SqliteVFS {
     // so unrelated writes no longer invalidate them. In-memory only — the
     // clock resets with the DO lifetime, exactly like the caches keyed on it.
     _pathRevisions = new Map();
-    // ── Deferred write queue (do86 pattern) ───────────────────────────────
-    pendingWrites = new Map();
-    /**
-     * Sum of `data.length` across pendingWrites entries. Maintained
-     * in lockstep with the Map by every code path that mutates it
-     * (deferWrite/clearPendingWritesForPath/flushPendingWrites/
-     * cleanupAfterDelete). Read by getStats() so /api/_diag/memory's
-     * `heap.breakdown.vfsInFlightBytes` is no longer a hardcoded 0.
-     * (N3, memory accounting cleanup.)
-     */
-    _pendingWriteBytes = 0;
-    _peakPendingWriteBytes = 0;
-    _pendingFlushInFlightBytes = 0;
-    _peakPendingFlushInFlightBytes = 0;
     _peakRetainedWriteBytes = 0;
     /**
      * N2 (memory accounting cleanup). Sum of bytes held by writeStream()
      * for files that have not yet reached their declared v1 chunk count.
      * A completed file releases its retained bytes immediately after its
      * pointer publish; finally releases the incomplete remainder on failure.
-     *
-     * Sums into `heap.breakdown.vfsInFlightBytes` alongside
-     * _pendingWriteBytes so a single value reflects ALL transient
-     * write-bytes the supervisor is holding.
      */
     _writeStreamSpoolBytes = 0;
     _peakWriteStreamSpoolBytes = 0;
     /** In-memory liveness only; content_lifecycle remains durable ownership. */
     activeStagingContentIds = new Set();
-    writeFlushScheduled = false;
+    /** True only while durable GC work or a known abandoned staging row exists. */
+    maintenancePending = false;
     // Stage 2 transaction/phase telemetry. Scalar writes stay cheap; the
     // percentile is computed from the fixed ring only when diagnostics read it.
     _activeTransaction = null;
@@ -300,22 +281,6 @@ export class SqliteVFS {
     _lastTransaction = null;
     _overLimitFileCount = 0;
     _lastOverLimitFile = null;
-    // ── Write-failure tracking (audit C1) ─────────────────────────────────
-    // When a deferred flush fails, the entry lands here so (a) flushAll()
-    // can throw with accurate context on the next forced flush, (b) the
-    // supervisor can surface the error to the user's terminal via the
-    // onWriteError subscription, and (c) flushAndWait() can report.
-    //
-    // Keys use cacheKey(path, chunkId). Retry count bounds backoff to one
-    // additional attempt (per audit recommendation: "re-queue on transient
-    // SQL errors once"); entries that fail twice remain pending for an
-    // explicit later durability retry.
-    //
-    // Failure records are metadata only. pendingWrites remains the single
-    // owner of retryable bytes.
-    failedWrites = new Map();
-    writeErrorHandlers = new Set();
-    _writeFailures = 0;
     // ── Stats ─────────────────────────────────────────────────────────────
     _cacheHits = 0;
     _cacheMisses = 0;
@@ -330,7 +295,7 @@ export class SqliteVFS {
         this.events = new VfsEventEmitter();
         this.initSchema();
         this.loadInodes();
-        this.runContentMaintenanceSafely(2);
+        this.runContentMaintenanceSafely(2, true);
     }
     // ── Schema ────────────────────────────────────────────────────────────
     initSchema() {
@@ -654,7 +619,7 @@ export class SqliteVFS {
     //
     // shrinkForInstall(targetEntries): tighten the cap so heavy-alloc
     // owners (npm install / git clone / pre-bundle) free heap headroom
-    // for in-flight RPC payloads + pending-writes queue. Refcount-based
+    // for in-flight RPC and streamed-write payloads. Refcount-based
     // so nested heavy-alloc owners (e.g. concurrent install + clone)
     // don't race; only the OUTERMOST restoreAfterInstall() raises the
     // cap back to LRU_MAX_ENTRIES.
@@ -662,8 +627,8 @@ export class SqliteVFS {
     // Default target 128 entries × 64 KB = 8 MiB. Matches
     // CF-INTERNAL-OPTIMIZATION-RESEARCH.md J.1.2.
     //
-    // Pending writes own unflushed bytes independently, so eviction is
-    // disposable. Cold-cache bounce is acceptable for install workloads.
+    // The cache is disposable. Cold-cache bounce is acceptable for install
+    // workloads because accepted writes are already durable in SQLite.
     shrinkForInstall(targetEntries = 128) {
         const target = Math.max(1, Math.min(LRU_MAX_ENTRIES, targetEntries | 0));
         // Refcount: nested acquires stack. Take the smallest target across
@@ -677,8 +642,7 @@ export class SqliteVFS {
         }
         this._lruShrinkRefcount = 1;
         this._lruMaxEntries = target;
-        // Evict down to the new cap. Pending writes own unflushed bytes,
-        // so cache eviction is always disposable.
+        // Evict down to the new cap; cache eviction is always disposable.
         this.enforceCacheLimit();
     }
     /** Decrement the heavy-alloc refcount. When the count returns to
@@ -692,12 +656,7 @@ export class SqliteVFS {
             this._lruMaxEntries = LRU_MAX_ENTRIES;
         }
     }
-    /**
-     * Drop every disposable cache entry. Pending writes separately own all
-     * bytes that have not reached SQLite. Used by the SQLITE_NOMEM path to
-     * free pages before retrying the same strict batch. Sync; safe inside the
-     * input gate.
-     */
+    /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll() {
         // Iterate a snapshot while deleting from the cache.
         const keys = Array.from(this.cache.keys());
@@ -708,33 +667,6 @@ export class SqliteVFS {
             this.cache.delete(key);
             this._cacheBytes -= entry.data.length;
             this._evictions++;
-        }
-    }
-    /** Invalidate all cache entries for a path. */
-    cacheInvalidate(path) {
-        const toDelete = [];
-        for (const [key, entry] of this.cache) {
-            if (entry.path === path) {
-                this._cacheBytes -= entry.data.length;
-                toDelete.push(key);
-            }
-        }
-        for (const key of toDelete) {
-            this.cache.delete(key);
-        }
-    }
-    /** Remove all pending writes for a path (prevents orphan chunks). */
-    clearPendingWritesForPath(path) {
-        const toRemove = [];
-        for (const [key, entry] of this.pendingWrites) {
-            if (entry.path === path)
-                toRemove.push(key);
-        }
-        for (const key of toRemove) {
-            const e = this.pendingWrites.get(key);
-            if (e)
-                this._pendingWriteBytes -= e.data.length;
-            this.pendingWrites.delete(key);
         }
     }
     /**
@@ -757,249 +689,6 @@ export class SqliteVFS {
             this.cache.delete(key);
         }
     }
-    /** Batch version of clearPendingWritesForPath — one pass for N paths. */
-    clearPendingWritesForPaths(paths) {
-        if (paths.size === 0)
-            return;
-        const toRemove = [];
-        for (const [key, entry] of this.pendingWrites) {
-            if (paths.has(entry.path))
-                toRemove.push(key);
-        }
-        for (const key of toRemove) {
-            const e = this.pendingWrites.get(key);
-            if (e)
-                this._pendingWriteBytes -= e.data.length;
-            this.pendingWrites.delete(key);
-        }
-    }
-    clearWriteFailuresForPaths(paths) {
-        if (paths.size === 0)
-            return;
-        for (const [key, failure] of this.failedWrites) {
-            if (paths.has(failure.path))
-                this.failedWrites.delete(key);
-        }
-    }
-    clearWriteFailuresForPath(path) {
-        for (const [key, failure] of this.failedWrites) {
-            if (failure.path === path)
-                this.failedWrites.delete(key);
-        }
-    }
-    flushPendingWrites() {
-        this.writeFlushScheduled = false;
-        if (this.pendingWrites.size === 0)
-            return;
-        // Snapshot only keys/path metadata. Holding a second all-entry snapshot
-        // would retain already-committed buffers until the complete flush returns
-        // and make later-group in-flight telemetry undercount live references.
-        const keysByPath = new Map();
-        for (const [key, entry] of this.pendingWrites) {
-            const keys = keysByPath.get(entry.path);
-            if (keys)
-                keys.push(key);
-            else
-                keysByPath.set(entry.path, [key]);
-        }
-        let builder = new TransactionPlanBuilder();
-        const flushBuilder = () => {
-            if (builder.empty)
-                return true;
-            const plan = builder.build();
-            builder = new TransactionPlanBuilder();
-            return this.flushPendingPlan(plan);
-        };
-        for (const [path, keys] of keysByPath) {
-            const entries = [];
-            for (const key of keys) {
-                const entry = this.pendingWrites.get(key);
-                if (entry?.path === path)
-                    entries.push(entry);
-            }
-            if (entries.length === 0)
-                continue;
-            for (const entry of entries) {
-                if (builder.wouldExceedChunkGroup([entry]) !== null)
-                    flushBuilder();
-                builder.addChunk(entry);
-            }
-            entries.length = 0;
-        }
-        flushBuilder();
-    }
-    flushPendingPlan(plan, limitMode = 'bounded') {
-        const entries = plan.chunks;
-        const entryCount = entries.length;
-        let transferredBytes = 0;
-        for (const entry of entries) {
-            const key = this.cacheKey(entry.path, entry.chunkId);
-            if (this.pendingWrites.get(key) !== entry)
-                continue;
-            transferredBytes += entry.data.byteLength;
-        }
-        this._pendingWriteBytes -= transferredBytes;
-        this._pendingFlushInFlightBytes += transferredBytes;
-        this._peakPendingFlushInFlightBytes = Math.max(this._peakPendingFlushInFlightBytes, this._pendingFlushInFlightBytes);
-        this.updatePeakRetainedWriteBytes();
-        let firstError;
-        try {
-            this.executeTransactionPlan(plan, { source: 'pending-flush', limitMode });
-        }
-        catch (error) {
-            firstError = error;
-        }
-        if (firstError !== undefined) {
-            try {
-                this.executeTransactionPlan(plan, { source: 'pending-flush', limitMode });
-            }
-            catch (retryError) {
-                const message = `${this.errorMessage(firstError)}; retry: ${this.errorMessage(retryError)}`;
-                for (const entry of entries)
-                    this._recordFailedWrite(entry, message, 2);
-                entries.length = 0;
-                this._pendingFlushInFlightBytes -= transferredBytes;
-                this._pendingWriteBytes += transferredBytes;
-                this._peakPendingWriteBytes = Math.max(this._peakPendingWriteBytes, this._pendingWriteBytes);
-                this.updatePeakRetainedWriteBytes();
-                return false;
-            }
-        }
-        const postCommitStartedAt = performance.now();
-        for (const entry of entries) {
-            const key = this.cacheKey(entry.path, entry.chunkId);
-            if (this.pendingWrites.get(key) !== entry)
-                continue;
-            this.pendingWrites.delete(key);
-            this.failedWrites.delete(key);
-        }
-        entries.length = 0;
-        this._pendingFlushInFlightBytes -= transferredBytes;
-        this._sqlWrites += entryCount;
-        this._batchWrites++;
-        this._batchWriteRows += entryCount;
-        this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
-        this.updatePeakRetainedWriteBytes();
-        return true;
-    }
-    /**
-     * Move an un-writable chunk into failedWrites and notify subscribers.
-     * Called from the retry path of flushPendingWrites(). Entries recorded
-     * here are the ones that failed BOTH the original attempt and the
-     * one-shot retry. The matching pending entries remain the durability
-     * owner so a later explicit boundary can retry the whole snapshot.
-     */
-    _recordFailedWrite(entry, error, attempts) {
-        const key = this.cacheKey(entry.path, entry.chunkId);
-        // Defensive cap: a session that writes to a broken SQLite could
-        // otherwise grow failedWrites without bound between flushAll calls.
-        // 1000 entries × ~120 B = ~120 KB ceiling. The cumulative
-        // _writeFailures counter still grows so observers can see drops.
-        if (!this.failedWrites.has(key) && this.failedWrites.size >= 1000) {
-            // Drop the oldest recorded failure to make room; a 1000-deep
-            // failure queue already signals a serious problem.
-            const oldest = this.failedWrites.keys().next().value;
-            if (oldest !== undefined)
-                this.failedWrites.delete(oldest);
-        }
-        this.failedWrites.set(key, {
-            path: entry.path, chunkId: entry.chunkId,
-            error, attempts,
-        });
-        this._writeFailures++;
-        // Surface to subscribers so the supervisor can, e.g., write to the
-        // user's terminal. Handler errors are swallowed — they mustn't
-        // affect the flush path (called from a microtask).
-        const payload = { path: entry.path, chunkId: entry.chunkId, error, attempts };
-        for (const handler of this.writeErrorHandlers) {
-            try {
-                handler(payload);
-            }
-            catch { /* handler is last line of defense */ }
-        }
-        console.error('[sqlite-vfs] write permanently failed for', entry.path, 'chunk', entry.chunkId, 'after', attempts, 'attempts:', error);
-    }
-    /**
-     * Subscribe to write failures. Fires once per chunk that failed both
-     * its first attempt AND the one-shot retry. Returns an unsubscribe
-     * function. Multiple subscribers are permitted.
-     *
-     * Handlers run synchronously inside the flush microtask. Keep them
-     * cheap and non-throwing; errors thrown by a handler are caught and
-     * discarded so one bad subscriber can't break the flush path.
-     */
-    onWriteError(handler) {
-        this.writeErrorHandlers.add(handler);
-        return () => { this.writeErrorHandlers.delete(handler); };
-    }
-    /**
-     * Snapshot of currently-recorded write failures. Intended for
-     * diagnostics (e.g. /api/stats). The underlying Map is not exposed
-     * so external code can't accidentally mutate it.
-     */
-    getWriteFailures() {
-        return Array.from(this.failedWrites.values()).map(f => ({
-            path: f.path, chunkId: f.chunkId, error: f.error, attempts: f.attempts,
-        }));
-    }
-    /**
-     * Clear recorded failures. Callers that have recovered (e.g. retried
-     * the user-facing operation, or logged the error and decided to move
-     * on) can call this to reset the counter so flushAll() stops
-     * throwing. Without this, a single poisoned chunk would make every
-     * subsequent flushAll() throw forever.
-     */
-    clearWriteFailures() {
-        const n = this.failedWrites.size;
-        this.failedWrites.clear();
-        return n;
-    }
-    /**
-     * Force flush all pending writes to SQLite.
-     *
-     * Throws if any chunk failed both its first attempt AND the one-shot
-     * retry during this or any previous flush in this DO's lifetime.
-     * Callers that invoke flushAll() on a critical boundary (e.g.
-     * webSocketClose) get a synchronous error signal; callers that don't
-     * want to assert cleanliness should use flushAndWait() instead.
-     *
-     * Staying synchronous preserves the sqlite-vfs invariant that all
-     * file ops are sync (documented at the top of this file) — required
-     * by the vendored MountProvider interface.
-     */
-    flushAll() {
-        // Flush pending writes synchronously
-        this.flushPendingWrites();
-        if (this.failedWrites.size > 0) {
-            // Build a concise error message that names the first few paths
-            // so the operator can triage. Full list is available via
-            // getWriteFailures().
-            const first = Array.from(this.failedWrites.values()).slice(0, 3);
-            const preview = first.map(f => `${f.path}#${f.chunkId} (${f.error})`).join('; ');
-            const remaining = this.failedWrites.size > first.length
-                ? ` +${this.failedWrites.size - first.length} more`
-                : '';
-            throw new Error(`[sqlite-vfs] flushAll: ${this.failedWrites.size} write(s) failed permanently: ${preview}${remaining}`);
-        }
-    }
-    /**
-     * Force-flush and resolve only after the flush completes with no
-     * recorded failures. Rejects with the same error shape as flushAll()
-     * when one or more chunks are un-writable after retry.
-     *
-     * Use this at explicit persistence boundaries (e.g. end of
-     * `npm install`, end of `git clone`, seed-filesystem completion) to
-     * guarantee data landed. Synchronous `writeFile()` callers that
-     * don't opt in continue to get best-effort semantics — the audit's
-     * alternative fix path (keep void API, surface errors through
-     * onWriteError + throwing flushAll).
-     */
-    async flushAndWait() {
-        // queueMicrotask-scheduled flush may be in flight. Await a microtask
-        // turn before checking + forcing a flush so we don't double-run.
-        await Promise.resolve();
-        this.flushAll(); // throws on failures
-    }
     // ── Helpers ───────────────────────────────────────────────────────────
     now() { return Date.now(); }
     parentPath(path) {
@@ -1012,22 +701,28 @@ export class SqliteVFS {
     legacyContentId(path) {
         return path;
     }
-    createContentId() {
-        for (let attempt = 0; attempt < 8; attempt++) {
-            const contentId = `content:${crypto.randomUUID()}`;
-            const rows = this.sql.exec(`SELECT content_id FROM file_chunks WHERE content_id = ? LIMIT 1`, contentId);
-            if ([...rows].length > 0)
+    createContentId(reservedContentIds) {
+        // Canonical VFS keys never have a leading slash, so this namespace cannot
+        // overlap legacy IDs, which are raw canonical paths. One combined indexed
+        // guard also protects malformed legacy data, durable generations, and a
+        // repeated random value; the local reservation protects IDs in one plan.
+        for (let attempt = 0; attempt < CONTENT_ID_ALLOCATION_ATTEMPTS; attempt++) {
+            const contentId = `/content:${crypto.randomUUID()}`;
+            if (reservedContentIds?.has(contentId))
                 continue;
-            const lifecycle = this.sql.exec(`SELECT content_id FROM content_lifecycle WHERE content_id = ? LIMIT 1`, contentId);
-            if ([...lifecycle].length > 0)
-                continue;
-            const referenced = this.sql.exec(`SELECT path FROM inodes
+            const collision = [...this.sql.exec(`SELECT 1 AS collision FROM file_chunks WHERE content_id = ?
+         UNION ALL
+         SELECT 1 FROM content_lifecycle WHERE content_id = ?
+         UNION ALL
+         SELECT 1 FROM inodes
          WHERE is_dir = 0 AND COALESCE(content_id, path) = ?
-         LIMIT 1`, contentId);
-            if ([...referenced].length === 0)
+         LIMIT 1`, contentId, contentId, contentId)];
+            if (collision.length === 0) {
+                reservedContentIds?.add(contentId);
                 return contentId;
+            }
         }
-        throw new Error('[sqlite-vfs] failed to allocate a unique content id');
+        throw new Error('EIO: failed to allocate a unique VFS content generation');
     }
     blobToUint8Array(blob) {
         if (blob instanceof Uint8Array)
@@ -1044,11 +739,6 @@ export class SqliteVFS {
         return copy;
     }
     readChunkFromSql(inode, chunkId) {
-        // Check pending writes first (do86 pattern: avoid stale reads)
-        const key = this.cacheKey(inode.path, chunkId);
-        const pending = this.pendingWrites.get(key);
-        if (pending)
-            return pending.data;
         this._sqlReads++;
         const rows = [...this.sql.exec("SELECT data FROM file_chunks WHERE content_id = ? AND chunk_id = ?", this.contentIdForInode(inode), chunkId)];
         if (rows.length === 0)
@@ -1162,15 +852,12 @@ export class SqliteVFS {
             this.replaceFileWithStagedContent(inode, chunks);
         }
     }
-    /** Read one chunk via cache → pending writes → SQL, caching on miss. */
+    /** Read one chunk via cache → SQL, caching on miss. */
     readChunk(inode, chunkId) {
         const path = inode.path;
         const cached = this.cacheGet(path, chunkId);
         if (cached)
             return cached;
-        const pending = this.pendingWrites.get(this.cacheKey(path, chunkId));
-        if (pending)
-            return pending.data;
         const data = this.readChunkFromSql(inode, chunkId);
         if (data)
             this.cacheSet(path, chunkId, data);
@@ -1271,9 +958,6 @@ export class SqliteVFS {
         // POSIX pwrite of zero bytes never extends or dirties an existing file.
         if (bytes.length === 0)
             return;
-        // Establish one durable source generation before deriving any replacement
-        // chunks. A failed older deferred write must not be folded into a new edit.
-        this.flushAll();
         const oldSize = prior.size;
         const oldChunkCount = prior.chunkCount;
         const newSize = Math.max(oldSize, end);
@@ -1311,9 +995,8 @@ export class SqliteVFS {
     }
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
-     * Shrinking drops trailing chunk rows (and any cache/pending entries
-     * for them, so a deferred flush cannot resurrect deleted rows) and
-     * trims the new last chunk; growing zero-fills like writeRange.
+     * Shrinking drops trailing chunk rows and trims the new last chunk;
+     * growing zero-fills like writeRange. Every mutation commits before return.
      */
     truncate(path, size) {
         const inode = this.inodes.get(path);
@@ -1325,7 +1008,6 @@ export class SqliteVFS {
         const oldSize = inode.size;
         if (newSize === oldSize)
             return;
-        this.flushAll();
         const newChunkCount = newSize === 0 ? 0 : Math.ceil(newSize / CHUNK_SIZE);
         const now = this.now();
         const changedChunks = new Map();
@@ -1499,7 +1181,6 @@ export class SqliteVFS {
         if (inode.isDir)
             throw new Error('EISDIR: ' + path);
         this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] });
-        this.runContentMaintenanceSafely(1);
     }
     rmdir(path) {
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -1521,11 +1202,6 @@ export class SqliteVFS {
         if (newPath.startsWith(`${oldPath}/`)) {
             throw new Error(`EINVAL: cannot move ${oldPath} inside itself`);
         }
-        // Flush pending writes for old path first to avoid orphans
-        this.cacheInvalidate(oldPath);
-        this.flushAll(); // fail before mutation unless every accepted byte is durable
-        const newPp = this.parentPath(newPath);
-        const oldPp = this.parentPath(oldPath);
         const inode = this.inodes.get(oldPath);
         if (!inode)
             throw new Error("ENOENT: " + oldPath);
@@ -1591,8 +1267,6 @@ export class SqliteVFS {
         this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
         const touchedPaths = new Set(plan.affectedPaths);
         this.cacheInvalidateBatch(touchedPaths);
-        this.clearPendingWritesForPaths(touchedPaths);
-        this.clearWriteFailuresForPaths(touchedPaths);
         if (destInode) {
             this._removeFromChildrenIndex(destInode.parentPath, destInode.path);
             this.inodes.delete(destInode.path);
@@ -1660,6 +1334,7 @@ export class SqliteVFS {
         }
         catch (error) {
             this.activeStagingContentIds.delete(contentId);
+            this.maintenancePending = true;
             this.runContentMaintenanceSafely(1);
             throw error;
         }
@@ -1699,6 +1374,7 @@ export class SqliteVFS {
         }
         catch (error) {
             this.activeStagingContentIds.delete(contentId);
+            this.maintenancePending = true;
             this.runContentMaintenanceSafely(1);
             throw error;
         }
@@ -1930,6 +1606,8 @@ export class SqliteVFS {
             }
             this.updatePeakRetainedWriteBytes();
             for (const contentId of ownedStagingContentIds) {
+                if (this.activeStagingContentIds.has(contentId))
+                    this.maintenancePending = true;
                 this.activeStagingContentIds.delete(contentId);
             }
             this.runContentMaintenanceSafely(2);
@@ -2072,6 +1750,8 @@ export class SqliteVFS {
            ON CONFLICT(content_id) DO UPDATE SET state = 'gc'`, ...values);
             }
         });
+        if (plan.gcContentIds.length > 0)
+            this.maintenancePending = true;
     }
     executeMeasuredTransaction(plan, execution, callback) {
         if (this._activeTransaction !== null) {
@@ -2108,6 +1788,8 @@ export class SqliteVFS {
     runContentMaintenance(maxTransactions = 4) {
         let transactions = 0;
         const maximum = clampNonNegativeInt(maxTransactions);
+        let orphanScanComplete = true;
+        let stagingScanComplete = true;
         if (transactions < maximum) {
             const orphanRows = [...this.sql.exec(`SELECT chunks.content_id
          FROM file_chunks AS chunks
@@ -2123,6 +1805,7 @@ export class SqliteVFS {
          GROUP BY chunks.content_id
          ORDER BY chunks.content_id
          LIMIT ?`, CONTENT_IDS_PER_SQL_EXEC)];
+            orphanScanComplete = orphanRows.length < CONTENT_IDS_PER_SQL_EXEC;
             const contentIds = orphanRows.map((row) => String(row.content_id));
             if (contentIds.length > 0) {
                 const candidates = contentIds
@@ -2162,6 +1845,7 @@ export class SqliteVFS {
            )
          ORDER BY lifecycle.created_at, lifecycle.content_id
          LIMIT ?`, CONTENT_IDS_PER_SQL_EXEC)];
+            stagingScanComplete = stagingRows.length < CONTENT_IDS_PER_SQL_EXEC;
             const contentIds = stagingRows
                 .map((row) => String(row.content_id))
                 .filter((contentId) => !this.activeStagingContentIds.has(contentId));
@@ -2254,13 +1938,28 @@ export class SqliteVFS {
             });
             transactions++;
         }
+        if (maximum > 0) {
+            const hasGcBacklog = transactions >= maximum && [...this.sql.exec(`SELECT 1
+         FROM content_lifecycle AS lifecycle
+         WHERE lifecycle.state = 'gc'
+           AND NOT EXISTS (
+             SELECT 1 FROM inodes
+             WHERE inodes.is_dir = 0
+               AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
+           )
+         LIMIT 1`)].length > 0;
+            this.maintenancePending = !orphanScanComplete || !stagingScanComplete || hasGcBacklog;
+        }
         return { transactions };
     }
-    runContentMaintenanceSafely(maxTransactions) {
+    runContentMaintenanceSafely(maxTransactions, force = false) {
+        if (!force && !this.maintenancePending)
+            return;
         try {
             this.runContentMaintenance(maxTransactions);
         }
         catch (error) {
+            this.maintenancePending = true;
             console.error('[sqlite-vfs] content maintenance failed:', this.errorMessage(error));
         }
     }
@@ -2291,9 +1990,7 @@ export class SqliteVFS {
         this._peakRetainedWriteBytes = Math.max(this._peakRetainedWriteBytes, this.currentRetainedWriteBytes());
     }
     currentRetainedWriteBytes() {
-        return this._pendingWriteBytes
-            + this._pendingFlushInFlightBytes
-            + this._writeStreamSpoolBytes;
+        return this._writeStreamSpoolBytes;
     }
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     _safeHeapUsed() {
@@ -2330,6 +2027,7 @@ export class SqliteVFS {
                 chunksByPath.set(chunk.path, [chunk]);
         }
         const contentIds = new Map();
+        const reservedContentIds = allocateContentIds ? new Set() : undefined;
         let preflightContentIndex = 0;
         for (const entry of normalizedInodes.values()) {
             const prior = this.inodes.get(entry.path);
@@ -2344,7 +2042,7 @@ export class SqliteVFS {
                 const fileChunks = chunksByPath.get(entry.path) ?? [];
                 this.validateFileChunks(entry, fileChunks);
                 const contentId = allocateContentIds
-                    ? this.createContentId()
+                    ? this.createContentId(reservedContentIds)
                     : `preflight:${preflightContentIndex++}`;
                 contentIds.set(entry.path, contentId);
                 builder.addStagingContent(contentId);
@@ -2427,10 +2125,8 @@ export class SqliteVFS {
         }
         const postCommitStartedAt = performance.now();
         // Durable commit succeeded. Only now may this operation supersede cached
-        // or deferred data accepted earlier on the same paths.
+        // data on the same paths.
         this.cacheInvalidateBatch(plan.affectedPaths);
-        this.clearPendingWritesForPaths(plan.affectedPaths);
-        this.clearWriteFailuresForPaths(plan.affectedPaths);
         // 4. Publish the recursive deletions, then inode replacements.
         for (const inode of deletedInodes) {
             this._removeFromChildrenIndex(inode.parentPath, inode.path);
@@ -2665,26 +2361,10 @@ export class SqliteVFS {
                 writes: this._sqlWrites,
                 batchWrites: this._batchWrites,
                 batchWriteRows: this._batchWriteRows,
-                pendingWrites: this.pendingWrites.size,
-                // N3 (memory accounting cleanup): real byte sum of the
-                // pendingWrites Map. Source-of-truth for the heap-estimator's
-                // vfsInFlightBytes contributor (was hardcoded 0 at routes.ts:347
-                // pre-fix). Adding this AS WELL AS the entry count above so
-                // ops dashboards that already plot the count don't break, while
-                // memory triage gets the actual byte number.
-                pendingWriteBytes: this._pendingWriteBytes,
                 // Live bytes retained by writeStream() for files that have not yet
                 // reached their declared v1 chunk count. Stage 4 adds explicit v2
                 // file framing and cross-stream global-credit backpressure.
                 writeStreamSpoolBytes: this._writeStreamSpoolBytes,
-                queuedWriteBytes: {
-                    current: this._pendingWriteBytes,
-                    peak: this._peakPendingWriteBytes,
-                },
-                inFlightWriteBytes: {
-                    current: this._pendingFlushInFlightBytes,
-                    peak: this._peakPendingFlushInFlightBytes,
-                },
                 retainedWriteBytes: {
                     current: this.currentRetainedWriteBytes(),
                     peak: this._peakRetainedWriteBytes,
@@ -2748,8 +2428,6 @@ export class SqliteVFS {
                         last: this._lastOverLimitFile,
                     },
                 },
-                failedWrites: this.failedWrites.size,
-                totalWriteFailures: this._writeFailures,
             },
             // Event stats
             events: this.events.stats,

@@ -9,7 +9,7 @@
  * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
  * │  ─────────────────────────────────────── │
  * │  On cache miss → SQLite read             │
- * │  Pending writes own durability bytes     │
+ * │  Writes commit synchronously to SQLite   │
  * │  On npm install → batch SQLite writes    │
  * └─────────────────────────────────────────┘
  *          │                    │
@@ -23,19 +23,16 @@
  *            DO SQLite (10 GB)
  *
  * Key design from do86's SqlPageStore:
- * - Disposable read cache; pending writes own unflushed bytes
- * - Microtask-deferred batch writes (64 rows per INSERT)
+ * - Disposable read cache; SQLite owns every accepted write durably
+ * - Bounded batch writes (33 chunk rows per INSERT)
  * - All operations SYNCHRONOUS (DO sql.exec() is sync)
  *
- * Durability (audit C1):
+ * Durability:
  * - writeFile() returns void (sync) — preserved to match LIFO's
  *   MountProvider.writeFile(subpath, content): void contract.
- * - Deferred-flush failures retry the same complete transaction once.
- *   Entries that fail both attempts remain pending and are also surfaced
- *   through failedWrites/onWriteError(). flushAll() throws until the
- *   retained snapshot is durably retried or failures are acknowledged.
- * - Callers that need a hard guarantee can use flushAndWait() (async)
- *   at explicit persistence boundaries.
+ * - Every write returns only after its SQLite transaction commits. Large
+ *   replacements stage bounded chunk groups and atomically publish the new
+ *   content generation before returning.
  *
  * Key design decisions:
  * - 64KB chunks (not 4KB): file access is sequential, fewer rows
@@ -86,7 +83,7 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
     };
 });
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
-type TransactionSource = 'strict-batch' | 'pending-flush' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
+type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
 interface TransactionPlanMetrics {
     blobBytes: number;
@@ -119,35 +116,19 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
-    private pendingWrites;
-    /**
-     * Sum of `data.length` across pendingWrites entries. Maintained
-     * in lockstep with the Map by every code path that mutates it
-     * (deferWrite/clearPendingWritesForPath/flushPendingWrites/
-     * cleanupAfterDelete). Read by getStats() so /api/_diag/memory's
-     * `heap.breakdown.vfsInFlightBytes` is no longer a hardcoded 0.
-     * (N3, memory accounting cleanup.)
-     */
-    private _pendingWriteBytes;
-    private _peakPendingWriteBytes;
-    private _pendingFlushInFlightBytes;
-    private _peakPendingFlushInFlightBytes;
     private _peakRetainedWriteBytes;
     /**
      * N2 (memory accounting cleanup). Sum of bytes held by writeStream()
      * for files that have not yet reached their declared v1 chunk count.
      * A completed file releases its retained bytes immediately after its
      * pointer publish; finally releases the incomplete remainder on failure.
-     *
-     * Sums into `heap.breakdown.vfsInFlightBytes` alongside
-     * _pendingWriteBytes so a single value reflects ALL transient
-     * write-bytes the supervisor is holding.
      */
     private _writeStreamSpoolBytes;
     private _peakWriteStreamSpoolBytes;
     /** In-memory liveness only; content_lifecycle remains durable ownership. */
     private readonly activeStagingContentIds;
-    private writeFlushScheduled;
+    /** True only while durable GC work or a known abandoned staging row exists. */
+    private maintenancePending;
     private _activeTransaction;
     private _transactionDuration;
     private _postCommitDuration;
@@ -166,9 +147,6 @@ export declare class SqliteVFS {
     private _lastTransaction;
     private _overLimitFileCount;
     private _lastOverLimitFile;
-    private failedWrites;
-    private writeErrorHandlers;
-    private _writeFailures;
     private _cacheHits;
     private _cacheMisses;
     private _evictions;
@@ -193,17 +171,8 @@ export declare class SqliteVFS {
      *  zero, restore the cap to LRU_MAX_ENTRIES. No re-population —
      *  the cache warms naturally on next reads. */
     restoreAfterInstall(): void;
-    /**
-     * Drop every disposable cache entry. Pending writes separately own all
-     * bytes that have not reached SQLite. Used by the SQLITE_NOMEM path to
-     * free pages before retrying the same strict batch. Sync; safe inside the
-     * input gate.
-     */
+    /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll(): void;
-    /** Invalidate all cache entries for a path. */
-    private cacheInvalidate;
-    /** Remove all pending writes for a path (prevents orphan chunks). */
-    private clearPendingWritesForPath;
     /**
      * Batch version of cacheInvalidate — invalidate every cache entry
      * whose path is in `paths`. One pass over the cache instead of one
@@ -211,81 +180,6 @@ export declare class SqliteVFS {
      *
      */
     private cacheInvalidateBatch;
-    /** Batch version of clearPendingWritesForPath — one pass for N paths. */
-    private clearPendingWritesForPaths;
-    private clearWriteFailuresForPaths;
-    private clearWriteFailuresForPath;
-    private flushPendingWrites;
-    private flushPendingPlan;
-    /**
-     * Move an un-writable chunk into failedWrites and notify subscribers.
-     * Called from the retry path of flushPendingWrites(). Entries recorded
-     * here are the ones that failed BOTH the original attempt and the
-     * one-shot retry. The matching pending entries remain the durability
-     * owner so a later explicit boundary can retry the whole snapshot.
-     */
-    private _recordFailedWrite;
-    /**
-     * Subscribe to write failures. Fires once per chunk that failed both
-     * its first attempt AND the one-shot retry. Returns an unsubscribe
-     * function. Multiple subscribers are permitted.
-     *
-     * Handlers run synchronously inside the flush microtask. Keep them
-     * cheap and non-throwing; errors thrown by a handler are caught and
-     * discarded so one bad subscriber can't break the flush path.
-     */
-    onWriteError(handler: (err: {
-        path: string;
-        chunkId: number;
-        error: string;
-        attempts: number;
-    }) => void): () => void;
-    /**
-     * Snapshot of currently-recorded write failures. Intended for
-     * diagnostics (e.g. /api/stats). The underlying Map is not exposed
-     * so external code can't accidentally mutate it.
-     */
-    getWriteFailures(): Array<{
-        path: string;
-        chunkId: number;
-        error: string;
-        attempts: number;
-    }>;
-    /**
-     * Clear recorded failures. Callers that have recovered (e.g. retried
-     * the user-facing operation, or logged the error and decided to move
-     * on) can call this to reset the counter so flushAll() stops
-     * throwing. Without this, a single poisoned chunk would make every
-     * subsequent flushAll() throw forever.
-     */
-    clearWriteFailures(): number;
-    /**
-     * Force flush all pending writes to SQLite.
-     *
-     * Throws if any chunk failed both its first attempt AND the one-shot
-     * retry during this or any previous flush in this DO's lifetime.
-     * Callers that invoke flushAll() on a critical boundary (e.g.
-     * webSocketClose) get a synchronous error signal; callers that don't
-     * want to assert cleanliness should use flushAndWait() instead.
-     *
-     * Staying synchronous preserves the sqlite-vfs invariant that all
-     * file ops are sync (documented at the top of this file) — required
-     * by the vendored MountProvider interface.
-     */
-    flushAll(): void;
-    /**
-     * Force-flush and resolve only after the flush completes with no
-     * recorded failures. Rejects with the same error shape as flushAll()
-     * when one or more chunks are un-writable after retry.
-     *
-     * Use this at explicit persistence boundaries (e.g. end of
-     * `npm install`, end of `git clone`, seed-filesystem completion) to
-     * guarantee data landed. Synchronous `writeFile()` callers that
-     * don't opt in continue to get best-effort semantics — the audit's
-     * alternative fix path (keep void API, surface errors through
-     * onWriteError + throwing flushAll).
-     */
-    flushAndWait(): Promise<void>;
     private now;
     private parentPath;
     /** The single content resolver for both legacy-null and generated inodes. */
@@ -312,7 +206,7 @@ export declare class SqliteVFS {
     }): void;
     private _mkdirSingle;
     writeFile(path: string, content: string | Uint8Array): void;
-    /** Read one chunk via cache → pending writes → SQL, caching on miss. */
+    /** Read one chunk via cache → SQL, caching on miss. */
     private readChunk;
     readFile(path: string): Uint8Array;
     private requireChunk;
@@ -334,9 +228,8 @@ export declare class SqliteVFS {
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
-     * Shrinking drops trailing chunk rows (and any cache/pending entries
-     * for them, so a deferred flush cannot resurrect deleted rows) and
-     * trims the new last chunk; growing zero-fills like writeRange.
+     * Shrinking drops trailing chunk rows and trims the new last chunk;
+     * growing zero-fills like writeRange. Every mutation commits before return.
      */
     truncate(path: string, size: number): void;
     private updatedFileInode;
@@ -476,17 +369,7 @@ export declare class SqliteVFS {
             writes: number;
             batchWrites: number;
             batchWriteRows: number;
-            pendingWrites: number;
-            pendingWriteBytes: number;
             writeStreamSpoolBytes: number;
-            queuedWriteBytes: {
-                current: number;
-                peak: number;
-            };
-            inFlightWriteBytes: {
-                current: number;
-                peak: number;
-            };
             retainedWriteBytes: {
                 current: number;
                 peak: number;
@@ -586,8 +469,6 @@ export declare class SqliteVFS {
                     }) | null;
                 };
             };
-            failedWrites: number;
-            totalWriteFailures: number;
         };
         events: {
             totalEmitted: number;

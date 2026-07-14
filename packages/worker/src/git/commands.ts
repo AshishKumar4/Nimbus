@@ -305,7 +305,6 @@ export function registerGitCommands(
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
               },
             });
-            try { vfs.flushAll(); } catch {}
             if (result.success) {
               ctx.stdout.write(
                 `\n[git] clone complete (${result.filesWritten} files, ` +
@@ -487,7 +486,6 @@ export function registerGitCommands(
               password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
             },
           });
-          try { vfs.flushAll(); } catch {}
           if (result.success) {
             ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
             return 0;
@@ -516,7 +514,6 @@ export function registerGitCommands(
               password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
             },
           });
-          try { vfs.flushAll(); } catch {}
           if (result.success) {
             ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
             return 0;

@@ -95,7 +95,7 @@ for (let statement = 1; statement <= strictCreateStatementCount; statement++) {
   assert.equal(vfs.revision(), revision);
   assert.equal(vfs.exists('rollback.bin'), false);
   assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'rollback.bin'"), []);
-  assert.deepEqual(harness.sql.exec("SELECT content_id FROM file_chunks WHERE content_id LIKE 'content:%'"), []);
+  assert.deepEqual(harness.sql.exec("SELECT content_id FROM file_chunks WHERE content_id LIKE '/content:%'"), []);
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.equal(reconstructed.exists('rollback.bin'), false);
 }
@@ -130,7 +130,6 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   const oldData = bytes(CHUNK_SIZE + 7, 21);
   const newData = bytes(5, 81);
   vfs.writeFile('atomic-replace.bin', oldData);
-  vfs.flushAll();
   const revision = vfs.revision();
   harness.failOnTransactionStatement(statement);
   assert.throws(() => vfs.writeBatch({
@@ -161,7 +160,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   assert.equal(vfs.revision(), revision);
   assert.equal(vfs.exists('never-visible.bin'), false);
   assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'never-visible.bin'"), []);
-  assert.deepEqual(harness.sql.exec("SELECT content_id FROM file_chunks WHERE content_id LIKE 'content:%'"), []);
+  assert.deepEqual(harness.sql.exec("SELECT content_id FROM file_chunks WHERE content_id LIKE '/content:%'"), []);
 }
 
 // #4: a SQLITE_NOMEM retry must rerun the same strict transaction, never
@@ -230,8 +229,6 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
     chunks: chunks('race.bin', replacement),
   }), /injected SQL fault/);
   assert.deepEqual(vfs.readFile('race.bin'), accepted);
-  assert.equal(vfs.getStats().sql.pendingWriteBytes, 0);
-  vfs.flushAll();
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('race.bin'), accepted);
 }
@@ -254,9 +251,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
     chunks: chunks('race-nomem.bin', replacement),
   }), /SQLITE_NOMEM/);
   assert.deepEqual(vfs.readFile('race-nomem.bin'), accepted);
-  assert.equal(vfs.getStats().sql.pendingWriteBytes, 0);
   harness.clearFault();
-  vfs.flushAll();
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('race-nomem.bin'), accepted);
 }
@@ -282,7 +277,6 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
     'failed range transaction must preserve the prior complete generation',
   );
   assert.deepEqual(vfs.readFile('flush.bin'), durable);
-  assert.equal(vfs.getStats().sql.pendingWriteBytes, 0);
 
   harness.clearFault();
   vfs.writeRange('flush.bin', 0, data);
@@ -316,8 +310,6 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
     chunks: [],
   });
   assert.equal(vfs.isDirectory('flip'), true);
-  assert.equal(vfs.getStats().sql.pendingWrites, 0);
-  vfs.flushAll();
   assert.deepEqual(
     harness.sql.exec('SELECT chunk_id FROM file_chunks WHERE content_id = ?', oldContentId),
     [],
@@ -331,7 +323,6 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   vfs.mkdir('tree/nested', { recursive: true });
   vfs.writeFile('tree/a.txt', bytes(3, 1));
   vfs.writeFile('tree/nested/b.txt', bytes(5, 2));
-  vfs.flushAll();
   vfs.writeBatch({ inodes: [], chunks: [], deletePaths: ['tree'] });
   assert.equal(vfs.exists('tree'), false);
   assert.equal(vfs.exists('tree/a.txt'), false);
@@ -381,7 +372,6 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   vfs.mkdir('rollback-tree/nested', { recursive: true });
   vfs.writeFile('rollback-tree/a.txt', bytes(3, 4));
   vfs.writeFile('rollback-tree/nested/b.txt', bytes(5, 6));
-  vfs.flushAll();
   const before = vfs.revision();
   harness.failOnTransactionStatement(statement);
   assert.throws(
@@ -404,7 +394,6 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   const oldData = bytes(CHUNK_SIZE + 9, 7);
   const newData = bytes(4, 19);
   vfs.writeFile('replace.bin', oldData);
-  vfs.flushAll();
   vfs.writeBatch({
     inodes: [fileInode('replace.bin', newData.length)],
     chunks: chunks('replace.bin', newData),
@@ -423,7 +412,6 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   const { harness, vfs } = openVfs();
   const data = bytes(CHUNK_SIZE + 9, 14);
   vfs.writeFile('range-only.bin', data);
-  vfs.flushAll();
   const first = bytes(CHUNK_SIZE, 88);
   vfs.writeBatch({
     inodes: [],
@@ -482,7 +470,6 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   const data = bytes(CHUNK_SIZE * 2 + 5, 51);
   vfs.writeFile('corrupt.bin', data);
   vfs.writeFile('single.bin', bytes(7, 91));
-  vfs.flushAll();
   harness.sql.exec(
     'DELETE FROM file_chunks WHERE content_id = ? AND chunk_id = 1',
     resolvedContentId(harness, 'corrupt.bin'),
@@ -635,7 +622,6 @@ for (const faultCase of [
   const source = bytes(5, 1);
   vfs.writeFile('source.bin', source);
   vfs.writeFile('destination.bin', bytes(19, 2));
-  vfs.flushAll();
   vfs.rename('source.bin', 'destination.bin');
   assert.equal(vfs.getStats().usedBytes, source.length);
   assert.equal(vfs.getStats().files, 1);

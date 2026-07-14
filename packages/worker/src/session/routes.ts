@@ -426,10 +426,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // calls process.memoryUsage(). Ceiling is the architectural soft
       // budget (SUPERVISOR_HEAP_CEILING_BYTES = 64 MiB), half the
       // workerd hard cap of 128 MiB.
-      // Stage 2 reports mutually exclusive queued, pending-transaction,
-      // and decoder-retained logical bytes. The aggregate is the estimator's
-      // VFS in-flight contributor; SQL binding copies and object overhead are
-      // deliberately not presented as measured heap.
+      // Stage 3 retains logical write bytes only for incomplete writeStream
+      // files. SQL binding copies and object overhead are deliberately not
+      // presented as measured heap.
       const sqlStats = vfs.sql;
       const inFlightWriteBytes = sqlStats.retainedWriteBytes.current;
       const heap = estimateSupervisorHeap(counters, {
@@ -464,18 +463,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           lruShrunk: cacheStats.lruShrunk ?? false,
           evictions: cacheStats.evictions ?? 0,
           hitRate: cacheStats.hitRate ?? 0,
-          // N3 (memory accounting cleanup): pending-writes observability.
-          // `pendingWrites` is the entry count (unchanged); the new
-          // `pendingWriteBytes` is the live byte total maintained by
-          // SqliteVFS._pendingWriteBytes. Probes use the pair to
-          // distinguish "many small chunks" from "few large chunks".
-          pendingWrites: sqlStats.pendingWrites ?? 0,
-          pendingWriteBytes: sqlStats.pendingWriteBytes ?? 0,
           // N2: live bytes retained for incomplete writeStream() files.
           // Visible during a real npm install; ~0 at rest.
           writeStreamSpoolBytes: sqlStats.writeStreamSpoolBytes ?? 0,
-          queuedWriteBytes: sqlStats.queuedWriteBytes,
-          inFlightWriteBytes: sqlStats.inFlightWriteBytes,
           retainedWriteBytes: sqlStats.retainedWriteBytes,
           decoderRetainedBytes: sqlStats.decoderRetainedBytes,
           creditRetainedBytes: sqlStats.creditRetainedBytes,

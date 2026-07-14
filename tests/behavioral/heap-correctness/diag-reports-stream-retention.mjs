@@ -1,14 +1,8 @@
 #!/usr/bin/env bun
-// heap-correctness/diag-reports-pending-writes — N3 probe.
+// heap-correctness/diag-reports-stream-retention — N3/N2 telemetry probe.
 //
-// Bug: src/session/routes.ts:347-348 — `inFlightWriteBytes: 0` was
-// hardcoded with the comment "matches reality (writes are flushed in
-// microseconds)". Wrong: pendingWrites can hold up to 500 chunks ×
-// 64 KiB = 32 MiB pre-flush, AND writeStream spools the active batch.
-//
-// Probe: assert the diag schema includes the new fields AND a real
-// install drives them above 0 at some point. Same observability
-// layer as the H10 probe — the underlying counter is shared.
+// Probe: assert the diag schema includes the live writeStream retention
+// fields and a real install drives them above 0 at some point.
 
 import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { diagMemory, fmtBytes } from './_diag.mjs';
@@ -20,10 +14,9 @@ console.log(`[N3] sid=${sid} BASE=${BASE}`);
 const baseline = await diagMemory(sid);
 const baseDetail = baseline.vfsDetail ?? {};
 const schemaHasFields =
-  'pendingWriteBytes' in baseDetail &&
   'writeStreamSpoolBytes' in baseDetail &&
-  'pendingWrites' in baseDetail;
-console.log(`[N3] schema fields present: ${schemaHasFields} (pendingWriteBytes=${baseDetail.pendingWriteBytes}, writeStreamSpoolBytes=${baseDetail.writeStreamSpoolBytes})`);
+  'retainedWriteBytes' in baseDetail;
+console.log(`[N3] schema fields present: ${schemaHasFields} (writeStreamSpoolBytes=${baseDetail.writeStreamSpoolBytes})`);
 
 // Drive real activity — same shape as N2 / H10 probes use. Install
 // chunks pass through writeStream which holds the spool counter
@@ -41,9 +34,7 @@ const sampler = (async () => {
       const m = await diagMemory(sid);
       samples.push({
         inFlight: m.heap?.breakdown?.vfsInFlightBytes ?? 0,
-        pendingBytes: m.vfsDetail?.pendingWriteBytes ?? 0,
         spoolBytes: m.vfsDetail?.writeStreamSpoolBytes ?? 0,
-        pendingEntries: m.vfsDetail?.pendingWrites ?? 0,
       });
     } catch {}
   }
@@ -69,9 +60,7 @@ await sampler;
 await t.close();
 
 const peakInFlight = samples.reduce((a, s) => Math.max(a, s.inFlight), 0);
-const peakPendingBytes = samples.reduce((a, s) => Math.max(a, s.pendingBytes), 0);
 const peakSpoolBytes = samples.reduce((a, s) => Math.max(a, s.spoolBytes), 0);
-const peakPendingEntries = samples.reduce((a, s) => Math.max(a, s.pendingEntries), 0);
 
 const findings = {
   bug: 'N3',
@@ -81,22 +70,20 @@ const findings = {
   outcome,
   samples: samples.length,
   peakInFlightBytes: peakInFlight,
-  peakPendingWriteBytes: peakPendingBytes,
   peakWriteStreamSpoolBytes: peakSpoolBytes,
-  peakPendingWritesEntries: peakPendingEntries,
 };
 
 console.log(JSON.stringify(findings, null, 2));
 
 const verdict = (() => {
   if (!schemaHasFields) {
-    return { state: 'failing', reason: 'vfsDetail does not include the post-fix fields (pendingWriteBytes, writeStreamSpoolBytes)' };
+    return { state: 'failing', reason: 'vfsDetail does not include writeStreamSpoolBytes and retainedWriteBytes' };
   }
   if (outcome !== 'SUCCESS') return { state: 'failing', reason: `install ${outcome}` };
   if (peakInFlight === 0) {
     return { state: 'failing', reason: `vfsInFlightBytes peaked at 0 across ${samples.length} samples during a real install` };
   }
-  return { state: 'passing', reason: `vfsInFlightBytes peak=${fmtBytes(peakInFlight)} (pending=${fmtBytes(peakPendingBytes)}, spool=${fmtBytes(peakSpoolBytes)}); schema correct` };
+  return { state: 'passing', reason: `vfsInFlightBytes peak=${fmtBytes(peakInFlight)} (spool=${fmtBytes(peakSpoolBytes)}); schema correct` };
 })();
 console.log(`[N3] ${verdict.state} — ${verdict.reason}`);
 process.exit(verdict.state === 'passing' ? 0 : 1);

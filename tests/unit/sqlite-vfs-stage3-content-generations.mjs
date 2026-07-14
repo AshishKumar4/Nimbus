@@ -61,6 +61,27 @@ function contentChunkIds(harness, id) {
   ).map((row) => Number(row.chunk_id));
 }
 
+function contentMaintenanceScanCount(harness, fromStatement = 0) {
+  return harness.statements.slice(fromStatement).filter((statement) => (
+    /FROM\s+file_chunks\s+AS\s+chunks/i.test(statement.sql)
+    && /NOT\s+EXISTS/i.test(statement.sql)
+  )).length;
+}
+
+function standaloneContentIdLookupCount(harness, fromStatement = 0) {
+  return harness.statements.slice(fromStatement).filter((statement) => (
+    /^\s*SELECT\s+(?:content_id|path)\s+FROM\s+(?:file_chunks|content_lifecycle|inodes)/i.test(statement.sql)
+  )).length;
+}
+
+function contentIdAllocationGuardCount(harness, fromStatement = 0) {
+  return harness.statements.slice(fromStatement).filter((statement) => (
+    /SELECT\s+1\s+AS\s+collision\s+FROM\s+file_chunks/i.test(statement.sql)
+    && /UNION\s+ALL[\s\S]+FROM\s+content_lifecycle/i.test(statement.sql)
+    && /UNION\s+ALL[\s\S]+FROM\s+inodes/i.test(statement.sql)
+  )).length;
+}
+
 function transactionGroups(harness, fromStatement = 0) {
   const groups = new Map();
   for (const statement of harness.statements.slice(fromStatement)) {
@@ -175,6 +196,9 @@ function assertBounded(metrics, label) {
   vfs.writeFile('new-schema.txt', 'new-schema');
   const firstId = contentId(harness, 'new-schema.txt');
   assert.equal(typeof firstId, 'string');
+  assert.match(firstId, /^\/content:/);
+  // No flush/barrier is necessary: a fresh VFS must observe the write as soon
+  // as the synchronous write call returns.
   const reopened = reopenVfs(harness);
   assert.equal(reopened.readFileString('new-schema.txt'), 'new-schema');
   assert.equal(contentId(harness, 'new-schema.txt'), firstId);
@@ -200,11 +224,111 @@ function assertBounded(metrics, label) {
   vfs.writeFile('legacy.bin', replacement);
   const opaque = contentId(harness, 'legacy.bin');
   assert.equal(typeof opaque, 'string');
-  assert.match(opaque, /^content:/);
+  assert.match(opaque, /^\/content:/);
   assert.notEqual(opaque, 'legacy.bin');
   assert.deepEqual(reopenVfs(harness).readFile('legacy.bin'), replacement);
   vfs.writeFile('legacy.bin', replacement);
   assert.notEqual(contentId(harness, 'legacy.bin'), opaque, 'every full rewrite gets a fresh generation');
+}
+
+// Clean writes do not run the orphan-maintenance scan. Content allocation uses
+// one combined indexed uniqueness guard rather than three separate lookups.
+// Replacing content enqueues GC, performs one maintenance pass, and reclaims
+// the superseded generation before returning.
+{
+  const { harness, vfs } = openVfs();
+  const cleanStart = harness.statements.length;
+  for (let index = 0; index < 12; index++) {
+    vfs.writeFile(`clean-${index}.txt`, `value-${index}`);
+  }
+  assert.equal(contentMaintenanceScanCount(harness, cleanStart), 0);
+  assert.equal(contentIdAllocationGuardCount(harness, cleanStart), 12);
+  assert.equal(standaloneContentIdLookupCount(harness, cleanStart), 0);
+  const generatedIds = new Set(
+    Array.from({ length: 12 }, (_, index) => contentId(harness, `clean-${index}.txt`)),
+  );
+  assert.equal(generatedIds.size, 12);
+
+  const oldId = contentId(harness, 'clean-0.txt');
+  const replacementStart = harness.statements.length;
+  vfs.writeFile('clean-0.txt', 'replacement');
+  assert.equal(contentMaintenanceScanCount(harness, replacementStart), 1);
+  assert.deepEqual(contentChunkIds(harness, oldId), []);
+  assert.deepEqual(
+    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', oldId),
+    [],
+  );
+  const postGcStart = harness.statements.length;
+  vfs.writeFile('post-gc-clean.txt', 'clean');
+  assert.equal(contentMaintenanceScanCount(harness, postGcStart), 0);
+  assert.equal(reopenVfs(harness).readFileString('clean-0.txt'), 'replacement');
+}
+
+// A repeated random UUID inside one multi-file plan is detected before staging
+// can alias its generations. The allocator retries once and both files remain
+// independently durable across reconstruction.
+{
+  const { harness, vfs } = openVfs();
+  const firstUuid = '11111111-1111-4111-8111-111111111111';
+  const secondUuid = '22222222-2222-4222-8222-222222222222';
+  const generatedUuids = [firstUuid, firstUuid, secondUuid];
+  const originalDescriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+  Object.defineProperty(crypto, 'randomUUID', {
+    configurable: true,
+    value: () => {
+      const next = generatedUuids.shift();
+      assert.ok(next, 'unexpected extra content ID allocation attempt');
+      return next;
+    },
+  });
+  const statementStart = harness.statements.length;
+  const firstData = bytes(9, 17);
+  const secondData = bytes(11, 73);
+  try {
+    vfs.writeBatch({
+      inodes: [
+        fileInode('collision-first.bin', firstData),
+        fileInode('collision-second.bin', secondData),
+      ],
+      chunks: [
+        ...chunks('collision-first.bin', firstData),
+        ...chunks('collision-second.bin', secondData),
+      ],
+    });
+  } finally {
+    if (originalDescriptor) Object.defineProperty(crypto, 'randomUUID', originalDescriptor);
+    else delete crypto.randomUUID;
+  }
+  assert.equal(contentId(harness, 'collision-first.bin'), `/content:${firstUuid}`);
+  assert.equal(contentId(harness, 'collision-second.bin'), `/content:${secondUuid}`);
+  assert.equal(generatedUuids.length, 0, 'allocator must consume the retry UUID');
+  assert.equal(contentIdAllocationGuardCount(harness, statementStart), 2);
+  const reconstructed = reopenVfs(harness);
+  assert.deepEqual(reconstructed.readFile('collision-first.bin'), firstData);
+  assert.deepEqual(reconstructed.readFile('collision-second.bin'), secondData);
+}
+
+// Unlink enqueues GC through writeBatch and runs exactly one effective
+// maintenance pass, which removes both the chunks and lifecycle row.
+{
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('unlink-once.txt', 'gone');
+  const oldId = contentId(harness, 'unlink-once.txt');
+  const runMaintenance = vfs.runContentMaintenanceSafely.bind(vfs);
+  let maintenanceInvocations = 0;
+  vfs.runContentMaintenanceSafely = (...args) => {
+    maintenanceInvocations++;
+    return runMaintenance(...args);
+  };
+  const unlinkStart = harness.statements.length;
+  vfs.unlink('unlink-once.txt');
+  assert.equal(maintenanceInvocations, 1);
+  assert.equal(contentMaintenanceScanCount(harness, unlinkStart), 1);
+  assert.deepEqual(contentChunkIds(harness, oldId), []);
+  assert.deepEqual(
+    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', oldId),
+    [],
+  );
 }
 
 // The zero-copy migration may expose pre-existing orphan chunk keys. Boot
@@ -313,14 +437,12 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
   const id = contentId(harness, 'range.bin');
   const patch = bytes(10, 91);
   vfs.writeRange('range.bin', CHUNK_SIZE - 5, patch);
-  vfs.flushAll();
   assert.equal(contentId(harness, 'range.bin'), id);
   const expected = original.slice();
   expected.set(patch, CHUNK_SIZE - 5);
   assert.deepEqual(reopenVfs(harness).readFile('range.bin'), expected);
 
   vfs.truncate('range.bin', CHUNK_SIZE + 23);
-  vfs.flushAll();
   assert.equal(contentId(harness, 'range.bin'), id);
   assert.deepEqual(contentChunkIds(harness, id), [0, 1]);
   assert.deepEqual(reopenVfs(harness).readFile('range.bin'), expected.slice(0, CHUNK_SIZE + 23));
@@ -460,6 +582,58 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
   });
   assert.equal(result.ok, true);
   assert.deepEqual(reopenVfs(harness).readFile('active-stage.bin'), data);
+}
+
+// A full discovery page of active staging rows cannot hide a later abandoned
+// generation and clear the dirty flag. Once the active rows finish, subsequent
+// hot-path maintenance converts and reclaims the abandoned generation.
+{
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('maintenance-trigger.txt', 'old');
+  const activeIds = Array.from(
+    { length: 50 },
+    (_, index) => `/test:active:${String(index).padStart(2, '0')}`,
+  );
+  for (const [index, activeId] of activeIds.entries()) {
+    harness.sql.exec(
+      "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'staging', ?)",
+      activeId,
+      index,
+    );
+    vfs.activeStagingContentIds.add(activeId);
+  }
+  const abandonedId = '/test:abandoned-after-active-page';
+  harness.sql.exec(
+    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'staging', ?)",
+    abandonedId,
+    100,
+  );
+  harness.sql.exec(
+    'INSERT INTO file_chunks (content_id, chunk_id, data) VALUES (?, ?, ?)',
+    abandonedId,
+    0,
+    bytes(7, 83),
+  );
+
+  vfs.writeFile('maintenance-trigger.txt', 'new');
+  assert.deepEqual(
+    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', abandonedId),
+    [{ state: 'staging' }],
+  );
+  for (const activeId of activeIds) {
+    harness.sql.exec('DELETE FROM content_lifecycle WHERE content_id = ?', activeId);
+    vfs.activeStagingContentIds.delete(activeId);
+  }
+
+  const cleanupStart = harness.statements.length;
+  vfs.writeFile('maintenance-progress-1.txt', 'one');
+  vfs.writeFile('maintenance-progress-2.txt', 'two');
+  assert.ok(contentMaintenanceScanCount(harness, cleanupStart) >= 2);
+  assert.deepEqual(contentChunkIds(harness, abandonedId), []);
+  assert.deepEqual(
+    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', abandonedId),
+    [],
+  );
 }
 
 function createLargeReplacementFixture() {

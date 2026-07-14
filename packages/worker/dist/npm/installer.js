@@ -244,7 +244,6 @@ export class NpmInstaller {
         if (opts?.packages && opts.packages.length > 0) {
             this.updatePackageJson(projDir, opts.packages, resolved);
         }
-        this.vfs.flushAll();
         // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
         // The install command resolves IMMEDIATELY. Pre-bundle dispatches
         // its facet work in the background.
@@ -1881,13 +1880,10 @@ export class NpmInstaller {
             const counters = readDiagCounters();
             const vfsStats = this.vfs.getStats();
             const cacheStats = vfsStats.cache ?? {};
+            const sqlStats = vfsStats.sql ?? {};
             const heap = estimateSupervisorHeap(counters, {
                 cacheHotBytes: cacheStats.hotBytes ?? 0,
-                // Steady-state in-flight write bytes are 0 by the time we
-                // reach the pre-bundle phase boundary (writeBatch has
-                // already flushed before bundle dispatches). Same value
-                // routes.ts uses for its read.
-                inFlightWriteBytes: 0,
+                inFlightWriteBytes: sqlStats.retainedWriteBytes?.current ?? 0,
             });
             return heap.estimatedBytes / (1024 * 1024);
         }

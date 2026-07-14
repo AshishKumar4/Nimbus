@@ -576,7 +576,6 @@ export async function rpcDestroy(
   }
 
   try { self.processes.flushLogs(); } catch {}
-  try { self.sqliteFs?.flushAll?.(); } catch {}
   await quiesceInMemorySessionState(self);
   try { await self.ctx.storage.deleteAll(); } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);

@@ -47,7 +47,6 @@ const sampler = (async () => {
         heapBytes: m.heap?.estimatedBytes ?? 0,
         breakdown: m.heap?.breakdown ?? {},
         cacheHotBytes: m.vfsDetail?.lruBytes ?? 0,
-        pendingWrites: m.vfsDetail?.pendingWrites ?? null,
       });
     } catch { /* sampler error — stop quietly */ }
     await sleep(800);
@@ -85,7 +84,6 @@ await t.close();
 // Compute peaks from the sample stream.
 const peakHeap = samples.reduce((a, s) => Math.max(a, s.heapBytes ?? 0), 0);
 const peakInFlight = samples.reduce((a, s) => Math.max(a, s.breakdown?.vfsInFlightBytes ?? 0), 0);
-const peakPending = samples.reduce((a, s) => Math.max(a, s.pendingWrites ?? 0), 0);
 const peakCacheHot = samples.reduce((a, s) => Math.max(a, s.cacheHotBytes ?? 0), 0);
 
 const findings = {
@@ -97,7 +95,6 @@ const findings = {
   samples: samples.length,
   peakHeapBytes: peakHeap,
   peakInFlightWriteBytes: peakInFlight,
-  peakPendingWritesEntries: peakPending,
   peakCacheHotBytes: peakCacheHot,
   // Surface contributors at peak so we can identify the dominant.
   breakdownKeysSeen: [...new Set(samples.flatMap(s => Object.keys(s.breakdown ?? {})))],

@@ -390,10 +390,6 @@ export async function rpcDestroy(self, options = {}) {
         self.processes.flushLogs();
     }
     catch { }
-    try {
-        self.sqliteFs?.flushAll?.();
-    }
-    catch { }
     await quiesceInMemorySessionState(self);
     try {
         await self.ctx.storage.deleteAll();

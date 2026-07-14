@@ -49,17 +49,14 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
   assert.throws(() => vfs.readRange('home/user/dir', 0, 1), /EISDIR/);
 }
 
-// ── writeRange: in-place, spanning chunks, only affected chunks flushed ──
+// ── writeRange: in-place, spanning chunks, only affected chunks committed ──
 {
   const { harness, vfs } = makeVfs();
   const data = pattern(CHUNK_SIZE * 3);
   vfs.writeFile('f.bin', data);
-  vfs.flushAll();
-
   const statementStart = harness.statementCount;
   const patch = pattern(10, 7);
   vfs.writeRange('f.bin', CHUNK_SIZE - 5, patch); // spans chunks 0 and 1
-  vfs.flushAll();
   const chunkWrites = harness.statements.slice(statementStart)
     .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
     .reduce((count, statement) => count + (statement.params.length / 3), 0);
@@ -137,7 +134,6 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
   // Persistence: a fresh VFS over the same SQLite sees the same bytes.
   vfs.writeRange('t.bin', 3, pattern(8, 1));
-  await vfs.flushAndWait();
   const { vfs: vfs2 } = makeVfs(harness.db);
   const reread = vfs2.readFile('t.bin');
   assert.equal(reread.length, 11);

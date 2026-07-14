@@ -234,7 +234,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   async fsync(): Promise<void> {
-    this.vfs.flushAll();
+    // SqliteVFS writes are synchronously durable before their calls return.
   }
 
   async revision(path?: string): Promise<number> {

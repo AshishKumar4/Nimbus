@@ -85,8 +85,6 @@ const dec = new TextDecoder();
   const big = new Uint8Array(CHUNK_SIZE * 2);
   big.fill(9);
   await bridge.writeFile('/wk/big.bin', big);
-  vfs.flushAll();
-
   const handle = await bridge.open('/wk/big.bin', { read: true, write: true });
   // Positional read.
   assert.deepEqual(Array.from(await bridge.read(handle.id, 5, 3)), [9, 9, 9]);
@@ -94,10 +92,9 @@ const dec = new TextDecoder();
   await bridge.read(handle.id, null, 4);
   assert.equal((await bridge.read(handle.id, null, 0)).length, 0);
 
-  // Positional write inside chunk 1 must flush exactly one chunk.
+  // Positional write inside chunk 1 must commit exactly one chunk.
   const statementStart = harness.statementCount;
   await bridge.write(handle.id, CHUNK_SIZE + 10, enc.encode('zz'));
-  vfs.flushAll();
   const chunkWrites = harness.statements.slice(statementStart)
     .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
     .reduce((count, statement) => count + (statement.params.length / 3), 0);

@@ -608,8 +608,8 @@ processes, REPLs, package managers, web servers, or agent CLIs.
 - resident inode metadata
 - chunked file storage
 - LRU content cache
-- deferred write batching
-- forced flush boundaries
+- synchronously durable batch writes
+- bounded content-generation staging with atomic publish
 - revision tracking
 - VFS mutation events
 

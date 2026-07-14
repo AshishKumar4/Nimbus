@@ -330,21 +330,6 @@ export async function wsClose(self, ws, _code, _reason, _wasClean) {
     // is the legacy ring entry (active→drained); the field assignment
     // surfaces the live phase via /api/_diag/session.phase.
     self._b4Phase = 'drained';
-    if (self.sqliteFs) {
-        // Audit C1: flushAll() now throws when any chunk failed both
-        // its first attempt and the one-shot retry. Log loudly and
-        // clear so the next close doesn't re-throw.
-        try {
-            self.sqliteFs.flushAll();
-        }
-        catch (e) {
-            console.error('[nimbus] webSocketClose: flushAll failed —', e?.message || e);
-            try {
-                self.sqliteFs.clearWriteFailures();
-            }
-            catch { }
-        }
-    }
     // W5 Lever 5: persist the OOM ring on close so cf-tail-style
     // forensics survive DO hibernation. Gated on ctx.waitUntil so
     // the close handler doesn't hang on storage. Skipped if ring
@@ -423,18 +408,6 @@ export async function wsError(self, ws, _error) {
     catch { /* observability is non-critical */ }
     // [B'.4] Live phase indicator — same as wsClose path.
     self._b4Phase = 'drained';
-    if (self.sqliteFs) {
-        try {
-            self.sqliteFs.flushAll();
-        }
-        catch (e) {
-            console.error('[nimbus] webSocketError: flushAll failed —', e?.message || e);
-            try {
-                self.sqliteFs.clearWriteFailures();
-            }
-            catch { }
-        }
-    }
     // W5 Lever 5: persist OOM ring (same rationale as webSocketClose).
     // Also synthesize a DiagFailure for the WS error itself if one
     // hasn't already been recorded. Helps when a session vanishes

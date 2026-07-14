@@ -781,23 +781,6 @@ export class NimbusSession extends CloudflareDurableObject {
   ensureSqliteFs() {
     if (!this.sqliteFs) {
       this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-      // Audit C1: surface deferred-flush failures. SqliteVFS.writeFile()
-      // is synchronous (fire-and-forget by design — see LIFO MountProvider
-      // contract) so it can't return an error to the caller. Instead the
-      // VFS retries once and then calls these handlers for chunks that
-      // failed twice. We log to the user's terminal (non-spammy — the
-      // VFS also logs to the Worker console for operator triage) and
-      // make the error visible in /api/stats via getStats().
-      this.sqliteFs.onWriteError((err) => {
-        try {
-          if (this.terminal) {
-            this.terminal.write(
-              `\x1b[31m[vfs] write failed: ${err.path} chunk ${err.chunkId} ` +
-              `(attempts=${err.attempts}): ${err.error}\x1b[0m\r\n`,
-            );
-          }
-        } catch { /* handler must not throw back into the flush path */ }
-      });
       // W5 Lever 8: shrinkForInstall() during heavy-alloc windows.
       // The observer fires only on 0→1 / ≥1→0 edges (registerAllocObserver
       // in heavy-alloc-coord.ts handles the refcount). Default shrink
