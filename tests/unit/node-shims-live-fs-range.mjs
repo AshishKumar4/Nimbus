@@ -6,13 +6,13 @@
 // live VFS content stays authoritative.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-const db = new Database(':memory:');
-const vfs = new SqliteVFS({ exec(q, ...p) { return db.query(q).all(...p); } });
+const harness = createSqliteVfsTestHarness();
+const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const bridge = new SqliteRuntimeFsBridge(vfs);
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.

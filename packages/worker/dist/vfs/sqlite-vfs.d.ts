@@ -9,7 +9,7 @@
  * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
  * │  ─────────────────────────────────────── │
  * │  On cache miss → SQLite read             │
- * │  On eviction → SQLite write (if dirty)   │
+ * │  Pending writes own durability bytes     │
  * │  On npm install → batch SQLite writes    │
  * └─────────────────────────────────────────┘
  *          │                    │
@@ -23,18 +23,17 @@
  *            DO SQLite (10 GB)
  *
  * Key design from do86's SqlPageStore:
- * - LRU eviction with dirty-write-back
+ * - Disposable read cache; pending writes own unflushed bytes
  * - Microtask-deferred batch writes (64 rows per INSERT)
  * - All operations SYNCHRONOUS (DO sql.exec() is sync)
  *
  * Durability (audit C1):
  * - writeFile() returns void (sync) — preserved to match LIFO's
  *   MountProvider.writeFile(subpath, content): void contract.
- * - Deferred-flush failures (from transactionSync or individual row
- *   inserts) are retried ONCE without a transaction wrapper. Entries
- *   that fail both attempts land in failedWrites and are surfaced to
- *   subscribers via onWriteError(). flushAll() throws if any failed
- *   writes accumulated since last clearWriteFailures().
+ * - Deferred-flush failures retry the same complete transaction once.
+ *   Entries that fail both attempts remain pending and are also surfaced
+ *   through failedWrites/onWriteError(). flushAll() throws until the
+ *   retained snapshot is durably retried or failures are acknowledged.
  * - Callers that need a hard guarantee can use flushAndWait() (async)
  *   at explicit persistence boundaries.
  *
@@ -128,6 +127,7 @@ export declare class SqliteVFS {
     private cacheKey;
     private cacheGet;
     private cacheSet;
+    private enforceCacheLimit;
     private evictOne;
     shrinkForInstall(targetEntries?: number): void;
     /** Decrement the heavy-alloc refcount. When the count returns to
@@ -135,17 +135,13 @@ export declare class SqliteVFS {
      *  the cache warms naturally on next reads. */
     restoreAfterInstall(): void;
     /**
-     * Drop EVERY cache entry, flushing dirty ones via deferWrite. Used
-     * by the W5 Lever 9 SQLITE_NOMEM retry path to free pages owned by
-     * us before retrying a smaller batch. Sync; safe inside the input
-     * gate.
+     * Drop every disposable cache entry. Pending writes separately own all
+     * bytes that have not reached SQLite. Used by the SQLITE_NOMEM path to
+     * free pages before retrying the same strict batch. Sync; safe inside the
+     * input gate.
      */
     evictAll(): void;
-    /**
-     * Invalidate all cache entries for a path.
-     * @param discard If true, dirty entries are discarded (not flushed).
-     *   Use discard=true when the file is about to be overwritten or deleted.
-     */
+    /** Invalidate all cache entries for a path. */
     private cacheInvalidate;
     /** Remove all pending writes for a path (prevents orphan chunks). */
     private clearPendingWritesForPath;
@@ -154,23 +150,20 @@ export declare class SqliteVFS {
      * whose path is in `paths`. One pass over the cache instead of one
      * pass per path (audit R2: writeBatch was O(P × C) before this).
      *
-     * `discard` semantics match cacheInvalidate(path, discard): when
-     * false, dirty entries are re-queued for persistence before being
-     * dropped from the cache; when true (the writeBatch case — the row
-     * is about to be overwritten), dirty data is abandoned.
      */
     private cacheInvalidateBatch;
     /** Batch version of clearPendingWritesForPath — one pass for N paths. */
     private clearPendingWritesForPaths;
+    private clearWriteFailuresForPaths;
+    private clearWriteFailuresForPath;
     private deferWrite;
     private flushPendingWrites;
     /**
      * Move an un-writable chunk into failedWrites and notify subscribers.
      * Called from the retry path of flushPendingWrites(). Entries recorded
      * here are the ones that failed BOTH the original attempt and the
-     * one-shot retry; they are considered lost (we do not re-queue a
-     * third time — the audit recommendation was a single retry). The
-     * chunk bytes are NOT retained — see failedWrites comment above.
+     * one-shot retry. The matching pending entries remain the durability
+     * owner so a later explicit boundary can retry the whole snapshot.
      */
     private _recordFailedWrite;
     /**
@@ -208,7 +201,7 @@ export declare class SqliteVFS {
      */
     clearWriteFailures(): number;
     /**
-     * Force flush all dirty cache entries and pending writes to SQLite.
+     * Force flush all pending writes to SQLite.
      *
      * Throws if any chunk failed both its first attempt AND the one-shot
      * retry during this or any previous flush in this DO's lifetime.
@@ -237,6 +230,7 @@ export declare class SqliteVFS {
     private now;
     private parentPath;
     private blobToUint8Array;
+    private copyBytes;
     private readChunkFromSql;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
@@ -258,10 +252,11 @@ export declare class SqliteVFS {
     /** Read one chunk via cache → pending writes → SQL, caching on miss. */
     private readChunk;
     readFile(path: string): Uint8Array;
+    private requireChunk;
     /**
      * Read `length` bytes at `offset` without assembling the whole file —
      * only the chunks overlapping the range are touched. Reads past EOF
-     * are clamped; chunks missing their SQL row read as zeroes.
+     * are clamped; missing spans retain the existing zero-fill range semantics.
      */
     readRange(path: string, offset: number, length: number): Uint8Array;
     /**
@@ -312,8 +307,8 @@ export declare class SqliteVFS {
      * writeBatch() does:
      *   1 transactionSync() containing:
      *     - N DELETE for old paths (if any)
-     *     - Multi-row INSERT for inodes (up to 4000/statement)
-     *     - Multi-row INSERT for chunks (up to 200/statement, blob-heavy)
+     *     - Multi-row INSERT for inodes (up to 12/statement)
+     *     - Multi-row INSERT for chunks (up to 33/statement, blob-heavy)
      *   Total: 1 transactionSync() per wave of ~300-500 files.
      *
      * Speedup: 60K ops → ~60 ops (1000x fewer transaction commits).
@@ -347,7 +342,8 @@ export declare class SqliteVFS {
      * vfsInFlightBytes contributor now sums pendingWriteBytes +
      * writeStreamSpoolBytes. The N2 failing probe asserts on this sum.
      *
-     * Throws on SQLITE_NOMEM (with halve-retry per writeBatch); any
+     * On SQLITE_NOMEM, writeBatch evicts clean cache and retries the exact
+     * strict transaction once. Any
      * iterator-source error propagates unchanged. Atomicity guarantee
      * matches writeBatch: either ALL inodes + chunks land in SQLite or
      * NONE do.
@@ -367,16 +363,13 @@ export declare class SqliteVFS {
      * at the moment of the SQLITE_NOMEM. Fast (no copy).
      */
     private _estimateBatchBytes;
+    private errorMessage;
+    private isSqliteNoMem;
+    private transactionSync;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     private _safeHeapUsed;
-    /**
-     * Partition a writeBatch payload into two halves with disjoint
-     * path-sets. Preserves the W2.5 invariant: deletePaths and chunks
-     * follow their owning inode into the same half. Used by the
-     * SQLITE_NOMEM retry path.
-     */
-    private _halveBatchPayload;
     private _writeBatchOnce;
+    private collectBatchDeletions;
     /**
      * Bulk mkdir: create all directories in a single transactionSync.
      * Pre-creates the full directory tree before file writes to avoid

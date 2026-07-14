@@ -5,14 +5,14 @@
 // through the shared per-VFS SymlinkRegistry.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function makeBridge() {
-  const db = new Database(':memory:');
-  const vfs = new SqliteVFS({ exec(query, ...params) { return db.query(query).all(...params); } });
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
   return { vfs, bridge: new SqliteRuntimeFsBridge(vfs) };
 }
 
