@@ -6,8 +6,8 @@
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
  *      each job to `slot = cursor % concurrency` and use stable loader
- *      IDs `nfp:${fnHash}:slot-${i}`, so a pool of concurrency=4 keeps at
- *      most 4 warm isolates rather than N fresh ones.
+ *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
+ *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
@@ -246,6 +246,7 @@ export class NimbusLoaderPool {
   private readonly defaultTimeoutMs: number;
   private readonly defaultRetries: number;
   private readonly tag: string;
+  private readonly slotGenerations = new Map<number, number>();
   private bindings: Record<string, unknown> | undefined;
 
   private readonly preamble: string | undefined;
@@ -646,7 +647,9 @@ export class NimbusLoaderPool {
     // a later session's pool reuses the warm worker from a previous
     // session (which still carries the old session's env.SUPERVISOR
     // binding), and writeBatch RPCs land in the wrong DO's VFS.
-    const id = `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}`;
+    const buildId = (generation: number): string =>
+      `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}:g${generation}`;
+    let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
     const code = this.#buildCode(fnSource, context, perCallWasmEntries);
 
     // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
@@ -694,7 +697,9 @@ export class NimbusLoaderPool {
 
     const maxAttempts = 1 + resilience.retries;
     let lastError: Error | undefined;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let retriedCloneRefusal = false;
+    let attempt = 0;
+    while (attempt < maxAttempts) {
       try {
         if (resilience.timeoutMs > 0) {
           // Race runOnce() against a settable timer. CRITICAL: clear
@@ -729,6 +734,7 @@ export class NimbusLoaderPool {
         return await runOnce();
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        const cause = classifyError(lastError);
         // W5 Lever 5: classify + record. We push on EVERY failed
         // attempt (not just the final retry-exhausted throw) so the
         // ring captures transient SQLITE_NOMEM / clone-refused
@@ -738,7 +744,7 @@ export class NimbusLoaderPool {
           recordFailure({
             at: Date.now(),
             phase: 'rpc',
-            cause: classifyError(lastError),
+            cause,
             rssEstimateBytes: 0, heapUsedBytes: 0,
             lruBytes: 0, inFlightBytes: 0,
             lastRpcFrame: getLastRpcFrame(),
@@ -746,11 +752,23 @@ export class NimbusLoaderPool {
             message: lastError.message,
           });
         } catch { /* fail-soft */ }
+        if (cause === 'clone_refused' && !retriedCloneRefusal) {
+          retriedCloneRefusal = true;
+          const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
+          this.slotGenerations.set(slotIndex, generation);
+          id = buildId(generation);
+          try { setLastFacetId(id, slotIndex); } catch { /* best-effort */ }
+          // If the supervisor DO is stale, a newer loader still cannot
+          // deserialize back into it; only recycling that DO heals the
+          // reverse direction. This refresh targets the stale-loader case.
+          continue;
+        }
         if (attempt < maxAttempts - 1) {
           // 100 * 2^attempt, capped at 2s so retries don't compound waiting.
           const delay = Math.min(2000, 100 * Math.pow(2, attempt));
           await new Promise((r) => setTimeout(r, delay));
         }
+        attempt++;
       }
     }
     if (maxAttempts > 1) {

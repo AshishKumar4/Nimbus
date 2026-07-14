@@ -6,8 +6,8 @@
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
  *      each job to `slot = cursor % concurrency` and use stable loader
- *      IDs `nfp:${fnHash}:slot-${i}`, so a pool of concurrency=4 keeps at
- *      most 4 warm isolates rather than N fresh ones.
+ *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
+ *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
@@ -197,6 +197,7 @@ export declare class NimbusLoaderPool {
     private readonly defaultTimeoutMs;
     private readonly defaultRetries;
     private readonly tag;
+    private readonly slotGenerations;
     private bindings;
     private readonly preamble;
     private readonly preambleHash;

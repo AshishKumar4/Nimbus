@@ -68,7 +68,7 @@ export function classifyMessage(msg) {
     if (m.includes('database or disk is full'))
         return 'sqlite_nomem';
     // Structured-clone refusal — a 32 MiB-cap cousin
-    if (m.includes('cannot deserialize cloned data'))
+    if (m.includes('deserialize cloned data'))
         return 'clone_refused';
     if (m.includes('could not be cloned'))
         return 'clone_refused';
