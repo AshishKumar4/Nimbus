@@ -64,6 +64,11 @@ export const MAX_TX_LOGICAL_ROWS = 256;
 export const MAX_TX_SQL_EXECS = 64;
 export const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
+// Largest byte payload Nimbus sends through an ordinary Workers RPC value.
+// The platform limit is 32 MiB; 28 MiB leaves room for structured-clone
+// metadata and matches the proven on-demand facet transfer envelope.
+export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
+
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and
 // /@modules/ bundles are also persisted (SQLite) — this LRU is just the
@@ -77,7 +82,7 @@ export const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 // on-demand byte-budget gate, caps peak supervisor slice memory at one
 // slice — the same envelope the install-time pre-bundler proved safe on
 // shared DO isolates (concurrency=2 of max slices crashed Mossaic-scale).
-export const ON_DEMAND_SLICE_CAP_BYTES = 28 * 1024 * 1024;
+export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 
 // ── Facet Constants ─────────────────────────────────────────────────────
 export const FACET_TIMEOUT_MS = 30_000;  // 30s execution timeout

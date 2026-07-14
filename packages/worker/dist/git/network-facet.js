@@ -23,7 +23,7 @@
  * in the PR that introduced this file.
  */
 import { getCtxExports } from '../session/ctx-exports.js';
-import { CF_COMPAT_DATE } from '../constants.js';
+import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
@@ -69,7 +69,7 @@ export async function execGitNetwork(ctx, env, opts) {
             //     the aggregate 8 MiB payload-credit and transaction limits.
             //   - the pre-bundled isomorphic-git (git-bundle.js)
             modules: {
-                'git-network-worker.js': W7_FRAME_PREAMBLE + '\n' + generateGitNetworkFacetCode(),
+                'git-network-worker.js': assembleGitNetworkFacetSource(),
                 'git-bundle.js': GIT_BUNDLE_CODE,
             },
             env: { SUPERVISOR: supervisorBinding },
@@ -134,12 +134,17 @@ export async function execGitNetwork(ctx, env, opts) {
  * Reads op args from the POST body, runs isomorphic-git with a buffered
  * fs adapter, and flushes writes through W7 v2.
  */
+export function assembleGitNetworkFacetSource() {
+    return W7_FRAME_PREAMBLE + '\n' + generateGitNetworkFacetCode();
+}
 function generateGitNetworkFacetCode() {
     return `
 // CHUNK_SIZE is provided by the W7 frame preamble (from constants.ts),
 // prepended to this facet worker — do not redeclare it here.
 const WAVE_PATHS = 128;
 const WAVE_BYTES = 4 * 1024 * 1024; // or every 4MB
+const WHOLE_FILE_RPC_SAFE_BYTES = ${MAX_RPC_SAFE_PAYLOAD_BYTES};
+const READ_RANGE_BYTES = 4 * 1024 * 1024;
 
 function disposeRpcResult(value) {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
@@ -175,6 +180,12 @@ function parentOf(p) {
 function enoent(filepath) {
   const err = new Error('ENOENT: no such file or directory, ' + filepath);
   err.code = 'ENOENT'; err.errno = -2;
+  return err;
+}
+
+function eio(filepath, detail) {
+  const err = new Error('EIO: failed to read ' + filepath + ': ' + detail);
+  err.code = 'EIO'; err.errno = -5;
   return err;
 }
 
@@ -405,11 +416,52 @@ function createBufferedFs(supervisor, stats) {
         if (deleteBuffer.has(p)) {
           throw enoent(filepath);
         }
-        // Fall through to supervisor — use byte-preserving RPC for binary safety
-        // (git object files, packfiles must NOT round-trip through TextDecoder)
-        const content = await useRpcResult(supervisor.readFileBytes(p), (result) => result);
-        if (content === null || content === undefined) throw enoent(filepath);
-        const data = content instanceof Uint8Array ? content : new Uint8Array(content);
+        // Fall through to the supervisor. Ordinary RPC values have a 32 MiB
+        // structured-clone ceiling, so reconstruct larger files through the
+        // existing bounded range RPC instead of sending one oversized value.
+        // This is intentionally size-based rather than pack-path-specific: it
+        // preserves the fs.readFile contract for every large binary file.
+        const size = await useRpcResult(
+          supervisor.stat(p),
+          (result) => result === null || result === undefined ? null : Number(result.size),
+        );
+        if (size === null) throw enoent(filepath);
+        if (!Number.isSafeInteger(size) || size < 0) {
+          throw eio(filepath, 'invalid file size ' + String(size));
+        }
+
+        let data;
+        if (size > WHOLE_FILE_RPC_SAFE_BYTES) {
+          data = new Uint8Array(size);
+          for (let offset = 0; offset < size;) {
+            const expected = Math.min(READ_RANGE_BYTES, size - offset);
+            const bytesRead = await useRpcResult(
+              supervisor.fsReadRange(p, offset, expected),
+              (result) => {
+                if (result === null || result === undefined) {
+                  throw eio(filepath, 'range ' + offset + '..' + (offset + expected) + ' is missing');
+                }
+                const chunk = result instanceof Uint8Array ? result : new Uint8Array(result);
+                if (chunk.byteLength !== expected) {
+                  throw eio(
+                    filepath,
+                    'range ' + offset + '..' + (offset + expected) +
+                      ' returned ' + chunk.byteLength + ' bytes',
+                  );
+                }
+                data.set(chunk, offset);
+                return chunk.byteLength;
+              },
+            );
+            offset += bytesRead;
+          }
+        } else {
+          data = await useRpcResult(supervisor.readFileBytes(p), (result) => {
+            if (result === null || result === undefined) throw enoent(filepath);
+            const content = result instanceof Uint8Array ? result : new Uint8Array(result);
+            return content.slice();
+          });
+        }
         if (opts && opts.encoding === 'utf8') return new TextDecoder().decode(data);
         return data;
       },
