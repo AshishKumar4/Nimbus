@@ -318,12 +318,14 @@ export async function _rpcWriteBatchStream(self, stream) {
     // total writeBatchStream RPCs at the coordinator (vs 620+ pre-fix).
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
+    const decodeDrainStartedAt = performance.now();
     const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
     const decoded = await decodeWriteBatchStream(stream);
     return self.sqliteFs.writeStream({
         inodes: decoded.inodes,
         chunkIter: decoded.chunkIter,
         deletePaths: decoded.deletePaths,
+        decodeDrainStartedAt,
     });
 }
 /**

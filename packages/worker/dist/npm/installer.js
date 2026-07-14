@@ -9,12 +9,12 @@
  *   Phase 2: Hoist          — compute flat node_modules layout
  *   Phase 3: Diff           — skip packages already cached
  *   Phase 4: Fetch+Extract  — wave-based, 15 pkgs/wave, cache results
- *   Phase 5: Write          — ONE transactionSync() per wave via writeBatch()
+ *   Phase 5: Write          — bulk waves via writeBatchStream()
  *   Phase 6: Link bins      — create node_modules/.bin/ entries
  *   Phase 7: Pre-bundle     — scan source, esbuild used packages (background)
  *
  * Key invariants:
- *   - All VFS writes go through writeBatch() (never individual writeFile)
+ *   - Bulk VFS writes use the explicit stream path (never individual writeFile)
  *   - Tarball cache is per-package (name, version) — no cross-package dedup
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
@@ -201,7 +201,7 @@ export class NpmInstaller {
             for (let i = 0; i < toRestore.length; i += RESTORE_WAVE) {
                 const wave = toRestore.slice(i, i + RESTORE_WAVE);
                 const payload = buildCacheRestorePayload(wave, hoistPlan, nmDir, this.cache);
-                const result = this.vfs.writeBatch(payload);
+                const result = await this.writeStreamPayload(payload);
                 totalFiles += result.inodes;
                 for (const pkg of wave) {
                     installed.push(`${pkg.name}@${pkg.version}`);
@@ -234,7 +234,7 @@ export class NpmInstaller {
         // ── Phase 6: Link bins ──────────────────────────────────────────
         phaseStart = Date.now();
         setInstallPhase('link-bins');
-        this.linkBins(resolved, nmDir);
+        await this.linkBins(resolved, nmDir);
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         if (!usedLockfile || opts?.packages) {
@@ -1062,7 +1062,7 @@ export class NpmInstaller {
     /**
      * Create node_modules/.bin/ entries for packages with "bin" fields.
      */
-    linkBins(resolved, nmDir) {
+    async linkBins(resolved, nmDir) {
         const binDir = nmDir + '/.bin';
         const binEntries = [];
         const binChunks = [];
@@ -1114,7 +1114,17 @@ export class NpmInstaller {
                 chunkCount: 0,
             });
         }
-        this.vfs.writeBatch({ inodes: binEntries, chunks: binChunks });
+        await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
+    }
+    writeStreamPayload(payload) {
+        const chunks = async function* () {
+            yield* payload.chunks;
+        };
+        return this.vfs.writeStream({
+            inodes: payload.inodes,
+            chunkIter: chunks(),
+            deletePaths: payload.deletePaths,
+        });
     }
     // ── Package.json update ───────────────────────────────────────────────
     updatePackageJson(projDir, explicitPackages, resolved) {

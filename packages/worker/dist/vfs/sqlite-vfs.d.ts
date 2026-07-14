@@ -67,6 +67,23 @@ export interface BatchWritePayload {
     /** Paths to delete before writing (for clean reinstall). */
     deletePaths?: string[];
 }
+type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
+type TransactionSource = 'strict-batch' | 'pending-flush' | 'stream-v1';
+type TransactionLimitMode = 'bounded' | 'pending-over-limit-file' | 'stage2-stream-unbounded';
+interface TransactionPlanMetrics {
+    blobBytes: number;
+    logicalRows: number;
+    sqlExecs: number;
+    affectedPaths: number;
+}
+export declare class SqliteVfsTransactionTooLargeError extends Error {
+    readonly limit: TransactionLimit;
+    readonly actual: number;
+    readonly maximum: number;
+    readonly metrics: Readonly<TransactionPlanMetrics>;
+    readonly code: "E2BIG";
+    constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
+}
 export declare class SqliteVFS {
     private sql;
     private ctx;
@@ -94,6 +111,10 @@ export declare class SqliteVFS {
      * (N3, memory accounting cleanup.)
      */
     private _pendingWriteBytes;
+    private _peakPendingWriteBytes;
+    private _pendingFlushInFlightBytes;
+    private _peakPendingFlushInFlightBytes;
+    private _peakRetainedWriteBytes;
     /**
      * N2 (memory accounting cleanup). Sum of bytes currently held in the
      * `chunks: []` spool inside writeStream(). Maintained per-chunk so
@@ -107,7 +128,26 @@ export declare class SqliteVFS {
      * write-bytes the supervisor is holding.
      */
     private _writeStreamSpoolBytes;
+    private _peakWriteStreamSpoolBytes;
     private writeFlushScheduled;
+    private _activeTransaction;
+    private _transactionDuration;
+    private _postCommitDuration;
+    private _decodeDrainDuration;
+    private readonly _transactionDurationSamples;
+    private _transactionDurationSampleCount;
+    private _transactionDurationSampleIndex;
+    private readonly _decodeDrainStarts;
+    private _transactionPeakBlobBytes;
+    private _transactionPeakLogicalRows;
+    private _transactionPeakSqlExecs;
+    private _transactionPeakAffectedPaths;
+    private _boundedTransactionPeakBlobBytes;
+    private _boundedTransactionPeakLogicalRows;
+    private _boundedTransactionPeakSqlExecs;
+    private _lastTransaction;
+    private _overLimitFileCount;
+    private _lastOverLimitFile;
     private failedWrites;
     private writeErrorHandlers;
     private _writeFailures;
@@ -157,7 +197,15 @@ export declare class SqliteVFS {
     private clearWriteFailuresForPaths;
     private clearWriteFailuresForPath;
     private deferWrite;
+    /**
+     * Preserve synchronous producer backpressure at a complete-path boundary.
+     * Calling this from deferWrite would allow a large file to flush halfway
+     * through its chunk loop. The pending transaction builder remains the
+     * authority for the exact byte/row/SQL grouping.
+     */
+    private flushPendingWritesAtLimit;
     private flushPendingWrites;
+    private flushPendingPlan;
     /**
      * Move an un-writable chunk into failedWrites and notify subscribers.
      * Called from the retry path of flushPendingWrites(). Entries recorded
@@ -301,49 +349,39 @@ export declare class SqliteVFS {
      *
      * Why this exists:
      *   writeFile() does 1 DELETE + 1 INSERT per inode (each auto-committed)
-     *   plus deferWrite() which flushes at 500-threshold.
+     *   plus deferred chunks flushed in bounded complete-path groups.
      *   For 30K files: ~60K sync SQL ops → 30-60s, often crashes DO.
      *
-     * writeBatch() does:
-     *   1 transactionSync() containing:
-     *     - N DELETE for old paths (if any)
-     *     - Multi-row INSERT for inodes (up to 12/statement)
-     *     - Multi-row INSERT for chunks (up to 33/statement, blob-heavy)
-     *   Total: 1 transactionSync() per wave of ~300-500 files.
-     *
-     * Speedup: 60K ops → ~60 ops (1000x fewer transaction commits).
+     * The complete mutation is preflighted against the Stage 2 transaction
+     * limits, then executed in one transaction with 12-inode / 33-chunk SQL
+     * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
         chunks: number;
     };
     /**
-     * W7 — streaming bulk-write. Same semantics as writeBatch() but
+     * W7 — streaming bulk-write. Same atomic transaction semantics as
+     * writeBatch() but
      * accepts the chunks list as an `AsyncIterable<BatchChunkEntry>`
      * rather than a fully-realised array.
      *
      * v1 (this wave) is "spool-then-commit": we drain the iterator into
-     * an in-memory Array<BatchChunkEntry>, then delegate to writeBatch.
+     * an in-memory Array<BatchChunkEntry>, then execute the shared plan in
+     * the explicit Stage 2 stream-unbounded mode.
      * The HEAP-savings claim of W7 lives on the FACET side — by the
      * time chunks reach this method (post-RPC), they've already
      * traversed the byte-stream boundary without hitting the 32 MiB
      * structured-clone cap.
      *
-     * Heap-correctness wave (N2): the spool is bounded by the peer's
-     * SHARED_RPC_FLUSH_THRESHOLD (4 MiB; see install-batch-facet.ts:196)
-     * — a peer never sends more than ~4 MiB of chunk-bytes per
-     * writeBatchStream RPC, AND workerd's input gate serialises
-     * concurrent RPCs on the same DO. So the supervisor's `chunks: []`
-     * spool peak is ≤ 4 MiB + path-overhead per call.
+     * Stage 2 intentionally preserves the existing eager drain and one
+     * transaction for callers that already selected writeBatchStream. The
+     * transaction is planned and measured, but its hard bounding and global
+     * stream credit are deferred to Stages 3-4. `_writeStreamSpoolBytes`
+     * truthfully reports the retained decoder payload throughout the drain.
      *
-     * What this method DID lack: the spool bytes were invisible to the
-     * heap estimator. We now maintain `_writeStreamSpoolBytes` that
-     * tracks the live spool contents during the drain; the diag's
-     * vfsInFlightBytes contributor now sums pendingWriteBytes +
-     * writeStreamSpoolBytes. The N2 failing probe asserts on this sum.
-     *
-     * On SQLITE_NOMEM, writeBatch evicts clean cache and retries the exact
-     * strict transaction once. Any
+     * On SQLITE_NOMEM, the VFS evicts clean cache and retries the exact
+     * transaction once. Any
      * iterator-source error propagates unchanged. Atomicity guarantee
      * matches writeBatch: either ALL inodes + chunks land in SQLite or
      * NONE do.
@@ -352,6 +390,7 @@ export declare class SqliteVFS {
         inodes: BatchInodeEntry[];
         chunkIter: AsyncIterable<BatchChunkEntry>;
         deletePaths?: string[];
+        decodeDrainStartedAt?: number;
     }): Promise<{
         inodes: number;
         chunks: number;
@@ -366,8 +405,15 @@ export declare class SqliteVFS {
     private errorMessage;
     private isSqliteNoMem;
     private transactionSync;
+    private executeTransactionPlan;
+    private recordOverLimitFile;
+    private recordDuration;
+    private updatePeakRetainedWriteBytes;
+    private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     private _safeHeapUsed;
+    private prepareBatchTransaction;
+    private assertTransactionFits;
     private _writeBatchOnce;
     private collectBatchDeletions;
     /**
@@ -420,6 +466,113 @@ export declare class SqliteVFS {
             pendingWrites: number;
             pendingWriteBytes: number;
             writeStreamSpoolBytes: number;
+            queuedWriteBytes: {
+                current: number;
+                peak: number;
+            };
+            inFlightWriteBytes: {
+                current: number;
+                peak: number;
+            };
+            retainedWriteBytes: {
+                current: number;
+                peak: number;
+            };
+            decoderRetainedBytes: {
+                current: number;
+                peak: number;
+            };
+            creditRetainedBytes: {
+                current: number;
+                peak: number;
+            };
+            stagedBytes: {
+                current: number;
+                peak: number;
+            };
+            gcBytes: {
+                current: number;
+                peak: number;
+            };
+            phases: {
+                decodeDrainWaitMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                creditWaitMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+            };
+            transactions: {
+                limits: {
+                    blobBytes: number;
+                    logicalRows: number;
+                    sqlExecs: number;
+                };
+                active: boolean;
+                durationMs: {
+                    p95: number;
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                postCommitDurationMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                blobBytes: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                logicalRows: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                sqlExecs: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                affectedPaths: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                boundedPeak: {
+                    blobBytes: number;
+                    logicalRows: number;
+                    sqlExecs: number;
+                };
+                last: {
+                    source: TransactionSource;
+                    limitMode: TransactionLimitMode;
+                    blobBytes: number;
+                    logicalRows: number;
+                    sqlExecs: number;
+                    affectedPaths: number;
+                } | null;
+                overLimitFiles: {
+                    count: number;
+                    last: (TransactionPlanMetrics & {
+                        path: string;
+                        limit: TransactionLimit;
+                    }) | null;
+                };
+            };
             failedWrites: number;
             totalWriteFailures: number;
         };
@@ -467,4 +620,5 @@ export declare class SqliteVFSProvider {
     rename(o: string, n: string): void;
     copyFile(s: string, d: string): void;
 }
+export {};
 //# sourceMappingURL=sqlite-vfs.d.ts.map

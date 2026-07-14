@@ -39,6 +39,16 @@ function chunks(path, data) {
   return result;
 }
 
+function statementHasChunk(sql, params, path, chunkId) {
+  if (!sql.startsWith('INSERT OR REPLACE INTO file_chunks')) return false;
+  for (let index = 0; index < params.length; index += 3) {
+    if (params[index] === path && (chunkId === undefined || params[index + 1] === chunkId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // The strict full-file batch below executes exactly three statements:
 // delete old chunks, publish the inode, and publish its chunk rows. A fault at
 // every position must leave both live and durable state unchanged.
@@ -210,7 +220,7 @@ for (let statement = 1; statement <= 3; statement++) {
   const data = bytes(CHUNK_SIZE * 2 + 11, 47);
   vfs.writeFile('flush.bin', data);
   harness.setFaultInjector(({ sql, params }) => {
-    if (sql.startsWith('INSERT OR REPLACE INTO file_chunks') && params[0] === 'flush.bin' && params[1] === 1) {
+    if (statementHasChunk(sql, params, 'flush.bin', 1)) {
       return new Error('injected persistent chunk failure');
     }
     return null;
@@ -236,7 +246,7 @@ for (let statement = 1; statement <= 3; statement++) {
   const data = bytes(CHUNK_SIZE + 3, 53);
   vfs.writeFile('rename-pending.bin', data);
   harness.setFaultInjector(({ sql, params }) => (
-    sql.startsWith('INSERT OR REPLACE INTO file_chunks') && params[0] === 'rename-pending.bin'
+    statementHasChunk(sql, params, 'rename-pending.bin')
       ? new Error('injected rename flush failure')
       : null
   ));
@@ -257,7 +267,7 @@ for (let statement = 1; statement <= 3; statement++) {
   const { harness, vfs } = openVfs();
   vfs.writeFile('failed-then-removed.bin', bytes(7, 61));
   harness.setFaultInjector(({ sql, params }) => (
-    sql.startsWith('INSERT OR REPLACE INTO file_chunks') && params[0] === 'failed-then-removed.bin'
+    statementHasChunk(sql, params, 'failed-then-removed.bin')
       ? new Error('injected obsolete failure marker')
       : null
   ));
@@ -268,7 +278,7 @@ for (let statement = 1; statement <= 3; statement++) {
 
   vfs.writeFile('failed-then-empty.bin', bytes(7, 67));
   harness.setFaultInjector(({ sql, params }) => (
-    sql.startsWith('INSERT OR REPLACE INTO file_chunks') && params[0] === 'failed-then-empty.bin'
+    statementHasChunk(sql, params, 'failed-then-empty.bin')
       ? new Error('injected obsolete replacement marker')
       : null
   ));
@@ -285,7 +295,7 @@ for (let statement = 1; statement <= 3; statement++) {
   const first = bytes(CHUNK_SIZE + 3, 9);
   vfs.writeFile('recovered.bin', first);
   harness.setFaultInjector(({ sql, params }) => {
-    if (sql.startsWith('INSERT OR REPLACE INTO file_chunks') && params[0] === 'recovered.bin') {
+    if (statementHasChunk(sql, params, 'recovered.bin')) {
       return new Error('injected persistent recovery failure');
     }
     return null;

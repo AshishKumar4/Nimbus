@@ -78,7 +78,7 @@ export interface HeapBreakdown {
   supervisorBaselineBytes: number;
   /** SqliteVFS LRU cache hot-byte count (sqlite-vfs.ts cache.hotBytes). */
   vfsLruBytes: number;
-  /** SqliteVFS in-flight write payload bytes (peak observed). */
+  /** SqliteVFS current logical retained write payload bytes. */
   vfsInFlightBytes: number;
   /** Resolver in-flight packument bytes (rough cap = live stubs × last
    *  packument size). Post A'.1 the resolver runs in a facet and this

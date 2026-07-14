@@ -418,7 +418,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       const DO_HEAP_LIMIT_BYTES = 128 * 1024 * 1024;
       const heapUsed = nodeMem?.heapUsed ?? 0;
       const counters = readDiagCounters();
-      const cacheStats = (vfs as any).cache ?? {};
+      const cacheStats = vfs.cache;
       const lastFailures = getFailures();
 
       // ── C'.1 deterministic heap estimate ─────────────────────────────
@@ -426,23 +426,12 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // calls process.memoryUsage(). Ceiling is the architectural soft
       // budget (SUPERVISOR_HEAP_CEILING_BYTES = 64 MiB), half the
       // workerd hard cap of 128 MiB.
-      // N3 (memory accounting cleanup). Pre-fix, this was hardcoded 0 with
-      // the comment "matches reality (writes are flushed in
-      // microseconds)" — which was wrong: pendingWrites can hold up to
-      // 500 chunks × 64 KiB = 32 MiB at peak, AND writeStream's spool
-      // can buffer the full incoming batch. Both were invisible to the
-      // estimator because there was no counter to read.
-      //
-      // Post-fix, SqliteVFS maintains TWO running byte sums:
-      //   - _pendingWriteBytes        : the post-deferWrite queue
-      //   - _writeStreamSpoolBytes    : N2 spool inside writeStream
-      // Both contribute to "in-flight write bytes the supervisor is
-      // currently holding"; the estimator sees their sum.
-      // (vfs.sql is the sub-object in getStats() that surfaces these.)
-      const sqlStats = (vfs as any).sql ?? {};
-      const inFlightWriteBytes =
-        (sqlStats.pendingWriteBytes ?? 0) +
-        (sqlStats.writeStreamSpoolBytes ?? 0);
+      // Stage 2 reports mutually exclusive queued, pending-transaction,
+      // and decoder-retained logical bytes. The aggregate is the estimator's
+      // VFS in-flight contributor; SQL binding copies and object overhead are
+      // deliberately not presented as measured heap.
+      const sqlStats = vfs.sql;
+      const inFlightWriteBytes = sqlStats.retainedWriteBytes.current;
       const heap = estimateSupervisorHeap(counters, {
         cacheHotBytes: cacheStats.hotBytes ?? 0,
         inFlightWriteBytes,
@@ -485,6 +474,15 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           // N2: live byte count inside the writeStream() drain spool.
           // Visible during a real npm install; ~0 at rest.
           writeStreamSpoolBytes: sqlStats.writeStreamSpoolBytes ?? 0,
+          queuedWriteBytes: sqlStats.queuedWriteBytes,
+          inFlightWriteBytes: sqlStats.inFlightWriteBytes,
+          retainedWriteBytes: sqlStats.retainedWriteBytes,
+          decoderRetainedBytes: sqlStats.decoderRetainedBytes,
+          creditRetainedBytes: sqlStats.creditRetainedBytes,
+          stagedBytes: sqlStats.stagedBytes,
+          gcBytes: sqlStats.gcBytes,
+          phases: sqlStats.phases,
+          transactions: sqlStats.transactions,
         },
 
         // H7 (memory accounting cleanup): _NIMBUS_LOADED_CODES Map state.

@@ -44,10 +44,133 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { normalizeVfsPath } from './path.js';
-import { CHUNK_SIZE, LRU_MAX_ENTRIES } from '../constants.js';
+import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, } from '../constants.js';
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { enc, dec } from '../_shared/bytes.js';
+const INODE_ROWS_PER_SQL_EXEC = 12;
+const CHUNK_ROWS_PER_SQL_EXEC = 33;
+const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
+export class SqliteVfsTransactionTooLargeError extends Error {
+    limit;
+    actual;
+    maximum;
+    metrics;
+    code = 'E2BIG';
+    constructor(limit, actual, maximum, metrics) {
+        super(`[sqlite-vfs] transaction exceeds ${limit} limit: ${actual} > ${maximum}`);
+        this.limit = limit;
+        this.actual = actual;
+        this.maximum = maximum;
+        this.metrics = metrics;
+        this.name = 'SqliteVfsTransactionTooLargeError';
+    }
+}
+class TransactionPlanBuilder {
+    inodes = [];
+    chunks = [];
+    deletedPaths = new Set();
+    replacedContentPaths = new Set();
+    affectedPaths = new Set();
+    deletedInodePaths = new Set();
+    reservedOldChunkRowsByPath = new Map();
+    blobBytes = 0;
+    deletedInodeRows = 0;
+    reservedOldChunkRows = 0;
+    addInode(entry, prior) {
+        this.inodes.push(entry);
+        this.affectedPaths.add(entry.path);
+        this.replacedContentPaths.add(entry.path);
+        if (prior)
+            this.reserveOldChunks(prior.path, prior.chunkCount);
+    }
+    addChunk(entry) {
+        this.chunks.push(entry);
+        this.blobBytes += entry.data.byteLength;
+        this.affectedPaths.add(entry.path);
+    }
+    addChunkGroup(entries) {
+        for (const entry of entries)
+            this.addChunk(entry);
+    }
+    addDeletedPath(path, inode, orphanChunkRows = 0) {
+        this.deletedPaths.add(path);
+        this.affectedPaths.add(path);
+        if (inode && !this.deletedInodePaths.has(inode.path)) {
+            this.deletedInodePaths.add(inode.path);
+            this.deletedInodeRows++;
+        }
+        this.reserveOldChunks(path, Math.max(inode?.chunkCount ?? 0, orphanChunkRows));
+    }
+    wouldExceedChunkGroup(entries) {
+        let additionalBlobBytes = 0;
+        for (const entry of entries)
+            additionalBlobBytes += entry.data.byteLength;
+        return exceededTransactionLimit({
+            blobBytes: this.blobBytes + additionalBlobBytes,
+            logicalRows: this.logicalRows + entries.length,
+            sqlExecs: this.fixedSqlExecs
+                + groupedSqlExecs(this.inodes.length, INODE_ROWS_PER_SQL_EXEC)
+                + groupedSqlExecs(this.chunks.length + entries.length, CHUNK_ROWS_PER_SQL_EXEC),
+            affectedPaths: this.affectedPaths.size,
+        });
+    }
+    get empty() {
+        return this.inodes.length === 0
+            && this.chunks.length === 0
+            && this.deletedPaths.size === 0
+            && this.replacedContentPaths.size === 0;
+    }
+    build() {
+        return {
+            inodes: this.inodes,
+            chunks: this.chunks,
+            deletedPaths: [...this.deletedPaths],
+            replacedContentPaths: [...this.replacedContentPaths],
+            affectedPaths: this.affectedPaths,
+            metrics: this.metrics,
+        };
+    }
+    reserveOldChunks(path, rows) {
+        rows = clampNonNegativeInt(rows);
+        const prior = this.reservedOldChunkRowsByPath.get(path) ?? 0;
+        if (rows <= prior)
+            return;
+        this.reservedOldChunkRowsByPath.set(path, rows);
+        this.reservedOldChunkRows += rows - prior;
+    }
+    get logicalRows() {
+        return this.inodes.length
+            + this.chunks.length
+            + this.deletedInodeRows
+            + this.reservedOldChunkRows;
+    }
+    get fixedSqlExecs() {
+        return (this.deletedPaths.size * 2) + this.replacedContentPaths.size;
+    }
+    get metrics() {
+        return {
+            blobBytes: this.blobBytes,
+            logicalRows: this.logicalRows,
+            sqlExecs: this.fixedSqlExecs
+                + groupedSqlExecs(this.inodes.length, INODE_ROWS_PER_SQL_EXEC)
+                + groupedSqlExecs(this.chunks.length, CHUNK_ROWS_PER_SQL_EXEC),
+            affectedPaths: this.affectedPaths.size,
+        };
+    }
+}
+function groupedSqlExecs(rows, rowsPerExec) {
+    return rows === 0 ? 0 : Math.ceil(rows / rowsPerExec);
+}
+function exceededTransactionLimit(metrics) {
+    if (metrics.blobBytes > MAX_TX_BLOB_BYTES)
+        return 'blobBytes';
+    if (metrics.logicalRows > MAX_TX_LOGICAL_ROWS)
+        return 'logicalRows';
+    if (metrics.sqlExecs > MAX_TX_SQL_EXECS)
+        return 'sqlExecs';
+    return null;
+}
 // ── SqliteVFS ───────────────────────────────────────────────────────────────
 export class SqliteVFS {
     sql;
@@ -109,6 +232,10 @@ export class SqliteVFS {
      * (N3, memory accounting cleanup.)
      */
     _pendingWriteBytes = 0;
+    _peakPendingWriteBytes = 0;
+    _pendingFlushInFlightBytes = 0;
+    _peakPendingFlushInFlightBytes = 0;
+    _peakRetainedWriteBytes = 0;
     /**
      * N2 (memory accounting cleanup). Sum of bytes currently held in the
      * `chunks: []` spool inside writeStream(). Maintained per-chunk so
@@ -122,7 +249,28 @@ export class SqliteVFS {
      * write-bytes the supervisor is holding.
      */
     _writeStreamSpoolBytes = 0;
+    _peakWriteStreamSpoolBytes = 0;
     writeFlushScheduled = false;
+    // Stage 2 transaction/phase telemetry. Scalar writes stay cheap; the
+    // percentile is computed from the fixed ring only when diagnostics read it.
+    _activeTransaction = null;
+    _transactionDuration = emptyDurationSummary();
+    _postCommitDuration = emptyDurationSummary();
+    _decodeDrainDuration = emptyDurationSummary();
+    _transactionDurationSamples = new Float64Array(TRANSACTION_DURATION_SAMPLE_COUNT);
+    _transactionDurationSampleCount = 0;
+    _transactionDurationSampleIndex = 0;
+    _decodeDrainStarts = new Map();
+    _transactionPeakBlobBytes = 0;
+    _transactionPeakLogicalRows = 0;
+    _transactionPeakSqlExecs = 0;
+    _transactionPeakAffectedPaths = 0;
+    _boundedTransactionPeakBlobBytes = 0;
+    _boundedTransactionPeakLogicalRows = 0;
+    _boundedTransactionPeakSqlExecs = 0;
+    _lastTransaction = null;
+    _overLimitFileCount = 0;
+    _lastOverLimitFile = null;
     // ── Write-failure tracking (audit C1) ─────────────────────────────────
     // When a deferred flush fails, the entry lands here so (a) flushAll()
     // can throw with accurate context on the next forced flush, (b) the
@@ -585,63 +733,130 @@ export class SqliteVFS {
             this._pendingWriteBytes -= prior.data.length;
         this.pendingWrites.set(key, { path, chunkId, data: copy });
         this._pendingWriteBytes += copy.length;
-        // Throttle: if too many writes pending, flush synchronously.
-        // 500 threshold balances memory (500 × ~64KB = ~32MB max pending) vs throughput
-        // (fewer flushes = faster git clone / npm install).
-        if (this.pendingWrites.size >= 500) {
-            this.flushPendingWrites();
-            return;
-        }
+        this._peakPendingWriteBytes = Math.max(this._peakPendingWriteBytes, this._pendingWriteBytes);
+        this.updatePeakRetainedWriteBytes();
         if (!this.writeFlushScheduled) {
             this.writeFlushScheduled = true;
             queueMicrotask(() => this.flushPendingWrites());
+        }
+    }
+    /**
+     * Preserve synchronous producer backpressure at a complete-path boundary.
+     * Calling this from deferWrite would allow a large file to flush halfway
+     * through its chunk loop. The pending transaction builder remains the
+     * authority for the exact byte/row/SQL grouping.
+     */
+    flushPendingWritesAtLimit() {
+        const pendingSqlExecs = groupedSqlExecs(this.pendingWrites.size, CHUNK_ROWS_PER_SQL_EXEC);
+        if (this._pendingWriteBytes >= MAX_TX_BLOB_BYTES
+            || this.pendingWrites.size >= MAX_TX_LOGICAL_ROWS
+            || pendingSqlExecs >= MAX_TX_SQL_EXECS) {
+            this.flushPendingWrites();
         }
     }
     flushPendingWrites() {
         this.writeFlushScheduled = false;
         if (this.pendingWrites.size === 0)
             return;
-        const entries = Array.from(this.pendingWrites.values());
-        this._batchWrites++;
-        const writeSnapshot = () => {
-            const writeRows = () => {
-                for (const entry of entries) {
-                    this.sql.exec("INSERT OR REPLACE INTO file_chunks (path, chunk_id, data) VALUES (?, ?, ?)", entry.path, entry.chunkId, entry.data);
-                }
-            };
-            this.transactionSync(writeRows);
+        // Snapshot only keys/path metadata. Holding a second all-entry snapshot
+        // would retain already-committed buffers until the complete flush returns
+        // and make later-group in-flight telemetry undercount live references.
+        const keysByPath = new Map();
+        for (const [key, entry] of this.pendingWrites) {
+            const keys = keysByPath.get(entry.path);
+            if (keys)
+                keys.push(key);
+            else
+                keysByPath.set(entry.path, [key]);
+        }
+        let builder = new TransactionPlanBuilder();
+        const flushBuilder = () => {
+            if (builder.empty)
+                return true;
+            const plan = builder.build();
+            builder = new TransactionPlanBuilder();
+            return this.flushPendingPlan(plan);
         };
+        for (const [path, keys] of keysByPath) {
+            const entries = [];
+            for (const key of keys) {
+                const entry = this.pendingWrites.get(key);
+                if (entry?.path === path)
+                    entries.push(entry);
+            }
+            if (entries.length === 0)
+                continue;
+            const limit = builder.wouldExceedChunkGroup(entries);
+            if (limit !== null && !builder.empty)
+                flushBuilder();
+            const fileLimit = builder.wouldExceedChunkGroup(entries);
+            builder.addChunkGroup(entries);
+            entries.length = 0;
+            if (fileLimit !== null) {
+                // Stage 2 exception: without content generations, splitting one file
+                // could durably publish only a prefix. Execute the file alone and
+                // record the over-limit work for the Stage 3 migration.
+                const plan = builder.build();
+                this.recordOverLimitFile(path, fileLimit, plan.metrics);
+                builder = new TransactionPlanBuilder();
+                this.flushPendingPlan(plan, 'pending-over-limit-file');
+            }
+        }
+        flushBuilder();
+    }
+    flushPendingPlan(plan, limitMode = 'bounded') {
+        const entries = plan.chunks;
+        const entryCount = entries.length;
+        let transferredBytes = 0;
+        for (const entry of entries) {
+            const key = this.cacheKey(entry.path, entry.chunkId);
+            if (this.pendingWrites.get(key) !== entry)
+                continue;
+            transferredBytes += entry.data.byteLength;
+        }
+        this._pendingWriteBytes -= transferredBytes;
+        this._pendingFlushInFlightBytes += transferredBytes;
+        this._peakPendingFlushInFlightBytes = Math.max(this._peakPendingFlushInFlightBytes, this._pendingFlushInFlightBytes);
+        this.updatePeakRetainedWriteBytes();
         let firstError;
         try {
-            writeSnapshot();
+            this.executeTransactionPlan(plan, { source: 'pending-flush', limitMode });
         }
         catch (error) {
             firstError = error;
         }
         if (firstError !== undefined) {
             try {
-                // Preserve the existing one-retry contract, but retry the same
-                // complete snapshot. Retrying individual rows can durably publish
-                // only part of a multi-chunk file.
-                writeSnapshot();
+                this.executeTransactionPlan(plan, { source: 'pending-flush', limitMode });
             }
             catch (retryError) {
                 const message = `${this.errorMessage(firstError)}; retry: ${this.errorMessage(retryError)}`;
                 for (const entry of entries)
                     this._recordFailedWrite(entry, message, 2);
-                return;
+                entries.length = 0;
+                this._pendingFlushInFlightBytes -= transferredBytes;
+                this._pendingWriteBytes += transferredBytes;
+                this._peakPendingWriteBytes = Math.max(this._peakPendingWriteBytes, this._pendingWriteBytes);
+                this.updatePeakRetainedWriteBytes();
+                return false;
             }
         }
+        const postCommitStartedAt = performance.now();
         for (const entry of entries) {
             const key = this.cacheKey(entry.path, entry.chunkId);
             if (this.pendingWrites.get(key) !== entry)
                 continue;
             this.pendingWrites.delete(key);
-            this._pendingWriteBytes -= entry.data.length;
             this.failedWrites.delete(key);
         }
-        this._sqlWrites += entries.length;
-        this._batchWriteRows += entries.length;
+        entries.length = 0;
+        this._pendingFlushInFlightBytes -= transferredBytes;
+        this._sqlWrites += entryCount;
+        this._batchWrites++;
+        this._batchWriteRows += entryCount;
+        this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
+        this.updatePeakRetainedWriteBytes();
+        return true;
     }
     /**
      * Move an un-writable chunk into failedWrites and notify subscribers.
@@ -914,6 +1129,7 @@ export class SqliteVFS {
             }
         }
         this.clearWriteFailuresForPath(path);
+        this.flushPendingWritesAtLimit();
         this.bumpRevision([path]);
         this.events.emit(isNew ? 'add' : 'change', path);
     }
@@ -1059,6 +1275,7 @@ export class SqliteVFS {
             this.sql.exec("UPDATE inodes SET size = ?, mtime = ?, chunk_count = ? WHERE path = ?", newSize, now, newChunkCount, path);
             this._usedBytes += newSize - oldSize;
         }
+        this.flushPendingWritesAtLimit();
         this.bumpRevision([path]);
         this.events.emit(isNew ? 'add' : 'change', path);
     }
@@ -1118,6 +1335,7 @@ export class SqliteVFS {
         inode.chunkCount = newChunkCount;
         this.sql.exec("UPDATE inodes SET size = ?, mtime = ?, chunk_count = ? WHERE path = ?", newSize, now, newChunkCount, path);
         this._usedBytes += newSize - oldSize;
+        this.flushPendingWritesAtLimit();
         this.bumpRevision([path]);
         this.events.emit('change', path);
     }
@@ -1352,48 +1570,38 @@ export class SqliteVFS {
      *
      * Why this exists:
      *   writeFile() does 1 DELETE + 1 INSERT per inode (each auto-committed)
-     *   plus deferWrite() which flushes at 500-threshold.
+     *   plus deferred chunks flushed in bounded complete-path groups.
      *   For 30K files: ~60K sync SQL ops → 30-60s, often crashes DO.
      *
-     * writeBatch() does:
-     *   1 transactionSync() containing:
-     *     - N DELETE for old paths (if any)
-     *     - Multi-row INSERT for inodes (up to 12/statement)
-     *     - Multi-row INSERT for chunks (up to 33/statement, blob-heavy)
-     *   Total: 1 transactionSync() per wave of ~300-500 files.
-     *
-     * Speedup: 60K ops → ~60 ops (1000x fewer transaction commits).
+     * The complete mutation is preflighted against the Stage 2 transaction
+     * limits, then executed in one transaction with 12-inode / 33-chunk SQL
+     * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     writeBatch(payload) {
-        return this._writeBatchWithRetry(payload);
+        return this._writeBatchWithRetry(payload, { source: 'strict-batch', limitMode: 'bounded' }, true);
     }
     /**
-     * W7 — streaming bulk-write. Same semantics as writeBatch() but
+     * W7 — streaming bulk-write. Same atomic transaction semantics as
+     * writeBatch() but
      * accepts the chunks list as an `AsyncIterable<BatchChunkEntry>`
      * rather than a fully-realised array.
      *
      * v1 (this wave) is "spool-then-commit": we drain the iterator into
-     * an in-memory Array<BatchChunkEntry>, then delegate to writeBatch.
+     * an in-memory Array<BatchChunkEntry>, then execute the shared plan in
+     * the explicit Stage 2 stream-unbounded mode.
      * The HEAP-savings claim of W7 lives on the FACET side — by the
      * time chunks reach this method (post-RPC), they've already
      * traversed the byte-stream boundary without hitting the 32 MiB
      * structured-clone cap.
      *
-     * Heap-correctness wave (N2): the spool is bounded by the peer's
-     * SHARED_RPC_FLUSH_THRESHOLD (4 MiB; see install-batch-facet.ts:196)
-     * — a peer never sends more than ~4 MiB of chunk-bytes per
-     * writeBatchStream RPC, AND workerd's input gate serialises
-     * concurrent RPCs on the same DO. So the supervisor's `chunks: []`
-     * spool peak is ≤ 4 MiB + path-overhead per call.
+     * Stage 2 intentionally preserves the existing eager drain and one
+     * transaction for callers that already selected writeBatchStream. The
+     * transaction is planned and measured, but its hard bounding and global
+     * stream credit are deferred to Stages 3-4. `_writeStreamSpoolBytes`
+     * truthfully reports the retained decoder payload throughout the drain.
      *
-     * What this method DID lack: the spool bytes were invisible to the
-     * heap estimator. We now maintain `_writeStreamSpoolBytes` that
-     * tracks the live spool contents during the drain; the diag's
-     * vfsInFlightBytes contributor now sums pendingWriteBytes +
-     * writeStreamSpoolBytes. The N2 failing probe asserts on this sum.
-     *
-     * On SQLITE_NOMEM, writeBatch evicts clean cache and retries the exact
-     * strict transaction once. Any
+     * On SQLITE_NOMEM, the VFS evicts clean cache and retries the exact
+     * transaction once. Any
      * iterator-source error propagates unchanged. Atomicity guarantee
      * matches writeBatch: either ALL inodes + chunks land in SQLite or
      * NONE do.
@@ -1405,27 +1613,30 @@ export class SqliteVFS {
         //
         // N2 (memory accounting cleanup): track spool bytes so the diag
         // estimator's vfsInFlightBytes is no longer a 0 lie. Increment
-        // per chunk pushed; reset to 0 immediately before delegating to
-        // writeBatch (the bytes are now `pendingWrites' problem if they
-        // survive transactionSync).
+        // per chunk pushed; release it only after the transaction and
+        // post-commit publication finish (or the operation throws).
         const chunks = [];
+        const decodeDrainStartedAt = payload.decodeDrainStartedAt ?? performance.now();
+        const decodeDrainToken = {};
+        this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
+        let decodeDrainFinished = false;
         try {
             for await (const c of payload.chunkIter) {
                 chunks.push(c);
                 this._writeStreamSpoolBytes += c.data.length;
+                this._peakWriteStreamSpoolBytes = Math.max(this._peakWriteStreamSpoolBytes, this._writeStreamSpoolBytes);
+                this.updatePeakRetainedWriteBytes();
             }
-            const r = this.writeBatch({
-                inodes: payload.inodes,
-                chunks,
-                deletePaths: payload.deletePaths,
-            });
+            this._decodeDrainStarts.delete(decodeDrainToken);
+            this.recordDuration(this._decodeDrainDuration, performance.now() - decodeDrainStartedAt);
+            decodeDrainFinished = true;
+            const r = this._writeBatchWithRetry({ inodes: payload.inodes, chunks, deletePaths: payload.deletePaths }, { source: 'stream-v1', limitMode: 'stage2-stream-unbounded' }, false);
             return r;
         }
         finally {
-            // The bytes are no longer in `chunks` — they've either been
-            // copied into pendingWrites by writeBatch's inner deferWrite
-            // path, or written directly inside transactionSync. Either
-            // way, the spool counter resets here. Subtract by the actual
+            // The direct transaction no longer retains the drained chunks after
+            // this method returns or throws, so the decoder counter resets here.
+            // Subtract by the actual
             // sum we tracked, NOT by chunks.length × CHUNK_SIZE — chunks
             // can be smaller than CHUNK_SIZE on the last entry of a file.
             let drained = 0;
@@ -1434,11 +1645,21 @@ export class SqliteVFS {
             this._writeStreamSpoolBytes -= drained;
             if (this._writeStreamSpoolBytes < 0)
                 this._writeStreamSpoolBytes = 0;
+            if (!decodeDrainFinished) {
+                this._decodeDrainStarts.delete(decodeDrainToken);
+                this.recordDuration(this._decodeDrainDuration, performance.now() - decodeDrainStartedAt);
+            }
+            this.updatePeakRetainedWriteBytes();
         }
     }
-    _writeBatchWithRetry(payload) {
+    _writeBatchWithRetry(payload, execution, enforceLimits) {
+        const prepared = this.prepareBatchTransaction(payload);
+        if (prepared.plan.metrics.sqlExecs === 0)
+            return { inodes: 0, chunks: 0 };
+        if (enforceLimits)
+            this.assertTransactionFits(prepared.plan.metrics);
         try {
-            return this._writeBatchOnce(payload);
+            return this._writeBatchOnce(prepared, execution);
         }
         catch (error) {
             const cause = classifyError(error);
@@ -1465,7 +1686,7 @@ export class SqliteVFS {
             // transaction once. Splitting a strict batch would publish a prefix
             // if a later half failed and would advance its revision more than once.
             this.evictAll();
-            return this._writeBatchOnce(payload);
+            return this._writeBatchOnce(prepared, execution);
         }
     }
     /**
@@ -1499,6 +1720,80 @@ export class SqliteVFS {
         }
         this.ctx.storage.transactionSync(callback);
     }
+    executeTransactionPlan(plan, execution) {
+        if (this._activeTransaction !== null) {
+            throw new Error('[sqlite-vfs] nested transaction plan execution is not supported');
+        }
+        const startedAt = performance.now();
+        this._activeTransaction = { startedAt, plan, execution };
+        try {
+            this.transactionSync(() => {
+                for (const path of plan.deletedPaths) {
+                    this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
+                    this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
+                }
+                for (const path of plan.replacedContentPaths) {
+                    this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
+                }
+                for (let i = 0; i < plan.inodes.length; i += INODE_ROWS_PER_SQL_EXEC) {
+                    const batch = plan.inodes.slice(i, i + INODE_ROWS_PER_SQL_EXEC);
+                    const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?)').join(',');
+                    const values = [];
+                    for (const inode of batch) {
+                        const atime = inode.atime !== undefined && Number.isFinite(inode.atime)
+                            ? inode.atime
+                            : inode.mtime;
+                        values.push(inode.path, inode.parentPath, inode.isDir ? 1 : 0, inode.size, atime, inode.mtime, inode.mode, inode.chunkCount);
+                    }
+                    this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES ${placeholders}`, ...values);
+                }
+                for (let i = 0; i < plan.chunks.length; i += CHUNK_ROWS_PER_SQL_EXEC) {
+                    const batch = plan.chunks.slice(i, i + CHUNK_ROWS_PER_SQL_EXEC);
+                    const placeholders = batch.map(() => '(?,?,?)').join(',');
+                    const values = [];
+                    for (const chunk of batch)
+                        values.push(chunk.path, chunk.chunkId, chunk.data);
+                    this.sql.exec(`INSERT OR REPLACE INTO file_chunks (path, chunk_id, data) VALUES ${placeholders}`, ...values);
+                }
+            });
+        }
+        finally {
+            const durationMs = performance.now() - startedAt;
+            this.recordDuration(this._transactionDuration, durationMs);
+            this._transactionDurationSamples[this._transactionDurationSampleIndex] = durationMs;
+            this._transactionDurationSampleIndex = (this._transactionDurationSampleIndex + 1) % TRANSACTION_DURATION_SAMPLE_COUNT;
+            this._transactionDurationSampleCount = Math.min(this._transactionDurationSampleCount + 1, TRANSACTION_DURATION_SAMPLE_COUNT);
+            this._transactionPeakBlobBytes = Math.max(this._transactionPeakBlobBytes, plan.metrics.blobBytes);
+            this._transactionPeakLogicalRows = Math.max(this._transactionPeakLogicalRows, plan.metrics.logicalRows);
+            this._transactionPeakSqlExecs = Math.max(this._transactionPeakSqlExecs, plan.metrics.sqlExecs);
+            this._transactionPeakAffectedPaths = Math.max(this._transactionPeakAffectedPaths, plan.metrics.affectedPaths);
+            if (execution.limitMode === 'bounded') {
+                this._boundedTransactionPeakBlobBytes = Math.max(this._boundedTransactionPeakBlobBytes, plan.metrics.blobBytes);
+                this._boundedTransactionPeakLogicalRows = Math.max(this._boundedTransactionPeakLogicalRows, plan.metrics.logicalRows);
+                this._boundedTransactionPeakSqlExecs = Math.max(this._boundedTransactionPeakSqlExecs, plan.metrics.sqlExecs);
+            }
+            this._lastTransaction = { metrics: plan.metrics, execution };
+            this._activeTransaction = null;
+        }
+    }
+    recordOverLimitFile(path, limit, metrics) {
+        this._overLimitFileCount++;
+        this._lastOverLimitFile = { path, limit, ...metrics };
+    }
+    recordDuration(summary, durationMs) {
+        summary.count++;
+        summary.totalMs += durationMs;
+        summary.lastMs = durationMs;
+        summary.maxMs = Math.max(summary.maxMs, durationMs);
+    }
+    updatePeakRetainedWriteBytes() {
+        this._peakRetainedWriteBytes = Math.max(this._peakRetainedWriteBytes, this.currentRetainedWriteBytes());
+    }
+    currentRetainedWriteBytes() {
+        return this._pendingWriteBytes
+            + this._pendingFlushInFlightBytes
+            + this._writeStreamSpoolBytes;
+    }
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     _safeHeapUsed() {
         try {
@@ -1509,85 +1804,60 @@ export class SqliteVFS {
             return 0;
         }
     }
-    _writeBatchOnce(payload) {
-        let inodeCount = 0;
-        let chunkCount = 0;
-        const affectedPaths = new Set();
-        for (const inode of payload.inodes) {
-            affectedPaths.add(inode.path);
-        }
-        for (const chunk of payload.chunks) {
-            affectedPaths.add(chunk.path);
-        }
-        if (payload.deletePaths) {
-            for (const p of payload.deletePaths)
-                affectedPaths.add(p);
-        }
+    prepareBatchTransaction(payload) {
         const deletedInodes = this.collectBatchDeletions(payload.deletePaths ?? []);
+        const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
+        const deletedPaths = new Map();
+        for (const path of payload.deletePaths ?? [])
+            deletedPaths.set(path, 0);
         for (const inode of deletedInodes)
-            affectedPaths.add(inode.path);
-        const deletedPaths = new Set(payload.deletePaths ?? []);
-        for (const inode of deletedInodes)
-            deletedPaths.add(inode.path);
+            deletedPaths.set(inode.path, 0);
         for (const root of payload.deletePaths ?? []) {
             const prefix = `${root}/`;
-            const orphanRows = this.sql.exec("SELECT DISTINCT path FROM file_chunks WHERE path = ? OR substr(path, 1, ?) = ?", root, prefix.length, prefix);
-            for (const row of orphanRows)
-                deletedPaths.add(String(row.path));
+            const orphanRows = this.sql.exec(`SELECT path, COUNT(*) AS chunk_count
+         FROM file_chunks
+         WHERE path = ? OR substr(path, 1, ?) = ?
+         GROUP BY path`, root, prefix.length, prefix);
+            for (const row of orphanRows) {
+                deletedPaths.set(String(row.path), clampNonNegativeInt(Number(row.chunk_count)));
+            }
         }
-        const replacedContentPaths = new Set(payload.inodes.map((inode) => inode.path));
+        const builder = new TransactionPlanBuilder();
+        for (const [path, orphanChunkRows] of deletedPaths) {
+            builder.addDeletedPath(path, deletedInodesByPath.get(path), orphanChunkRows);
+        }
+        for (const entry of payload.inodes)
+            builder.addInode(entry, this.inodes.get(entry.path));
+        for (const entry of payload.chunks)
+            builder.addChunk(entry);
+        return { payload, plan: builder.build(), deletedInodes };
+    }
+    assertTransactionFits(metrics) {
+        const limit = exceededTransactionLimit(metrics);
+        if (limit === null)
+            return;
+        const maximum = limit === 'blobBytes'
+            ? MAX_TX_BLOB_BYTES
+            : limit === 'logicalRows'
+                ? MAX_TX_LOGICAL_ROWS
+                : MAX_TX_SQL_EXECS;
+        throw new SqliteVfsTransactionTooLargeError(limit, metrics[limit], maximum, metrics);
+    }
+    _writeBatchOnce(prepared, execution) {
+        const { payload, plan, deletedInodes } = prepared;
         try {
-            this.transactionSync(() => {
-                // 1. Delete the exact recursive mutation set.
-                for (const path of deletedPaths) {
-                    this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
-                    this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
-                }
-                // Full-file replacements own their complete chunk set. Remove the
-                // previous generation's rows before inserting the replacement. A
-                // chunks-only/range batch deliberately does not take this path.
-                for (const path of replacedContentPaths) {
-                    this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
-                }
-                // 2. Batch insert inodes — multi-row VALUES.
-                // DO SQLite has a low bind-parameter limit (~100 variables).
-                // 8 columns per inode → max 12 rows per statement (12×8=96).
-                const INODE_BATCH = 12;
-                for (let i = 0; i < payload.inodes.length; i += INODE_BATCH) {
-                    const batch = payload.inodes.slice(i, i + INODE_BATCH);
-                    const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?)').join(',');
-                    const values = [];
-                    for (const n of batch) {
-                        const atime = n.atime !== undefined && Number.isFinite(n.atime) ? n.atime : n.mtime;
-                        values.push(n.path, n.parentPath, n.isDir ? 1 : 0, n.size, atime, n.mtime, n.mode, n.chunkCount);
-                    }
-                    this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES ${placeholders}`, ...values);
-                    inodeCount += batch.length;
-                }
-                // 3. Batch insert chunks — multi-row VALUES.
-                // 3 columns per chunk → max 33 rows per statement (33×3=99).
-                const CHUNK_BATCH = 33;
-                for (let i = 0; i < payload.chunks.length; i += CHUNK_BATCH) {
-                    const batch = payload.chunks.slice(i, i + CHUNK_BATCH);
-                    const placeholders = batch.map(() => '(?,?,?)').join(',');
-                    const values = [];
-                    for (const c of batch) {
-                        values.push(c.path, c.chunkId, c.data);
-                    }
-                    this.sql.exec(`INSERT OR REPLACE INTO file_chunks (path, chunk_id, data) VALUES ${placeholders}`, ...values);
-                    chunkCount += batch.length;
-                }
-            });
+            this.executeTransactionPlan(plan, execution);
         }
         catch (error) {
             console.error('[sqlite-vfs] writeBatch failed:', this.errorMessage(error));
             throw error;
         }
+        const postCommitStartedAt = performance.now();
         // Durable commit succeeded. Only now may this operation supersede cached
         // or deferred data accepted earlier on the same paths.
-        this.cacheInvalidateBatch(affectedPaths);
-        this.clearPendingWritesForPaths(affectedPaths);
-        this.clearWriteFailuresForPaths(affectedPaths);
+        this.cacheInvalidateBatch(plan.affectedPaths);
+        this.clearPendingWritesForPaths(plan.affectedPaths);
+        this.clearWriteFailuresForPaths(plan.affectedPaths);
         // 4. Publish the recursive deletions, then inode replacements.
         for (const inode of deletedInodes) {
             this._removeFromChildrenIndex(inode.parentPath, inode.path);
@@ -1675,13 +1945,15 @@ export class SqliteVFS {
                 // Dir-replace (both dir): no counter change.
             }
         }
+        const inodeCount = plan.inodes.length;
+        const chunkCount = plan.chunks.length;
         this._sqlWrites += inodeCount + chunkCount;
         this._batchWrites++;
         this._batchWriteRows += inodeCount + chunkCount;
         if (inodeCount > 0 || chunkCount > 0 || payload.deletePaths?.length) {
             // One clock tick for the whole batch; stamp every touched path
             // (affectedPaths covers files/chunks/deletes; add dir inodes too).
-            const touched = new Set(affectedPaths);
+            const touched = new Set(plan.affectedPaths);
             for (const entry of payload.inodes)
                 touched.add(entry.path);
             this.bumpRevision(Array.from(touched));
@@ -1693,6 +1965,8 @@ export class SqliteVFS {
         for (const entry of payload.inodes) {
             this.events.emit(entry.isDir ? 'addDir' : 'add', entry.path);
         }
+        this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
+        this.updatePeakRetainedWriteBytes();
         return { inodes: inodeCount, chunks: chunkCount };
     }
     collectBatchDeletions(deletePaths) {
@@ -1777,6 +2051,15 @@ export class SqliteVFS {
         const usedBytes = this._usedBytes;
         const totalAccesses = this._cacheHits + this._cacheMisses;
         const hitRate = totalAccesses > 0 ? (this._cacheHits / totalAccesses * 100) : 0;
+        const now = performance.now();
+        const activeTransactionDuration = this._activeTransaction === null
+            ? 0
+            : now - this._activeTransaction.startedAt;
+        let activeDecodeDrainDuration = 0;
+        for (const startedAt of this._decodeDrainStarts.values()) {
+            activeDecodeDrainDuration += now - startedAt;
+        }
+        const activeMetrics = this._activeTransaction?.plan.metrics ?? null;
         return {
             // Legacy compat
             files: totalFiles,
@@ -1814,11 +2097,80 @@ export class SqliteVFS {
                 // memory triage gets the actual byte number.
                 pendingWriteBytes: this._pendingWriteBytes,
                 // N2 (memory accounting cleanup): live byte count inside the
-                // writeStream() drain spool. Non-zero only during the brief
-                // window between the first chunk arriving and writeBatch
-                // returning — bounded by SHARED_RPC_FLUSH_THRESHOLD (4 MiB)
-                // on the peer side.
+                // writeStream() decoder/drain spool. Stage 2 measures this exactly;
+                // hard receiver-side credit and incremental drain land in Stage 4.
                 writeStreamSpoolBytes: this._writeStreamSpoolBytes,
+                queuedWriteBytes: {
+                    current: this._pendingWriteBytes,
+                    peak: this._peakPendingWriteBytes,
+                },
+                inFlightWriteBytes: {
+                    current: this._pendingFlushInFlightBytes,
+                    peak: this._peakPendingFlushInFlightBytes,
+                },
+                retainedWriteBytes: {
+                    current: this.currentRetainedWriteBytes(),
+                    peak: this._peakRetainedWriteBytes,
+                },
+                decoderRetainedBytes: {
+                    current: this._writeStreamSpoolBytes,
+                    peak: this._peakWriteStreamSpoolBytes,
+                },
+                creditRetainedBytes: { current: 0, peak: 0 },
+                stagedBytes: { current: 0, peak: 0 },
+                gcBytes: { current: 0, peak: 0 },
+                phases: {
+                    decodeDrainWaitMs: durationSnapshot(this._decodeDrainDuration, activeDecodeDrainDuration),
+                    creditWaitMs: durationSnapshot(emptyDurationSummary(), 0),
+                },
+                transactions: {
+                    limits: {
+                        blobBytes: MAX_TX_BLOB_BYTES,
+                        logicalRows: MAX_TX_LOGICAL_ROWS,
+                        sqlExecs: MAX_TX_SQL_EXECS,
+                    },
+                    active: this._activeTransaction !== null,
+                    durationMs: {
+                        ...durationSnapshot(this._transactionDuration, activeTransactionDuration),
+                        p95: recentPercentile(this._transactionDurationSamples, this._transactionDurationSampleCount, 0.95),
+                    },
+                    postCommitDurationMs: durationSnapshot(this._postCommitDuration, 0),
+                    blobBytes: {
+                        current: activeMetrics?.blobBytes ?? 0,
+                        last: this._lastTransaction?.metrics.blobBytes ?? 0,
+                        peak: this._transactionPeakBlobBytes,
+                    },
+                    logicalRows: {
+                        current: activeMetrics?.logicalRows ?? 0,
+                        last: this._lastTransaction?.metrics.logicalRows ?? 0,
+                        peak: this._transactionPeakLogicalRows,
+                    },
+                    sqlExecs: {
+                        current: activeMetrics?.sqlExecs ?? 0,
+                        last: this._lastTransaction?.metrics.sqlExecs ?? 0,
+                        peak: this._transactionPeakSqlExecs,
+                    },
+                    affectedPaths: {
+                        current: activeMetrics?.affectedPaths ?? 0,
+                        last: this._lastTransaction?.metrics.affectedPaths ?? 0,
+                        peak: this._transactionPeakAffectedPaths,
+                    },
+                    boundedPeak: {
+                        blobBytes: this._boundedTransactionPeakBlobBytes,
+                        logicalRows: this._boundedTransactionPeakLogicalRows,
+                        sqlExecs: this._boundedTransactionPeakSqlExecs,
+                    },
+                    last: this._lastTransaction === null
+                        ? null
+                        : {
+                            ...this._lastTransaction.metrics,
+                            ...this._lastTransaction.execution,
+                        },
+                    overLimitFiles: {
+                        count: this._overLimitFileCount,
+                        last: this._lastOverLimitFile,
+                    },
+                },
                 failedWrites: this.failedWrites.size,
                 totalWriteFailures: this._writeFailures,
             },
@@ -1833,6 +2185,25 @@ export class SqliteVFS {
             },
         };
     }
+}
+function emptyDurationSummary() {
+    return { count: 0, totalMs: 0, lastMs: 0, maxMs: 0 };
+}
+function durationSnapshot(summary, current) {
+    return {
+        current,
+        count: summary.count,
+        total: summary.totalMs,
+        last: summary.lastMs,
+        max: summary.maxMs,
+    };
+}
+function recentPercentile(samples, count, percentile) {
+    if (count === 0)
+        return 0;
+    const sorted = Array.from(samples.subarray(0, count)).sort((a, b) => a - b);
+    const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * percentile) - 1);
+    return sorted[index] ?? 0;
 }
 function clampNonNegativeInt(value) {
     return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;

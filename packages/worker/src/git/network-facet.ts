@@ -8,7 +8,7 @@
  * Architecture:
  *   - Facet holds a buffered fs adapter: writes accumulate in memory
  *   - When buffer reaches WAVE_SIZE files or WAVE_BYTES bytes, flush
- *     via ONE supervisor.writeBatch() RPC (atomic transactionSync).
+ *     via ONE supervisor.writeBatchStream() RPC (atomic transactionSync).
  *   - At clone end, a final flush commits remaining buffered state.
  *   - Reads fall through: buffer → supervisor.readFile / supervisor.stat.
  *
@@ -324,12 +324,8 @@ function createBufferedFs(supervisor, stats) {
   const deleteBuffer = new Set();
   let bufferBytes = 0;
 
-  // W7 streaming detection. The supervisor's RPC class exposes
-  // writeBatchStream() when the deployed code carries the W7 frame
-  // protocol. Older supervisors only have writeBatch(). The facet
-  // checks once at boot; subsequent flushWave() invocations branch
-  // on supportsStreaming.
-  //
+  // The supervisor's RPC class exposes the required W7
+  // writeBatchStream() protocol.
   // encodeWriteBatchStream is a top-level function in the W7 frame
   // preamble that's been prepended to this worker's main module
   // source (see the modules map at the top of execGitNetwork).

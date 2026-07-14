@@ -59,6 +59,9 @@ export const CHUNK_SIZE = 65_536;        // 64KB per content chunk
 export const LRU_MAX_ENTRIES = 512;      // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64;            // rows per batch INSERT
 export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
+export const MAX_TX_BLOB_BYTES = 1 * 1024 * 1024;
+export const MAX_TX_LOGICAL_ROWS = 256;
+export const MAX_TX_SQL_EXECS = 64;
 
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and

@@ -118,13 +118,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   batch: InstallBatchSpec,
   env: {
     SUPERVISOR: {
-      writeBatch(payload: any): Promise<{ inodes: number; chunks: number }>;
       // [W7] Streaming bulk-write RPC. Bypasses the 32 MiB structured-clone
       // cap by sending the batch as a type:'bytes' ReadableStream<Uint8Array>
       // (W7 wire protocol — see src/_shared/w7-frame.ts).
-      // Optional in the type so the facet keeps working against pre-W7
-      // supervisors via the typeof-guarded fallback at the call site.
-      writeBatchStream?: (stream: ReadableStream<Uint8Array>) => Promise<{ inodes: number; chunks: number }>;
+      writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<{ inodes: number; chunks: number }>;
       // [W4 + cache-obs-2] Optional R2-cache RPC. Return shape evolved:
       //   v1 (deployed): Uint8Array | null
       //   cache-obs-2:   { bytes: Uint8Array | null, events: ... }
@@ -154,12 +151,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   if (!batch || typeof batch !== 'object' || !Array.isArray(batch.packages)) {
     throw new Error('installPackagesInFacet: missing batch.packages');
   }
-  if (!env || !env.SUPERVISOR || typeof env.SUPERVISOR.writeBatch !== 'function') {
-    throw new Error('installPackagesInFacet: env.SUPERVISOR.writeBatch missing');
+  if (!env || !env.SUPERVISOR || typeof env.SUPERVISOR.writeBatchStream !== 'function') {
+    throw new Error('installPackagesInFacet: env.SUPERVISOR.writeBatchStream missing');
   }
-  // [W7] Detect streaming RPC support ONCE per batch — the typeof check
-  // is cheap but we don't want to repeat it inside every flush hot path.
-  const supportsStreaming = typeof env.SUPERVISOR.writeBatchStream === 'function';
 
   // [W4] Cap on how long we wait for the R2 cache before committing to
   // the network response. 300 ms is generous enough for a regional R2
@@ -253,19 +247,12 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     sharedInodes = [];
     sharedChunks = [];
     sharedBufferedBytes = 0;
-    if (supportsStreaming) {
-      // @ts-ignore — preamble symbol.
-      const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-      await __nimbusUseRpcResult(
-        env.SUPERVISOR.writeBatchStream!(stream),
-        () => undefined,
-      );
-    } else {
-      await __nimbusUseRpcResult(
-        env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow }),
-        () => undefined,
-      );
-    }
+    // @ts-ignore — preamble symbol.
+    const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
+    await __nimbusUseRpcResult(
+      env.SUPERVISOR.writeBatchStream(stream),
+      () => undefined,
+    );
   };
   const sharedFlush = async (): Promise<void> => {
     // Serialize: wait for any in-flight flush to complete first; then

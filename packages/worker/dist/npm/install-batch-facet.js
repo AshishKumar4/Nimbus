@@ -53,12 +53,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     if (!batch || typeof batch !== 'object' || !Array.isArray(batch.packages)) {
         throw new Error('installPackagesInFacet: missing batch.packages');
     }
-    if (!env || !env.SUPERVISOR || typeof env.SUPERVISOR.writeBatch !== 'function') {
-        throw new Error('installPackagesInFacet: env.SUPERVISOR.writeBatch missing');
+    if (!env || !env.SUPERVISOR || typeof env.SUPERVISOR.writeBatchStream !== 'function') {
+        throw new Error('installPackagesInFacet: env.SUPERVISOR.writeBatchStream missing');
     }
-    // [W7] Detect streaming RPC support ONCE per batch — the typeof check
-    // is cheap but we don't want to repeat it inside every flush hot path.
-    const supportsStreaming = typeof env.SUPERVISOR.writeBatchStream === 'function';
     // [W4] Cap on how long we wait for the R2 cache before committing to
     // the network response. 300 ms is generous enough for a regional R2
     // GET (typically 30-100 ms) but bounds worst-case loss on a miss.
@@ -129,14 +126,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         sharedInodes = [];
         sharedChunks = [];
         sharedBufferedBytes = 0;
-        if (supportsStreaming) {
-            // @ts-ignore — preamble symbol.
-            const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-            await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), () => undefined);
-        }
-        else {
-            await __nimbusUseRpcResult(env.SUPERVISOR.writeBatch({ inodes: inodesNow, chunks: chunksNow }), () => undefined);
-        }
+        // @ts-ignore — preamble symbol.
+        const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
+        await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), () => undefined);
     };
     const sharedFlush = async () => {
         // Serialize: wait for any in-flight flush to complete first; then

@@ -8,7 +8,7 @@
  * Architecture:
  *   - Facet holds a buffered fs adapter: writes accumulate in memory
  *   - When buffer reaches WAVE_SIZE files or WAVE_BYTES bytes, flush
- *     via ONE supervisor.writeBatch() RPC (atomic transactionSync).
+ *     via ONE supervisor.writeBatchStream() RPC (atomic transactionSync).
  *   - At clone end, a final flush commits remaining buffered state.
  *   - Reads fall through: buffer → supervisor.readFile / supervisor.stat.
  *

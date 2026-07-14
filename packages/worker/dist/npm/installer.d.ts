@@ -9,12 +9,12 @@
  *   Phase 2: Hoist          — compute flat node_modules layout
  *   Phase 3: Diff           — skip packages already cached
  *   Phase 4: Fetch+Extract  — wave-based, 15 pkgs/wave, cache results
- *   Phase 5: Write          — ONE transactionSync() per wave via writeBatch()
+ *   Phase 5: Write          — bulk waves via writeBatchStream()
  *   Phase 6: Link bins      — create node_modules/.bin/ entries
  *   Phase 7: Pre-bundle     — scan source, esbuild used packages (background)
  *
  * Key invariants:
- *   - All VFS writes go through writeBatch() (never individual writeFile)
+ *   - Bulk VFS writes use the explicit stream path (never individual writeFile)
  *   - Tarball cache is per-package (name, version) — no cross-package dedup
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
@@ -168,6 +168,7 @@ export declare class NpmInstaller {
      * Create node_modules/.bin/ entries for packages with "bin" fields.
      */
     private linkBins;
+    private writeStreamPayload;
     private updatePackageJson;
     /**
      * Pre-bundle ESM modules that are actually imported by the project source.

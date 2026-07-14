@@ -102,11 +102,7 @@ export interface InstallBatchResult {
 }
 export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
     SUPERVISOR: {
-        writeBatch(payload: any): Promise<{
-            inodes: number;
-            chunks: number;
-        }>;
-        writeBatchStream?: (stream: ReadableStream<Uint8Array>) => Promise<{
+        writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<{
             inodes: number;
             chunks: number;
         }>;
