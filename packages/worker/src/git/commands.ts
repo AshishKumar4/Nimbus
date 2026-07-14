@@ -165,7 +165,42 @@ function getDir(ctx: Ctx): string {
 
 function getFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
-  return idx >= 0 && args[idx + 1] ? args[idx + 1] : undefined;
+  if (idx >= 0) return args[idx + 1] || undefined;
+  const prefix = `${flag}=`;
+  return args.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || undefined;
+}
+
+export interface ParsedCloneArgs {
+  url: string | undefined;
+  dest: string | undefined;
+  depth: number | undefined;
+  noShallow: boolean;
+  isBg: boolean;
+}
+
+export function parseCloneArgs(args: string[]): ParsedCloneArgs {
+  const depthFlag = getFlag(args, '--depth');
+  const noShallow = args.includes('--no-shallow');
+  const positionals: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--depth') {
+      i++;
+    } else if (arg === '&' || arg.startsWith('-')) {
+      continue;
+    } else {
+      positionals.push(arg);
+    }
+  }
+
+  return {
+    url: positionals[0],
+    dest: positionals[1],
+    depth: depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1),
+    noShallow,
+    isBg: args.includes('&') || args.includes('--bg'),
+  };
 }
 
 function getAuthor(ctx: Ctx) {
@@ -234,7 +269,7 @@ export function registerGitCommands(
         }
 
         case 'clone': {
-          const url = subArgs[0];
+          const { url, dest: destArg, depth, isBg } = parseCloneArgs(subArgs);
           if (!url) { ctx.stderr.write('usage: git clone <url> [dir]\n'); return 1; }
           // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
           // resolved to `<cwd>//tmp/x` because the `subArgs[1]` branch
@@ -242,17 +277,13 @@ export function registerGitCommands(
           // <cwd>//tmp/x (note double slash) and the user's later `cd /tmp/x`
           // hit ENOENT. Real-world git treats absolute targets as absolute.
           let dest: string;
-          if (subArgs[1]) {
-            dest = subArgs[1].startsWith('/')
-              ? subArgs[1]
-              : getDir(ctx) + '/' + subArgs[1];
+          if (destArg) {
+            dest = destArg.startsWith('/')
+              ? destArg
+              : getDir(ctx) + '/' + destArg;
           } else {
             dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
           }
-          const depthFlag = getFlag(subArgs, '--depth');
-          const noShallow = subArgs.includes('--no-shallow');
-          const depth = depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1);
-          const isBg = subArgs.includes('&') || subArgs.includes('--bg');
 
           if (!doCtx || !doEnv) {
             ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
