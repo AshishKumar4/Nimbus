@@ -21,12 +21,9 @@
  * producing 1 loader entry instead of 4. Same architectural shape as
  * src/npm-resolve-facet.ts — proven to work in production (commit 9194998).
  *
- * Memory plan inside the facet (pLimit=3, 16 MiB flush threshold):
- *   - 3 concurrent tarball pipelines: each holds at most 16 MiB of
- *     pending-flush bytes + 1× tarball-decompress state (~5-10 MiB) +
- *     integrity-hash buffer (compressed tarball size, ~1-3 MiB).
- *   - Peak ≈ 3 × (16 + 10 + 3) = ~87 MiB inside the facet's 128 MiB cap.
- *   - ~40 MiB headroom for V8 + tar-parser closure state.
+ * The shared producer wave pre-flushes before 4 MiB or 128 paths. One
+ * oversize file may occupy a wave by itself; the supervisor's weighted
+ * credit pool and transaction builder remain the authoritative hard bounds.
  *
  * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
  * writeBatch flush) is identical to src/npm-install-facet.ts — kept
@@ -47,9 +44,7 @@ export interface InstallBatchSpec {
     /** All packages to install in this batch. ≈456 entries × ~200 B = ~90 KB,
      *  well under workerd's 32 MiB RPC arg cap. */
     packages: FacetPackageSpec[];
-    /** Internal pLimit cap for concurrent tarball pipelines.
-     *  3 keeps facet heap peak ~87 MiB under the 128 MiB cap.
-     *  Lower if pathological packages cause facet OOM in prod. */
+    /** Internal pLimit cap for concurrent tarball download/decompression pipelines. */
     concurrency: number;
 }
 export interface InstallBatchPerPackage {

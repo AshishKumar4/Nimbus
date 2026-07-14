@@ -282,9 +282,9 @@ function normalizeWriteBatchChunkData(value) {
 }
 /**
  * W7 — Streaming bulk-write entry point. Receives a
- * ReadableStream<Uint8Array> in the W7 wire format (see
- * src/_shared/w7-frame.ts), decodes inode metadata + chunks lazily,
- * and feeds them into SqliteVFS.writeStream().
+ * ReadableStream<Uint8Array> in the W7 v2 wire format (see
+ * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
+ * SqliteVFS.writeStream().
  *
  * Bypasses the 32 MiB structured-clone cap that constrained the
  * legacy writeBatch path — workerd flow-controls the byte stream
@@ -293,8 +293,7 @@ function normalizeWriteBatchChunkData(value) {
  * Unlike strict writeBatch, the stream contract is path-atomic with a
  * committed prefix: every reported path is complete, but earlier publish
  * groups remain durable when a later group fails. The typed result carries
- * the exact durable progress. W7 v1 infers file completion from the header's
- * chunk counts; explicit file frames and global credits are Stage 4.
+ * the exact durable progress.
  */
 export async function _rpcWriteBatchStream(self, stream) {
     self.ensureSqliteFs();
@@ -319,29 +318,7 @@ export async function _rpcWriteBatchStream(self, stream) {
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
     const decodeDrainStartedAt = performance.now();
-    const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
-    let decoded;
-    try {
-        decoded = await decodeWriteBatchStream(stream);
-    }
-    catch (error) {
-        return {
-            ok: false,
-            committedGroupSequence: 0,
-            committedPathCount: 0,
-            inodes: 0,
-            chunks: 0,
-            error: {
-                code: 'ERR_WRITE_BATCH_STREAM',
-                phase: 'decode',
-                message: error instanceof Error ? error.message : String(error),
-            },
-        };
-    }
-    return self.sqliteFs.writeStream({
-        inodes: decoded.inodes,
-        chunkIter: decoded.chunkIter,
-        deletePaths: decoded.deletePaths,
+    return self.sqliteFs.writeStream(stream, {
         decodeDrainStartedAt,
     });
 }

@@ -62,6 +62,7 @@ export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
 export const MAX_TX_BLOB_BYTES = 1 * 1024 * 1024;
 export const MAX_TX_LOGICAL_ROWS = 256;
 export const MAX_TX_SQL_EXECS = 64;
+export const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and

@@ -7,7 +7,7 @@
  *
  * Architecture:
  *   - Facet holds a buffered fs adapter: writes accumulate in memory
- *   - When buffer reaches WAVE_SIZE files or WAVE_BYTES bytes, flush
+ *   - Pre-flush before an ordinary wave crosses 128 paths or 4 MiB
  *     via ONE supervisor.writeBatchStream() RPC. Each published path is
  *     atomic; a later publish-group failure may leave a committed prefix.
  *   - At clone end, a final flush commits remaining buffered state.
@@ -15,7 +15,7 @@
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
- *   - No per-file RPC round-trips — ~1 writeBatch per 500 files
+ *   - No per-file RPC round-trips — bounded path waves
  *   - Packfile network fetch works (facet fetch is reliable, DO fetch hangs)
  *   - cf-git's nonBlocking=true option yields to event loop between batches
  *
@@ -65,11 +65,8 @@ export async function execGitNetwork(ctx, env, opts) {
             //     state) prepended so the buffered fs adapter can call
             //     them as bare identifiers — the same shape NimbusLoaderPool's
             //     `preamble` option provides for npm install. This is the
-            //     fix for git-freeze: writeBatch via structured-clone
-            //     accumulates ~4 MiB residency per wave in the ctx.exports
-            //     SupervisorRPC wrapper isolate, which OOMs after ~5 waves
-            //     on real repos. writeBatchStream uses a 256 KiB-highwater
-            //     ReadableStream, keeping wrapper-isolate residency
+            //     W7 v2 emits one bounded record per pull; the receiver owns
+            //     the aggregate 8 MiB payload-credit and transaction limits.
             //   - the pre-bundled isomorphic-git (git-bundle.js)
             modules: {
                 'git-network-worker.js': W7_FRAME_PREAMBLE + '\n' + generateGitNetworkFacetCode(),
@@ -135,12 +132,13 @@ export async function execGitNetwork(ctx, env, opts) {
  *
  * Exports `default { async fetch(request, workerEnv) { ... } }`.
  * Reads op args from the POST body, runs isomorphic-git with a buffered
- * fs adapter, flushes writes to supervisor via writeBatch RPC.
+ * fs adapter, and flushes writes through W7 v2.
  */
 function generateGitNetworkFacetCode() {
     return `
-const CHUNK_SIZE = 65536; // must match sqlite-vfs.ts
-const WAVE_FILES = 500;   // flush every N buffered files
+// CHUNK_SIZE is provided by the W7 frame preamble (from constants.ts),
+// prepended to this facet worker — do not redeclare it here.
+const WAVE_PATHS = 128;
 const WAVE_BYTES = 4 * 1024 * 1024; // or every 4MB
 
 function disposeRpcResult(value) {
@@ -167,15 +165,8 @@ function requireWriteBatchStreamSuccess(result) {
   throw new Error('writeBatchStream failed' + progress + ': ' + detail);
 }
 
-function normalizePath(p) {
-  const parts = String(p || '').split('/');
-  const out = [];
-  for (const seg of parts) {
-    if (seg === '..' && out.length > 0) out.pop();
-    else if (seg !== '.' && seg !== '' && seg !== undefined) out.push(seg);
-  }
-  return out.join('/');
-}
+// normalizePath is provided by the W7 frame preamble (from _shared/w7-frame.ts),
+// prepended to this facet worker — semantically identical, do not redeclare.
 
 function parentOf(p) {
   return p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
@@ -295,6 +286,31 @@ function createBufferedFs(supervisor, stats) {
   const dirBuffer = new Set();
   const deleteBuffer = new Set();
   let bufferBytes = 0;
+  let flushInFlight = null;
+
+  function bufferedPaths(extraFilePath) {
+    const paths = new Set(deleteBuffer);
+    for (const path of dirBuffer) {
+      if (!path) continue;
+      const parts = path.split('/');
+      for (let i = 1; i <= parts.length; i++) paths.add(parts.slice(0, i).join('/'));
+    }
+    for (const path of writeBuffer.keys()) {
+      paths.add(path);
+      const parts = path.split('/');
+      for (let i = 1; i < parts.length; i++) paths.add(parts.slice(0, i).join('/'));
+    }
+    if (extraFilePath) {
+      paths.add(extraFilePath);
+      const parts = extraFilePath.split('/');
+      for (let i = 1; i < parts.length; i++) paths.add(parts.slice(0, i).join('/'));
+    }
+    return paths.size;
+  }
+
+  function hasBufferedMutations() {
+    return writeBuffer.size > 0 || dirBuffer.size > 0 || deleteBuffer.size > 0;
+  }
 
   // The supervisor's RPC class exposes the required W7
   // writeBatchStream() protocol.
@@ -305,16 +321,10 @@ function createBufferedFs(supervisor, stats) {
   // exactly like the npm install-batch-facet does at
   // src/npm/install-batch-facet.ts:429.
   //
-  // Why streaming matters here: writeBatch sends the full payload
-  // through a single structured-clone RPC. For a clone that
-  // produces multiple 4 MiB waves, the wrapper isolate hosting
-  // ctx.exports SupervisorRPC accumulates resident bytes per wave.
-  // After ~5 waves it OOMs at 128 MiB and downstream stat RPCs
-  // hang — exactly the git-freeze symptom. writeBatchStream uses
-  // a type:'bytes' ReadableStream with a 256 KiB highwater, so the
-  // wrapper isolate sees bounded residency regardless of wave size.
-  // Same pattern as src/npm/install-batch-facet.ts:421-440.
-  async function flushWave() {
+  // Producer waves are an optimization: they pre-flush before 4 MiB or
+  // 128 paths and serialize RPCs. Oversize single files are permitted;
+  // receiver-side weighted credit and transaction limits are the hard bound.
+  async function doFlushWave() {
     if (writeBuffer.size === 0 && dirBuffer.size === 0 && deleteBuffer.size === 0) return;
     const payload = buildPayload(writeBuffer, dirBuffer, deleteBuffer);
     // Snapshot stats counters BEFORE clearing the buffers so the increments
@@ -361,8 +371,23 @@ function createBufferedFs(supervisor, stats) {
     stats.bytesWritten += wavebytesWritten;
   }
 
+  async function flushWave() {
+    const prior = flushInFlight;
+    const current = (async () => {
+      if (prior) {
+        try { await prior; } catch { /* this caller still drains its own wave */ }
+      }
+      await doFlushWave();
+    })();
+    flushInFlight = current;
+    try { await current; }
+    finally {
+      if (flushInFlight === current) flushInFlight = null;
+    }
+  }
+
   async function maybeFlush() {
-    if (writeBuffer.size >= WAVE_FILES || bufferBytes >= WAVE_BYTES) {
+    if (bufferedPaths() >= WAVE_PATHS || bufferBytes >= WAVE_BYTES) {
       await flushWave();
     }
   }
@@ -460,6 +485,12 @@ function createBufferedFs(supervisor, stats) {
           buf = new Uint8Array(src.length);
           buf.set(src);
         }
+        while (hasBufferedMutations() && (
+          bufferBytes - (writeBuffer.get(p)?.length || 0) + buf.length > WAVE_BYTES
+          || bufferedPaths(p) > WAVE_PATHS
+        )) {
+          await flushWave();
+        }
         // Remove from deleteBuffer if previously deleted
         deleteBuffer.delete(p);
         // Replace in writeBuffer (size delta tracked)
@@ -533,6 +564,7 @@ function createBufferedFs(supervisor, stats) {
         const p = normalizePath(filepath);
         dirBuffer.delete(p);
         deleteBuffer.add(p);
+        await maybeFlush();
       },
 
       async stat(filepath) {

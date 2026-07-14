@@ -8,6 +8,7 @@ import {
   MAX_TX_SQL_EXECS,
 } from '../../packages/worker/src/constants.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
@@ -565,21 +566,10 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
   const { harness, vfs } = openVfs();
   const data = bytes(CHUNK_SIZE + 3, 21);
   const entries = chunks('active-stage.bin', data);
-  const chunkIter = {
-    async *[Symbol.asyncIterator]() {
-      yield entries[0];
-      vfs.runContentMaintenance(4);
-      assert.deepEqual(
-        harness.sql.exec("SELECT state FROM content_lifecycle WHERE state = 'staging'"),
-        [{ state: 'staging' }],
-      );
-      yield entries[1];
-    },
-  };
-  const result = await vfs.writeStream({
+  const result = await vfs.writeStream(encodeWriteBatchStream({
     inodes: [fileInode('active-stage.bin', data)],
-    chunkIter,
-  });
+    chunks: entries,
+  }));
   assert.equal(result.ok, true);
   assert.deepEqual(reopenVfs(harness).readFile('active-stage.bin'), data);
 }
@@ -858,16 +848,49 @@ function streamPayload(entries) {
   };
 }
 
-function chunkIterable(entries, throwAfter = null) {
-  return {
-    async *[Symbol.asyncIterator]() {
-      for (let index = 0; index < entries.length; index++) {
-        if (throwAfter === index) throw new Error('injected stream decode failure');
-        yield entries[index];
-      }
-      if (throwAfter === entries.length) throw new Error('injected stream decode failure');
+async function collectStream(stream) {
+  const reader = stream.getReader();
+  const parts = [];
+  let total = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    parts.push(next.value);
+    total += next.value.length;
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
+function nthRecordOffset(bytes, tag, occurrence) {
+  let seen = 0;
+  let offset = 4;
+  while (offset < bytes.length) {
+    const length = (
+      bytes[offset + 1]
+      | (bytes[offset + 2] << 8)
+      | (bytes[offset + 3] << 16)
+      | (bytes[offset + 4] << 24)
+    ) >>> 0;
+    if (bytes[offset] === tag && ++seen === occurrence) return offset;
+    offset += 5 + length;
+  }
+  throw new Error(`missing record tag ${tag} occurrence ${occurrence}`);
+}
+
+function streamFromBytes(bytes) {
+  return new ReadableStream({
+    type: 'bytes',
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
     },
-  };
+  });
 }
 
 // Storage failure after one published stream path returns exact typed progress;
@@ -887,10 +910,7 @@ function chunkIterable(entries, throwAfter = null) {
       ? new Error('injected second publish failure')
       : null
   ));
-  const failed = await vfs.writeStream({
-    inodes: payload.inodes,
-    chunkIter: chunkIterable(payload.chunks),
-  });
+  const failed = await vfs.writeStream(encodeWriteBatchStream(payload));
   harness.clearFault();
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'publish');
@@ -900,10 +920,7 @@ function chunkIterable(entries, throwAfter = null) {
   assert.deepEqual(reopenVfs(harness).readFile('prefix-b.bin'), oldB);
   assert.equal(reopenVfs(harness).exists('prefix-c.bin'), false);
 
-  const replay = await vfs.writeStream({
-    inodes: payload.inodes,
-    chunkIter: chunkIterable(payload.chunks),
-  });
+  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
   assert.equal(replay.ok, true);
   assert.equal(replay.committedGroupSequence, 3);
   assert.equal(replay.committedPathCount, 3);
@@ -918,11 +935,9 @@ function chunkIterable(entries, throwAfter = null) {
   const first = { path: 'decode-a.bin', data: bytes(3, 1) };
   const second = { path: 'decode-b.bin', data: bytes(CHUNK_SIZE + 1, 2) };
   const payload = streamPayload([first, second]);
-  const firstPathChunkCount = chunks(first.path, first.data).length;
-  const failed = await vfs.writeStream({
-    inodes: payload.inodes,
-    chunkIter: chunkIterable(payload.chunks, firstPathChunkCount),
-  });
+  const encoded = await collectStream(encodeWriteBatchStream(payload));
+  const secondChunkOffset = nthRecordOffset(encoded, 5, 2);
+  const failed = await vfs.writeStream(streamFromBytes(encoded.slice(0, secondChunkOffset + 9)));
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'decode');
   assert.equal(failed.committedGroupSequence, 1);
@@ -931,10 +946,7 @@ function chunkIterable(entries, throwAfter = null) {
   assert.deepEqual(reconstructed.readFile(first.path), first.data);
   assert.equal(reconstructed.exists(second.path), false);
 
-  const replay = await vfs.writeStream({
-    inodes: payload.inodes,
-    chunkIter: chunkIterable(payload.chunks),
-  });
+  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload([first, second])));
   assert.equal(replay.ok, true);
   const converged = reopenVfs(harness);
   assert.deepEqual(converged.readFile(first.path), first.data);
@@ -953,11 +965,11 @@ function chunkIterable(entries, throwAfter = null) {
     mtime: 1, mode: 0o755, chunkCount: 0,
   };
   const payload = streamPayload([file]);
-  const apply = () => vfs.writeStream({
+  const apply = () => vfs.writeStream(encodeWriteBatchStream({
     inodes: [directory, ...payload.inodes],
-    chunkIter: chunkIterable(payload.chunks),
+    chunks: streamPayload([file]).chunks,
     deletePaths: ['remove', 'already-absent'],
-  });
+  }));
   assert.equal((await apply()).ok, true);
   assert.equal((await apply()).ok, true);
   const reconstructed = reopenVfs(harness);
@@ -972,14 +984,10 @@ function chunkIterable(entries, throwAfter = null) {
   const { vfs } = openVfs();
   const data = bytes(3, 91);
   const duplicate = fileInode('duplicate.bin', data);
-  const result = await vfs.writeStream({
+  assert.throws(() => encodeWriteBatchStream({
     inodes: [duplicate, { ...duplicate, mtime: duplicate.mtime + 1 }],
-    chunkIter: chunkIterable(chunks(duplicate.path, data)),
-  });
-  assert.equal(result.ok, false);
-  assert.equal(result.error.phase, 'validation');
-  assert.match(result.error.message, /duplicate streamed inode path/);
-  assert.equal(result.committedPathCount, 0);
+    chunks: chunks(duplicate.path, data),
+  }), /duplicate path ownership/);
   assert.equal(vfs.exists('duplicate.bin'), false);
 }
 

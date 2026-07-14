@@ -147,7 +147,7 @@ async function main() {
     ' * Tar-stream symbols: parseTarHeader, streamTarEntries,',
     ' *   readableStreamToAsyncIterable, MAX_FILE_BYTES.',
     ' * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,',
-    ' *   W7_MAGIC, W7_TRAILER.',
+    ' *   W7_MAGIC, W7_MAX_RECORD_BYTES.',
     ' *',
     ` * Tar size: ${(tarStripped.length / 1024).toFixed(2)} KiB`,
     ` * W7 size:  ${(w7Stripped.length / 1024).toFixed(2)} KiB`,

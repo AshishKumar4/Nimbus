@@ -1,412 +1,970 @@
 /**
- * w7-frame.ts — Wire protocol for streaming bulk-write payloads
- * from facet to supervisor over RPC, bypassing the 32 MiB
- * structured-clone cap.
- *
- * Frame format (W7 wire protocol v1):
- *
- *   ┌─────────────────────────────────────────────────────────┐
- *   │ MAGIC: 4 bytes — 'NW7\x01'  (Nimbus W7 v1)             │
- *   │ HDR_LEN: 4 bytes uint32-LE — length of header JSON      │
- *   │ HDR_JSON: HDR_LEN bytes UTF-8 JSON                      │
- *   │   { inodes: BatchInodeEntry[], deletePaths?: string[],  │
- *   │     chunkCount: number }                                │
- *   │ For each chunk (chunkCount times):                       │
- *   │   PATH_LEN: 4 bytes uint32-LE                            │
- *   │   PATH_BYTES: PATH_LEN bytes UTF-8                       │
- *   │   CHUNK_ID:  4 bytes uint32-LE                           │
- *   │   DATA_LEN:  4 bytes uint32-LE                            │
- *   │   DATA:      DATA_LEN bytes raw                            │
- *   │ TRAILER: 4 bytes — 'NEND'                                │
- *   └─────────────────────────────────────────────────────────┘
- *
- * Why a custom frame and not CBOR / protobuf:
- *   - We control both ends; no schema-evolution constraint.
- *   - The whole point is byte-counted streaming with type: 'bytes'.
- *   - Adding a transport dep would bloat the facet preamble.
- *
- * Contract per Cloudflare Workers RPC docs
- * (https://developers.cloudflare.com/workers/runtime-apis/rpc/):
- *
- *   - Only byte-oriented streams (`type: 'bytes'`) traverse RPC.
- *   - Ownership transfers — sender cannot read after sending.
- *   - Flow control is automatic on the byte-stream.
- *
- * The encoder uses `type: 'bytes'` so the resulting stream is
- * byob-readable, which is the precise requirement for RPC transit.
+ * W7 v2 — incremental typed records for streamed bulk filesystem writes.
+ * The format is internal: every producer and consumer deploys together.
  */
 
-import type { BatchInodeEntry, BatchChunkEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
+import { CHUNK_SIZE } from '../constants.js';
+import type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
 
-// ── Constants ──────────────────────────────────────────────────────────
+export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x02]);
 
-/** Magic bytes 'NW7\x01' — start of every W7 frame.
- *  Not Object.freeze'd: typed-array storage isn't a configurable property,
- *  so freezing throws on any later byte-write. We rely on internal
- *  discipline + .slice() at every emission point. */
-export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x01]);
+const ENCODER_QUEUE_HWM = 0;
+const MAX_METADATA_BYTES = 64 * 1024;
+const MAX_PATH_BYTES = 64 * 1024;
+const MAX_BATCH_ID_BYTES = 128;
+const MAX_CONTENT_ID_BYTES = 256;
+export const W7_MAX_PATHS_PER_BATCH = 128;
+export const W7_MAX_OWNED_PATH_BYTES = 64 * 1024;
+export const W7_MAX_RECORD_BYTES = 5 + 4 + MAX_CONTENT_ID_BYTES + 8 + CHUNK_SIZE;
 
-/** Trailer 'NEND' — sanity terminator. Same freeze caveat applies. */
-export const W7_TRAILER = new Uint8Array([0x4e, 0x45, 0x4e, 0x44]);
-
-/** Highwater mark for the encoder's queueing strategy. Bounds backpressure. */
-const ENCODER_QUEUE_HWM = 256 * 1024;
-
-/** Chunk-emit boundary inside the encoder (max bytes per ReadableStream
- *  enqueue). 64 KiB matches typical SqliteVFS chunk size. */
-const ENCODER_EMIT_CAP = 64 * 1024;
-
-// ── Diagnostics ────────────────────────────────────────────────────────
-//
-// W7-plan §9.4 — the heap-peak harness needs visibility into how many
-// bytes are simultaneously resident inside the encoder's queue. We
-// maintain a module-scoped peak counter that the test harness reads.
-//
-// Production code must NOT depend on this. It's purely diagnostic.
-// `_resetPeakInFlightBytes()` is called at the start of each test
-// scenario to isolate measurements.
-
-let _peakInFlight = 0;
-let _currentInFlight = 0;
-
-/** Diagnostics — peak in-flight bytes resident inside any active encoder
- *  queue since last reset. Used by the heap-peak probe to verify the
- *  ≤ 30 MiB acceptance gate. */
-export function _peakInFlightBytes(): number {
-  return _peakInFlight;
+const enum RecordTag {
+  BatchBegin = 1,
+  Delete = 2,
+  Directory = 3,
+  FileBegin = 4,
+  FileChunk = 5,
+  FileEnd = 6,
+  BatchEnd = 7,
 }
 
-/** Diagnostics — reset both peak and current counters. Intended for
- *  test isolation between scenarios. */
-export function _resetPeakInFlightBytes(): void {
-  _peakInFlight = 0;
-  _currentInFlight = 0;
+const MODE = 'path-atomic-committed-prefix' as const;
+
+interface BatchBeginMetadata {
+  id: string;
+  mode: typeof MODE;
 }
 
-function _trackInFlightAdd(n: number): void {
-  _currentInFlight += n;
-  if (_currentInFlight > _peakInFlight) _peakInFlight = _currentInFlight;
+interface DeleteMetadata {
+  path: string;
 }
 
-function _trackInFlightSub(n: number): void {
-  _currentInFlight -= n;
-  if (_currentInFlight < 0) _currentInFlight = 0;
+interface DirectoryMetadata {
+  path: string;
+  atime?: number;
+  mtime: number;
+  mode: number;
 }
 
-// ── Encoder ────────────────────────────────────────────────────────────
+interface FileBeginMetadata extends DirectoryMetadata {
+  contentId: string;
+  size: number;
+  chunkCount: number;
+}
 
-/**
- * Encode a BatchWritePayload as a byte-oriented ReadableStream.
- *
- * Returns a `ReadableStream<Uint8Array>` with `type: 'bytes'` (BYOB
- * readable, RPC-transferable). The stream:
- *   1. Emits MAGIC.
- *   2. Emits HDR_LEN + HDR_JSON encoding inode metadata, deletePaths,
- *      and chunkCount.
- *   3. Emits each chunk record (PATH_LEN, PATH, CHUNK_ID, DATA_LEN, DATA).
- *   4. Emits TRAILER.
- *   5. Closes.
- *
- * Backpressure: the source uses `pull()` — the encoder produces the
- * NEXT chunk only when the consumer has drained the queue below the
- * HWM. Module-level `_currentInFlight` tracks queue residency for the
- * heap-peak probe.
- */
+interface FileEndMetadata {
+  contentId: string;
+  size: number;
+  chunkCount: number;
+  check: number;
+}
+
+export interface W7BatchSummary {
+  recordCount: number;
+  pathCount: number;
+  deleteCount: number;
+  directoryCount: number;
+  fileCount: number;
+  chunkCount: number;
+  byteCount: number;
+  check: number;
+}
+
+export interface W7ChunkRetention {
+  readonly bytes: number;
+  release(): void;
+}
+
+export interface W7DecodeOptions {
+  signal?: AbortSignal;
+  retainChunk?: (byteLength: number, signal?: AbortSignal) => Promise<W7ChunkRetention>;
+}
+
+export type W7DecodedRecord =
+  | { type: 'delete'; path: string }
+  | { type: 'directory'; inode: BatchInodeEntry }
+  | {
+      type: 'file-begin';
+      streamContentId: string;
+      inode: BatchInodeEntry;
+    }
+  | {
+      type: 'file-chunk';
+      streamContentId: string;
+      path: string;
+      chunkId: number;
+      data: Uint8Array;
+      retention: W7ChunkRetention;
+    }
+  | {
+      type: 'file-end';
+      streamContentId: string;
+      path: string;
+      size: number;
+      chunkCount: number;
+      check: number;
+    }
+  | { type: 'batch-end'; summary: W7BatchSummary };
+
+export interface W7DecodedStream {
+  readonly batchId: string;
+  readonly mode: typeof MODE;
+  readonly records: AsyncIterable<W7DecodedRecord>;
+}
+
+interface EncoderFile {
+  inode: BatchInodeEntry;
+  contentId: string;
+  chunks: BatchChunkEntry[];
+}
+
+interface EncoderState {
+  batchCheck: number;
+  summary: Omit<W7BatchSummary, 'check'>;
+}
+
+/** Encode one bounded record per pull; no batch-sized metadata header exists. */
 export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array> {
-  const inodes = payload.inodes ?? [];
-  const chunks = payload.chunks ?? [];
-  const deletePaths = payload.deletePaths;
-
-  // Stream emission state:
-  //   phase 0 = magic
-  //   phase 1 = header (length-prefixed JSON)
-  //   phase 2 = chunks (iterating)
-  //   phase 3 = trailer
-  //   phase 4 = closed
-  let phase: 0 | 1 | 2 | 3 | 4 = 0;
-  let chunkIdx = 0;
-  const enc = new TextEncoder();
-  const headerBytes = enc.encode(JSON.stringify({
-    inodes,
-    deletePaths,
-    chunkCount: chunks.length,
-  }));
-
-  // The DOM `ReadableStream<R>` constructor has two overloads keyed by
-  // the literal type of `source.type`. When the object literal's
-  // `type` is widened to `string` (as happens through @cloudflare's
-  // ambient-typed mods), TS picks the default-controller overload and
-  // rejects `'bytes'`. Build the source as `UnderlyingByteSource` and
-  // pass it through an explicit cast — runtime behaviour is unchanged.
+  const batchId = crypto.randomUUID();
+  const { deletes, directories, files } = preparePayload(payload, batchId);
+  const iterator = encodeRecords(batchId, deletes, directories, files);
+  let closed = false;
+  let magicEmitted = false;
   const source: UnderlyingByteSource = {
     type: 'bytes',
-    pull(controller: ReadableByteStreamController) {
-      // Each pull() emits ONE bounded record. The HWM combined with
-      // pull-on-demand means the queue holds at most ~1 emit-cap of
-      // bytes at a time — backpressure is automatic.
+    pull(controller) {
+      if (closed) return;
       try {
-        if (phase === 0) {
-          enqueue(controller, W7_MAGIC.slice());
-          phase = 1;
+        if (!magicEmitted) {
+          magicEmitted = true;
+          controller.enqueue(W7_MAGIC.slice());
           return;
         }
-        if (phase === 1) {
-          // HDR_LEN (uint32 LE) + HDR_JSON.
-          const hdr = new Uint8Array(4 + headerBytes.length);
-          writeU32LE(hdr, 0, headerBytes.length);
-          hdr.set(headerBytes, 4);
-          enqueue(controller, hdr);
-          phase = 2;
-          return;
-        }
-        if (phase === 2) {
-          if (chunkIdx >= chunks.length) {
-            phase = 3;
-            // Tail-call the trailer immediately so we don't waste a
-            // pull() iteration on a no-op.
-          } else {
-            const c = chunks[chunkIdx++];
-            const pathBytes = enc.encode(c.path);
-            const data = c.data instanceof Uint8Array
-              ? c.data
-              : new Uint8Array(c.data as ArrayBufferLike);
-            // Emit the chunk record. If the data exceeds the emit cap,
-            // split into multiple enqueues (header chunk first, then
-            // data segments). This bounds the per-pull queue load even
-            // for very large chunk payloads (rare in practice; SqliteVFS
-            // chunks are 64 KiB max).
-            const headerSize = 4 + pathBytes.length + 4 + 4;
-            const headerOut = new Uint8Array(headerSize);
-            let o = 0;
-            writeU32LE(headerOut, o, pathBytes.length); o += 4;
-            headerOut.set(pathBytes, o); o += pathBytes.length;
-            writeU32LE(headerOut, o, c.chunkId); o += 4;
-            writeU32LE(headerOut, o, data.length); o += 4;
-            enqueue(controller, headerOut);
-            // Chunk data — split by emit cap if oversize.
-            if (data.length === 0) return;
-            if (data.length <= ENCODER_EMIT_CAP) {
-              enqueue(controller, data);
-            } else {
-              for (let i = 0; i < data.length; i += ENCODER_EMIT_CAP) {
-                enqueue(controller, data.subarray(i, Math.min(i + ENCODER_EMIT_CAP, data.length)));
-              }
-            }
-            return;
-          }
-        }
-        if (phase === 3) {
-          enqueue(controller, W7_TRAILER.slice());
-          phase = 4;
+        const next = iterator.next();
+        if (next.done) {
+          closed = true;
           controller.close();
           return;
         }
-        // phase === 4 — already closed; defensive.
-        controller.close();
-      } catch (e) {
-        controller.error(e);
+        for (const part of next.value) controller.enqueue(part);
+      } catch (error) {
+        closed = true;
+        controller.error(error);
       }
     },
     cancel() {
-      // Reset diagnostics on cancellation so a leaked counter doesn't
-      // pollute subsequent measurements.
-      phase = 4;
-      chunkIdx = chunks.length;
+      closed = true;
+      iterator.return?.(undefined);
     },
   };
-  return new ReadableStream<Uint8Array>(source as any, {
-    // Byte streams (`type: 'bytes'`) MUST use the default byte-counted
-    // strategy: highWaterMark is in bytes, size is implicit. Custom
-    // `size` callbacks are forbidden — they throw at construction.
+  return new ReadableStream<Uint8Array>(source as never, {
     highWaterMark: ENCODER_QUEUE_HWM,
   });
-
-  function enqueue(controller: ReadableByteStreamController, bytes: Uint8Array): void {
-    _trackInFlightAdd(bytes.byteLength);
-    controller.enqueue(bytes);
-    // The bytes leave our queue once the consumer reads them. We can't
-    // observe that directly; we approximate by decrementing on the
-    // next microtask, which is when the read settles in workerd.
-    queueMicrotask(() => _trackInFlightSub(bytes.byteLength));
-  }
 }
 
-// ── Decoder ────────────────────────────────────────────────────────────
-
 /**
- * Decode a W7 stream into a structured handle:
- *   - `inodes` and `deletePaths` are read eagerly (the header arrives
- *     in the first frame; metadata is small).
- *   - `chunkIter` is an AsyncIterable that yields `BatchChunkEntry`
- *     items one at a time, lazily, as bytes arrive.
- *
- * The chunk iterator is resumable but NOT seekable. The caller must
- * iterate it linearly. Closing the iterator early is permitted (the
- * underlying reader is released).
- *
- * Errors propagate:
- *   - Magic mismatch → rejects on the returned promise.
- *   - Truncated header → rejects on the returned promise.
- *   - Truncated chunk record → the iterator throws the error.
- *   - Source error mid-stream → the iterator throws the error.
+ * Parse the v2 preamble eagerly, then expose validated operation records
+ * incrementally. Chunk credit is acquired after its bounded header validates
+ * and before its payload bytes are read or copied.
  */
 export async function decodeWriteBatchStream(
   stream: ReadableStream<Uint8Array>,
-): Promise<{
-  inodes: BatchInodeEntry[];
-  chunkIter: AsyncIterable<BatchChunkEntry>;
-  deletePaths?: string[];
-}> {
-  const reader = stream.getReader();
-  // Pull byte-buffer of unread data; we accumulate as needed.
-  const buf = new ByteBuffer(reader);
-
-  // 1. Magic.
-  const magic = await buf.readExact(4, 'magic');
-  if (!bytesEqual(magic, W7_MAGIC)) {
-    try { reader.releaseLock(); } catch { /* best-effort */ }
-    throw new Error(`w7-frame: bad magic, expected NW7\\x01, got ${Array.from(magic).map(b => b.toString(16)).join(' ')}`);
-  }
-
-  // 2. Header length + JSON.
-  const hdrLenBytes = await buf.readExact(4, 'header-length');
-  const hdrLen = readU32LE(hdrLenBytes, 0);
-  if (hdrLen < 0 || hdrLen > 64 * 1024 * 1024) {
-    throw new Error(`w7-frame: implausible header length ${hdrLen}`);
-  }
-  const hdrJson = await buf.readExact(hdrLen, 'header-json');
-  let header: { inodes: BatchInodeEntry[]; deletePaths?: string[]; chunkCount: number };
+  options: W7DecodeOptions = {},
+): Promise<W7DecodedStream> {
+  let reader: ReadableStreamBYOBReader;
   try {
-    header = JSON.parse(new TextDecoder().decode(hdrJson));
-  } catch (e: any) {
-    throw new Error(`w7-frame: header JSON parse failed: ${e?.message || e}`);
+    reader = stream.getReader({ mode: 'byob' });
+  } catch {
+    throw new Error('w7-frame: stream must be a byte-oriented ReadableStream');
   }
-  if (!header || !Array.isArray(header.inodes) || typeof header.chunkCount !== 'number') {
-    throw new Error('w7-frame: header missing required fields (inodes / chunkCount)');
+  const buffer = new ExactByteReader(reader);
+  let handedOff = false;
+  try {
+    throwIfAborted(options.signal);
+    const magic = await buffer.readExact(W7_MAGIC.length, 'magic');
+    if (!bytesEqual(magic, W7_MAGIC)) {
+      const version = magic.length === 4
+        && magic[0] === 0x4e && magic[1] === 0x57 && magic[2] === 0x37
+        ? magic[3]
+        : null;
+      if (version !== null) {
+        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 2`);
+      }
+      throw new Error(`w7-frame: bad magic, expected NW7\\x02, got ${hex(magic)}`);
+    }
+    const beginEnvelope = await readEnvelope(buffer, 'batch-begin');
+    if (beginEnvelope.tag !== RecordTag.BatchBegin) {
+      throw new Error(`w7-frame: first record must be batch-begin, got tag ${beginEnvelope.tag}`);
+    }
+    if (beginEnvelope.length > MAX_METADATA_BYTES) {
+      throw new Error(
+        `w7-frame: batch-begin length ${beginEnvelope.length} exceeds ${MAX_METADATA_BYTES}`,
+      );
+    }
+    const beginPayload = await buffer.readExact(beginEnvelope.length, 'batch-begin payload');
+    const begin = parseBatchBegin(beginPayload);
+    const initialCheck = updateRecordCheck(CRC_SEED, beginEnvelope.header, beginPayload);
+    handedOff = true;
+    return {
+      batchId: begin.id,
+      mode: begin.mode,
+      records: decodeRecords(stream, reader, buffer, options, initialCheck),
+    };
+  } catch (error) {
+    if (!handedOff) await cancelReader(reader, error);
+    throw error;
   }
+}
 
-  // 3. Chunk iterator.
-  const chunkIter: AsyncIterable<BatchChunkEntry> = {
-    [Symbol.asyncIterator]() {
-      let idx = 0;
-      let exhausted = false;
-      return {
-        async next(): Promise<IteratorResult<BatchChunkEntry>> {
-          if (exhausted) return { value: undefined as any, done: true };
-          if (idx >= header.chunkCount) {
-            // Read trailer.
-            const trailer = await buf.readExact(4, 'trailer');
-            if (!bytesEqual(trailer, W7_TRAILER)) {
-              throw new Error(
-                `w7-frame: bad trailer, expected NEND, got ${Array.from(trailer).map(b => String.fromCharCode(b)).join('')}`,
-              );
-            }
-            try { reader.releaseLock(); } catch { /* best-effort */ }
-            exhausted = true;
-            return { value: undefined as any, done: true };
+async function* decodeRecords(
+  stream: ReadableStream<Uint8Array>,
+  reader: ReadableStreamBYOBReader,
+  buffer: ExactByteReader,
+  options: W7DecodeOptions,
+  initialCheck: number,
+): AsyncGenerator<W7DecodedRecord> {
+  const ownedPaths = new PathOwnership();
+  const contentIds = new Set<string>();
+  let active: {
+    metadata: FileBeginMetadata;
+    inode: BatchInodeEntry;
+    nextChunkId: number;
+    receivedBytes: number;
+    check: number;
+  } | null = null;
+  let batchCheck = initialCheck;
+  const summary: Omit<W7BatchSummary, 'check'> = {
+    recordCount: 1,
+    pathCount: 0,
+    deleteCount: 0,
+    directoryCount: 0,
+    fileCount: 0,
+    chunkCount: 0,
+    byteCount: 0,
+  };
+  let completed = false;
+  let failure: unknown = new DOMException('W7 consumer cancelled', 'AbortError');
+  try {
+    while (true) {
+      throwIfAborted(options.signal);
+      const envelope = await readEnvelope(buffer, 'record');
+      if (active && envelope.tag !== RecordTag.FileChunk && envelope.tag !== RecordTag.FileEnd) {
+        throw new Error(`w7-frame: file ${active.inode.path} ended without file-end`);
+      }
+
+      if (envelope.tag === RecordTag.FileChunk) {
+        if (!active) throw new Error('w7-frame: file-chunk without active file');
+        const prefixLength = Math.min(envelope.length, 4 + MAX_CONTENT_ID_BYTES + 8);
+        const idLengthBytes = await buffer.readExact(4, 'file-chunk content-id length');
+        const idLength = readU32LE(idLengthBytes, 0);
+        if (idLength === 0 || idLength > MAX_CONTENT_ID_BYTES) {
+          throw new Error(`w7-frame: invalid file-chunk content-id length ${idLength}`);
+        }
+        const remainingPrefixLength = idLength + 8;
+        if (4 + remainingPrefixLength > prefixLength || 4 + remainingPrefixLength > envelope.length) {
+          throw new Error('w7-frame: malformed file-chunk record length');
+        }
+        const rest = await buffer.readExact(remainingPrefixLength, 'file-chunk header');
+        const contentId = decodeText(rest.subarray(0, idLength), 'file-chunk content id');
+        const chunkId = readU32LE(rest, idLength);
+        const dataLength = readU32LE(rest, idLength + 4);
+        if (envelope.length !== 4 + idLength + 8 + dataLength) {
+          throw new Error('w7-frame: file-chunk payload length mismatch');
+        }
+        if (contentId !== active.metadata.contentId) {
+          throw new Error(`w7-frame: file-chunk content id ${contentId} does not own ${active.inode.path}`);
+        }
+        if (chunkId !== active.nextChunkId) {
+          throw new Error(
+            `w7-frame: ${active.inode.path}: expected chunk ${active.nextChunkId}, got ${chunkId}`,
+          );
+        }
+        if (chunkId >= active.inode.chunkCount) {
+          throw new Error(`w7-frame: ${active.inode.path}: chunk ${chunkId} is out of range`);
+        }
+        const expectedBytes = Math.min(
+          CHUNK_SIZE,
+          active.inode.size - (chunkId * CHUNK_SIZE),
+        );
+        if (dataLength !== expectedBytes || dataLength > CHUNK_SIZE) {
+          throw new Error(
+            `w7-frame: ${active.inode.path}: chunk ${chunkId} has ${dataLength} bytes; expected ${expectedBytes}`,
+          );
+        }
+        const headerPayload = concatBytes(idLengthBytes, rest);
+        let retention: W7ChunkRetention | null = null;
+        try {
+          retention = options.retainChunk
+            ? await options.retainChunk(dataLength, options.signal)
+            : noopRetention(dataLength);
+          throwIfAborted(options.signal);
+          const data = await buffer.readExact(dataLength, 'file-chunk data');
+          batchCheck = updateRecordCheck(batchCheck, envelope.header, headerPayload, data);
+          active.check = crc32Update(active.check, data);
+          active.nextChunkId++;
+          active.receivedBytes += dataLength;
+          summary.recordCount++;
+          summary.chunkCount++;
+          summary.byteCount += dataLength;
+          const record: W7DecodedRecord = {
+            type: 'file-chunk',
+            streamContentId: contentId,
+            path: active.inode.path,
+            chunkId,
+            data,
+            retention,
+          };
+          retention = null;
+          yield record;
+        } finally {
+          retention?.release();
+        }
+        continue;
+      }
+
+      if (envelope.length > MAX_METADATA_BYTES) {
+        throw new Error(`w7-frame: metadata record length ${envelope.length} exceeds ${MAX_METADATA_BYTES}`);
+      }
+      const payload = await buffer.readExact(envelope.length, 'record payload');
+      if (envelope.tag !== RecordTag.BatchEnd) {
+        batchCheck = updateRecordCheck(batchCheck, envelope.header, payload);
+        summary.recordCount++;
+      }
+
+      switch (envelope.tag) {
+        case RecordTag.Delete: {
+          const metadata = parseDelete(payload);
+          claimPath(ownedPaths, metadata.path);
+          summary.pathCount++;
+          summary.deleteCount++;
+          yield { type: 'delete', path: metadata.path };
+          break;
+        }
+        case RecordTag.Directory: {
+          const metadata = parseDirectory(payload);
+          claimPath(ownedPaths, metadata.path);
+          summary.pathCount++;
+          summary.directoryCount++;
+          yield { type: 'directory', inode: directoryInode(metadata) };
+          break;
+        }
+        case RecordTag.FileBegin: {
+          const metadata = parseFileBegin(payload);
+          claimPath(ownedPaths, metadata.path);
+          if (contentIds.has(metadata.contentId)) {
+            throw new Error(`w7-frame: duplicate stream content id ${metadata.contentId}`);
           }
-          // PATH_LEN, PATH, CHUNK_ID, DATA_LEN, DATA.
-          const pathLenBytes = await buf.readExact(4, 'chunk-path-length');
-          const pathLen = readU32LE(pathLenBytes, 0);
-          if (pathLen < 0 || pathLen > 64 * 1024) {
-            throw new Error(`w7-frame: implausible path length ${pathLen} at chunk ${idx}`);
+          contentIds.add(metadata.contentId);
+          const inode = fileInode(metadata);
+          summary.pathCount++;
+          summary.fileCount++;
+          active = {
+            metadata,
+            inode,
+            nextChunkId: 0,
+            receivedBytes: 0,
+            check: CRC_SEED,
+          };
+          yield { type: 'file-begin', streamContentId: metadata.contentId, inode };
+          break;
+        }
+        case RecordTag.FileEnd: {
+          if (!active) throw new Error('w7-frame: file-end without active file');
+          const metadata = parseFileEnd(payload);
+          const actualCheck = crc32Finish(active.check);
+          if (metadata.contentId !== active.metadata.contentId) {
+            throw new Error(`w7-frame: file-end content id mismatch for ${active.inode.path}`);
           }
-          const pathBytes = await buf.readExact(pathLen, 'chunk-path');
-          const path = new TextDecoder().decode(pathBytes);
-          const chunkIdBytes = await buf.readExact(4, 'chunk-id');
-          const chunkId = readU32LE(chunkIdBytes, 0);
-          const dataLenBytes = await buf.readExact(4, 'chunk-data-length');
-          const dataLen = readU32LE(dataLenBytes, 0);
-          if (dataLen < 0 || dataLen > 64 * 1024 * 1024) {
-            throw new Error(`w7-frame: implausible data length ${dataLen} at chunk ${idx}`);
+          if (metadata.size !== active.receivedBytes || metadata.size !== active.inode.size) {
+            throw new Error(`w7-frame: file-end byte total mismatch for ${active.inode.path}`);
           }
-          const data = await buf.readExact(dataLen, 'chunk-data');
-          idx++;
-          return { value: { path, chunkId, data }, done: false };
-        },
-        async return(): Promise<IteratorResult<BatchChunkEntry>> {
-          exhausted = true;
-          try { reader.releaseLock(); } catch { /* best-effort */ }
-          return { value: undefined as any, done: true };
-        },
-      };
+          if (metadata.chunkCount !== active.nextChunkId
+            || metadata.chunkCount !== active.inode.chunkCount) {
+            throw new Error(`w7-frame: file-end chunk count mismatch for ${active.inode.path}`);
+          }
+          if (metadata.check !== actualCheck) {
+            throw new Error(`w7-frame: file-end check mismatch for ${active.inode.path}`);
+          }
+          const record: W7DecodedRecord = {
+            type: 'file-end',
+            streamContentId: metadata.contentId,
+            path: active.inode.path,
+            size: metadata.size,
+            chunkCount: metadata.chunkCount,
+            check: metadata.check,
+          };
+          active = null;
+          yield record;
+          break;
+        }
+        case RecordTag.BatchEnd: {
+          if (active) throw new Error(`w7-frame: batch-end while file ${active.inode.path} is active`);
+          const actual = parseBatchEnd(payload);
+          const expected = { ...summary, check: crc32Finish(batchCheck) };
+          if (!sameSummary(actual, expected)) {
+            throw new Error(
+              `w7-frame: batch-end summary mismatch; expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+            );
+          }
+          await buffer.ensureEof(stream);
+          completed = true;
+          yield { type: 'batch-end', summary: actual };
+          return;
+        }
+        case RecordTag.BatchBegin:
+          throw new Error('w7-frame: duplicate batch-begin');
+        default:
+          throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
+      }
+    }
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (completed) {
+      try { reader.releaseLock(); } catch { /* already released */ }
+    } else {
+      await cancelReader(reader, failure);
+    }
+  }
+}
+
+function* encodeRecords(
+  batchId: string,
+  deletes: string[],
+  directories: BatchInodeEntry[],
+  files: EncoderFile[],
+): Generator<Uint8Array[]> {
+  const state: EncoderState = {
+    batchCheck: CRC_SEED,
+    summary: {
+      recordCount: 0,
+      pathCount: 0,
+      deleteCount: 0,
+      directoryCount: 0,
+      fileCount: 0,
+      chunkCount: 0,
+      byteCount: 0,
     },
   };
+  yield encodeMetadataRecord(RecordTag.BatchBegin, { id: batchId, mode: MODE }, state);
+  for (const path of deletes) {
+    state.summary.pathCount++;
+    state.summary.deleteCount++;
+    yield encodeMetadataRecord(RecordTag.Delete, { path }, state);
+  }
+  for (const inode of directories) {
+    state.summary.pathCount++;
+    state.summary.directoryCount++;
+    yield encodeMetadataRecord(RecordTag.Directory, inodeMetadata(inode), state);
+  }
+  for (const file of files) {
+    state.summary.pathCount++;
+    state.summary.fileCount++;
+    yield encodeMetadataRecord(RecordTag.FileBegin, {
+      ...inodeMetadata(file.inode),
+      contentId: file.contentId,
+      size: file.inode.size,
+      chunkCount: file.inode.chunkCount,
+    }, state);
+    let fileCheck = CRC_SEED;
+    for (const chunk of file.chunks) {
+      const data = chunk.data;
+      const contentBytes = new TextEncoder().encode(file.contentId);
+      const prefix = new Uint8Array(4 + contentBytes.length + 8);
+      writeU32LE(prefix, 0, contentBytes.length);
+      prefix.set(contentBytes, 4);
+      writeU32LE(prefix, 4 + contentBytes.length, chunk.chunkId);
+      writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
+      const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
+      state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
+      state.summary.recordCount++;
+      state.summary.chunkCount++;
+      state.summary.byteCount += data.byteLength;
+      fileCheck = crc32Update(fileCheck, data);
+      yield [concatBytes(header, prefix), data];
+    }
+    yield encodeMetadataRecord(RecordTag.FileEnd, {
+      contentId: file.contentId,
+      size: file.inode.size,
+      chunkCount: file.inode.chunkCount,
+      check: crc32Finish(fileCheck),
+    }, state);
+  }
+  const end: W7BatchSummary = {
+    ...state.summary,
+    check: crc32Finish(state.batchCheck),
+  };
+  yield encodeMetadataRecord(RecordTag.BatchEnd, end);
+}
 
+function encodeMetadataRecord(
+  tag: RecordTag,
+  value: object,
+  state?: EncoderState,
+): Uint8Array[] {
+  const payload = new TextEncoder().encode(JSON.stringify(value));
+  if (payload.byteLength > MAX_METADATA_BYTES) {
+    throw new Error(`w7-frame: metadata record exceeds ${MAX_METADATA_BYTES} bytes`);
+  }
+  const header = recordHeader(tag, payload.byteLength);
+  if (state && tag !== RecordTag.BatchEnd) {
+    state.batchCheck = updateRecordCheck(state.batchCheck, header, payload);
+    state.summary.recordCount++;
+  }
+  return [concatBytes(header, payload)];
+}
+
+function preparePayload(
+  payload: BatchWritePayload,
+  batchId: string,
+): { deletes: string[]; directories: BatchInodeEntry[]; files: EncoderFile[] } {
+  if (!payload || !Array.isArray(payload.inodes) || !Array.isArray(payload.chunks)) {
+    throw new Error('w7-frame: payload must contain inode and chunk arrays');
+  }
+  const ownedPaths = new PathOwnership();
+  const deletes = [...(payload.deletePaths ?? [])];
+  for (const path of deletes) claimPath(ownedPaths, canonicalPath(path, 'delete path'));
+  const chunksByPath = new Map<string, BatchChunkEntry[]>();
+  for (const chunk of payload.chunks) {
+    const path = canonicalPath(chunk.path, 'chunk path');
+    const list = chunksByPath.get(path);
+    if (list) list.push(chunk);
+    else chunksByPath.set(path, [chunk]);
+  }
+  const directories: BatchInodeEntry[] = [];
+  const files: EncoderFile[] = [];
+  let fileIndex = 0;
+  for (const inode of payload.inodes) {
+    const path = canonicalPath(inode.path, 'inode path');
+    if (path !== inode.path) throw new Error(`w7-frame: noncanonical inode path ${inode.path}`);
+    claimPath(ownedPaths, path);
+    validateInode(inode);
+    const fileChunks = chunksByPath.get(path) ?? [];
+    if (inode.isDir) {
+      if (fileChunks.length > 0) throw new Error(`w7-frame: directory ${path} has chunks`);
+      directories.push(inode);
+    } else {
+      validateChunks(inode, fileChunks);
+      files.push({ inode, contentId: `${batchId}:${fileIndex++}`, chunks: fileChunks });
+    }
+    chunksByPath.delete(path);
+  }
+  if (chunksByPath.size > 0) {
+    throw new Error(`w7-frame: chunk has no inode: ${chunksByPath.keys().next().value}`);
+  }
+  return { deletes, directories, files };
+}
+
+function parseBatchBegin(bytes: Uint8Array): BatchBeginMetadata {
+  const value = parseObject(bytes, 'batch-begin', ['id', 'mode']);
+  const id = boundedString(value.id, 'batch id', MAX_BATCH_ID_BYTES);
+  if (value.mode !== MODE) throw new Error(`w7-frame: unsupported batch mode ${String(value.mode)}`);
+  return { id, mode: MODE };
+}
+
+function parseDelete(bytes: Uint8Array): DeleteMetadata {
+  const value = parseObject(bytes, 'delete', ['path']);
+  return { path: canonicalPath(value.path, 'delete path') };
+}
+
+function parseDirectory(bytes: Uint8Array): DirectoryMetadata {
+  const value = parseObject(bytes, 'directory', ['path', 'mtime', 'mode'], ['atime']);
+  return parseInodeMetadata(value, 'directory');
+}
+
+function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
+  const value = parseObject(
+    bytes,
+    'file-begin',
+    ['path', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
+    ['atime'],
+  );
+  const base = parseInodeMetadata(value, 'file-begin');
+  const contentId = boundedString(value.contentId, 'stream content id', MAX_CONTENT_ID_BYTES);
+  if (!/^[A-Za-z0-9._:-]+$/.test(contentId)) {
+    throw new Error(`w7-frame: invalid stream content id ${contentId}`);
+  }
+  const size = safeInteger(value.size, 'file size');
+  const chunkCount = u32(value.chunkCount, 'file chunk count');
+  const expected = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+  if (chunkCount !== expected) {
+    throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
+  }
+  return { ...base, contentId, size, chunkCount };
+}
+
+function parseFileEnd(bytes: Uint8Array): FileEndMetadata {
+  const value = parseObject(bytes, 'file-end', ['contentId', 'size', 'chunkCount', 'check']);
   return {
-    inodes: header.inodes,
-    deletePaths: header.deletePaths,
-    chunkIter,
+    contentId: boundedString(value.contentId, 'stream content id', MAX_CONTENT_ID_BYTES),
+    size: safeInteger(value.size, 'file-end size'),
+    chunkCount: u32(value.chunkCount, 'file-end chunk count'),
+    check: u32(value.check, 'file-end check'),
   };
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────
-
-function writeU32LE(out: Uint8Array, off: number, n: number): void {
-  out[off] = n & 0xff;
-  out[off + 1] = (n >>> 8) & 0xff;
-  out[off + 2] = (n >>> 16) & 0xff;
-  out[off + 3] = (n >>> 24) & 0xff;
+function parseBatchEnd(bytes: Uint8Array): W7BatchSummary {
+  const keys = [
+    'recordCount', 'pathCount', 'deleteCount', 'directoryCount',
+    'fileCount', 'chunkCount', 'byteCount', 'check',
+  ];
+  const value = parseObject(bytes, 'batch-end', keys);
+  return {
+    recordCount: safeInteger(value.recordCount, 'batch record count'),
+    pathCount: safeInteger(value.pathCount, 'batch path count'),
+    deleteCount: safeInteger(value.deleteCount, 'batch delete count'),
+    directoryCount: safeInteger(value.directoryCount, 'batch directory count'),
+    fileCount: safeInteger(value.fileCount, 'batch file count'),
+    chunkCount: safeInteger(value.chunkCount, 'batch chunk count'),
+    byteCount: safeInteger(value.byteCount, 'batch byte count'),
+    check: u32(value.check, 'batch check'),
+  };
 }
 
-function readU32LE(buf: Uint8Array, off: number): number {
-  return (buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0;
+function parseInodeMetadata(value: Record<string, unknown>, label: string): DirectoryMetadata {
+  return {
+    path: canonicalPath(value.path, `${label} path`),
+    ...(value.atime === undefined ? {} : { atime: safeInteger(value.atime, `${label} atime`) }),
+    mtime: safeInteger(value.mtime, `${label} mtime`),
+    mode: u32(value.mode, `${label} mode`),
+  };
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array | Readonly<Uint8Array>): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+function parseObject(
+  bytes: Uint8Array,
+  label: string,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(decodeText(bytes, label));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('w7-frame:')) throw error;
+    throw new Error(`w7-frame: invalid ${label} JSON: ${errorMessage(error)}`);
+  }
+  if (!isObject(value) || Array.isArray(value)) throw new Error(`w7-frame: ${label} must be an object`);
+  const allowed = new Set([...required, ...optional]);
+  for (const key of required) {
+    if (!Object.hasOwn(value, key)) throw new Error(`w7-frame: ${label} missing ${key}`);
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`w7-frame: ${label} has unknown field ${key}`);
+  }
+  return value;
 }
 
-/**
- * Lazy byte buffer over a ReadableStreamDefaultReader<Uint8Array>.
- * `readExact(n, label)` returns a contiguous Uint8Array of exactly N
- * bytes. Reads from the underlying reader as needed; throws if the
- * stream ends before N bytes are available.
- *
- * NOTE: returns a fresh Uint8Array (copy). This costs a memcpy per
- * read but simplifies lifetime — callers can hold the slice past the
- * next read without worrying about buffer overwrites.
- */
-class ByteBuffer {
-  private chunks: Uint8Array[] = [];
-  private avail = 0;
+function validateInode(inode: BatchInodeEntry): void {
+  canonicalPath(inode.path, 'inode path');
+  if (inode.parentPath !== parentPath(inode.path)) {
+    throw new Error(`w7-frame: ${inode.path}: noncanonical parent path ${inode.parentPath}`);
+  }
+  safeInteger(inode.size, `${inode.path} size`);
+  u32(inode.chunkCount, `${inode.path} chunk count`);
+  safeInteger(inode.mtime, `${inode.path} mtime`);
+  if (inode.atime !== undefined) safeInteger(inode.atime, `${inode.path} atime`);
+  u32(inode.mode, `${inode.path} mode`);
+  if (inode.isDir && (inode.size !== 0 || inode.chunkCount !== 0)) {
+    throw new Error(`w7-frame: directory ${inode.path} must have zero size and chunks`);
+  }
+  if (!inode.isDir) {
+    const expected = inode.size === 0 ? 0 : Math.ceil(inode.size / CHUNK_SIZE);
+    if (inode.chunkCount !== expected) {
+      throw new Error(`w7-frame: ${inode.path}: expected ${expected} chunks, got ${inode.chunkCount}`);
+    }
+  }
+}
+
+function validateChunks(inode: BatchInodeEntry, chunks: BatchChunkEntry[]): void {
+  if (chunks.length !== inode.chunkCount) {
+    throw new Error(`w7-frame: ${inode.path}: expected ${inode.chunkCount} chunks, got ${chunks.length}`);
+  }
+  chunks.sort((left, right) => left.chunkId - right.chunkId);
+  for (let index = 0; index < chunks.length; index++) {
+    const chunk = chunks[index];
+    if (chunk.chunkId !== index) {
+      throw new Error(`w7-frame: ${inode.path}: expected chunk ${index}, got ${chunk.chunkId}`);
+    }
+    const expected = Math.min(CHUNK_SIZE, inode.size - (index * CHUNK_SIZE));
+    if (!(chunk.data instanceof Uint8Array) || chunk.data.byteLength !== expected) {
+      throw new Error(`w7-frame: ${inode.path}: chunk ${index} must contain ${expected} bytes`);
+    }
+  }
+}
+
+function directoryInode(metadata: DirectoryMetadata): BatchInodeEntry {
+  return {
+    path: metadata.path,
+    parentPath: parentPath(metadata.path),
+    isDir: true,
+    size: 0,
+    atime: metadata.atime,
+    mtime: metadata.mtime,
+    mode: metadata.mode,
+    chunkCount: 0,
+  };
+}
+
+function fileInode(metadata: FileBeginMetadata): BatchInodeEntry {
+  return {
+    path: metadata.path,
+    parentPath: parentPath(metadata.path),
+    isDir: false,
+    size: metadata.size,
+    atime: metadata.atime,
+    mtime: metadata.mtime,
+    mode: metadata.mode,
+    chunkCount: metadata.chunkCount,
+  };
+}
+
+function inodeMetadata(inode: BatchInodeEntry): DirectoryMetadata {
+  return {
+    path: inode.path,
+    ...(inode.atime === undefined ? {} : { atime: inode.atime }),
+    mtime: inode.mtime,
+    mode: inode.mode,
+  };
+}
+
+function canonicalPath(value: unknown, label: string): string {
+  const path = boundedString(value, label, MAX_PATH_BYTES);
+  if (path.includes('\0')) throw new Error(`w7-frame: ${label} contains NUL`);
+  const normalized = normalizePath(path);
+  if (!path || normalized !== path) throw new Error(`w7-frame: noncanonical ${label}: ${path}`);
+  return path;
+}
+
+class PathOwnership {
+  private readonly paths = new Set<string>();
+  private pathBytes = 0;
+
+  claim(path: string): void {
+    if (this.paths.has(path)) throw new Error(`w7-frame: duplicate path ownership: ${path}`);
+    if (this.paths.size >= W7_MAX_PATHS_PER_BATCH) {
+      throw new Error(`w7-frame: batch exceeds ${W7_MAX_PATHS_PER_BATCH} owned paths`);
+    }
+    const nextPathBytes = this.pathBytes + new TextEncoder().encode(path).byteLength;
+    if (nextPathBytes > W7_MAX_OWNED_PATH_BYTES) {
+      throw new Error(
+        `w7-frame: owned path bytes exceed ${W7_MAX_OWNED_PATH_BYTES}`,
+      );
+    }
+    this.paths.add(path);
+    this.pathBytes = nextPathBytes;
+  }
+}
+
+function claimPath(paths: PathOwnership, path: string): void {
+  paths.claim(path);
+}
+
+function normalizePath(path: string): string {
+  const out: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '..') {
+      if (out.length > 0) out.pop();
+    } else if (segment !== '' && segment !== '.') {
+      out.push(segment);
+    }
+  }
+  return out.join('/');
+}
+
+function parentPath(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index < 0 ? '' : path.slice(0, index);
+}
+
+function boundedString(value: unknown, label: string, maxBytes: number): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`w7-frame: ${label} must be a non-empty string`);
+  }
+  const length = new TextEncoder().encode(value).byteLength;
+  if (length > maxBytes) throw new Error(`w7-frame: ${label} exceeds ${maxBytes} bytes`);
+  return value;
+}
+
+function safeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`w7-frame: ${label} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function u32(value: unknown, label: string): number {
+  const integer = safeInteger(value, label);
+  if (integer > 0xffff_ffff) throw new Error(`w7-frame: ${label} exceeds uint32`);
+  return integer;
+}
+
+function sameSummary(left: W7BatchSummary, right: W7BatchSummary): boolean {
+  return left.recordCount === right.recordCount
+    && left.pathCount === right.pathCount
+    && left.deleteCount === right.deleteCount
+    && left.directoryCount === right.directoryCount
+    && left.fileCount === right.fileCount
+    && left.chunkCount === right.chunkCount
+    && left.byteCount === right.byteCount
+    && left.check === right.check;
+}
+
+async function readEnvelope(buffer: ExactByteReader, label: string): Promise<{
+  tag: number;
+  length: number;
+  header: Uint8Array;
+}> {
+  const header = await buffer.readExact(5, `${label} header`);
+  return { tag: header[0], length: readU32LE(header, 1), header };
+}
+
+function recordHeader(tag: RecordTag, length: number): Uint8Array {
+  const header = new Uint8Array(5);
+  header[0] = tag;
+  writeU32LE(header, 1, length);
+  return header;
+}
+
+function writeU32LE(out: Uint8Array, offset: number, value: number): void {
+  out[offset] = value & 0xff;
+  out[offset + 1] = (value >>> 8) & 0xff;
+  out[offset + 2] = (value >>> 16) & 0xff;
+  out[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function readU32LE(bytes: Uint8Array, offset: number): number {
+  return (
+    bytes[offset]
+    | (bytes[offset + 1] << 8)
+    | (bytes[offset + 2] << 16)
+    | (bytes[offset + 3] << 24)
+  ) >>> 0;
+}
+
+function updateRecordCheck(seed: number, ...parts: Uint8Array[]): number {
+  let check = seed;
+  for (const part of parts) check = crc32Update(check, part);
+  return check;
+}
+
+const CRC_SEED = 0xffff_ffff;
+let crcTable: Uint32Array | null = null;
+
+function crc32Update(check: number, bytes: Uint8Array): number {
+  const table = crcTable ??= createCrcTable();
+  let value = check;
+  for (const byte of bytes) value = table[(value ^ byte) & 0xff] ^ (value >>> 8);
+  return value >>> 0;
+}
+
+function crc32Finish(check: number): number {
+  return (check ^ 0xffff_ffff) >>> 0;
+}
+
+function createCrcTable(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index++) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit++) {
+      value = (value & 1) !== 0 ? 0xedb8_8320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+}
+
+function noopRetention(bytes: number): W7ChunkRetention {
+  return { bytes, release() {} };
+}
+
+function decodeText(bytes: Uint8Array, label: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new Error(`w7-frame: invalid UTF-8 in ${label}: ${errorMessage(error)}`);
+  }
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+  return output;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(' ');
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw new DOMException(
+    signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? 'Aborted'),
+    'AbortError',
+  );
+}
+
+async function cancelReader(
+  reader: ReadableStreamBYOBReader,
+  reason: unknown,
+): Promise<void> {
+  try { await reader.cancel(reason); } catch { /* preserve primary failure */ }
+  try { reader.releaseLock(); } catch { /* already released */ }
+}
+
+class ExactByteReader {
   private done = false;
-  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
 
-  async readExact(n: number, label: string): Promise<Uint8Array> {
-    if (n === 0) return new Uint8Array(0);
-    while (this.avail < n) {
+  constructor(private readonly reader: ReadableStreamBYOBReader) {}
+
+  async readExact(length: number, label: string): Promise<Uint8Array> {
+    if (length === 0) return new Uint8Array(0);
+    const output = new Uint8Array(length);
+    let offset = 0;
+    while (offset < length) {
       if (this.done) {
         throw new Error(
-          `w7-frame: stream ended ${this.avail} bytes into expected ${n}-byte ${label}`,
+          `w7-frame: stream ended ${offset} bytes into expected ${length}-byte ${label}`,
         );
       }
-      const { value, done } = await this.reader.read();
-      if (done) {
-        this.done = true;
-      } else if (value && value.length > 0) {
-        this.chunks.push(value);
-        this.avail += value.length;
+      const next = await this.reader.read(new Uint8Array(length - offset));
+      if (next.done) this.done = true;
+      else if (next.value.byteLength > 0) {
+        output.set(next.value, offset);
+        offset += next.value.byteLength;
       }
     }
-    // Copy the first N bytes into a fresh slice; advance the buffer.
-    const out = new Uint8Array(n);
-    let copied = 0;
-    while (copied < n) {
-      const head = this.chunks[0];
-      const take = Math.min(head.length, n - copied);
-      out.set(head.subarray(0, take), copied);
-      copied += take;
-      if (take === head.length) {
-        this.chunks.shift();
-      } else {
-        // Replace head with the unconsumed tail.
-        this.chunks[0] = head.subarray(take);
+    return output;
+  }
+
+  async ensureEof(stream: ReadableStream<Uint8Array>): Promise<void> {
+    if (this.done) return;
+    this.reader.releaseLock();
+    const reader = stream.getReader();
+    try {
+      const next = await reader.read();
+      if (!next.done && next.value.byteLength > 0) {
+        await reader.cancel(new Error('w7-frame: trailing bytes after batch-end'));
+        throw new Error('w7-frame: trailing bytes after batch-end');
       }
+      this.done = true;
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released */ }
     }
-    this.avail -= n;
-    return out;
   }
 }

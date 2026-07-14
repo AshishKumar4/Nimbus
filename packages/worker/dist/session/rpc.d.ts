@@ -100,9 +100,9 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
 }>;
 /**
  * W7 — Streaming bulk-write entry point. Receives a
- * ReadableStream<Uint8Array> in the W7 wire format (see
- * src/_shared/w7-frame.ts), decodes inode metadata + chunks lazily,
- * and feeds them into SqliteVFS.writeStream().
+ * ReadableStream<Uint8Array> in the W7 v2 wire format (see
+ * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
+ * SqliteVFS.writeStream().
  *
  * Bypasses the 32 MiB structured-clone cap that constrained the
  * legacy writeBatch path — workerd flow-controls the byte stream
@@ -111,8 +111,7 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
  * Unlike strict writeBatch, the stream contract is path-atomic with a
  * committed prefix: every reported path is complete, but earlier publish
  * groups remain durable when a later group fails. The typed result carries
- * the exact durable progress. W7 v1 infers file completion from the header's
- * chunk counts; explicit file frames and global credits are Stage 4.
+ * the exact durable progress.
  */
 export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
 /**

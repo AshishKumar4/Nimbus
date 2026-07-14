@@ -24,6 +24,7 @@ import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
+import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
@@ -1116,14 +1117,7 @@ export class NpmInstaller {
         await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
     }
     async writeStreamPayload(payload) {
-        const chunks = async function* () {
-            yield* payload.chunks;
-        };
-        const result = await this.vfs.writeStream({
-            inodes: payload.inodes,
-            chunkIter: chunks(),
-            deletePaths: payload.deletePaths,
-        });
+        const result = await this.vfs.writeStream(encodeWriteBatchStream(payload));
         if (!result.ok) {
             throw new Error(`writeBatchStream failed after group ${result.committedGroupSequence} ` +
                 `(${result.committedPathCount} committed paths): ${result.error.message}`);

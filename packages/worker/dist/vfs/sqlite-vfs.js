@@ -41,10 +41,12 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { normalizeVfsPath } from './path.js';
-import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, } from '../constants.js';
+import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, } from '../constants.js';
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { enc, dec } from '../_shared/bytes.js';
+import { decodeWriteBatchStream, } from '../_shared/w7-frame.js';
+import { WeightedCreditPool, } from './write-stream-credit-pool.js';
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
 const INODE_ROWS_PER_SQL_EXEC = 11;
 const CHUNK_ROWS_PER_SQL_EXEC = 33;
@@ -117,12 +119,15 @@ class TransactionPlanBuilder {
         let additionalBlobBytes = 0;
         for (const entry of entries)
             additionalBlobBytes += entry.data.byteLength;
+        return this.wouldExceedChunks(additionalBlobBytes, entries.length);
+    }
+    wouldExceedChunks(additionalBlobBytes, additionalRows = 1) {
         return exceededTransactionLimit({
             blobBytes: this.blobBytes + additionalBlobBytes,
-            logicalRows: this.logicalRows + entries.length,
+            logicalRows: this.logicalRows + additionalRows,
             sqlExecs: this.fixedSqlExecs
                 + groupedSqlExecs(this.inodes.length, INODE_ROWS_PER_SQL_EXEC)
-                + groupedSqlExecs(this.chunks.length + entries.length, CHUNK_ROWS_PER_SQL_EXEC),
+                + groupedSqlExecs(this.chunks.length + additionalRows, CHUNK_ROWS_PER_SQL_EXEC),
             affectedPaths: this.affectedPaths.size,
         });
     }
@@ -248,15 +253,10 @@ export class SqliteVFS {
     // so unrelated writes no longer invalidate them. In-memory only — the
     // clock resets with the DO lifetime, exactly like the caches keyed on it.
     _pathRevisions = new Map();
-    _peakRetainedWriteBytes = 0;
-    /**
-     * N2 (memory accounting cleanup). Sum of bytes held by writeStream()
-     * for files that have not yet reached their declared v1 chunk count.
-     * A completed file releases its retained bytes immediately after its
-     * pointer publish; finally releases the incomplete remainder on failure.
-     */
-    _writeStreamSpoolBytes = 0;
-    _peakWriteStreamSpoolBytes = 0;
+    /** Shared by every concurrent stream targeting this session's VFS. */
+    writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
+    _stagedStreamBytes = 0;
+    _peakStagedStreamBytes = 0;
     /** In-memory liveness only; content_lifecycle remains durable ownership. */
     activeStagingContentIds = new Set();
     /** True only while durable GC work or a known abandoned staging row exists. */
@@ -267,10 +267,12 @@ export class SqliteVFS {
     _transactionDuration = emptyDurationSummary();
     _postCommitDuration = emptyDurationSummary();
     _decodeDrainDuration = emptyDurationSummary();
+    _creditWaitDuration = emptyDurationSummary();
     _transactionDurationSamples = new Float64Array(TRANSACTION_DURATION_SAMPLE_COUNT);
     _transactionDurationSampleCount = 0;
     _transactionDurationSampleIndex = 0;
     _decodeDrainStarts = new Map();
+    _creditWaitStarts = new Map();
     _transactionPeakBlobBytes = 0;
     _transactionPeakLogicalRows = 0;
     _transactionPeakSqlExecs = 0;
@@ -1407,24 +1409,22 @@ export class SqliteVFS {
         return result;
     }
     /**
-     * W7 v1 streamed bulk write. Storage publication is
-     * path-atomic/committed-prefix: every reported group is durable and
-     * complete, while an unpublished failing group contributes no progress.
-     * Full-file chunks are staged in bounded transactions and exposed by one
-     * inode-pointer transaction. Stage 4 adds the v2 framing and global-credit
-     * protocol; this v1 consumer infers file completion from the declared
-     * chunk count.
+     * Incremental W7 v2 consumer. Publication is path-atomic with a committed
+     * prefix. Chunk payload is admitted through one per-VFS weighted credit
+     * pool, staged in bounded synchronous transactions, then released before
+     * the decoder pulls another record.
      */
-    async writeStream(payload) {
-        const decodeDrainStartedAt = payload.decodeDrainStartedAt ?? performance.now();
+    async writeStream(stream, options = {}) {
+        const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
         const decodeDrainToken = {};
         this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
         let decodeDrainFinished = false;
         let decodeDrainWaitMs = Math.max(0, performance.now() - decodeDrainStartedAt);
-        let retainedSpoolBytes = 0;
-        let chunkIterator = null;
-        let chunkIteratorFinished = false;
+        let recordIterator = null;
+        let recordIteratorFinished = false;
+        let decodedRecordLease = null;
         const ownedStagingContentIds = new Set();
+        let activeFile = null;
         const progress = {
             committedGroupSequence: 0,
             committedPathCount: 0,
@@ -1432,152 +1432,151 @@ export class SqliteVFS {
             chunks: 0,
         };
         let phase = 'decode';
-        try {
-            phase = 'validation';
-            const normalizedInodes = new Map();
-            for (const inode of payload.inodes) {
-                if (normalizedInodes.has(inode.path)) {
-                    throw new Error(`EINVAL: duplicate streamed inode path: ${inode.path}`);
-                }
-                normalizedInodes.set(inode.path, inode);
-            }
-            const files = new Map();
-            const publishedFiles = new Set();
-            for (const inode of normalizedInodes.values()) {
-                this.validateInodeContentShape(inode);
-                if (!inode.isDir && inode.chunkCount > 0) {
-                    files.set(inode.path, {
-                        inode,
-                        contentId: null,
-                        receivedChunkIds: new Set(),
-                        receivedBytes: 0,
-                    });
-                }
-            }
-            let stageBuilder = new TransactionPlanBuilder();
-            const beginStreamContent = () => {
-                const contentId = this.beginStagedContent();
-                ownedStagingContentIds.add(contentId);
-                return contentId;
-            };
-            const flushStagedChunks = () => {
-                if (stageBuilder.empty)
-                    return;
-                const plan = stageBuilder.build();
-                stageBuilder = new TransactionPlanBuilder();
+        let stageBuilder = new TransactionPlanBuilder();
+        let stageLeases = [];
+        const flushStagedChunks = () => {
+            if (stageBuilder.empty)
+                return;
+            const plan = stageBuilder.build();
+            const leases = stageLeases;
+            stageBuilder = new TransactionPlanBuilder();
+            stageLeases = [];
+            try {
                 this.executeStagedChunkPlan(plan);
-                this._writeStreamSpoolBytes -= plan.metrics.blobBytes;
-                retainedSpoolBytes -= plan.metrics.blobBytes;
-                this.updatePeakRetainedWriteBytes();
-            };
-            for (const path of payload.deletePaths ?? []) {
-                phase = 'publish';
-                const affected = Math.max(1, this.collectBatchDeletions([path]).length);
-                this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] });
-                progress.committedGroupSequence++;
-                progress.committedPathCount += affected;
+                this._stagedStreamBytes += plan.metrics.blobBytes;
+                this._peakStagedStreamBytes = Math.max(this._peakStagedStreamBytes, this._stagedStreamBytes);
+                if (activeFile)
+                    activeFile.stagedBytes += plan.metrics.blobBytes;
             }
-            for (const inode of normalizedInodes.values()) {
-                if (!inode.isDir && inode.chunkCount !== 0)
-                    continue;
-                phase = 'validation';
-                this.validateFileChunks(inode, []);
-                phase = inode.isDir ? 'publish' : 'stage';
-                let result;
-                if (inode.isDir) {
-                    result = this.writeBatch({ inodes: [inode], chunks: [] });
-                }
-                else {
-                    const contentId = beginStreamContent();
-                    phase = 'publish';
-                    result = this.publishStagedFile(inode, contentId, 0);
-                }
-                progress.committedGroupSequence++;
-                progress.committedPathCount++;
-                progress.inodes += result.inodes;
-                progress.chunks += result.chunks;
-                if (!inode.isDir)
-                    publishedFiles.add(inode.path);
+            finally {
+                for (const lease of leases)
+                    lease.release();
             }
-            chunkIterator = payload.chunkIter[Symbol.asyncIterator]();
+        };
+        const retainChunk = async (byteLength, signal) => {
+            if (stageBuilder.wouldExceedChunks(byteLength) !== null)
+                flushStagedChunks();
+            let lease = this.writeStreamCredits.tryAcquire(byteLength);
+            if (!lease && !stageBuilder.empty) {
+                flushStagedChunks();
+                lease = this.writeStreamCredits.tryAcquire(byteLength);
+            }
+            if (lease)
+                return lease;
+            const waitToken = {};
+            const waitStartedAt = performance.now();
+            this._creditWaitStarts.set(waitToken, waitStartedAt);
+            try {
+                return await this.writeStreamCredits.acquire(byteLength, signal);
+            }
+            finally {
+                this._creditWaitStarts.delete(waitToken);
+                this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
+            }
+        };
+        try {
+            const decoded = await decodeWriteBatchStream(stream, {
+                signal: options.signal,
+                retainChunk,
+            });
+            recordIterator = decoded.records[Symbol.asyncIterator]();
             while (true) {
                 phase = 'decode';
                 const waitStartedAt = performance.now();
                 let next;
                 try {
-                    next = await chunkIterator.next();
+                    next = await recordIterator.next();
                 }
                 finally {
                     decodeDrainWaitMs += performance.now() - waitStartedAt;
                 }
                 if (next.done) {
-                    chunkIteratorFinished = true;
-                    break;
+                    recordIteratorFinished = true;
+                    throw new Error('w7-frame: stream ended without batch-end');
                 }
-                const chunk = next.value;
-                this._writeStreamSpoolBytes += chunk.data.byteLength;
-                retainedSpoolBytes += chunk.data.byteLength;
-                this._peakWriteStreamSpoolBytes = Math.max(this._peakWriteStreamSpoolBytes, this._writeStreamSpoolBytes);
-                this.updatePeakRetainedWriteBytes();
-                phase = 'validation';
-                const inode = normalizedInodes.get(chunk.path);
-                if (!inode)
-                    throw new Error(`EINVAL: streamed chunk has no inode: ${chunk.path}`);
-                if (inode.isDir)
-                    throw new Error(`EINVAL: directory stream entry has chunks: ${chunk.path}`);
-                if (publishedFiles.has(chunk.path)) {
-                    throw new Error(`EINVAL: streamed file has chunks after publication: ${chunk.path}`);
+                const record = next.value;
+                switch (record.type) {
+                    case 'delete': {
+                        phase = 'publish';
+                        const affected = Math.max(1, this.collectBatchDeletions([record.path]).length);
+                        this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] });
+                        progress.committedGroupSequence++;
+                        progress.committedPathCount += affected;
+                        break;
+                    }
+                    case 'directory': {
+                        phase = 'validation';
+                        this.validateFileChunks(record.inode, []);
+                        phase = 'publish';
+                        const result = this.writeBatch({ inodes: [record.inode], chunks: [] });
+                        progress.committedGroupSequence++;
+                        progress.committedPathCount++;
+                        progress.inodes += result.inodes;
+                        break;
+                    }
+                    case 'file-begin': {
+                        if (activeFile)
+                            throw new Error(`EINVAL: nested streamed file ${record.inode.path}`);
+                        phase = 'validation';
+                        this.validateInodeContentShape(record.inode);
+                        phase = 'stage';
+                        const durableContentId = this.beginStagedContent();
+                        ownedStagingContentIds.add(durableContentId);
+                        activeFile = {
+                            streamContentId: record.streamContentId,
+                            durableContentId,
+                            inode: record.inode,
+                            stagedBytes: 0,
+                        };
+                        break;
+                    }
+                    case 'file-chunk': {
+                        decodedRecordLease = record.retention;
+                        phase = 'validation';
+                        if (!activeFile
+                            || record.streamContentId !== activeFile.streamContentId
+                            || record.path !== activeFile.inode.path) {
+                            throw new Error(`EINVAL: streamed chunk ownership mismatch: ${record.path}`);
+                        }
+                        phase = 'stage';
+                        stageBuilder.addChunk({
+                            path: record.path,
+                            contentId: activeFile.durableContentId,
+                            chunkId: record.chunkId,
+                            data: record.data,
+                        });
+                        stageLeases.push(record.retention);
+                        decodedRecordLease = null;
+                        break;
+                    }
+                    case 'file-end': {
+                        phase = 'validation';
+                        if (!activeFile || record.streamContentId !== activeFile.streamContentId) {
+                            throw new Error(`EINVAL: streamed file-end ownership mismatch: ${record.path}`);
+                        }
+                        flushStagedChunks();
+                        phase = 'publish';
+                        const completed = activeFile;
+                        const result = this.publishStagedFile(completed.inode, completed.durableContentId, record.chunkCount);
+                        ownedStagingContentIds.delete(completed.durableContentId);
+                        this._stagedStreamBytes -= completed.stagedBytes;
+                        activeFile = null;
+                        progress.committedGroupSequence++;
+                        progress.committedPathCount++;
+                        progress.inodes += result.inodes;
+                        progress.chunks += result.chunks;
+                        break;
+                    }
+                    case 'batch-end':
+                        if (recordIterator.return)
+                            await recordIterator.return();
+                        recordIteratorFinished = true;
+                        this._decodeDrainStarts.delete(decodeDrainToken);
+                        this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
+                        decodeDrainFinished = true;
+                        return { ok: true, ...progress };
                 }
-                if (!Number.isSafeInteger(chunk.chunkId)
-                    || chunk.chunkId < 0
-                    || chunk.chunkId >= inode.chunkCount) {
-                    throw new Error(`EINVAL: ${chunk.path}: chunk id ${chunk.chunkId} is out of range`);
-                }
-                const expectedBytes = Math.min(CHUNK_SIZE, inode.size - (chunk.chunkId * CHUNK_SIZE));
-                if (chunk.data.byteLength !== expectedBytes) {
-                    throw new Error(`EINVAL: ${chunk.path}: chunk ${chunk.chunkId} has ${chunk.data.byteLength} bytes; expected ${expectedBytes}`);
-                }
-                const file = files.get(chunk.path);
-                if (!file) {
-                    throw new Error(`EINVAL: streamed file has no pending content: ${chunk.path}`);
-                }
-                if (file.receivedChunkIds.has(chunk.chunkId)) {
-                    throw new Error(`EINVAL: ${chunk.path}: duplicate chunk ${chunk.chunkId}`);
-                }
-                phase = 'stage';
-                if (file.contentId === null)
-                    file.contentId = beginStreamContent();
-                const stored = { ...chunk, contentId: file.contentId };
-                if (stageBuilder.wouldExceedChunkGroup([stored]) !== null)
-                    flushStagedChunks();
-                stageBuilder.addChunk(stored);
-                file.receivedChunkIds.add(chunk.chunkId);
-                file.receivedBytes += chunk.data.byteLength;
-                if (file.receivedChunkIds.size !== inode.chunkCount) {
-                    phase = 'decode';
-                    continue;
-                }
-                if (file.receivedBytes !== inode.size) {
-                    throw new Error(`EINVAL: ${inode.path}: chunk bytes ${file.receivedBytes} do not match size ${inode.size}`);
-                }
-                flushStagedChunks();
-                phase = 'publish';
-                const result = this.publishStagedFile(inode, file.contentId, inode.chunkCount);
-                publishedFiles.add(inode.path);
-                files.delete(inode.path);
-                progress.committedGroupSequence++;
-                progress.committedPathCount++;
-                progress.inodes += result.inodes;
-                progress.chunks += result.chunks;
             }
-            this._decodeDrainStarts.delete(decodeDrainToken);
-            this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
-            decodeDrainFinished = true;
-            phase = 'validation';
-            for (const [path, file] of files) {
-                throw new Error(`EINVAL: ${path}: expected ${file.inode.chunkCount} chunks, got ${file.receivedChunkIds.size}`);
-            }
-            return { ok: true, ...progress };
         }
         catch (error) {
             return {
@@ -1591,20 +1590,25 @@ export class SqliteVFS {
             };
         }
         finally {
-            if (!chunkIteratorFinished && chunkIterator?.return) {
+            decodedRecordLease?.release();
+            for (const lease of stageLeases)
+                lease.release();
+            stageLeases = [];
+            if (!recordIteratorFinished && recordIterator?.return) {
                 try {
-                    await chunkIterator.return();
+                    await recordIterator.return();
                 }
                 catch { /* preserve the primary stream result */ }
             }
-            this._writeStreamSpoolBytes -= retainedSpoolBytes;
-            if (this._writeStreamSpoolBytes < 0)
-                this._writeStreamSpoolBytes = 0;
             if (!decodeDrainFinished) {
                 this._decodeDrainStarts.delete(decodeDrainToken);
                 this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
             }
-            this.updatePeakRetainedWriteBytes();
+            if (activeFile) {
+                this._stagedStreamBytes -= activeFile.stagedBytes;
+                if (this._stagedStreamBytes < 0)
+                    this._stagedStreamBytes = 0;
+            }
             for (const contentId of ownedStagingContentIds) {
                 if (this.activeStagingContentIds.has(contentId))
                     this.maintenancePending = true;
@@ -1986,11 +1990,8 @@ export class SqliteVFS {
         summary.lastMs = durationMs;
         summary.maxMs = Math.max(summary.maxMs, durationMs);
     }
-    updatePeakRetainedWriteBytes() {
-        this._peakRetainedWriteBytes = Math.max(this._peakRetainedWriteBytes, this.currentRetainedWriteBytes());
-    }
     currentRetainedWriteBytes() {
-        return this._writeStreamSpoolBytes;
+        return this.writeStreamCredits.stats.current;
     }
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     _safeHeapUsed() {
@@ -2239,7 +2240,6 @@ export class SqliteVFS {
             this.events.emit(entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add', entry.path);
         }
         this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
-        this.updatePeakRetainedWriteBytes();
         return { inodes: inodeCount, chunks: chunkCount };
     }
     collectBatchDeletions(deletePaths) {
@@ -2332,7 +2332,12 @@ export class SqliteVFS {
         for (const startedAt of this._decodeDrainStarts.values()) {
             activeDecodeDrainDuration += now - startedAt;
         }
+        let activeCreditWaitDuration = 0;
+        for (const startedAt of this._creditWaitStarts.values()) {
+            activeCreditWaitDuration += now - startedAt;
+        }
         const activeMetrics = this._activeTransaction?.plan.metrics ?? null;
+        const creditStats = this.writeStreamCredits.stats;
         return {
             // Legacy compat
             files: totalFiles,
@@ -2361,24 +2366,31 @@ export class SqliteVFS {
                 writes: this._sqlWrites,
                 batchWrites: this._batchWrites,
                 batchWriteRows: this._batchWriteRows,
-                // Live bytes retained by writeStream() for files that have not yet
-                // reached their declared v1 chunk count. Stage 4 adds explicit v2
-                // file framing and cross-stream global-credit backpressure.
-                writeStreamSpoolBytes: this._writeStreamSpoolBytes,
+                // Legacy names alias the same credited logical payload counter. The
+                // 8 MiB pool includes both a decoded chunk record and staged buckets.
+                writeStreamSpoolBytes: creditStats.current,
                 retainedWriteBytes: {
                     current: this.currentRetainedWriteBytes(),
-                    peak: this._peakRetainedWriteBytes,
+                    peak: creditStats.peak,
                 },
                 decoderRetainedBytes: {
-                    current: this._writeStreamSpoolBytes,
-                    peak: this._peakWriteStreamSpoolBytes,
+                    current: creditStats.current,
+                    peak: creditStats.peak,
                 },
-                creditRetainedBytes: { current: 0, peak: 0 },
-                stagedBytes: { current: 0, peak: 0 },
+                creditRetainedBytes: {
+                    current: creditStats.current,
+                    peak: creditStats.peak,
+                    limit: MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
+                    queued: creditStats.queued,
+                },
+                stagedBytes: {
+                    current: this._stagedStreamBytes,
+                    peak: this._peakStagedStreamBytes,
+                },
                 gcBytes: { current: 0, peak: 0 },
                 phases: {
                     decodeDrainWaitMs: durationSnapshot(this._decodeDrainDuration, activeDecodeDrainDuration),
-                    creditWaitMs: durationSnapshot(emptyDurationSummary(), 0),
+                    creditWaitMs: durationSnapshot(this._creditWaitDuration, activeCreditWaitDuration),
                 },
                 transactions: {
                     limits: {

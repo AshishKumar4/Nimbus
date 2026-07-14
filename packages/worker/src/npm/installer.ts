@@ -41,6 +41,7 @@ import {
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
+import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
@@ -1298,14 +1299,7 @@ export class NpmInstaller {
   private async writeStreamPayload(
     payload: BatchWritePayload,
   ): Promise<Extract<WriteBatchStreamResult, { ok: true }>> {
-    const chunks = async function* () {
-      yield* payload.chunks;
-    };
-    const result = await this.vfs.writeStream({
-      inodes: payload.inodes,
-      chunkIter: chunks(),
-      deletePaths: payload.deletePaths,
-    });
+    const result = await this.vfs.writeStream(encodeWriteBatchStream(payload));
     if (!result.ok) {
       throw new Error(
         `writeBatchStream failed after group ${result.committedGroupSequence} ` +

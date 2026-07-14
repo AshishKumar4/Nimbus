@@ -34,6 +34,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '../observability/diag-counters.j
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss, r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail, } from '../observability/diag-counters.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
+import { W7_MAX_RECORD_BYTES } from '../_shared/w7-frame.js';
 /**
  * Drain the per-call event list captured by R2CacheClient during this
  * SupervisorRPC call.
@@ -223,12 +224,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * decoder that observes the actual byte count.
      */
     async writeBatchStream(stream) {
-        // The streaming bytes flow with backpressure (W7_HIGHWATER_BYTES =
-        // 256 KiB per active encoder per src/_shared/w7-frame.ts:53). The
-        // supervisor-resident bound is the queue highwater, NOT the total
-        // payload — the LastRpcFrame surfaces -1 to mark "stream"; the
-        // RPC payload counter sees the bounded chunk-size estimate.
-        const STREAM_RESIDENT_BYTES = 256 * 1024;
+        // The encoder emits one bounded v2 record per pull. This wrapper-isolate
+        // estimate covers that record; the receiving VFS separately reports and
+        // enforces its shared 8 MiB retained-payload credit.
+        const STREAM_RESIDENT_BYTES = W7_MAX_RECORD_BYTES;
         setLastRpcFrame('writeBatchStream', -1);
         rpcPayloadStart(STREAM_RESIDENT_BYTES);
         try {

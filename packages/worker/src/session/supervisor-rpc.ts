@@ -39,6 +39,7 @@ import {
 } from '../observability/diag-counters.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { W7_MAX_RECORD_BYTES } from '../_shared/w7-frame.js';
 // cache metrics support: per-tier hit/miss counters.
 //
 // CRITICAL — SupervisorRPC is a WorkerEntrypoint (loopback service
@@ -274,12 +275,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
   ): Promise<WriteBatchStreamResult> {
-    // The streaming bytes flow with backpressure (W7_HIGHWATER_BYTES =
-    // 256 KiB per active encoder per src/_shared/w7-frame.ts:53). The
-    // supervisor-resident bound is the queue highwater, NOT the total
-    // payload — the LastRpcFrame surfaces -1 to mark "stream"; the
-    // RPC payload counter sees the bounded chunk-size estimate.
-    const STREAM_RESIDENT_BYTES = 256 * 1024;
+    // The encoder emits one bounded v2 record per pull. This wrapper-isolate
+    // estimate covers that record; the receiving VFS separately reports and
+    // enforces its shared 8 MiB retained-payload credit.
+    const STREAM_RESIDENT_BYTES = W7_MAX_RECORD_BYTES;
     setLastRpcFrame('writeBatchStream', -1);
     rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {

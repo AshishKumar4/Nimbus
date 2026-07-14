@@ -11,6 +11,7 @@ import {
   SqliteVFS,
   SqliteVfsTransactionTooLargeError,
 } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs() {
@@ -181,10 +182,10 @@ function assertBounded(stats) {
   const data = new Uint8Array(MAX_TX_BLOB_BYTES * 2 + 1).fill(19);
   const entries = chunks('stream.bin', data);
   const firstTransaction = harness.transactionCount + 1;
-  const result = await vfs.writeStream({
+  const result = await vfs.writeStream(encodeWriteBatchStream({
     inodes: [fileInode('stream.bin', data.length)],
-    chunkIter: (async function* () { yield* entries; })(),
-  });
+    chunks: entries,
+  }));
   assert.deepEqual(result, {
     ok: true,
     committedGroupSequence: 1,

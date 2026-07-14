@@ -7,7 +7,7 @@
  *
  * Architecture:
  *   - Facet holds a buffered fs adapter: writes accumulate in memory
- *   - When buffer reaches WAVE_SIZE files or WAVE_BYTES bytes, flush
+ *   - Pre-flush before an ordinary wave crosses 128 paths or 4 MiB
  *     via ONE supervisor.writeBatchStream() RPC. Each published path is
  *     atomic; a later publish-group failure may leave a committed prefix.
  *   - At clone end, a final flush commits remaining buffered state.
@@ -15,7 +15,7 @@
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
- *   - No per-file RPC round-trips — ~1 writeBatch per 500 files
+ *   - No per-file RPC round-trips — bounded path waves
  *   - Packfile network fetch works (facet fetch is reliable, DO fetch hangs)
  *   - cf-git's nonBlocking=true option yields to event loop between batches
  *

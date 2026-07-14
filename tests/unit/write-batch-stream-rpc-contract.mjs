@@ -2,18 +2,22 @@
 
 import assert from 'node:assert/strict';
 import { _rpcWriteBatchStream } from '../../packages/worker/src/session/rpc.ts';
+import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const malformed = new ReadableStream({
+  type: 'bytes',
   start(controller) {
     controller.enqueue(new Uint8Array([0x42, 0x41, 0x44, 0x21]));
     controller.close();
   },
 });
 
-const result = await _rpcWriteBatchStream(
-  { ensureSqliteFs() {} },
-  malformed,
-);
+const harness = createSqliteVfsTestHarness();
+const result = await _rpcWriteBatchStream({
+  sqliteFs: new SqliteVFS(harness.sql, harness.ctx),
+  ensureSqliteFs() {},
+}, malformed);
 
 assert.deepEqual(result, {
   ok: false,
@@ -24,7 +28,7 @@ assert.deepEqual(result, {
   error: {
     code: 'ERR_WRITE_BATCH_STREAM',
     phase: 'decode',
-    message: 'w7-frame: bad magic, expected NW7\\x01, got 42 41 44 21',
+    message: 'w7-frame: bad magic, expected NW7\\x02, got 42 41 44 21',
   },
 });
 

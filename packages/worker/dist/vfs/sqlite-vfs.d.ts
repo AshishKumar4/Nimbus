@@ -116,15 +116,10 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
-    private _peakRetainedWriteBytes;
-    /**
-     * N2 (memory accounting cleanup). Sum of bytes held by writeStream()
-     * for files that have not yet reached their declared v1 chunk count.
-     * A completed file releases its retained bytes immediately after its
-     * pointer publish; finally releases the incomplete remainder on failure.
-     */
-    private _writeStreamSpoolBytes;
-    private _peakWriteStreamSpoolBytes;
+    /** Shared by every concurrent stream targeting this session's VFS. */
+    private readonly writeStreamCredits;
+    private _stagedStreamBytes;
+    private _peakStagedStreamBytes;
     /** In-memory liveness only; content_lifecycle remains durable ownership. */
     private readonly activeStagingContentIds;
     /** True only while durable GC work or a known abandoned staging row exists. */
@@ -133,10 +128,12 @@ export declare class SqliteVFS {
     private _transactionDuration;
     private _postCommitDuration;
     private _decodeDrainDuration;
+    private _creditWaitDuration;
     private readonly _transactionDurationSamples;
     private _transactionDurationSampleCount;
     private _transactionDurationSampleIndex;
     private readonly _decodeDrainStarts;
+    private readonly _creditWaitStarts;
     private _transactionPeakBlobBytes;
     private _transactionPeakLogicalRows;
     private _transactionPeakSqlExecs;
@@ -275,19 +272,14 @@ export declare class SqliteVFS {
     private executeStagedChunkPlan;
     private publishStagedFile;
     /**
-     * W7 v1 streamed bulk write. Storage publication is
-     * path-atomic/committed-prefix: every reported group is durable and
-     * complete, while an unpublished failing group contributes no progress.
-     * Full-file chunks are staged in bounded transactions and exposed by one
-     * inode-pointer transaction. Stage 4 adds the v2 framing and global-credit
-     * protocol; this v1 consumer infers file completion from the declared
-     * chunk count.
+     * Incremental W7 v2 consumer. Publication is path-atomic with a committed
+     * prefix. Chunk payload is admitted through one per-VFS weighted credit
+     * pool, staged in bounded synchronous transactions, then released before
+     * the decoder pulls another record.
      */
-    writeStream(payload: {
-        inodes: BatchInodeEntry[];
-        chunkIter: AsyncIterable<BatchChunkEntry>;
-        deletePaths?: string[];
+    writeStream(stream: ReadableStream<Uint8Array>, options?: {
         decodeDrainStartedAt?: number;
+        signal?: AbortSignal;
     }): Promise<WriteBatchStreamResult>;
     private _writeBatchWithRetry;
     /**
@@ -312,7 +304,6 @@ export declare class SqliteVFS {
     private metricsOnlyPlan;
     private recordOverLimitFile;
     private recordDuration;
-    private updatePeakRetainedWriteBytes;
     private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     private _safeHeapUsed;
@@ -381,6 +372,8 @@ export declare class SqliteVFS {
             creditRetainedBytes: {
                 current: number;
                 peak: number;
+                limit: number;
+                queued: number;
             };
             stagedBytes: {
                 current: number;

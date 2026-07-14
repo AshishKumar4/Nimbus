@@ -13,10 +13,10 @@
  * Tar-stream symbols: parseTarHeader, streamTarEntries,
  *   readableStreamToAsyncIterable, MAX_FILE_BYTES.
  * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,
- *   W7_MAGIC, W7_TRAILER.
+ *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 3.84 KiB
- * W7 size:  7.78 KiB
+ * W7 size:  27.74 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const TAR_STREAM_PREAMBLE_SIZE: number;

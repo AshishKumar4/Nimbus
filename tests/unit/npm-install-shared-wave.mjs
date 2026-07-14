@@ -75,6 +75,21 @@ function makeTarball() {
   return new Uint8Array(gzipSync(tar));
 }
 
+async function decodeWave(stream) {
+  const decoded = await decodeWriteBatchStream(stream);
+  const paths = [];
+  let chunks = 0;
+  for await (const record of decoded.records) {
+    if (record.type === 'directory' || record.type === 'file-begin') {
+      paths.push(record.inode.path);
+    } else if (record.type === 'file-chunk') {
+      chunks++;
+      record.retention.release();
+    }
+  }
+  return { paths, chunks };
+}
+
 const tarball = makeTarball();
 const inodePaths = [];
 const env = {
@@ -83,11 +98,8 @@ const env = {
       return tarball.slice();
     },
     async writeBatchStream(stream) {
-      const decoded = await decodeWriteBatchStream(stream);
-      inodePaths.push(decoded.inodes.map((inode) => inode.path));
-      for await (const _chunk of decoded.chunkIter) {
-        // Drain the W7 v1 trailer before returning the injected result.
-      }
+      const decoded = await decodeWave(stream);
+      inodePaths.push(decoded.paths);
       return {
         ok: false,
         committedGroupSequence: 1,
@@ -129,16 +141,14 @@ const success = await installPackagesInFacet({ packages, concurrency: 2 }, {
       return tarball.slice();
     },
     async writeBatchStream(stream) {
-      const decoded = await decodeWriteBatchStream(stream);
-      successfulWaves.push(decoded.inodes.map((inode) => inode.path));
-      let chunks = 0;
-      for await (const _chunk of decoded.chunkIter) chunks++;
+      const decoded = await decodeWave(stream);
+      successfulWaves.push(decoded.paths);
       return {
         ok: true,
-        committedGroupSequence: decoded.inodes.length,
-        committedPathCount: decoded.inodes.length,
-        inodes: decoded.inodes.length,
-        chunks,
+        committedGroupSequence: decoded.paths.length,
+        committedPathCount: decoded.paths.length,
+        inodes: decoded.paths.length,
+        chunks: decoded.chunks,
       };
     },
   },
@@ -151,6 +161,52 @@ for (const name of ['a', 'b']) {
     publicationOrder.indexOf(`${ownerPrefix}/index.js`)
       < publicationOrder.indexOf(`${ownerPrefix}/package.json`),
   );
+}
+
+// Producer preflushes before 128 paths and never overlaps W7 RPCs even when
+// many package pipelines reach the shared wave concurrently.
+{
+  const manyPackages = Array.from({ length: 130 }, (_, index) => ({
+    name: `pkg-${index}`,
+    version: '1.0.0',
+    tarballUrl: `https://unused.invalid/pkg-${index}`,
+    integrity: '',
+    pkgDir: `node_modules/pkg-${index}`,
+    mtime: 1,
+    chunkSize: 65_536,
+  }));
+  let active = 0;
+  let peakActive = 0;
+  const pathCounts = [];
+  const result = await installPackagesInFacet({ packages: manyPackages, concurrency: 10 }, {
+    SUPERVISOR: {
+      async getCachedTarball() {
+        return tarball.slice();
+      },
+      async writeBatchStream(stream) {
+        active++;
+        peakActive = Math.max(peakActive, active);
+        try {
+          const decoded = await decodeWave(stream);
+          pathCounts.push(decoded.paths.length);
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          return {
+            ok: true,
+            committedGroupSequence: decoded.paths.length,
+            committedPathCount: decoded.paths.length,
+            inodes: decoded.paths.length,
+            chunks: decoded.chunks,
+          };
+        } finally {
+          active--;
+        }
+      },
+    },
+  });
+  assert.ok(result.perPackage.every((pkg) => !pkg.errorText));
+  assert.equal(peakActive, 1, 'npm producer started overlapping flush RPCs');
+  assert.ok(pathCounts.length > 1, 'path-limit fixture did not produce multiple waves');
+  assert.ok(pathCounts.every((count) => count <= 128), `oversize wave paths: ${pathCounts}`);
 }
 
 console.log('npm shared write wave ownership: ok');

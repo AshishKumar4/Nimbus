@@ -21,12 +21,9 @@
  * producing 1 loader entry instead of 4. Same architectural shape as
  * src/npm-resolve-facet.ts — proven to work in production (commit 9194998).
  *
- * Memory plan inside the facet (pLimit=3, 16 MiB flush threshold):
- *   - 3 concurrent tarball pipelines: each holds at most 16 MiB of
- *     pending-flush bytes + 1× tarball-decompress state (~5-10 MiB) +
- *     integrity-hash buffer (compressed tarball size, ~1-3 MiB).
- *   - Peak ≈ 3 × (16 + 10 + 3) = ~87 MiB inside the facet's 128 MiB cap.
- *   - ~40 MiB headroom for V8 + tar-parser closure state.
+ * The shared producer wave pre-flushes before 4 MiB or 128 paths. One
+ * oversize file may occupy a wave by itself; the supervisor's weighted
+ * credit pool and transaction builder remain the authoritative hard bounds.
  *
  * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
  * writeBatch flush) is identical to src/npm-install-facet.ts — kept
@@ -107,9 +104,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // Shared-buffer flushes happen across packages, so smaller chunks keep
     // individual write transactions short and avoid aging the parent RPC.
     const SHARED_RPC_FLUSH_THRESHOLD = 4 * 1024 * 1024;
+    const SHARED_RPC_PATH_LIMIT = 128;
     const INODE_OVERHEAD = 160;
     const CHUNK_OVERHEAD = 96;
-    let sharedInodes = [];
+    let sharedInodes = new Map();
     let sharedChunks = [];
     let sharedBufferedBytes = 0;
     let sharedOwners = new Set();
@@ -120,14 +118,27 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // flush() will line up behind this promise and resolve in arrival
     // order — the W7 frame is opaque to ordering so this is safe.
     let sharedFlushInFlight = null;
+    let sharedMutationInFlight = Promise.resolve();
+    const withSharedMutation = async (action) => {
+        const prior = sharedMutationInFlight;
+        let release;
+        sharedMutationInFlight = new Promise((resolve) => { release = resolve; });
+        await prior;
+        try {
+            return await action();
+        }
+        finally {
+            release();
+        }
+    };
     const doSharedFlush = async () => {
-        if (sharedInodes.length === 0 && sharedChunks.length === 0)
+        if (sharedInodes.size === 0 && sharedChunks.length === 0)
             return;
         // Snapshot current contents and reset the buffer BEFORE awaiting
         // the RPC so a concurrent install can start filling the next batch.
-        const inodesNow = sharedInodes;
+        const inodesNow = [...sharedInodes.values()];
         const chunksNow = sharedChunks;
-        sharedInodes = [];
+        sharedInodes = new Map();
         sharedChunks = [];
         sharedBufferedBytes = 0;
         const ownersNow = sharedOwners;
@@ -165,9 +176,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             }
             waves.add(wave);
         }
-        const outcome = await wave;
-        if (!outcome.ok)
-            throw new Error(outcome.message);
+        await wave;
     };
     const sharedFlush = async () => {
         // Serialize: wait for any in-flight flush to complete first; then
@@ -197,11 +206,23 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 sharedFlushInFlight = null;
         }
     };
-    const enqueueSharedFile = (ownerId, filePath, data, mtime, chunkSize) => {
+    const preflushSharedMutation = async (path, additionalBytes) => {
+        if (sharedInodes.has(path)) {
+            throw new Error(`duplicate path in npm write wave: ${path}`);
+        }
+        while (sharedInodes.size > 0 && (sharedBufferedBytes + additionalBytes > SHARED_RPC_FLUSH_THRESHOLD
+            || sharedInodes.size + 1 > SHARED_RPC_PATH_LIMIT)) {
+            await sharedFlush();
+        }
+    };
+    const enqueueSharedFile = (ownerId, filePath, data, mtime, chunkSize) => withSharedMutation(async () => {
         const size = data.length;
         const chunkCount = size === 0 ? 0 : Math.ceil(size / chunkSize);
+        const additionalBytes = INODE_OVERHEAD + filePath.length * 2
+            + size + (chunkCount * (CHUNK_OVERHEAD + filePath.length));
+        await preflushSharedMutation(filePath, additionalBytes);
         sharedOwners.add(ownerId);
-        sharedInodes.push({
+        sharedInodes.set(filePath, {
             path: filePath,
             parentPath: filePath.includes('/') ? filePath.substring(0, filePath.lastIndexOf('/')) : '',
             isDir: false,
@@ -223,7 +244,29 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             sharedChunks.push({ path: filePath, chunkId, data: slice });
             sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + slice.length;
         }
-    };
+    });
+    const enqueueSharedDirectory = (ownerId, path, mtime) => withSharedMutation(async () => {
+        const existing = sharedInodes.get(path);
+        if (existing) {
+            if (!existing.isDir)
+                throw new Error(`file/directory collision in npm write wave: ${path}`);
+            sharedOwners.add(ownerId);
+            return;
+        }
+        const additionalBytes = INODE_OVERHEAD + path.length * 2;
+        await preflushSharedMutation(path, additionalBytes);
+        sharedOwners.add(ownerId);
+        sharedInodes.set(path, {
+            path,
+            parentPath: path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '',
+            isDir: true,
+            size: 0,
+            mtime,
+            mode: 0o755,
+            chunkCount: 0,
+        });
+        sharedBufferedBytes += additionalBytes;
+    });
     // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
     //
     // Mirrors src/npm-install-facet.ts:fetchAndStagePackage. Kept inline
@@ -513,31 +556,20 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             const decompressed = bytesStream.pipeThrough(new DecompressionStream('gzip'));
             // @ts-ignore — preamble symbol.
             const asyncIter = readableStreamToAsyncIterable(decompressed);
-            // 4. Build + flush BatchWritePayload(s) at the threshold.
-            //    Pre-W7 threshold: 16 MiB to keep the structured-clone payload
-            //      well under workerd's 32 MiB cap with 6% serialization
-            //      overhead. With pLimit=3, total in-flight pending flush bytes
-            //      peaked at 3 × 16 = 48 MiB inside the 128 MiB cap.
-            //    W7 (streaming path): the RPC has no 32 MiB cap because the
-            //      bytes traverse the boundary as a flow-controlled byte stream.
-            //      We could in principle drop this threshold entirely (one
-            //      flush per package), but a memory-pressure boundary is still
-            //      useful — a single 100 MiB tarball would otherwise hold 100
-            //      MiB resident in the chunks array before flushing. Keep the
-            //      threshold; raise it if/when measured peak heap suggests the
-            //      legacy 16 MiB is now the bottleneck on the streaming path.
+            // 4. Add entries to the shared producer wave. Ordinary waves pre-flush
+            //    before crossing 4 MiB or 128 paths; the receiver's transaction
+            //    limits and global credit pool remain the authoritative bounds.
             const pkgDir = spec.pkgDir;
             // Use the shard-level inode/chunk buffer so flushes are per shard,
             // not per package. Per-package totals stay local to the result object.
             let totalFileInodes = 0;
             let totalBytesWritten = 0;
             const dirSet = new Set();
-            const parentOf = (p) => (p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '');
             dirSet.add(pkgDir);
             let completionMarker = null;
-            const enqueueFile = (filePath, data) => {
+            const enqueueFile = async (filePath, data) => {
                 const size = data.length;
-                enqueueSharedFile(ownerId, filePath, data, spec.mtime, spec.chunkSize);
+                await enqueueSharedFile(ownerId, filePath, data, spec.mtime, spec.chunkSize);
                 totalFileInodes += 1;
                 totalBytesWritten += size;
             };
@@ -561,10 +593,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                     completionMarker = { path: filePath, data };
                 }
                 else {
-                    enqueueFile(filePath, data);
-                }
-                if (sharedBufferedBytes >= SHARED_RPC_FLUSH_THRESHOLD) {
-                    await sharedFlush();
+                    await enqueueFile(filePath, data);
                 }
             }
             // Wait for integrity verification before final flush.
@@ -573,12 +602,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // package end — let the threshold-based flush coalesce across
             // packages. The end-of-batch flush below catches anything left.
             for (const d of dirSet) {
-                sharedOwners.add(ownerId);
-                sharedInodes.push({
-                    path: d, parentPath: parentOf(d), isDir: true,
-                    size: 0, mtime: spec.mtime, mode: 0o755, chunkCount: 0,
-                });
-                sharedBufferedBytes += INODE_OVERHEAD + d.length * 2;
+                await enqueueSharedDirectory(ownerId, d, spec.mtime);
             }
             // package.json is the durable completion marker used by the installer
             // diff path. Hold it outside every content wave. Batch reconciliation
@@ -594,13 +618,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             });
             totalFileInodes += 1;
             totalBytesWritten += completionMarker.data.length;
-            // Threshold-based flush (NOT per-package) — only fires if the
-            // shared buffer has crossed SHARED_RPC_FLUSH_THRESHOLD as a
-            // result of this package's contributions. Otherwise the buffer
-            // continues accumulating across the next package(s) in pLimit.
-            if (sharedBufferedBytes >= SHARED_RPC_FLUSH_THRESHOLD) {
-                await sharedFlush();
-            }
             // Write tarballs to R2 only after a successful network install so the
             // next tenant can skip the round-trip to npm. This must be awaited:
             // the facet lifecycle ends when this function returns.
@@ -660,7 +677,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         const outcomes = await Promise.all([...(ownerWaves.get(ownerId) ?? [])]);
         if (outcomes.some((outcome) => !outcome.ok))
             continue;
-        enqueueSharedFile(ownerId, marker.path, marker.data, marker.mtime, marker.chunkSize);
+        await enqueueSharedFile(ownerId, marker.path, marker.data, marker.mtime, marker.chunkSize);
         ownersWithCompletionMarker.add(ownerId);
     }
     try {
