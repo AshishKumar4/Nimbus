@@ -11,7 +11,7 @@ import {
   Shell,
 } from '../substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, type WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
@@ -642,7 +642,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
-  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatchStream(this as any, stream); }
+  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult> { return _rpc._rpcWriteBatchStream(this as any, stream); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: string): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }

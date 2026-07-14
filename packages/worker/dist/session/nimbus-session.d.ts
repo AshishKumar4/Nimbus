@@ -7,7 +7,7 @@
  */
 import { Kernel, Shell } from '../substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, type WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -249,10 +249,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         inodes: number;
         chunks: number;
     }>;
-    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{
-        inodes: number;
-        chunks: number;
-    }>;
+    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
     _rpcPutRegistryEntries(entries: any[]): Promise<{
         written: number;
         failed: number;

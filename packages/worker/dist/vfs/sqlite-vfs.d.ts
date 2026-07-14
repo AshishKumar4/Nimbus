@@ -16,8 +16,8 @@
  *          ▼                    ▼
  * ┌─────────────────┐  ┌─────────────────────┐
  * │  file_chunks     │  │  inodes              │
- * │  (path, chunk_id,│  │  (path, type, mode,  │
- * │   data BLOB)     │  │   size, mtime, ...)  │
+ * │  (content_id,    │  │  (path, type, mode,  │
+ * │   chunk_id, data)│  │   size, content_id)  │
  * │  64KB chunks     │  │                      │
  * └─────────────────┘  └─────────────────────┘
  *            DO SQLite (10 GB)
@@ -67,9 +67,27 @@ export interface BatchWritePayload {
     /** Paths to delete before writing (for clean reinstall). */
     deletePaths?: string[];
 }
+export interface WriteBatchStreamProgress {
+    /** 1-based sequence of the last durable publish group; zero means none. */
+    committedGroupSequence: number;
+    committedPathCount: number;
+    inodes: number;
+    chunks: number;
+}
+export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
+export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
+    ok: true;
+}) | (WriteBatchStreamProgress & {
+    ok: false;
+    error: {
+        code: 'ERR_WRITE_BATCH_STREAM';
+        phase: WriteBatchStreamFailurePhase;
+        message: string;
+    };
+});
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
-type TransactionSource = 'strict-batch' | 'pending-flush' | 'stream-v1';
-type TransactionLimitMode = 'bounded' | 'pending-over-limit-file' | 'stage2-stream-unbounded';
+type TransactionSource = 'strict-batch' | 'pending-flush' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
+type TransactionLimitMode = 'bounded';
 interface TransactionPlanMetrics {
     blobBytes: number;
     logicalRows: number;
@@ -116,12 +134,10 @@ export declare class SqliteVFS {
     private _peakPendingFlushInFlightBytes;
     private _peakRetainedWriteBytes;
     /**
-     * N2 (memory accounting cleanup). Sum of bytes currently held in the
-     * `chunks: []` spool inside writeStream(). Maintained per-chunk so
-     * a long-running drain shows live, not the steady-state 0.
-     * Reset (or decremented to the drained amount) inside writeStream's
-     * finally block, after transactionSync has either consumed the
-     * bytes or thrown.
+     * N2 (memory accounting cleanup). Sum of bytes held by writeStream()
+     * for files that have not yet reached their declared v1 chunk count.
+     * A completed file releases its retained bytes immediately after its
+     * pointer publish; finally releases the incomplete remainder on failure.
      *
      * Sums into `heap.breakdown.vfsInFlightBytes` alongside
      * _pendingWriteBytes so a single value reflects ALL transient
@@ -129,6 +145,8 @@ export declare class SqliteVFS {
      */
     private _writeStreamSpoolBytes;
     private _peakWriteStreamSpoolBytes;
+    /** In-memory liveness only; content_lifecycle remains durable ownership. */
+    private readonly activeStagingContentIds;
     private writeFlushScheduled;
     private _activeTransaction;
     private _transactionDuration;
@@ -160,6 +178,7 @@ export declare class SqliteVFS {
     private _batchWriteRows;
     constructor(sql: SqlStorage, ctx?: DurableObjectState);
     private initSchema;
+    private tableColumns;
     private migrateFromLegacy;
     private loadInodes;
     private _addToChildrenIndex;
@@ -196,14 +215,6 @@ export declare class SqliteVFS {
     private clearPendingWritesForPaths;
     private clearWriteFailuresForPaths;
     private clearWriteFailuresForPath;
-    private deferWrite;
-    /**
-     * Preserve synchronous producer backpressure at a complete-path boundary.
-     * Calling this from deferWrite would allow a large file to flush halfway
-     * through its chunk loop. The pending transaction builder remains the
-     * authority for the exact byte/row/SQL grouping.
-     */
-    private flushPendingWritesAtLimit;
     private flushPendingWrites;
     private flushPendingPlan;
     /**
@@ -277,6 +288,10 @@ export declare class SqliteVFS {
     flushAndWait(): Promise<void>;
     private now;
     private parentPath;
+    /** The single content resolver for both legacy-null and generated inodes. */
+    private contentIdForInode;
+    private legacyContentId;
+    private createContentId;
     private blobToUint8Array;
     private copyBytes;
     private readChunkFromSql;
@@ -324,8 +339,9 @@ export declare class SqliteVFS {
      * trims the new last chunk; growing zero-fills like writeRange.
      */
     truncate(path: string, size: number): void;
-    /** Drop cache + pending-write entries for chunks >= fromChunkId. */
-    private dropChunksFrom;
+    private updatedFileInode;
+    private commitCurrentContentMutation;
+    private generatedMutationChunk;
     readFileString(path: string): string;
     stat(path: string): {
         type: string;
@@ -347,54 +363,39 @@ export declare class SqliteVFS {
     /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
-     * Why this exists:
-     *   writeFile() does 1 DELETE + 1 INSERT per inode (each auto-committed)
-     *   plus deferred chunks flushed in bounded complete-path groups.
-     *   For 30K files: ~60K sync SQL ops → 30-60s, often crashes DO.
-     *
      * The complete mutation is preflighted against the Stage 2 transaction
-     * limits, then executed in one transaction with 12-inode / 33-chunk SQL
+     * limits, then executed in one transaction with 11-inode / 33-chunk SQL
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
         chunks: number;
     };
+    private replaceFileWithStagedContent;
     /**
-     * W7 — streaming bulk-write. Same atomic transaction semantics as
-     * writeBatch() but
-     * accepts the chunks list as an `AsyncIterable<BatchChunkEntry>`
-     * rather than a fully-realised array.
-     *
-     * v1 (this wave) is "spool-then-commit": we drain the iterator into
-     * an in-memory Array<BatchChunkEntry>, then execute the shared plan in
-     * the explicit Stage 2 stream-unbounded mode.
-     * The HEAP-savings claim of W7 lives on the FACET side — by the
-     * time chunks reach this method (post-RPC), they've already
-     * traversed the byte-stream boundary without hitting the 32 MiB
-     * structured-clone cap.
-     *
-     * Stage 2 intentionally preserves the existing eager drain and one
-     * transaction for callers that already selected writeBatchStream. The
-     * transaction is planned and measured, but its hard bounding and global
-     * stream credit are deferred to Stages 3-4. `_writeStreamSpoolBytes`
-     * truthfully reports the retained decoder payload throughout the drain.
-     *
-     * On SQLITE_NOMEM, the VFS evicts clean cache and retries the exact
-     * transaction once. Any
-     * iterator-source error propagates unchanged. Atomicity guarantee
-     * matches writeBatch: either ALL inodes + chunks land in SQLite or
-     * NONE do.
+     * Copy-on-write replacement for an over-limit range/truncate mutation.
+     * Chunks are produced and staged one at a time, so the operation never
+     * assembles the file as one BLOB or exceeds a Stage 2 transaction bound.
+     */
+    private replaceFileWithGeneratedContent;
+    private beginStagedContent;
+    private executeStagedChunkPlan;
+    private publishStagedFile;
+    /**
+     * W7 v1 streamed bulk write. Storage publication is
+     * path-atomic/committed-prefix: every reported group is durable and
+     * complete, while an unpublished failing group contributes no progress.
+     * Full-file chunks are staged in bounded transactions and exposed by one
+     * inode-pointer transaction. Stage 4 adds the v2 framing and global-credit
+     * protocol; this v1 consumer infers file completion from the declared
+     * chunk count.
      */
     writeStream(payload: {
         inodes: BatchInodeEntry[];
         chunkIter: AsyncIterable<BatchChunkEntry>;
         deletePaths?: string[];
         decodeDrainStartedAt?: number;
-    }): Promise<{
-        inodes: number;
-        chunks: number;
-    }>;
+    }): Promise<WriteBatchStreamResult>;
     private _writeBatchWithRetry;
     /**
      * Estimate the byte cost of a writeBatch payload. Used by the W5
@@ -406,6 +407,16 @@ export declare class SqliteVFS {
     private isSqliteNoMem;
     private transactionSync;
     private executeTransactionPlan;
+    private executeMeasuredTransaction;
+    /**
+     * Bounded, idempotent content maintenance. Age only orders work; durable
+     * reference checks in each mutation transaction are the deletion authority.
+     */
+    runContentMaintenance(maxTransactions?: number): {
+        transactions: number;
+    };
+    private runContentMaintenanceSafely;
+    private metricsOnlyPlan;
     private recordOverLimitFile;
     private recordDuration;
     private updatePeakRetainedWriteBytes;
@@ -413,6 +424,8 @@ export declare class SqliteVFS {
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     private _safeHeapUsed;
     private prepareBatchTransaction;
+    private validateFileChunks;
+    private validateInodeContentShape;
     private assertTransactionFits;
     private _writeBatchOnce;
     private collectBatchDeletions;

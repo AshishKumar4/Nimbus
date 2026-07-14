@@ -24,7 +24,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── readRange ────────────────────────────────────────────────────────────
 {
-  const { vfs } = makeVfs();
+  const { harness, vfs } = makeVfs();
   const data = pattern(CHUNK_SIZE * 2 + 1000);
   vfs.writeFile('home/user/big.bin', data);
 
@@ -51,17 +51,19 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── writeRange: in-place, spanning chunks, only affected chunks flushed ──
 {
-  const { vfs } = makeVfs();
+  const { harness, vfs } = makeVfs();
   const data = pattern(CHUNK_SIZE * 3);
   vfs.writeFile('f.bin', data);
   vfs.flushAll();
 
-  const before = vfs.getStats().sql.writes;
+  const statementStart = harness.statementCount;
   const patch = pattern(10, 7);
   vfs.writeRange('f.bin', CHUNK_SIZE - 5, patch); // spans chunks 0 and 1
   vfs.flushAll();
-  const flushedChunks = vfs.getStats().sql.writes - before;
-  assert.equal(flushedChunks, 2, `range write spanning one boundary must flush exactly 2 chunks, flushed ${flushedChunks}`);
+  const chunkWrites = harness.statements.slice(statementStart)
+    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
+    .reduce((count, statement) => count + (statement.params.length / 3), 0);
+  assert.equal(chunkWrites, 2, 'range write spanning one boundary must rewrite exactly 2 chunks');
 
   const expected = new Uint8Array(data);
   expected.set(patch, CHUNK_SIZE - 5);

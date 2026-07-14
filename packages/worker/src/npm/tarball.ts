@@ -160,6 +160,16 @@ export function buildCacheRestorePayload(
   for (const pkg of packages) {
     const files = cache.getTarballFiles(pkg.name, pkg.version);
     if (files.length === 0) continue;
+    const completionMarkers = files.filter((file) => file.relPath === 'package.json');
+    if (completionMarkers.length !== 1) {
+      throw new Error(
+        `cached package ${pkg.name}@${pkg.version} has ${completionMarkers.length} root package.json entries`,
+      );
+    }
+    const orderedFiles = [
+      ...files.filter((file) => file.relPath !== 'package.json'),
+      completionMarkers[0],
+    ];
 
     const pkgDir = hoistPlan.root.has(pkg.name)
       ? nodeModulesDir + '/' + pkg.name
@@ -167,7 +177,10 @@ export function buildCacheRestorePayload(
 
     dirs.add(pkgDir);
 
-    for (const file of files) {
+    // The root package.json is the installer's durable completion marker.
+    // Keep it as this package's final file mutation so a committed-prefix
+    // failure can never make an incomplete cache restore look installed.
+    for (const file of orderedFiles) {
       const filePath = pkgDir + '/' + file.relPath;
 
       const parts = filePath.split('/');

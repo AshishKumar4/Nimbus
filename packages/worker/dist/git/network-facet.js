@@ -8,7 +8,8 @@
  * Architecture:
  *   - Facet holds a buffered fs adapter: writes accumulate in memory
  *   - When buffer reaches WAVE_SIZE files or WAVE_BYTES bytes, flush
- *     via ONE supervisor.writeBatchStream() RPC (atomic transactionSync).
+ *     via ONE supervisor.writeBatchStream() RPC. Each published path is
+ *     atomic; a later publish-group failure may leave a committed prefix.
  *   - At clone end, a final flush commits remaining buffered state.
  *   - Reads fall through: buffer → supervisor.readFile / supervisor.stat.
  *
@@ -152,6 +153,18 @@ async function useRpcResult(promise, use) {
   const value = await promise;
   try { return await use(value); }
   finally { disposeRpcResult(value); }
+}
+
+function requireWriteBatchStreamSuccess(result) {
+  if (result && result.ok === true) return result;
+  const progress = result
+    ? ' after group ' + result.committedGroupSequence +
+      ' (' + result.committedPathCount + ' committed paths)'
+    : '';
+  const detail = result && result.error && result.error.message
+    ? result.error.message
+    : 'missing writeBatchStream result';
+  throw new Error('writeBatchStream failed' + progress + ': ' + detail);
 }
 
 function normalizePath(p) {
@@ -325,12 +338,10 @@ function createBufferedFs(supervisor, stats) {
     // facet-side residency during the await drops from ~2× wave bytes
     // to ~1× wave bytes.
     //
-    // Safety: if the await throws, the outer fetch handler at
-    // network-facet.ts:644 calls flushWave() again best-effort —
-    // writeBuffer is already empty, so that's a no-op. The error
-    // propagates as the JSON response body. NO data is lost: bytes were
-    // either committed by the supervisor before the throw, or are
-    // forever gone (we can't replay a transferred byte stream anyway).
+    // Safety: if the await throws, the outer fetch handler calls flushWave()
+    // again best-effort. writeBuffer is already empty, so that is a no-op.
+    // The typed result reports any path groups durably published before the
+    // failure; replaying the git operation safely replaces those paths again.
     writeBuffer.clear();
     dirBuffer.clear();
     deleteBuffer.clear();
@@ -342,7 +353,10 @@ function createBufferedFs(supervisor, stats) {
     // RPC since 2026-05-09 (commit 89a64ef9).
     // @ts-ignore — preamble symbol injected at module-prepend time.
     const stream = encodeWriteBatchStream(payload);
-    await useRpcResult(supervisor.writeBatchStream(stream), () => undefined);
+    await useRpcResult(
+      supervisor.writeBatchStream(stream),
+      result => requireWriteBatchStreamSuccess(result),
+    );
     stats.filesWritten += wavefilesWritten;
     stats.bytesWritten += wavebytesWritten;
   }

@@ -290,11 +290,11 @@ function normalizeWriteBatchChunkData(value) {
  * legacy writeBatch path — workerd flow-controls the byte stream
  * end-to-end.
  *
- * Atomicity guarantee mirrors writeBatch: either ALL inodes +
- * chunks land in SQLite or NONE do. SqliteVFS.writeStream defers
- * the actual transactionSync until the chunk iterator is fully
- * drained (v1 spool-then-commit), so a stream error mid-transit
- * aborts before any SQL state mutates.
+ * Unlike strict writeBatch, the stream contract is path-atomic with a
+ * committed prefix: every reported path is complete, but earlier publish
+ * groups remain durable when a later group fails. The typed result carries
+ * the exact durable progress. W7 v1 infers file completion from the header's
+ * chunk counts; explicit file frames and global credits are Stage 4.
  */
 export async function _rpcWriteBatchStream(self, stream) {
     self.ensureSqliteFs();
@@ -320,7 +320,24 @@ export async function _rpcWriteBatchStream(self, stream) {
     // under the queue-age threshold without any user-space semaphore.
     const decodeDrainStartedAt = performance.now();
     const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
-    const decoded = await decodeWriteBatchStream(stream);
+    let decoded;
+    try {
+        decoded = await decodeWriteBatchStream(stream);
+    }
+    catch (error) {
+        return {
+            ok: false,
+            committedGroupSequence: 0,
+            committedPathCount: 0,
+            inodes: 0,
+            chunks: 0,
+            error: {
+                code: 'ERR_WRITE_BATCH_STREAM',
+                phase: 'decode',
+                message: error instanceof Error ? error.message : String(error),
+            },
+        };
+    }
     return self.sqliteFs.writeStream({
         inodes: decoded.inodes,
         chunkIter: decoded.chunkIter,

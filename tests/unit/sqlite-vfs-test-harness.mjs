@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 
 export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
   let fault = null;
+  let afterTransactionFault = null;
   let statementCount = 0;
   let transactionCount = 0;
   let activeTransaction = null;
@@ -48,7 +49,17 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
       activeTransaction = ++transactionCount;
       transactionStatement = 0;
       try {
-        return db.transaction(callback)();
+        const result = db.transaction(callback)();
+        if (
+          afterTransactionFault !== null
+          && (afterTransactionFault.transaction === null
+            || afterTransactionFault.transaction === activeTransaction)
+        ) {
+          const error = afterTransactionFault.error;
+          if (!afterTransactionFault.repeat) afterTransactionFault = null;
+          throw error;
+        }
+        return result;
       } finally {
         activeTransaction = null;
         transactionStatement = 0;
@@ -82,12 +93,25 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
       }
       fault = { kind: 'transaction', statement, transaction, repeat, error };
     },
+    failAfterTransaction(
+      {
+        transaction = transactionCount + 1,
+        repeat = false,
+        error = new Error(`injected reset after transaction ${transaction}`),
+      } = {},
+    ) {
+      if (transaction !== null && (!Number.isInteger(transaction) || transaction < 1)) {
+        throw new RangeError('transaction must be null or a positive integer');
+      }
+      afterTransactionFault = { transaction, repeat, error };
+    },
     setFaultInjector(inject) {
       if (typeof inject !== 'function') throw new TypeError('fault injector must be a function');
       fault = { kind: 'injector', inject };
     },
     clearFault() {
       fault = null;
+      afterTransactionFault = null;
     },
     get statementCount() {
       return statementCount;

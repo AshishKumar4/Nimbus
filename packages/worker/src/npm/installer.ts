@@ -24,6 +24,7 @@ import type {
   SqliteVFS,
   BatchInodeEntry,
   BatchWritePayload,
+  WriteBatchStreamResult,
 } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
@@ -331,9 +332,9 @@ export class NpmInstaller {
     // Then, fetch + extract + write new packages.
     //
     // Single fetch path: one NimbusLoaderPool isolate (the batch facet)
-    // runs the entire install. The facet streams each tarball through
-    // gunzip+tar and emits one writeBatch RPC per package; supervisor
-    // heap only sees one inbound RPC payload at a time.
+    // runs the entire install. The facet streams tarballs through gunzip+tar
+    // and coalesces package-owned paths into shared writeBatchStream waves;
+    // every owner awaits each wave it contributed to.
     //
     // No fallback paths: env.LOADER + ctx are platform requirements
     // (their absence is a deploy bug, not a runtime branch). Per-package
@@ -1296,15 +1297,24 @@ export class NpmInstaller {
     await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
   }
 
-  private writeStreamPayload(payload: BatchWritePayload): Promise<{ inodes: number; chunks: number }> {
+  private async writeStreamPayload(
+    payload: BatchWritePayload,
+  ): Promise<Extract<WriteBatchStreamResult, { ok: true }>> {
     const chunks = async function* () {
       yield* payload.chunks;
     };
-    return this.vfs.writeStream({
+    const result = await this.vfs.writeStream({
       inodes: payload.inodes,
       chunkIter: chunks(),
       deletePaths: payload.deletePaths,
     });
+    if (!result.ok) {
+      throw new Error(
+        `writeBatchStream failed after group ${result.committedGroupSequence} ` +
+        `(${result.committedPathCount} committed paths): ${result.error.message}`,
+      );
+    }
+    return result;
   }
 
   // ── Package.json update ───────────────────────────────────────────────

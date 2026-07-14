@@ -26,6 +26,7 @@
  *   prefetch(cwd, entryCode) → Record<string, string>
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
@@ -113,8 +114,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         chunks: number;
     }>;
     /**
-     * W7 — Streaming bulk-write. Same semantics as writeBatch() but the
-     * argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
+     * W7 — Streaming bulk-write with path-atomic, committed-prefix semantics.
+     * The argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
      * (see src/_shared/w7-frame.ts). Bypasses the 32 MiB structured-clone
      * cap entirely; the byte stream traverses the RPC boundary with
      * automatic flow control per Cloudflare RPC docs.
@@ -128,10 +129,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * is unknown up-front (-1 sentinel); it is the supervisor's
      * decoder that observes the actual byte count.
      */
-    writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<{
-        inodes: number;
-        chunks: number;
-    }>;
+    writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
     /**
      * Bulk-write npm registry cache entries (resolved packument metadata)
      * in ONE RPC. Used by the resolver-facet to flush a wave of resolved

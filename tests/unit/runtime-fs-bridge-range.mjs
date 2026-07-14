@@ -13,7 +13,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 function makeBridge() {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  return { vfs, bridge: new SqliteRuntimeFsBridge(vfs) };
+  return { harness, vfs, bridge: new SqliteRuntimeFsBridge(vfs) };
 }
 
 const enc = new TextEncoder();
@@ -81,7 +81,7 @@ const dec = new TextDecoder();
 
 // ── handles: positional range IO without whole-file rewrites ──
 {
-  const { vfs, bridge } = makeBridge();
+  const { harness, vfs, bridge } = makeBridge();
   const big = new Uint8Array(CHUNK_SIZE * 2);
   big.fill(9);
   await bridge.writeFile('/wk/big.bin', big);
@@ -95,11 +95,13 @@ const dec = new TextDecoder();
   assert.equal((await bridge.read(handle.id, null, 0)).length, 0);
 
   // Positional write inside chunk 1 must flush exactly one chunk.
-  const before = vfs.getStats().sql.writes;
+  const statementStart = harness.statementCount;
   await bridge.write(handle.id, CHUNK_SIZE + 10, enc.encode('zz'));
   vfs.flushAll();
-  assert.equal(vfs.getStats().sql.writes - before, 1,
-    'a small positional write must rewrite only the touched chunk');
+  const chunkWrites = harness.statements.slice(statementStart)
+    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
+    .reduce((count, statement) => count + (statement.params.length / 3), 0);
+  assert.equal(chunkWrites, 1, 'a small positional write must rewrite only the touched chunk');
   const verify = await bridge.readRange('/wk/big.bin', CHUNK_SIZE + 9, 4);
   assert.deepEqual(Array.from(verify), [9, 122, 122, 9]);
   assert.equal((await bridge.stat('/wk/big.bin')).size, big.length, 'positional write must not grow the file');

@@ -136,13 +136,15 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
   const big = new Uint8Array(CHUNK * 2).fill(7);
   vfs.writeFile('home/user/huge.bin', big);
   vfs.flushAll();
-  const before = vfs.getStats().sql.writes;
+  const statementStart = harness.statementCount;
   const fh = await fsp.open('/home/user/huge.bin', 'r+');
   await fh.write(enc.encode('!!'), 0, 2, CHUNK + 1); // inside chunk 1 only
   await fh.close();
   vfs.flushAll();
-  assert.equal(vfs.getStats().sql.writes - before, 1,
-    'a small FileHandle positional write must flush exactly one chunk');
+  const chunkWrites = harness.statements.slice(statementStart)
+    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
+    .reduce((count, statement) => count + (statement.params.length / 3), 0);
+  assert.equal(chunkWrites, 1, 'a small FileHandle positional write must rewrite one chunk');
 }
 
 console.log('node-shims-live-fs-range: all assertions passed');

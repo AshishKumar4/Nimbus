@@ -211,9 +211,9 @@ export class NpmInstaller {
         // Then, fetch + extract + write new packages.
         //
         // Single fetch path: one NimbusLoaderPool isolate (the batch facet)
-        // runs the entire install. The facet streams each tarball through
-        // gunzip+tar and emits one writeBatch RPC per package; supervisor
-        // heap only sees one inbound RPC payload at a time.
+        // runs the entire install. The facet streams tarballs through gunzip+tar
+        // and coalesces package-owned paths into shared writeBatchStream waves;
+        // every owner awaits each wave it contributed to.
         //
         // No fallback paths: env.LOADER + ctx are platform requirements
         // (their absence is a deploy bug, not a runtime branch). Per-package
@@ -1116,15 +1116,20 @@ export class NpmInstaller {
         }
         await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
     }
-    writeStreamPayload(payload) {
+    async writeStreamPayload(payload) {
         const chunks = async function* () {
             yield* payload.chunks;
         };
-        return this.vfs.writeStream({
+        const result = await this.vfs.writeStream({
             inodes: payload.inodes,
             chunkIter: chunks(),
             deletePaths: payload.deletePaths,
         });
+        if (!result.ok) {
+            throw new Error(`writeBatchStream failed after group ${result.committedGroupSequence} ` +
+                `(${result.committedPathCount} committed paths): ${result.error.message}`);
+        }
+        return result;
     }
     // ── Package.json update ───────────────────────────────────────────────
     updatePackageJson(projDir, explicitPackages, resolved) {

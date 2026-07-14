@@ -16,8 +16,8 @@
  *          ▼                    ▼
  * ┌─────────────────┐  ┌─────────────────────┐
  * │  file_chunks     │  │  inodes              │
- * │  (path, chunk_id,│  │  (path, type, mode,  │
- * │   data BLOB)     │  │   size, mtime, ...)  │
+ * │  (content_id,    │  │  (path, type, mode,  │
+ * │   chunk_id, data)│  │   size, content_id)  │
  * │  64KB chunks     │  │                      │
  * └─────────────────┘  └─────────────────────┘
  *            DO SQLite (10 GB)
@@ -48,9 +48,11 @@ import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MA
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { enc, dec } from '../_shared/bytes.js';
-const INODE_ROWS_PER_SQL_EXEC = 12;
+const INODE_ROWS_PER_SQL_EXEC = 11;
 const CHUNK_ROWS_PER_SQL_EXEC = 33;
+const CONTENT_IDS_PER_SQL_EXEC = 50;
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
+const CONTENT_SCHEMA_MIGRATION = 'content_generations_v1';
 export class SqliteVfsTransactionTooLargeError extends Error {
     limit;
     actual;
@@ -69,20 +71,18 @@ export class SqliteVfsTransactionTooLargeError extends Error {
 class TransactionPlanBuilder {
     inodes = [];
     chunks = [];
+    deletedChunks = [];
     deletedPaths = new Set();
-    replacedContentPaths = new Set();
+    stagingContentIds = new Set();
+    publishedContentIds = new Set();
+    gcContentIds = new Set();
     affectedPaths = new Set();
     deletedInodePaths = new Set();
-    reservedOldChunkRowsByPath = new Map();
     blobBytes = 0;
     deletedInodeRows = 0;
-    reservedOldChunkRows = 0;
-    addInode(entry, prior) {
+    addInode(entry) {
         this.inodes.push(entry);
         this.affectedPaths.add(entry.path);
-        this.replacedContentPaths.add(entry.path);
-        if (prior)
-            this.reserveOldChunks(prior.path, prior.chunkCount);
     }
     addChunk(entry) {
         this.chunks.push(entry);
@@ -93,14 +93,27 @@ class TransactionPlanBuilder {
         for (const entry of entries)
             this.addChunk(entry);
     }
-    addDeletedPath(path, inode, orphanChunkRows = 0) {
+    addDeletedChunk(entry) {
+        this.deletedChunks.push(entry);
+        this.blobBytes += entry.byteLength;
+        this.affectedPaths.add(entry.path);
+    }
+    addDeletedPath(path, inode) {
         this.deletedPaths.add(path);
         this.affectedPaths.add(path);
         if (inode && !this.deletedInodePaths.has(inode.path)) {
             this.deletedInodePaths.add(inode.path);
             this.deletedInodeRows++;
         }
-        this.reserveOldChunks(path, Math.max(inode?.chunkCount ?? 0, orphanChunkRows));
+    }
+    addStagingContent(contentId) {
+        this.stagingContentIds.add(contentId);
+    }
+    addPublishedContent(contentId) {
+        this.publishedContentIds.add(contentId);
+    }
+    addGcContent(contentId) {
+        this.gcContentIds.add(contentId);
     }
     wouldExceedChunkGroup(entries) {
         let additionalBlobBytes = 0;
@@ -118,35 +131,50 @@ class TransactionPlanBuilder {
     get empty() {
         return this.inodes.length === 0
             && this.chunks.length === 0
+            && this.deletedChunks.length === 0
             && this.deletedPaths.size === 0
-            && this.replacedContentPaths.size === 0;
+            && this.stagingContentIds.size === 0
+            && this.publishedContentIds.size === 0
+            && this.gcContentIds.size === 0;
     }
     build() {
         return {
             inodes: this.inodes,
             chunks: this.chunks,
+            deletedChunks: this.deletedChunks,
             deletedPaths: [...this.deletedPaths],
-            replacedContentPaths: [...this.replacedContentPaths],
+            stagingContentIds: [...this.stagingContentIds],
+            publishedContentIds: [...this.publishedContentIds],
+            gcContentIds: [...this.gcContentIds],
             affectedPaths: this.affectedPaths,
             metrics: this.metrics,
         };
     }
-    reserveOldChunks(path, rows) {
-        rows = clampNonNegativeInt(rows);
-        const prior = this.reservedOldChunkRowsByPath.get(path) ?? 0;
-        if (rows <= prior)
-            return;
-        this.reservedOldChunkRowsByPath.set(path, rows);
-        this.reservedOldChunkRows += rows - prior;
-    }
     get logicalRows() {
         return this.inodes.length
             + this.chunks.length
+            + this.deletedChunks.length
             + this.deletedInodeRows
-            + this.reservedOldChunkRows;
+            + this.stagingContentIds.size
+            + this.publishedContentIds.size
+            + this.gcContentIds.size;
     }
     get fixedSqlExecs() {
-        return (this.deletedPaths.size * 2) + this.replacedContentPaths.size;
+        return this.deletedPaths.size
+            + groupedSqlExecs(this.stagingContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
+            + groupedSqlExecs(this.publishedContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
+            + groupedSqlExecs(this.gcContentIds.size, CONTENT_IDS_PER_SQL_EXEC);
+    }
+    get deletedChunkSqlExecs() {
+        const byContent = new Map();
+        for (const chunk of this.deletedChunks) {
+            byContent.set(chunk.contentId, (byContent.get(chunk.contentId) ?? 0) + 1);
+        }
+        let sqlExecs = 0;
+        for (const count of byContent.values()) {
+            sqlExecs += groupedSqlExecs(count, CHUNK_ROWS_PER_SQL_EXEC);
+        }
+        return sqlExecs;
     }
     get metrics() {
         return {
@@ -154,7 +182,8 @@ class TransactionPlanBuilder {
             logicalRows: this.logicalRows,
             sqlExecs: this.fixedSqlExecs
                 + groupedSqlExecs(this.inodes.length, INODE_ROWS_PER_SQL_EXEC)
-                + groupedSqlExecs(this.chunks.length, CHUNK_ROWS_PER_SQL_EXEC),
+                + groupedSqlExecs(this.chunks.length, CHUNK_ROWS_PER_SQL_EXEC)
+                + this.deletedChunkSqlExecs,
             affectedPaths: this.affectedPaths.size,
         };
     }
@@ -237,12 +266,10 @@ export class SqliteVFS {
     _peakPendingFlushInFlightBytes = 0;
     _peakRetainedWriteBytes = 0;
     /**
-     * N2 (memory accounting cleanup). Sum of bytes currently held in the
-     * `chunks: []` spool inside writeStream(). Maintained per-chunk so
-     * a long-running drain shows live, not the steady-state 0.
-     * Reset (or decremented to the drained amount) inside writeStream's
-     * finally block, after transactionSync has either consumed the
-     * bytes or thrown.
+     * N2 (memory accounting cleanup). Sum of bytes held by writeStream()
+     * for files that have not yet reached their declared v1 chunk count.
+     * A completed file releases its retained bytes immediately after its
+     * pointer publish; finally releases the incomplete remainder on failure.
      *
      * Sums into `heap.breakdown.vfsInFlightBytes` alongside
      * _pendingWriteBytes so a single value reflects ALL transient
@@ -250,6 +277,8 @@ export class SqliteVFS {
      */
     _writeStreamSpoolBytes = 0;
     _peakWriteStreamSpoolBytes = 0;
+    /** In-memory liveness only; content_lifecycle remains durable ownership. */
+    activeStagingContentIds = new Set();
     writeFlushScheduled = false;
     // Stage 2 transaction/phase telemetry. Scalar writes stay cheap; the
     // percentile is computed from the fixed ring only when diagnostics read it.
@@ -301,165 +330,220 @@ export class SqliteVFS {
         this.events = new VfsEventEmitter();
         this.initSchema();
         this.loadInodes();
+        this.runContentMaintenanceSafely(2);
     }
     // ── Schema ────────────────────────────────────────────────────────────
     initSchema() {
-        this.sql.exec(`CREATE TABLE IF NOT EXISTS inodes (
-      path TEXT PRIMARY KEY,
-      parent_path TEXT NOT NULL DEFAULT '',
-      is_dir INTEGER NOT NULL DEFAULT 0,
-      size INTEGER NOT NULL DEFAULT 0,
-      atime INTEGER NOT NULL DEFAULT 0,
-      mtime INTEGER NOT NULL DEFAULT 0,
-      mode INTEGER NOT NULL DEFAULT 0,
-      chunk_count INTEGER NOT NULL DEFAULT 0
-    )`);
-        this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_parent ON inodes(parent_path)`);
-        this.sql.exec(`CREATE TABLE IF NOT EXISTS file_chunks (
-      path TEXT NOT NULL,
-      chunk_id INTEGER NOT NULL,
-      data BLOB NOT NULL,
-      PRIMARY KEY (path, chunk_id)
-    )`);
-        this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_schema_migrations (
-      id TEXT PRIMARY KEY,
-      applied_at INTEGER NOT NULL
-    )`);
-        // Ensure chunk_count column exists (handles upgrade from older schema)
-        try {
-            this.sql.exec("SELECT chunk_count FROM inodes LIMIT 0");
-        }
-        catch {
-            try {
+        this.transactionSync(() => {
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_schema_migrations (
+        id TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      )`);
+            const contentMigrationApplied = [...this.sql.exec('SELECT id FROM vfs_schema_migrations WHERE id = ?', CONTENT_SCHEMA_MIGRATION)].length > 0;
+            const existingInodeColumns = this.tableColumns('inodes');
+            const existingChunkColumns = this.tableColumns('file_chunks');
+            const existingLifecycleColumns = this.tableColumns('content_lifecycle');
+            const chunksAreLegacy = existingChunkColumns.has('path')
+                && existingChunkColumns.has('chunk_id')
+                && existingChunkColumns.has('data')
+                && !existingChunkColumns.has('content_id');
+            const chunksAreCurrent = existingChunkColumns.has('content_id')
+                && existingChunkColumns.has('chunk_id')
+                && existingChunkColumns.has('data')
+                && !existingChunkColumns.has('path');
+            const lifecycleIsCurrent = existingLifecycleColumns.has('content_id')
+                && existingLifecycleColumns.has('state')
+                && existingLifecycleColumns.has('created_at');
+            if (contentMigrationApplied && (!existingInodeColumns.has('content_id')
+                || !chunksAreCurrent
+                || !lifecycleIsCurrent)) {
+                throw new Error('[sqlite-vfs] content generation marker does not match the durable schema');
+            }
+            if (existingChunkColumns.size > 0 && !chunksAreLegacy && !chunksAreCurrent) {
+                throw new Error('[sqlite-vfs] unsupported file_chunks schema');
+            }
+            if (existingLifecycleColumns.size > 0 && !lifecycleIsCurrent) {
+                throw new Error('[sqlite-vfs] unsupported content_lifecycle schema');
+            }
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS inodes (
+        path TEXT PRIMARY KEY,
+        parent_path TEXT NOT NULL DEFAULT '',
+        is_dir INTEGER NOT NULL DEFAULT 0,
+        size INTEGER NOT NULL DEFAULT 0,
+        atime INTEGER NOT NULL DEFAULT 0,
+        mtime INTEGER NOT NULL DEFAULT 0,
+        mode INTEGER NOT NULL DEFAULT 0,
+        chunk_count INTEGER NOT NULL DEFAULT 0,
+        content_id TEXT NULL
+      )`);
+            const inodeColumns = this.tableColumns('inodes');
+            if (!inodeColumns.has('chunk_count')) {
                 this.sql.exec("ALTER TABLE inodes ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0");
             }
-            catch { }
-        }
-        try {
-            this.sql.exec("SELECT atime FROM inodes LIMIT 0");
-        }
-        catch {
-            try {
+            if (!inodeColumns.has('atime')) {
                 this.sql.exec("ALTER TABLE inodes ADD COLUMN atime INTEGER NOT NULL DEFAULT 0");
-                this.sql.exec("UPDATE inodes SET atime = mtime WHERE atime = 0");
             }
-            catch { }
-        }
+            if (!inodeColumns.has('content_id')) {
+                this.sql.exec("ALTER TABLE inodes ADD COLUMN content_id TEXT NULL");
+            }
+            const chunkColumns = this.tableColumns('file_chunks');
+            if (chunkColumns.size === 0) {
+                this.sql.exec(`CREATE TABLE file_chunks (
+          content_id TEXT NOT NULL,
+          chunk_id INTEGER NOT NULL,
+          data BLOB NOT NULL,
+          PRIMARY KEY (content_id, chunk_id)
+        )`);
+            }
+            else if (chunksAreLegacy) {
+                // legacyContentId(path) is the path itself. Renaming the column is an
+                // O(1), rollback-atomic schema migration: no unbounded row-copy txn.
+                this.sql.exec("ALTER TABLE file_chunks RENAME COLUMN path TO content_id");
+            }
+            else if (!chunksAreCurrent) {
+                throw new Error('[sqlite-vfs] unsupported file_chunks schema');
+            }
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS content_lifecycle (
+        content_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL CHECK (state IN ('staging', 'gc')),
+        created_at INTEGER NOT NULL
+      )`);
+            this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_parent ON inodes(parent_path)`);
+            this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_content ON inodes(content_id)`);
+            this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_resolved_file_content
+         ON inodes(COALESCE(content_id, path)) WHERE is_dir = 0`);
+            this.sql.exec("INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)", CONTENT_SCHEMA_MIGRATION, Date.now());
+        });
         this.migrateFromLegacy();
     }
+    tableColumns(table) {
+        const rows = this.sql.exec(`PRAGMA table_info(${table})`);
+        return new Set([...rows].map((row) => String(row.name)));
+    }
     migrateFromLegacy() {
-        // Check if old fs_objects table exists
         const rows = [...this.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='fs_objects'")];
         if (rows.length === 0)
             return;
+        const marker = [...this.sql.exec("SELECT id FROM vfs_schema_migrations WHERE id = 'legacy_fs_objects_v1'")];
+        if (marker.length > 0)
+            return;
         console.log('[sqlite-vfs] Migrating from legacy fs_objects table...');
+        const LEGACY_CHUNK_SIZE = 1_800_000;
         let migratedEntries = 0;
-        this.transactionSync(() => {
-            const marker = [...this.sql.exec("SELECT id FROM vfs_schema_migrations WHERE id = 'legacy_fs_objects_v1'")];
-            if (marker.length > 0)
-                return;
-            const LEGACY_CHUNK_SIZE = 1_800_000;
-            const state = { current: null };
-            const writeChunk = (entry, data) => {
-                this.sql.exec("INSERT OR REPLACE INTO file_chunks (path, chunk_id, data) VALUES (?, ?, ?)", entry.path, entry.nextChunkId, data);
-                entry.nextChunkId++;
-            };
-            const appendLegacyData = (entry, data) => {
-                let offset = 0;
-                if (entry.tail.length > 0) {
-                    const take = Math.min(CHUNK_SIZE - entry.tail.length, data.length);
-                    const combined = new Uint8Array(entry.tail.length + take);
-                    combined.set(entry.tail);
-                    combined.set(data.subarray(0, take), entry.tail.length);
-                    offset = take;
-                    if (combined.length === CHUNK_SIZE) {
-                        writeChunk(entry, combined);
-                        entry.tail = new Uint8Array(0);
-                    }
-                    else {
-                        entry.tail = combined;
-                    }
-                }
-                while (data.length - offset >= CHUNK_SIZE) {
-                    writeChunk(entry, data.subarray(offset, offset + CHUNK_SIZE));
-                    offset += CHUNK_SIZE;
-                }
-                if (offset < data.length)
-                    entry.tail = data.slice(offset);
-                entry.bytesRead += data.length;
-            };
-            const finishEntry = (entry) => {
-                const chunkCount = entry.isDir || entry.size === 0 ? 0 : Math.ceil(entry.size / CHUNK_SIZE);
-                if (!entry.isDir) {
-                    const expectedLegacyChunks = entry.size === 0 ? 1 : Math.ceil(entry.size / LEGACY_CHUNK_SIZE);
-                    if (entry.nextLegacyChunk !== expectedLegacyChunks) {
-                        throw new Error(`EIO: missing legacy chunk ${entry.nextLegacyChunk} for ${entry.path}`);
-                    }
-                    if (entry.bytesRead !== entry.size) {
-                        throw new Error(`EIO: legacy size mismatch for ${entry.path}: expected ${entry.size}, got ${entry.bytesRead}`);
-                    }
-                    if (entry.tail.length > 0) {
-                        writeChunk(entry, entry.tail);
-                        entry.tail = new Uint8Array(0);
-                    }
-                    if (entry.nextChunkId !== chunkCount) {
-                        throw new Error(`EIO: migrated chunk count mismatch for ${entry.path}`);
-                    }
-                }
-                this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.path, entry.parentPath, entry.isDir ? 1 : 0, entry.size, entry.mtime, entry.mtime, entry.mode, chunkCount);
-                migratedEntries++;
-            };
-            const oldRows = this.sql.exec("SELECT path, chunk_index, parent_path, data, is_dir, size, mtime, mode FROM fs_objects ORDER BY path, chunk_index");
-            for (const row of oldRows) {
-                const path = String(row.path);
-                const chunkIndex = Number(row.chunk_index);
-                const parentPath = String(row.parent_path);
-                const isDir = Number(row.is_dir) === 1;
-                const size = Number(row.size);
-                const mtime = Number(row.mtime);
-                const mode = Number(row.mode);
-                if (state.current?.path !== path) {
-                    if (state.current)
-                        finishEntry(state.current);
-                    if (!Number.isSafeInteger(size) || size < 0) {
-                        throw new Error(`EIO: invalid legacy size for ${path}: ${size}`);
-                    }
-                    state.current = {
-                        path,
-                        parentPath,
-                        isDir,
-                        size,
-                        mtime,
-                        mode,
-                        nextLegacyChunk: 0,
-                        nextChunkId: 0,
-                        bytesRead: 0,
-                        tail: new Uint8Array(0),
-                    };
-                }
-                else if (state.current.parentPath !== parentPath
-                    || state.current.isDir !== isDir
-                    || state.current.size !== size
-                    || state.current.mtime !== mtime
-                    || state.current.mode !== mode) {
+        const paths = [...this.sql.exec("SELECT DISTINCT path FROM fs_objects ORDER BY path")];
+        for (const pathRow of paths) {
+            const path = String(pathRow.path);
+            const sourceRows = [...this.sql.exec(`SELECT chunk_index, parent_path, data, is_dir, size, mtime, mode
+         FROM fs_objects WHERE path = ? ORDER BY chunk_index`, path)];
+            if (sourceRows.length === 0)
+                continue;
+            const first = sourceRows[0];
+            const parentPath = String(first.parent_path);
+            const isDir = Number(first.is_dir) === 1;
+            const size = Number(first.size);
+            const mtime = Number(first.mtime);
+            const mode = Number(first.mode);
+            if (!Number.isSafeInteger(size) || size < 0) {
+                throw new Error(`EIO: invalid legacy size for ${path}: ${size}`);
+            }
+            for (const row of sourceRows) {
+                if (String(row.parent_path) !== parentPath
+                    || (Number(row.is_dir) === 1) !== isDir
+                    || Number(row.size) !== size
+                    || Number(row.mtime) !== mtime
+                    || Number(row.mode) !== mode) {
                     throw new Error(`EIO: inconsistent legacy metadata for ${path}`);
                 }
-                if (isDir)
-                    continue;
-                if (!Number.isSafeInteger(chunkIndex) || chunkIndex !== state.current.nextLegacyChunk) {
-                    throw new Error(`EIO: invalid legacy chunk index ${chunkIndex} for ${path}`);
-                }
-                const offset = chunkIndex * LEGACY_CHUNK_SIZE;
-                const expectedLength = Math.max(0, Math.min(LEGACY_CHUNK_SIZE, size - offset));
-                const data = row.data == null ? new Uint8Array(0) : this.blobToUint8Array(row.data);
-                if (offset > size || data.length !== expectedLength) {
-                    throw new Error(`EIO: invalid legacy chunk ${chunkIndex} for ${path}: expected ${expectedLength} bytes, got ${data.length}`);
-                }
-                appendLegacyData(state.current, data);
-                state.current.nextLegacyChunk++;
             }
-            if (state.current)
-                finishEntry(state.current);
+            const chunkCount = isDir || size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+            if (!isDir) {
+                const markerPlan = this.metricsOnlyPlan({
+                    blobBytes: 0, logicalRows: 1, sqlExecs: 1, affectedPaths: 1,
+                });
+                this.executeMeasuredTransaction(markerPlan, { source: 'content-stage', limitMode: 'bounded' }, () => {
+                    this.sql.exec("INSERT OR IGNORE INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'staging', ?)", path, Date.now());
+                });
+                let builder = new TransactionPlanBuilder();
+                const flush = () => {
+                    if (builder.empty)
+                        return;
+                    const plan = builder.build();
+                    builder = new TransactionPlanBuilder();
+                    this.assertTransactionFits(plan.metrics);
+                    this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+                };
+                let tail = new Uint8Array(0);
+                let nextChunkId = 0;
+                let bytesRead = 0;
+                for (let legacyIndex = 0; legacyIndex < sourceRows.length; legacyIndex++) {
+                    const row = sourceRows[legacyIndex];
+                    if (Number(row.chunk_index) !== legacyIndex) {
+                        throw new Error(`EIO: invalid legacy chunk index ${row.chunk_index} for ${path}`);
+                    }
+                    const offset = legacyIndex * LEGACY_CHUNK_SIZE;
+                    const expectedLength = Math.max(0, Math.min(LEGACY_CHUNK_SIZE, size - offset));
+                    const data = row.data == null ? new Uint8Array(0) : this.blobToUint8Array(row.data);
+                    if (offset > size || data.length !== expectedLength) {
+                        throw new Error(`EIO: invalid legacy chunk ${legacyIndex} for ${path}: expected ${expectedLength} bytes, got ${data.length}`);
+                    }
+                    const combined = new Uint8Array(tail.length + data.length);
+                    combined.set(tail);
+                    combined.set(data, tail.length);
+                    let offsetInCombined = 0;
+                    while (combined.length - offsetInCombined >= CHUNK_SIZE) {
+                        const chunk = {
+                            path,
+                            contentId: path,
+                            chunkId: nextChunkId++,
+                            data: combined.slice(offsetInCombined, offsetInCombined + CHUNK_SIZE),
+                        };
+                        if (builder.wouldExceedChunkGroup([chunk]) !== null)
+                            flush();
+                        builder.addChunk(chunk);
+                        offsetInCombined += CHUNK_SIZE;
+                    }
+                    tail = combined.slice(offsetInCombined);
+                    bytesRead += data.length;
+                }
+                if (tail.length > 0) {
+                    const chunk = {
+                        path,
+                        contentId: path,
+                        chunkId: nextChunkId++,
+                        data: tail,
+                    };
+                    if (builder.wouldExceedChunkGroup([chunk]) !== null)
+                        flush();
+                    builder.addChunk(chunk);
+                }
+                flush();
+                if (bytesRead !== size || nextChunkId !== chunkCount) {
+                    throw new Error(`EIO: migrated content mismatch for ${path}`);
+                }
+            }
+            const publishBuilder = new TransactionPlanBuilder();
+            publishBuilder.addInode({
+                path,
+                parentPath,
+                isDir,
+                size,
+                atime: mtime,
+                mtime,
+                mode,
+                chunkCount,
+                contentId: null,
+            });
+            if (!isDir)
+                publishBuilder.addPublishedContent(path);
+            const publishPlan = publishBuilder.build();
+            this.assertTransactionFits(publishPlan.metrics);
+            this.executeTransactionPlan(publishPlan, { source: 'content-publish', limitMode: 'bounded' });
+            migratedEntries++;
+        }
+        const finishPlan = this.metricsOnlyPlan({
+            blobBytes: 0, logicalRows: 1, sqlExecs: 2, affectedPaths: 0,
+        });
+        this.executeMeasuredTransaction(finishPlan, { source: 'content-publish', limitMode: 'bounded' }, () => {
             this.sql.exec("INSERT INTO vfs_schema_migrations (id, applied_at) VALUES ('legacy_fs_objects_v1', ?)", Date.now());
             this.sql.exec("DROP TABLE fs_objects");
         });
@@ -473,7 +557,7 @@ export class SqliteVFS {
         this._totalFiles = 0;
         this._totalDirs = 0;
         this._usedBytes = 0;
-        const rows = [...this.sql.exec("SELECT path, parent_path, is_dir, size, atime, mtime, mode, chunk_count FROM inodes")];
+        const rows = [...this.sql.exec("SELECT path, parent_path, is_dir, size, atime, mtime, mode, chunk_count, content_id FROM inodes")];
         for (const row of rows) {
             const mtime = Number(row.mtime);
             const atime = Number(row.atime) || mtime;
@@ -486,6 +570,7 @@ export class SqliteVFS {
                 mtime,
                 mode: Number(row.mode),
                 chunkCount: Number(row.chunk_count),
+                contentId: row.content_id === null ? null : String(row.content_id),
             };
             this.inodes.set(inode.path, inode);
             this._addToChildrenIndex(inode.parentPath, inode.path);
@@ -702,58 +787,6 @@ export class SqliteVFS {
                 this.failedWrites.delete(key);
         }
     }
-    // ── Deferred batch writes (do86 pattern) ──────────────────────────────
-    deferWrite(path, chunkId, data) {
-        const key = this.cacheKey(path, chunkId);
-        // SINGLE-OWNERSHIP BOUNDARY (H10 audit, memory accounting cleanup).
-        //
-        // `data` is one of:
-        //   - a `subarray` view into the caller's source ArrayBuffer
-        //     (writeFile post-H10), or
-        //   - a fresh Uint8Array (writeBatch chunks come pre-decoded), or
-        //   - any caller-supplied buffer.
-        //
-        // The pendingWrites entry MUST own its bytes outright — until
-        // flush, the supervisor must be free to drop the caller's ref
-        // without losing the not-yet-persisted data. So we materialise a
-        // fresh ArrayBuffer here. This is the ONE copy on the writeFile
-        // path; before the H10 fix it was the second of THREE copies
-        // (slice + this) per chunk.
-        //
-        // _pendingWriteBytes counter is the source-of-truth for N3
-        // (memory accounting cleanup): the `vfsInFlightBytes` heap-estimator
-        // contributor reads from it.
-        const copy = new Uint8Array(data.length);
-        copy.set(data);
-        // Overwrite-correctness for the byte counter: if a prior entry
-        // exists at this key (re-write of the same chunk before flush),
-        // subtract its bytes BEFORE replacing.
-        const prior = this.pendingWrites.get(key);
-        if (prior)
-            this._pendingWriteBytes -= prior.data.length;
-        this.pendingWrites.set(key, { path, chunkId, data: copy });
-        this._pendingWriteBytes += copy.length;
-        this._peakPendingWriteBytes = Math.max(this._peakPendingWriteBytes, this._pendingWriteBytes);
-        this.updatePeakRetainedWriteBytes();
-        if (!this.writeFlushScheduled) {
-            this.writeFlushScheduled = true;
-            queueMicrotask(() => this.flushPendingWrites());
-        }
-    }
-    /**
-     * Preserve synchronous producer backpressure at a complete-path boundary.
-     * Calling this from deferWrite would allow a large file to flush halfway
-     * through its chunk loop. The pending transaction builder remains the
-     * authority for the exact byte/row/SQL grouping.
-     */
-    flushPendingWritesAtLimit() {
-        const pendingSqlExecs = groupedSqlExecs(this.pendingWrites.size, CHUNK_ROWS_PER_SQL_EXEC);
-        if (this._pendingWriteBytes >= MAX_TX_BLOB_BYTES
-            || this.pendingWrites.size >= MAX_TX_LOGICAL_ROWS
-            || pendingSqlExecs >= MAX_TX_SQL_EXECS) {
-            this.flushPendingWrites();
-        }
-    }
     flushPendingWrites() {
         this.writeFlushScheduled = false;
         if (this.pendingWrites.size === 0)
@@ -786,21 +819,12 @@ export class SqliteVFS {
             }
             if (entries.length === 0)
                 continue;
-            const limit = builder.wouldExceedChunkGroup(entries);
-            if (limit !== null && !builder.empty)
-                flushBuilder();
-            const fileLimit = builder.wouldExceedChunkGroup(entries);
-            builder.addChunkGroup(entries);
-            entries.length = 0;
-            if (fileLimit !== null) {
-                // Stage 2 exception: without content generations, splitting one file
-                // could durably publish only a prefix. Execute the file alone and
-                // record the over-limit work for the Stage 3 migration.
-                const plan = builder.build();
-                this.recordOverLimitFile(path, fileLimit, plan.metrics);
-                builder = new TransactionPlanBuilder();
-                this.flushPendingPlan(plan, 'pending-over-limit-file');
+            for (const entry of entries) {
+                if (builder.wouldExceedChunkGroup([entry]) !== null)
+                    flushBuilder();
+                builder.addChunk(entry);
             }
+            entries.length = 0;
         }
         flushBuilder();
     }
@@ -981,6 +1005,30 @@ export class SqliteVFS {
     parentPath(path) {
         return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
     }
+    /** The single content resolver for both legacy-null and generated inodes. */
+    contentIdForInode(inode) {
+        return inode.contentId ?? this.legacyContentId(inode.path);
+    }
+    legacyContentId(path) {
+        return path;
+    }
+    createContentId() {
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const contentId = `content:${crypto.randomUUID()}`;
+            const rows = this.sql.exec(`SELECT content_id FROM file_chunks WHERE content_id = ? LIMIT 1`, contentId);
+            if ([...rows].length > 0)
+                continue;
+            const lifecycle = this.sql.exec(`SELECT content_id FROM content_lifecycle WHERE content_id = ? LIMIT 1`, contentId);
+            if ([...lifecycle].length > 0)
+                continue;
+            const referenced = this.sql.exec(`SELECT path FROM inodes
+         WHERE is_dir = 0 AND COALESCE(content_id, path) = ?
+         LIMIT 1`, contentId);
+            if ([...referenced].length === 0)
+                return contentId;
+        }
+        throw new Error('[sqlite-vfs] failed to allocate a unique content id');
+    }
     blobToUint8Array(blob) {
         if (blob instanceof Uint8Array)
             return blob;
@@ -995,14 +1043,14 @@ export class SqliteVFS {
         copy.set(data);
         return copy;
     }
-    readChunkFromSql(path, chunkId) {
+    readChunkFromSql(inode, chunkId) {
         // Check pending writes first (do86 pattern: avoid stale reads)
-        const key = this.cacheKey(path, chunkId);
+        const key = this.cacheKey(inode.path, chunkId);
         const pending = this.pendingWrites.get(key);
         if (pending)
             return pending.data;
         this._sqlReads++;
-        const rows = [...this.sql.exec("SELECT data FROM file_chunks WHERE path = ? AND chunk_id = ?", path, chunkId)];
+        const rows = [...this.sql.exec("SELECT data FROM file_chunks WHERE content_id = ? AND chunk_id = ?", this.contentIdForInode(inode), chunkId)];
         if (rows.length === 0)
             return null;
         return this.blobToUint8Array(rows[0].data);
@@ -1064,8 +1112,18 @@ export class SqliteVFS {
     _mkdirSingle(path) {
         const pp = this.parentPath(path);
         const now = this.now();
-        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, 1, 0, ?, ?, ?, 0)", path, pp, now, now, 0o755);
-        const inode = { path, parentPath: pp, isDir: true, size: 0, atime: now, mtime: now, mode: 0o755, chunkCount: 0 };
+        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count, content_id) VALUES (?, ?, 1, 0, ?, ?, ?, 0, NULL)", path, pp, now, now, 0o755);
+        const inode = {
+            path,
+            parentPath: pp,
+            isDir: true,
+            size: 0,
+            atime: now,
+            mtime: now,
+            mode: 0o755,
+            chunkCount: 0,
+            contentId: null,
+        };
         this.inodes.set(path, inode);
         this._addToChildrenIndex(pp, path);
         this._totalDirs++; // B3
@@ -1077,71 +1135,43 @@ export class SqliteVFS {
         const pp = this.parentPath(path);
         const now = this.now();
         const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
-        // Capture prior state BEFORE mutating this.inodes (B3 delta tracking).
-        const prior = this.inodes.get(path);
-        const isNew = prior === undefined;
-        // Invalidate old cache entries (discard=true: old data is being replaced)
-        if (!isNew) {
-            this.cacheInvalidate(path);
-            this.clearPendingWritesForPath(path);
-            // Delete old chunks from SQL (chunk count may differ)
-            this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
+        const chunks = [];
+        for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
+            chunks.push({
+                path,
+                chunkId,
+                data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
+            });
         }
-        // Write inode
-        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, 0, ?, ?, ?, ?, ?)", path, pp, data.length, now, now, 0o644, chunkCount);
-        const newInode = { path, parentPath: pp, isDir: false, size: data.length, atime: now, mtime: now, mode: 0o644, chunkCount };
-        this.inodes.set(path, newInode);
-        if (isNew)
-            this._addToChildrenIndex(pp, path);
-        // B3: update running counters. Handles new file, replace file,
-        // and the edge case of writing a file path that previously
-        // belonged to a directory (writeFile replacing an old dir — rare
-        // but `INSERT OR REPLACE` + `this.inodes.set` would silently
-        // convert it; handle the count flip defensively).
-        if (isNew) {
-            this._totalFiles++;
-            this._usedBytes += data.length;
+        const inode = {
+            path,
+            parentPath: pp,
+            isDir: false,
+            size: data.length,
+            atime: now,
+            mtime: now,
+            mode: 0o644,
+            chunkCount,
+        };
+        try {
+            this.writeBatch({ inodes: [inode], chunks });
         }
-        else if (prior.isDir) {
-            // Dir → file conversion.
-            this._totalDirs--;
-            this._totalFiles++;
-            this._usedBytes += data.length; // prior size was 0
+        catch (error) {
+            if (!(error instanceof SqliteVfsTransactionTooLargeError))
+                throw error;
+            this.replaceFileWithStagedContent(inode, chunks);
         }
-        else {
-            // File → file replace: delta on size, no count change.
-            this._usedBytes += data.length - prior.size;
-        }
-        // Cache and pending durability each own exact-sized copies. Neither
-        // may retain or expose caller-owned backing buffers.
-        if (data.length === 0) {
-            // Empty file: no chunks to write
-        }
-        else if (data.length <= CHUNK_SIZE) {
-            this.cacheSet(path, 0, data);
-            this.deferWrite(path, 0, data);
-        }
-        else {
-            for (let i = 0; i < chunkCount; i++) {
-                const chunk = data.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-                this.cacheSet(path, i, chunk);
-                this.deferWrite(path, i, chunk);
-            }
-        }
-        this.clearWriteFailuresForPath(path);
-        this.flushPendingWritesAtLimit();
-        this.bumpRevision([path]);
-        this.events.emit(isNew ? 'add' : 'change', path);
     }
     /** Read one chunk via cache → pending writes → SQL, caching on miss. */
-    readChunk(path, chunkId) {
+    readChunk(inode, chunkId) {
+        const path = inode.path;
         const cached = this.cacheGet(path, chunkId);
         if (cached)
             return cached;
         const pending = this.pendingWrites.get(this.cacheKey(path, chunkId));
         if (pending)
             return pending.data;
-        const data = this.readChunkFromSql(path, chunkId);
+        const data = this.readChunkFromSql(inode, chunkId);
         if (data)
             this.cacheSet(path, chunkId, data);
         return data;
@@ -1155,7 +1185,7 @@ export class SqliteVFS {
         if (inode.size === 0 || inode.chunkCount === 0)
             return new Uint8Array(0);
         if (inode.chunkCount === 1) {
-            return this.requireChunk(path, inode, 0).slice();
+            return this.requireChunk(path, inode, 0).slice(0, inode.size);
         }
         // Multi-chunk: reassemble
         const chunks = [];
@@ -1165,16 +1195,22 @@ export class SqliteVFS {
             chunks.push(chunk);
             totalRead += chunk.length;
         }
-        const result = new Uint8Array(totalRead);
+        if (totalRead < inode.size) {
+            throw new Error(`EIO: ${path}: declared size ${inode.size} exceeds chunk bytes ${totalRead}`);
+        }
+        const result = new Uint8Array(inode.size);
         let offset = 0;
         for (const c of chunks) {
-            result.set(c, offset);
-            offset += c.length;
+            const length = Math.min(c.length, result.length - offset);
+            if (length <= 0)
+                break;
+            result.set(c.subarray(0, length), offset);
+            offset += length;
         }
         return result;
     }
     requireChunk(path, inode, chunkId) {
-        const chunk = this.readChunk(path, chunkId);
+        const chunk = this.readChunk(inode, chunkId);
         if (chunk)
             return chunk;
         throw new Error(`EIO: ${path}: missing declared chunk ${chunkId} of ${inode.chunkCount} (size ${inode.size})`);
@@ -1198,7 +1234,7 @@ export class SqliteVFS {
         const firstChunk = Math.floor(start / CHUNK_SIZE);
         const lastChunk = Math.floor((end - 1) / CHUNK_SIZE);
         for (let i = firstChunk; i <= lastChunk; i++) {
-            const chunk = this.readChunk(path, i);
+            const chunk = this.readChunk(inode, i);
             if (!chunk)
                 continue;
             const chunkStart = i * CHUNK_SIZE;
@@ -1224,16 +1260,25 @@ export class SqliteVFS {
         if (prior && prior.isDir)
             throw new Error("EISDIR: " + path);
         const isNew = prior === undefined;
-        // POSIX pwrite of zero bytes never extends or dirties an existing file.
-        if (bytes.length === 0 && !isNew)
-            return;
         const start = clampNonNegativeInt(offset);
         const end = start + bytes.length;
-        const oldSize = prior?.size ?? 0;
-        const oldChunkCount = prior?.chunkCount ?? 0;
+        if (isNew) {
+            const initial = new Uint8Array(end);
+            initial.set(bytes, start);
+            this.writeFile(path, initial);
+            return;
+        }
+        // POSIX pwrite of zero bytes never extends or dirties an existing file.
+        if (bytes.length === 0)
+            return;
+        // Establish one durable source generation before deriving any replacement
+        // chunks. A failed older deferred write must not be folded into a new edit.
+        this.flushAll();
+        const oldSize = prior.size;
+        const oldChunkCount = prior.chunkCount;
         const newSize = Math.max(oldSize, end);
         const now = this.now();
-        const pp = this.parentPath(path);
+        const changedChunks = new Map();
         if (newSize > 0) {
             // Contiguous chunk span: the written range, plus the stretch from
             // the old EOF when extending (gap chunks zero-fill; a partial old
@@ -1249,35 +1294,20 @@ export class SqliteVFS {
                 const chunk = new Uint8Array(chunkLen);
                 const fullyCovered = overlayFrom <= chunkStart && overlayTo >= chunkStart + chunkLen;
                 if (!fullyCovered && i < oldChunkCount) {
-                    const existing = this.readChunk(path, i);
-                    if (existing)
-                        chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
+                    const existing = this.requireChunk(path, prior, i);
+                    chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
                 }
                 if (overlayFrom < overlayTo) {
                     chunk.set(bytes.subarray(overlayFrom - start, overlayTo - start), overlayFrom - chunkStart);
                 }
-                this.cacheSet(path, i, chunk);
-                this.deferWrite(path, i, chunk);
+                changedChunks.set(i, chunk);
             }
         }
         const newChunkCount = newSize === 0 ? 0 : Math.ceil(newSize / CHUNK_SIZE);
-        if (isNew) {
-            this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES (?, ?, 0, ?, ?, ?, ?, ?)", path, pp, newSize, now, now, 0o644, newChunkCount);
-            this.inodes.set(path, { path, parentPath: pp, isDir: false, size: newSize, atime: now, mtime: now, mode: 0o644, chunkCount: newChunkCount });
-            this._addToChildrenIndex(pp, path);
-            this._totalFiles++;
-            this._usedBytes += newSize;
-        }
-        else {
-            prior.size = newSize;
-            prior.mtime = now;
-            prior.chunkCount = newChunkCount;
-            this.sql.exec("UPDATE inodes SET size = ?, mtime = ?, chunk_count = ? WHERE path = ?", newSize, now, newChunkCount, path);
-            this._usedBytes += newSize - oldSize;
-        }
-        this.flushPendingWritesAtLimit();
-        this.bumpRevision([path]);
-        this.events.emit(isNew ? 'add' : 'change', path);
+        const next = this.updatedFileInode(prior, newSize, newChunkCount, now);
+        if (this.commitCurrentContentMutation(prior, next, changedChunks, []))
+            return;
+        this.replaceFileWithGeneratedContent(next, (chunkId) => this.generatedMutationChunk(prior, next, changedChunks, chunkId));
     }
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
@@ -1295,8 +1325,10 @@ export class SqliteVFS {
         const oldSize = inode.size;
         if (newSize === oldSize)
             return;
+        this.flushAll();
         const newChunkCount = newSize === 0 ? 0 : Math.ceil(newSize / CHUNK_SIZE);
         const now = this.now();
+        const changedChunks = new Map();
         if (newSize > oldSize) {
             // Zero-extend from the old EOF. A full old last chunk is skipped;
             // a partial one is re-materialized at its grown length.
@@ -1306,61 +1338,88 @@ export class SqliteVFS {
                 const chunkLen = Math.min(CHUNK_SIZE, newSize - chunkStart);
                 const chunk = new Uint8Array(chunkLen);
                 if (i < inode.chunkCount) {
-                    const existing = this.readChunk(path, i);
-                    if (existing)
-                        chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
+                    const existing = this.requireChunk(path, inode, i);
+                    chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
                 }
-                this.cacheSet(path, i, chunk);
-                this.deferWrite(path, i, chunk);
+                changedChunks.set(i, chunk);
             }
         }
         else {
-            this.dropChunksFrom(path, newChunkCount);
-            this.sql.exec("DELETE FROM file_chunks WHERE path = ? AND chunk_id >= ?", path, newChunkCount);
             if (newChunkCount > 0) {
                 const lastId = newChunkCount - 1;
                 const lastLen = newSize - lastId * CHUNK_SIZE;
                 if (lastLen < CHUNK_SIZE) {
-                    const existing = this.readChunk(path, lastId);
-                    if (existing && existing.length > lastLen) {
+                    const existing = this.requireChunk(path, inode, lastId);
+                    if (existing.length > lastLen) {
                         const trimmed = existing.slice(0, lastLen);
-                        this.cacheSet(path, lastId, trimmed);
-                        this.deferWrite(path, lastId, trimmed);
+                        changedChunks.set(lastId, trimmed);
                     }
                 }
             }
         }
-        inode.size = newSize;
-        inode.mtime = now;
-        inode.chunkCount = newChunkCount;
-        this.sql.exec("UPDATE inodes SET size = ?, mtime = ?, chunk_count = ? WHERE path = ?", newSize, now, newChunkCount, path);
-        this._usedBytes += newSize - oldSize;
-        this.flushPendingWritesAtLimit();
-        this.bumpRevision([path]);
-        this.events.emit('change', path);
-    }
-    /** Drop cache + pending-write entries for chunks >= fromChunkId. */
-    dropChunksFrom(path, fromChunkId) {
-        const cacheDoomed = [];
-        for (const [key, entry] of this.cache) {
-            if (entry.path === path && entry.chunkId >= fromChunkId) {
-                this._cacheBytes -= entry.data.length;
-                cacheDoomed.push(key);
+        const deletedChunks = [];
+        if (newSize < oldSize) {
+            const contentId = this.contentIdForInode(inode);
+            const rows = [...this.sql.exec(`SELECT chunk_id, length(data) AS byte_length
+         FROM file_chunks
+         WHERE content_id = ? AND chunk_id >= ?
+         ORDER BY chunk_id
+         LIMIT ?`, contentId, newChunkCount, MAX_TX_LOGICAL_ROWS + 1)];
+            for (const row of rows) {
+                deletedChunks.push({
+                    path,
+                    contentId,
+                    chunkId: clampNonNegativeInt(Number(row.chunk_id)),
+                    byteLength: clampNonNegativeInt(Number(row.byte_length)),
+                });
             }
         }
-        for (const key of cacheDoomed)
-            this.cache.delete(key);
-        const pendingDoomed = [];
-        for (const [key, entry] of this.pendingWrites) {
-            if (entry.path === path && entry.chunkId >= fromChunkId)
-                pendingDoomed.push(key);
+        const next = this.updatedFileInode(inode, newSize, newChunkCount, now);
+        if (this.commitCurrentContentMutation(inode, next, changedChunks, deletedChunks))
+            return;
+        this.replaceFileWithGeneratedContent(next, (chunkId) => this.generatedMutationChunk(inode, next, changedChunks, chunkId));
+    }
+    updatedFileInode(inode, size, chunkCount, mtime) {
+        return {
+            path: inode.path,
+            parentPath: inode.parentPath,
+            isDir: false,
+            size,
+            atime: inode.atime,
+            mtime,
+            mode: inode.mode,
+            chunkCount,
+        };
+    }
+    commitCurrentContentMutation(prior, inode, changedChunks, deletedChunks) {
+        const contentId = this.contentIdForInode(prior);
+        const builder = new TransactionPlanBuilder();
+        builder.addInode({ ...inode, contentId });
+        for (const [chunkId, data] of changedChunks) {
+            builder.addChunk({ path: inode.path, contentId, chunkId, data });
         }
-        for (const key of pendingDoomed) {
-            const e = this.pendingWrites.get(key);
-            if (e)
-                this._pendingWriteBytes -= e.data.length;
-            this.pendingWrites.delete(key);
+        for (const chunk of deletedChunks)
+            builder.addDeletedChunk(chunk);
+        const plan = builder.build();
+        if (exceededTransactionLimit(plan.metrics) !== null)
+            return false;
+        this._writeBatchOnce({
+            payload: { inodes: [inode], chunks: [] },
+            plan,
+            deletedInodes: [],
+        }, { source: 'range-mutation', limitMode: 'bounded' }, changedChunks.size);
+        return true;
+    }
+    generatedMutationChunk(prior, inode, changedChunks, chunkId) {
+        const changed = changedChunks.get(chunkId);
+        if (changed)
+            return changed;
+        const existing = this.requireChunk(prior.path, prior, chunkId);
+        const expected = Math.min(CHUNK_SIZE, inode.size - (chunkId * CHUNK_SIZE));
+        if (existing.byteLength !== expected) {
+            throw new Error(`EIO: ${prior.path}: chunk ${chunkId} has ${existing.byteLength} bytes; expected ${expected}`);
         }
+        return existing;
     }
     readFileString(path) {
         return dec.decode(this.readFile(path));
@@ -1435,25 +1494,12 @@ export class SqliteVFS {
     }
     unlink(path) {
         const inode = this.inodes.get(path);
-        this.cacheInvalidate(path);
-        this.clearPendingWritesForPath(path);
-        this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
-        this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
-        if (inode) {
-            this._removeFromChildrenIndex(inode.parentPath, path);
-            // B3: running counters. unlink of a dir shouldn't happen (that's
-            // rmdir's job) but guard defensively against the count flipping.
-            if (inode.isDir)
-                this._totalDirs--;
-            else {
-                this._totalFiles--;
-                this._usedBytes -= inode.size;
-            }
-        }
-        this.inodes.delete(path);
-        this.clearWriteFailuresForPath(path);
-        this.bumpRevision([path]);
-        this.events.emit('unlink', path);
+        if (!inode)
+            return;
+        if (inode.isDir)
+            throw new Error('EISDIR: ' + path);
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] });
+        this.runContentMaintenanceSafely(1);
     }
     rmdir(path) {
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -1463,30 +1509,23 @@ export class SqliteVFS {
             throw new Error("ENOTEMPTY: " + path);
         }
         const inode = this.inodes.get(np);
-        this.sql.exec("DELETE FROM inodes WHERE path = ?", np);
-        if (inode) {
-            this._removeFromChildrenIndex(inode.parentPath, np);
-            // B3: running counters. Rmdir targets a dir; a non-dir entry here
-            // would be a caller bug. Still, match the actual inode state.
-            if (inode.isDir)
-                this._totalDirs--;
-            else {
-                this._totalFiles--;
-                this._usedBytes -= inode.size;
-            }
-        }
-        this.inodes.delete(np);
-        this.children.delete(np); // Remove empty children set
-        this.bumpRevision([np]);
-        this.events.emit('unlinkDir', np);
+        if (!inode)
+            return;
+        if (!inode.isDir)
+            throw new Error('ENOTDIR: ' + path);
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [np] });
     }
     rename(oldPath, newPath) {
+        if (oldPath === newPath)
+            return;
+        if (newPath.startsWith(`${oldPath}/`)) {
+            throw new Error(`EINVAL: cannot move ${oldPath} inside itself`);
+        }
         // Flush pending writes for old path first to avoid orphans
         this.cacheInvalidate(oldPath);
         this.flushAll(); // fail before mutation unless every accepted byte is durable
         const newPp = this.parentPath(newPath);
         const oldPp = this.parentPath(oldPath);
-        // Update inode
         const inode = this.inodes.get(oldPath);
         if (!inode)
             throw new Error("ENOENT: " + oldPath);
@@ -1511,55 +1550,72 @@ export class SqliteVFS {
                 }
                 throw new Error("EISDIR: cannot rename file onto existing directory");
             }
-            // Existing file at newPath — unlink it (drops chunks + inode row).
-            this.cacheInvalidate(newPath);
-            this.clearPendingWritesForPath(newPath);
-            this.sql.exec("DELETE FROM file_chunks WHERE path=?", newPath);
-            this.sql.exec("DELETE FROM inodes WHERE path=?", newPath);
-            this._removeFromChildrenIndex(newPp, newPath);
-            this.inodes.delete(newPath);
-            // Update running counters mirror unlink's accounting.
+        }
+        const moving = [...this.inodes.values()]
+            .filter((entry) => entry.path === oldPath || entry.path.startsWith(`${oldPath}/`))
+            .sort((a, b) => a.path.length - b.path.length);
+        const movingPaths = new Set(moving.map((entry) => entry.path));
+        const targetPaths = new Set(moving.map((entry) => newPath + entry.path.substring(oldPath.length)));
+        for (const existing of this.inodes.values()) {
+            if (movingPaths.has(existing.path) || existing === destInode)
+                continue;
+            if (targetPaths.has(existing.path) || existing.path.startsWith(`${newPath}/`)) {
+                throw new Error(`ENOTEMPTY: rename target subtree conflicts at ${existing.path}`);
+            }
+        }
+        const builder = new TransactionPlanBuilder();
+        if (destInode) {
+            builder.addDeletedPath(newPath, destInode);
+            builder.addGcContent(this.contentIdForInode(destInode));
+        }
+        const renamed = moving.map((entry) => {
+            const path = newPath + entry.path.substring(oldPath.length);
+            const stored = {
+                path,
+                parentPath: this.parentPath(path),
+                isDir: entry.isDir,
+                size: entry.size,
+                atime: entry.atime,
+                mtime: entry.mtime,
+                mode: entry.mode,
+                chunkCount: entry.chunkCount,
+                // Materialize the old legacy key before changing the logical path.
+                contentId: entry.isDir ? null : this.contentIdForInode(entry),
+            };
+            builder.addDeletedPath(entry.path, entry);
+            builder.addInode(stored);
+            return { entry, stored };
+        });
+        const plan = builder.build();
+        this.assertTransactionFits(plan.metrics);
+        this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+        const touchedPaths = new Set(plan.affectedPaths);
+        this.cacheInvalidateBatch(touchedPaths);
+        this.clearPendingWritesForPaths(touchedPaths);
+        this.clearWriteFailuresForPaths(touchedPaths);
+        if (destInode) {
+            this._removeFromChildrenIndex(destInode.parentPath, destInode.path);
+            this.inodes.delete(destInode.path);
             this._totalFiles--;
             this._usedBytes -= destInode.size;
         }
-        this.sql.exec("UPDATE inodes SET path=?, parent_path=? WHERE path=?", newPath, newPp, oldPath);
-        this.sql.exec("UPDATE file_chunks SET path=? WHERE path=?", newPath, oldPath);
-        // Update in-memory state
-        this._removeFromChildrenIndex(oldPp, oldPath);
-        this.inodes.delete(oldPath);
-        inode.path = newPath;
-        inode.parentPath = newPp;
-        this.inodes.set(newPath, inode);
-        this._addToChildrenIndex(newPp, newPath);
-        // Rename children if directory
-        const touchedPaths = [oldPath, newPath];
-        if (inode.isDir) {
-            const childPaths = [];
-            for (const [p] of this.inodes) {
-                if (p.startsWith(oldPath + '/'))
-                    childPaths.push(p);
-            }
-            for (const cp of childPaths) {
-                const ncp = newPath + cp.substring(oldPath.length);
-                const ncpp = this.parentPath(ncp);
-                this.cacheInvalidate(cp);
-                this.clearPendingWritesForPath(cp);
-                this.sql.exec("UPDATE inodes SET path=?, parent_path=? WHERE path=?", ncp, ncpp, cp);
-                this.sql.exec("UPDATE file_chunks SET path=? WHERE path=?", ncp, cp);
-                const childInode = this.inodes.get(cp);
-                const oldCpp = childInode.parentPath;
-                this._removeFromChildrenIndex(oldCpp, cp);
-                this.inodes.delete(cp);
-                childInode.path = ncp;
-                childInode.parentPath = ncpp;
-                this.inodes.set(ncp, childInode);
-                this._addToChildrenIndex(ncpp, ncp);
-                touchedPaths.push(cp, ncp);
-            }
+        for (const { entry } of renamed) {
+            this._removeFromChildrenIndex(entry.parentPath, entry.path);
+            this.inodes.delete(entry.path);
         }
-        this.clearWriteFailuresForPaths(new Set(touchedPaths));
-        this.bumpRevision(touchedPaths);
+        for (const { entry, stored } of renamed) {
+            entry.path = stored.path;
+            entry.parentPath = stored.parentPath;
+            entry.contentId = stored.contentId;
+            this.inodes.set(entry.path, entry);
+            this._addToChildrenIndex(entry.parentPath, entry.path);
+        }
+        this._sqlWrites += plan.inodes.length + plan.deletedPaths.length;
+        this._batchWrites++;
+        this._batchWriteRows += plan.inodes.length + plan.deletedPaths.length;
+        this.bumpRevision([...touchedPaths]);
         this.events.emit('rename', newPath, oldPath);
+        this.runContentMaintenanceSafely(1);
     }
     copyFile(src, dest) {
         this.writeFile(dest, this.readFile(src));
@@ -1568,96 +1624,327 @@ export class SqliteVFS {
     /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
-     * Why this exists:
-     *   writeFile() does 1 DELETE + 1 INSERT per inode (each auto-committed)
-     *   plus deferred chunks flushed in bounded complete-path groups.
-     *   For 30K files: ~60K sync SQL ops → 30-60s, often crashes DO.
-     *
      * The complete mutation is preflighted against the Stage 2 transaction
-     * limits, then executed in one transaction with 12-inode / 33-chunk SQL
+     * limits, then executed in one transaction with 11-inode / 33-chunk SQL
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     writeBatch(payload) {
-        return this._writeBatchWithRetry(payload, { source: 'strict-batch', limitMode: 'bounded' }, true);
+        const result = this._writeBatchWithRetry(payload, { source: 'strict-batch', limitMode: 'bounded' }, true);
+        this.runContentMaintenanceSafely(1);
+        return result;
+    }
+    replaceFileWithStagedContent(inode, chunks, onPhase) {
+        this.validateFileChunks(inode, chunks);
+        onPhase?.('stage');
+        const contentId = this.beginStagedContent();
+        let builder = new TransactionPlanBuilder();
+        const flushChunks = () => {
+            if (builder.empty)
+                return;
+            const plan = builder.build();
+            builder = new TransactionPlanBuilder();
+            this.executeStagedChunkPlan(plan);
+        };
+        try {
+            for (const chunk of chunks) {
+                const stored = { ...chunk, contentId };
+                if (builder.wouldExceedChunkGroup([stored]) !== null)
+                    flushChunks();
+                builder.addChunk(stored);
+            }
+            flushChunks();
+            onPhase?.('publish');
+            const result = this.publishStagedFile(inode, contentId, chunks.length);
+            this.runContentMaintenanceSafely(1);
+            return result;
+        }
+        catch (error) {
+            this.activeStagingContentIds.delete(contentId);
+            this.runContentMaintenanceSafely(1);
+            throw error;
+        }
     }
     /**
-     * W7 — streaming bulk-write. Same atomic transaction semantics as
-     * writeBatch() but
-     * accepts the chunks list as an `AsyncIterable<BatchChunkEntry>`
-     * rather than a fully-realised array.
-     *
-     * v1 (this wave) is "spool-then-commit": we drain the iterator into
-     * an in-memory Array<BatchChunkEntry>, then execute the shared plan in
-     * the explicit Stage 2 stream-unbounded mode.
-     * The HEAP-savings claim of W7 lives on the FACET side — by the
-     * time chunks reach this method (post-RPC), they've already
-     * traversed the byte-stream boundary without hitting the 32 MiB
-     * structured-clone cap.
-     *
-     * Stage 2 intentionally preserves the existing eager drain and one
-     * transaction for callers that already selected writeBatchStream. The
-     * transaction is planned and measured, but its hard bounding and global
-     * stream credit are deferred to Stages 3-4. `_writeStreamSpoolBytes`
-     * truthfully reports the retained decoder payload throughout the drain.
-     *
-     * On SQLITE_NOMEM, the VFS evicts clean cache and retries the exact
-     * transaction once. Any
-     * iterator-source error propagates unchanged. Atomicity guarantee
-     * matches writeBatch: either ALL inodes + chunks land in SQLite or
-     * NONE do.
+     * Copy-on-write replacement for an over-limit range/truncate mutation.
+     * Chunks are produced and staged one at a time, so the operation never
+     * assembles the file as one BLOB or exceeds a Stage 2 transaction bound.
+     */
+    replaceFileWithGeneratedContent(inode, chunkAt) {
+        this.validateInodeContentShape(inode);
+        const contentId = this.beginStagedContent();
+        let builder = new TransactionPlanBuilder();
+        const flushChunks = () => {
+            if (builder.empty)
+                return;
+            const plan = builder.build();
+            builder = new TransactionPlanBuilder();
+            this.executeStagedChunkPlan(plan);
+        };
+        try {
+            for (let chunkId = 0; chunkId < inode.chunkCount; chunkId++) {
+                const data = chunkAt(chunkId);
+                const expected = Math.min(CHUNK_SIZE, inode.size - (chunkId * CHUNK_SIZE));
+                if (data.byteLength !== expected) {
+                    throw new Error(`EIO: ${inode.path}: generated chunk ${chunkId} has ${data.byteLength} bytes; expected ${expected}`);
+                }
+                const chunk = { path: inode.path, contentId, chunkId, data };
+                if (builder.wouldExceedChunkGroup([chunk]) !== null)
+                    flushChunks();
+                builder.addChunk(chunk);
+            }
+            flushChunks();
+            const result = this.publishStagedFile(inode, contentId, inode.chunkCount);
+            this.runContentMaintenanceSafely(1);
+            return result;
+        }
+        catch (error) {
+            this.activeStagingContentIds.delete(contentId);
+            this.runContentMaintenanceSafely(1);
+            throw error;
+        }
+    }
+    beginStagedContent() {
+        const contentId = this.createContentId();
+        const builder = new TransactionPlanBuilder();
+        builder.addStagingContent(contentId);
+        const plan = builder.build();
+        this.assertTransactionFits(plan.metrics);
+        this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+        this.activeStagingContentIds.add(contentId);
+        return contentId;
+    }
+    executeStagedChunkPlan(plan) {
+        this.assertTransactionFits(plan.metrics);
+        this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+    }
+    publishStagedFile(inode, contentId, publishedChunkCount) {
+        const prior = this.inodes.get(inode.path);
+        const builder = new TransactionPlanBuilder();
+        builder.addInode({ ...inode, contentId });
+        builder.addPublishedContent(contentId);
+        if (prior && !prior.isDir)
+            builder.addGcContent(this.contentIdForInode(prior));
+        const plan = builder.build();
+        this.assertTransactionFits(plan.metrics);
+        const result = this._writeBatchOnce({ payload: { inodes: [inode], chunks: [] }, plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, publishedChunkCount);
+        this.activeStagingContentIds.delete(contentId);
+        return result;
+    }
+    /**
+     * W7 v1 streamed bulk write. Storage publication is
+     * path-atomic/committed-prefix: every reported group is durable and
+     * complete, while an unpublished failing group contributes no progress.
+     * Full-file chunks are staged in bounded transactions and exposed by one
+     * inode-pointer transaction. Stage 4 adds the v2 framing and global-credit
+     * protocol; this v1 consumer infers file completion from the declared
+     * chunk count.
      */
     async writeStream(payload) {
-        // Drain the iterator. Iterator errors propagate unchanged.
-        // We build the chunks array fully BEFORE entering transactionSync
-        // because transactionSync is synchronous (cannot await mid-txn).
-        //
-        // N2 (memory accounting cleanup): track spool bytes so the diag
-        // estimator's vfsInFlightBytes is no longer a 0 lie. Increment
-        // per chunk pushed; release it only after the transaction and
-        // post-commit publication finish (or the operation throws).
-        const chunks = [];
         const decodeDrainStartedAt = payload.decodeDrainStartedAt ?? performance.now();
         const decodeDrainToken = {};
         this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
         let decodeDrainFinished = false;
+        let decodeDrainWaitMs = Math.max(0, performance.now() - decodeDrainStartedAt);
+        let retainedSpoolBytes = 0;
+        let chunkIterator = null;
+        let chunkIteratorFinished = false;
+        const ownedStagingContentIds = new Set();
+        const progress = {
+            committedGroupSequence: 0,
+            committedPathCount: 0,
+            inodes: 0,
+            chunks: 0,
+        };
+        let phase = 'decode';
         try {
-            for await (const c of payload.chunkIter) {
-                chunks.push(c);
-                this._writeStreamSpoolBytes += c.data.length;
+            phase = 'validation';
+            const normalizedInodes = new Map();
+            for (const inode of payload.inodes) {
+                if (normalizedInodes.has(inode.path)) {
+                    throw new Error(`EINVAL: duplicate streamed inode path: ${inode.path}`);
+                }
+                normalizedInodes.set(inode.path, inode);
+            }
+            const files = new Map();
+            const publishedFiles = new Set();
+            for (const inode of normalizedInodes.values()) {
+                this.validateInodeContentShape(inode);
+                if (!inode.isDir && inode.chunkCount > 0) {
+                    files.set(inode.path, {
+                        inode,
+                        contentId: null,
+                        receivedChunkIds: new Set(),
+                        receivedBytes: 0,
+                    });
+                }
+            }
+            let stageBuilder = new TransactionPlanBuilder();
+            const beginStreamContent = () => {
+                const contentId = this.beginStagedContent();
+                ownedStagingContentIds.add(contentId);
+                return contentId;
+            };
+            const flushStagedChunks = () => {
+                if (stageBuilder.empty)
+                    return;
+                const plan = stageBuilder.build();
+                stageBuilder = new TransactionPlanBuilder();
+                this.executeStagedChunkPlan(plan);
+                this._writeStreamSpoolBytes -= plan.metrics.blobBytes;
+                retainedSpoolBytes -= plan.metrics.blobBytes;
+                this.updatePeakRetainedWriteBytes();
+            };
+            for (const path of payload.deletePaths ?? []) {
+                phase = 'publish';
+                const affected = Math.max(1, this.collectBatchDeletions([path]).length);
+                this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] });
+                progress.committedGroupSequence++;
+                progress.committedPathCount += affected;
+            }
+            for (const inode of normalizedInodes.values()) {
+                if (!inode.isDir && inode.chunkCount !== 0)
+                    continue;
+                phase = 'validation';
+                this.validateFileChunks(inode, []);
+                phase = inode.isDir ? 'publish' : 'stage';
+                let result;
+                if (inode.isDir) {
+                    result = this.writeBatch({ inodes: [inode], chunks: [] });
+                }
+                else {
+                    const contentId = beginStreamContent();
+                    phase = 'publish';
+                    result = this.publishStagedFile(inode, contentId, 0);
+                }
+                progress.committedGroupSequence++;
+                progress.committedPathCount++;
+                progress.inodes += result.inodes;
+                progress.chunks += result.chunks;
+                if (!inode.isDir)
+                    publishedFiles.add(inode.path);
+            }
+            chunkIterator = payload.chunkIter[Symbol.asyncIterator]();
+            while (true) {
+                phase = 'decode';
+                const waitStartedAt = performance.now();
+                let next;
+                try {
+                    next = await chunkIterator.next();
+                }
+                finally {
+                    decodeDrainWaitMs += performance.now() - waitStartedAt;
+                }
+                if (next.done) {
+                    chunkIteratorFinished = true;
+                    break;
+                }
+                const chunk = next.value;
+                this._writeStreamSpoolBytes += chunk.data.byteLength;
+                retainedSpoolBytes += chunk.data.byteLength;
                 this._peakWriteStreamSpoolBytes = Math.max(this._peakWriteStreamSpoolBytes, this._writeStreamSpoolBytes);
                 this.updatePeakRetainedWriteBytes();
+                phase = 'validation';
+                const inode = normalizedInodes.get(chunk.path);
+                if (!inode)
+                    throw new Error(`EINVAL: streamed chunk has no inode: ${chunk.path}`);
+                if (inode.isDir)
+                    throw new Error(`EINVAL: directory stream entry has chunks: ${chunk.path}`);
+                if (publishedFiles.has(chunk.path)) {
+                    throw new Error(`EINVAL: streamed file has chunks after publication: ${chunk.path}`);
+                }
+                if (!Number.isSafeInteger(chunk.chunkId)
+                    || chunk.chunkId < 0
+                    || chunk.chunkId >= inode.chunkCount) {
+                    throw new Error(`EINVAL: ${chunk.path}: chunk id ${chunk.chunkId} is out of range`);
+                }
+                const expectedBytes = Math.min(CHUNK_SIZE, inode.size - (chunk.chunkId * CHUNK_SIZE));
+                if (chunk.data.byteLength !== expectedBytes) {
+                    throw new Error(`EINVAL: ${chunk.path}: chunk ${chunk.chunkId} has ${chunk.data.byteLength} bytes; expected ${expectedBytes}`);
+                }
+                const file = files.get(chunk.path);
+                if (!file) {
+                    throw new Error(`EINVAL: streamed file has no pending content: ${chunk.path}`);
+                }
+                if (file.receivedChunkIds.has(chunk.chunkId)) {
+                    throw new Error(`EINVAL: ${chunk.path}: duplicate chunk ${chunk.chunkId}`);
+                }
+                phase = 'stage';
+                if (file.contentId === null)
+                    file.contentId = beginStreamContent();
+                const stored = { ...chunk, contentId: file.contentId };
+                if (stageBuilder.wouldExceedChunkGroup([stored]) !== null)
+                    flushStagedChunks();
+                stageBuilder.addChunk(stored);
+                file.receivedChunkIds.add(chunk.chunkId);
+                file.receivedBytes += chunk.data.byteLength;
+                if (file.receivedChunkIds.size !== inode.chunkCount) {
+                    phase = 'decode';
+                    continue;
+                }
+                if (file.receivedBytes !== inode.size) {
+                    throw new Error(`EINVAL: ${inode.path}: chunk bytes ${file.receivedBytes} do not match size ${inode.size}`);
+                }
+                flushStagedChunks();
+                phase = 'publish';
+                const result = this.publishStagedFile(inode, file.contentId, inode.chunkCount);
+                publishedFiles.add(inode.path);
+                files.delete(inode.path);
+                progress.committedGroupSequence++;
+                progress.committedPathCount++;
+                progress.inodes += result.inodes;
+                progress.chunks += result.chunks;
             }
             this._decodeDrainStarts.delete(decodeDrainToken);
-            this.recordDuration(this._decodeDrainDuration, performance.now() - decodeDrainStartedAt);
+            this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
             decodeDrainFinished = true;
-            const r = this._writeBatchWithRetry({ inodes: payload.inodes, chunks, deletePaths: payload.deletePaths }, { source: 'stream-v1', limitMode: 'stage2-stream-unbounded' }, false);
-            return r;
+            phase = 'validation';
+            for (const [path, file] of files) {
+                throw new Error(`EINVAL: ${path}: expected ${file.inode.chunkCount} chunks, got ${file.receivedChunkIds.size}`);
+            }
+            return { ok: true, ...progress };
+        }
+        catch (error) {
+            return {
+                ok: false,
+                ...progress,
+                error: {
+                    code: 'ERR_WRITE_BATCH_STREAM',
+                    phase,
+                    message: this.errorMessage(error),
+                },
+            };
         }
         finally {
-            // The direct transaction no longer retains the drained chunks after
-            // this method returns or throws, so the decoder counter resets here.
-            // Subtract by the actual
-            // sum we tracked, NOT by chunks.length × CHUNK_SIZE — chunks
-            // can be smaller than CHUNK_SIZE on the last entry of a file.
-            let drained = 0;
-            for (const c of chunks)
-                drained += c.data.length;
-            this._writeStreamSpoolBytes -= drained;
+            if (!chunkIteratorFinished && chunkIterator?.return) {
+                try {
+                    await chunkIterator.return();
+                }
+                catch { /* preserve the primary stream result */ }
+            }
+            this._writeStreamSpoolBytes -= retainedSpoolBytes;
             if (this._writeStreamSpoolBytes < 0)
                 this._writeStreamSpoolBytes = 0;
             if (!decodeDrainFinished) {
                 this._decodeDrainStarts.delete(decodeDrainToken);
-                this.recordDuration(this._decodeDrainDuration, performance.now() - decodeDrainStartedAt);
+                this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
             }
             this.updatePeakRetainedWriteBytes();
+            for (const contentId of ownedStagingContentIds) {
+                this.activeStagingContentIds.delete(contentId);
+            }
+            this.runContentMaintenanceSafely(2);
         }
     }
     _writeBatchWithRetry(payload, execution, enforceLimits) {
-        const prepared = this.prepareBatchTransaction(payload);
+        if (enforceLimits) {
+            const preflight = this.prepareBatchTransaction(payload, false);
+            if (preflight.plan.metrics.sqlExecs === 0)
+                return { inodes: 0, chunks: 0 };
+            this.assertTransactionFits(preflight.plan.metrics);
+        }
+        const prepared = this.prepareBatchTransaction(payload, true);
         if (prepared.plan.metrics.sqlExecs === 0)
             return { inodes: 0, chunks: 0 };
-        if (enforceLimits)
-            this.assertTransactionFits(prepared.plan.metrics);
         try {
             return this._writeBatchOnce(prepared, execution);
         }
@@ -1721,41 +2008,79 @@ export class SqliteVFS {
         this.ctx.storage.transactionSync(callback);
     }
     executeTransactionPlan(plan, execution) {
+        this.executeMeasuredTransaction(plan, execution, () => {
+            for (const path of plan.deletedPaths) {
+                this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
+            }
+            for (let i = 0; i < plan.stagingContentIds.length; i += CONTENT_IDS_PER_SQL_EXEC) {
+                const batch = plan.stagingContentIds.slice(i, i + CONTENT_IDS_PER_SQL_EXEC);
+                const placeholders = batch.map(() => "(?, 'staging', ?)").join(',');
+                const values = [];
+                const createdAt = Date.now();
+                for (const contentId of batch)
+                    values.push(contentId, createdAt);
+                this.sql.exec(`INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ${placeholders}`, ...values);
+            }
+            for (let i = 0; i < plan.inodes.length; i += INODE_ROWS_PER_SQL_EXEC) {
+                const batch = plan.inodes.slice(i, i + INODE_ROWS_PER_SQL_EXEC);
+                const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?,?)').join(',');
+                const values = [];
+                for (const inode of batch) {
+                    const atime = inode.atime !== undefined && Number.isFinite(inode.atime)
+                        ? inode.atime
+                        : inode.mtime;
+                    values.push(inode.path, inode.parentPath, inode.isDir ? 1 : 0, inode.size, atime, inode.mtime, inode.mode, inode.chunkCount, inode.contentId);
+                }
+                this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count, content_id) VALUES ${placeholders}`, ...values);
+            }
+            for (let i = 0; i < plan.chunks.length; i += CHUNK_ROWS_PER_SQL_EXEC) {
+                const batch = plan.chunks.slice(i, i + CHUNK_ROWS_PER_SQL_EXEC);
+                const placeholders = batch.map(() => '(?,?,?)').join(',');
+                const values = [];
+                for (const chunk of batch)
+                    values.push(chunk.contentId, chunk.chunkId, chunk.data);
+                this.sql.exec(`INSERT OR REPLACE INTO file_chunks (content_id, chunk_id, data) VALUES ${placeholders}`, ...values);
+            }
+            const deletedChunksByContent = new Map();
+            for (const chunk of plan.deletedChunks) {
+                const entries = deletedChunksByContent.get(chunk.contentId);
+                if (entries)
+                    entries.push(chunk);
+                else
+                    deletedChunksByContent.set(chunk.contentId, [chunk]);
+            }
+            for (const [contentId, chunks] of deletedChunksByContent) {
+                for (let i = 0; i < chunks.length; i += CHUNK_ROWS_PER_SQL_EXEC) {
+                    const batch = chunks.slice(i, i + CHUNK_ROWS_PER_SQL_EXEC);
+                    const placeholders = batch.map(() => '?').join(',');
+                    this.sql.exec(`DELETE FROM file_chunks WHERE content_id = ? AND chunk_id IN (${placeholders})`, contentId, ...batch.map((chunk) => chunk.chunkId));
+                }
+            }
+            for (let i = 0; i < plan.publishedContentIds.length; i += CONTENT_IDS_PER_SQL_EXEC) {
+                const batch = plan.publishedContentIds.slice(i, i + CONTENT_IDS_PER_SQL_EXEC);
+                const placeholders = batch.map(() => '?').join(',');
+                this.sql.exec(`DELETE FROM content_lifecycle WHERE content_id IN (${placeholders}) AND state = 'staging'`, ...batch);
+            }
+            for (let i = 0; i < plan.gcContentIds.length; i += CONTENT_IDS_PER_SQL_EXEC) {
+                const batch = plan.gcContentIds.slice(i, i + CONTENT_IDS_PER_SQL_EXEC);
+                const placeholders = batch.map(() => "(?, 'gc', ?)").join(',');
+                const values = [];
+                const createdAt = Date.now();
+                for (const contentId of batch)
+                    values.push(contentId, createdAt);
+                this.sql.exec(`INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ${placeholders}
+           ON CONFLICT(content_id) DO UPDATE SET state = 'gc'`, ...values);
+            }
+        });
+    }
+    executeMeasuredTransaction(plan, execution, callback) {
         if (this._activeTransaction !== null) {
             throw new Error('[sqlite-vfs] nested transaction plan execution is not supported');
         }
         const startedAt = performance.now();
         this._activeTransaction = { startedAt, plan, execution };
         try {
-            this.transactionSync(() => {
-                for (const path of plan.deletedPaths) {
-                    this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
-                    this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
-                }
-                for (const path of plan.replacedContentPaths) {
-                    this.sql.exec("DELETE FROM file_chunks WHERE path = ?", path);
-                }
-                for (let i = 0; i < plan.inodes.length; i += INODE_ROWS_PER_SQL_EXEC) {
-                    const batch = plan.inodes.slice(i, i + INODE_ROWS_PER_SQL_EXEC);
-                    const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?)').join(',');
-                    const values = [];
-                    for (const inode of batch) {
-                        const atime = inode.atime !== undefined && Number.isFinite(inode.atime)
-                            ? inode.atime
-                            : inode.mtime;
-                        values.push(inode.path, inode.parentPath, inode.isDir ? 1 : 0, inode.size, atime, inode.mtime, inode.mode, inode.chunkCount);
-                    }
-                    this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count) VALUES ${placeholders}`, ...values);
-                }
-                for (let i = 0; i < plan.chunks.length; i += CHUNK_ROWS_PER_SQL_EXEC) {
-                    const batch = plan.chunks.slice(i, i + CHUNK_ROWS_PER_SQL_EXEC);
-                    const placeholders = batch.map(() => '(?,?,?)').join(',');
-                    const values = [];
-                    for (const chunk of batch)
-                        values.push(chunk.path, chunk.chunkId, chunk.data);
-                    this.sql.exec(`INSERT OR REPLACE INTO file_chunks (path, chunk_id, data) VALUES ${placeholders}`, ...values);
-                }
-            });
+            this.transactionSync(callback);
         }
         finally {
             const durationMs = performance.now() - startedAt;
@@ -1775,6 +2100,182 @@ export class SqliteVFS {
             this._lastTransaction = { metrics: plan.metrics, execution };
             this._activeTransaction = null;
         }
+    }
+    /**
+     * Bounded, idempotent content maintenance. Age only orders work; durable
+     * reference checks in each mutation transaction are the deletion authority.
+     */
+    runContentMaintenance(maxTransactions = 4) {
+        let transactions = 0;
+        const maximum = clampNonNegativeInt(maxTransactions);
+        if (transactions < maximum) {
+            const orphanRows = [...this.sql.exec(`SELECT chunks.content_id
+         FROM file_chunks AS chunks
+         WHERE NOT EXISTS (
+             SELECT 1 FROM content_lifecycle AS lifecycle
+             WHERE lifecycle.content_id = chunks.content_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM inodes
+             WHERE inodes.is_dir = 0
+               AND COALESCE(inodes.content_id, inodes.path) = chunks.content_id
+           )
+         GROUP BY chunks.content_id
+         ORDER BY chunks.content_id
+         LIMIT ?`, CONTENT_IDS_PER_SQL_EXEC)];
+            const contentIds = orphanRows.map((row) => String(row.content_id));
+            if (contentIds.length > 0) {
+                const candidates = contentIds
+                    .map((_, index) => index === 0 ? 'SELECT ? AS content_id' : 'SELECT ?')
+                    .join(' UNION ALL ');
+                const plan = this.metricsOnlyPlan({
+                    blobBytes: 0,
+                    logicalRows: contentIds.length,
+                    sqlExecs: 1,
+                    affectedPaths: 0,
+                });
+                this.executeMeasuredTransaction(plan, { source: 'content-gc', limitMode: 'bounded' }, () => {
+                    this.sql.exec(`INSERT OR IGNORE INTO content_lifecycle (content_id, state, created_at)
+               SELECT candidate.content_id, 'gc', ?
+               FROM (${candidates}) AS candidate
+               WHERE EXISTS (
+                   SELECT 1 FROM file_chunks
+                   WHERE file_chunks.content_id = candidate.content_id
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM inodes
+                   WHERE inodes.is_dir = 0
+                     AND COALESCE(inodes.content_id, inodes.path) = candidate.content_id
+                 )`, Date.now(), ...contentIds);
+                });
+                transactions++;
+            }
+        }
+        if (transactions < maximum) {
+            const stagingRows = [...this.sql.exec(`SELECT lifecycle.content_id
+         FROM content_lifecycle AS lifecycle
+         WHERE lifecycle.state = 'staging'
+           AND NOT EXISTS (
+             SELECT 1 FROM inodes
+             WHERE inodes.is_dir = 0
+               AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
+           )
+         ORDER BY lifecycle.created_at, lifecycle.content_id
+         LIMIT ?`, CONTENT_IDS_PER_SQL_EXEC)];
+            const contentIds = stagingRows
+                .map((row) => String(row.content_id))
+                .filter((contentId) => !this.activeStagingContentIds.has(contentId));
+            if (contentIds.length > 0) {
+                const placeholders = contentIds.map(() => '?').join(',');
+                const plan = this.metricsOnlyPlan({
+                    blobBytes: 0,
+                    logicalRows: contentIds.length,
+                    sqlExecs: 1,
+                    affectedPaths: 0,
+                });
+                this.executeMeasuredTransaction(plan, { source: 'content-gc', limitMode: 'bounded' }, () => {
+                    this.sql.exec(`UPDATE content_lifecycle AS lifecycle
+               SET state = 'gc'
+               WHERE lifecycle.state = 'staging'
+                 AND lifecycle.content_id IN (${placeholders})
+                 AND NOT EXISTS (
+                   SELECT 1 FROM inodes
+                   WHERE inodes.is_dir = 0
+                     AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
+                 )`, ...contentIds);
+                });
+                transactions++;
+            }
+        }
+        while (transactions < maximum) {
+            const lifecycle = [...this.sql.exec(`SELECT lifecycle.content_id
+         FROM content_lifecycle AS lifecycle
+         WHERE lifecycle.state = 'gc'
+           AND NOT EXISTS (
+             SELECT 1 FROM inodes
+             WHERE inodes.is_dir = 0
+               AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
+           )
+         ORDER BY lifecycle.created_at, lifecycle.content_id
+         LIMIT 1`)];
+            if (lifecycle.length === 0)
+                break;
+            const contentId = String(lifecycle[0].content_id);
+            const candidates = [...this.sql.exec(`SELECT chunk_id, length(data) AS byte_length
+         FROM file_chunks
+         WHERE content_id = ?
+         ORDER BY chunk_id
+         LIMIT ?`, contentId, Math.min(MAX_TX_LOGICAL_ROWS - 1, CHUNK_ROWS_PER_SQL_EXEC))];
+            const chunkIds = [];
+            let blobBytes = 0;
+            for (const row of candidates) {
+                const byteLength = clampNonNegativeInt(Number(row.byte_length));
+                if (chunkIds.length > 0 && blobBytes + byteLength > MAX_TX_BLOB_BYTES)
+                    break;
+                chunkIds.push(clampNonNegativeInt(Number(row.chunk_id)));
+                blobBytes += byteLength;
+            }
+            const plan = this.metricsOnlyPlan({
+                blobBytes,
+                logicalRows: chunkIds.length + 1,
+                sqlExecs: chunkIds.length === 0 ? 1 : 2,
+                affectedPaths: 0,
+            });
+            this.assertTransactionFits(plan.metrics);
+            this.executeMeasuredTransaction(plan, { source: 'content-gc', limitMode: 'bounded' }, () => {
+                if (chunkIds.length > 0) {
+                    const placeholders = chunkIds.map(() => '?').join(',');
+                    this.sql.exec(`DELETE FROM file_chunks
+               WHERE content_id = ?
+                 AND chunk_id IN (${placeholders})
+                 AND EXISTS (
+                   SELECT 1 FROM content_lifecycle
+                   WHERE content_lifecycle.content_id = ?
+                     AND content_lifecycle.state = 'gc'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM inodes
+                   WHERE inodes.is_dir = 0
+                     AND COALESCE(inodes.content_id, inodes.path) = ?
+                 )`, contentId, ...chunkIds, contentId, contentId);
+                }
+                this.sql.exec(`DELETE FROM content_lifecycle AS lifecycle
+             WHERE lifecycle.content_id = ?
+               AND lifecycle.state = 'gc'
+               AND NOT EXISTS (
+                 SELECT 1 FROM inodes
+                 WHERE inodes.is_dir = 0
+                   AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM file_chunks
+                 WHERE file_chunks.content_id = lifecycle.content_id
+               )`, contentId);
+            });
+            transactions++;
+        }
+        return { transactions };
+    }
+    runContentMaintenanceSafely(maxTransactions) {
+        try {
+            this.runContentMaintenance(maxTransactions);
+        }
+        catch (error) {
+            console.error('[sqlite-vfs] content maintenance failed:', this.errorMessage(error));
+        }
+    }
+    metricsOnlyPlan(metrics) {
+        return {
+            inodes: [],
+            chunks: [],
+            deletedChunks: [],
+            deletedPaths: [],
+            stagingContentIds: [],
+            publishedContentIds: [],
+            gcContentIds: [],
+            affectedPaths: new Set(),
+            metrics,
+        };
     }
     recordOverLimitFile(path, limit, metrics) {
         this._overLimitFileCount++;
@@ -1804,33 +2305,105 @@ export class SqliteVFS {
             return 0;
         }
     }
-    prepareBatchTransaction(payload) {
+    prepareBatchTransaction(payload, allocateContentIds) {
         const deletedInodes = this.collectBatchDeletions(payload.deletePaths ?? []);
         const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
-        const deletedPaths = new Map();
-        for (const path of payload.deletePaths ?? [])
-            deletedPaths.set(path, 0);
-        for (const inode of deletedInodes)
-            deletedPaths.set(inode.path, 0);
-        for (const root of payload.deletePaths ?? []) {
-            const prefix = `${root}/`;
-            const orphanRows = this.sql.exec(`SELECT path, COUNT(*) AS chunk_count
-         FROM file_chunks
-         WHERE path = ? OR substr(path, 1, ?) = ?
-         GROUP BY path`, root, prefix.length, prefix);
-            for (const row of orphanRows) {
-                deletedPaths.set(String(row.path), clampNonNegativeInt(Number(row.chunk_count)));
-            }
-        }
         const builder = new TransactionPlanBuilder();
-        for (const [path, orphanChunkRows] of deletedPaths) {
-            builder.addDeletedPath(path, deletedInodesByPath.get(path), orphanChunkRows);
+        const deletedPaths = new Set(payload.deletePaths ?? []);
+        for (const inode of deletedInodes)
+            deletedPaths.add(inode.path);
+        for (const path of deletedPaths) {
+            const inode = deletedInodesByPath.get(path);
+            builder.addDeletedPath(path, inode);
+            if (inode && !inode.isDir)
+                builder.addGcContent(this.contentIdForInode(inode));
         }
+        const normalizedInodes = new Map();
         for (const entry of payload.inodes)
-            builder.addInode(entry, this.inodes.get(entry.path));
-        for (const entry of payload.chunks)
-            builder.addChunk(entry);
+            normalizedInodes.set(entry.path, entry);
+        const chunksByPath = new Map();
+        for (const chunk of payload.chunks) {
+            const entries = chunksByPath.get(chunk.path);
+            if (entries)
+                entries.push(chunk);
+            else
+                chunksByPath.set(chunk.path, [chunk]);
+        }
+        const contentIds = new Map();
+        let preflightContentIndex = 0;
+        for (const entry of normalizedInodes.values()) {
+            const prior = this.inodes.get(entry.path);
+            this.validateInodeContentShape(entry);
+            if (entry.isDir) {
+                if ((chunksByPath.get(entry.path)?.length ?? 0) > 0) {
+                    throw new Error(`EINVAL: directory batch entry has chunks: ${entry.path}`);
+                }
+                builder.addInode({ ...entry, contentId: null });
+            }
+            else {
+                const fileChunks = chunksByPath.get(entry.path) ?? [];
+                this.validateFileChunks(entry, fileChunks);
+                const contentId = allocateContentIds
+                    ? this.createContentId()
+                    : `preflight:${preflightContentIndex++}`;
+                contentIds.set(entry.path, contentId);
+                builder.addStagingContent(contentId);
+                builder.addInode({ ...entry, contentId });
+                builder.addPublishedContent(contentId);
+            }
+            if (prior && !prior.isDir)
+                builder.addGcContent(this.contentIdForInode(prior));
+        }
+        for (const entry of payload.chunks) {
+            const contentId = contentIds.get(entry.path)
+                ?? (() => {
+                    const inode = this.inodes.get(entry.path);
+                    if (!inode || inode.isDir)
+                        throw new Error(`EINVAL: chunk has no file inode: ${entry.path}`);
+                    return this.contentIdForInode(inode);
+                })();
+            builder.addChunk({ ...entry, contentId });
+        }
         return { payload, plan: builder.build(), deletedInodes };
+    }
+    validateFileChunks(inode, chunks) {
+        this.validateInodeContentShape(inode);
+        if (inode.chunkCount !== chunks.length) {
+            throw new Error(`EINVAL: ${inode.path}: expected ${inode.chunkCount} chunks, got ${chunks.length}`);
+        }
+        let total = 0;
+        const ordered = [...chunks].sort((a, b) => a.chunkId - b.chunkId);
+        for (let index = 0; index < ordered.length; index++) {
+            const chunk = ordered[index];
+            if (chunk.chunkId !== index) {
+                throw new Error(`EINVAL: ${inode.path}: expected chunk ${index}, got ${chunk.chunkId}`);
+            }
+            const expected = Math.min(CHUNK_SIZE, inode.size - (index * CHUNK_SIZE));
+            if (chunk.data.byteLength !== expected) {
+                throw new Error(`EINVAL: ${inode.path}: chunk ${index} has ${chunk.data.byteLength} bytes; expected ${expected}`);
+            }
+            total += chunk.data.byteLength;
+        }
+        if (total !== inode.size) {
+            throw new Error(`EINVAL: ${inode.path}: chunk bytes ${total} do not match size ${inode.size}`);
+        }
+    }
+    validateInodeContentShape(inode) {
+        if (!Number.isSafeInteger(inode.size) || inode.size < 0) {
+            throw new Error(`EINVAL: ${inode.path}: invalid size ${inode.size}`);
+        }
+        if (!Number.isSafeInteger(inode.chunkCount) || inode.chunkCount < 0) {
+            throw new Error(`EINVAL: ${inode.path}: invalid chunk count ${inode.chunkCount}`);
+        }
+        if (inode.isDir && inode.size !== 0) {
+            throw new Error(`EINVAL: ${inode.path}: directory size must be zero`);
+        }
+        const expectedChunkCount = inode.isDir || inode.size === 0
+            ? 0
+            : Math.ceil(inode.size / CHUNK_SIZE);
+        if (inode.chunkCount !== expectedChunkCount) {
+            throw new Error(`EINVAL: ${inode.path}: expected ${expectedChunkCount} chunks for ${inode.size} bytes, got ${inode.chunkCount}`);
+        }
     }
     assertTransactionFits(metrics) {
         const limit = exceededTransactionLimit(metrics);
@@ -1843,7 +2416,7 @@ export class SqliteVFS {
                 : MAX_TX_SQL_EXECS;
         throw new SqliteVfsTransactionTooLargeError(limit, metrics[limit], maximum, metrics);
     }
-    _writeBatchOnce(prepared, execution) {
+    _writeBatchOnce(prepared, execution, publishedChunkCount) {
         const { payload, plan, deletedInodes } = prepared;
         try {
             this.executeTransactionPlan(plan, execution);
@@ -1884,8 +2457,11 @@ export class SqliteVFS {
         // gating it on `prior === undefined` was the bug. Counters remain
         // gated correctly so they don't double-count.
         const __diag = (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
-        for (const entry of payload.inodes) {
+        const replacedPaths = new Set();
+        for (const entry of plan.inodes) {
             const prior = this.inodes.get(entry.path);
+            if (prior !== undefined)
+                replacedPaths.add(entry.path);
             const atime = entry.atime !== undefined && Number.isFinite(entry.atime) ? entry.atime : entry.mtime;
             const node = {
                 path: entry.path,
@@ -1896,6 +2472,7 @@ export class SqliteVFS {
                 mtime: entry.mtime,
                 mode: entry.mode,
                 chunkCount: entry.chunkCount,
+                contentId: entry.contentId,
             };
             if (prior && prior.parentPath !== entry.parentPath) {
                 this._removeFromChildrenIndex(prior.parentPath, entry.path);
@@ -1946,15 +2523,15 @@ export class SqliteVFS {
             }
         }
         const inodeCount = plan.inodes.length;
-        const chunkCount = plan.chunks.length;
+        const chunkCount = publishedChunkCount ?? plan.chunks.length;
         this._sqlWrites += inodeCount + chunkCount;
         this._batchWrites++;
         this._batchWriteRows += inodeCount + chunkCount;
-        if (inodeCount > 0 || chunkCount > 0 || payload.deletePaths?.length) {
+        if (inodeCount > 0 || chunkCount > 0 || plan.deletedPaths.length > 0) {
             // One clock tick for the whole batch; stamp every touched path
             // (affectedPaths covers files/chunks/deletes; add dir inodes too).
             const touched = new Set(plan.affectedPaths);
-            for (const entry of payload.inodes)
+            for (const entry of plan.inodes)
                 touched.add(entry.path);
             this.bumpRevision(Array.from(touched));
         }
@@ -1962,8 +2539,8 @@ export class SqliteVFS {
         for (const inode of deletedInodes) {
             this.events.emit(inode.isDir ? 'unlinkDir' : 'unlink', inode.path);
         }
-        for (const entry of payload.inodes) {
-            this.events.emit(entry.isDir ? 'addDir' : 'add', entry.path);
+        for (const entry of plan.inodes) {
+            this.events.emit(entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add', entry.path);
         }
         this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
         this.updatePeakRetainedWriteBytes();
@@ -2096,9 +2673,9 @@ export class SqliteVFS {
                 // ops dashboards that already plot the count don't break, while
                 // memory triage gets the actual byte number.
                 pendingWriteBytes: this._pendingWriteBytes,
-                // N2 (memory accounting cleanup): live byte count inside the
-                // writeStream() decoder/drain spool. Stage 2 measures this exactly;
-                // hard receiver-side credit and incremental drain land in Stage 4.
+                // Live bytes retained by writeStream() for files that have not yet
+                // reached their declared v1 chunk count. Stage 4 adds explicit v2
+                // file framing and cross-stream global-credit backpressure.
                 writeStreamSpoolBytes: this._writeStreamSpoolBytes,
                 queuedWriteBytes: {
                     current: this._pendingWriteBytes,

@@ -43,6 +43,7 @@
  */
 
 import type { FacetPackageSpec } from './install-facet.js';
+import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 
 declare const __nimbusUseRpcResult: <T, R>(
   promise: Promise<T>,
@@ -121,7 +122,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // [W7] Streaming bulk-write RPC. Bypasses the 32 MiB structured-clone
       // cap by sending the batch as a type:'bytes' ReadableStream<Uint8Array>
       // (W7 wire protocol — see src/_shared/w7-frame.ts).
-      writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<{ inodes: number; chunks: number }>;
+      writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<WriteBatchStreamResult>;
       // [W4 + cache-obs-2] Optional R2-cache RPC. Return shape evolved:
       //   v1 (deployed): Uint8Array | null
       //   cache-obs-2:   { bytes: Uint8Array | null, events: ... }
@@ -226,6 +227,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     size: number; mtime: number; mode: number; chunkCount: number;
   };
   type ChunkT = { path: string; chunkId: number; data: Uint8Array };
+  type SharedWaveOutcome =
+    | { ok: true }
+    | { ok: false; message: string };
   // Shared-buffer flushes happen across packages, so smaller chunks keep
   // individual write transactions short and avoid aging the parent RPC.
   const SHARED_RPC_FLUSH_THRESHOLD = 4 * 1024 * 1024;
@@ -234,6 +238,15 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   let sharedInodes: InodeT[] = [];
   let sharedChunks: ChunkT[] = [];
   let sharedBufferedBytes = 0;
+  let sharedOwners = new Set<number>();
+  const ownerWaves = new Map<number, Set<Promise<SharedWaveOutcome>>>();
+  const ownersWithCompletionMarker = new Set<number>();
+  const completionMarkers = new Map<number, {
+    path: string;
+    data: Uint8Array;
+    mtime: number;
+    chunkSize: number;
+  }>();
   // Mutex: only one flush runs at a time. Concurrent installs awaiting
   // flush() will line up behind this promise and resolve in arrival
   // order — the W7 frame is opaque to ordering so this is safe.
@@ -247,12 +260,47 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     sharedInodes = [];
     sharedChunks = [];
     sharedBufferedBytes = 0;
-    // @ts-ignore — preamble symbol.
-    const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-    await __nimbusUseRpcResult(
-      env.SUPERVISOR.writeBatchStream(stream),
-      () => undefined,
-    );
+    const ownersNow = sharedOwners;
+    sharedOwners = new Set<number>();
+
+    // One promise owns this exact wave. Register the SAME settled outcome
+    // with every contributing package before awaiting the RPC, so a package
+    // cannot report success while another package happens to be the caller
+    // that triggered its shared flush.
+    const wave = (async (): Promise<SharedWaveOutcome> => {
+      try {
+        // @ts-ignore — preamble symbol.
+        const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
+        return await __nimbusUseRpcResult(
+          env.SUPERVISOR.writeBatchStream(stream),
+          (result): SharedWaveOutcome => {
+            if (result.ok) return { ok: true };
+            return {
+              ok: false,
+              message:
+                `writeBatchStream failed after group ${result.committedGroupSequence} ` +
+                `(${result.committedPathCount} committed paths): ${result.error.message}`,
+            };
+          },
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })();
+    for (const owner of ownersNow) {
+      let waves = ownerWaves.get(owner);
+      if (!waves) {
+        waves = new Set<Promise<SharedWaveOutcome>>();
+        ownerWaves.set(owner, waves);
+      }
+      waves.add(wave);
+    }
+
+    const outcome = await wave;
+    if (!outcome.ok) throw new Error(outcome.message);
   };
   const sharedFlush = async (): Promise<void> => {
     // Serialize: wait for any in-flight flush to complete first; then
@@ -261,7 +309,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     const prior = sharedFlushInFlight;
     const myFlush = (async () => {
       if (prior) {
-        try { await prior; } catch { /* surface our own error, not the prior's */ }
+        // The prior wave's outcome is already attached to every owner that
+        // contributed to it. Continue draining this independent buffer so its
+        // owners receive their own outcome as well.
+        try { await prior; } catch { /* owner reconciliation surfaces it */ }
       }
       await doSharedFlush();
     })();
@@ -274,13 +325,52 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     }
   };
 
+  const enqueueSharedFile = (
+    ownerId: number,
+    filePath: string,
+    data: Uint8Array,
+    mtime: number,
+    chunkSize: number,
+  ): void => {
+    const size = data.length;
+    const chunkCount = size === 0 ? 0 : Math.ceil(size / chunkSize);
+    sharedOwners.add(ownerId);
+    sharedInodes.push({
+      path: filePath,
+      parentPath: filePath.includes('/') ? filePath.substring(0, filePath.lastIndexOf('/')) : '',
+      isDir: false,
+      size,
+      mtime,
+      mode: 0o644,
+      chunkCount,
+    });
+    sharedBufferedBytes += INODE_OVERHEAD + filePath.length * 2;
+    if (size <= 0) return;
+    if (size <= chunkSize) {
+      sharedChunks.push({ path: filePath, chunkId: 0, data });
+      sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + data.length;
+      return;
+    }
+    for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
+      const slice = data.slice(
+        chunkId * chunkSize,
+        (chunkId + 1) * chunkSize,
+      );
+      sharedChunks.push({ path: filePath, chunkId, data: slice });
+      sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + slice.length;
+    }
+  };
+
   // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
   //
   // Mirrors src/npm-install-facet.ts:fetchAndStagePackage. Kept inline
   // because cloudflare-parallel serializes this whole function via
   // fn.toString() — we cannot import from a sibling module across the
   // isolate boundary. Keep this logic in sync with npm-install-facet.ts.
-  const installOne = async (spec: FacetPackageSpec): Promise<InstallBatchPerPackage> => {
+  const installOne = async (
+    spec: FacetPackageSpec,
+    ownerId: number,
+  ): Promise<InstallBatchPerPackage> => {
     const t0 = Date.now();
     const warnings: string[] = [];
 
@@ -580,6 +670,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       const dirSet = new Set<string>();
       const parentOf = (p: string) => (p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '');
       dirSet.add(pkgDir);
+      let completionMarker: { path: string; data: Uint8Array } | null = null;
+
+      const enqueueFile = (filePath: string, data: Uint8Array): void => {
+        const size = data.length;
+        enqueueSharedFile(ownerId, filePath, data, spec.mtime, spec.chunkSize);
+        totalFileInodes += 1;
+        totalBytesWritten += size;
+      };
 
       const onSkip = (name: string, size: number, reason: string) => {
         if (reason === 'too-large') {
@@ -594,27 +692,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(
           dirSet.add(parts.slice(0, i).join('/'));
         }
         const data: Uint8Array = entry.data;
-        const size = data.length;
-        const chunkCount = size === 0 ? 0 : Math.ceil(size / spec.chunkSize);
-        sharedInodes.push({
-          path: filePath, parentPath: parentOf(filePath), isDir: false,
-          size, mtime: spec.mtime, mode: 0o644, chunkCount,
-        });
-        sharedBufferedBytes += INODE_OVERHEAD + filePath.length * 2;
-        totalFileInodes += 1;
-        totalBytesWritten += size;
-
-        if (size > 0) {
-          if (size <= spec.chunkSize) {
-            sharedChunks.push({ path: filePath, chunkId: 0, data });
-            sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + data.length;
-          } else {
-            for (let c = 0; c < chunkCount; c++) {
-              const slice = data.slice(c * spec.chunkSize, (c + 1) * spec.chunkSize);
-              sharedChunks.push({ path: filePath, chunkId: c, data: slice });
-              sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + slice.length;
-            }
+        if (entry.name === 'package.json') {
+          if (completionMarker) {
+            throw new Error(`package tarball contains duplicate root package.json: ${spec.name}@${spec.version}`);
           }
+          completionMarker = { path: filePath, data };
+        } else {
+          enqueueFile(filePath, data);
         }
 
         if (sharedBufferedBytes >= SHARED_RPC_FLUSH_THRESHOLD) {
@@ -629,12 +713,28 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // package end — let the threshold-based flush coalesce across
       // packages. The end-of-batch flush below catches anything left.
       for (const d of dirSet) {
+        sharedOwners.add(ownerId);
         sharedInodes.push({
           path: d, parentPath: parentOf(d), isDir: true,
           size: 0, mtime: spec.mtime, mode: 0o755, chunkCount: 0,
         });
         sharedBufferedBytes += INODE_OVERHEAD + d.length * 2;
       }
+
+      // package.json is the durable completion marker used by the installer
+      // diff path. Hold it outside every content wave. Batch reconciliation
+      // publishes it only after all of this owner's content waves succeed.
+      if (!completionMarker) {
+        throw new Error(`package tarball missing root package.json: ${spec.name}@${spec.version}`);
+      }
+      completionMarkers.set(ownerId, {
+        path: completionMarker.path,
+        data: completionMarker.data,
+        mtime: spec.mtime,
+        chunkSize: spec.chunkSize,
+      });
+      totalFileInodes += 1;
+      totalBytesWritten += completionMarker.data.length;
 
       // Threshold-based flush (NOT per-package) — only fires if the
       // shared buffer has crossed SHARED_RPC_FLUSH_THRESHOLD as a
@@ -682,20 +782,56 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
   // ── Dispatch all packages with internal pLimit ───────────────────────
   const perPackage = await Promise.all(
-    batch.packages.map((spec) => limit(() => installOne(spec))),
+    batch.packages.map((spec, ownerId) => limit(() => installOne(spec, ownerId))),
   );
 
   // [P0a wave-2] End-of-batch shared flush. Drains the last buffered
   // contributions (the per-package flush is threshold-based — anything
   // below the threshold sits here until end-of-batch).
-  await sharedFlush();
+  try { await sharedFlush(); } catch { /* owner reconciliation surfaces it */ }
   // Wait for any chained flush still in-flight from the threshold path.
   if (sharedFlushInFlight) {
     try { await sharedFlushInFlight; } catch { /* errored flushes already surfaced */ }
   }
 
+  // Only owners whose complete content history succeeded may publish the
+  // package.json marker used by the next install's diff/skip decision.
+  for (const [ownerId, marker] of completionMarkers) {
+    const result = perPackage[ownerId];
+    if (result.errorText) continue;
+    const outcomes = await Promise.all([...(ownerWaves.get(ownerId) ?? [])]);
+    if (outcomes.some((outcome) => !outcome.ok)) continue;
+    enqueueSharedFile(
+      ownerId,
+      marker.path,
+      marker.data,
+      marker.mtime,
+      marker.chunkSize,
+    );
+    ownersWithCompletionMarker.add(ownerId);
+  }
+  try { await sharedFlush(); } catch { /* owner reconciliation surfaces it */ }
+
+  const reconciledPerPackage = await Promise.all(perPackage.map(async (result, ownerId) => {
+    const outcomes = await Promise.all([...(ownerWaves.get(ownerId) ?? [])]);
+    const failedWave = outcomes.find((outcome): outcome is Extract<SharedWaveOutcome, { ok: false }> => !outcome.ok);
+    const errors: string[] = [];
+    if (result.errorText) errors.push(result.errorText);
+    if (failedWave) errors.push(failedWave.message);
+    if (!result.errorText && !ownersWithCompletionMarker.has(ownerId)) {
+      errors.push(`package completion marker was not queued: ${result.name}@${result.version}`);
+    }
+    if (errors.length === 0) return result;
+    return {
+      ...result,
+      fileCount: 0,
+      bytesWritten: 0,
+      errorText: [...new Set(errors)].join('; '),
+    };
+  }));
+
   return {
-    perPackage,
+    perPackage: reconciledPerPackage,
     elapsed: Date.now() - tBatchStart,
     facetCounters: {
       tarballsCompleted,

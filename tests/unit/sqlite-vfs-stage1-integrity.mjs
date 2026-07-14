@@ -39,20 +39,51 @@ function chunks(path, data) {
   return result;
 }
 
-function statementHasChunk(sql, params, path, chunkId) {
+function resolvedContentId(harness, path) {
+  const rows = harness.sql.exec('SELECT path, content_id FROM inodes WHERE path = ?', path);
+  assert.equal(rows.length, 1, `expected one inode for ${path}`);
+  return rows[0].content_id ?? rows[0].path;
+}
+
+function durableChunkIds(harness, path) {
+  const id = resolvedContentId(harness, path);
+  return harness.sql.exec(
+    'SELECT chunk_id FROM file_chunks WHERE content_id = ? ORDER BY chunk_id',
+    id,
+  );
+}
+
+function statementHasChunk(sql, params, contentId, chunkId) {
   if (!sql.startsWith('INSERT OR REPLACE INTO file_chunks')) return false;
   for (let index = 0; index < params.length; index += 3) {
-    if (params[index] === path && (chunkId === undefined || params[index + 1] === chunkId)) {
+    if (params[index] === contentId && (chunkId === undefined || params[index + 1] === chunkId)) {
       return true;
     }
   }
   return false;
 }
 
-// The strict full-file batch below executes exactly three statements:
-// delete old chunks, publish the inode, and publish its chunk rows. A fault at
-// every position must leave both live and durable state unchanged.
-for (let statement = 1; statement <= 3; statement++) {
+function latestTransactionStatementCount(harness, transactionStart) {
+  const transaction = harness.transactionCount;
+  assert.ok(transaction > transactionStart, 'expected a new transaction');
+  return harness.statements.filter((statement) => statement.transaction === transaction).length;
+}
+
+const strictCreateStatementCount = (() => {
+  const { harness, vfs } = openVfs();
+  const start = harness.transactionCount;
+  const data = bytes(5, 1);
+  vfs.writeBatch({
+    inodes: [fileInode('strict-count.bin', data.length)],
+    chunks: chunks('strict-count.bin', data),
+  });
+  return latestTransactionStatementCount(harness, start);
+})();
+
+// The strict full-file batch publishes staging ownership, inode pointer, and
+// chunks in one transaction. A fault at every actual SQL position must leave
+// both live and durable state unchanged.
+for (let statement = 1; statement <= strictCreateStatementCount; statement++) {
   const { harness, vfs } = openVfs();
   const data = bytes(5, statement);
   const revision = vfs.revision();
@@ -64,26 +95,37 @@ for (let statement = 1; statement <= 3; statement++) {
   assert.equal(vfs.revision(), revision);
   assert.equal(vfs.exists('rollback.bin'), false);
   assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'rollback.bin'"), []);
-  assert.deepEqual(harness.sql.exec("SELECT path FROM file_chunks WHERE path = 'rollback.bin'"), []);
+  assert.deepEqual(harness.sql.exec("SELECT content_id FROM file_chunks WHERE content_id LIKE 'content:%'"), []);
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.equal(reconstructed.exists('rollback.bin'), false);
 }
 
-// Atomic APIs fail before mutation when transactionSync is unavailable.
+// Schema initialization itself is atomic and fails before mutation when
+// transactionSync is unavailable.
 {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql);
-  const data = bytes(3, 7);
-  assert.throws(() => vfs.writeBatch({
-    inodes: [fileInode('no-transaction.bin', data.length)],
-    chunks: chunks('no-transaction.bin', data),
-  }), /requires transactionSync/);
-  assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'no-transaction.bin'"), []);
+  assert.throws(() => new SqliteVFS(harness.sql), /requires transactionSync/);
+  assert.deepEqual(
+    harness.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'inodes'"),
+    [],
+  );
 }
 
-// Full-file replacement remains complete-old on a fault after its old chunks
-// have been deleted inside the transaction.
-for (let statement = 1; statement <= 3; statement++) {
+const strictReplaceStatementCount = (() => {
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('replace-count.bin', bytes(7, 1));
+  const start = harness.transactionCount;
+  const data = bytes(5, 2);
+  vfs.writeBatch({
+    inodes: [fileInode('replace-count.bin', data.length)],
+    chunks: chunks('replace-count.bin', data),
+  });
+  return latestTransactionStatementCount(harness, start);
+})();
+
+// Full-file replacement remains complete-old on a fault anywhere in the
+// pointer-swap transaction; old chunks are queued for later bounded GC.
+for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   const { harness, vfs } = openVfs();
   const oldData = bytes(CHUNK_SIZE + 7, 21);
   const newData = bytes(5, 81);
@@ -119,7 +161,7 @@ for (let statement = 1; statement <= 3; statement++) {
   assert.equal(vfs.revision(), revision);
   assert.equal(vfs.exists('never-visible.bin'), false);
   assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'never-visible.bin'"), []);
-  assert.deepEqual(harness.sql.exec("SELECT path FROM file_chunks WHERE path = 'never-visible.bin'"), []);
+  assert.deepEqual(harness.sql.exec("SELECT content_id FROM file_chunks WHERE content_id LIKE 'content:%'"), []);
 }
 
 // #4: a SQLITE_NOMEM retry must rerun the same strict transaction, never
@@ -128,11 +170,13 @@ for (let statement = 1; statement <= 3; statement++) {
   const { harness, vfs } = openVfs();
   const a = bytes(3, 1);
   const b = bytes(3, 9);
+  const transactionStart = harness.transactionCount;
+  const firstAttempt = transactionStart + 1;
   harness.setFaultInjector(({ transaction, transactionStatement }) => {
-    if (transaction === 1 && transactionStatement === 2) {
+    if (transaction === firstAttempt && transactionStatement === 2) {
       return new Error('SQLITE_NOMEM: injected whole-batch failure');
     }
-    if (transaction === 3 && transactionStatement === 1) {
+    if (transaction === firstAttempt + 2 && transactionStatement === 1) {
       return new Error('injected second-half failure');
     }
     return null;
@@ -146,7 +190,11 @@ for (let statement = 1; statement <= 3; statement++) {
   assert.equal(vfs.revision(), revision + 1, 'successful strict retry must tick once');
   assert.deepEqual(vfs.readFile('a.bin'), a);
   assert.deepEqual(vfs.readFile('b.bin'), b);
-  assert.equal(harness.transactionCount, 2, 'strict retry must execute the same transaction once more');
+  assert.equal(
+    harness.transactionCount,
+    transactionStart + 2,
+    'strict retry must execute the same transaction once more',
+  );
 }
 
 // #5: one inode with multiple chunks must never be split into orphan chunks.
@@ -164,38 +212,38 @@ for (let statement = 1; statement <= 3; statement++) {
   assert.equal(vfs.revision(), revision + 1);
   assert.deepEqual(vfs.readFile('one.bin'), data);
   const durableInodes = harness.sql.exec("SELECT path FROM inodes WHERE path = 'one.bin'");
-  const durableChunks = harness.sql.exec("SELECT chunk_id FROM file_chunks WHERE path = 'one.bin' ORDER BY chunk_id");
+  const durableChunks = durableChunkIds(harness, 'one.bin');
   assert.deepEqual(durableInodes, [{ path: 'one.bin' }]);
   assert.deepEqual(durableChunks, [{ chunk_id: 0 }, { chunk_id: 1 }]);
 }
 
-// #6: a failed batch must preserve a previously accepted deferred write.
+// #6: a failed strict batch must preserve a previously committed range edit.
 {
   const { harness, vfs } = openVfs();
   const accepted = bytes(CHUNK_SIZE + 5, 31);
   const replacement = bytes(2, 99);
-  vfs.writeFile('race.bin', accepted);
-  const pendingBefore = vfs.getStats().sql.pendingWriteBytes;
+  vfs.writeFile('race.bin', bytes(accepted.length, 3));
+  vfs.writeRange('race.bin', 0, accepted);
   harness.failOnTransactionStatement(1);
   assert.throws(() => vfs.writeBatch({
     inodes: [fileInode('race.bin', replacement.length)],
     chunks: chunks('race.bin', replacement),
   }), /injected SQL fault/);
   assert.deepEqual(vfs.readFile('race.bin'), accepted);
-  assert.equal(vfs.getStats().sql.pendingWriteBytes, pendingBefore);
+  assert.equal(vfs.getStats().sql.pendingWriteBytes, 0);
   vfs.flushAll();
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('race.bin'), accepted);
 }
 
 // The SQLITE_NOMEM retry evicts the disposable cache. A second failure must
-// still leave the accepted pending bytes readable and retryable.
+// still leave the prior range transaction readable and durable.
 {
   const { harness, vfs } = openVfs();
   const accepted = bytes(CHUNK_SIZE + 5, 41);
   const replacement = bytes(2, 101);
-  vfs.writeFile('race-nomem.bin', accepted);
-  const pendingBefore = vfs.getStats().sql.pendingWriteBytes;
+  vfs.writeFile('race-nomem.bin', bytes(accepted.length, 5));
+  vfs.writeRange('race-nomem.bin', 0, accepted);
   harness.failOnTransactionStatement(2, {
     transaction: null,
     repeat: true,
@@ -206,115 +254,60 @@ for (let statement = 1; statement <= 3; statement++) {
     chunks: chunks('race-nomem.bin', replacement),
   }), /SQLITE_NOMEM/);
   assert.deepEqual(vfs.readFile('race-nomem.bin'), accepted);
-  assert.equal(vfs.getStats().sql.pendingWriteBytes, pendingBefore);
+  assert.equal(vfs.getStats().sql.pendingWriteBytes, 0);
   harness.clearFault();
   vfs.flushAll();
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('race-nomem.bin'), accepted);
 }
 
-// #7: a permanently failing row cannot commit the other chunks of its file;
-// all bytes remain retryable and the durability boundary fails loudly.
+// #7: a bounded range mutation is one atomic chunks+metadata transaction;
+// a failing row cannot publish any of the edited chunks.
 {
   const { harness, vfs } = openVfs();
   const data = bytes(CHUNK_SIZE * 2 + 11, 47);
-  vfs.writeFile('flush.bin', data);
+  const durable = bytes(data.length, 7);
+  vfs.writeFile('flush.bin', durable);
+  const id = resolvedContentId(harness, 'flush.bin');
   harness.setFaultInjector(({ sql, params }) => {
-    if (statementHasChunk(sql, params, 'flush.bin', 1)) {
+    if (statementHasChunk(sql, params, id, 1)) {
       return new Error('injected persistent chunk failure');
     }
     return null;
   });
-  assert.throws(() => vfs.flushAll(), /flushAll: .*write\(s\) failed permanently/);
+  assert.throws(() => vfs.writeRange('flush.bin', 0, data), /injected persistent chunk failure/);
   assert.deepEqual(
-    harness.sql.exec("SELECT chunk_id FROM file_chunks WHERE path = 'flush.bin' ORDER BY chunk_id"),
-    [],
-    'an indivisible file must have no durable chunk subset',
+    durableChunkIds(harness, 'flush.bin'),
+    [{ chunk_id: 0 }, { chunk_id: 1 }, { chunk_id: 2 }],
+    'failed range transaction must preserve the prior complete generation',
   );
-  assert.equal(vfs.getStats().sql.pendingWriteBytes, data.length, 'failed file bytes must remain retryable');
+  assert.deepEqual(vfs.readFile('flush.bin'), durable);
+  assert.equal(vfs.getStats().sql.pendingWriteBytes, 0);
 
   harness.clearFault();
-  vfs.flushAll();
+  vfs.writeRange('flush.bin', 0, data);
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('flush.bin'), data);
 }
 
-// Rename is a durability boundary: it must stop before changing paths when
-// accepted source bytes cannot be flushed, then remain retryable.
+// Rename sees the already-durable range generation and moves only its inode.
 {
   const { harness, vfs } = openVfs();
   const data = bytes(CHUNK_SIZE + 3, 53);
-  vfs.writeFile('rename-pending.bin', data);
-  harness.setFaultInjector(({ sql, params }) => (
-    statementHasChunk(sql, params, 'rename-pending.bin')
-      ? new Error('injected rename flush failure')
-      : null
-  ));
-  assert.throws(() => vfs.rename('rename-pending.bin', 'renamed.bin'), /flushAll: .*write\(s\) failed permanently/);
-  assert.equal(vfs.exists('rename-pending.bin'), true);
-  assert.equal(vfs.exists('renamed.bin'), false);
-  assert.deepEqual(vfs.readFile('rename-pending.bin'), data);
-  assert.ok(vfs.getStats().sql.pendingWriteBytes > 0);
-  harness.clearFault();
-  vfs.flushAll();
+  vfs.writeFile('rename-pending.bin', bytes(data.length, 9));
+  vfs.writeRange('rename-pending.bin', 0, data);
   vfs.rename('rename-pending.bin', 'renamed.bin');
+  assert.equal(vfs.exists('rename-pending.bin'), false);
+  assert.deepEqual(vfs.readFile('renamed.bin'), data);
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('renamed.bin'), data);
 }
 
-// A successful non-batch supersession owns and clears obsolete failure state.
-{
-  const { harness, vfs } = openVfs();
-  vfs.writeFile('failed-then-removed.bin', bytes(7, 61));
-  harness.setFaultInjector(({ sql, params }) => (
-    statementHasChunk(sql, params, 'failed-then-removed.bin')
-      ? new Error('injected obsolete failure marker')
-      : null
-  ));
-  assert.throws(() => vfs.flushAll(), /flushAll: .*write\(s\) failed permanently/);
-  harness.clearFault();
-  vfs.unlink('failed-then-removed.bin');
-  assert.doesNotThrow(() => vfs.flushAll());
-
-  vfs.writeFile('failed-then-empty.bin', bytes(7, 67));
-  harness.setFaultInjector(({ sql, params }) => (
-    statementHasChunk(sql, params, 'failed-then-empty.bin')
-      ? new Error('injected obsolete replacement marker')
-      : null
-  ));
-  assert.throws(() => vfs.flushAll(), /flushAll: .*write\(s\) failed permanently/);
-  harness.clearFault();
-  vfs.writeFile('failed-then-empty.bin', new Uint8Array(0));
-  assert.doesNotThrow(() => vfs.flushAll());
-}
-
-// A successful batch supersession clears retained pending bytes and their
-// failure markers for the same path.
-{
-  const { harness, vfs } = openVfs();
-  const first = bytes(CHUNK_SIZE + 3, 9);
-  vfs.writeFile('recovered.bin', first);
-  harness.setFaultInjector(({ sql, params }) => {
-    if (statementHasChunk(sql, params, 'recovered.bin')) {
-      return new Error('injected persistent recovery failure');
-    }
-    return null;
-  });
-  assert.throws(() => vfs.flushAll(), /failed permanently/);
-  harness.clearFault();
-  const replacement = bytes(4, 44);
-  vfs.writeBatch({
-    inodes: [fileInode('recovered.bin', replacement.length)],
-    chunks: chunks('recovered.bin', replacement),
-  });
-  assert.doesNotThrow(() => vfs.flushAll());
-  assert.deepEqual(vfs.readFile('recovered.bin'), replacement);
-}
-
-// File-to-directory replacement clears old chunks and pending ownership.
+// File-to-directory replacement reclaims the old content generation.
 {
   const { harness, vfs } = openVfs();
   vfs.writeFile('flip', bytes(7, 12));
+  const oldContentId = resolvedContentId(harness, 'flip');
   vfs.writeBatch({
     inodes: [{
       path: 'flip', parentPath: '', isDir: true, size: 0,
@@ -325,7 +318,10 @@ for (let statement = 1; statement <= 3; statement++) {
   assert.equal(vfs.isDirectory('flip'), true);
   assert.equal(vfs.getStats().sql.pendingWrites, 0);
   vfs.flushAll();
-  assert.deepEqual(harness.sql.exec("SELECT chunk_id FROM file_chunks WHERE path = 'flip'"), []);
+  assert.deepEqual(
+    harness.sql.exec('SELECT chunk_id FROM file_chunks WHERE content_id = ?', oldContentId),
+    [],
+  );
 }
 
 // #9: recursive deletePaths publication must keep live and reconstructed
@@ -336,10 +332,6 @@ for (let statement = 1; statement <= 3; statement++) {
   vfs.writeFile('tree/a.txt', bytes(3, 1));
   vfs.writeFile('tree/nested/b.txt', bytes(5, 2));
   vfs.flushAll();
-  harness.sql.exec(
-    "INSERT INTO file_chunks (path, chunk_id, data) VALUES ('tree/orphan.bin', 0, ?)",
-    bytes(2, 99),
-  );
   vfs.writeBatch({ inodes: [], chunks: [], deletePaths: ['tree'] });
   assert.equal(vfs.exists('tree'), false);
   assert.equal(vfs.exists('tree/a.txt'), false);
@@ -362,17 +354,29 @@ for (let statement = 1; statement <= 3; statement++) {
     },
   );
   assert.equal(reconstructed.exists('tree/nested/b.txt'), false);
-  assert.deepEqual(
-    harness.sql.exec("SELECT path FROM file_chunks WHERE path = 'tree/orphan.bin'"),
-    [],
-  );
   assert.deepEqual(vfs.readdir(''), reconstructed.readdir(''));
 }
 
+const recursiveDeleteStatementCount = (() => {
+  const { harness, vfs } = openVfs();
+  vfs.mkdir('count-tree/nested', { recursive: true });
+  vfs.writeFile('count-tree/a.txt', bytes(3, 1));
+  vfs.writeFile('count-tree/nested/b.txt', bytes(5, 2));
+  const statementStart = harness.statements.length;
+  vfs.writeBatch({ inodes: [], chunks: [], deletePaths: ['count-tree'] });
+  const transaction = new Map();
+  for (const statement of harness.statements.slice(statementStart)) {
+    if (statement.transaction === null || !/DELETE FROM inodes/i.test(statement.sql)) continue;
+    transaction.set(statement.transaction, true);
+  }
+  assert.equal(transaction.size, 1);
+  const [id] = transaction.keys();
+  return harness.statements.filter((statement) => statement.transaction === id).length;
+})();
 
 // A fault at every SQL statement of recursive deletion leaves the complete
 // old subtree visible both live and after reconstruction.
-for (let statement = 1; statement <= 8; statement++) {
+for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++) {
   const { harness, vfs } = openVfs();
   vfs.mkdir('rollback-tree/nested', { recursive: true });
   vfs.writeFile('rollback-tree/a.txt', bytes(3, 4));
@@ -406,7 +410,7 @@ for (let statement = 1; statement <= 8; statement++) {
     chunks: chunks('replace.bin', newData),
   });
   assert.deepEqual(
-    harness.sql.exec("SELECT chunk_id FROM file_chunks WHERE path = 'replace.bin' ORDER BY chunk_id"),
+    durableChunkIds(harness, 'replace.bin'),
     [{ chunk_id: 0 }],
   );
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
@@ -426,21 +430,19 @@ for (let statement = 1; statement <= 8; statement++) {
     chunks: [{ path: 'range-only.bin', chunkId: 0, data: first }],
   });
   assert.deepEqual(
-    harness.sql.exec("SELECT chunk_id FROM file_chunks WHERE path = 'range-only.bin' ORDER BY chunk_id"),
+    durableChunkIds(harness, 'range-only.bin'),
     [{ chunk_id: 0 }, { chunk_id: 1 }],
   );
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(reconstructed.readFile('range-only.bin'), new Uint8Array([...first, ...data.slice(CHUNK_SIZE)]));
 }
 
-// Any inode-backed replacement owns the path's complete content, including a
-// directory inode replacing historical orphan chunk rows.
+// Any inode-backed replacement owns the path's complete resolved generation,
+// including a directory replacing a file.
 {
   const { harness, vfs } = openVfs();
-  harness.sql.exec(
-    "INSERT INTO file_chunks (path, chunk_id, data) VALUES (?, ?, ?)",
-    'orphan-to-dir', 0, bytes(3, 73),
-  );
+  vfs.writeFile('orphan-to-dir', bytes(3, 73));
+  const oldContentId = resolvedContentId(harness, 'orphan-to-dir');
   vfs.writeBatch({
     inodes: [{
       path: 'orphan-to-dir', parentPath: '', isDir: true, size: 0,
@@ -449,7 +451,7 @@ for (let statement = 1; statement <= 8; statement++) {
     chunks: [],
   });
   assert.deepEqual(
-    harness.sql.exec("SELECT chunk_id FROM file_chunks WHERE path = 'orphan-to-dir'"),
+    harness.sql.exec('SELECT chunk_id FROM file_chunks WHERE content_id = ?', oldContentId),
     [],
   );
   assert.equal(vfs.isDirectory('orphan-to-dir'), true);
@@ -481,8 +483,14 @@ for (let statement = 1; statement <= 8; statement++) {
   vfs.writeFile('corrupt.bin', data);
   vfs.writeFile('single.bin', bytes(7, 91));
   vfs.flushAll();
-  harness.sql.exec("DELETE FROM file_chunks WHERE path = 'corrupt.bin' AND chunk_id = 1");
-  harness.sql.exec("DELETE FROM file_chunks WHERE path = 'single.bin' AND chunk_id = 0");
+  harness.sql.exec(
+    'DELETE FROM file_chunks WHERE content_id = ? AND chunk_id = 1',
+    resolvedContentId(harness, 'corrupt.bin'),
+  );
+  harness.sql.exec(
+    'DELETE FROM file_chunks WHERE content_id = ? AND chunk_id = 0',
+    resolvedContentId(harness, 'single.bin'),
+  );
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.throws(() => reconstructed.readFile('corrupt.bin'), /EIO: .*corrupt\.bin.*chunk 1/);
   assert.throws(() => reconstructed.readFile('single.bin'), /EIO: .*single\.bin.*chunk 0/);
@@ -547,8 +555,35 @@ for (let statement = 1; statement <= 8; statement++) {
   assert.deepEqual(vfs.readFile('legacy-large.bin'), data);
 }
 
-// Every statement in the legacy migration transaction rolls back together.
-for (let statement = 1; statement <= 6; statement++) {
+// Legacy migration now uses bounded staging + publish transactions. A reset at
+// each durable phase may leave invisible staging or an already-complete inode,
+// but reopening must deterministically converge before the source is dropped.
+for (const faultCase of [
+  {
+    name: 'stage marker',
+    matches: ({ sql, params }) => /INSERT OR IGNORE INTO content_lifecycle/i.test(sql)
+      && params.includes('atomic.txt'),
+  },
+  {
+    name: 'chunk stage',
+    matches: ({ sql, params }) => /INSERT OR REPLACE INTO file_chunks/i.test(sql)
+      && params.includes('atomic.txt'),
+  },
+  {
+    name: 'inode publish',
+    matches: ({ sql, params }) => /INSERT OR REPLACE INTO inodes/i.test(sql)
+      && params.includes('atomic.txt'),
+  },
+  {
+    name: 'migration marker',
+    matches: ({ sql }) => /INSERT INTO vfs_schema_migrations/i.test(sql)
+      && /legacy_fs_objects_v1/i.test(sql),
+  },
+  {
+    name: 'source drop',
+    matches: ({ sql }) => /DROP TABLE fs_objects/i.test(sql),
+  },
+]) {
   const harness = createSqliteVfsTestHarness();
   harness.sql.exec(`CREATE TABLE fs_objects (
     path TEXT NOT NULL,
@@ -561,19 +596,21 @@ for (let statement = 1; statement <= 6; statement++) {
     mode INTEGER NOT NULL,
     PRIMARY KEY (path, chunk_index)
   )`);
-  const data = bytes(4, statement);
+  const data = bytes(4, faultCase.name.length);
   harness.sql.exec(
     'INSERT INTO fs_objects VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     'atomic.txt', 0, '', data, 0, data.length, 1234, 0o644,
   );
-  harness.failOnTransactionStatement(statement);
-  assert.throws(() => openVfs(harness), /injected SQL fault/);
-  assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'atomic.txt'"), []);
-  assert.deepEqual(harness.sql.exec("SELECT path FROM file_chunks WHERE path = 'atomic.txt'"), []);
-  assert.deepEqual(
-    harness.sql.exec("SELECT id FROM vfs_schema_migrations WHERE id = 'legacy_fs_objects_v1'"),
-    [],
-  );
+  let injected = false;
+  harness.setFaultInjector((statement) => {
+    if (!injected && faultCase.matches(statement)) {
+      injected = true;
+      return new Error(`injected legacy migration reset at ${faultCase.name}`);
+    }
+    return null;
+  });
+  assert.throws(() => openVfs(harness), /injected legacy migration reset/);
+  assert.equal(injected, true, `fault seam not reached: ${faultCase.name}`);
   assert.deepEqual(
     harness.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fs_objects'"),
     [{ name: 'fs_objects' }],
@@ -581,6 +618,15 @@ for (let statement = 1; statement <= 6; statement++) {
   harness.clearFault();
   const { vfs } = openVfs(harness);
   assert.deepEqual(vfs.readFile('atomic.txt'), data);
+  assert.deepEqual(
+    harness.sql.exec("SELECT id FROM vfs_schema_migrations WHERE id = 'legacy_fs_objects_v1'"),
+    [{ id: 'legacy_fs_objects_v1' }],
+  );
+  assert.deepEqual(
+    harness.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fs_objects'"),
+    [],
+  );
+  assert.deepEqual(openVfs(createSqliteVfsTestHarness(harness.db)).vfs.readFile('atomic.txt'), data);
 }
 
 // #14: overwrite-rename removes the overwritten file's bytes from counters.
@@ -620,7 +666,10 @@ for (let statement = 1; statement <= 6; statement++) {
 // mutation leaves the cache within the current cap.
 {
   const { vfs } = openVfs();
-  for (let i = 0; i < 4; i++) vfs.writeFile(`cache-${i}.bin`, bytes(3, i));
+  for (let i = 0; i < 4; i++) {
+    vfs.writeFile(`cache-${i}.bin`, bytes(3, i));
+    vfs.readFile(`cache-${i}.bin`);
+  }
   assert.equal(vfs.getStats().cache.entries, 4);
   vfs.shrinkForInstall(4);
   vfs.shrinkForInstall(1);
@@ -633,9 +682,13 @@ for (let statement = 1; statement <= 6; statement++) {
 // an already-over-cap cache instead of returning before eviction.
 {
   const { vfs } = openVfs();
-  for (let i = 0; i < 3; i++) vfs.writeFile(`cache-update-${i}.bin`, bytes(3, i));
+  for (let i = 0; i < 3; i++) {
+    vfs.writeFile(`cache-update-${i}.bin`, bytes(3, i));
+    vfs.readFile(`cache-update-${i}.bin`);
+  }
   vfs._lruMaxEntries = 1;
   vfs.writeFile('cache-update-2.bin', bytes(4, 9));
+  vfs.readFile('cache-update-2.bin');
   assert.ok(vfs.getStats().cache.entries <= 1);
 }
 

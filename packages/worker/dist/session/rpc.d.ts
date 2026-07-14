@@ -22,6 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 type RpcHost = any;
 export declare function _rpcReadFile(self: RpcHost, path: string): Promise<string | null>;
 /**
@@ -107,16 +108,13 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
  * legacy writeBatch path — workerd flow-controls the byte stream
  * end-to-end.
  *
- * Atomicity guarantee mirrors writeBatch: either ALL inodes +
- * chunks land in SQLite or NONE do. SqliteVFS.writeStream defers
- * the actual transactionSync until the chunk iterator is fully
- * drained (v1 spool-then-commit), so a stream error mid-transit
- * aborts before any SQL state mutates.
+ * Unlike strict writeBatch, the stream contract is path-atomic with a
+ * committed prefix: every reported path is complete, but earlier publish
+ * groups remain durable when a later group fails. The typed result carries
+ * the exact durable progress. W7 v1 infers file completion from the header's
+ * chunk counts; explicit file frames and global credits are Stage 4.
  */
-export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>): Promise<{
-    inodes: number;
-    chunks: number;
-}>;
+export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
 /**
  * Bulk-write npm registry cache entries in ONE RPC. Used by the
  * resolver-facet to flush a wave of resolved packages back to the

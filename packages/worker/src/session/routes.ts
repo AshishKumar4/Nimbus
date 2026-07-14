@@ -471,7 +471,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           // distinguish "many small chunks" from "few large chunks".
           pendingWrites: sqlStats.pendingWrites ?? 0,
           pendingWriteBytes: sqlStats.pendingWriteBytes ?? 0,
-          // N2: live byte count inside the writeStream() drain spool.
+          // N2: live bytes retained for incomplete writeStream() files.
           // Visible during a real npm install; ~0 at rest.
           writeStreamSpoolBytes: sqlStats.writeStreamSpoolBytes ?? 0,
           queuedWriteBytes: sqlStats.queuedWriteBytes,

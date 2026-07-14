@@ -38,6 +38,7 @@ import {
   r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail,
 } from '../observability/diag-counters.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
+import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 // cache metrics support: per-tier hit/miss counters.
 //
 // CRITICAL — SupervisorRPC is a WorkerEntrypoint (loopback service
@@ -255,8 +256,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /**
-   * W7 — Streaming bulk-write. Same semantics as writeBatch() but the
-   * argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
+   * W7 — Streaming bulk-write with path-atomic, committed-prefix semantics.
+   * The argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
    * (see src/_shared/w7-frame.ts). Bypasses the 32 MiB structured-clone
    * cap entirely; the byte stream traverses the RPC boundary with
    * automatic flow control per Cloudflare RPC docs.
@@ -272,7 +273,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
-  ): Promise<{ inodes: number; chunks: number }> {
+  ): Promise<WriteBatchStreamResult> {
     // The streaming bytes flow with backpressure (W7_HIGHWATER_BYTES =
     // 256 KiB per active encoder per src/_shared/w7-frame.ts:53). The
     // supervisor-resident bound is the queue highwater, NOT the total
