@@ -36,19 +36,26 @@ const chunks = (path, data) => Array.from(
 const fixture = () => {
   const one = bytes(CHUNK_SIZE, 7);
   const many = bytes(CHUNK_SIZE + 17, 19);
+  const link = new TextEncoder().encode('../one.bin');
   return {
     payload: {
       deletePaths: ['old.txt'],
       inodes: [
         inode('dir', new Uint8Array(), true),
         inode('empty.txt', new Uint8Array()),
-        inode('one.bin', one),
+        { ...inode('one.bin', one), kind: 'file', mode: 0o755 },
         inode('dir/many.bin', many),
+        { ...inode('dir/link', link), kind: 'symlink', mode: 0o777 },
       ],
-      chunks: [...chunks('one.bin', one), ...chunks('dir/many.bin', many)],
+      chunks: [
+        ...chunks('one.bin', one),
+        ...chunks('dir/many.bin', many),
+        ...chunks('dir/link', link),
+      ],
     },
     one,
     many,
+    link,
   };
 };
 
@@ -113,7 +120,7 @@ function frameRecords(value) {
 
 // Mixed records round-trip even when every transport byte is fragmented.
 {
-  const { payload, one, many } = fixture();
+  const { payload, one, many, link } = fixture();
   const encoded = await collect(encodeWriteBatchStream(payload));
   for (const fragment of [encoded.length, 1]) {
     const { decoded, records } = await decodeAll(encoded, fragment);
@@ -126,7 +133,22 @@ function frameRecords(value) {
         'file-begin', 'file-end',
         'file-begin', 'file-chunk', 'file-end',
         'file-begin', 'file-chunk', 'file-chunk', 'file-end',
+        'file-begin', 'file-chunk', 'file-end',
         'batch-end',
+      ],
+    );
+    const directory = records.find((record) => record.type === 'directory').inode;
+    assert.equal(directory.kind, 'directory');
+    const fileInodes = records
+      .filter((record) => record.type === 'file-begin')
+      .map((record) => record.inode);
+    assert.deepEqual(
+      fileInodes.map(({ path, kind, mode }) => ({ path, kind, mode })),
+      [
+        { path: 'empty.txt', kind: 'file', mode: 0o644 },
+        { path: 'one.bin', kind: 'file', mode: 0o755 },
+        { path: 'dir/many.bin', kind: 'file', mode: 0o644 },
+        { path: 'dir/link', kind: 'symlink', mode: 0o777 },
       ],
     );
     const fileBytes = new Map();
@@ -138,10 +160,11 @@ function frameRecords(value) {
     }
     assert.deepEqual(new Uint8Array(fileBytes.get('one.bin')), one);
     assert.deepEqual(new Uint8Array(fileBytes.get('dir/many.bin')), many);
+    assert.deepEqual(new Uint8Array(fileBytes.get('dir/link')), link);
     const end = records.at(-1).summary;
-    assert.equal(end.pathCount, 5);
-    assert.equal(end.chunkCount, 3);
-    assert.equal(end.byteCount, one.length + many.length);
+    assert.equal(end.pathCount, 6);
+    assert.equal(end.chunkCount, 4);
+    assert.equal(end.byteCount, one.length + many.length + link.length);
   }
 }
 
@@ -157,9 +180,10 @@ async function expectDecodeFailure(value, pattern) {
 // Old, malformed, truncated, duplicate, and out-of-order frames fail loudly.
 {
   await expectDecodeFailure(new Uint8Array([0x4e, 0x57, 0x37, 0x01]), /unsupported protocol version 1/);
+  await expectDecodeFailure(new Uint8Array([0x4e, 0x57, 0x37, 0x02]), /unsupported protocol version 2; expected 3/);
 
   const oversizedBegin = new Uint8Array(9);
-  oversizedBegin.set([0x4e, 0x57, 0x37, 0x02, 1], 0);
+  oversizedBegin.set([0x4e, 0x57, 0x37, 0x03, 1], 0);
   oversizedBegin.set([1, 0, 1, 0], 5); // 65,537 bytes; reject before allocation/read.
   await expectDecodeFailure(oversizedBegin, /batch-begin length 65537 exceeds 65536/);
 
@@ -173,6 +197,16 @@ async function expectDecodeFailure(value, pattern) {
     inodes: [{ ...inode('integer-bound.bin', new Uint8Array()), chunkCount: 0x1_0000_0000 }],
     chunks: [],
   }), /chunk count exceeds uint32/);
+
+  assert.throws(() => encodeWriteBatchStream({
+    inodes: [{ ...inode('bad-kind', new Uint8Array()), kind: 'fifo' }],
+    chunks: [],
+  }), /unsupported inode kind fifo/);
+
+  assert.throws(() => encodeWriteBatchStream({
+    inodes: [{ ...inode('bad-shape', new Uint8Array(), true), kind: 'symlink' }],
+    chunks: [],
+  }), /symlink inode bad-shape cannot be a directory/);
 
   const encoded = await collect(encodeWriteBatchStream(fixture().payload));
   await expectDecodeFailure(encoded.slice(0, -3), /stream ended|batch-end/);
@@ -195,7 +229,11 @@ async function expectDecodeFailure(value, pattern) {
 
   const outOfOrder = encoded.slice();
   const chunkRecords = frameRecords(outOfOrder).filter((record) => record.tag === 5);
-  const second = chunkRecords.at(-1);
+  const second = chunkRecords.find((record) => {
+    const contentIdLength = readU32(outOfOrder, record.payloadOffset);
+    return readU32(outOfOrder, record.payloadOffset + 4 + contentIdLength) === 1;
+  });
+  assert.ok(second);
   const contentIdLength = readU32(outOfOrder, second.payloadOffset);
   const chunkIdOffset = second.payloadOffset + 4 + contentIdLength;
   outOfOrder.fill(0, chunkIdOffset, chunkIdOffset + 4);
@@ -210,6 +248,16 @@ async function expectDecodeFailure(value, pattern) {
   assert.equal(badJson.length, fileEnd.length);
   badEnd.set(badJson, fileEnd.payloadOffset);
   await expectDecodeFailure(badEnd, /file-end chunk count mismatch/);
+
+  const badKind = encoded.slice();
+  const fileBegin = frameRecords(badKind).find((record) => record.tag === 4);
+  const fileBeginJson = new TextDecoder().decode(
+    badKind.subarray(fileBegin.payloadOffset, fileBegin.payloadOffset + fileBegin.length),
+  );
+  const badKindJson = new TextEncoder().encode(fileBeginJson.replace('"kind":"file"', '"kind":"fifo"'));
+  assert.equal(badKindJson.length, fileBegin.length);
+  badKind.set(badKindJson, fileBegin.payloadOffset);
+  await expectDecodeFailure(badKind, /unsupported file-begin kind fifo/);
 }
 
 // Decoder acquires credit after the chunk header and before pulling its data.
@@ -246,4 +294,4 @@ async function expectDecodeFailure(value, pattern) {
   assert.equal(retained, true);
 }
 
-console.log('W7 v2 incremental protocol: ok');
+console.log('W7 v3 incremental protocol: ok');

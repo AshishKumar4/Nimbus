@@ -613,6 +613,10 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content); }
   async _rpcStat(path: string): Promise<any> { return _rpc._rpcStat(this as any, path); }
+  async _rpcLstat(path: string): Promise<any> { return _rpc._rpcLstat(this as any, path); }
+  async _rpcHasLegacySymlinkUnder(path: string): Promise<boolean> {
+    return _rpc._rpcHasLegacySymlinkUnder(this as any, path);
+  }
   async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs);
   }
@@ -642,7 +646,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
-  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult> { return _rpc._rpcWriteBatchStream(this as any, stream); }
+  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult> {
+    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner);
+  }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: string): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }

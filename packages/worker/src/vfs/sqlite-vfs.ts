@@ -62,6 +62,7 @@ import {
   WeightedCreditPool,
   type CreditLease,
 } from './write-stream-credit-pool.js';
+import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
 
@@ -73,9 +74,21 @@ const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
+export type VfsInodeKind = 'file' | 'directory' | 'symlink';
+
+export interface ExclusiveMutationLease {
+  readonly root: string;
+  readonly owner: string;
+}
+
+export interface ExclusiveMutationOptions {
+  readonly includeMissingAncestors?: boolean;
+}
+
 interface INode {
   path: string;
   parentPath: string;
+  kind: VfsInodeKind;
   isDir: boolean;
   size: number;
   atime: number;
@@ -91,6 +104,8 @@ interface INode {
 export interface BatchInodeEntry {
   path: string;
   parentPath: string;
+  /** Defaults to isDir ? directory : file for legacy/non-symlink producers. */
+  kind?: VfsInodeKind;
   isDir: boolean;
   size: number;
   atime?: number;
@@ -140,6 +155,9 @@ const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
 const CONTENT_SCHEMA_MIGRATION = 'content_generations_v1';
+const INODE_KIND_FILE = 0;
+const INODE_KIND_DIRECTORY = 1;
+const INODE_KIND_SYMLINK = 2;
 
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource =
@@ -150,7 +168,8 @@ type TransactionSource =
   | 'content-gc';
 type TransactionLimitMode = 'bounded';
 
-interface StoredInodeEntry extends BatchInodeEntry {
+interface StoredInodeEntry extends Omit<BatchInodeEntry, 'kind'> {
+  kind: VfsInodeKind;
   contentId: string | null;
 }
 
@@ -428,6 +447,8 @@ export class SqliteVFS {
   // so unrelated writes no longer invalidate them. In-memory only — the
   // clock resets with the DO lifetime, exactly like the caches keyed on it.
   private _pathRevisions = new Map<string, number>();
+  private readonly exclusiveMutationLeases = new Map<string, string>();
+  private activeMutationOwner: string | null = null;
 
   /** Shared by every concurrent stream targeting this session's VFS. */
   private readonly writeStreamCredits = new WeightedCreditPool(
@@ -501,7 +522,25 @@ export class SqliteVFS {
         'SELECT id FROM vfs_schema_migrations WHERE id = ?',
         CONTENT_SCHEMA_MIGRATION,
       )].length > 0;
-      const existingInodeColumns = this.tableColumns('inodes');
+      let existingInodeColumns = this.tableColumns('inodes');
+      if (existingInodeColumns.has('is_dir') && !existingInodeColumns.has('kind')) {
+        const invalidLegacyKinds = [...this.sql.exec(
+          'SELECT path, is_dir FROM inodes WHERE is_dir NOT IN (0, 1) LIMIT 1',
+        )];
+        if (invalidLegacyKinds.length > 0) {
+          throw new Error(
+            `[sqlite-vfs] invalid legacy inode kind ${String(invalidLegacyKinds[0].is_dir)} ` +
+            `at ${String(invalidLegacyKinds[0].path)}`,
+          );
+        }
+        this.sql.exec('ALTER TABLE inodes RENAME COLUMN is_dir TO kind');
+        existingInodeColumns = this.tableColumns('inodes');
+      }
+      if (existingInodeColumns.has('is_dir') || (
+        existingInodeColumns.size > 0 && !existingInodeColumns.has('kind')
+      )) {
+        throw new Error('[sqlite-vfs] unsupported inode kind schema');
+      }
       const existingChunkColumns = this.tableColumns('file_chunks');
       const existingLifecycleColumns = this.tableColumns('content_lifecycle');
       const chunksAreLegacy = existingChunkColumns.has('path')
@@ -532,7 +571,7 @@ export class SqliteVFS {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS inodes (
         path TEXT PRIMARY KEY,
         parent_path TEXT NOT NULL DEFAULT '',
-        is_dir INTEGER NOT NULL DEFAULT 0,
+        kind INTEGER NOT NULL DEFAULT 0 CHECK (kind IN (0, 1, 2)),
         size INTEGER NOT NULL DEFAULT 0,
         atime INTEGER NOT NULL DEFAULT 0,
         mtime INTEGER NOT NULL DEFAULT 0,
@@ -551,6 +590,21 @@ export class SqliteVFS {
       if (!inodeColumns.has('content_id')) {
         this.sql.exec("ALTER TABLE inodes ADD COLUMN content_id TEXT NULL");
       }
+      const invalidKinds = [...this.sql.exec(
+        'SELECT path, kind FROM inodes WHERE kind NOT IN (0, 1, 2) LIMIT 1',
+      )];
+      if (invalidKinds.length > 0) {
+        throw new Error(
+          `[sqlite-vfs] invalid durable inode kind ${String(invalidKinds[0].kind)} ` +
+          `at ${String(invalidKinds[0].path)}`,
+        );
+      }
+      this.sql.exec(`CREATE TRIGGER IF NOT EXISTS trg_inodes_kind_insert
+        BEFORE INSERT ON inodes WHEN NEW.kind NOT IN (0, 1, 2)
+        BEGIN SELECT RAISE(ABORT, 'invalid inode kind'); END`);
+      this.sql.exec(`CREATE TRIGGER IF NOT EXISTS trg_inodes_kind_update
+        BEFORE UPDATE OF kind ON inodes WHEN NEW.kind NOT IN (0, 1, 2)
+        BEGIN SELECT RAISE(ABORT, 'invalid inode kind'); END`);
 
       const chunkColumns = this.tableColumns('file_chunks');
       if (chunkColumns.size === 0) {
@@ -575,9 +629,10 @@ export class SqliteVFS {
       )`);
       this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_parent ON inodes(parent_path)`);
       this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_content ON inodes(content_id)`);
+      this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_file_content');
       this.sql.exec(
-        `CREATE INDEX IF NOT EXISTS idx_inodes_resolved_file_content
-         ON inodes(COALESCE(content_id, path)) WHERE is_dir = 0`,
+        `CREATE INDEX IF NOT EXISTS idx_inodes_resolved_kind_content
+         ON inodes(COALESCE(content_id, path)) WHERE kind != 1`,
       );
       this.sql.exec(
         "INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)",
@@ -714,6 +769,7 @@ export class SqliteVFS {
       publishBuilder.addInode({
         path,
         parentPath,
+        kind: isDir ? 'directory' : 'file',
         isDir,
         size,
         atime: mtime,
@@ -755,14 +811,16 @@ export class SqliteVFS {
     this._totalFiles = 0;
     this._totalDirs = 0;
     this._usedBytes = 0;
-    const rows = [...this.sql.exec("SELECT path, parent_path, is_dir, size, atime, mtime, mode, chunk_count, content_id FROM inodes")];
+    const rows = [...this.sql.exec("SELECT path, parent_path, kind, size, atime, mtime, mode, chunk_count, content_id FROM inodes")];
     for (const row of rows) {
       const mtime = Number(row.mtime);
       const atime = Number(row.atime) || mtime;
+      const kind = inodeKindFromCode(Number(row.kind));
       const inode: INode = {
         path: String(row.path),
         parentPath: String(row.parent_path),
-        isDir: Number(row.is_dir) === 1,
+        kind,
+        isDir: kind === 'directory',
         size: Number(row.size),
         atime,
         mtime,
@@ -955,7 +1013,7 @@ export class SqliteVFS {
          SELECT 1 FROM content_lifecycle WHERE content_id = ?
          UNION ALL
          SELECT 1 FROM inodes
-         WHERE is_dir = 0 AND COALESCE(content_id, path) = ?
+         WHERE kind != 1 AND COALESCE(content_id, path) = ?
          LIMIT 1`,
         contentId,
         contentId,
@@ -1001,12 +1059,16 @@ export class SqliteVFS {
 
   isDirectory(path: string): boolean {
     const inode = this.inodes.get(path);
-    return inode !== undefined && inode.isDir;
+    return inode?.kind === 'directory';
   }
 
   isFile(path: string): boolean {
     const inode = this.inodes.get(path);
-    return inode !== undefined && !inode.isDir;
+    return inode?.kind === 'file';
+  }
+
+  isSymlink(path: string): boolean {
+    return this.inodes.get(path)?.kind === 'symlink';
   }
 
   /**
@@ -1034,11 +1096,99 @@ export class SqliteVFS {
     }
   }
 
+  acquireExclusiveMutation(
+    path: string,
+    options: ExclusiveMutationOptions = {},
+  ): ExclusiveMutationLease {
+    let root = normalizeVfsPath(path);
+    if (!root) throw vfsError('EINVAL', 'exclusive mutation root cannot be empty');
+    if (options.includeMissingAncestors) {
+      const parts = root.split('/');
+      for (let index = 0; index < parts.length; index++) {
+        const candidate = parts.slice(0, index + 1).join('/');
+        const inode = this.inodes.get(candidate);
+        if (!inode) {
+          root = candidate;
+          break;
+        }
+        if (inode.kind !== 'directory') break;
+      }
+    }
+    for (const lockedRoot of this.exclusiveMutationLeases.values()) {
+      if (pathsOverlap(root, lockedRoot)) {
+        throw vfsError('EBUSY', `${root} overlaps exclusive mutation at ${lockedRoot || '/'}`);
+      }
+    }
+    const owner = crypto.randomUUID();
+    this.exclusiveMutationLeases.set(owner, root);
+    return { root, owner };
+  }
+
+  acquireGlobalExclusiveMutation(): ExclusiveMutationLease {
+    if (this.exclusiveMutationLeases.size > 0) {
+      throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
+    }
+    const owner = crypto.randomUUID();
+    this.exclusiveMutationLeases.set(owner, '');
+    return { root: '', owner };
+  }
+
+  releaseExclusiveMutation(owner: string): void {
+    this.exclusiveMutationLeases.delete(owner);
+  }
+
+  hasExclusiveMutation(): boolean {
+    return this.exclusiveMutationLeases.size > 0;
+  }
+
+  private withMutationOwner<T>(owner: string | undefined, callback: () => T): T {
+    if (!owner || !this.exclusiveMutationLeases.has(owner)) {
+      if (owner) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
+      return callback();
+    }
+    if (this.activeMutationOwner !== null) {
+      throw new Error('[sqlite-vfs] nested mutation owner scope is not supported');
+    }
+    this.activeMutationOwner = owner;
+    try {
+      return callback();
+    } finally {
+      this.activeMutationOwner = null;
+    }
+  }
+
+  assertMutationAllowed(path: string): void {
+    this.assertMutationsAllowed([path]);
+  }
+
+  private assertMutationsAllowed(paths: Iterable<string>): void {
+    for (const path of paths) {
+      const normalized = normalizeVfsPath(path);
+      if (this.activeMutationOwner !== null) {
+        const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+        if (!ownedRoot || (normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
+          throw vfsError('EPERM', `${normalized} is outside exclusive mutation root ${ownedRoot ?? ''}`);
+        }
+      }
+      if (this.activeMutationOwner === null &&
+          normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
+          this.exclusiveMutationLeases.size > 0) {
+        throw vfsError('EBUSY', `${normalized} is locked while an exclusive mutation is active`);
+      }
+      for (const [owner, root] of this.exclusiveMutationLeases) {
+        if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner) continue;
+        throw vfsError('EBUSY', `${normalized} is locked by exclusive mutation at ${root || '/'}`);
+      }
+    }
+  }
+
   mkdir(path: string, options?: { recursive?: boolean }): void {
-    if (this.exists(path)) return;
+    const normalized = normalizeVfsPath(path);
+    this.assertMutationsAllowed([normalized]);
+    if (this.exists(normalized)) return;
 
     if (options?.recursive) {
-      const parts = path.split('/').filter(Boolean);
+      const parts = normalized.split('/').filter(Boolean);
       let current = '';
       for (const part of parts) {
         current = current ? current + '/' + part : part;
@@ -1047,7 +1197,7 @@ export class SqliteVFS {
         }
       }
     } else {
-      this._mkdirSingle(path);
+      this._mkdirSingle(normalized);
     }
   }
 
@@ -1055,12 +1205,13 @@ export class SqliteVFS {
     const pp = this.parentPath(path);
     const now = this.now();
     this.sql.exec(
-      "INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count, content_id) VALUES (?, ?, 1, 0, ?, ?, ?, 0, NULL)",
+      "INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, chunk_count, content_id) VALUES (?, ?, 1, 0, ?, ?, ?, 0, NULL)",
       path, pp, now, now, 0o755
     );
     const inode: INode = {
       path,
       parentPath: pp,
+      kind: 'directory',
       isDir: true,
       size: 0,
       atime: now,
@@ -1077,6 +1228,7 @@ export class SqliteVFS {
   }
 
   writeFile(path: string, content: string | Uint8Array): void {
+    this.assertMutationsAllowed([path]);
     const data = typeof content === 'string' ? enc.encode(content) : content;
     const pp = this.parentPath(path);
     const now = this.now();
@@ -1092,6 +1244,7 @@ export class SqliteVFS {
     const inode: BatchInodeEntry = {
       path,
       parentPath: pp,
+      kind: 'file',
       isDir: false,
       size: data.length,
       atime: now,
@@ -1107,6 +1260,53 @@ export class SqliteVFS {
     }
   }
 
+  symlink(target: string, path: string): void {
+    this.assertMutationsAllowed([path]);
+    const data = enc.encode(target);
+    const now = this.now();
+    const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
+    const inode: BatchInodeEntry = {
+      path,
+      parentPath: this.parentPath(path),
+      kind: 'symlink',
+      isDir: false,
+      size: data.length,
+      atime: now,
+      mtime: now,
+      mode: 0o777,
+      chunkCount,
+    };
+    const chunks = Array.from({ length: chunkCount }, (_, chunkId) => ({
+      path,
+      chunkId,
+      data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
+    }));
+    this.writeBatch({ inodes: [inode], chunks });
+  }
+
+  readlink(path: string): string {
+    const inode = this.inodes.get(path);
+    if (!inode) throw new Error('ENOENT: ' + path);
+    if (inode.kind !== 'symlink') throw new Error('EINVAL: ' + path + ' is not a symlink');
+    return dec.decode(this.readInodeBytes(path, inode));
+  }
+
+  resolveSymlink(path: string): string | null {
+    let current = normalizeVfsPath(path);
+    const seen = new Set<string>();
+    for (let hops = 0; hops < 40; hops++) {
+      const inode = this.inodes.get(current);
+      if (!inode || inode.kind !== 'symlink') return current;
+      if (seen.has(current)) return null;
+      seen.add(current);
+      const target = this.readlink(current);
+      current = target.startsWith('/')
+        ? normalizeVfsPath(target)
+        : normalizeVfsPath(`${this.parentPath(current)}/${target}`);
+    }
+    return null;
+  }
+
   /** Read one chunk via cache → SQL, caching on miss. */
   private readChunk(inode: INode, chunkId: number): Uint8Array | null {
     const path = inode.path;
@@ -1120,7 +1320,12 @@ export class SqliteVFS {
   readFile(path: string): Uint8Array {
     const inode = this.inodes.get(path);
     if (!inode) throw new Error("ENOENT: " + path);
-    if (inode.isDir) throw new Error("EISDIR: " + path);
+    if (inode.kind === 'directory') throw new Error("EISDIR: " + path);
+    if (inode.kind === 'symlink') throw new Error("EINVAL: " + path + ' is a symlink');
+    return this.readInodeBytes(path, inode);
+  }
+
+  private readInodeBytes(path: string, inode: INode): Uint8Array {
     if (inode.size === 0 || inode.chunkCount === 0) return new Uint8Array(0);
 
     if (inode.chunkCount === 1) {
@@ -1166,7 +1371,8 @@ export class SqliteVFS {
   readRange(path: string, offset: number, length: number): Uint8Array {
     const inode = this.inodes.get(path);
     if (!inode) throw new Error("ENOENT: " + path);
-    if (inode.isDir) throw new Error("EISDIR: " + path);
+    if (inode.kind === 'directory') throw new Error("EISDIR: " + path);
+    if (inode.kind !== 'file') throw new Error("EINVAL: " + path + ' is not a regular file');
     const start = clampNonNegativeInt(offset);
     const end = Math.min(inode.size, start + clampNonNegativeInt(length));
     if (start >= end) return new Uint8Array(0);
@@ -1196,8 +1402,10 @@ export class SqliteVFS {
    * (same contract as writeFile).
    */
   writeRange(path: string, offset: number, bytes: Uint8Array): void {
+    this.assertMutationsAllowed([path]);
     const prior = this.inodes.get(path);
-    if (prior && prior.isDir) throw new Error("EISDIR: " + path);
+    if (prior?.kind === 'directory') throw new Error("EISDIR: " + path);
+    if (prior && prior.kind !== 'file') throw new Error("EINVAL: " + path + ' is not a regular file');
     const isNew = prior === undefined;
     const start = clampNonNegativeInt(offset);
     const end = start + bytes.length;
@@ -1256,9 +1464,11 @@ export class SqliteVFS {
    * growing zero-fills like writeRange. Every mutation commits before return.
    */
   truncate(path: string, size: number): void {
+    this.assertMutationsAllowed([path]);
     const inode = this.inodes.get(path);
     if (!inode) throw new Error("ENOENT: " + path);
-    if (inode.isDir) throw new Error("EISDIR: " + path);
+    if (inode.kind === 'directory') throw new Error("EISDIR: " + path);
+    if (inode.kind !== 'file') throw new Error("EINVAL: " + path + ' is not a regular file');
     const newSize = clampNonNegativeInt(size);
     const oldSize = inode.size;
     if (newSize === oldSize) return;
@@ -1334,6 +1544,7 @@ export class SqliteVFS {
     return {
       path: inode.path,
       parentPath: inode.parentPath,
+      kind: 'file',
       isDir: false,
       size,
       atime: inode.atime,
@@ -1351,7 +1562,7 @@ export class SqliteVFS {
   ): boolean {
     const contentId = this.contentIdForInode(prior);
     const builder = new TransactionPlanBuilder();
-    builder.addInode({ ...inode, contentId });
+    builder.addInode({ ...inode, kind: inodeKind(inode), contentId });
     for (const [chunkId, data] of changedChunks) {
       builder.addChunk({ path: inode.path, contentId, chunkId, data });
     }
@@ -1396,7 +1607,7 @@ export class SqliteVFS {
     const inode = this.inodes.get(path);
     if (!inode) throw new Error("ENOENT: " + path);
     return {
-      type: inode.isDir ? 'directory' : 'file',
+      type: inode.kind,
       size: inode.size,
       atime: inode.atime || inode.mtime,
       ctime: inode.mtime,
@@ -1406,6 +1617,7 @@ export class SqliteVFS {
   }
 
   utimes(path: string, atimeMs: number, mtimeMs: number): void {
+    this.assertMutationsAllowed([path]);
     const inode = this.inodes.get(path);
     if (!inode) throw new Error("ENOENT: " + path);
     const atime = Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
@@ -1419,6 +1631,9 @@ export class SqliteVFS {
 
   readdir(path: string): { name: string; type: string }[] {
     const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
+    const inode = this.inodes.get(np);
+    if (np && !inode) throw new Error('ENOENT: ' + path);
+    if (inode && inode.kind !== 'directory') throw new Error('ENOTDIR: ' + path);
     const kids = this.children.get(np);
     if (!kids) {
       // W2.5b diagnostic: empty children-set for a directory we expected
@@ -1437,7 +1652,7 @@ export class SqliteVFS {
       const inode = this.inodes.get(childPath);
       if (inode) {
         const name = inode.path.split('/').pop()!;
-        results.push({ name, type: inode.isDir ? 'directory' : 'file' });
+        results.push({ name, type: inode.kind });
       }
     }
     // W2.5b diagnostic: if children-set has entries but readdir returns
@@ -1468,6 +1683,7 @@ export class SqliteVFS {
   }
 
   unlink(path: string): void {
+    this.assertMutationsAllowed([path]);
     const inode = this.inodes.get(path);
     if (!inode) return;
     if (inode.isDir) throw new Error('EISDIR: ' + path);
@@ -1475,6 +1691,7 @@ export class SqliteVFS {
   }
 
   rmdir(path: string): void {
+    this.assertMutationsAllowed([path]);
     const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
     // Check if empty using children index (O(1) instead of O(N))
     const kids = this.children.get(np);
@@ -1488,6 +1705,7 @@ export class SqliteVFS {
   }
 
   rename(oldPath: string, newPath: string): void {
+    this.assertMutationsAllowed([oldPath, newPath]);
     if (oldPath === newPath) return;
     if (newPath.startsWith(`${oldPath}/`)) {
       throw new Error(`EINVAL: cannot move ${oldPath} inside itself`);
@@ -1541,6 +1759,7 @@ export class SqliteVFS {
       const stored: StoredInodeEntry = {
         path,
         parentPath: this.parentPath(path),
+        kind: entry.kind,
         isDir: entry.isDir,
         size: entry.size,
         atime: entry.atime,
@@ -1599,6 +1818,7 @@ export class SqliteVFS {
    * grouping. Oversized strict calls fail with E2BIG before mutation.
    */
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } {
+    this.assertMutationsAllowed(batchMutationPaths(payload));
     const result = this._writeBatchWithRetry(
       payload,
       { source: 'strict-batch', limitMode: 'bounded' },
@@ -1708,9 +1928,10 @@ export class SqliteVFS {
     contentId: string,
     publishedChunkCount: number,
   ): { inodes: number; chunks: number } {
+    this.assertMutationsAllowed([inode.path]);
     const prior = this.inodes.get(inode.path);
     const builder = new TransactionPlanBuilder();
-    builder.addInode({ ...inode, contentId });
+    builder.addInode({ ...inode, kind: inodeKind(inode), contentId });
     builder.addPublishedContent(contentId);
     if (prior && !prior.isDir) builder.addGcContent(this.contentIdForInode(prior));
     const plan = builder.build();
@@ -1725,14 +1946,14 @@ export class SqliteVFS {
   }
 
   /**
-   * Incremental W7 v2 consumer. Publication is path-atomic with a committed
+   * Incremental W7 v3 consumer. Publication is path-atomic with a committed
    * prefix. Chunk payload is admitted through one per-VFS weighted credit
    * pool, staged in bounded synchronous transactions, then released before
    * the decoder pulls another record.
    */
   async writeStream(
     stream: ReadableStream<Uint8Array>,
-    options: { decodeDrainStartedAt?: number; signal?: AbortSignal } = {},
+    options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string } = {},
   ): Promise<WriteBatchStreamResult> {
     const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
     const decodeDrainToken = {};
@@ -1822,7 +2043,9 @@ export class SqliteVFS {
           case 'delete': {
             phase = 'publish';
             const affected = Math.max(1, this.collectBatchDeletions([record.path]).length);
-            this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] });
+            this.withMutationOwner(options.mutationOwner, () => {
+              this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] });
+            });
             progress.committedGroupSequence++;
             progress.committedPathCount += affected;
             break;
@@ -1831,7 +2054,9 @@ export class SqliteVFS {
             phase = 'validation';
             this.validateFileChunks(record.inode, []);
             phase = 'publish';
-            const result = this.writeBatch({ inodes: [record.inode], chunks: [] });
+            const result = this.withMutationOwner(options.mutationOwner, () => (
+              this.writeBatch({ inodes: [record.inode], chunks: [] })
+            ));
             progress.committedGroupSequence++;
             progress.committedPathCount++;
             progress.inodes += result.inodes;
@@ -1841,6 +2066,9 @@ export class SqliteVFS {
             if (activeFile) throw new Error(`EINVAL: nested streamed file ${record.inode.path}`);
             phase = 'validation';
             this.validateInodeContentShape(record.inode);
+            this.withMutationOwner(options.mutationOwner, () => {
+              this.assertMutationsAllowed([record.inode.path]);
+            });
             phase = 'stage';
             const durableContentId = this.beginStagedContent();
             ownedStagingContentIds.add(durableContentId);
@@ -1879,11 +2107,13 @@ export class SqliteVFS {
             flushStagedChunks();
             phase = 'publish';
             const completed = activeFile;
-            const result = this.publishStagedFile(
-              completed.inode,
-              completed.durableContentId,
-              record.chunkCount,
-            );
+            const result = this.withMutationOwner(options.mutationOwner, () => (
+              this.publishStagedFile(
+                completed.inode,
+                completed.durableContentId,
+                record.chunkCount,
+              )
+            ));
             ownedStagingContentIds.delete(completed.durableContentId);
             this._stagedStreamBytes -= completed.stagedBytes;
             activeFile = null;
@@ -2039,7 +2269,7 @@ export class SqliteVFS {
           values.push(
             inode.path,
             inode.parentPath,
-            inode.isDir ? 1 : 0,
+            inodeKindCode(inode.kind),
             inode.size,
             atime,
             inode.mtime,
@@ -2049,7 +2279,7 @@ export class SqliteVFS {
           );
         }
         this.sql.exec(
-          `INSERT OR REPLACE INTO inodes (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count, content_id) VALUES ${placeholders}`,
+          `INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, chunk_count, content_id) VALUES ${placeholders}`,
           ...values,
         );
       }
@@ -2186,7 +2416,7 @@ export class SqliteVFS {
            )
            AND NOT EXISTS (
              SELECT 1 FROM inodes
-             WHERE inodes.is_dir = 0
+             WHERE inodes.kind != 1
                AND COALESCE(inodes.content_id, inodes.path) = chunks.content_id
            )
          GROUP BY chunks.content_id
@@ -2220,7 +2450,7 @@ export class SqliteVFS {
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM inodes
-                   WHERE inodes.is_dir = 0
+                   WHERE inodes.kind != 1
                      AND COALESCE(inodes.content_id, inodes.path) = candidate.content_id
                  )`,
               Date.now(),
@@ -2239,7 +2469,7 @@ export class SqliteVFS {
          WHERE lifecycle.state = 'staging'
            AND NOT EXISTS (
              SELECT 1 FROM inodes
-             WHERE inodes.is_dir = 0
+             WHERE inodes.kind != 1
                AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
            )
          ORDER BY lifecycle.created_at, lifecycle.content_id
@@ -2269,7 +2499,7 @@ export class SqliteVFS {
                  AND lifecycle.content_id IN (${placeholders})
                  AND NOT EXISTS (
                    SELECT 1 FROM inodes
-                   WHERE inodes.is_dir = 0
+                   WHERE inodes.kind != 1
                      AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
                  )`,
               ...contentIds,
@@ -2287,7 +2517,7 @@ export class SqliteVFS {
          WHERE lifecycle.state = 'gc'
            AND NOT EXISTS (
              SELECT 1 FROM inodes
-             WHERE inodes.is_dir = 0
+             WHERE inodes.kind != 1
                AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
            )
          ORDER BY lifecycle.created_at, lifecycle.content_id
@@ -2336,7 +2566,7 @@ export class SqliteVFS {
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM inodes
-                   WHERE inodes.is_dir = 0
+                   WHERE inodes.kind != 1
                      AND COALESCE(inodes.content_id, inodes.path) = ?
                  )`,
               contentId,
@@ -2351,7 +2581,7 @@ export class SqliteVFS {
                AND lifecycle.state = 'gc'
                AND NOT EXISTS (
                  SELECT 1 FROM inodes
-                 WHERE inodes.is_dir = 0
+                 WHERE inodes.kind != 1
                    AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
                )
                AND NOT EXISTS (
@@ -2371,7 +2601,7 @@ export class SqliteVFS {
          WHERE lifecycle.state = 'gc'
            AND NOT EXISTS (
              SELECT 1 FROM inodes
-             WHERE inodes.is_dir = 0
+             WHERE inodes.kind != 1
                AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
            )
          LIMIT 1`,
@@ -2451,7 +2681,15 @@ export class SqliteVFS {
     }
 
     const normalizedInodes = new Map<string, BatchInodeEntry>();
-    for (const entry of payload.inodes) normalizedInodes.set(entry.path, entry);
+    for (const entry of payload.inodes) {
+      this.validateInodeContentShape(entry);
+      const kind = inodeKind(entry);
+      normalizedInodes.set(entry.path, {
+        ...entry,
+        kind,
+        isDir: kind === 'directory',
+      });
+    }
     const chunksByPath = new Map<string, BatchChunkEntry[]>();
     for (const chunk of payload.chunks) {
       const entries = chunksByPath.get(chunk.path);
@@ -2464,12 +2702,11 @@ export class SqliteVFS {
     let preflightContentIndex = 0;
     for (const entry of normalizedInodes.values()) {
       const prior = this.inodes.get(entry.path);
-      this.validateInodeContentShape(entry);
       if (entry.isDir) {
         if ((chunksByPath.get(entry.path)?.length ?? 0) > 0) {
           throw new Error(`EINVAL: directory batch entry has chunks: ${entry.path}`);
         }
-        builder.addInode({ ...entry, contentId: null });
+        builder.addInode({ ...entry, kind: inodeKind(entry), contentId: null });
       } else {
         const fileChunks = chunksByPath.get(entry.path) ?? [];
         this.validateFileChunks(entry, fileChunks);
@@ -2478,7 +2715,7 @@ export class SqliteVFS {
           : `preflight:${preflightContentIndex++}`;
         contentIds.set(entry.path, contentId);
         builder.addStagingContent(contentId);
-        builder.addInode({ ...entry, contentId });
+        builder.addInode({ ...entry, kind: inodeKind(entry), contentId });
         builder.addPublishedContent(contentId);
       }
       if (prior && !prior.isDir) builder.addGcContent(this.contentIdForInode(prior));
@@ -2488,12 +2725,18 @@ export class SqliteVFS {
       const contentId = contentIds.get(entry.path)
         ?? (() => {
           const inode = this.inodes.get(entry.path);
-          if (!inode || inode.isDir) throw new Error(`EINVAL: chunk has no file inode: ${entry.path}`);
+          if (!inode || inode.kind !== 'file') {
+            throw new Error(`EINVAL: chunk has no regular file inode: ${entry.path}`);
+          }
           return this.contentIdForInode(inode);
         })();
       builder.addChunk({ ...entry, contentId });
     }
-    return { payload, plan: builder.build(), deletedInodes };
+    return {
+      payload: { ...payload, inodes: [...normalizedInodes.values()] },
+      plan: builder.build(),
+      deletedInodes,
+    };
   }
 
   private validateFileChunks(inode: BatchInodeEntry, chunks: readonly BatchChunkEntry[]): void {
@@ -2524,16 +2767,26 @@ export class SqliteVFS {
   }
 
   private validateInodeContentShape(inode: BatchInodeEntry): void {
+    const kind = inodeKind(inode);
+    const expectedParent = this.parentPath(inode.path);
+    if (inode.parentPath !== expectedParent) {
+      throw new Error(
+        `EINVAL: ${inode.path}: parentPath ${inode.parentPath} does not match ${expectedParent}`,
+      );
+    }
+    if (inode.isDir !== (kind === 'directory')) {
+      throw new Error(`EINVAL: ${inode.path}: inode kind ${kind} conflicts with isDir=${inode.isDir}`);
+    }
     if (!Number.isSafeInteger(inode.size) || inode.size < 0) {
       throw new Error(`EINVAL: ${inode.path}: invalid size ${inode.size}`);
     }
     if (!Number.isSafeInteger(inode.chunkCount) || inode.chunkCount < 0) {
       throw new Error(`EINVAL: ${inode.path}: invalid chunk count ${inode.chunkCount}`);
     }
-    if (inode.isDir && inode.size !== 0) {
+    if (kind === 'directory' && inode.size !== 0) {
       throw new Error(`EINVAL: ${inode.path}: directory size must be zero`);
     }
-    const expectedChunkCount = inode.isDir || inode.size === 0
+    const expectedChunkCount = kind === 'directory' || inode.size === 0
       ? 0
       : Math.ceil(inode.size / CHUNK_SIZE);
     if (inode.chunkCount !== expectedChunkCount) {
@@ -2606,6 +2859,7 @@ export class SqliteVFS {
       const node: INode = {
         path: entry.path,
         parentPath: entry.parentPath,
+        kind: entry.kind,
         isDir: entry.isDir,
         size: entry.size,
         atime,
@@ -2707,6 +2961,7 @@ export class SqliteVFS {
    * per-file mkdir overhead.
    */
   mkdirBatch(paths: string[]): number {
+    this.assertMutationsAllowed(paths);
     const mtime = Date.now();
     const toCreate: BatchInodeEntry[] = [];
     const seen = new Set<string>();
@@ -2908,6 +3163,47 @@ export class SqliteVFS {
       },
     };
   }
+}
+
+function inodeKind(inode: Pick<BatchInodeEntry, 'kind' | 'isDir'>): VfsInodeKind {
+  const kind = inode.kind ?? (inode.isDir ? 'directory' : 'file');
+  if (kind !== 'file' && kind !== 'directory' && kind !== 'symlink') {
+    throw new Error(`EINVAL: invalid inode kind ${String(kind)}`);
+  }
+  return kind;
+}
+
+function inodeKindCode(kind: VfsInodeKind): number {
+  if (kind === 'file') return INODE_KIND_FILE;
+  if (kind === 'directory') return INODE_KIND_DIRECTORY;
+  if (kind === 'symlink') return INODE_KIND_SYMLINK;
+  throw new Error(`EINVAL: invalid inode kind ${String(kind)}`);
+}
+
+function inodeKindFromCode(code: number): VfsInodeKind {
+  if (code === INODE_KIND_FILE) return 'file';
+  if (code === INODE_KIND_DIRECTORY) return 'directory';
+  if (code === INODE_KIND_SYMLINK) return 'symlink';
+  throw new Error(`EIO: invalid durable inode kind ${code}`);
+}
+
+function batchMutationPaths(payload: BatchWritePayload): Set<string> {
+  const paths = new Set<string>(payload.deletePaths ?? []);
+  for (const inode of payload.inodes) paths.add(inode.path);
+  for (const chunk of payload.chunks) paths.add(chunk.path);
+  return paths;
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return left === ''
+    || right === ''
+    || left === right
+    || left.startsWith(`${right}/`)
+    || right.startsWith(`${left}/`);
+}
+
+function vfsError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(`${code}: ${message}`), { code });
 }
 
 function emptyDurationSummary(): DurationSummary {

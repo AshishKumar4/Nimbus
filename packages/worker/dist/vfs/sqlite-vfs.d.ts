@@ -40,10 +40,20 @@
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
+export type VfsInodeKind = 'file' | 'directory' | 'symlink';
+export interface ExclusiveMutationLease {
+    readonly root: string;
+    readonly owner: string;
+}
+export interface ExclusiveMutationOptions {
+    readonly includeMissingAncestors?: boolean;
+}
 /** Entry for bulk inode creation via writeBatch(). */
 export interface BatchInodeEntry {
     path: string;
     parentPath: string;
+    /** Defaults to isDir ? directory : file for legacy/non-symlink producers. */
+    kind?: VfsInodeKind;
     isDir: boolean;
     size: number;
     atime?: number;
@@ -116,6 +126,8 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
+    private readonly exclusiveMutationLeases;
+    private activeMutationOwner;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -189,6 +201,7 @@ export declare class SqliteVFS {
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
+    isSymlink(path: string): boolean;
     /**
      * Without a path: the global mutation clock. With a path: the clock
      * value at the last mutation inside that path's subtree (0 if nothing
@@ -198,14 +211,25 @@ export declare class SqliteVFS {
     revision(path?: string): number;
     /** Advance the clock once and stamp every path + its ancestors. */
     private bumpRevision;
+    acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
+    acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
+    releaseExclusiveMutation(owner: string): void;
+    hasExclusiveMutation(): boolean;
+    private withMutationOwner;
+    assertMutationAllowed(path: string): void;
+    private assertMutationsAllowed;
     mkdir(path: string, options?: {
         recursive?: boolean;
     }): void;
     private _mkdirSingle;
     writeFile(path: string, content: string | Uint8Array): void;
+    symlink(target: string, path: string): void;
+    readlink(path: string): string;
+    resolveSymlink(path: string): string | null;
     /** Read one chunk via cache → SQL, caching on miss. */
     private readChunk;
     readFile(path: string): Uint8Array;
+    private readInodeBytes;
     private requireChunk;
     /**
      * Read `length` bytes at `offset` without assembling the whole file —
@@ -272,7 +296,7 @@ export declare class SqliteVFS {
     private executeStagedChunkPlan;
     private publishStagedFile;
     /**
-     * Incremental W7 v2 consumer. Publication is path-atomic with a committed
+     * Incremental W7 v3 consumer. Publication is path-atomic with a committed
      * prefix. Chunk payload is admitted through one per-VFS weighted credit
      * pool, staged in bounded synchronous transactions, then released before
      * the decoder pulls another record.
@@ -280,6 +304,7 @@ export declare class SqliteVFS {
     writeStream(stream: ReadableStream<Uint8Array>, options?: {
         decodeDrainStartedAt?: number;
         signal?: AbortSignal;
+        mutationOwner?: string;
     }): Promise<WriteBatchStreamResult>;
     private _writeBatchWithRetry;
     /**

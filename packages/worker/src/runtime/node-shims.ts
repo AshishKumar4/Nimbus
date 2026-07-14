@@ -550,6 +550,16 @@ const __fsMod = (() => {
     return statSync(p);
   }
 
+  async function _lstatAsync(p) {
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.lstat === "function") {
+      const meta = await __nimbusUseRpcResult(supervisor.lstat(absPath), (result) => result);
+      if (meta) return _statObject(meta);
+    }
+    return lstatSync(p);
+  }
+
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     let local;
@@ -1040,6 +1050,7 @@ const __fsMod = (() => {
     _writeFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
   function stat(p, cb) { _statAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
+  function lstat(p, cb) { _lstatAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
   function readdir(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
     _readdirAsync(p, opts).then((d) => cb(null, d)).catch((e) => cb(e));
@@ -1241,7 +1252,7 @@ const __fsMod = (() => {
 
     // W3 additions:
     appendFile: async (p, d, o) => { await _appendFileAsync(p, d, o); },
-    lstat: (p) => new Promise((res, rej) => stat(p, (e, s) => e ? rej(e) : res(s))),
+    lstat: (p) => new Promise((res, rej) => lstat(p, (e, s) => e ? rej(e) : res(s))),
     rm: async (p, opts) => {
       const o = opts || {};
       const k = _strip(_resolve(p));
@@ -1408,7 +1419,7 @@ const __fsMod = (() => {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync, utimesSync, lutimesSync,
-    readFile, writeFile, stat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, access,
+    readFile, writeFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({

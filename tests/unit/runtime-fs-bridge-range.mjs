@@ -2,12 +2,13 @@
 // Unit tests for SqliteRuntimeFsBridge range ops (readRange/writeRange/
 // truncate), per-path revision semantics (stat().revision, revision(path),
 // expectedRevision, handle ESTALE isolation), and symlink resolution
-// through the shared per-VFS SymlinkRegistry.
+// through durable SqliteVFS symlink inodes.
 
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function makeBridge() {
@@ -137,20 +138,111 @@ const dec = new TextDecoder();
   await bridge.close(tr.id);
 }
 
-// ── symlinks: range ops resolve through the shared registry ──
+// ── symlinks: native inode durability, metadata, and resolution ──
 {
-  const { bridge } = makeBridge();
+  const { harness, vfs, bridge } = makeBridge();
   await bridge.writeFile('/real/target.txt', 'abcdefgh');
   await bridge.symlink('/real/target.txt', '/links/alias.txt');
 
+  assert.equal(vfs.isSymlink('links/alias.txt'), true, 'new links must be native VFS inodes');
+  assert.equal(vfs.readlink('links/alias.txt'), '/real/target.txt');
+  assert.equal(await bridge.readlink('/links/alias.txt'), '/real/target.txt');
+  const linkStat = await bridge.stat('/links/alias.txt', { followSymlinks: false });
+  assert.equal(linkStat.type, 'symlink');
+  assert.equal(linkStat.mode, 0o120777, 'lstat mode must include the symlink inode type');
+  assert.equal(linkStat.size, enc.encode('/real/target.txt').byteLength);
+  assert.equal((await bridge.stat('/links/alias.txt')).type, 'file');
+  assert.deepEqual(
+    await bridge.readdir('/links'),
+    [{ name: 'alias.txt', type: 'symlink' }],
+    'native symlinks must appear exactly once with their real directory-entry type',
+  );
   assert.equal(dec.decode(await bridge.readRange('/links/alias.txt', 2, 3)), 'cde');
   await bridge.writeRange('/links/alias.txt', 0, enc.encode('AB'));
   assert.equal(dec.decode(await bridge.readFile('/real/target.txt')), 'ABcdefgh');
   await bridge.truncate('/links/alias.txt', 4);
   assert.equal(dec.decode(await bridge.readFile('/real/target.txt')), 'ABcd');
-  assert.equal((await bridge.stat('/links/alias.txt', { followSymlinks: false })).type, 'symlink');
   // revision(link) follows the link target's data path.
   assert.equal(await bridge.revision('/links/alias.txt'), await bridge.revision('/real/target.txt'));
+
+  const reloadedVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const reloadedBridge = new SqliteRuntimeFsBridge(reloadedVfs);
+  assert.equal(reloadedVfs.isSymlink('links/alias.txt'), true, 'symlink kind must survive VFS reload');
+  assert.equal(await reloadedBridge.readlink('/links/alias.txt'), '/real/target.txt');
+  assert.equal(
+    (await reloadedBridge.stat('/links/alias.txt', { followSymlinks: false })).mode,
+    0o120777,
+    'the symlink mode must survive VFS reload',
+  );
+  assert.equal(dec.decode(await reloadedBridge.readFile('/links/alias.txt')), 'ABcd');
+  await reloadedBridge.rename('/links/alias.txt', '/links/renamed.txt');
+  assert.equal(reloadedVfs.isSymlink('links/alias.txt'), false);
+  assert.equal(reloadedVfs.isSymlink('links/renamed.txt'), true);
+  assert.equal(await reloadedBridge.readlink('/links/renamed.txt'), '/real/target.txt');
+  await reloadedBridge.unlink('/links/renamed.txt');
+  assert.equal(reloadedVfs.exists('links/renamed.txt'), false);
+}
+
+// ── symlinks: intermediate components, loops, and legacy read fallback ──
+{
+  const { vfs, bridge } = makeBridge();
+  await bridge.writeFile('/real/dir/file.txt', 'through-directory-link');
+  await bridge.symlink('../real/dir', '/links/dir');
+  assert.equal(
+    dec.decode(await bridge.readFile('/links/dir/file.txt')),
+    'through-directory-link',
+    'resolution must follow symlinks in intermediate path components',
+  );
+  assert.deepEqual(await bridge.readdir('/links/dir'), [{ name: 'file.txt', type: 'file' }]);
+
+  await bridge.symlink('../missing-target', '/links/dangling');
+  assert.equal(await bridge.readlink('/links/dangling'), '../missing-target');
+  assert.equal(await bridge.stat('/links/dangling'), null, 'stat follows a dangling symlink');
+  assert.equal((await bridge.stat('/links/dangling', { followSymlinks: false })).type, 'symlink');
+
+  await bridge.symlink('two', '/loop/one');
+  await bridge.symlink('one', '/loop/two');
+  assert.equal(await bridge.stat('/loop/one'), null, 'symlink loops must not resolve to arbitrary data');
+  assert.equal(await bridge.readFile('/loop/one'), null);
+
+  getSymlinkRegistry(vfs).set('/legacy/link.txt', '/real/dir/file.txt');
+  assert.equal(
+    dec.decode(await bridge.readFile('/legacy/link.txt')),
+    'through-directory-link',
+    'pre-native registry entries remain readable during compatibility migration',
+  );
+  assert.equal((await bridge.stat('/legacy/link.txt', { followSymlinks: false })).mode, 0o120777);
+
+  getSymlinkRegistry(vfs).set('/legacy/shadowed.txt', '/real/dir/file.txt');
+  vfs.mkdir('legacy', { recursive: true });
+  vfs.writeFile('legacy/shadowed.txt', 'native-wins');
+  assert.equal(
+    dec.decode(await bridge.readFile('/legacy/shadowed.txt')),
+    'native-wins',
+    'native inodes take precedence over stale legacy registry entries',
+  );
+
+  const registry = getSymlinkRegistry(vfs);
+  registry.set('/legacy/destination-link', '/real/dir/file.txt');
+  await assert.rejects(
+    bridge.rename('/legacy/missing-source', '/legacy/destination-link'),
+    /ENOENT/,
+  );
+  assert.equal(registry.readlink('/legacy/destination-link'), '/real/dir/file.txt');
+
+  registry.set('/legacy/source-link', '/real/dir/file.txt');
+  vfs.writeFile('legacy/native-destination', 'replace-me');
+  await bridge.rename('/legacy/source-link', '/legacy/native-destination');
+  assert.equal(vfs.stat('legacy/native-destination').type, 'symlink');
+  assert.equal(vfs.readlink('legacy/native-destination'), '/real/dir/file.txt');
+  assert.equal(registry.readlink('/legacy/source-link'), null);
+
+  vfs.writeFile('legacy/native-source', 'replacement');
+  registry.set('/legacy/shadowed-destination', '/real/dir/file.txt');
+  vfs.writeFile('legacy/shadowed-destination', 'old-native');
+  await bridge.rename('/legacy/native-source', '/legacy/shadowed-destination');
+  assert.equal(vfs.readFileString('legacy/shadowed-destination'), 'replacement');
+  assert.equal(registry.readlink('/legacy/shadowed-destination'), null);
 }
 
 console.log('runtime-fs-bridge-range: all assertions passed');

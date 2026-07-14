@@ -224,6 +224,8 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string): Promise<any>;
+    _rpcLstat(path: string): Promise<any>;
+    _rpcHasLegacySymlinkUnder(path: string): Promise<boolean>;
     _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     _rpcReaddir(path: string): Promise<{
         name: string;
@@ -249,7 +251,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         inodes: number;
         chunks: number;
     }>;
-    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
+    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult>;
     _rpcPutRegistryEntries(entries: any[]): Promise<{
         written: number;
         failed: number;

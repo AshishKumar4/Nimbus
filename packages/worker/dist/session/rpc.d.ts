@@ -57,6 +57,8 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
 }>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void>;
 export declare function _rpcStat(self: RpcHost, path: string): Promise<any>;
+export declare function _rpcLstat(self: RpcHost, path: string): Promise<any>;
+export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean>;
 export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void>;
 export declare function _rpcReaddir(self: RpcHost, path: string): Promise<{
     name: string;
@@ -100,7 +102,7 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
 }>;
 /**
  * W7 — Streaming bulk-write entry point. Receives a
- * ReadableStream<Uint8Array> in the W7 v2 wire format (see
+ * ReadableStream<Uint8Array> in the W7 v3 wire format (see
  * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
  * SqliteVFS.writeStream().
  *
@@ -113,7 +115,7 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
  * groups remain durable when a later group fails. The typed result carries
  * the exact durable progress.
  */
-export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
+export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult>;
 /**
  * Bulk-write npm registry cache entries in ONE RPC. Used by the
  * resolver-facet to flush a wave of resolved packages back to the

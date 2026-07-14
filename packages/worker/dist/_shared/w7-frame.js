@@ -1,9 +1,9 @@
 /**
- * W7 v2 — incremental typed records for streamed bulk filesystem writes.
+ * W7 v3 — incremental typed records for streamed bulk filesystem writes.
  * The format is internal: every producer and consumer deploys together.
  */
 import { CHUNK_SIZE } from '../constants.js';
-export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x02]);
+export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 const ENCODER_QUEUE_HWM = 0;
 const MAX_METADATA_BYTES = 64 * 1024;
 const MAX_PATH_BYTES = 64 * 1024;
@@ -65,7 +65,7 @@ export function encodeWriteBatchStream(payload) {
     });
 }
 /**
- * Parse the v2 preamble eagerly, then expose validated operation records
+ * Parse the v3 preamble eagerly, then expose validated operation records
  * incrementally. Chunk credit is acquired after its bounded header validates
  * and before its payload bytes are read or copied.
  */
@@ -88,9 +88,9 @@ export async function decodeWriteBatchStream(stream, options = {}) {
                 ? magic[3]
                 : null;
             if (version !== null) {
-                throw new Error(`w7-frame: unsupported protocol version ${version}; expected 2`);
+                throw new Error(`w7-frame: unsupported protocol version ${version}; expected 3`);
             }
-            throw new Error(`w7-frame: bad magic, expected NW7\\x02, got ${hex(magic)}`);
+            throw new Error(`w7-frame: bad magic, expected NW7\\x03, got ${hex(magic)}`);
         }
         const beginEnvelope = await readEnvelope(buffer, 'batch-begin');
         if (beginEnvelope.tag !== RecordTag.BatchBegin) {
@@ -335,13 +335,17 @@ function* encodeRecords(batchId, deletes, directories, files) {
     for (const inode of directories) {
         state.summary.pathCount++;
         state.summary.directoryCount++;
-        yield encodeMetadataRecord(RecordTag.Directory, inodeMetadata(inode), state);
+        yield encodeMetadataRecord(RecordTag.Directory, {
+            ...inodeMetadata(inode),
+            kind: inode.kind,
+        }, state);
     }
     for (const file of files) {
         state.summary.pathCount++;
         state.summary.fileCount++;
         yield encodeMetadataRecord(RecordTag.FileBegin, {
             ...inodeMetadata(file.inode),
+            kind: file.inode.kind,
             contentId: file.contentId,
             size: file.inode.size,
             chunkCount: file.inode.chunkCount,
@@ -413,16 +417,20 @@ function preparePayload(payload, batchId) {
         if (path !== inode.path)
             throw new Error(`w7-frame: noncanonical inode path ${inode.path}`);
         claimPath(ownedPaths, path);
-        validateInode(inode);
+        const normalizedInode = normalizeInode(inode);
         const fileChunks = chunksByPath.get(path) ?? [];
-        if (inode.isDir) {
+        if (normalizedInode.kind === 'directory') {
             if (fileChunks.length > 0)
                 throw new Error(`w7-frame: directory ${path} has chunks`);
-            directories.push(inode);
+            directories.push(normalizedInode);
         }
         else {
-            validateChunks(inode, fileChunks);
-            files.push({ inode, contentId: `${batchId}:${fileIndex++}`, chunks: fileChunks });
+            validateChunks(normalizedInode, fileChunks);
+            files.push({
+                inode: normalizedInode,
+                contentId: `${batchId}:${fileIndex++}`,
+                chunks: fileChunks,
+            });
         }
         chunksByPath.delete(path);
     }
@@ -443,12 +451,18 @@ function parseDelete(bytes) {
     return { path: canonicalPath(value.path, 'delete path') };
 }
 function parseDirectory(bytes) {
-    const value = parseObject(bytes, 'directory', ['path', 'mtime', 'mode'], ['atime']);
-    return parseInodeMetadata(value, 'directory');
+    const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], ['atime']);
+    if (value.kind !== 'directory') {
+        throw new Error(`w7-frame: unsupported directory kind ${String(value.kind)}`);
+    }
+    return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 function parseFileBegin(bytes) {
-    const value = parseObject(bytes, 'file-begin', ['path', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], ['atime']);
+    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], ['atime']);
     const base = parseInodeMetadata(value, 'file-begin');
+    if (value.kind !== 'file' && value.kind !== 'symlink') {
+        throw new Error(`w7-frame: unsupported file-begin kind ${String(value.kind)}`);
+    }
     const contentId = boundedString(value.contentId, 'stream content id', MAX_CONTENT_ID_BYTES);
     if (!/^[A-Za-z0-9._:-]+$/.test(contentId)) {
         throw new Error(`w7-frame: invalid stream content id ${contentId}`);
@@ -459,7 +473,7 @@ function parseFileBegin(bytes) {
     if (chunkCount !== expected) {
         throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
     }
-    return { ...base, contentId, size, chunkCount };
+    return { ...base, kind: value.kind, contentId, size, chunkCount };
 }
 function parseFileEnd(bytes) {
     const value = parseObject(bytes, 'file-end', ['contentId', 'size', 'chunkCount', 'check']);
@@ -518,7 +532,7 @@ function parseObject(bytes, label, required, optional = []) {
     }
     return value;
 }
-function validateInode(inode) {
+function normalizeInode(inode) {
     canonicalPath(inode.path, 'inode path');
     if (inode.parentPath !== parentPath(inode.path)) {
         throw new Error(`w7-frame: ${inode.path}: noncanonical parent path ${inode.parentPath}`);
@@ -529,15 +543,28 @@ function validateInode(inode) {
     if (inode.atime !== undefined)
         safeInteger(inode.atime, `${inode.path} atime`);
     u32(inode.mode, `${inode.path} mode`);
-    if (inode.isDir && (inode.size !== 0 || inode.chunkCount !== 0)) {
+    const rawKind = inode.kind ?? (inode.isDir ? 'directory' : 'file');
+    if (rawKind !== 'file' && rawKind !== 'directory' && rawKind !== 'symlink') {
+        throw new Error(`w7-frame: unsupported inode kind ${String(rawKind)}`);
+    }
+    const kind = rawKind;
+    if (kind === 'directory' && !inode.isDir) {
+        throw new Error(`w7-frame: directory inode ${inode.path} must be a directory`);
+    }
+    if (kind !== 'directory' && inode.isDir) {
+        throw new Error(`w7-frame: ${kind} inode ${inode.path} cannot be a directory`);
+    }
+    if (kind === 'directory' && (inode.size !== 0 || inode.chunkCount !== 0)) {
         throw new Error(`w7-frame: directory ${inode.path} must have zero size and chunks`);
     }
-    if (!inode.isDir) {
+    if (kind !== 'directory') {
         const expected = inode.size === 0 ? 0 : Math.ceil(inode.size / CHUNK_SIZE);
         if (inode.chunkCount !== expected) {
             throw new Error(`w7-frame: ${inode.path}: expected ${expected} chunks, got ${inode.chunkCount}`);
         }
+        return { ...inode, kind, isDir: false };
     }
+    return { ...inode, kind, isDir: true };
 }
 function validateChunks(inode, chunks) {
     if (chunks.length !== inode.chunkCount) {
@@ -559,6 +586,7 @@ function directoryInode(metadata) {
     return {
         path: metadata.path,
         parentPath: parentPath(metadata.path),
+        kind: metadata.kind,
         isDir: true,
         size: 0,
         atime: metadata.atime,
@@ -571,6 +599,7 @@ function fileInode(metadata) {
     return {
         path: metadata.path,
         parentPath: parentPath(metadata.path),
+        kind: metadata.kind,
         isDir: false,
         size: metadata.size,
         atime: metadata.atime,

@@ -28,8 +28,28 @@ assert.deepEqual(result, {
   error: {
     code: 'ERR_WRITE_BATCH_STREAM',
     phase: 'decode',
-    message: 'w7-frame: bad magic, expected NW7\\x02, got 42 41 44 21',
+    message: 'w7-frame: bad magic, expected NW7\\x03, got 42 41 44 21',
   },
 });
+
+let forwardedOwner;
+const ownerResult = await _rpcWriteBatchStream({
+  sqliteFs: {
+    async writeStream(_stream, options) {
+      forwardedOwner = options.mutationOwner;
+      return {
+        ok: true,
+        committedGroupSequence: 0,
+        committedPathCount: 0,
+        inodes: 0,
+        chunks: 0,
+      };
+    },
+  },
+  ensureSqliteFs() {},
+}, new ReadableStream(), 'clone-owner');
+
+assert.equal(forwardedOwner, 'clone-owner');
+assert.equal(ownerResult.ok, true);
 
 console.log('writeBatchStream RPC contract: ok');

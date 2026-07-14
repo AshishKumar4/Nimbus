@@ -1,5 +1,5 @@
 /**
- * W7 v2 — incremental typed records for streamed bulk filesystem writes.
+ * W7 v3 — incremental typed records for streamed bulk filesystem writes.
  * The format is internal: every producer and consumer deploys together.
  */
 import type { BatchInodeEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
@@ -26,16 +26,24 @@ export interface W7DecodeOptions {
     signal?: AbortSignal;
     retainChunk?: (byteLength: number, signal?: AbortSignal) => Promise<W7ChunkRetention>;
 }
+type W7DirectoryInode = BatchInodeEntry & {
+    kind: 'directory';
+    isDir: true;
+};
+type W7ContentInode = BatchInodeEntry & {
+    kind: 'file' | 'symlink';
+    isDir: false;
+};
 export type W7DecodedRecord = {
     type: 'delete';
     path: string;
 } | {
     type: 'directory';
-    inode: BatchInodeEntry;
+    inode: W7DirectoryInode;
 } | {
     type: 'file-begin';
     streamContentId: string;
-    inode: BatchInodeEntry;
+    inode: W7ContentInode;
 } | {
     type: 'file-chunk';
     streamContentId: string;
@@ -62,7 +70,7 @@ export interface W7DecodedStream {
 /** Encode one bounded record per pull; no batch-sized metadata header exists. */
 export declare function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array>;
 /**
- * Parse the v2 preamble eagerly, then expose validated operation records
+ * Parse the v3 preamble eagerly, then expose validated operation records
  * incrementally. Chunk credit is acquired after its bounded header validates
  * and before its payload bytes are read or copied.
  */

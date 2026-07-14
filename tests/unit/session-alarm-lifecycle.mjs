@@ -137,6 +137,14 @@ function makeHost() {
     ...makeHost(),
     ctx: { storage, getWebSockets: () => [] },
     sqliteFs: null,
+    ensureSqliteFs() {
+      if (this.sqliteFs) return;
+      this.sqliteFs = {
+        hasExclusiveMutation: () => false,
+        acquireGlobalExclusiveMutation: () => ({ root: '', owner: 'destroy-test' }),
+        releaseExclusiveMutation() {},
+      };
+    },
     terminal: null,
     shell: null,
     kernel: null,

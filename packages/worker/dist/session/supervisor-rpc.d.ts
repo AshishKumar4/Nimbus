@@ -73,6 +73,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     readFileBytes(path: string): Promise<Uint8Array | null>;
     writeFile(path: string, content: string | Uint8Array): Promise<void>;
     stat(path: string): Promise<any>;
+    lstat(path: string): Promise<any>;
+    hasLegacySymlinkUnder(path: string): Promise<boolean>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     readdir(path: string): Promise<{
         name: string;

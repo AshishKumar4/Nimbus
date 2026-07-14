@@ -156,6 +156,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._getStub()._rpcStat(path));
   }
 
+  async lstat(path: string): Promise<any> {
+    return this._call(this._getStub()._rpcLstat(path));
+  }
+
+  async hasLegacySymlinkUnder(path: string): Promise<boolean> {
+    return this._call(this._getStub()._rpcHasLegacySymlinkUnder(path));
+  }
+
   async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs));
   }
@@ -282,7 +290,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     setLastRpcFrame('writeBatchStream', -1);
     rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {
-      return await this._call(this._getStub()._rpcWriteBatchStream(stream));
+      const mutationOwner = (this.ctx as any).props?.mutationOwner;
+      return await this._call(this._getStub()._rpcWriteBatchStream(
+        stream,
+        typeof mutationOwner === 'string' ? mutationOwner : undefined,
+      ));
     } finally {
       rpcPayloadEnd(STREAM_RESIDENT_BYTES);
     }

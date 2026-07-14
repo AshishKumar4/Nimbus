@@ -31,10 +31,12 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
     parentPath: z.string(),
+    kind: z.enum(['file', 'directory', 'symlink']).optional(),
     isDir: z.boolean(),
     size: z.number(),
     atime: z.number().optional(),
@@ -146,6 +148,13 @@ export async function _rpcWriteFile(self, path, content) {
 export async function _rpcStat(self, path) {
     return runtimeFs(self).stat(path);
 }
+export async function _rpcLstat(self, path) {
+    return runtimeFs(self).stat(path, { followSymlinks: false });
+}
+export async function _rpcHasLegacySymlinkUnder(self, path) {
+    self.ensureSqliteFs();
+    return getSymlinkRegistry(self.sqliteFs).hasAtOrBelow(path);
+}
 export async function _rpcUtimes(self, path, atimeMs, mtimeMs) {
     await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
 }
@@ -229,10 +238,7 @@ export async function _rpcHmrRelay(self, clientId, msg) {
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 export async function _rpcUnlink(self, path) {
-    try {
-        await runtimeFs(self).unlink(path);
-    }
-    catch { }
+    await runtimeFs(self).unlink(path);
 }
 /**
  * Bulk-write files and directories via one transactionSync().
@@ -282,7 +288,7 @@ function normalizeWriteBatchChunkData(value) {
 }
 /**
  * W7 — Streaming bulk-write entry point. Receives a
- * ReadableStream<Uint8Array> in the W7 v2 wire format (see
+ * ReadableStream<Uint8Array> in the W7 v3 wire format (see
  * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
  * SqliteVFS.writeStream().
  *
@@ -295,7 +301,7 @@ function normalizeWriteBatchChunkData(value) {
  * groups remain durable when a later group fails. The typed result carries
  * the exact durable progress.
  */
-export async function _rpcWriteBatchStream(self, stream) {
+export async function _rpcWriteBatchStream(self, stream, mutationOwner) {
     self.ensureSqliteFs();
     // [P0a — COORDINATOR-OVERLOAD]
     //
@@ -320,6 +326,7 @@ export async function _rpcWriteBatchStream(self, stream) {
     const decodeDrainStartedAt = performance.now();
     return self.sqliteFs.writeStream(stream, {
         decodeDrainStartedAt,
+        mutationOwner,
     });
 }
 /**

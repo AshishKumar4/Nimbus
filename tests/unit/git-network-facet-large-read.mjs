@@ -17,7 +17,7 @@ try {
   writeFileSync(join(tempDir, 'git-bundle.js'), `
 export const gitHttp = {};
 export const git = {
-  async clone({ fs, dir }) {
+  async fetch({ fs, dir }) {
     const bytes = await fs.promises.readFile(dir + '/.git/objects/pack/pack-test.pack');
     if (!(bytes instanceof Uint8Array)) throw new Error('pack read did not return bytes');
     const expectedSize = dir === '/repo' ? ${LARGE_FILE_BYTES} : 3;
@@ -56,7 +56,7 @@ export const git = {
   const response = await worker.default.fetch(
     new Request('http://git/op', {
       method: 'POST',
-      body: JSON.stringify({ op: 'clone', dir: '/repo', url: 'https://example.invalid/repo.git' }),
+      body: JSON.stringify({ op: 'fetch', dir: '/repo' }),
     }),
     { SUPERVISOR: supervisor },
   );
@@ -77,7 +77,7 @@ export const git = {
   const smallResponse = await worker.default.fetch(
     new Request('http://git/op', {
       method: 'POST',
-      body: JSON.stringify({ op: 'clone', dir: '/small', url: 'https://example.invalid/small.git' }),
+      body: JSON.stringify({ op: 'fetch', dir: '/small' }),
     }),
     {
       SUPERVISOR: {

@@ -12,17 +12,19 @@ import type {
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private nextHandleId = 1;
   private handles = new Map<number, RuntimeFileHandle>();
-  private symlinks: SymlinkRegistry;
+  private legacySymlinks: SymlinkRegistry;
 
   constructor(private readonly vfs: SqliteVFS) {
-    this.symlinks = getSymlinkRegistry(vfs);
+    this.legacySymlinks = getSymlinkRegistry(vfs);
   }
 
   async stat(path: string, options: { followSymlinks?: boolean } = {}): Promise<RuntimeVfsStat | null> {
-    const p = this.resolveDataPath(path, options.followSymlinks !== false);
+    const followSymlinks = options.followSymlinks !== false;
+    const p = this.resolveDataPath(path, followSymlinks);
     if (!p) return null;
-    if (this.symlinks.isSymlink(p) && options.followSymlinks === false) {
-      const target = this.symlinks.readlink(p) || '';
+    if (!followSymlinks && !this.vfs.exists(p)) {
+      const target = this.legacySymlinks.readlink(p);
+      if (target === null) return null;
       const now = Date.now();
       return {
         type: 'symlink',
@@ -30,19 +32,24 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         ctime: now,
         atime: now,
         mtime: now,
-        mode: 0o777,
+        mode: 0o120777,
         revision: this.vfs.revision(p),
       };
     }
     try {
       const st = this.vfs.stat(p);
+      const type = st.type === 'directory'
+        ? 'directory'
+        : st.type === 'symlink'
+          ? 'symlink'
+          : 'file';
       return {
-        type: st.type === 'directory' ? 'directory' : 'file',
+        type,
         size: st.size,
         ctime: st.ctime,
         atime: st.atime,
         mtime: st.mtime,
-        mode: st.mode,
+        mode: type === 'symlink' ? 0o120000 | (st.mode & 0o777) : st.mode,
         revision: this.vfs.revision(p),
       };
     } catch {
@@ -65,7 +72,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     bytes: string | Uint8Array,
     options: { createParents?: boolean; expectedRevision?: number } = {},
   ): Promise<void> {
-    const p = this.resolveDataPath(path, true) || normalizeVfsPath(path);
+    const p = this.resolveMutationPath(path, true, 'write');
     this.assertExpectedRevision(p, options.expectedRevision);
     if (options.createParents !== false) this.ensureParent(p);
     this.vfs.writeFile(p, bytes);
@@ -92,7 +99,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     bytes: Uint8Array,
     options: { createParents?: boolean; expectedRevision?: number } = {},
   ): Promise<number> {
-    const p = this.resolveDataPath(path, true) || normalizeVfsPath(path);
+    const p = this.resolveMutationPath(path, true, 'write');
     this.assertExpectedRevision(p, options.expectedRevision);
     if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
     if (options.createParents !== false) this.ensureParent(p);
@@ -105,8 +112,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     size: number,
     options: { followSymlinks?: boolean } = {},
   ): Promise<void> {
-    const p = this.resolveDataPath(path, options.followSymlinks !== false);
-    if (!p || !this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
+    const p = this.resolveMutationPath(path, options.followSymlinks !== false, 'truncate');
+    if (!this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
     if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'truncate', path);
     this.vfs.truncate(p, size);
   }
@@ -117,14 +124,19 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     mtimeMs: number,
     options: { followSymlinks?: boolean } = {},
   ): Promise<void> {
-    const p = this.resolveDataPath(path, options.followSymlinks !== false);
-    if (!p || !this.vfs.exists(p)) throw fsError('ENOENT', 'utimes', path);
+    const p = this.resolveMutationPath(path, options.followSymlinks !== false, 'utimes');
+    if (!this.vfs.exists(p)) throw fsError('ENOENT', 'utimes', path);
     this.vfs.utimes(p, atimeMs, mtimeMs);
   }
 
   async open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
     const normalizedFlags = normalizeOpenFlags(flags);
-    const p = this.resolveDataPath(path, normalizedFlags.followSymlinks) || normalizeVfsPath(path);
+    const mutates = normalizedFlags.write || normalizedFlags.create ||
+      normalizedFlags.truncate || normalizedFlags.append;
+    const p = mutates
+      ? this.resolveMutationPath(path, normalizedFlags.followSymlinks, 'open')
+      : this.resolveDataPath(path, normalizedFlags.followSymlinks);
+    if (p === null) throw fsError('ELOOP', 'open', path);
     this.assertExpectedRevision(p, normalizedFlags.expectedRevision);
 
     const exists = this.vfs.exists(p);
@@ -184,53 +196,86 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   async readdir(path: string, options: { followSymlinks?: boolean } = {}): Promise<RuntimeVfsDirEntry[]> {
     const p = this.resolveDataPath(path, options.followSymlinks !== false);
     if (!p) return [];
-    const entries: RuntimeVfsDirEntry[] = this.vfs.readdir(p).map((entry) => ({
-      name: entry.name,
-      type: entry.type === 'directory' ? 'directory' as const : 'file' as const,
-    }));
-    const prefix = p ? `${p}/` : '';
-    for (const link of this.symlinks.list()) {
-      if (parentVfsPath(link.link) !== p) continue;
-      entries.push({ name: link.link.slice(prefix.length), type: 'symlink' });
+    const entries = new Map<string, RuntimeVfsDirEntry>();
+    for (const entry of this.vfs.readdir(p)) {
+      const type = entry.type === 'directory'
+        ? 'directory'
+        : entry.type === 'symlink'
+          ? 'symlink'
+          : 'file';
+      entries.set(entry.name, { name: entry.name, type });
     }
-    return entries.sort((a, b) => a.name.localeCompare(b.name));
+    const prefix = p ? `${p}/` : '';
+    for (const link of this.legacySymlinks.list()) {
+      if (parentVfsPath(link.link) !== p) continue;
+      const name = link.link.slice(prefix.length);
+      if (!entries.has(name)) entries.set(name, { name, type: 'symlink' });
+    }
+    return [...entries.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async mkdir(path: string, options: { recursive?: boolean; mode?: number } = {}): Promise<void> {
-    this.vfs.mkdir(normalizeVfsPath(path), { recursive: !!options.recursive });
+    const p = this.resolveMutationPath(path, false, 'mkdir');
+    if (this.vfs.exists(p)) {
+      if (options.recursive && this.vfs.isDirectory(p)) return;
+      throw fsError('EEXIST', 'mkdir', path);
+    }
+    this.vfs.mkdir(p, { recursive: !!options.recursive });
   }
 
   async unlink(path: string): Promise<void> {
-    const p = normalizeVfsPath(path);
-    if (this.symlinks.delete(p)) return;
-    this.vfs.unlink(p);
+    const p = this.resolveMutationPath(path, false, 'unlink');
+    if (this.vfs.exists(p)) {
+      const staleLegacy = this.legacySymlinks.isSymlink(p);
+      if (staleLegacy) this.legacySymlinks.assertMutable(p);
+      this.vfs.unlink(p);
+      if (staleLegacy) this.legacySymlinks.delete(p);
+      return;
+    }
+    this.legacySymlinks.delete(p);
   }
 
   async rmdir(path: string): Promise<void> {
-    this.vfs.rmdir(normalizeVfsPath(path));
+    const p = this.resolveMutationPath(path, false, 'rmdir');
+    if (!this.vfs.isDirectory(p)) throw fsError('ENOTDIR', 'rmdir', path);
+    this.vfs.rmdir(p);
   }
 
   async rename(from: string, to: string): Promise<void> {
-    const oldPath = normalizeVfsPath(from);
-    const newPath = normalizeVfsPath(to);
-    const linkTarget = this.symlinks.readlink(oldPath);
-    if (linkTarget !== null) {
-      this.symlinks.delete(oldPath);
-      this.symlinks.set(newPath, linkTarget);
+    const oldPath = this.resolveMutationPath(from, false, 'rename');
+    const newPath = this.resolveMutationPath(to, false, 'rename');
+    if (this.vfs.exists(oldPath)) {
+      const staleDestination = this.legacySymlinks.isSymlink(newPath);
+      if (staleDestination) this.legacySymlinks.assertMutable(newPath);
+      this.assertParentDirectory(newPath, 'rename');
+      this.vfs.rename(oldPath, newPath);
+      if (staleDestination) this.legacySymlinks.delete(newPath);
       return;
     }
-    this.ensureParent(newPath);
-    this.vfs.rename(oldPath, newPath);
+    const linkTarget = this.legacySymlinks.readlink(oldPath);
+    if (linkTarget === null) throw fsError('ENOENT', 'rename', from);
+    const staleDestination = this.legacySymlinks.isSymlink(newPath);
+    this.legacySymlinks.assertMutable(oldPath, ...(staleDestination ? [newPath] : []));
+    this.assertParentDirectory(newPath, 'rename');
+    this.vfs.symlink(linkTarget, newPath);
+    this.legacySymlinks.delete(oldPath);
+    if (staleDestination) this.legacySymlinks.delete(newPath);
   }
 
   async readlink(path: string): Promise<string | null> {
-    return this.symlinks.readlink(normalizeVfsPath(path));
+    const p = this.resolveDataPath(path, false);
+    if (!p) return null;
+    if (this.vfs.isSymlink(p)) return this.vfs.readlink(p);
+    return this.legacySymlinks.readlink(p);
   }
 
   async symlink(target: string, path: string): Promise<void> {
-    const p = normalizeVfsPath(path);
+    const p = this.resolveMutationPath(path, false, 'symlink');
+    if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(p)) {
+      throw fsError('EEXIST', 'symlink', path);
+    }
     this.ensureParent(p);
-    this.symlinks.set(p, target);
+    this.vfs.symlink(target, p);
   }
 
   async fsync(): Promise<void> {
@@ -248,14 +293,64 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   private resolveDataPath(path: string, followSymlinks: boolean): string | null {
-    const p = normalizeVfsPath(path);
-    if (!followSymlinks) return p;
-    return this.symlinks.resolveChain(p);
+    const pending = normalizeVfsPath(path).split('/').filter(Boolean);
+    const resolved: string[] = [];
+    const seen = new Set<string>();
+
+    while (pending.length > 0) {
+      const segment = pending.shift()!;
+      const candidate = [...resolved, segment].join('/');
+      const isFinal = pending.length === 0;
+      if (!followSymlinks && isFinal) {
+        resolved.push(segment);
+        continue;
+      }
+
+      let target: string | null;
+      if (this.vfs.isSymlink(candidate)) {
+        target = this.vfs.resolveSymlink(candidate);
+        if (target === null) return null;
+      } else if (!this.vfs.exists(candidate)) {
+        const legacyTarget = this.legacySymlinks.readlink(candidate);
+        target = legacyTarget === null
+          ? null
+          : legacyTarget.startsWith('/')
+            ? normalizeVfsPath(legacyTarget)
+            : normalizeVfsPath(`${parentVfsPath(candidate)}/${legacyTarget}`);
+      } else {
+        target = null;
+      }
+
+      if (target === null) {
+        resolved.push(segment);
+        continue;
+      }
+      if (seen.has(candidate)) return null;
+      seen.add(candidate);
+      pending.unshift(...target.split('/').filter(Boolean));
+      resolved.length = 0;
+    }
+
+    return resolved.join('/');
+  }
+
+  private resolveMutationPath(path: string, followSymlinks: boolean, syscall: string): string {
+    this.vfs.assertMutationAllowed(normalizeVfsPath(path));
+    const resolved = this.resolveDataPath(path, followSymlinks);
+    if (resolved === null) throw fsError('ELOOP', syscall, path);
+    return resolved;
   }
 
   private ensureParent(path: string): void {
     const parent = parentVfsPath(path);
     if (parent && !this.vfs.exists(parent)) this.vfs.mkdir(parent, { recursive: true });
+  }
+
+  private assertParentDirectory(path: string, syscall: string): void {
+    const parent = parentVfsPath(path);
+    if (!parent) return;
+    if (!this.vfs.exists(parent)) throw fsError('ENOENT', syscall, path);
+    if (!this.vfs.isDirectory(parent)) throw fsError('ENOTDIR', syscall, path);
   }
 
   private assertExpectedRevision(path: string, expectedRevision: number | undefined): void {

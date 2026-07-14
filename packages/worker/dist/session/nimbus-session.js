@@ -522,6 +522,10 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcWriteFile(path, content) { return _rpc._rpcWriteFile(this, path, content); }
     async _rpcStat(path) { return _rpc._rpcStat(this, path); }
+    async _rpcLstat(path) { return _rpc._rpcLstat(this, path); }
+    async _rpcHasLegacySymlinkUnder(path) {
+        return _rpc._rpcHasLegacySymlinkUnder(this, path);
+    }
     async _rpcUtimes(path, atimeMs, mtimeMs) {
         return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs);
     }
@@ -551,7 +555,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcUnlink(path) { return _rpc._rpcUnlink(this, path); }
     async _rpcWriteBatch(payload) { return _rpc._rpcWriteBatch(this, payload); }
-    async _rpcWriteBatchStream(stream) { return _rpc._rpcWriteBatchStream(this, stream); }
+    async _rpcWriteBatchStream(stream, mutationOwner) {
+        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner);
+    }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
     async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }

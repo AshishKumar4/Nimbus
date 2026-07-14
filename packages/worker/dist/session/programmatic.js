@@ -330,103 +330,117 @@ export async function rpcDeleteFile(self, path, options = {}) {
     self.sqliteFs.unlink(p);
 }
 export async function rpcDestroy(self, options = {}) {
-    const reason = typeof options.reason === 'string' && options.reason.trim()
-        ? options.reason.trim().slice(0, 200)
-        : null;
-    const destroyedAt = Date.now();
-    let killed = 0;
-    const running = self.processes.getAll()
-        .filter((p) => p.state === 'running');
-    for (const entry of running) {
-        const pid = Number(entry.pid);
-        try {
-            if (self._viteShimPid === pid) {
-                if (self.cirrusReal?.isRunning)
-                    self.cirrusReal.stop(self.ctx);
-                self.cirrusReal = null;
-                if (self.viteDevServer?.isRunning)
-                    self.viteDevServer.stop();
-                self.viteDevServer = null;
+    self.ensureSqliteFs();
+    if (self.sqliteFs.hasExclusiveMutation()) {
+        throw new Error('EBUSY: session has an active exclusive filesystem mutation');
+    }
+    const guardedVfs = self.sqliteFs;
+    const destroyLease = guardedVfs.acquireGlobalExclusiveMutation();
+    let destroyed = false;
+    try {
+        const reason = typeof options.reason === 'string' && options.reason.trim()
+            ? options.reason.trim().slice(0, 200)
+            : null;
+        const destroyedAt = Date.now();
+        let killed = 0;
+        const running = self.processes.getAll()
+            .filter((p) => p.state === 'running');
+        for (const entry of running) {
+            const pid = Number(entry.pid);
+            try {
+                if (self._viteShimPid === pid) {
+                    if (self.cirrusReal?.isRunning)
+                        self.cirrusReal.stop(self.ctx);
+                    self.cirrusReal = null;
+                    if (self.viteDevServer?.isRunning)
+                        self.viteDevServer.stop();
+                    self.viteDevServer = null;
+                    try {
+                        await self.ctx.storage.delete('vite-config');
+                    }
+                    catch { }
+                    self._viteShimPid = null;
+                    self._viteShimPort = null;
+                }
+                else if (self.facetManager?.kill?.(pid)) {
+                    // facetManager.kill already marks process state and unregisters ports.
+                }
+                else {
+                    try {
+                        self.processes.kill(pid);
+                    }
+                    catch { }
+                }
                 try {
-                    await self.ctx.storage.delete('vite-config');
+                    self.portRegistry?.unregisterByPid?.(pid);
                 }
                 catch { }
-                self._viteShimPid = null;
-                self._viteShimPort = null;
+                try {
+                    if (!self.processes.getExit(pid)) {
+                        self.processes.markExit(pid, 137, reason ?? 'destroyed');
+                    }
+                }
+                catch { }
+                killed++;
             }
-            else if (self.facetManager?.kill?.(pid)) {
-                // facetManager.kill already marks process state and unregisters ports.
-            }
-            else {
+            catch {
                 try {
                     self.processes.kill(pid);
                 }
                 catch { }
-            }
-            try {
-                self.portRegistry?.unregisterByPid?.(pid);
-            }
-            catch { }
-            try {
-                if (!self.processes.getExit(pid)) {
-                    self.processes.markExit(pid, 137, reason ?? 'destroyed');
+                try {
+                    self.portRegistry?.unregisterByPid?.(pid);
                 }
+                catch { }
             }
-            catch { }
-            killed++;
         }
-        catch {
-            try {
-                self.processes.kill(pid);
-            }
-            catch { }
-            try {
-                self.portRegistry?.unregisterByPid?.(pid);
-            }
-            catch { }
+        try {
+            self.processes.flushLogs();
         }
+        catch { }
+        await quiesceInMemorySessionState(self);
+        try {
+            await self.ctx.storage.deleteAll();
+        }
+        catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);
+        }
+        // deleteAll() does NOT delete a pending alarm (per CF docs). Without
+        // this, every destroyed session left an alarm behind that kept booting
+        // its DO forever (the W1 janitor cycle), and the accumulated zombie
+        // fleet's storage churn intermittently reset live session DOs.
+        try {
+            await self.ctx.storage.deleteAlarm();
+        }
+        catch { /* best-effort */ }
+        // Tombstone (written AFTER the wipe, deliberately surviving it): a
+        // straggler facet RPC can wake this DO again, and its log activity must
+        // not re-arm the janitor alarm cycle on a destroyed session — this
+        // instance via the flag, any FUTURE instance via the persisted key
+        // (hydrated in the constructor).
+        self._w1SessionDestroyed = true;
+        try {
+            await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt);
+        }
+        catch { /* best-effort */ }
+        // deleteAll also wiped the isolate-generation counter; without
+        // re-persisting it the next boot would restart at generation 1, and a
+        // straggler facet from a HIGHER pre-destroy generation would classify as
+        // current-generation (pid > pidBase) — landing its output on the
+        // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
+        try {
+            await self.ctx.storage.put(W9_ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0);
+        }
+        catch { /* best-effort */ }
+        resetInMemorySessionState(self);
+        destroyed = true;
+        return { ok: true, killed, destroyedAt, reason };
     }
-    try {
-        self.processes.flushLogs();
+    finally {
+        if (!destroyed)
+            guardedVfs.releaseExclusiveMutation(destroyLease.owner);
     }
-    catch { }
-    await quiesceInMemorySessionState(self);
-    try {
-        await self.ctx.storage.deleteAll();
-    }
-    catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);
-    }
-    // deleteAll() does NOT delete a pending alarm (per CF docs). Without
-    // this, every destroyed session left an alarm behind that kept booting
-    // its DO forever (the W1 janitor cycle), and the accumulated zombie
-    // fleet's storage churn intermittently reset live session DOs.
-    try {
-        await self.ctx.storage.deleteAlarm();
-    }
-    catch { /* best-effort */ }
-    // Tombstone (written AFTER the wipe, deliberately surviving it): a
-    // straggler facet RPC can wake this DO again, and its log activity must
-    // not re-arm the janitor alarm cycle on a destroyed session — this
-    // instance via the flag, any FUTURE instance via the persisted key
-    // (hydrated in the constructor).
-    self._w1SessionDestroyed = true;
-    try {
-        await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt);
-    }
-    catch { /* best-effort */ }
-    // deleteAll also wiped the isolate-generation counter; without
-    // re-persisting it the next boot would restart at generation 1, and a
-    // straggler facet from a HIGHER pre-destroy generation would classify as
-    // current-generation (pid > pidBase) — landing its output on the
-    // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-    try {
-        await self.ctx.storage.put(W9_ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0);
-    }
-    catch { /* best-effort */ }
-    resetInMemorySessionState(self);
-    return { ok: true, killed, destroyedAt, reason };
 }
 async function quiesceInMemorySessionState(self) {
     if (self._w9FlushTimer) {

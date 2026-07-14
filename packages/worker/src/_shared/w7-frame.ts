@@ -1,12 +1,17 @@
 /**
- * W7 v2 — incremental typed records for streamed bulk filesystem writes.
+ * W7 v3 — incremental typed records for streamed bulk filesystem writes.
  * The format is internal: every producer and consumer deploys together.
  */
 
 import { CHUNK_SIZE } from '../constants.js';
-import type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
+import type {
+  BatchChunkEntry,
+  BatchInodeEntry,
+  BatchWritePayload,
+  VfsInodeKind,
+} from '../vfs/sqlite-vfs.js';
 
-export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x02]);
+export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 
 const ENCODER_QUEUE_HWM = 0;
 const MAX_METADATA_BYTES = 64 * 1024;
@@ -38,14 +43,19 @@ interface DeleteMetadata {
   path: string;
 }
 
-interface DirectoryMetadata {
+interface InodeMetadata {
   path: string;
   atime?: number;
   mtime: number;
   mode: number;
 }
 
-interface FileBeginMetadata extends DirectoryMetadata {
+interface DirectoryMetadata extends InodeMetadata {
+  kind: 'directory';
+}
+
+interface FileBeginMetadata extends InodeMetadata {
+  kind: 'file' | 'symlink';
   contentId: string;
   size: number;
   chunkCount: number;
@@ -79,13 +89,16 @@ export interface W7DecodeOptions {
   retainChunk?: (byteLength: number, signal?: AbortSignal) => Promise<W7ChunkRetention>;
 }
 
+type W7DirectoryInode = BatchInodeEntry & { kind: 'directory'; isDir: true };
+type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false };
+
 export type W7DecodedRecord =
   | { type: 'delete'; path: string }
-  | { type: 'directory'; inode: BatchInodeEntry }
+  | { type: 'directory'; inode: W7DirectoryInode }
   | {
       type: 'file-begin';
       streamContentId: string;
-      inode: BatchInodeEntry;
+      inode: W7ContentInode;
     }
   | {
       type: 'file-chunk';
@@ -112,7 +125,7 @@ export interface W7DecodedStream {
 }
 
 interface EncoderFile {
-  inode: BatchInodeEntry;
+  inode: W7ContentInode;
   contentId: string;
   chunks: BatchChunkEntry[];
 }
@@ -162,7 +175,7 @@ export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStre
 }
 
 /**
- * Parse the v2 preamble eagerly, then expose validated operation records
+ * Parse the v3 preamble eagerly, then expose validated operation records
  * incrementally. Chunk credit is acquired after its bounded header validates
  * and before its payload bytes are read or copied.
  */
@@ -187,9 +200,9 @@ export async function decodeWriteBatchStream(
         ? magic[3]
         : null;
       if (version !== null) {
-        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 2`);
+        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 3`);
       }
-      throw new Error(`w7-frame: bad magic, expected NW7\\x02, got ${hex(magic)}`);
+      throw new Error(`w7-frame: bad magic, expected NW7\\x03, got ${hex(magic)}`);
     }
     const beginEnvelope = await readEnvelope(buffer, 'batch-begin');
     if (beginEnvelope.tag !== RecordTag.BatchBegin) {
@@ -226,7 +239,7 @@ async function* decodeRecords(
   const contentIds = new Set<string>();
   let active: {
     metadata: FileBeginMetadata;
-    inode: BatchInodeEntry;
+    inode: W7ContentInode;
     nextChunkId: number;
     receivedBytes: number;
     check: number;
@@ -431,7 +444,7 @@ async function* decodeRecords(
 function* encodeRecords(
   batchId: string,
   deletes: string[],
-  directories: BatchInodeEntry[],
+  directories: W7DirectoryInode[],
   files: EncoderFile[],
 ): Generator<Uint8Array[]> {
   const state: EncoderState = {
@@ -455,13 +468,17 @@ function* encodeRecords(
   for (const inode of directories) {
     state.summary.pathCount++;
     state.summary.directoryCount++;
-    yield encodeMetadataRecord(RecordTag.Directory, inodeMetadata(inode), state);
+    yield encodeMetadataRecord(RecordTag.Directory, {
+      ...inodeMetadata(inode),
+      kind: inode.kind,
+    }, state);
   }
   for (const file of files) {
     state.summary.pathCount++;
     state.summary.fileCount++;
     yield encodeMetadataRecord(RecordTag.FileBegin, {
       ...inodeMetadata(file.inode),
+      kind: file.inode.kind,
       contentId: file.contentId,
       size: file.inode.size,
       chunkCount: file.inode.chunkCount,
@@ -517,7 +534,7 @@ function encodeMetadataRecord(
 function preparePayload(
   payload: BatchWritePayload,
   batchId: string,
-): { deletes: string[]; directories: BatchInodeEntry[]; files: EncoderFile[] } {
+): { deletes: string[]; directories: W7DirectoryInode[]; files: EncoderFile[] } {
   if (!payload || !Array.isArray(payload.inodes) || !Array.isArray(payload.chunks)) {
     throw new Error('w7-frame: payload must contain inode and chunk arrays');
   }
@@ -531,21 +548,25 @@ function preparePayload(
     if (list) list.push(chunk);
     else chunksByPath.set(path, [chunk]);
   }
-  const directories: BatchInodeEntry[] = [];
+  const directories: W7DirectoryInode[] = [];
   const files: EncoderFile[] = [];
   let fileIndex = 0;
   for (const inode of payload.inodes) {
     const path = canonicalPath(inode.path, 'inode path');
     if (path !== inode.path) throw new Error(`w7-frame: noncanonical inode path ${inode.path}`);
     claimPath(ownedPaths, path);
-    validateInode(inode);
+    const normalizedInode = normalizeInode(inode);
     const fileChunks = chunksByPath.get(path) ?? [];
-    if (inode.isDir) {
+    if (normalizedInode.kind === 'directory') {
       if (fileChunks.length > 0) throw new Error(`w7-frame: directory ${path} has chunks`);
-      directories.push(inode);
+      directories.push(normalizedInode);
     } else {
-      validateChunks(inode, fileChunks);
-      files.push({ inode, contentId: `${batchId}:${fileIndex++}`, chunks: fileChunks });
+      validateChunks(normalizedInode, fileChunks);
+      files.push({
+        inode: normalizedInode,
+        contentId: `${batchId}:${fileIndex++}`,
+        chunks: fileChunks,
+      });
     }
     chunksByPath.delete(path);
   }
@@ -568,18 +589,24 @@ function parseDelete(bytes: Uint8Array): DeleteMetadata {
 }
 
 function parseDirectory(bytes: Uint8Array): DirectoryMetadata {
-  const value = parseObject(bytes, 'directory', ['path', 'mtime', 'mode'], ['atime']);
-  return parseInodeMetadata(value, 'directory');
+  const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], ['atime']);
+  if (value.kind !== 'directory') {
+    throw new Error(`w7-frame: unsupported directory kind ${String(value.kind)}`);
+  }
+  return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 
 function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
   const value = parseObject(
     bytes,
     'file-begin',
-    ['path', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
+    ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
     ['atime'],
   );
   const base = parseInodeMetadata(value, 'file-begin');
+  if (value.kind !== 'file' && value.kind !== 'symlink') {
+    throw new Error(`w7-frame: unsupported file-begin kind ${String(value.kind)}`);
+  }
   const contentId = boundedString(value.contentId, 'stream content id', MAX_CONTENT_ID_BYTES);
   if (!/^[A-Za-z0-9._:-]+$/.test(contentId)) {
     throw new Error(`w7-frame: invalid stream content id ${contentId}`);
@@ -590,7 +617,7 @@ function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
   if (chunkCount !== expected) {
     throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
   }
-  return { ...base, contentId, size, chunkCount };
+  return { ...base, kind: value.kind, contentId, size, chunkCount };
 }
 
 function parseFileEnd(bytes: Uint8Array): FileEndMetadata {
@@ -621,7 +648,7 @@ function parseBatchEnd(bytes: Uint8Array): W7BatchSummary {
   };
 }
 
-function parseInodeMetadata(value: Record<string, unknown>, label: string): DirectoryMetadata {
+function parseInodeMetadata(value: Record<string, unknown>, label: string): InodeMetadata {
   return {
     path: canonicalPath(value.path, `${label} path`),
     ...(value.atime === undefined ? {} : { atime: safeInteger(value.atime, `${label} atime`) }),
@@ -654,7 +681,7 @@ function parseObject(
   return value;
 }
 
-function validateInode(inode: BatchInodeEntry): void {
+function normalizeInode(inode: BatchInodeEntry): W7DirectoryInode | W7ContentInode {
   canonicalPath(inode.path, 'inode path');
   if (inode.parentPath !== parentPath(inode.path)) {
     throw new Error(`w7-frame: ${inode.path}: noncanonical parent path ${inode.parentPath}`);
@@ -664,15 +691,28 @@ function validateInode(inode: BatchInodeEntry): void {
   safeInteger(inode.mtime, `${inode.path} mtime`);
   if (inode.atime !== undefined) safeInteger(inode.atime, `${inode.path} atime`);
   u32(inode.mode, `${inode.path} mode`);
-  if (inode.isDir && (inode.size !== 0 || inode.chunkCount !== 0)) {
+  const rawKind: unknown = inode.kind ?? (inode.isDir ? 'directory' : 'file');
+  if (rawKind !== 'file' && rawKind !== 'directory' && rawKind !== 'symlink') {
+    throw new Error(`w7-frame: unsupported inode kind ${String(rawKind)}`);
+  }
+  const kind: VfsInodeKind = rawKind;
+  if (kind === 'directory' && !inode.isDir) {
+    throw new Error(`w7-frame: directory inode ${inode.path} must be a directory`);
+  }
+  if (kind !== 'directory' && inode.isDir) {
+    throw new Error(`w7-frame: ${kind} inode ${inode.path} cannot be a directory`);
+  }
+  if (kind === 'directory' && (inode.size !== 0 || inode.chunkCount !== 0)) {
     throw new Error(`w7-frame: directory ${inode.path} must have zero size and chunks`);
   }
-  if (!inode.isDir) {
+  if (kind !== 'directory') {
     const expected = inode.size === 0 ? 0 : Math.ceil(inode.size / CHUNK_SIZE);
     if (inode.chunkCount !== expected) {
       throw new Error(`w7-frame: ${inode.path}: expected ${expected} chunks, got ${inode.chunkCount}`);
     }
+    return { ...inode, kind, isDir: false };
   }
+  return { ...inode, kind, isDir: true };
 }
 
 function validateChunks(inode: BatchInodeEntry, chunks: BatchChunkEntry[]): void {
@@ -692,10 +732,11 @@ function validateChunks(inode: BatchInodeEntry, chunks: BatchChunkEntry[]): void
   }
 }
 
-function directoryInode(metadata: DirectoryMetadata): BatchInodeEntry {
+function directoryInode(metadata: DirectoryMetadata): W7DirectoryInode {
   return {
     path: metadata.path,
     parentPath: parentPath(metadata.path),
+    kind: metadata.kind,
     isDir: true,
     size: 0,
     atime: metadata.atime,
@@ -705,10 +746,11 @@ function directoryInode(metadata: DirectoryMetadata): BatchInodeEntry {
   };
 }
 
-function fileInode(metadata: FileBeginMetadata): BatchInodeEntry {
+function fileInode(metadata: FileBeginMetadata): W7ContentInode {
   return {
     path: metadata.path,
     parentPath: parentPath(metadata.path),
+    kind: metadata.kind,
     isDir: false,
     size: metadata.size,
     atime: metadata.atime,
@@ -718,7 +760,7 @@ function fileInode(metadata: FileBeginMetadata): BatchInodeEntry {
   };
 }
 
-function inodeMetadata(inode: BatchInodeEntry): DirectoryMetadata {
+function inodeMetadata(inode: BatchInodeEntry): InodeMetadata {
   return {
     path: inode.path,
     ...(inode.atime === undefined ? {} : { atime: inode.atime }),

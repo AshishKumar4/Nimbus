@@ -69,6 +69,42 @@ function latestTransactionStatementCount(harness, transactionStart) {
   return harness.statements.filter((statement) => statement.transaction === transaction).length;
 }
 
+// Legacy boolean inode types must never be silently reinterpreted as symlinks,
+// and upgraded schemas must enforce the expanded durable kind domain.
+{
+  const invalid = createSqliteVfsTestHarness();
+  invalid.sql.exec(`CREATE TABLE inodes (
+    path TEXT PRIMARY KEY, parent_path TEXT NOT NULL DEFAULT '',
+    is_dir INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
+    atime INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
+    mode INTEGER NOT NULL DEFAULT 0, chunk_count INTEGER NOT NULL DEFAULT 0,
+    content_id TEXT NULL
+  )`);
+  invalid.sql.exec("INSERT INTO inodes (path, is_dir) VALUES ('ambiguous', 2)");
+  assert.throws(() => new SqliteVFS(invalid.sql, invalid.ctx), /invalid legacy inode kind 2/);
+
+  const upgraded = createSqliteVfsTestHarness();
+  upgraded.sql.exec(`CREATE TABLE inodes (
+    path TEXT PRIMARY KEY, parent_path TEXT NOT NULL DEFAULT '',
+    is_dir INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
+    atime INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
+    mode INTEGER NOT NULL DEFAULT 0, chunk_count INTEGER NOT NULL DEFAULT 0,
+    content_id TEXT NULL
+  )`);
+  new SqliteVFS(upgraded.sql, upgraded.ctx);
+  assert.throws(
+    () => upgraded.sql.exec("INSERT INTO inodes (path, kind) VALUES ('invalid', 7)"),
+    /invalid inode kind/,
+  );
+
+  const parentHarness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(parentHarness.sql, parentHarness.ctx);
+  assert.throws(() => vfs.writeBatch({
+    inodes: [{ ...fileInode('child', 0), parentPath: 'wrong-parent' }],
+    chunks: [],
+  }), /parentPath wrong-parent does not match/);
+}
+
 const strictCreateStatementCount = (() => {
   const { harness, vfs } = openVfs();
   const start = harness.transactionCount;

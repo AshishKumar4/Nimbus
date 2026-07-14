@@ -292,36 +292,53 @@ export function registerGitCommands(
 
           ctx.stdout.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
 
+          // A clone's closed-world filesystem view is correct only while no
+          // other session surface can mutate its destination subtree. Acquire
+          // the lease before the facet performs its lstat/readdir emptiness
+          // proof; the clone's W7 stream carries the opaque owner capability
+          // through the trusted SupervisorRPC binding.
+          const mutationLease = vfs.acquireExclusiveMutation(dest, {
+            includeMissingAncestors: true,
+          });
+
           // Delegate to git-network-facet: heavy packfile processing runs in
           // a dynamic worker with its own CPU budget, not the supervisor DO.
-          const doClone = async () => {
-            const result = await execGitNetwork(doCtx, doEnv, {
-              op: 'clone',
-              dir: dest as string,
-              url,
-              depth,
-              auth: {
-                username: ctx.env.GIT_USERNAME || '',
-                password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-              },
-            });
-            if (result.success) {
-              ctx.stdout.write(
-                `\n[git] clone complete (${result.filesWritten} files, ` +
-                `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
-              );
-            } else {
-              ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+          const doClone = async (): Promise<boolean> => {
+            try {
+              const result = await execGitNetwork(doCtx, doEnv, {
+                op: 'clone',
+                dir: dest as string,
+                url,
+                depth,
+                exclusiveDestination: true,
+                exclusiveMutationRoot: mutationLease.root,
+                mutationOwner: mutationLease.owner,
+                auth: {
+                  username: ctx.env.GIT_USERNAME || '',
+                  password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
+                },
+              });
+              if (result.success) {
+                ctx.stdout.write(
+                  `\n[git] clone complete (${result.filesWritten} files, ` +
+                  `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
+                );
+              } else {
+                ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+              }
+              return result.success;
+            } finally {
+              vfs.releaseExclusiveMutation(mutationLease.owner);
             }
           };
 
           if (isBg) {
+            const task = doClone();
+            doCtx.waitUntil(task);
             ctx.stdout.write('[git] clone running in background...\n');
-            doClone(); // intentionally not awaited
             return 0;
           } else {
-            await doClone();
-            return 0;
+            return (await doClone()) ? 0 : 1;
           }
         }
 

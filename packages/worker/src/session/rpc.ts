@@ -36,6 +36,7 @@ import {
 import { classifyError } from '../observability/oom-classify.js';
 import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { z } from 'zod/v4';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
@@ -48,6 +49,7 @@ type RpcHost = any;
 const WriteBatchInodeSchema: z.ZodType<BatchInodeEntry> = z.object({
   path: z.string(),
   parentPath: z.string(),
+  kind: z.enum(['file', 'directory', 'symlink']).optional(),
   isDir: z.boolean(),
   size: z.number(),
   atime: z.number().optional(),
@@ -181,6 +183,15 @@ export async function _rpcStat(self: RpcHost, path: string): Promise<any> {
     return runtimeFs(self).stat(path);
 }
 
+export async function _rpcLstat(self: RpcHost, path: string): Promise<any> {
+  return runtimeFs(self).stat(path, { followSymlinks: false });
+}
+
+export async function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean> {
+  self.ensureSqliteFs();
+  return getSymlinkRegistry(self.sqliteFs!).hasAtOrBelow(path);
+}
+
 export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
 }
@@ -301,7 +312,7 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
 }
 
 export async function _rpcUnlink(self: RpcHost, path: string): Promise<void> {
-    try { await runtimeFs(self).unlink(path); } catch {}
+    await runtimeFs(self).unlink(path);
 }
 
   /**
@@ -351,7 +362,7 @@ function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
 
   /**
    * W7 — Streaming bulk-write entry point. Receives a
-   * ReadableStream<Uint8Array> in the W7 v2 wire format (see
+   * ReadableStream<Uint8Array> in the W7 v3 wire format (see
    * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
    * SqliteVFS.writeStream().
    *
@@ -366,6 +377,7 @@ function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
    */
 export async function _rpcWriteBatchStream(self: RpcHost, 
     stream: ReadableStream<Uint8Array>,
+    mutationOwner?: string,
   ): Promise<WriteBatchStreamResult> {
     self.ensureSqliteFs();
     // [P0a — COORDINATOR-OVERLOAD]
@@ -391,6 +403,7 @@ export async function _rpcWriteBatchStream(self: RpcHost,
     const decodeDrainStartedAt = performance.now();
     return self.sqliteFs!.writeStream(stream, {
       decodeDrainStartedAt,
+      mutationOwner,
     });
 }
 
