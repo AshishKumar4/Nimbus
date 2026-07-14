@@ -104,10 +104,47 @@ function collector() {
   });
   const live = createLiveTurn();
   const { seen, callbacks } = collector();
-  await readAgentStream(body, live, callbacks);
+  const outcome = await readAgentStream(body, live, callbacks);
   assert.deepEqual(live.message.parts, [{ type: 'text', text: 'Hello' }]);
   assert.deepEqual(live.usage, { totalTokens: 3 });
   assert.equal(seen.done?.id, 'a1');
+  assert.equal(outcome, 'done');
+}
+
+// A syntactically clean EOF without done/error is a distinct interrupted
+// outcome, not a successful turn.
+{
+  const payload = '{"type":"assistant-start","messageId":"a-reset","createdAt":9}\n'
+    + '{"type":"text-delta","delta":"still here"}\n';
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(payload));
+      controller.close();
+    },
+  });
+  const live = createLiveTurn();
+  const { callbacks } = collector();
+  const outcome = await readAgentStream(body, live, callbacks);
+  assert.equal(outcome, 'eof');
+  assert.equal(live.message.id, 'a-reset');
+  assert.equal(live.message.status, 'streaming');
+  assert.deepEqual(live.message.parts, [{ type: 'text', text: 'still here' }]);
+}
+
+// Error is terminal even though the NDJSON body then reaches EOF.
+{
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(
+        '{"type":"error","error":"provider failed","code":"E","messages":[]}\n',
+      ));
+      controller.close();
+    },
+  });
+  const live = createLiveTurn();
+  const { seen, callbacks } = collector();
+  assert.equal(await readAgentStream(body, live, callbacks), 'error');
+  assert.equal(seen.error, 'provider failed');
 }
 
 console.log('agent-chat-stream: all assertions passed');

@@ -23,6 +23,8 @@ export type StoredTurnPart =
 
 export type StoredToolPart = Extract<StoredTurnPart, { type: 'tool' }>;
 
+export type StoredMessageStatus = 'streaming' | 'complete' | 'interrupted';
+
 export interface StoredMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
@@ -30,9 +32,15 @@ export interface StoredMessage {
   createdAt: number;
   name?: string;
   parts?: StoredTurnPart[];
-  /** Present when the turn was stopped by the client before it finished. */
+  /**
+   * Turn lifecycle. `aborted` and `error` refine an `interrupted` status
+   * with the known reason; an orphaned reset has neither reason marker.
+   * Missing status is valid for history written before lifecycle tracking.
+   */
+  status?: StoredMessageStatus;
+  /** Present only when an interrupted turn was stopped by the client. */
   aborted?: true;
-  /** Present when the turn ended in a terminal provider/stream error. */
+  /** Present only when an interrupted turn ended in a provider/stream error. */
   error?: string;
 }
 
@@ -95,6 +103,27 @@ export function upsertToolPart(parts: StoredTurnPart[], patch: StoredToolPartPat
     part.durationMs = Date.now() - startedAt;
   }
   return part;
+}
+
+/** Replace a stored message by id, or append it when first checkpointed. */
+export function upsertStoredMessage(messages: StoredMessage[], message: StoredMessage): void {
+  const index = messages.findIndex((item) => item.id === message.id);
+  if (index >= 0) messages[index] = message;
+  else messages.push(message);
+}
+
+/** Settle tools that cannot still be running once their turn is interrupted. */
+export function interruptRunningTools(parts: StoredTurnPart[], reason: string): void {
+  for (const part of parts) {
+    if (part.type !== 'tool' || part.status !== 'running') continue;
+    part.status = 'error';
+    part.error = reason;
+    if (part.output === undefined) part.output = { error: reason };
+  }
+}
+
+export function isInterruptedMessage(message: StoredMessage): boolean {
+  return message.status === 'interrupted' || message.aborted === true || typeof message.error === 'string';
 }
 
 export function textFromParts(parts: StoredTurnPart[]): string {

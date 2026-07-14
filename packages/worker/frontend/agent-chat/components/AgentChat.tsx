@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import type { AgentStatusPayload, AgentTurnUsage, StoredMessage } from '../../../src/session/agent-contract.js';
+import {
+  interruptRunningTools,
+  isInterruptedMessage,
+  textFromParts,
+  upsertStoredMessage,
+  type AgentStatusPayload,
+  type AgentTurnUsage,
+  type StoredMessage,
+} from '../../../src/session/agent-contract.js';
 import * as api from '../api.js';
 import { usePinToBottom } from '../hooks.js';
 import { createLiveTurn, readAgentStream, type LiveTurn } from '../stream.js';
@@ -173,12 +181,20 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
     }
   }, [confirmClear]);
 
-  // After a Stop the server persists the partial turn from its detached
-  // stream, racing our GET. Keep the locally-accumulated partial rendered
-  // and accept a fetched list only once it contains it (one bounded
-  // re-fetch); otherwise the local snapshot stands until the next refresh.
-  const syncAfterAbort = useCallback(async (partial: StoredMessage | null, seq: number) => {
-    if (partial) setMessages((current) => [...current, partial]);
+  // Server persistence after Stop or clean EOF can race this GET. Keep the
+  // local partial until storage contains a terminal version of the same turn.
+  const syncInterruptedTurn = useCallback(async (partial: StoredMessage | null, seq: number) => {
+    if (partial) {
+      if (liveRef.current?.message.id === partial.id) {
+        liveRef.current = null;
+        scheduleTick();
+      }
+      setMessages((current) => {
+        const next = [...current];
+        upsertStoredMessage(next, partial);
+        return next;
+      });
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
       let list: StoredMessage[];
       try {
@@ -187,18 +203,20 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
         return;
       }
       if (turnSeqRef.current !== seq) return;
-      if (!partial || list.some((message) => message.id === partial.id)) {
+      const persistedPartial = partial && list.find((message) => message.id === partial.id);
+      if (!partial || (persistedPartial && persistedPartial.status !== 'streaming')) {
         setMessages(list);
         return;
       }
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
     }
-  }, []);
+  }, [scheduleTick]);
 
   const runTurn = useCallback(async (
     body: api.ChatRequestBody,
     sendCtx?: { optimisticId: string; text: string },
   ) => {
+    if (abortRef.current) return;
     const controller = new AbortController();
     abortRef.current = controller;
     const seq = ++turnSeqRef.current;
@@ -213,12 +231,20 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
     try {
       const stream = await api.postChatTurn(body, controller.signal);
       accepted = true;
-      await readAgentStream(stream, live, {
+      const outcome = await readAgentStream(stream, live, {
         onMessages: setMessages,
         onLiveChange: scheduleTick,
         onDone: (message) => setLastUsage({ id: message.id, usage: live.usage }),
         onError: (error) => setTurnError({ message: error, resendText: null }),
       });
+      if (outcome === 'eof' && live.message.parts.length > 0) {
+        interruptRunningTools(live.message.parts, 'Interrupted before completion');
+        await syncInterruptedTurn({
+          ...live.message,
+          content: textFromParts(live.message.parts),
+          status: 'interrupted',
+        }, seq);
+      }
     } catch (error) {
       if (!accepted && sendCtx) {
         // The server never saw this send: drop the phantom optimistic
@@ -229,12 +255,29 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
           setTurnError({ message: errorMessage(error), resendText: sendCtx.text });
         }
       } else if (isAbortError(error)) {
-        const partial: StoredMessage | null = live.message.parts.length > 0
-          ? { ...live.message, aborted: true }
-          : null;
-        await syncAfterAbort(partial, seq);
+        let partial: StoredMessage | null = null;
+        if (live.message.parts.length > 0) {
+          interruptRunningTools(live.message.parts, 'Stopped by user');
+          partial = {
+            ...live.message,
+            content: textFromParts(live.message.parts),
+            status: 'interrupted',
+            aborted: true,
+          };
+        }
+        await syncInterruptedTurn(partial, seq);
       } else {
-        setTurnError({ message: errorMessage(error), resendText: null });
+        const message = errorMessage(error);
+        if (live.message.parts.length > 0) {
+          interruptRunningTools(live.message.parts, message);
+          await syncInterruptedTurn({
+            ...live.message,
+            content: textFromParts(live.message.parts),
+            status: 'interrupted',
+            error: message,
+          }, seq);
+        }
+        setTurnError({ message, resendText: null });
       }
     } finally {
       liveRef.current = null;
@@ -242,9 +285,10 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
       setBusy(false);
       scheduleTick();
     }
-  }, [scheduleTick, syncAfterAbort]);
+  }, [scheduleTick, syncInterruptedTurn]);
 
   const send = useCallback((text: string) => {
+    if (abortRef.current) return;
     const optimisticId = `optimistic-${crypto.randomUUID()}`;
     setDraft((current) => (current.trim() === text ? '' : current));
     setMessages((current) => [...current, {
@@ -257,6 +301,7 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
   }, [runTurn]);
 
   const retryTurn = useCallback((resendText: string | null) => {
+    if (abortRef.current) return;
     if (resendText !== null) send(resendText);
     else void runTurn({ retry: true, stream: true });
   }, [send, runTurn]);
@@ -337,11 +382,20 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
           </div>
         ) : (
           <div class="agent-thread">
-            {messages.map((message) => (
+            {messages.map((message, index) => (
               <Message
                 key={message.id}
                 message={message}
                 usage={lastUsage && lastUsage.id === message.id ? lastUsage.usage : null}
+                onRetry={
+                  index === messages.length - 1
+                  && message.role === 'assistant'
+                  && isInterruptedMessage(message)
+                  && !busy
+                  && !turnError
+                    ? () => retryTurn(null)
+                    : undefined
+                }
               />
             ))}
             {live && <Message message={live.message} live tick={tick} />}
