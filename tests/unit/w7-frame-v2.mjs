@@ -168,6 +168,38 @@ function frameRecords(value) {
   }
 }
 
+// Symlink targets use the same canonical content model as files: the inode,
+// emitted file-chunk records, and file-end declaration carry one exact count.
+// Empty files and empty symlink targets carry zero content chunks.
+{
+  const target = new TextEncoder().encode('../sass/sass.js');
+  const payload = {
+    inodes: [
+      inode('zero.txt', new Uint8Array()),
+      { ...inode('sass-link', target), kind: 'symlink', mode: 0o777 },
+      { ...inode('empty-link', new Uint8Array()), kind: 'symlink', mode: 0o777 },
+    ],
+    chunks: chunks('sass-link', target),
+  };
+  const encoded = await collect(encodeWriteBatchStream(payload));
+  const { records } = await decodeAll(encoded, 1);
+  for (const path of ['zero.txt', 'sass-link', 'empty-link']) {
+    const begin = records.find((record) => record.type === 'file-begin' && record.inode.path === path);
+    const end = records.find((record) => record.type === 'file-end' && record.path === path);
+    const emitted = records.filter((record) => record.type === 'file-chunk' && record.path === path);
+    assert.equal(end.chunkCount, emitted.length);
+    assert.equal(begin.inode.chunkCount, emitted.length);
+  }
+  const linkBegin = records.find(
+    (record) => record.type === 'file-begin' && record.inode.path === 'sass-link',
+  );
+  assert.equal(linkBegin.inode.kind, 'symlink');
+  assert.deepEqual(
+    records.find((record) => record.type === 'file-chunk' && record.path === 'sass-link').data,
+    target,
+  );
+}
+
 async function expectDecodeFailure(value, pattern) {
   await assert.rejects(async () => {
     const decoded = await decodeWriteBatchStream(streamBytes(value, 7));

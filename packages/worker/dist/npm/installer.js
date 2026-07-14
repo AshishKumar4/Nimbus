@@ -1064,34 +1064,34 @@ export class NpmInstaller {
      */
     async linkBins(resolved, nmDir) {
         const binDir = nmDir + '/.bin';
-        const binEntries = [];
-        const binChunks = [];
-        const mtime = Date.now();
-        const dirs = new Set();
         const manifestEntries = [];
-        dirs.add(binDir);
         for (const [, pkg] of resolved) {
             for (const binEntry of packageBinEntries(pkg, nmDir)) {
                 manifestEntries.push(binEntry);
-                const script = createNpmBinShim(binEntry);
-                const data = enc.encode(script);
-                const linkPath = binDir + '/' + binEntry.name;
-                binEntries.push({
-                    path: linkPath,
-                    parentPath: binDir,
-                    isDir: false,
-                    size: data.length,
-                    mtime,
-                    mode: 0o755,
-                    chunkCount: 1,
-                });
-                binChunks.push({ path: linkPath, chunkId: 0, data });
             }
         }
-        if (binEntries.length === 0)
+        if (manifestEntries.length === 0)
             return;
+        const manifest = createNpmBinManifest(manifestEntries);
+        const binEntries = [];
+        const binChunks = [];
+        const mtime = Date.now();
+        for (const binEntry of Object.values(manifest.bins)) {
+            const data = enc.encode(createNpmBinShim(binEntry));
+            const linkPath = binDir + '/' + binEntry.name;
+            binEntries.push({
+                path: linkPath,
+                parentPath: binDir,
+                isDir: false,
+                size: data.length,
+                mtime,
+                mode: 0o755,
+                chunkCount: 1,
+            });
+            binChunks.push({ path: linkPath, chunkId: 0, data });
+        }
         const manifestPath = npmBinManifestPath(nmDir);
-        const manifestData = enc.encode(JSON.stringify(createNpmBinManifest(manifestEntries), null, 2) + '\n');
+        const manifestData = enc.encode(JSON.stringify(manifest, null, 2) + '\n');
         binEntries.push({
             path: manifestPath,
             parentPath: binDir,
@@ -1102,18 +1102,15 @@ export class NpmInstaller {
             chunkCount: 1,
         });
         binChunks.push({ path: manifestPath, chunkId: 0, data: manifestData });
-        // Add directory inodes
-        for (const dir of dirs) {
-            binEntries.push({
-                path: dir,
-                parentPath: parentOf(dir),
-                isDir: true,
-                size: 0,
-                mtime,
-                mode: 0o755,
-                chunkCount: 0,
-            });
-        }
+        binEntries.push({
+            path: binDir,
+            parentPath: parentOf(binDir),
+            isDir: true,
+            size: 0,
+            mtime,
+            mode: 0o755,
+            chunkCount: 0,
+        });
         await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
     }
     async writeStreamPayload(payload) {
