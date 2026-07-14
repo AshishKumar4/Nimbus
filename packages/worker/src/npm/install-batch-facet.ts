@@ -353,6 +353,23 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   ): Promise<void> => withSharedMutation(async () => {
     const size = data.length;
     const chunkCount = size === 0 ? 0 : Math.ceil(size / chunkSize);
+    // Re-enqueue of the same path (two owners writing the same shared file in
+    // a parallel install) is last-write-wins. sharedInodes.set() below already
+    // replaces the inode, but sharedChunks is append-only — without dropping
+    // the prior chunks here, the path would carry the previous enqueue's chunks
+    // PLUS the new ones while its inode declares only the new chunkCount, and
+    // the W7 encoder rejects the wave ("expected N chunks, got M"). Mirror the
+    // dedup enqueueSharedDirectory already performs.
+    const existing = sharedInodes.get(filePath);
+    if (existing) {
+      if (existing.isDir) throw new Error(`file/directory collision in npm write wave: ${filePath}`);
+      sharedBufferedBytes -= INODE_OVERHEAD + filePath.length * 2;
+      for (let i = sharedChunks.length - 1; i >= 0; i--) {
+        if (sharedChunks[i].path !== filePath) continue;
+        sharedBufferedBytes -= CHUNK_OVERHEAD + filePath.length + sharedChunks[i].data.length;
+        sharedChunks.splice(i, 1);
+      }
+    }
     const additionalBytes = INODE_OVERHEAD + filePath.length * 2
       + size + (chunkCount * (CHUNK_OVERHEAD + filePath.length));
     await preflushSharedMutation(filePath, additionalBytes);
