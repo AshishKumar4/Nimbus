@@ -56,6 +56,42 @@ const ESBUILD_RUNTIME_SHIM = [
     '  finally { __nimbusDisposeRpcResult(value); }',
     '};',
 ].join('\n');
+/** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
+export function assembleLoaderWorkerModuleSource(options) {
+    const lines = [
+        'import { WorkerEntrypoint } from "cloudflare:workers";',
+    ];
+    const wasmEntries = options.wasmEntries ?? [];
+    if (wasmEntries.length > 0) {
+        lines.push('');
+        lines.push('// ── Pool-injected WebAssembly modules ─────────────────────');
+        for (const entry of wasmEntries) {
+            lines.push(`import __NIMBUS_WASM_${entry.id} from './${entry.name}';`);
+        }
+        lines.push('globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};');
+        for (const entry of wasmEntries) {
+            lines.push(`globalThis.__NIMBUS_WASM[${JSON.stringify(entry.name)}] = __NIMBUS_WASM_${entry.id};`);
+        }
+        lines.push('// ── End pool-injected WebAssembly modules ─────────────────');
+    }
+    lines.push('', '// ── esbuild runtime shim ──────────────────────────────────', '// When Nimbus is bundled by wrangler/esbuild, our facet function', '// is transformed into `__name(async function …, "…")` at emit', '// time. `fn.toString()` then yields the wrapped function body,', '// but `__name` and its helpers are module-local in the SUPERVISOR', '// bundle and do NOT cross into the facet isolate. Redeclare them', '// here so facet bodies survive the toString() round-trip.', ESBUILD_RUNTIME_SHIM, '// ── End esbuild runtime shim ──────────────────────────────', '');
+    if (options.preamble) {
+        lines.push('// ── Preamble (pool-level helpers) ─────────────────────────', options.preamble, '// ── End preamble ──────────────────────────────────────────', '');
+    }
+    if (options.context) {
+        for (const [key, value] of Object.entries(options.context)) {
+            lines.push(`const ${key} = ${JSON.stringify(value)};`);
+        }
+        lines.push('');
+    }
+    lines.push(`const __fn__ = ${options.fnSource};`);
+    lines.push('');
+    const callExpr = options.hasBindings
+        ? '__fn__(...args, this.env)'
+        : '__fn__(...args)';
+    lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    const result = ${callExpr};`, '    if (result instanceof Promise) return result;', '    return result;', '  }', '}');
+    return lines.join('\n');
+}
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
@@ -300,13 +336,6 @@ export class NimbusLoaderPool {
             globalOutbound: undefined,
             env: this.bindings,
         };
-        // Build module source manually (always — even without a user preamble
-        // — because we always want the esbuild-helper shim). The vendored
-        // buildWorkerCode is no longer used on this path; we keep the same
-        // module shape (default-export WorkerEntrypoint with execute()).
-        const lines = [
-            'import { WorkerEntrypoint } from "cloudflare:workers";',
-        ];
         // ── WASM module imports ───────────────────────────────────────────
         // Each entry in `wasmModules` (constructor-time + per-call) is
         // registered in the LOADER's modules map (below) as
@@ -327,37 +356,13 @@ export class NimbusLoaderPool {
             ...this.wasmModules,
             ...(perCallWasmEntries ?? []),
         ];
-        if (allWasmEntries.length > 0) {
-            lines.push('');
-            lines.push('// ── Pool-injected WebAssembly modules ─────────────────────');
-            for (const w of allWasmEntries) {
-                lines.push(`import __NIMBUS_WASM_${w.id} from './${w.name}';`);
-            }
-            lines.push('globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};');
-            for (const w of allWasmEntries) {
-                // Bind by ORIGINAL name (the spec the caller used) so the user
-                // fn looks up via the same key it passed to wasmModules.
-                lines.push(`globalThis.__NIMBUS_WASM[${JSON.stringify(w.name)}] = __NIMBUS_WASM_${w.id};`);
-            }
-            lines.push('// ── End pool-injected WebAssembly modules ─────────────────');
-        }
-        lines.push('', '// ── esbuild runtime shim ──────────────────────────────────', '// When Nimbus is bundled by wrangler/esbuild, our facet function', '// is transformed into `__name(async function …, "…")` at emit', '// time. `fn.toString()` then yields the wrapped function body,', '// but `__name` and its helpers are module-local in the SUPERVISOR', '// bundle and do NOT cross into the facet isolate. Redeclare them', '// here so facet bodies survive the toString() round-trip.', ESBUILD_RUNTIME_SHIM, '// ── End esbuild runtime shim ──────────────────────────────', '');
-        if (this.preamble) {
-            lines.push('// ── Preamble (pool-level helpers) ─────────────────────────', this.preamble, '// ── End preamble ──────────────────────────────────────────', '');
-        }
-        if (context) {
-            for (const [key, value] of Object.entries(context)) {
-                lines.push(`const ${key} = ${JSON.stringify(value)};`);
-            }
-            lines.push('');
-        }
-        lines.push(`const __fn__ = ${fnSource};`);
-        lines.push('');
-        const callExpr = this.bindings
-            ? '__fn__(...args, this.env)'
-            : '__fn__(...args)';
-        lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    const result = ${callExpr};`, '    if (result instanceof Promise) return result;', '    return result;', '  }', '}');
-        const moduleSource = lines.join('\n');
+        const moduleSource = assembleLoaderWorkerModuleSource({
+            fnSource,
+            preamble: this.preamble,
+            context,
+            wasmEntries: allWasmEntries,
+            hasBindings: this.bindings !== undefined,
+        });
         // Modules map: the entry worker.js source plus any wasm modules the
         // pool was constructed with. Workerd parses the modules map at
         // worker-load time and resolves the static `import` statements

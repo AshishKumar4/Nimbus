@@ -174,6 +174,18 @@ export interface NimbusLoaderMapOptions extends NimbusLoaderCallOptions {
      */
     onError?: 'throw' | 'null' | 'skip';
 }
+export interface LoaderWorkerModuleSourceOptions {
+    fnSource: string;
+    preamble?: string;
+    context?: Record<string, unknown>;
+    wasmEntries?: ReadonlyArray<{
+        name: string;
+        id: string;
+    }>;
+    hasBindings: boolean;
+}
+/** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
+export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerModuleSourceOptions): string;
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the

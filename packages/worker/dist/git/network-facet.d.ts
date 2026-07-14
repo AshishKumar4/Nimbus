@@ -59,4 +59,12 @@ export interface GitNetworkResult {
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: GitNetworkOpts): Promise<GitNetworkResult>;
+/**
+ * Generate the dynamic worker code for the git network facet.
+ *
+ * Exports `default { async fetch(request, workerEnv) { ... } }`.
+ * Reads op args from the POST body, runs isomorphic-git with a buffered
+ * fs adapter, and flushes writes through W7 v2.
+ */
+export declare function assembleGitNetworkFacetSource(): string;
 //# sourceMappingURL=network-facet.d.ts.map

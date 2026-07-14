@@ -19,6 +19,7 @@ export declare const MAX_TX_BLOB_BYTES: number;
 export declare const MAX_TX_LOGICAL_ROWS = 256;
 export declare const MAX_TX_SQL_EXECS = 64;
 export declare const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES: number;
+export declare const MAX_RPC_SAFE_PAYLOAD_BYTES: number;
 export declare const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 export declare const ON_DEMAND_SLICE_CAP_BYTES: number;
 export declare const FACET_TIMEOUT_MS = 30000;
