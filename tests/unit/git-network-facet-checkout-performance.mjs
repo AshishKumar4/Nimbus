@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { execFile as execFileCallback } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import {
   mkdtemp,
   readFile,
@@ -29,58 +30,37 @@ const git = await import(`${pathToFileURL(cfGitSource).href}?facet-perf=${Date.n
 const temp = await mkdtemp(join(os.tmpdir(), 'nimbus-git-facet-perf-'));
 
 async function createLargePackedRepository(root) {
-  await git.init({ fs, dir: root, defaultBranch: 'main' });
-  const blob = await git.writeBlob({ fs, dir: root, blob: Buffer.from('x') });
-  const fileEntries = (prefix, count) => Array.from({ length: count }, (_, index) => ({
-    mode: '100644',
-    path: `${prefix}-${String(index).padStart(5, '0')}.txt`,
-    type: 'blob',
-    oid: blob,
-  }));
-  const hugeTree = await git.writeTree({
-    fs,
-    dir: root,
-    tree: fileEntries('huge', 15_000),
+  await execFile('git', ['init', '--quiet', '--initial-branch=main', root]);
+  const importer = spawn('git', ['-C', root, 'fast-import', '--quiet'], {
+    stdio: ['pipe', 'ignore', 'pipe'],
   });
-  const nestedTrees = [];
-  for (let directory = 0; directory < 15; directory++) {
-    nestedTrees.push({
-      mode: '040000',
-      path: `nested-${String(directory).padStart(2, '0')}`,
-      type: 'tree',
-      oid: await git.writeTree({
-        fs,
-        dir: root,
-        tree: fileEntries(`file-${String(directory).padStart(2, '0')}`, 1_000),
-      }),
-    });
+  const errors = [];
+  importer.stderr.on('data', chunk => errors.push(chunk));
+  const message = 'large fixture\n';
+  let input =
+    'commit refs/heads/main\n' +
+    'author Nimbus <nimbus@example.com> 1 +0000\n' +
+    'committer Nimbus <nimbus@example.com> 1 +0000\n' +
+    `data ${Buffer.byteLength(message)}\n${message}`;
+  const appendFile = (path, index) => {
+    const content = `unique packed blob ${String(index).padStart(5, '0')} ` +
+      `${(Math.imul(index + 1, 2654435761) >>> 0).toString(16)}\n`;
+    input += `M 100644 inline ${path}\ndata ${Buffer.byteLength(content)}\n${content}`;
+  };
+  for (let index = 0; index < 60_000; index++) {
+    appendFile(`huge/huge-${String(index).padStart(5, '0')}.txt`, index);
+    if (input.length >= 1024 * 1024) {
+      if (!importer.stdin.write(input)) await once(importer.stdin, 'drain');
+      input = '';
+    }
   }
-  const tree = await git.writeTree({
-    fs,
-    dir: root,
-    tree: [
-      { mode: '040000', path: 'huge', type: 'tree', oid: hugeTree },
-      {
-        mode: '040000',
-        path: 'nested',
-        type: 'tree',
-        oid: await git.writeTree({ fs, dir: root, tree: nestedTrees }),
-      },
-    ],
-  });
-  const commit = await git.writeCommit({
-    fs,
-    dir: root,
-    commit: {
-      tree,
-      parent: [],
-      author: { name: 'Nimbus', email: 'nimbus@example.com', timestamp: 1, timezoneOffset: 0 },
-      committer: { name: 'Nimbus', email: 'nimbus@example.com', timestamp: 1, timezoneOffset: 0 },
-      message: 'large fixture\n',
-    },
-  });
-  await git.writeRef({ fs, dir: root, ref: 'refs/heads/main', value: commit, force: true });
+  importer.stdin.end(`${input}\ndone\n`);
+  const [exitCode] = await once(importer, 'close');
+  assert.equal(exitCode, 0, Buffer.concat(errors).toString());
   await execFile('git', ['-C', root, 'gc', '--prune=now']);
+  const commit = await git.resolveRef({ fs, dir: root, ref: 'HEAD' });
+  const { commit: parsedCommit } = await git.readCommit({ fs, dir: root, oid: commit });
+  const tree = parsedCommit.tree;
   const packDir = join(root, '.git/objects/pack');
   const packName = (await readdir(packDir)).find(name => name.endsWith('.pack'));
   assert.ok(packName, 'fixture did not produce a pack');
@@ -100,6 +80,10 @@ function metadataEntry(kind, size = 0, mode = kind === 'dir' ? 0o755 : 0o644) {
 const SUPERVISOR_RPC_LATENCY_MS = 30;
 const supervisorRpcDelay = () => new Promise(resolve =>
   setTimeout(resolve, SUPERVISOR_RPC_LATENCY_MS));
+const median = values => {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
+};
 
 try {
   const sourceRoot = join(temp, 'source');
@@ -321,7 +305,7 @@ try {
           prepared,
           checkoutCursor: cursor,
           checkoutBounds: {
-            maxEntries: 10_000,
+            maxEntries: 1_000,
             maxDecodedBytes: 32 * 1024 * 1024,
             maxWallMs: 150_000,
           },
@@ -347,7 +331,7 @@ try {
   const chunks = [];
   const first = await checkout(null, 'large-chunk-1');
   assert.equal(first.success, true, first.error);
-  assert.equal(first.treeEntriesVisited, 10_000,
+  assert.equal(first.treeEntriesVisited, 1_000,
     'first real chunk hit its wall bound before its entry bound');
   assert.equal(first.diagnostic.cold, true,
     'first checkout without module job state did not report a cold invocation');
@@ -366,7 +350,7 @@ try {
   );
   const cold = await checkout(firstCursor, 'large-chunk-cold-resume', coldFacet);
   assert.equal(cold.success, true, cold.error);
-  assert.equal(cold.treeEntriesVisited, 10_000);
+  assert.equal(cold.treeEntriesVisited, 1_000);
   assert.equal(cold.diagnostic.cold, true,
     'physically separate checkout module did not report a cold invocation');
   assert.ok(cold.statDelta + cold.lstatDelta <= 2,
@@ -383,8 +367,8 @@ try {
     'cold continuation lost the committed directory prefix',
   );
   const coldReads = calls.readFile.slice(readsBeforeCold);
-  assert.equal(coldReads.filter(path => path === `${gitdir}/index`).length, 1,
-    'cold real continuation did not parse the durable cumulative index exactly once');
+  assert.equal(coldReads.filter(path => path === `${gitdir}/index`).length, 0,
+    'cold real continuation read the cumulative Git index');
   assert.equal(coldReads.filter(path => path === idxPath).length, 1,
     'cold real continuation did not parse the pack index exactly once');
   assert.equal(coldReads.filter(path => path === packPath).length, 1,
@@ -393,17 +377,21 @@ try {
   let cursor = firstCursor;
   while (cursor !== null) {
     const invocation = `large-chunk-${chunks.length + 1}`;
-    const coldModulePath = join(moduleRoot, `git-network-worker-${invocation}.mjs`);
-    await writeFile(coldModulePath, facetSource);
-    const coldWorker = await import(
-      pathToFileURL(coldModulePath).href
-    );
-    const result = await checkout(cursor, invocation, coldWorker);
+    const priorCursor = cursor;
+    const result = await checkout(cursor, invocation);
     assert.equal(result.success, true, result.error);
-    assert.equal(result.diagnostic.cold, true,
-      'latency-modeled continuation unexpectedly reused module job state');
-    assert.ok(result.statDelta + result.lstatDelta <= 2,
-      'latency-modeled cold chunk performed per-entry supervisor stat/lstat RPCs');
+    assert.equal(result.diagnostic.cold, false,
+      'latency-modeled continuation lost live module job state');
+    if (result.nextCursor !== null) {
+      assert.ok(result.statDelta + result.lstatDelta <= 2,
+        'latency-modeled chunk performed per-entry supervisor stat/lstat RPCs');
+    } else {
+      assert.equal(
+        result.statDelta + result.lstatDelta,
+        priorCursor.indexChunks,
+        'final checkout did not read each durable index fragment exactly once',
+      );
+    }
     assert.deepEqual(
       [...result.statPaths, ...result.lstatPaths].filter(path =>
         path.startsWith(`${root}/`) && !path.startsWith(`${gitdir}/`)),
@@ -414,23 +402,40 @@ try {
     cursor = result.nextCursor;
   }
   assert.ok(chunks.length >= 4, 'fixture did not cross enough checkout chunks');
-  assert.ok(chunks.slice(0, -1).every(chunk => chunk.treeEntriesVisited === 10_000),
+  assert.ok(chunks.slice(0, -1).every(chunk => chunk.treeEntriesVisited === 1_000),
     'a non-final real chunk stopped before the entry bound');
   assert.equal(
     chunks.reduce((total, chunk) => total + chunk.treeEntriesVisited, 0),
-    30_017,
+    60_001,
   );
-  assert.equal(calls.readFile.filter(path => path === idxPath).length, chunks.length + 1,
-    'each physical-cold checkout did not parse its pack index exactly once');
-  assert.equal(calls.readFile.filter(path => path === packPath).length, chunks.length + 1,
-    'each physical-cold checkout did not load its pack exactly once');
-  assert.equal(calls.readFile.filter(path => path === `${gitdir}/index`).length, chunks.length,
-    'each cold continuation did not parse its cumulative Git index exactly once');
-  assert.ok(calls.writeBatchStream < 700,
+  const fullChunks = chunks.filter(chunk => chunk.treeEntriesVisited === 1_000);
+  assert.ok(fullChunks.length >= 6, 'fixture did not produce six equal checkout chunks');
+  const baselineWallMs = median(fullChunks.slice(1, 6).map(chunk => chunk.measuredWallMs));
+  for (let offset = 6; offset + 5 <= fullChunks.length; offset += 5) {
+    const windowWallMs = median(
+      fullChunks.slice(offset, offset + 5).map(chunk => chunk.measuredWallMs),
+    );
+    assert.ok(
+      windowWallMs <= baselineWallMs * 1.15,
+      `chunks ${offset + 1}-${offset + 5} median wall ${windowWallMs}ms exceeded ` +
+        `chunks 2-6 median ${baselineWallMs}ms by more than 15%`,
+    );
+  }
+  assert.equal(calls.readFile.filter(path => path === idxPath).length, 2,
+    'warm real chunks reparsed the pack index outside the forced-cold resume');
+  assert.equal(calls.readFile.filter(path => path === packPath).length, 2,
+    'warm real chunks reloaded the pack outside the forced-cold resume');
+  assert.equal(calls.readFile.filter(path => path === `${gitdir}/index`).length, 0,
+    'checkout read the cumulative Git index');
+  assert.ok(calls.writeBatchStream < 1_400,
     'supervisor writes scaled per entry instead of by bounded W7 waves');
   assert.equal(durable.has(markerPath), false, 'completed real checkout left its job marker');
-  assert.equal(durable.has(`${root}/huge/huge-14999.txt`), true);
-  assert.equal(durable.has(`${root}/nested/nested-14/file-14-00999.txt`), true);
+  assert.equal(
+    [...durable.keys()].some(path => path.startsWith(`${gitdir}/nimbus-checkout-index`)),
+    false,
+    'completed real checkout left index fragments behind',
+  );
+  assert.equal(durable.has(`${root}/huge/huge-59999.txt`), true);
 
   console.log(JSON.stringify({
     chunks: chunks.map(chunk => ({

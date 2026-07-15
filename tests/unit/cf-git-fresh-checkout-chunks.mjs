@@ -148,12 +148,13 @@ async function checkoutInChunks(root, {
 }
 
 function countingCheckoutFs() {
-  const counts = { indexReads: 0, packIndexReads: 0, packReads: 0 };
+  const counts = { indexReads: 0, indexFragmentReads: 0, packIndexReads: 0, packReads: 0 };
   let indexStatSequence = 0;
   const promises = Object.create(fs.promises);
   promises.readFile = async function(path, ...args) {
     if (typeof path === 'string') {
       if (path.endsWith('/.git/index')) counts.indexReads++;
+      else if (path.includes('/.git/nimbus-checkout-index/')) counts.indexFragmentReads++;
       else if (path.endsWith('.idx')) counts.packIndexReads++;
       else if (path.endsWith('.pack')) counts.packReads++;
     }
@@ -396,6 +397,30 @@ try {
   await checkoutInChunks(wallRoot, { coldCache: true });
   assert.deepEqual(await worktreeFiles(wallRoot), ['a.txt', 'b.txt', 'c.txt']);
 
+  const decodeWallRoot = join(temp, 'decode-wall-bound');
+  await createRepository(decodeWallRoot, [
+    { path: 'a.txt', content: 'a' },
+    { path: 'b.txt', content: 'b' },
+  ]);
+  const wallTimes = [0, 0, 100];
+  let decodeWallChunk;
+  try {
+    Date.now = () => wallTimes.shift() ?? 100;
+    decodeWallChunk = await git.checkoutFreshChunk({
+      fs,
+      dir: decodeWallRoot,
+      maxEntries: 100,
+      maxDecodedBytes: 1024,
+      maxWallMs: 50,
+    });
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(decodeWallChunk.treeEntriesVisited, 1,
+    'wall expiry during blob decode committed the expired entry');
+  await checkoutInChunks(decodeWallRoot, { coldCache: true });
+  assert.deepEqual(await worktreeFiles(decodeWallRoot), ['a.txt', 'b.txt']);
+
   const fixtureEntries = randomizedEntries();
   const warmRoot = join(temp, 'warm');
   const coldRoot = join(temp, 'cold');
@@ -421,6 +446,16 @@ try {
   assert.deepEqual(await indexManifest(warmRoot), await indexManifest(oneShotRoot));
   assert.deepEqual(await indexManifest(coldRoot), await indexManifest(oneShotRoot));
   assert.deepEqual(await indexManifest(warmRoot), await indexManifest(nativeRoot));
+  await assert.rejects(
+    () => stat(join(warmRoot, '.git/nimbus-checkout-index')),
+    error => error?.code === 'ENOENT',
+    'completed warm checkout left index fragments behind',
+  );
+  await assert.rejects(
+    () => stat(join(coldRoot, '.git/nimbus-checkout-index')),
+    error => error?.code === 'ENOENT',
+    'completed cold checkout left index fragments behind',
+  );
   assert.equal((await lstat(join(warmRoot, 'dir-0/file-00.txt'))).mode & 0o111, 0o111);
   assert.equal(await readlink(join(warmRoot, 'link')), 'dir-2/file-00.txt');
   assert.ok((await lstat(join(warmRoot, 'submodule'))).isDirectory());
@@ -444,8 +479,10 @@ try {
     coldCache: false,
     checkoutFs: warmCounting.fs,
   });
-  assert.equal(warmCounting.counts.indexReads, 1,
-    'warm continuation reparsed the cumulative Git index');
+  assert.equal(warmCounting.counts.indexReads, 0,
+    'warm continuation read the cumulative Git index');
+  assert.equal(warmCounting.counts.indexFragmentReads, countedWarmChunks.length - 1,
+    'final warm checkout did not read each durable index fragment exactly once');
   assert.equal(warmCounting.counts.packIndexReads, 1,
     'warm continuation reparsed the pack index');
   assert.equal(warmCounting.counts.packReads, 1,
@@ -456,8 +493,10 @@ try {
     coldCache: true,
     checkoutFs: coldCounting.fs,
   });
-  assert.equal(coldCounting.counts.indexReads, countedColdChunks.length,
-    'each cold continuation must parse the durable Git index exactly once');
+  assert.equal(coldCounting.counts.indexReads, 0,
+    'cold continuation read the cumulative Git index');
+  assert.equal(coldCounting.counts.indexFragmentReads, countedColdChunks.length - 1,
+    'final cold checkout did not read each durable index fragment exactly once');
   assert.equal(coldCounting.counts.packIndexReads, countedColdChunks.length,
     'each cold continuation must parse the pack index exactly once');
   assert.equal(coldCounting.counts.packReads, countedColdChunks.length,
@@ -481,7 +520,6 @@ try {
   );
 
   for (const failure of [
-    { name: 'object read', path: '.git/index', method: 'readFile' },
     {
       name: 'pack listing read',
       path: '.git/objects/pack',
@@ -490,8 +528,17 @@ try {
     },
     { name: 'worktree write', path: 'file-00.txt', method: 'writeFile' },
     { name: 'worktree lstat', path: 'file-00.txt', method: 'lstat' },
-    { name: 'index write before commit', path: '.git/index', method: 'writeFile' },
-    { name: 'index write after commit', path: '.git/index', method: 'writeFile', afterWrite: true },
+    {
+      name: 'index fragment write before commit',
+      path: '.git/nimbus-checkout-index/00000000',
+      method: 'writeFile',
+    },
+    {
+      name: 'index fragment write after commit',
+      path: '.git/nimbus-checkout-index/00000000',
+      method: 'writeFile',
+      afterWrite: true,
+    },
   ]) {
     const replayRoot = join(temp, failure.name.replaceAll(' ', '-'));
     await createRepository(replayRoot, fixtureEntries);
@@ -527,6 +574,38 @@ try {
       await worktreeManifest(oneShotRoot),
       `${failure.name} replay omitted a path`,
     );
+    assert.deepEqual(await indexManifest(replayRoot), await indexManifest(oneShotRoot));
+  }
+
+  for (const afterWrite of [false, true]) {
+    const replayRoot = join(temp, `final-index-${afterWrite ? 'after' : 'before'}-commit`);
+    await createRepository(replayRoot, fixtureEntries);
+    const args = {
+      dir: replayRoot,
+      maxEntries: 7,
+      maxDecodedBytes: 1024,
+      maxWallMs: 60_000,
+    };
+    let cursor = null;
+    await assert.rejects(async () => {
+      do {
+        const result = await git.checkoutFreshChunk({
+          ...args,
+          fs: injectedFs({
+            failPath: '.git/index',
+            method: 'writeFile',
+            afterWrite,
+          }),
+          cursor,
+        });
+        cursor = result.nextCursor;
+      } while (cursor !== null);
+    }, /injected writeFile failure: \.git\/index/);
+    do {
+      const result = await git.checkoutFreshChunk({ ...args, fs, cursor });
+      cursor = result.nextCursor;
+    } while (cursor !== null);
+    assert.deepEqual(await worktreeManifest(replayRoot), await worktreeManifest(oneShotRoot));
     assert.deepEqual(await indexManifest(replayRoot), await indexManifest(oneShotRoot));
   }
 } finally {

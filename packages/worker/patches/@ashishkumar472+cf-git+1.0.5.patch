@@ -1,26 +1,99 @@
 diff --git a/index.js b/index.js
-index 80a5167..c33c378 100644
+index 80a5167..06541fd 100644
 --- a/index.js
 +++ b/index.js
-@@ -1075,0 +1076 @@ class GitIndexManager {
+@@ -969 +969 @@ class GitIndex {
+-  async toObject() {
++  async toObject({ entries = this.entries } = {}) {
+@@ -974 +974,6 @@ class GitIndex {
+-    writer.writeUInt32BE(this.entriesFlat.length);
++    writer.writeUInt32BE(entries.reduce(
++      (count, entry) => count + (entry.stages.length > 1
++        ? entry.stages.filter(Boolean).length
++        : 1),
++      0
++    ));
+@@ -977 +982 @@ class GitIndex {
+-    for (const entry of this.entries) {
++    for (const entry of entries) {
+@@ -1075,0 +1081 @@ class GitIndexManager {
 +   * @param {boolean} [opts.trustIndexCache=false] - Skip the stat check when the caller exclusively owns index mutation.
-@@ -1080 +1081,4 @@ class GitIndexManager {
+@@ -1080 +1086,4 @@ class GitIndexManager {
 -  static async acquire({ fs, gitdir, cache, allowUnmerged = true }, closure) {
 +  static async acquire(
 +    { fs, gitdir, cache, allowUnmerged = true, trustIndexCache = false },
 +    closure
 +  ) {
-@@ -1095 +1099,2 @@ class GitIndexManager {
+@@ -1095 +1104,2 @@ class GitIndexManager {
 -      if (await isIndexStale(fs, filepath, theIndexCache)) {
 +      if (!theIndexCache.map.has(filepath) ||
 +          (!trustIndexCache && await isIndexStale(fs, filepath, theIndexCache))) {
-@@ -3175,0 +3181 @@ class GitPackIndex {
+@@ -1117,0 +1128,58 @@ class GitIndexManager {
++
++  static async acquireFreshCheckout(
++    { fs, gitdir, priorChunks, priorEntries, deferFragmentCleanup },
++    closure
++  ) {
++    const chunkIndex = new GitIndex();
++    const result = await closure(chunkIndex);
++    const chunkEntries = chunkIndex.entries;
++    const indexEntries = priorEntries + chunkEntries.length;
++    const fragmentDir = `${gitdir}/nimbus-checkout-index`;
++
++    if (!result.complete) {
++      await fs.mkdir(fragmentDir);
++      await fs.write(
++        `${fragmentDir}/${String(priorChunks).padStart(8, '0')}`,
++        await chunkIndex.toObject({ entries: chunkEntries })
++      );
++      return { result, indexEntries }
++    }
++
++    const index = new GitIndex();
++    let durableEntries = 0;
++    let previousEntry = null;
++    const mergeEntries = entries => {
++      for (const entry of entries) {
++        if (previousEntry !== null && comparePath(previousEntry, entry) >= 0) {
++          throw new InternalError('Fresh checkout: index fragments are not strictly ordered')
++        }
++        index._addEntry(entry);
++        previousEntry = entry;
++      }
++    };
++    for (let chunk = 0; chunk < priorChunks; chunk++) {
++      const fragmentPath = `${fragmentDir}/${String(chunk).padStart(8, '0')}`;
++      const fragmentBuffer = await fs.read(fragmentPath);
++      if (fragmentBuffer === null) {
++        throw new InternalError(`Fresh checkout: missing index fragment ${chunk}`)
++      }
++      const fragment = await GitIndex.from(fragmentBuffer);
++      const fragmentEntries = fragment.entries;
++      durableEntries += fragmentEntries.length;
++      mergeEntries(fragmentEntries);
++    }
++    if (durableEntries !== priorEntries) {
++      throw new InternalError(
++        `Fresh checkout: index fragments contain ${durableEntries} entries, expected ${priorEntries}`
++      )
++    }
++    mergeEntries(chunkEntries);
++    await fs.write(
++      `${gitdir}/index`,
++      await index.toObject({ entries: [...index._entries.values()] })
++    );
++    if (priorChunks > 0 && !deferFragmentCleanup) {
++      await fs.rmdir(fragmentDir, { recursive: true });
++    }
++    return { result, indexEntries }
++  }
+@@ -3175,0 +3244 @@ class GitPackIndex {
 +        const oid = await shasum(GitObject.wrap({ type, object: data }));
-@@ -3178,0 +3185 @@ class GitPackIndex {
+@@ -3178,0 +3248 @@ class GitPackIndex {
 +          oid,
-@@ -3217 +3223,0 @@ class GitPackIndex {
+@@ -3217 +3286,0 @@ class GitPackIndex {
 -    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-@@ -3234 +3240,6 @@ class GitPackIndex {
+@@ -3234 +3303,6 @@ class GitPackIndex {
 -      if (o.oid) continue
 +      if (o.oid) {
 +        hashes.push(o.oid);
@@ -28,35 +101,35 @@ index 80a5167..c33c378 100644
 +        crcs[o.oid] = o.crc;
 +        continue
 +      }
-@@ -3236,2 +3246,0 @@ class GitPackIndex {
+@@ -3236,2 +3309,0 @@ class GitPackIndex {
 -        p.readDepth = 0;
 -        p.externalReadDepth = 0;
-@@ -3239 +3247,0 @@ class GitPackIndex {
+@@ -3239 +3310,0 @@ class GitPackIndex {
 -        objectsByDepth[p.readDepth] += 1;
-@@ -3264,0 +3273,5 @@ class GitPackIndex {
+@@ -3264,0 +3336,5 @@ class GitPackIndex {
 +    const fanout = new Uint32Array(256);
 +    for (const hash of this.hashes) {
 +      fanout[parseInt(hash.slice(0, 2), 16)]++;
 +    }
 +    let count = 0;
-@@ -3266,4 +3279 @@ class GitPackIndex {
+@@ -3266,4 +3342 @@ class GitPackIndex {
 -      let count = 0;
 -      for (const hash of this.hashes) {
 -        if (parseInt(hash.slice(0, 2), 16) <= i) count++;
 -      }
 +      count += fanout[i];
-@@ -3307 +3317 @@ class GitPackIndex {
+@@ -3307 +3380 @@ class GitPackIndex {
 -  async read({ oid }) {
 +  async read({ oid, readContext = { depth: 0 } }) {
-@@ -3310 +3319,0 @@ class GitPackIndex {
+@@ -3310 +3382,0 @@ class GitPackIndex {
 -        this.externalReadDepth++;
-@@ -3317 +3326 @@ class GitPackIndex {
+@@ -3317 +3389 @@ class GitPackIndex {
 -    return this.readSlice({ start })
 +    return this.readSlice({ start, readContext })
-@@ -3320 +3329 @@ class GitPackIndex {
+@@ -3320 +3392 @@ class GitPackIndex {
 -  async readSlice({ start }) {
 +  async readSlice({ start, readContext = { depth: 0 } }) {
-@@ -3324,61 +3333,69 @@ class GitPackIndex {
+@@ -3324,61 +3396,69 @@ class GitPackIndex {
 -    this.readDepth++;
 -    const types = {
 -      0b0010000: 'commit',
@@ -187,9 +260,9 @@ index 80a5167..c33c378 100644
 +      return { type, format: 'content', object }
 +    } finally {
 +      readContext.depth--;
-@@ -3386 +3402,0 @@ class GitPackIndex {
+@@ -3386 +3465,0 @@ class GitPackIndex {
 -    return { type, format: 'content', object }
-@@ -3391,0 +3408,12 @@ const PackfileCache = Symbol('PackfileCache');
+@@ -3391,0 +3471,12 @@ const PackfileCache = Symbol('PackfileCache');
 +const packIndexCacheKey = (gitdir, filename) =>
 +  `${gitdir}/objects/pack/${filename}`;
 +
@@ -202,15 +275,15 @@ index 80a5167..c33c378 100644
 +  cache[PackfileCache].set(filename, Promise.resolve(index));
 +}
 +
-@@ -3440 +3468 @@ async function readObjectPacked({
+@@ -3440 +3531 @@ async function readObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -4525 +4553,3 @@ class GitWalkerFs {
+@@ -4525 +4616,3 @@ class GitWalkerFs {
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-@@ -6656,5 +6686,7 @@ const worthWalking = (filepath, root) => {
+@@ -6656,5 +6749,7 @@ const worthWalking = (filepath, root) => {
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -223,7 +296,7 @@ index 80a5167..c33c378 100644
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
-@@ -7310,9 +7342,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+@@ -7310,9 +7405,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -238,7 +311,7 @@ index 80a5167..c33c378 100644
 +    stats,
 +    oid,
 +  });
-@@ -7357,6 +7385,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7357,6 +7448,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -258,7 +331,7 @@ index 80a5167..c33c378 100644
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-@@ -7364,7 +7398,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7364,7 +7461,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -266,12 +339,12 @@ index 80a5167..c33c378 100644
 -          total: tasks.length,
 -        });
 -      }
-@@ -7372,4 +7399,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7372,4 +7462,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-@@ -7377 +7401,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7377 +7464,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -283,10 +356,11 @@ index 80a5167..c33c378 100644
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-@@ -7486,0 +7520,361 @@ async function checkout({
+@@ -7486,0 +7583,381 @@ async function checkout({
 +const freshCheckoutOidPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 +const freshCheckoutMaxDirectories = 20_000;
 +const freshCheckoutMaxDirectoryBytes = 4 * 1024 * 1024;
++const freshCheckoutMaxIndexChunks = 20_000;
 +
 +function freshCheckoutError(message) {
 +  return new InternalError(`Fresh checkout: ${message}`)
@@ -445,11 +519,16 @@ index 80a5167..c33c378 100644
 +      stack: [{ treeOid, path: '', nextChildIndex: 0 }],
 +      directories: new Set(),
 +      directoryBytes: 0,
++      indexChunks: 0,
++      indexEntries: 0,
 +    }
 +  }
-+  if (!cursor || typeof cursor !== 'object' || cursor.version !== 1 ||
++  if (!cursor || typeof cursor !== 'object' || cursor.version !== 2 ||
 +      cursor.tree !== treeOid || !Array.isArray(cursor.stack) ||
-+      cursor.stack.length === 0 || cursor.stack.length > 4096) {
++      cursor.stack.length === 0 || cursor.stack.length > 4096 ||
++      !Number.isSafeInteger(cursor.indexChunks) || cursor.indexChunks <= 0 ||
++      cursor.indexChunks > freshCheckoutMaxIndexChunks ||
++      !Number.isSafeInteger(cursor.indexEntries) || cursor.indexEntries < 0) {
 +    throw freshCheckoutError('cursor does not match the resolved tree')
 +  }
 +  const stack = cursor.stack.map(validateFreshCheckoutFrame);
@@ -457,14 +536,19 @@ index 80a5167..c33c378 100644
 +  if (stack[0].treeOid !== treeOid || stack[0].path !== '') {
 +    throw freshCheckoutError('cursor root frame does not match the resolved tree')
 +  }
++  const trees = new Map();
 +  for (let index = 0; index < stack.length; index++) {
 +    const frame = stack[index];
-+    const entries = await readFreshCheckoutTree({
-+      fs,
-+      cache,
-+      gitdir,
-+      oid: frame.treeOid,
-+    });
++    let entries = trees.get(frame.treeOid);
++    if (!entries) {
++      entries = await readFreshCheckoutTree({
++        fs,
++        cache,
++        gitdir,
++        oid: frame.treeOid,
++      });
++      trees.set(frame.treeOid, entries);
++    }
 +    if (frame.nextChildIndex > entries.length) {
 +      throw freshCheckoutError(`cursor frame ${index} is past the end of its tree`)
 +    }
@@ -473,19 +557,20 @@ index 80a5167..c33c378 100644
 +    if (parent.nextChildIndex === 0) {
 +      throw freshCheckoutError(`cursor frame ${index} has no parent entry`)
 +    }
-+    const parentEntries = await readFreshCheckoutTree({
-+      fs,
-+      cache,
-+      gitdir,
-+      oid: parent.treeOid,
-+    });
++    const parentEntries = trees.get(parent.treeOid);
 +    const entry = parentEntries[parent.nextChildIndex - 1];
 +    const path = parent.path ? `${parent.path}/${entry && entry.path}` : entry && entry.path;
 +    if (!entry || entry.mode !== '040000' || entry.oid !== frame.treeOid || path !== frame.path) {
 +      throw freshCheckoutError(`cursor frame ${index} does not match its parent tree`)
 +    }
 +  }
-+  return { stack, directories, directoryBytes }
++  return {
++    stack,
++    directories,
++    directoryBytes,
++    indexChunks: cursor.indexChunks,
++    indexEntries: cursor.indexEntries,
++  }
 +}
 +
 +/**
@@ -506,6 +591,7 @@ index 80a5167..c33c378 100644
 +  maxEntries,
 +  maxDecodedBytes,
 +  maxWallMs,
++  deferIndexFragmentCleanup = false,
 +}) {
 +  try {
 +    assertParameter('fs', inputFs);
@@ -525,24 +611,22 @@ index 80a5167..c33c378 100644
 +      treeOid,
 +      cursor,
 +    });
-+    const { stack, directories } = checkoutCursor;
++    const { stack, directories, indexChunks, indexEntries: priorIndexEntries } = checkoutCursor;
 +    let directoryBytes = checkoutCursor.directoryBytes;
 +    const startedAt = Date.now();
 +    const trees = new Map();
 +    let files = 0;
 +    let decodedBytes = 0;
 +    let treeEntriesVisited = 0;
-+    let indexEntries = 0;
++    let indexEntries = priorIndexEntries;
 +
-+    await GitIndexManager.acquire(
-+      // A fresh checkout is protected by Nimbus's exclusive destination lease.
-+      // Keep this parsed index warm, while acquire still serializes it durably.
++    const committedIndex = await GitIndexManager.acquireFreshCheckout(
 +      {
 +        fs,
 +        gitdir,
-+        cache,
-+        allowUnmerged: true,
-+        trustIndexCache: true,
++        priorChunks: indexChunks,
++        priorEntries: priorIndexEntries,
++        deferFragmentCleanup: deferIndexFragmentCleanup,
 +      },
 +      async function(index) {
 +        while (stack.length > 0) {
@@ -585,6 +669,7 @@ index 80a5167..c33c378 100644
 +                maxDecodedBytes
 +              )
 +            }
++            if (treeEntriesVisited > 0 && Date.now() - startedAt >= maxWallMs) break
 +            if (decodedBytes + object.byteLength > maxDecodedBytes) break
 +          }
 +
@@ -626,14 +711,22 @@ index 80a5167..c33c378 100644
 +            });
 +          }
 +        }
-+        indexEntries = index.entries.length;
++        return { complete: stack.length === 0 }
 +      }
 +    );
++    indexEntries = committedIndex.indexEntries;
 +
 +    return {
 +      nextCursor: stack.length === 0
 +        ? null
-+        : { version: 1, tree: treeOid, stack, directories: [...directories] },
++        : {
++            version: 2,
++            tree: treeOid,
++            stack,
++            directories: [...directories],
++            indexChunks: indexChunks + 1,
++            indexEntries,
++          },
 +      files,
 +      decodedBytes,
 +      treeEntriesVisited,
@@ -645,17 +738,17 @@ index 80a5167..c33c378 100644
 +  }
 +}
 +
-@@ -8155 +8549 @@ async function hasObjectPacked({
+@@ -8155 +8632 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8893 +9287,3 @@ async function _fetch({
+@@ -8893 +9370,3 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -9552 +9948 @@ async function expandOidPacked({
+@@ -9552 +10031 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -17576 +17972 @@ export default index;
+@@ -17576 +18055 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };

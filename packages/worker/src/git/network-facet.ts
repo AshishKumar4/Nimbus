@@ -981,6 +981,7 @@ const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
 const CHECKOUT_DIRECTORY_MAX_ENTRIES = 20_000;
 const CHECKOUT_DIRECTORY_MAX_ACCOUNTED_BYTES = 4 * 1024 * 1024;
+const CHECKOUT_INDEX_MAX_CHUNKS = 20_000;
 const CLONE_JOB_MARKER = 'nimbus-clone-job';
 const cloneJobs = new Map();
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -1079,9 +1080,12 @@ function cloneJobMarker(opts, prepared = null, cursor = null, cursorSeq = 0) {
 
 function validateCloneMarkerCursor(value, tree) {
   if (value === null) return null;
-  if (!value || typeof value !== 'object' || value.version !== 1 ||
+  if (!value || typeof value !== 'object' || value.version !== 2 ||
       value.tree !== tree || !Array.isArray(value.stack) ||
-      value.stack.length === 0 || value.stack.length > 4096) {
+      value.stack.length === 0 || value.stack.length > 4096 ||
+      !Number.isSafeInteger(value.indexChunks) || value.indexChunks <= 0 ||
+      value.indexChunks > CHECKOUT_INDEX_MAX_CHUNKS ||
+      !Number.isSafeInteger(value.indexEntries) || value.indexEntries < 0) {
     throw protocolError('clone job marker cursor is invalid');
   }
   const stack = value.stack.map((frame, index) => {
@@ -1101,10 +1105,12 @@ function validateCloneMarkerCursor(value, tree) {
     throw protocolError('clone job marker cursor root is invalid');
   }
   return {
-    version: 1,
+    version: 2,
     tree,
     stack,
     directories: validateCheckoutDirectories(value.directories),
+    indexChunks: value.indexChunks,
+    indexEntries: value.indexEntries,
   };
 }
 
@@ -1483,6 +1489,7 @@ function createBufferedFs(
   initialDirectories = [],
   phaseDeadline = null,
   authoritativeFallbackPaths = [],
+  authoritativeFallbackRoots = [],
 ) {
   const writeBuffer = new Map(); // path → Uint8Array (insertion ordered = FIFO)
   const pendingWriteMetadata = new Map();
@@ -1498,6 +1505,7 @@ function createBufferedFs(
   let mutationQueue = Promise.resolve();
   let pinnedFile = null;
   const fallbackPaths = new Set(authoritativeFallbackPaths.map(normalizePath));
+  const fallbackRoots = authoritativeFallbackRoots.map(normalizePath);
 
   function assertFlushHealthy() {
     if (flushFailure) throw flushFailure;
@@ -1523,7 +1531,8 @@ function createBufferedFs(
   }
 
   function canFallThrough(path) {
-    return fallbackPaths.has(path);
+    return fallbackPaths.has(path) || fallbackRoots.some(root =>
+      path === root || path.startsWith(root + '/'));
   }
 
   function metadataCost(path, entry) {
@@ -2128,6 +2137,17 @@ function createBufferedFs(
         });
       },
 
+      async rm(filepath) {
+        assertFlushHealthy();
+        const p = normalizePath(filepath);
+        return bufferMutation(p, 0, false, async () => {
+          dirBuffer.delete(p);
+          deleteBuffer.add(p);
+          removeMetadata(p, true);
+          await maybeFlush();
+        });
+      },
+
       async stat(filepath) {
         assertFlushHealthy();
         await awaitReadableOverlay();
@@ -2543,6 +2563,9 @@ export default {
         phase === 'clone-checkout'
           ? [normalizePath(opts.dir) + '/.git/index']
           : [],
+        phase === 'clone-checkout'
+          ? [normalizePath(opts.dir) + '/.git/nimbus-checkout-index']
+          : [],
       );
       const fs = bufferedFs.fs;
       flushWave = bufferedFs.flushWave;
@@ -2693,6 +2716,7 @@ export default {
             maxEntries: opts.checkoutBounds.maxEntries,
             maxDecodedBytes: opts.checkoutBounds.maxDecodedBytes,
             maxWallMs: opts.checkoutBounds.maxWallMs,
+            deferIndexFragmentCleanup: true,
             onProgress,
           });
         }
@@ -2707,6 +2731,12 @@ export default {
         }
         await flushWave();
         if (checkoutResult.nextCursor === null) {
+          if (opts.checkoutCursor?.indexChunks > 0) {
+            await fs.promises.rmdir(
+              normalizePath(opts.dir) + '/.git/nimbus-checkout-index',
+              { recursive: true },
+            );
+          }
           bufferedFs.unpinFile(cloneJobMarkerPath(opts.dir));
           await fs.promises.unlink(cloneJobMarkerPath(opts.dir));
           await flushWave();

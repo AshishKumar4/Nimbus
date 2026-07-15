@@ -12,10 +12,12 @@ let committedFailurePrefix = false;
 let abortObservedPrefix = false;
 const terminalLines = [];
 const continuationCursor = {
-  version: 1,
+  version: 2,
   tree: '2'.repeat(40),
   stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 3 }],
   directories: ['src'],
+  indexChunks: 1,
+  indexEntries: 3,
 };
 
 const supervisor = {

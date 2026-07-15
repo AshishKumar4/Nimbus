@@ -133,25 +133,45 @@ export const git = {
     return ref;
   },
 
-  async checkoutFreshChunk({ fs, dir, cache, cursor, maxEntries, maxDecodedBytes, maxWallMs, onProgress }) {
+  async checkoutFreshChunk({
+    fs,
+    dir,
+    cache,
+    cursor,
+    maxEntries,
+    maxDecodedBytes,
+    maxWallMs,
+    deferIndexFragmentCleanup,
+    onProgress,
+  }) {
     assert(cache.prepared === true, 'checkout did not reuse the prepared cache');
     assert(maxEntries > 0 && maxDecodedBytes > 0 && maxWallMs > 0,
       'checkout bounds were not forwarded');
+    assert(deferIndexFragmentCleanup === true,
+      'facet did not retain fragments through terminal marker acknowledgement');
     const root = dir.replace(/^\\/+/, '').split('/').filter(segment => segment && segment !== '.').join('/');
     if (root === 'repo') {
       assert(globalThis.__prepareDurable === true,
         'checkout began before prepared .git state was durably flushed');
     }
     assert(root !== 'unborn', 'empty repository unexpectedly ran checkout');
-    if (root === 'continuation' || root === 'marker-replay' || root.startsWith('chunk-failure-')) {
+    if (root === 'continuation' || root === 'marker-replay' ||
+        root === 'terminal-replay' || root.startsWith('chunk-failure-')) {
       if (cursor === null) {
+        await fs.promises.mkdir(root + '/.git/nimbus-checkout-index');
+        await fs.promises.writeFile(
+          root + '/.git/nimbus-checkout-index/00000000',
+          'fragment',
+        );
         await fs.promises.writeFile(root + '/first.txt', 'first');
         return {
           nextCursor: {
-            version: 1,
+            version: 2,
             tree: '2'.repeat(40),
             stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 1 }],
             directories: [],
+            indexChunks: 1,
+            indexEntries: 1,
           },
           files: 1,
           decodedBytes: 5,
@@ -904,10 +924,12 @@ export const git = {
   assert.equal(vfs.exists('continuation/.git/nimbus-clone-job'), false,
     'final chunk left the ownership marker behind');
   const firstCursor = {
-    version: 1,
+    version: 2,
     tree: '2'.repeat(40),
     stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 1 }],
     directories: [],
+    indexChunks: 1,
+    indexEntries: 1,
   };
   assert.ok(
     continuationMarkerWaves.some(({ paths, marker }) =>
@@ -1000,6 +1022,83 @@ export const git = {
   assert.equal(replayFinal.nextCursor, null);
   assert.equal(vfs.readFileString('marker-replay/second.txt'), 'second');
   assert.equal(vfs.exists('marker-replay/.git/nimbus-clone-job'), false);
+
+  const terminalJobId = 'terminal-replay-job';
+  const terminalOptionsHash = 'e'.repeat(64);
+  const terminalPhase = async (phase, invocationId, body, phaseSupervisor = supervisor) => {
+    const response = await facetWorker.default.fetch(
+      new Request(`http://git/git/${phase}/${invocationId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          op: 'clone',
+          dir: '/terminal-replay',
+          url: 'https://example.invalid/repo.git',
+          exclusiveDestination: true,
+          phase,
+          invocationId,
+          jobId: terminalJobId,
+          optionsHash: terminalOptionsHash,
+          phaseDeadline: Date.now() + 30_000,
+          ...body,
+        }),
+      }),
+      { SUPERVISOR: phaseSupervisor },
+    );
+    return response.json();
+  };
+  const terminalPrepare = await terminalPhase(
+    'clone-prepare',
+    'terminal-replay-prepare',
+    {},
+  );
+  assert.equal(terminalPrepare.success, true, terminalPrepare.error);
+  const terminalChunkBody = {
+    prepared: terminalPrepare.prepared,
+    checkoutCursor: null,
+    checkoutBounds: {
+      maxEntries: 10_000,
+      maxDecodedBytes: 32 * 1024 * 1024,
+      maxWallMs: 20_000,
+    },
+  };
+  const terminalFirst = await terminalPhase(
+    'clone-checkout',
+    'terminal-replay-first',
+    terminalChunkBody,
+  );
+  assert.equal(terminalFirst.success, true, terminalFirst.error);
+  let terminalWrite = 0;
+  const terminalFailingSupervisor = {
+    ...supervisor,
+    async writeBatchStream(stream) {
+      terminalWrite++;
+      if (terminalWrite >= 2) {
+        await new Response(stream).arrayBuffer();
+        throw new Error('injected terminal acknowledgement failure');
+      }
+      return supervisor.writeBatchStream(stream);
+    },
+  };
+  const terminalFailed = await terminalPhase(
+    'clone-checkout',
+    'terminal-replay-failed-final',
+    { ...terminalChunkBody, checkoutCursor: firstCursor },
+    terminalFailingSupervisor,
+  );
+  assert.equal(terminalFailed.success, false, 'terminal acknowledgement failure reported success');
+  assert.match(terminalFailed.error, /injected terminal acknowledgement failure/);
+  assert.equal(vfs.exists('terminal-replay/.git/nimbus-clone-job'), true,
+    'failed terminal acknowledgement removed the replay cursor');
+  assert.equal(vfs.exists('terminal-replay/.git/nimbus-checkout-index/00000000'), true,
+    'failed terminal acknowledgement removed the replay index fragment');
+  const terminalRetry = await terminalPhase(
+    'clone-checkout',
+    'terminal-replay-retry-final',
+    { ...terminalChunkBody, checkoutCursor: firstCursor },
+  );
+  assert.equal(terminalRetry.success, true, terminalRetry.error);
+  assert.equal(vfs.exists('terminal-replay/.git/nimbus-clone-job'), false);
+  assert.equal(vfs.exists('terminal-replay/.git/nimbus-checkout-index'), false);
 
   for (const failurePoint of ['before', 'during', 'after']) {
     const dir = `chunk-failure-${failurePoint}`;
