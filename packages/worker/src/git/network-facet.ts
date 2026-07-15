@@ -95,6 +95,8 @@ export interface GitNetworkPhaseDiagnostic {
   endedAt: number;
   elapsed: number;
   outcome: 'success' | 'error' | 'timeout';
+  /** Whether the facet began mutating the clone destination. */
+  mutated?: boolean;
   error?: string;
   lastProgress?: { phase: string; loaded: number; total?: number };
   w7Waves: number;
@@ -123,6 +125,16 @@ interface FacetInvocationResult {
   metadataOverlay?: unknown;
   diagnostic?: unknown;
   prepared?: unknown;
+  mutated?: unknown;
+  refused?: unknown;
+}
+
+interface GitFacetEntrypoint {
+  fetch(request: Request): Promise<Response>;
+}
+
+interface GitFacetWorker {
+  getEntrypoint(): GitFacetEntrypoint;
 }
 
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
@@ -237,6 +249,11 @@ function parsePhaseDiagnostic(
     endedAt: nonNegativeCounter(diagnostic.endedAt) || fallback.endedAt,
     elapsed: nonNegativeCounter(diagnostic.elapsed) || fallback.elapsed,
     outcome,
+    mutated: typeof diagnostic.mutated === 'boolean'
+      ? diagnostic.mutated
+      : typeof result.mutated === 'boolean'
+        ? result.mutated
+        : fallback.mutated,
     error: typeof diagnostic.error === 'string'
       ? diagnostic.error
       : fallback.error,
@@ -250,6 +267,7 @@ function parsePhaseDiagnostic(
 class GitClonePhaseError extends Error {
   readonly phase: GitCloneInvocationPhase;
   readonly diagnostic: GitNetworkPhaseDiagnostic;
+  readonly mutated: boolean | undefined;
 
   constructor(
     phase: GitCloneInvocationPhase,
@@ -260,6 +278,7 @@ class GitClonePhaseError extends Error {
     this.name = 'GitClonePhaseError';
     this.phase = phase;
     this.diagnostic = diagnostic;
+    this.mutated = diagnostic.mutated;
   }
 }
 
@@ -286,7 +305,7 @@ function phaseErrorMessage(error: unknown): string {
 }
 
 async function invokeFacet(
-  entrypoint: { fetch(request: Request): Promise<Response> },
+  entrypoint: GitFacetEntrypoint,
   phase: GitCloneInvocationPhase,
   invocationId: string,
   body: Record<string, unknown>,
@@ -312,6 +331,7 @@ async function invokeFacet(
   }
 
   const controller = new AbortController();
+  const phaseDeadline = startedAt + timeoutMs;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
@@ -322,17 +342,18 @@ async function invokeFacet(
   });
 
   try {
-    const response = await Promise.race([
-      entrypoint.fetch(new Request(
-        `http://git/git/${phase}/${encodeURIComponent(invocationId)}`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ ...body, phase, invocationId }),
-          signal: controller.signal,
-        },
-      )),
-      timeout,
-    ]);
+    const call = entrypoint.fetch(new Request(
+      `http://git/git/${phase}/${encodeURIComponent(invocationId)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...body, phase, invocationId, phaseDeadline }),
+        signal: controller.signal,
+      },
+    )).then((response) => {
+      if (controller.signal.aborted) disposeRpcResource(response);
+      return response;
+    });
+    const response = await Promise.race([call, timeout]);
     let result: FacetInvocationResult;
     try {
       result = await response.json() as FacetInvocationResult;
@@ -434,27 +455,30 @@ export async function execGitNetwork(
       };
     }
 
-    const worker = env.LOADER.load({
-      compatibilityDate: CF_COMPAT_DATE,
-      compatibilityFlags: ['nodejs_compat'],
-      mainModule: 'git-network-worker.js',
-      // Facet gets:
-      //   - its own worker code (git-network-worker.js), with the
-      //     W7 frame helpers (encodeWriteBatchStream + supporting
-      //     state) prepended so the buffered fs adapter can call
-      //     them as bare identifiers — the same shape NimbusLoaderPool's
-      //     `preamble` option provides for npm install. This is the
-      //     W7 v3 emits one bounded record per pull; the receiver owns
-      //     the aggregate 8 MiB payload-credit and transaction limits.
-      //   - the pre-bundled isomorphic-git (git-bundle.js)
-      modules: {
-        'git-network-worker.js': assembleGitNetworkFacetSource(),
-        'git-bundle.js': GIT_BUNDLE_CODE,
-      },
-      env: { SUPERVISOR: supervisorBinding },
-    });
-    const entrypoint = worker.getEntrypoint();
+    let worker: GitFacetWorker | undefined;
+    let entrypoint: GitFacetEntrypoint | undefined;
     try {
+      const loadedWorker: GitFacetWorker = env.LOADER.load({
+        compatibilityDate: CF_COMPAT_DATE,
+        compatibilityFlags: ['nodejs_compat'],
+        mainModule: 'git-network-worker.js',
+        // Facet gets:
+        //   - its own worker code (git-network-worker.js), with the
+        //     W7 frame helpers (encodeWriteBatchStream + supporting
+        //     state) prepended so the buffered fs adapter can call
+        //     them as bare identifiers — the same shape NimbusLoaderPool's
+        //     `preamble` option provides for npm install. This is the
+        //     W7 v3 emits one bounded record per pull; the receiver owns
+        //     the aggregate 8 MiB payload-credit and transaction limits.
+        //   - the pre-bundled isomorphic-git (git-bundle.js)
+        modules: {
+          'git-network-worker.js': assembleGitNetworkFacetSource(),
+          'git-bundle.js': GIT_BUNDLE_CODE,
+        },
+        env: { SUPERVISOR: supervisorBinding },
+      });
+      worker = loadedWorker;
+      entrypoint = loadedWorker.getEntrypoint();
       if (opts.op === 'clone') {
         const jobId = crypto.randomUUID();
         const optionsHash = await hashCloneOptions(opts);
@@ -557,28 +581,32 @@ export async function execGitNetwork(
             phases.push(phaseError.diagnostic);
           }
           let cleanupError: string | undefined;
-          try {
-            const abort = await invokeFacet(
-              entrypoint,
-              'clone-abort',
-              crypto.randomUUID(),
-              { ...facetOpts, jobId, optionsHash },
-              outerDeadline,
-              CLONE_ABORT_TIMEOUT_MS,
-            );
-            phases.push(abort.diagnostic);
-            accountResult(abort.result);
-            await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
-            if (abort.result.success !== true) {
-              cleanupError = typeof abort.result.error === 'string'
-                ? abort.result.error
-                : 'clone-abort failed';
+          const preMutationPrepareFailure = phaseError.phase === 'clone-prepare' &&
+            phaseError.mutated === false;
+          if (!preMutationPrepareFailure) {
+            try {
+              const abort = await invokeFacet(
+                entrypoint,
+                'clone-abort',
+                crypto.randomUUID(),
+                { ...facetOpts, jobId, optionsHash },
+                outerDeadline,
+                CLONE_ABORT_TIMEOUT_MS,
+              );
+              phases.push(abort.diagnostic);
+              accountResult(abort.result);
+              await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
+              if (abort.result.success !== true) {
+                cleanupError = typeof abort.result.error === 'string'
+                  ? abort.result.error
+                  : 'clone-abort failed';
+              }
+            } catch (abortError) {
+              if (abortError instanceof GitClonePhaseError) {
+                phases.push(abortError.diagnostic);
+              }
+              cleanupError = phaseErrorMessage(abortError);
             }
-          } catch (abortError) {
-            if (abortError instanceof GitClonePhaseError) {
-              phases.push(abortError.diagnostic);
-            }
-            cleanupError = phaseErrorMessage(abortError);
           }
 
           return {
@@ -697,6 +725,7 @@ const READ_RANGE_BYTES = 4 * 1024 * 1024;
 const METADATA_MAX_ENTRIES = 100_000;
 const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
+const CLONE_JOB_MARKER = 'nimbus-clone-job';
 const cloneJobs = new Map();
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -723,6 +752,31 @@ function requireMetadataNumber(value, label) {
     throw protocolError(label + ' is invalid');
   }
   return value;
+}
+
+function cloneJobMarkerPath(dir) {
+  return normalizePath(dir) + '/.git/' + CLONE_JOB_MARKER;
+}
+
+function cloneJobMarker(opts) {
+  return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
+}
+
+async function ownsCloneJob(fs, opts) {
+  let raw;
+  try {
+    raw = await fs.promises.readFile(cloneJobMarkerPath(opts.dir), { encoding: 'utf8' });
+  } catch (error) {
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return false;
+    throw error;
+  }
+  try {
+    const marker = JSON.parse(raw);
+    return marker && marker.version === 1 &&
+      marker.jobId === opts.jobId && marker.optionsHash === opts.optionsHash;
+  } catch {
+    return false;
+  }
 }
 
 function validateMetadataManifest(value, root) {
@@ -1046,6 +1100,7 @@ function createBufferedFs(
   authoritativeRoot,
   authoritativeRootMetadata,
   initialMetadata = [],
+  phaseDeadline = null,
 ) {
   const writeBuffer = new Map(); // path → Uint8Array (insertion ordered = FIFO)
   const pendingWriteMetadata = new Map();
@@ -1059,6 +1114,7 @@ function createBufferedFs(
   let flushInFlight = null;
   let flushFailure = null;
   let mutationQueue = Promise.resolve();
+  let pinnedFile = null;
 
   function assertFlushHealthy() {
     if (flushFailure) throw flushFailure;
@@ -1250,6 +1306,33 @@ function createBufferedFs(
     return writeBuffer.size > 0 || dirBuffer.size > 0 || deleteBuffer.size > 0;
   }
 
+  function pinFile(path, data) {
+    const bytes = textEncoder.encode(data);
+    pinnedFile = { path: normalizePath(path), bytes };
+  }
+
+  function unpinFile(path) {
+    if (pinnedFile && pinnedFile.path === normalizePath(path)) pinnedFile = null;
+  }
+
+  function bufferPinnedFile() {
+    if (!pinnedFile) return;
+    const { path, bytes } = pinnedFile;
+    if (writeBuffer.has(path)) bufferBytes -= writeBuffer.get(path).length;
+    const copy = bytes.slice();
+    writeBuffer.set(path, copy);
+    bufferBytes += copy.length;
+    deleteBuffer.delete(path);
+    const now = Date.now();
+    ensureMetadataParents(path, now);
+    const entry = {
+      kind: 'file', size: copy.length, mode: 0o644,
+      mtimeMs: now, ctimeMs: now, atimeMs: now,
+    };
+    setMetadata(path, entry);
+    pendingWriteMetadata.set(path, entry);
+  }
+
   // The supervisor's RPC class exposes the required W7
   // writeBatchStream() protocol.
   // encodeWriteBatchStream is a top-level function in the W7 frame
@@ -1264,7 +1347,19 @@ function createBufferedFs(
   // receiver-side weighted credit and transaction limits are the hard bound.
   async function doFlushWave() {
     assertFlushHealthy();
+    // Parent directory records in W7 are independently published before file
+    // records. Re-include the marker so every completed clone wave ends with
+    // the durable proof while the marker from the prior wave remains in place.
+    bufferPinnedFile();
     if (writeBuffer.size === 0 && dirBuffer.size === 0 && deleteBuffer.size === 0) return;
+    // This stops a timed-out facet from starting another durable wave after
+    // the supervisor has moved on to clone-abort. A writeBatchStream RPC that
+    // started before the deadline can still finish afterward; if live evidence
+    // shows that residual race, rotate the mutation lease between phases so a
+    // zombie invocation can no longer publish under the old owner.
+    if (phaseDeadline !== null && Date.now() >= phaseDeadline) {
+      throw new Error('git clone phase deadline reached before starting a new write wave');
+    }
     try {
       const waveMetadataEntries = [...pendingWriteMetadata];
       const waveMetadata = new Map(metadata);
@@ -1747,7 +1842,7 @@ function createBufferedFs(
     },
   };
 
-  return { fs, flushWave, overlayStats, metadataSnapshot };
+  return { fs, flushWave, overlayStats, metadataSnapshot, pinFile, unpinFile };
 }
 
 function preparedPackManifest(metadata, cloneRoot) {
@@ -1826,6 +1921,7 @@ export default {
       bytesWritten: 0,
       supervisorRpc: createSupervisorRpcCounters(),
     };
+    let mutated = false;
     let lastProgress = null;
     const respond = (success, payload = {}, status = 200) => {
       const endedAt = Date.now();
@@ -1835,6 +1931,7 @@ export default {
       return Response.json({
         success,
         ...payload,
+        mutated,
         filesWritten: stats.filesWritten,
         bytesWritten: stats.bytesWritten,
         supervisorRpc: stats.supervisorRpc,
@@ -1845,6 +1942,7 @@ export default {
           endedAt,
           elapsed: Math.max(0, Math.round(performance.now() - startedMonotonic)),
           outcome: success ? 'success' : 'error',
+          mutated,
           error,
           lastProgress,
           w7Waves: stats.supervisorRpc.writeBatchStream,
@@ -1885,7 +1983,7 @@ export default {
     }
 
     // Keep progress bounded: phase transitions/completions, plus one timed
-    // network update every two seconds. Checkout has no timed per-file output.
+    // update every two seconds.
     // isomorphic-git fires this callback per packfile object — thousands
     // of times for a medium repo. Each call does supervisor.stdout(...),
     // a facet→supervisor RPC that consumes input-gate time on the
@@ -1905,7 +2003,7 @@ export default {
       };
       const phaseChanged = e.phase !== lastLoggedPhase;
       const phaseDone = e.total && e.loaded === e.total;
-      const dueByTime = phase !== 'clone-checkout' && now - lastLogAt >= 2000;
+      const dueByTime = now - lastLogAt >= 2000;
       if (!phaseChanged && !phaseDone && !dueByTime) return;
       lastLogAt = now;
       lastLoggedPhase = e.phase;
@@ -1921,6 +2019,9 @@ export default {
       let authoritativeRootMetadata = null;
       let initialMetadata = [];
       let prepared = null;
+      const phaseDeadline = phase === 'operation'
+        ? null
+        : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
       if (phase === 'clone-prepare') {
         if (opts.op !== 'clone') throw protocolError('prepare requires clone operation');
         requireProtocolString(opts.jobId, 'job id', 128);
@@ -2011,6 +2112,7 @@ export default {
         authoritativeRoot,
         authoritativeRootMetadata,
         initialMetadata,
+        phaseDeadline,
       );
       const fs = bufferedFs.fs;
       flushWave = bufferedFs.flushWave;
@@ -2019,9 +2121,18 @@ export default {
 
       if (phase === 'clone-prepare') {
         if (authoritativeRoot !== null && authoritativeRoot !== normalizePath(opts.dir)) {
+          mutated = true;
           await fs.promises.mkdir(opts.dir);
           await flushWave();
         }
+        mutated = true;
+        bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
+        await fs.promises.mkdir(normalizePath(opts.dir) + '/.git');
+        await fs.promises.writeFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
+        // No Git metadata wave starts until ownership is durable. If this first
+        // W7 stream loses its response, a cold abort can still prove ownership
+        // from the marker; a missing or mismatched marker is never authority.
+        await flushWave();
         const cache = {};
         await git.clone({
           fs, http, cache,
@@ -2082,6 +2193,8 @@ export default {
       } else if (phase === 'clone-checkout') {
         const warmJob = cloneJobs.get(opts.jobId);
         const cache = warmJob ? warmJob.cache : {};
+        bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
+        mutated = true;
         const durableHeadRef = await git.currentBranch({
           fs,
           dir: opts.dir,
@@ -2130,6 +2243,8 @@ export default {
             onProgress,
           });
         }
+        bufferedFs.unpinFile(cloneJobMarkerPath(opts.dir));
+        await fs.promises.unlink(cloneJobMarkerPath(opts.dir));
         await flushWave();
         cloneJobs.delete(opts.jobId);
       } else if (phase === 'clone-abort') {
@@ -2137,6 +2252,14 @@ export default {
         if (warmJob && warmJob.optionsHash !== opts.optionsHash) {
           throw protocolError('abort job identity does not match');
         }
+        if (!await ownsCloneJob(fs, opts)) {
+          cloneJobs.delete(opts.jobId);
+          return respond(true, {
+            refused: 'not-owner',
+            metadataOverlay: overlayStats(),
+          });
+        }
+        mutated = true;
         cloneJobs.delete(opts.jobId);
         await fs.promises.rmdir(normalizePath(opts.dir) + '/.git', { recursive: true });
         await flushWave();

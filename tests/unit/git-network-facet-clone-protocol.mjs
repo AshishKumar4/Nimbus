@@ -4,6 +4,7 @@ import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 
 const calls = [];
+let supervisorDisposeCount = 0;
 let prepareDurable = false;
 let loadCount = 0;
 let entrypointCount = 0;
@@ -12,6 +13,7 @@ let abortObservedPrefix = false;
 
 const supervisor = {
   async stdout() {},
+  [Symbol.dispose]() { supervisorDisposeCount++; },
 };
 
 setCtxExports({
@@ -26,6 +28,23 @@ const entrypoint = {
     calls.push({ url: request.url, body });
 
     if (body.phase === 'clone-prepare') {
+      if (body.dir === '/existing') {
+        return Response.json({
+          success: false,
+          error: "fatal: destination path '/existing' already exists and is not an empty directory.",
+          mutated: false,
+          filesWritten: 0,
+          bytesWritten: 0,
+          supervisorRpc: {},
+          metadataOverlay: { entries: 0, accountedBytes: 0 },
+          diagnostic: {
+            phase: body.phase,
+            invocationId: body.invocationId,
+            outcome: 'error',
+            mutated: false,
+          },
+        });
+      }
       prepareDurable = true;
       const root = body.dir.replace(/^\/+/, '');
       return Response.json({
@@ -126,6 +145,8 @@ assert.match(calls[0].url, /\/git\/clone-prepare\//);
 assert.match(calls[1].url, /\/git\/clone-checkout\//);
 assert.equal(calls[0].body.jobId, calls[1].body.jobId);
 assert.equal(calls[0].body.optionsHash, calls[1].body.optionsHash);
+assert.ok(Number.isSafeInteger(calls[0].body.phaseDeadline));
+assert.ok(Number.isSafeInteger(calls[1].body.phaseDeadline));
 assert.deepEqual(calls[1].body.prepared, calls[0].body.phase === 'clone-prepare'
   ? {
       jobId: calls[0].body.jobId,
@@ -175,5 +196,77 @@ assert.deepEqual(failureCalls.map(({ body }) => body.phase), [
 ]);
 assert.equal(abortObservedPrefix, true, 'abort did not leave the committed worktree prefix inspectable');
 assert.equal(failed.filesWritten, 5, 'partial checkout writes were not reported');
+
+const callsBeforeExisting = calls.length;
+const existing = await execGitNetwork(
+  { id: { toString: () => 'test-do' } },
+  env,
+  {
+    op: 'clone',
+    dir: '/existing',
+    url: 'https://example.invalid/repo.git',
+    exclusiveDestination: true,
+    exclusiveMutationRoot: 'existing',
+    mutationOwner: 'owner',
+  },
+);
+assert.equal(existing.success, false);
+assert.match(existing.error, /already exists and is not an empty directory/);
+assert.deepEqual(
+  calls.slice(callsBeforeExisting).map(({ body }) => body.phase),
+  ['clone-prepare'],
+  'pre-mutation prepare failure must not invoke clone-abort',
+);
+
+let lateResponseDisposed = 0;
+const lateEntrypoint = {
+  async fetch() {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    const response = Response.json({ success: true });
+    Object.defineProperty(response, Symbol.dispose, {
+      value() { lateResponseDisposed++; },
+    });
+    return response;
+  },
+};
+const timedOut = await execGitNetwork(
+  { id: { toString: () => 'test-do' } },
+  { LOADER: { load: () => ({ getEntrypoint: () => lateEntrypoint }) } },
+  {
+    op: 'clone',
+    dir: '/timeout',
+    url: 'https://example.invalid/repo.git',
+    timeout: 5,
+    exclusiveDestination: true,
+    exclusiveMutationRoot: 'timeout',
+    mutationOwner: 'owner',
+  },
+);
+assert.equal(timedOut.success, false);
+assert.equal(timedOut.errorPhase, 'clone-prepare');
+await new Promise(resolve => setTimeout(resolve, 30));
+assert.equal(lateResponseDisposed, 1, 'timeout-loser response leaked its RPC stub');
+
+let throwingWorkerDisposed = 0;
+const supervisorDisposalsBeforeEntrypointFailure = supervisorDisposeCount;
+const entrypointFailure = await execGitNetwork(
+  { id: { toString: () => 'test-do' } },
+  {
+    LOADER: {
+      load() {
+        return {
+          getEntrypoint() { throw new Error('entrypoint unavailable'); },
+          [Symbol.dispose]() { throwingWorkerDisposed++; },
+        };
+      },
+    },
+  },
+  { op: 'fetch', dir: '/repo' },
+);
+assert.equal(entrypointFailure.success, false);
+assert.equal(entrypointFailure.error, 'entrypoint unavailable');
+assert.equal(throwingWorkerDisposed, 1, 'worker leaked when getEntrypoint threw');
+assert.equal(supervisorDisposeCount, supervisorDisposalsBeforeEntrypointFailure + 1,
+  'supervisor binding leaked when getEntrypoint threw');
 
 console.log('git network facet clone protocol: ok');

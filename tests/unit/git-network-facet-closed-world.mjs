@@ -10,8 +10,12 @@ import {
   W7_MAX_PATHS_PER_BATCH,
 } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/worker/src/constants.ts';
-import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
+import {
+  assembleGitNetworkFacetSource,
+  execGitNetwork,
+} from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -129,7 +133,7 @@ export const git = {
     return ref;
   },
 
-  async checkout({ fs, dir, cache }) {
+  async checkout({ fs, dir, cache, onProgress }) {
     assert(cache.prepared === true, 'checkout did not reuse the prepared cache');
     const root = dir.replace(/^\\/+/, '').split('/').filter(segment => segment && segment !== '.').join('/');
     if (root === 'repo') {
@@ -137,6 +141,18 @@ export const git = {
         'checkout began before prepared .git state was durably flushed');
     }
     assert(root !== 'unborn', 'empty repository unexpectedly ran checkout');
+    if (root === 'progress') {
+      const originalNow = Date.now;
+      const startedAt = originalNow();
+      try {
+        await onProgress({ phase: 'Updating workdir', loaded: 1, total: 3 });
+        Date.now = () => startedAt + 2001;
+        await onProgress({ phase: 'Updating workdir', loaded: 2, total: 3 });
+      } finally {
+        Date.now = originalNow;
+      }
+      return;
+    }
     if (root === 'empty' || root === 'empty-vfs') {
       await fs.promises.writeFile(dir + '/created.txt', 'created');
       return;
@@ -279,6 +295,7 @@ export const git = {
               invocationId: prepareInvocationId,
               jobId,
               optionsHash,
+              phaseDeadline: Date.now() + 30_000,
             }),
           }),
           env,
@@ -286,6 +303,11 @@ export const git = {
         const prepare = await prepareResponse.json();
         if (!prepare.success) return Response.json(prepare);
         lastPrepared = structuredClone(prepare.prepared);
+        const cloneRoot = body.dir.split('/').filter(segment => segment && segment !== '.').join('/');
+        if (cloneRoot === 'repo') {
+          assert(vfs.exists(cloneRoot + '/.git/nimbus-clone-job'),
+            'prepare response became visible without its durable ownership marker');
+        }
         const checkoutInvocationId = `${jobId}-checkout`;
         const checkoutResponse = await facetWorker.default.fetch(
           new Request(`http://git/git/clone-checkout/${checkoutInvocationId}`, {
@@ -297,6 +319,7 @@ export const git = {
               jobId,
               optionsHash,
               prepared: prepare.prepared,
+              phaseDeadline: Date.now() + 30_000,
             }),
           }),
           env,
@@ -396,6 +419,10 @@ export const git = {
   );
   const result = await response.json();
   assert.equal(result.success, true, result.error);
+  assert.equal(vfs.exists('repo/.git/nimbus-clone-job'), false,
+    'successful checkout shipped the internal clone ownership marker');
+  assert.ok(wavePaths[0].includes('repo/.git/nimbus-clone-job'),
+    'the first clone wave did not durably establish ownership');
   assert.equal(rawCalls.stat.filter((path) => path.includes('/.git/objects/')).length, 0);
   assert.equal(rawCalls.readdir.filter((path) => path.endsWith('/.git/objects/pack')).length, 0);
   assert.equal(result.supervisorRpc.stat, 1, 'only outside-root stat should cross');
@@ -469,6 +496,7 @@ export const git = {
         jobId: coldPrepared.jobId,
         optionsHash: coldPrepared.optionsHash,
         prepared: coldPrepared,
+        phaseDeadline: Date.now() + 30_000,
       }),
     }),
     {
@@ -796,6 +824,7 @@ export const git = {
   assert.equal(fallback.supervisorRpc.lstat, 1);
   assert.equal(fallback.supervisorRpc.readdir, 1);
 
+  const repoGitBefore = await bridge.readFile('/repo/.git/HEAD');
   const abortResponse = await coldWorker.default.fetch(
     new Request('http://git/git/clone-abort/abort-invocation', {
       method: 'POST',
@@ -806,13 +835,17 @@ export const git = {
         invocationId: 'abort-invocation',
         jobId: 'abort-job',
         optionsHash: 'b'.repeat(64),
+        phaseDeadline: Date.now() + 30_000,
       }),
     }),
     { SUPERVISOR: supervisor },
   );
   const abort = await abortResponse.json();
   assert.equal(abort.success, true, abort.error);
-  assert.equal(vfs.exists('repo/.git'), false, 'abort left partial Git metadata behind');
+  assert.equal(abort.refused, 'not-owner');
+  assert.equal(vfs.exists('repo/.git'), true, 'unowned abort deleted Git metadata');
+  assert.deepEqual(await bridge.readFile('/repo/.git/HEAD'), repoGitBefore,
+    'unowned abort changed pre-existing Git metadata bytes');
   assert.equal(vfs.readFileString('repo/src/file-259.txt'), warmOutput,
     'abort removed the committed worktree prefix');
   const repeatedAbortResponse = await coldWorker.default.fetch(
@@ -825,12 +858,173 @@ export const git = {
         invocationId: 'abort-invocation-repeat',
         jobId: 'abort-job',
         optionsHash: 'b'.repeat(64),
+        phaseDeadline: Date.now() + 30_000,
       }),
     }),
     { SUPERVISOR: supervisor },
   );
   const repeatedAbort = await repeatedAbortResponse.json();
   assert.equal(repeatedAbort.success, true, repeatedAbort.error);
+  assert.equal(repeatedAbort.refused, 'not-owner');
+
+  const foreignMarkerBytes = new TextEncoder().encode(JSON.stringify({
+    version: 1,
+    jobId: 'different-job',
+    optionsHash: 'e'.repeat(64),
+  }));
+  await bridge.writeFile('/repo/.git/nimbus-clone-job', foreignMarkerBytes);
+  const mismatchedAbortResponse = await coldWorker.default.fetch(
+    new Request('http://git/git/clone-abort/mismatched-abort', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/repo',
+        phase: 'clone-abort',
+        invocationId: 'mismatched-abort',
+        jobId: 'abort-job',
+        optionsHash: 'b'.repeat(64),
+        phaseDeadline: Date.now() + 30_000,
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const mismatchedAbort = await mismatchedAbortResponse.json();
+  assert.equal(mismatchedAbort.success, true, mismatchedAbort.error);
+  assert.equal(mismatchedAbort.refused, 'not-owner');
+  assert.deepEqual(
+    await bridge.readFile('/repo/.git/nimbus-clone-job'),
+    foreignMarkerBytes,
+    'abort changed a mismatched ownership marker',
+  );
+  await bridge.unlink('/repo/.git/nimbus-clone-job');
+
+  const ownedJobId = 'cold-owned-abort-job';
+  const ownedOptionsHash = 'c'.repeat(64);
+  const ownedPrepareResponse = await facetWorker.default.fetch(
+    new Request('http://git/git/clone-prepare/owned-prepare', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/owned-abort',
+        url: 'https://example.invalid/repo.git',
+        exclusiveDestination: true,
+        phase: 'clone-prepare',
+        invocationId: 'owned-prepare',
+        jobId: ownedJobId,
+        optionsHash: ownedOptionsHash,
+        phaseDeadline: Date.now() + 30_000,
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const ownedPrepare = await ownedPrepareResponse.json();
+  assert.equal(ownedPrepare.success, true, ownedPrepare.error);
+  assert.equal(vfs.exists('owned-abort/.git/nimbus-clone-job'), true,
+    'prepare did not persist its ownership marker');
+  assert.deepEqual(
+    JSON.parse(vfs.readFileString('owned-abort/.git/nimbus-clone-job')),
+    { version: 1, jobId: ownedJobId, optionsHash: ownedOptionsHash },
+  );
+  const ownedAbortResponse = await coldWorker.default.fetch(
+    new Request('http://git/git/clone-abort/owned-abort', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/owned-abort',
+        phase: 'clone-abort',
+        invocationId: 'owned-abort',
+        jobId: ownedJobId,
+        optionsHash: ownedOptionsHash,
+        phaseDeadline: Date.now() + 30_000,
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const ownedAbort = await ownedAbortResponse.json();
+  assert.equal(ownedAbort.success, true, ownedAbort.error);
+  assert.equal(ownedAbort.refused, undefined);
+  assert.equal(vfs.exists('owned-abort/.git'), false,
+    'cold-isolate abort with a valid ownership marker left Git metadata behind');
+
+  await bridge.mkdir('/existing-repo/.git', { recursive: true });
+  const existingBytes = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
+  await bridge.writeFile('/existing-repo/.git/sentinel', existingBytes);
+  const existingPhases = [];
+  setCtxExports({ SupervisorRPC: () => supervisor });
+  const existingResult = await execGitNetwork(
+    { id: { toString: () => 'closed-world-do' } },
+    {
+      LOADER: {
+        load() {
+          return {
+            getEntrypoint() {
+              return {
+                async fetch(request) {
+                  existingPhases.push((await request.clone().json()).phase);
+                  return facetWorker.default.fetch(request, { SUPERVISOR: supervisor });
+                },
+              };
+            },
+          };
+        },
+      },
+    },
+    {
+      op: 'clone',
+      dir: '/existing-repo',
+      url: 'https://example.invalid/repo.git',
+      exclusiveDestination: true,
+      exclusiveMutationRoot: 'existing-repo',
+      mutationOwner: 'owner',
+    },
+  );
+  assert.equal(existingResult.success, false);
+  assert.match(existingResult.error, /already exists and is not an empty directory/);
+  assert.deepEqual(existingPhases, ['clone-prepare'],
+    'pre-mutation destination refusal incorrectly invoked clone-abort');
+  assert.deepEqual(await bridge.readFile('/existing-repo/.git/sentinel'), existingBytes,
+    'clone into an existing repository changed its Git metadata bytes');
+
+  const expiredResponse = await coldWorker.default.fetch(
+    new Request('http://git/git/clone-prepare/expired-prepare', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/expired',
+        url: 'https://example.invalid/repo.git',
+        exclusiveDestination: true,
+        phase: 'clone-prepare',
+        invocationId: 'expired-prepare',
+        jobId: 'expired-job',
+        optionsHash: 'd'.repeat(64),
+        phaseDeadline: Date.now() - 1,
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const expired = await expiredResponse.json();
+  assert.equal(expired.success, false);
+  assert.match(expired.error, /phase deadline/);
+  assert.equal(vfs.exists('expired/.git'), false,
+    'facet started a new write wave after its phase deadline');
+
+  const progressStart = rawCalls.stdout;
+  const progressResponse = await worker.default.fetch(
+    new Request('http://git/op', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/progress',
+        url: 'https://example.invalid/repo.git',
+        exclusiveDestination: true,
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const progress = await progressResponse.json();
+  assert.equal(progress.success, true, progress.error);
+  assert.ok(rawCalls.stdout >= progressStart + 2,
+    'checkout did not emit time-throttled progress after two seconds');
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

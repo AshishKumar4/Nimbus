@@ -82,6 +82,8 @@ export interface GitNetworkPhaseDiagnostic {
     endedAt: number;
     elapsed: number;
     outcome: 'success' | 'error' | 'timeout';
+    /** Whether the facet began mutating the clone destination. */
+    mutated?: boolean;
     error?: string;
     lastProgress?: {
         phase: string;
