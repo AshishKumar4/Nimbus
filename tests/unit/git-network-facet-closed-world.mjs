@@ -423,6 +423,7 @@ export const git = {
   };
   const wavePaths = [];
   const continuationMarkerWaves = [];
+  const continuationMarkerContentIds = new Set();
   globalThis.__symlinkBatchDurable = false;
   globalThis.__nestedParentsDurable = false;
   globalThis.__prepareDurable = false;
@@ -483,6 +484,13 @@ export const git = {
             ? JSON.parse(vfs.readFileString('continuation/.git/nimbus-clone-job'))
             : null,
         });
+      }
+      if (result.ok === true) {
+        for (const row of harness.sql.exec(
+          "SELECT content_id FROM inodes WHERE path = 'continuation/.git/nimbus-clone-job'",
+        )) {
+          continuationMarkerContentIds.add(String(row.content_id));
+        }
       }
       return result;
     },
@@ -931,11 +939,16 @@ export const git = {
     indexChunks: 1,
     indexEntries: 1,
   };
+  // The pin asserts marker presence: content waves must not re-write the
+  // unchanged marker (each re-write schedules content GC on the receiver).
   assert.ok(
-    continuationMarkerWaves.some(({ paths, marker }) =>
-      marker && paths.includes('continuation/first.txt') &&
-      marker.cursor === null && marker.cursorSeq === 0),
-    'first chunk published its cursor in the worktree/index wave',
+    wavePaths.some((paths) => paths.includes('continuation/first.txt')),
+    'first chunk did not flush a worktree/index wave',
+  );
+  assert.ok(
+    continuationMarkerWaves.every(({ paths }) =>
+      !paths.some(path => path.endsWith('.txt') || path.endsWith('/index'))),
+    'a checkout content wave re-wrote the unchanged ownership marker',
   );
   assert.ok(
     continuationMarkerWaves.some(({ paths, marker }) =>
@@ -944,6 +957,16 @@ export const git = {
       JSON.stringify(marker.cursor) === JSON.stringify(firstCursor)),
     'first committed cursor was not advanced in a final marker-only wave',
   );
+  // Marker generations that legitimately schedule GC: v1 → prepared-seq0
+  // overwrite, seq0 → committed-seq1 overwrite, and the terminal delete.
+  // Every additional scheduling is an unchanged-marker re-write re-arming
+  // content maintenance once per wave.
+  const markerGcSchedules = harness.statements.filter((statement) =>
+    /INSERT (OR IGNORE )?INTO content_lifecycle/.test(statement.sql) &&
+    statement.sql.includes("'gc'") &&
+    statement.params.some((param) => continuationMarkerContentIds.has(String(param))));
+  assert.equal(markerGcSchedules.length, 3,
+    'unchanged marker waves scheduled content GC');
 
   const replayJobId = 'marker-replay-job';
   const replayOptionsHash = 'f'.repeat(64);

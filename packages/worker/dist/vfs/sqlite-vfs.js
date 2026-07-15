@@ -274,6 +274,9 @@ export class SqliteVFS {
     _postCommitDuration = emptyDurationSummary();
     _decodeDrainDuration = emptyDurationSummary();
     _creditWaitDuration = emptyDurationSummary();
+    /** Whole content-maintenance runs, including the raw scans that execute
+     * outside executeMeasuredTransaction; count doubles as the run counter. */
+    _maintenanceDuration = emptyDurationSummary();
     _transactionDurationSamples = new Float64Array(TRANSACTION_DURATION_SAMPLE_COUNT);
     _transactionDurationSampleCount = 0;
     _transactionDurationSampleIndex = 0;
@@ -407,8 +410,11 @@ export class SqliteVFS {
             this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_parent ON inodes(parent_path)`);
             this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_content ON inodes(content_id)`);
             this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_file_content');
-            this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_resolved_kind_content
-         ON inodes(COALESCE(content_id, path)) WHERE kind != 1`);
+            // The COALESCE expression index is unusable by the reference probes:
+            // SQLite cannot seek an expression index from a correlated subquery, so
+            // every probe now seeks idx_inodes_content or the path primary key
+            // (see sqlNoInodeContentReference). Keeping it would only tax writes.
+            this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_kind_content');
             this.sql.exec("INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)", CONTENT_SCHEMA_MIGRATION, Date.now());
         });
         this.migrateFromLegacy();
@@ -741,6 +747,8 @@ export class SqliteVFS {
         // overlap legacy IDs, which are raw canonical paths. One combined indexed
         // guard also protects malformed legacy data, durable generations, and a
         // repeated random value; the local reservation protects IDs in one plan.
+        // The inode arms mirror sqlNoInodeContentReference: generated and legacy
+        // path-keyed references are probed separately so both seek plain indexes.
         for (let attempt = 0; attempt < CONTENT_ID_ALLOCATION_ATTEMPTS; attempt++) {
             const contentId = `/content:${crypto.randomUUID()}`;
             if (reservedContentIds?.has(contentId))
@@ -749,9 +757,10 @@ export class SqliteVFS {
          UNION ALL
          SELECT 1 FROM content_lifecycle WHERE content_id = ?
          UNION ALL
-         SELECT 1 FROM inodes
-         WHERE kind != 1 AND COALESCE(content_id, path) = ?
-         LIMIT 1`, contentId, contentId, contentId)];
+         SELECT 1 FROM inodes WHERE kind != 1 AND content_id = ?
+         UNION ALL
+         SELECT 1 FROM inodes WHERE kind != 1 AND content_id IS NULL AND path = ?
+         LIMIT 1`, contentId, contentId, contentId, contentId)];
             if (collision.length === 0) {
                 reservedContentIds?.add(contentId);
                 return contentId;
@@ -2002,11 +2011,7 @@ export class SqliteVFS {
              SELECT 1 FROM content_lifecycle AS lifecycle
              WHERE lifecycle.content_id = chunks.content_id
            )
-           AND NOT EXISTS (
-             SELECT 1 FROM inodes
-             WHERE inodes.kind != 1
-               AND COALESCE(inodes.content_id, inodes.path) = chunks.content_id
-           )
+           AND ${sqlNoInodeContentReference('chunks.content_id')}
          GROUP BY chunks.content_id
          ORDER BY chunks.content_id
          LIMIT ?`, CONTENT_IDS_PER_SQL_EXEC)];
@@ -2030,11 +2035,7 @@ export class SqliteVFS {
                    SELECT 1 FROM file_chunks
                    WHERE file_chunks.content_id = candidate.content_id
                  )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM inodes
-                   WHERE inodes.kind != 1
-                     AND COALESCE(inodes.content_id, inodes.path) = candidate.content_id
-                 )`, Date.now(), ...contentIds);
+                 AND ${sqlNoInodeContentReference('candidate.content_id')}`, Date.now(), ...contentIds);
                 });
                 transactions++;
             }
@@ -2043,11 +2044,7 @@ export class SqliteVFS {
             const stagingRows = [...this.sql.exec(`SELECT lifecycle.content_id
          FROM content_lifecycle AS lifecycle
          WHERE lifecycle.state = 'staging'
-           AND NOT EXISTS (
-             SELECT 1 FROM inodes
-             WHERE inodes.kind != 1
-               AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
-           )
+           AND ${sqlNoInodeContentReference('lifecycle.content_id')}
          ORDER BY lifecycle.created_at, lifecycle.content_id
          LIMIT ?`, CONTENT_IDS_PER_SQL_EXEC)];
             stagingScanComplete = stagingRows.length < CONTENT_IDS_PER_SQL_EXEC;
@@ -2067,11 +2064,7 @@ export class SqliteVFS {
                SET state = 'gc'
                WHERE lifecycle.state = 'staging'
                  AND lifecycle.content_id IN (${placeholders})
-                 AND NOT EXISTS (
-                   SELECT 1 FROM inodes
-                   WHERE inodes.kind != 1
-                     AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
-                 )`, ...contentIds);
+                 AND ${sqlNoInodeContentReference('lifecycle.content_id')}`, ...contentIds);
                 });
                 transactions++;
             }
@@ -2080,11 +2073,7 @@ export class SqliteVFS {
             const lifecycle = [...this.sql.exec(`SELECT lifecycle.content_id
          FROM content_lifecycle AS lifecycle
          WHERE lifecycle.state = 'gc'
-           AND NOT EXISTS (
-             SELECT 1 FROM inodes
-             WHERE inodes.kind != 1
-               AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
-           )
+           AND ${sqlNoInodeContentReference('lifecycle.content_id')}
          ORDER BY lifecycle.created_at, lifecycle.content_id
          LIMIT 1`)];
             if (lifecycle.length === 0)
@@ -2122,20 +2111,12 @@ export class SqliteVFS {
                    WHERE content_lifecycle.content_id = ?
                      AND content_lifecycle.state = 'gc'
                  )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM inodes
-                   WHERE inodes.kind != 1
-                     AND COALESCE(inodes.content_id, inodes.path) = ?
-                 )`, contentId, ...chunkIds, contentId, contentId);
+                 AND ${sqlNoInodeContentReference('?')}`, contentId, ...chunkIds, contentId, contentId, contentId);
                 }
                 this.sql.exec(`DELETE FROM content_lifecycle AS lifecycle
              WHERE lifecycle.content_id = ?
                AND lifecycle.state = 'gc'
-               AND NOT EXISTS (
-                 SELECT 1 FROM inodes
-                 WHERE inodes.kind != 1
-                   AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
-               )
+               AND ${sqlNoInodeContentReference('lifecycle.content_id')}
                AND NOT EXISTS (
                  SELECT 1 FROM file_chunks
                  WHERE file_chunks.content_id = lifecycle.content_id
@@ -2147,11 +2128,7 @@ export class SqliteVFS {
             const hasGcBacklog = transactions >= maximum && [...this.sql.exec(`SELECT 1
          FROM content_lifecycle AS lifecycle
          WHERE lifecycle.state = 'gc'
-           AND NOT EXISTS (
-             SELECT 1 FROM inodes
-             WHERE inodes.kind != 1
-               AND COALESCE(inodes.content_id, inodes.path) = lifecycle.content_id
-           )
+           AND ${sqlNoInodeContentReference('lifecycle.content_id')}
          LIMIT 1`)].length > 0;
             this.maintenancePending = !orphanScanComplete || !stagingScanComplete || hasGcBacklog;
         }
@@ -2160,12 +2137,16 @@ export class SqliteVFS {
     runContentMaintenanceSafely(maxTransactions, force = false) {
         if (!force && !this.maintenancePending)
             return;
+        const startedAt = performance.now();
         try {
             this.runContentMaintenance(maxTransactions);
         }
         catch (error) {
             this.maintenancePending = true;
             console.error('[sqlite-vfs] content maintenance failed:', this.errorMessage(error));
+        }
+        finally {
+            this.recordDuration(this._maintenanceDuration, performance.now() - startedAt);
         }
     }
     metricsOnlyPlan(metrics) {
@@ -2613,6 +2594,8 @@ export class SqliteVFS {
                 phases: {
                     decodeDrainWaitMs: durationSnapshot(this._decodeDrainDuration, activeDecodeDrainDuration),
                     creditWaitMs: durationSnapshot(this._creditWaitDuration, activeCreditWaitDuration),
+                    // count is the number of content-maintenance runs.
+                    maintenanceMs: durationSnapshot(this._maintenanceDuration, 0),
                 },
                 transactions: {
                     limits: {
@@ -2717,6 +2700,26 @@ function pathsOverlap(left, right) {
 }
 function vfsError(code, message) {
     return Object.assign(new Error(`${code}: ${message}`), { code });
+}
+/**
+ * Seekable form of the durable reference probe
+ * `NOT EXISTS (... WHERE inodes.kind != 1 AND COALESCE(inodes.content_id,
+ * inodes.path) = <ref>)`. SQLite cannot seek an expression index from a
+ * correlated subquery (the probe degrades to a per-outer-row SCAN of inodes,
+ * making the orphan scan O(chunks × inodes)), so the generated-content and
+ * legacy path-keyed cases are split into two probes that seek plain-column
+ * indexes: idx_inodes_content and the path primary key. `ref` is a column
+ * reference or a `?` placeholder; with `?` the value must be bound twice.
+ */
+function sqlNoInodeContentReference(ref) {
+    return `NOT EXISTS (
+       SELECT 1 FROM inodes
+       WHERE inodes.kind != 1 AND inodes.content_id = ${ref}
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM inodes
+       WHERE inodes.kind != 1 AND inodes.content_id IS NULL AND inodes.path = ${ref}
+     )`;
 }
 function emptyDurationSummary() {
     return { count: 0, totalMs: 0, lastMs: 0, maxMs: 0 };

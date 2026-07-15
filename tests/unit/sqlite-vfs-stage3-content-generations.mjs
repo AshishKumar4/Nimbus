@@ -991,4 +991,157 @@ function streamFromBytes(bytes) {
   assert.equal(vfs.exists('duplicate.bin'), false);
 }
 
+// Every durable content-reference probe must SEEK inodes. SQLite cannot seek
+// an expression index from a correlated subquery, so the historical
+// COALESCE(content_id, path) predicate degraded to a per-outer-row SCAN of
+// inodes and made the orphan scan O(chunks × inodes).
+{
+  const { harness, vfs } = openVfs();
+  const probeStart = harness.statements.length;
+  vfs.writeFile('plan/live.bin', bytes(8, 3));
+  harness.sql.exec(
+    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
+     VALUES ('plan/legacy.bin', 'plan', 0, 3, 1, 420, 1)`,
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('plan/legacy.bin', 0, ?)",
+    bytes(3, 5),
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('orphan:plan-a', 0, ?)",
+    bytes(3, 6),
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('orphan:plan-b', 0, ?)",
+    bytes(3, 7),
+  );
+  harness.sql.exec(
+    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ('stale:plan', 'staging', 0)",
+  );
+  // maximum=2 consumes the orphan-insert and staging-convert transactions and
+  // leaves a GC backlog, so the backlog probe executes; the follow-up drain
+  // covers the GC pick, chunk-delete, and lifecycle-delete probes.
+  vfs.runContentMaintenance(2);
+  vfs.runContentMaintenance(16);
+  const probeStatements = harness.statements.slice(probeStart).filter((statement) => (
+    statement.sql.includes('inodes')
+    && (/NOT\s+EXISTS/i.test(statement.sql) || statement.sql.includes('AS collision'))
+  ));
+  assert.ok(probeStatements.length >= 9,
+    `expected all reference-probe shapes to execute, saw ${probeStatements.length}`);
+  for (const statement of probeStatements) {
+    const plan = harness.db.prepare(`EXPLAIN QUERY PLAN ${statement.sql}`)
+      .all(...statement.params)
+      .map((row) => String(row.detail));
+    assert.ok(
+      plan.every((detail) => !/SCAN inodes/.test(detail)),
+      `reference probe scans inodes instead of seeking:\n${statement.sql}\n${plan.join('\n')}`,
+    );
+  }
+}
+
+// The orphan scan and the forced cold-start maintenance run stay flat in VFS
+// size: 15k fully referenced generations (worst case — every candidate must
+// be proven referenced) complete within a strict bound, and the run is
+// visible in getStats().sql.phases.maintenanceMs.
+{
+  const { harness, vfs } = openVfs();
+  const insertInode = harness.db.prepare(
+    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count, content_id)
+     VALUES (?, 'perf', 0, 4, 1, 420, 1, ?)`,
+  );
+  const insertChunk = harness.db.prepare(
+    'INSERT INTO file_chunks (content_id, chunk_id, data) VALUES (?, 0, ?)',
+  );
+  const payload = bytes(4, 9);
+  harness.db.transaction(() => {
+    for (let index = 0; index < 15_000; index++) {
+      const generated = `/content:perf-${String(index).padStart(8, '0')}`;
+      insertInode.run(`perf/file-${index}`, generated);
+      insertChunk.run(generated, payload);
+    }
+  })();
+  const scanStart = performance.now();
+  vfs.runContentMaintenance(4);
+  const scanMs = performance.now() - scanStart;
+  assert.ok(scanMs < 50, `orphan scan over 15k referenced generations took ${scanMs}ms`);
+
+  const reopened = reopenVfs(harness);
+  const maintenance = reopened.getStats().sql.phases.maintenanceMs;
+  assert.equal(maintenance.count, 1, 'constructor must run exactly one forced maintenance pass');
+  assert.ok(maintenance.last < 50,
+    `forced cold-start maintenance took ${maintenance.last}ms at 15k generations`);
+}
+
+// The seekable scan flags exactly the set the historical COALESCE predicate
+// defined: content referenced by content_id or by a legacy path-keyed
+// non-directory inode is never an orphan, lifecycle-owned content is never
+// scanned, and directory paths are not references.
+{
+  const { harness, vfs } = openVfs();
+  const live = bytes(6, 31);
+  vfs.writeFile('equiv/referenced.bin', live);
+  const liveId = contentId(harness, 'equiv/referenced.bin');
+  harness.sql.exec(
+    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
+     VALUES ('equiv/legacy.bin', 'equiv', 0, 3, 1, 420, 1)`,
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('equiv/legacy.bin', 0, ?)",
+    bytes(3, 32),
+  );
+  harness.sql.exec(
+    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
+     VALUES ('equiv/dir-flip', 'equiv', 1, 0, 1, 493, 0)`,
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('equiv/dir-flip', 0, ?)",
+    bytes(3, 33),
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('orphan:equiv', 0, ?)",
+    bytes(3, 34),
+  );
+  harness.sql.exec(
+    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count, content_id)
+     VALUES ('equiv/staged.bin', 'equiv', 0, 3, 1, 420, 1, 'stg:equiv')`,
+  );
+  harness.sql.exec(
+    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ('stg:equiv', 'staging', 1)",
+  );
+  harness.sql.exec(
+    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('stg:equiv', 0, ?)",
+    bytes(3, 35),
+  );
+  const referenceOrphans = harness.db.prepare(
+    `SELECT chunks.content_id
+     FROM file_chunks AS chunks
+     WHERE NOT EXISTS (
+         SELECT 1 FROM content_lifecycle AS lifecycle
+         WHERE lifecycle.content_id = chunks.content_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM inodes
+         WHERE inodes.kind != 1
+           AND COALESCE(inodes.content_id, inodes.path) = chunks.content_id
+       )
+     GROUP BY chunks.content_id
+     ORDER BY chunks.content_id`,
+  ).all().map((row) => String(row.content_id));
+  assert.deepEqual(referenceOrphans, ['equiv/dir-flip', 'orphan:equiv']);
+  vfs.runContentMaintenance(1);
+  const scheduled = harness.sql
+    .exec("SELECT content_id FROM content_lifecycle WHERE state = 'gc' ORDER BY content_id")
+    .map((row) => String(row.content_id));
+  assert.deepEqual(scheduled, referenceOrphans,
+    'seekable orphan scan diverged from the reference COALESCE predicate');
+  vfs.runContentMaintenance(16);
+  assert.deepEqual(vfs.readFile('equiv/referenced.bin'), live);
+  assert.deepEqual(contentChunkIds(harness, liveId), [0]);
+  assert.deepEqual(contentChunkIds(harness, 'equiv/legacy.bin'), [0]);
+  assert.deepEqual(contentChunkIds(harness, 'stg:equiv'), [0]);
+  assert.deepEqual(contentChunkIds(harness, 'equiv/dir-flip'), []);
+  assert.deepEqual(contentChunkIds(harness, 'orphan:equiv'), []);
+}
+
 console.log('sqlite-vfs-stage3-content-generations: all assertions passed');

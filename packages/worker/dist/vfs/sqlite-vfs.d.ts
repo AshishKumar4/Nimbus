@@ -141,6 +141,9 @@ export declare class SqliteVFS {
     private _postCommitDuration;
     private _decodeDrainDuration;
     private _creditWaitDuration;
+    /** Whole content-maintenance runs, including the raw scans that execute
+     * outside executeMeasuredTransaction; count doubles as the run counter. */
+    private _maintenanceDuration;
     private readonly _transactionDurationSamples;
     private _transactionDurationSampleCount;
     private _transactionDurationSampleIndex;
@@ -417,6 +420,13 @@ export declare class SqliteVFS {
                     max: number;
                 };
                 creditWaitMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                maintenanceMs: {
                     current: number;
                     count: number;
                     total: number;

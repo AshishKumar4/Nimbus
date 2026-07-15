@@ -1150,6 +1150,8 @@ function parseCloneJobMarker(raw, opts) {
   }
 }
 
+/** Resolves { marker, raw } for an owned job, or null. raw carries the exact
+ * durable bytes so a re-pin of identical content can skip the re-write. */
 async function readCloneJobMarker(fs, opts) {
   let raw;
   try {
@@ -1158,7 +1160,8 @@ async function readCloneJobMarker(fs, opts) {
     if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
     throw error;
   }
-  return parseCloneJobMarker(raw, opts);
+  const marker = parseCloneJobMarker(raw, opts);
+  return marker === null ? null : { marker, raw };
 }
 
 async function ownsCloneJob(fs, opts) {
@@ -1703,9 +1706,15 @@ function createBufferedFs(
     return writeBuffer.size > 0 || dirBuffer.size > 0 || deleteBuffer.size > 0;
   }
 
-  function pinFile(path, data) {
-    const bytes = textEncoder.encode(data);
-    pinnedFile = { path: normalizePath(path), bytes };
+  // alreadyDurable records that these exact bytes are known to be durably
+  // published at path (the caller read them back), so waves can assert the
+  // pin's presence without ever re-writing unchanged content.
+  function pinFile(path, data, alreadyDurable = false) {
+    pinnedFile = {
+      path: normalizePath(path),
+      bytes: textEncoder.encode(data),
+      durable: alreadyDurable,
+    };
   }
 
   function unpinFile(path) {
@@ -1714,7 +1723,11 @@ function createBufferedFs(
 
   function bufferPinnedFile() {
     if (!pinnedFile) return;
-    const { path, bytes } = pinnedFile;
+    const { path, bytes, durable } = pinnedFile;
+    // A durable pin asserts presence, not content churn: re-writing identical
+    // marker bytes every wave re-arms receiver-side content GC for no durable
+    // state change. Re-buffer only when a buffered mutation claims the path.
+    if (durable && !writeBuffer.has(path) && !deleteBuffer.has(path)) return;
     if (writeBuffer.has(path)) bufferBytes -= writeBuffer.get(path).length;
     const copy = bytes.slice();
     writeBuffer.set(path, copy);
@@ -1745,10 +1758,12 @@ function createBufferedFs(
   async function doFlushWave() {
     assertFlushHealthy();
     // Parent directory records in W7 are independently published before file
-    // records. Re-include the marker so every completed clone wave ends with
-    // the durable proof while the marker from the prior wave remains in place.
+    // records. Re-assert the marker pin so every completed clone wave leaves
+    // the durable proof in place; an already-durable unchanged pin is not
+    // re-written (idempotent — see bufferPinnedFile).
     bufferPinnedFile();
     if (writeBuffer.size === 0 && dirBuffer.size === 0 && deleteBuffer.size === 0) return;
+    const flushedPin = pinnedFile;
     // This stops a timed-out facet from starting another durable wave after
     // the supervisor has moved on to clone-abort. A writeBatchStream RPC that
     // started before the deadline can still finish afterward; if live evidence
@@ -1810,6 +1825,7 @@ function createBufferedFs(
         supervisor.writeBatchStream(stream),
         result => requireWriteBatchStreamSuccess(result),
       );
+      if (flushedPin !== null && pinnedFile === flushedPin) flushedPin.durable = true;
       for (const [path, entry] of waveMetadataEntries) setMetadata(path, entry);
       stats.filesWritten += wavefilesWritten;
       stats.bytesWritten += wavebytesWritten;
@@ -2653,19 +2669,24 @@ export default {
         if (!durableMarker) {
           throw protocolError('checkout clone job marker does not match');
         }
-        if (durableMarker.prepared &&
-            (durableMarker.prepared.commit !== prepared.commit ||
-             durableMarker.prepared.tree !== prepared.tree ||
-             durableMarker.prepared.headRef !== prepared.headRef)) {
+        const durableState = durableMarker.marker;
+        if (durableState.prepared &&
+            (durableState.prepared.commit !== prepared.commit ||
+             durableState.prepared.tree !== prepared.tree ||
+             durableState.prepared.headRef !== prepared.headRef)) {
           throw protocolError('clone job marker prepared identity does not match');
         }
         const currentMarker = cloneJobMarker(
           opts,
           prepared,
-          durableMarker.cursor,
-          durableMarker.cursorSeq,
+          durableState.cursor,
+          durableState.cursorSeq,
         );
-        bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), currentMarker);
+        bufferedFs.pinFile(
+          cloneJobMarkerPath(opts.dir),
+          currentMarker,
+          currentMarker === durableMarker.raw,
+        );
         if (!warmJob) {
           cloneJobs.set(opts.jobId, { optionsHash: opts.optionsHash, cache, prepared });
         }
@@ -2746,7 +2767,7 @@ export default {
             opts,
             prepared,
             checkoutResult.nextCursor,
-            durableMarker.cursorSeq + 1,
+            durableState.cursorSeq + 1,
           );
           bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), committedMarker);
           await fs.promises.writeFile(cloneJobMarkerPath(opts.dir), committedMarker);
