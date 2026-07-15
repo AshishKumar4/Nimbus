@@ -143,7 +143,7 @@ export const git = {
         'checkout began before prepared .git state was durably flushed');
     }
     assert(root !== 'unborn', 'empty repository unexpectedly ran checkout');
-    if (root === 'continuation' || root.startsWith('chunk-failure-')) {
+    if (root === 'continuation' || root === 'marker-replay' || root.startsWith('chunk-failure-')) {
       if (cursor === null) {
         await fs.promises.writeFile(root + '/first.txt', 'first');
         return {
@@ -401,6 +401,7 @@ export const git = {
     stdout: 0,
   };
   const wavePaths = [];
+  const continuationMarkerWaves = [];
   globalThis.__symlinkBatchDurable = false;
   globalThis.__nestedParentsDurable = false;
   globalThis.__prepareDurable = false;
@@ -453,6 +454,14 @@ export const git = {
       }
       if (paths.includes('continuation/first.txt')) {
         globalThis.__continuationFirstDurable = result.ok === true;
+      }
+      if (result.ok === true && paths.includes('continuation/.git/nimbus-clone-job')) {
+        continuationMarkerWaves.push({
+          paths,
+          marker: vfs.exists('continuation/.git/nimbus-clone-job')
+            ? JSON.parse(vfs.readFileString('continuation/.git/nimbus-clone-job'))
+            : null,
+        });
       }
       return result;
     },
@@ -893,6 +902,102 @@ export const git = {
   assert.equal(vfs.readFileString('continuation/second.txt'), 'second');
   assert.equal(vfs.exists('continuation/.git/nimbus-clone-job'), false,
     'final chunk left the ownership marker behind');
+  const firstCursor = {
+    version: 1,
+    tree: '2'.repeat(40),
+    stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 1 }],
+  };
+  assert.ok(
+    continuationMarkerWaves.some(({ paths, marker }) =>
+      marker && paths.includes('continuation/first.txt') &&
+      marker.cursor === null && marker.cursorSeq === 0),
+    'first chunk published its cursor in the worktree/index wave',
+  );
+  assert.ok(
+    continuationMarkerWaves.some(({ paths, marker }) =>
+      marker && marker.cursorSeq === 1 &&
+      !paths.some(path => path.endsWith('.txt') || path.endsWith('/index')) &&
+      JSON.stringify(marker.cursor) === JSON.stringify(firstCursor)),
+    'first committed cursor was not advanced in a final marker-only wave',
+  );
+
+  const replayJobId = 'marker-replay-job';
+  const replayOptionsHash = 'f'.repeat(64);
+  const replayPhase = async (phase, invocationId, body) => {
+    const response = await facetWorker.default.fetch(
+      new Request(`http://git/git/${phase}/${invocationId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          op: 'clone',
+          dir: '/marker-replay',
+          url: 'https://example.invalid/repo.git',
+          exclusiveDestination: true,
+          phase,
+          invocationId,
+          jobId: replayJobId,
+          optionsHash: replayOptionsHash,
+          phaseDeadline: Date.now() + 30_000,
+          ...body,
+        }),
+      }),
+      { SUPERVISOR: supervisor },
+    );
+    return response.json();
+  };
+  const replayPrepare = await replayPhase('clone-prepare', 'marker-replay-prepare', {});
+  assert.equal(replayPrepare.success, true, replayPrepare.error);
+  const replayChunkBody = {
+    prepared: replayPrepare.prepared,
+    checkoutCursor: null,
+    checkoutBounds: {
+      maxEntries: 10_000,
+      maxDecodedBytes: 32 * 1024 * 1024,
+      maxWallMs: 20_000,
+    },
+  };
+  const replayFirst = await replayPhase(
+    'clone-checkout',
+    'marker-replay-first',
+    replayChunkBody,
+  );
+  assert.equal(replayFirst.success, true, replayFirst.error);
+  assert.deepEqual(
+    JSON.parse(vfs.readFileString('marker-replay/.git/nimbus-clone-job')),
+    {
+      version: 2,
+      jobId: replayJobId,
+      optionsHash: replayOptionsHash,
+      prepared: {
+        commit: '1'.repeat(40),
+        tree: '2'.repeat(40),
+        headRef: 'refs/heads/main',
+      },
+      cursor: firstCursor,
+      cursorSeq: 1,
+    },
+  );
+  const replayOldCursor = await replayPhase(
+    'clone-checkout',
+    'marker-replay-old-cursor',
+    replayChunkBody,
+  );
+  assert.equal(replayOldCursor.success, true, replayOldCursor.error);
+  assert.deepEqual(replayOldCursor.nextCursor, firstCursor);
+  assert.equal(vfs.readFileString('marker-replay/first.txt'), 'first');
+  assert.equal(
+    JSON.parse(vfs.readFileString('marker-replay/.git/nimbus-clone-job')).cursorSeq,
+    2,
+    'idempotent old-cursor replay did not durably acknowledge another committed chunk',
+  );
+  const replayFinal = await replayPhase(
+    'clone-checkout',
+    'marker-replay-final',
+    { ...replayChunkBody, checkoutCursor: firstCursor },
+  );
+  assert.equal(replayFinal.success, true, replayFinal.error);
+  assert.equal(replayFinal.nextCursor, null);
+  assert.equal(vfs.readFileString('marker-replay/second.txt'), 'second');
+  assert.equal(vfs.exists('marker-replay/.git/nimbus-clone-job'), false);
 
   for (const failurePoint of ['before', 'during', 'after']) {
     const dir = `chunk-failure-${failurePoint}`;
@@ -1064,7 +1169,18 @@ export const git = {
     'prepare did not persist its ownership marker');
   assert.deepEqual(
     JSON.parse(vfs.readFileString('owned-abort/.git/nimbus-clone-job')),
-    { version: 1, jobId: ownedJobId, optionsHash: ownedOptionsHash },
+    {
+      version: 2,
+      jobId: ownedJobId,
+      optionsHash: ownedOptionsHash,
+      prepared: {
+        commit: '1'.repeat(40),
+        tree: '2'.repeat(40),
+        headRef: 'refs/heads/main',
+      },
+      cursor: null,
+      cursorSeq: 0,
+    },
   );
   const ownedAbortResponse = await coldWorker.default.fetch(
     new Request('http://git/git/clone-abort/owned-abort', {

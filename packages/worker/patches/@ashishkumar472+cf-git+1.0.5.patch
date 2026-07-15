@@ -1,6 +1,33 @@
 --- a/index.js
 +++ b/index.js
-@@ -3173,9 +3173,11 @@
+@@ -1073,11 +1073,15 @@
+    * @param {string} opts.gitdir - The path to the `.git` directory.
+    * @param {object} opts.cache - A shared cache object for storing index data.
+    * @param {boolean} [opts.allowUnmerged=true] - Whether to allow unmerged paths in the index.
++   * @param {boolean} [opts.trustIndexCache=false] - Skip the stat check when the caller exclusively owns index mutation.
+    * @param {function(GitIndex): any} closure - A function to execute with the Git index.
+    * @returns {Promise<any>} The result of the closure function.
+    * @throws {UnmergedPathsError} If unmerged paths exist and `allowUnmerged` is `false`.
+    */
+-  static async acquire({ fs, gitdir, cache, allowUnmerged = true }, closure) {
++  static async acquire(
++    { fs, gitdir, cache, allowUnmerged = true, trustIndexCache = false },
++    closure
++  ) {
+     if (!cache[IndexCache]) {
+       cache[IndexCache] = createCache();
+     }
+@@ -1092,7 +1096,8 @@
+       // simultaneously, which could result in a corrupted index.
+       // const fileLock = await Lock(filepath)
+       const theIndexCache = cache[IndexCache];
+-      if (await isIndexStale(fs, filepath, theIndexCache)) {
++      if (!theIndexCache.map.has(filepath) ||
++          (!trustIndexCache && await isIndexStale(fs, filepath, theIndexCache))) {
+         await updateCachedIndexFile(fs, filepath, theIndexCache);
+       }
+       const index = theIndexCache.map.get(filepath);
+@@ -3173,9 +3178,11 @@
        type = listpackTypes[type];
 
        if (['commit', 'tree', 'blob', 'tag'].includes(type)) {
@@ -12,7 +39,7 @@
          };
        } else if (type === 'ofs-delta') {
          offsetToObject[offset] = {
-@@ -3214,7 +3216,6 @@
+@@ -3214,7 +3221,6 @@
      // Resolve deltas and compute the oids
      lastPercent = null;
      let count = 0;
@@ -20,7 +47,7 @@
      for (let offset in offsetToObject) {
        offset = Number(offset);
        const percent = Math.floor((count * 100) / totalObjectCount);
-@@ -3231,12 +3232,14 @@
+@@ -3231,12 +3237,14 @@
        lastPercent = percent;
 
        const o = offsetToObject[offset];
@@ -39,7 +66,7 @@
          const oid = await shasum(GitObject.wrap({ type, object }));
          o.oid = oid;
          hashes.push(oid);
-@@ -3262,11 +3265,13 @@
+@@ -3262,11 +3270,13 @@
      write('00000002', 'hex');
      // Write fanout table
      const fanoutBuffer = new BufferCursor(Buffer.alloc(256 * 4));
@@ -57,7 +84,7 @@
        fanoutBuffer.writeUInt32BE(count);
      }
      buffers.push(fanoutBuffer.buffer);
-@@ -3304,91 +3309,109 @@
+@@ -3304,91 +3314,109 @@
      this.pack = null;
    }
 
@@ -233,7 +260,7 @@
  async function loadPackIndex({
    fs,
    filename,
-@@ -3437,7 +3460,7 @@
+@@ -3437,7 +3465,7 @@
    let list = await fs.readdir(join(gitdir, 'objects/pack'));
    list = list.filter(x => x.endsWith('.idx'));
    for (const filename of list) {
@@ -242,7 +269,7 @@
      const p = await readPackIndex({
        fs,
        cache,
-@@ -4522,7 +4545,9 @@
+@@ -4522,7 +4550,9 @@
      const { fs, dir } = this;
      const names = await fs.readdir(join(dir, filepath));
      if (names === null) return null
@@ -253,7 +280,7 @@
    }
 
    async type(entry) {
-@@ -6653,11 +6678,13 @@
+@@ -6653,11 +6683,13 @@
    if (filepath === '.' || root == null || root.length === 0 || root === '.') {
      return true
    }
@@ -272,7 +299,7 @@
  };
 
  // @ts-check
-@@ -7307,15 +7334,11 @@
+@@ -7307,15 +7339,11 @@
  }
 
  async function updateIndex({ index, fullpath, stats, oid }) {
@@ -293,7 +320,7 @@
  }
  async function updateWorkingDir(
    { fs, cache, gitdir, dir },
-@@ -7354,27 +7377,32 @@
+@@ -7354,27 +7382,32 @@
 
  async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
    const results = [];
@@ -344,7 +371,7 @@
    return results
  }
 
-@@ -7484,6 +7512,282 @@
+@@ -7484,6 +7517,290 @@
    }
  }
 
@@ -526,7 +553,15 @@
 +    let indexEntries = 0;
 +
 +    await GitIndexManager.acquire(
-+      { fs, gitdir, cache, allowUnmerged: true },
++      // A fresh checkout is protected by Nimbus's exclusive destination lease.
++      // Keep this parsed index warm, while acquire still serializes it durably.
++      {
++        fs,
++        gitdir,
++        cache,
++        allowUnmerged: true,
++        trustIndexCache: true,
++      },
 +      async function(index) {
 +        while (stack.length > 0) {
 +          const frame = stack[stack.length - 1];
@@ -627,7 +662,7 @@
  // @see https://git-scm.com/docs/git-rev-parse.html#_specifying_revisions
  const abbreviateRx = new RegExp('^refs/(heads/|tags/|remotes/)?(.*)');
 
-@@ -8152,7 +8456,7 @@
+@@ -8152,7 +8469,7 @@
    let list = await fs.readdir(join(gitdir, 'objects/pack'));
    list = list.filter(x => x.endsWith('.idx'));
    for (const filename of list) {
@@ -636,7 +671,7 @@
      const p = await readPackIndex({
        fs,
        cache,
-@@ -8890,7 +9194,9 @@
+@@ -8890,7 +9207,9 @@
        getExternalRefDelta,
        onProgress,
      });
@@ -647,7 +682,7 @@
    }
    return res
  }
-@@ -9549,7 +9855,7 @@
+@@ -9549,7 +9868,7 @@
    let list = await fs.readdir(join(gitdir, 'objects/pack'));
    list = list.filter(x => x.endsWith('.idx'));
    for (const filename of list) {
@@ -656,7 +691,7 @@
      const p = await readPackIndex({
        fs,
        cache,
-@@ -17573,4 +17879,4 @@
+@@ -17573,4 +17892,4 @@
  };
 
  export default index;

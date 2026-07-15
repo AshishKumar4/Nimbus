@@ -120,13 +120,18 @@ async function indexManifest(root) {
   });
 }
 
-async function checkoutInChunks(root, { coldCache, maxEntries = 7, maxDecodedBytes = 31 }) {
+async function checkoutInChunks(root, {
+  coldCache,
+  checkoutFs = fs,
+  maxEntries = 7,
+  maxDecodedBytes = 31,
+}) {
   let cursor = null;
   const cache = {};
   const chunks = [];
   do {
     const result = await git.checkoutFreshChunk({
-      fs,
+      fs: checkoutFs,
       cache: coldCache ? {} : cache,
       dir: root,
       cursor,
@@ -140,6 +145,31 @@ async function checkoutInChunks(root, { coldCache, maxEntries = 7, maxDecodedByt
       : JSON.parse(JSON.stringify(result.nextCursor));
   } while (cursor !== null);
   return chunks;
+}
+
+function countingCheckoutFs() {
+  const counts = { indexReads: 0, packIndexReads: 0, packReads: 0 };
+  let indexStatSequence = 0;
+  const promises = Object.create(fs.promises);
+  promises.readFile = async function(path, ...args) {
+    if (typeof path === 'string') {
+      if (path.endsWith('/.git/index')) counts.indexReads++;
+      else if (path.endsWith('.idx')) counts.packIndexReads++;
+      else if (path.endsWith('.pack')) counts.packReads++;
+    }
+    return fs.promises.readFile(path, ...args);
+  };
+  promises.lstat = async function(path, ...args) {
+    const stats = await fs.promises.lstat(path, ...args);
+    if (typeof path !== 'string' || !path.endsWith('/.git/index')) return stats;
+    const ino = Number(stats.ino) + ++indexStatSequence;
+    return new Proxy(stats, {
+      get(target, property, receiver) {
+        return property === 'ino' ? ino : Reflect.get(target, property, receiver);
+      },
+    });
+  };
+  return { fs: { ...fs, promises }, counts };
 }
 
 function randomizedEntries() {
@@ -358,6 +388,37 @@ try {
     warmChunks.reduce((total, chunk) => total + chunk.treeEntriesVisited, 0),
     coldChunks.reduce((total, chunk) => total + chunk.treeEntriesVisited, 0),
   );
+
+  const warmCacheRoot = join(temp, 'warm-cache-counts');
+  const coldCacheRoot = join(temp, 'cold-cache-counts');
+  await createRepository(warmCacheRoot, fixtureEntries);
+  await createRepository(coldCacheRoot, fixtureEntries);
+  await execFile('git', ['-C', warmCacheRoot, 'gc', '--prune=now']);
+  await execFile('git', ['-C', coldCacheRoot, 'gc', '--prune=now']);
+  const warmCounting = countingCheckoutFs();
+  const countedWarmChunks = await checkoutInChunks(warmCacheRoot, {
+    coldCache: false,
+    checkoutFs: warmCounting.fs,
+  });
+  assert.equal(warmCounting.counts.indexReads, 1,
+    'warm continuation reparsed the cumulative Git index');
+  assert.equal(warmCounting.counts.packIndexReads, 1,
+    'warm continuation reparsed the pack index');
+  assert.equal(warmCounting.counts.packReads, 1,
+    'warm continuation reloaded the pack');
+
+  const coldCounting = countingCheckoutFs();
+  const countedColdChunks = await checkoutInChunks(coldCacheRoot, {
+    coldCache: true,
+    checkoutFs: coldCounting.fs,
+  });
+  assert.equal(coldCounting.counts.indexReads, countedColdChunks.length,
+    'each cold continuation must parse the durable Git index exactly once');
+  assert.equal(coldCounting.counts.packIndexReads, countedColdChunks.length,
+    'each cold continuation must parse the pack index exactly once');
+  assert.equal(coldCounting.counts.packReads, countedColdChunks.length,
+    'each cold continuation must load the pack exactly once');
+  assert.equal(countedWarmChunks.length, countedColdChunks.length);
 
   const oversizedRoot = join(temp, 'oversized');
   await createRepository(oversizedRoot, [{ path: 'too-big.bin', content: 'x'.repeat(32) }]);

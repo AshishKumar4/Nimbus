@@ -279,8 +279,82 @@ const timedOut = await execGitNetwork(
 );
 assert.equal(timedOut.success, false);
 assert.equal(timedOut.errorPhase, 'clone-prepare');
+assert.equal(timedOut.errorCode, 'GitCloneBudgetExceeded');
+const { elapsedMs: timedOutElapsed, ...timedOutBudget } = timedOut.budget;
+assert.deepEqual(timedOutBudget, {
+  phase: 'clone-prepare',
+  chunksCompleted: 0,
+  processedEntries: 0,
+  decodedBytes: 0,
+  limitMs: 5,
+});
+assert.ok(timedOutElapsed >= timedOut.budget.limitMs);
+assert.match(timedOut.error, /clone budget exhausted after 0 chunks \/ 0 entries/);
 await new Promise(resolve => setTimeout(resolve, 30));
-assert.equal(lateResponseDisposed, 1, 'timeout-loser response leaked its RPC stub');
+assert.equal(lateResponseDisposed, 2,
+  'timed-out prepare or independently budgeted abort leaked its RPC stub');
+
+const originalNow = Date.now;
+let artificialNow = 0;
+const defaultBudgetCalls = [];
+try {
+  Date.now = () => artificialNow;
+  const defaultBudget = await execGitNetwork(
+    { id: { toString: () => 'test-do' } },
+    {
+      LOADER: {
+        load: () => ({
+          getEntrypoint: () => ({
+            async fetch(request) {
+              const body = await request.json();
+              defaultBudgetCalls.push(body);
+              if (body.phase === 'clone-prepare') {
+                artificialNow = 290_000;
+                return Response.json({
+                  success: true,
+                  prepared: {
+                    jobId: body.jobId,
+                    optionsHash: body.optionsHash,
+                    dir: 'default-budget',
+                    commit: '1'.repeat(40),
+                    tree: '2'.repeat(40),
+                    headRef: 'refs/heads/main',
+                    packs: [],
+                    packOnlyObjectStore: true,
+                    metadata: [],
+                  },
+                  supervisorRpc: {},
+                });
+              }
+              return Response.json({
+                success: true,
+                nextCursor: null,
+                treeEntriesVisited: 1,
+                decodedBytes: 1,
+                indexEntries: 1,
+                supervisorRpc: {},
+              });
+            },
+          }),
+        }),
+      },
+    },
+    {
+      op: 'clone',
+      dir: '/default-budget',
+      url: 'https://example.invalid/repo.git',
+      exclusiveDestination: true,
+      exclusiveMutationRoot: 'default-budget',
+      mutationOwner: 'owner',
+    },
+  );
+  assert.equal(defaultBudget.success, true, defaultBudget.error);
+} finally {
+  Date.now = originalNow;
+}
+assert.equal(defaultBudgetCalls[1].phase, 'clone-checkout');
+assert.equal(defaultBudgetCalls[1].phaseDeadline, 290_000 + 240_000,
+  'default clone budget starved a later checkout phase');
 
 let throwingWorkerDisposed = 0;
 const supervisorDisposalsBeforeEntrypointFailure = supervisorDisposeCount;

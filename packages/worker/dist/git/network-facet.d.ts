@@ -47,7 +47,7 @@ export interface GitNetworkOpts {
         name: string;
         email: string;
     };
-    /** Timeout (ms). Default 300_000 (5 min). */
+    /** Total operation budget (ms). Clone default 30 min; other ops default 5 min. */
     timeout?: number;
     /** Clone-only: caller holds an exclusive mutation lease for dir. */
     exclusiveDestination?: boolean;
@@ -109,7 +109,17 @@ export interface GitNetworkResult {
     metadataOverlay: GitMetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
+    errorCode?: 'GitCloneBudgetExceeded';
+    budget?: GitCloneBudgetDiagnostic;
     cleanupError?: string;
+}
+export interface GitCloneBudgetDiagnostic {
+    phase: GitCloneInvocationPhase;
+    chunksCompleted: number;
+    processedEntries: number;
+    decodedBytes: number;
+    elapsedMs: number;
+    limitMs: number;
 }
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
