@@ -1,0 +1,260 @@
+diff --git a/index.js b/index.js
+index 80a5167..7b0a849 100644
+--- a/index.js
++++ b/index.js
+@@ -3217 +3216,0 @@ class GitPackIndex {
+-    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+@@ -3236,2 +3234,0 @@ class GitPackIndex {
+-        p.readDepth = 0;
+-        p.externalReadDepth = 0;
+@@ -3239 +3235,0 @@ class GitPackIndex {
+-        objectsByDepth[p.readDepth] += 1;
+@@ -3307 +3303 @@ class GitPackIndex {
+-  async read({ oid }) {
++  async read({ oid, readContext = { depth: 0 } }) {
+@@ -3310 +3305,0 @@ class GitPackIndex {
+-        this.externalReadDepth++;
+@@ -3317 +3312 @@ class GitPackIndex {
+-    return this.readSlice({ start })
++    return this.readSlice({ start, readContext })
+@@ -3320 +3315 @@ class GitPackIndex {
+-  async readSlice({ start }) {
++  async readSlice({ start, readContext = { depth: 0 } }) {
+@@ -3324,61 +3319,69 @@ class GitPackIndex {
+-    this.readDepth++;
+-    const types = {
+-      0b0010000: 'commit',
+-      0b0100000: 'tree',
+-      0b0110000: 'blob',
+-      0b1000000: 'tag',
+-      0b1100000: 'ofs_delta',
+-      0b1110000: 'ref_delta',
+-    };
+-    if (!this.pack) {
+-      throw new InternalError(
+-        'Tried to read from a GitPackIndex with no packfile loaded into memory'
+-      )
+-    }
+-    const raw = (await this.pack).slice(start);
+-    const reader = new BufferCursor(raw);
+-    const byte = reader.readUInt8();
+-    // Object type is encoded in bits 654
+-    const btype = byte & 0b1110000;
+-    let type = types[btype];
+-    if (type === undefined) {
+-      throw new InternalError('Unrecognized type: 0b' + btype.toString(2))
+-    }
+-    // The length encoding get complicated.
+-    // Last four bits of length is encoded in bits 3210
+-    const lastFour = byte & 0b1111;
+-    let length = lastFour;
+-    // Whether the next byte is part of the variable-length encoded number
+-    // is encoded in bit 7
+-    const multibyte = byte & 0b10000000;
+-    if (multibyte) {
+-      length = otherVarIntDecode(reader, lastFour);
+-    }
+-    let base = null;
+-    let object = null;
+-    // Handle deltified objects
+-    if (type === 'ofs_delta') {
+-      const offset = decodeVarInt(reader);
+-      const baseOffset = start - offset
+-      ;({ object: base, type } = await this.readSlice({ start: baseOffset }));
+-    }
+-    if (type === 'ref_delta') {
+-      const oid = reader.slice(20).toString('hex')
+-      ;({ object: base, type } = await this.read({ oid }));
+-    }
+-    // Handle undeltified objects
+-    const buffer = raw.slice(reader.tell());
+-    object = Buffer.from(await inflate(buffer));
+-    // Assert that the object length is as expected.
+-    if (object.byteLength !== length) {
+-      throw new InternalError(
+-        `Packfile told us object would have length ${length} but it had length ${object.byteLength}`
+-      )
+-    }
+-    if (base) {
+-      object = Buffer.from(applyDelta(object, base));
+-    }
+-    // Cache the result based on depth.
+-    if (this.readDepth > 3) {
+-      // hand tuned for speed / memory usage tradeoff
+-      this.offsetCache[start] = { type, object };
++    readContext.depth++;
++    try {
++      const types = {
++        0b0010000: 'commit',
++        0b0100000: 'tree',
++        0b0110000: 'blob',
++        0b1000000: 'tag',
++        0b1100000: 'ofs_delta',
++        0b1110000: 'ref_delta',
++      };
++      if (!this.pack) {
++        throw new InternalError(
++          'Tried to read from a GitPackIndex with no packfile loaded into memory'
++        )
++      }
++      const raw = (await this.pack).slice(start);
++      const reader = new BufferCursor(raw);
++      const byte = reader.readUInt8();
++      // Object type is encoded in bits 654
++      const btype = byte & 0b1110000;
++      let type = types[btype];
++      if (type === undefined) {
++        throw new InternalError('Unrecognized type: 0b' + btype.toString(2))
++      }
++      // The length encoding get complicated.
++      // Last four bits of length is encoded in bits 3210
++      const lastFour = byte & 0b1111;
++      let length = lastFour;
++      // Whether the next byte is part of the variable-length encoded number
++      // is encoded in bit 7
++      const multibyte = byte & 0b10000000;
++      if (multibyte) {
++        length = otherVarIntDecode(reader, lastFour);
++      }
++      let base = null;
++      let object = null;
++      // Handle deltified objects
++      if (type === 'ofs_delta') {
++        const offset = decodeVarInt(reader);
++        const baseOffset = start - offset
++        ;({ object: base, type } = await this.readSlice({
++          start: baseOffset,
++          readContext,
++        }));
++      }
++      if (type === 'ref_delta') {
++        const oid = reader.slice(20).toString('hex')
++        ;({ object: base, type } = await this.read({ oid, readContext }));
++      }
++      // Handle undeltified objects
++      const buffer = raw.slice(reader.tell());
++      object = Buffer.from(await inflate(buffer));
++      // Assert that the object length is as expected.
++      if (object.byteLength !== length) {
++        throw new InternalError(
++          `Packfile told us object would have length ${length} but it had length ${object.byteLength}`
++        )
++      }
++      if (base) {
++        object = Buffer.from(applyDelta(object, base));
++      }
++      // Cache the result based on depth.
++      if (readContext.depth > 3) {
++        // hand tuned for speed / memory usage tradeoff
++        this.offsetCache[start] = { type, object };
++      }
++      return { type, format: 'content', object }
++    } finally {
++      readContext.depth--;
+@@ -3386 +3388,0 @@ class GitPackIndex {
+-    return { type, format: 'content', object }
+@@ -3391,0 +3394,12 @@ const PackfileCache = Symbol('PackfileCache');
++const packIndexCacheKey = (gitdir, filename) =>
++  `${gitdir}/objects/pack/${filename}`;
++
++function seedPackfileCache({ cache, gitdir, packfileSha, index }) {
++  if (!cache[PackfileCache]) cache[PackfileCache] = new Map();
++  const filename = packIndexCacheKey(
++    gitdir,
++    `pack-${packfileSha}.idx`
++  );
++  cache[PackfileCache].set(filename, Promise.resolve(index));
++}
++
+@@ -3440 +3454 @@ async function readObjectPacked({
+-    const indexFile = `${gitdir}/objects/pack/${filename}`;
++    const indexFile = packIndexCacheKey(gitdir, filename);
+@@ -4525 +4539,3 @@ class GitWalkerFs {
+-    return names.map(name => join(filepath, name))
++    return names
++      .filter(name => name !== '.git')
++      .map(name => join(filepath, name))
+@@ -6656,5 +6672,7 @@ const worthWalking = (filepath, root) => {
+-  if (root.length >= filepath.length) {
+-    return root.startsWith(filepath)
+-  } else {
+-    return filepath.startsWith(root)
+-  }
++  const filepathPrefix = filepath.endsWith('/') ? filepath : `${filepath}/`;
++  const rootPrefix = root.endsWith('/') ? root : `${root}/`;
++  return (
++    filepath === root ||
++    filepath.startsWith(rootPrefix) ||
++    root.startsWith(filepathPrefix)
++  )
+@@ -7310,9 +7328,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+-  try {
+-    index.insert({
+-      filepath: fullpath,
+-      stats,
+-      oid,
+-    });
+-  } catch (e) {
+-    console.warn(`Error inserting ${fullpath} into index:`, e);
+-  }
++  index.insert({
++    filepath: fullpath,
++    stats,
++    oid,
++  });
+@@ -7357,6 +7371,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+-  try {
+-    for (let i = 0; i < tasks.length; i += batchSize) {
+-      const batch = tasks.slice(i, i + batchSize).map(task => task());
+-      const batchResults = await Promise.allSettled(batch);
+-      batchResults.forEach(result => {
+-        if (result.status === 'fulfilled') results.push(result.value);
++  const errors = [];
++  for (let i = 0; i < tasks.length; i += batchSize) {
++    const batch = tasks.slice(i, i + batchSize).map(task => task());
++    const batchResults = await Promise.allSettled(batch);
++    batchResults.forEach(result => {
++      if (result.status === 'fulfilled') results.push(result.value);
++      else errors.push(result.reason);
++    });
++    if (onProgress) {
++      await onProgress({
++        phase: 'Updating workdir',
++        loaded: i + batch.length,
++        total: tasks.length,
+@@ -7364,7 +7384,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+-      if (onProgress) {
+-        await onProgress({
+-          phase: 'Updating workdir',
+-          loaded: i + batch.length,
+-          total: tasks.length,
+-        });
+-      }
+@@ -7372,4 +7385,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+-
+-    return results
+-  } catch (error) {
+-    console.error(`Error during ${operationName}: ${error}`);
+@@ -7377 +7387,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+-
++  if (errors.length > 0) {
++    const detail = errors
++      .slice(0, 5)
++      .map(e => (e && e.message) || String(e))
++      .join('; ');
++    const more = errors.length > 5 ? ` (+${errors.length - 5} more)` : '';
++    throw new InternalError(
++      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
++    )
++  }
+@@ -8155 +8174 @@ async function hasObjectPacked({
+-    const indexFile = `${gitdir}/objects/pack/${filename}`;
++    const indexFile = packIndexCacheKey(gitdir, filename);
+@@ -8893 +8912,3 @@ async function _fetch({
+-    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
++    const idxPath = fullpath.replace(/\.pack$/, '.idx');
++    await fs.write(idxPath, await idx.toBuffer());
++    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
+@@ -9552 +9573 @@ async function expandOidPacked({
+-    const indexFile = `${gitdir}/objects/pack/${filename}`;
++    const indexFile = packIndexCacheKey(gitdir, filename);
