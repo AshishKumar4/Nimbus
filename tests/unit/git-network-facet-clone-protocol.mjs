@@ -10,6 +10,11 @@ let loadCount = 0;
 let entrypointCount = 0;
 let committedFailurePrefix = false;
 let abortObservedPrefix = false;
+const continuationCursor = {
+  version: 1,
+  tree: '2'.repeat(40),
+  stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 3 }],
+};
 
 const supervisor = {
   async stdout() {},
@@ -97,8 +102,26 @@ const entrypoint = {
         metadataOverlay: { entries: 5, accountedBytes: 640 },
       });
     }
+    if (body.checkoutCursor === null) {
+      return Response.json({
+        success: true,
+        nextCursor: continuationCursor,
+        treeEntriesVisited: 3,
+        decodedBytes: 12,
+        indexEntries: 2,
+        filesWritten: 2,
+        bytesWritten: 6,
+        supervisorRpc: { writeBatchStream: 1 },
+        metadataOverlay: { entries: 6, accountedBytes: 768 },
+      });
+    }
+    assert.deepEqual(body.checkoutCursor, continuationCursor);
     return Response.json({
       success: true,
+      nextCursor: null,
+      treeEntriesVisited: 2,
+      decodedBytes: 6,
+      indexEntries: 4,
       filesWritten: 2,
       bytesWritten: 6,
       supervisorRpc: { writeBatchStream: 1 },
@@ -139,14 +162,26 @@ const result = await execGitNetwork(
 assert.equal(result.success, true, result.error);
 assert.equal(loadCount, 1, 'clone must load one dynamic worker');
 assert.equal(entrypointCount, 1, 'clone must use one entrypoint');
-assert.equal(calls.length, 2, 'clone must use separate prepare and checkout invocations');
+assert.equal(calls.length, 3, 'clone must use prepare plus bounded checkout invocations');
 assert.notEqual(calls[0].url, calls[1].url, 'phase invocations need distinct trace markers');
+assert.notEqual(calls[1].url, calls[2].url, 'checkout chunks need distinct trace markers');
 assert.match(calls[0].url, /\/git\/clone-prepare\//);
 assert.match(calls[1].url, /\/git\/clone-checkout\//);
+assert.match(calls[2].url, /\/git\/clone-checkout\//);
 assert.equal(calls[0].body.jobId, calls[1].body.jobId);
+assert.equal(calls[1].body.jobId, calls[2].body.jobId);
 assert.equal(calls[0].body.optionsHash, calls[1].body.optionsHash);
+assert.equal(calls[1].body.optionsHash, calls[2].body.optionsHash);
 assert.ok(Number.isSafeInteger(calls[0].body.phaseDeadline));
 assert.ok(Number.isSafeInteger(calls[1].body.phaseDeadline));
+assert.ok(Number.isSafeInteger(calls[2].body.phaseDeadline));
+assert.equal(calls[1].body.checkoutCursor, null);
+assert.deepEqual(calls[2].body.checkoutCursor, continuationCursor);
+assert.deepEqual(calls[1].body.checkoutBounds, {
+  maxEntries: 10_000,
+  maxDecodedBytes: 32 * 1024 * 1024,
+  maxWallMs: 20_000,
+});
 assert.deepEqual(calls[1].body.prepared, calls[0].body.phase === 'clone-prepare'
   ? {
       jobId: calls[0].body.jobId,
@@ -166,9 +201,9 @@ assert.deepEqual(calls[1].body.prepared, calls[0].body.phase === 'clone-prepare'
       metadata: [],
     }
   : null);
-assert.equal(result.filesWritten, 6);
-assert.equal(result.bytesWritten, 24);
-assert.equal(result.supervisorRpc.writeBatchStream, 2);
+assert.equal(result.filesWritten, 8);
+assert.equal(result.bytesWritten, 30);
+assert.equal(result.supervisorRpc.writeBatchStream, 3);
 
 const callsBeforeFailure = calls.length;
 prepareDurable = false;

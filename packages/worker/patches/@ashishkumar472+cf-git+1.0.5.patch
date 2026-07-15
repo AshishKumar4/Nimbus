@@ -1,14 +1,29 @@
-diff --git a/index.js b/index.js
-index 80a5167..358b3ed 100644
 --- a/index.js
 +++ b/index.js
-@@ -3175,0 +3176 @@ class GitPackIndex {
+@@ -3173,9 +3173,11 @@
+       type = listpackTypes[type];
+
+       if (['commit', 'tree', 'blob', 'tag'].includes(type)) {
 +        const oid = await shasum(GitObject.wrap({ type, object: data }));
-@@ -3178,0 +3180 @@ class GitPackIndex {
+         offsetToObject[offset] = {
+           type,
+           offset,
 +          oid,
-@@ -3217 +3218,0 @@ class GitPackIndex {
+         };
+       } else if (type === 'ofs-delta') {
+         offsetToObject[offset] = {
+@@ -3214,7 +3216,6 @@
+     // Resolve deltas and compute the oids
+     lastPercent = null;
+     let count = 0;
 -    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-@@ -3234 +3235,6 @@ class GitPackIndex {
+     for (let offset in offsetToObject) {
+       offset = Number(offset);
+       const percent = Math.floor((count * 100) / totalObjectCount);
+@@ -3231,12 +3232,14 @@
+       lastPercent = percent;
+
+       const o = offsetToObject[offset];
 -      if (o.oid) continue
 +      if (o.oid) {
 +        hashes.push(o.oid);
@@ -16,35 +31,56 @@ index 80a5167..358b3ed 100644
 +        crcs[o.oid] = o.crc;
 +        continue
 +      }
-@@ -3236,2 +3241,0 @@ class GitPackIndex {
+       try {
 -        p.readDepth = 0;
 -        p.externalReadDepth = 0;
-@@ -3239 +3242,0 @@ class GitPackIndex {
+         const { type, object } = await p.readSlice({ start: offset });
 -        objectsByDepth[p.readDepth] += 1;
-@@ -3264,0 +3268,5 @@ class GitPackIndex {
+         const oid = await shasum(GitObject.wrap({ type, object }));
+         o.oid = oid;
+         hashes.push(oid);
+@@ -3262,11 +3265,13 @@
+     write('00000002', 'hex');
+     // Write fanout table
+     const fanoutBuffer = new BufferCursor(Buffer.alloc(256 * 4));
 +    const fanout = new Uint32Array(256);
 +    for (const hash of this.hashes) {
 +      fanout[parseInt(hash.slice(0, 2), 16)]++;
 +    }
 +    let count = 0;
-@@ -3266,4 +3274 @@ class GitPackIndex {
+     for (let i = 0; i < 256; i++) {
 -      let count = 0;
 -      for (const hash of this.hashes) {
 -        if (parseInt(hash.slice(0, 2), 16) <= i) count++;
 -      }
 +      count += fanout[i];
-@@ -3307 +3312 @@ class GitPackIndex {
+       fanoutBuffer.writeUInt32BE(count);
+     }
+     buffers.push(fanoutBuffer.buffer);
+@@ -3304,91 +3309,109 @@
+     this.pack = null;
+   }
+
 -  async read({ oid }) {
 +  async read({ oid, readContext = { depth: 0 } }) {
-@@ -3310 +3314,0 @@ class GitPackIndex {
+     if (!this.offsets.get(oid)) {
+       if (this.getExternalRefDelta) {
 -        this.externalReadDepth++;
-@@ -3317 +3321 @@ class GitPackIndex {
+         return this.getExternalRefDelta(oid)
+       } else {
+         throw new InternalError(`Could not read object ${oid} from packfile`)
+       }
+     }
+     const start = this.offsets.get(oid);
 -    return this.readSlice({ start })
 +    return this.readSlice({ start, readContext })
-@@ -3320 +3324 @@ class GitPackIndex {
+   }
+
 -  async readSlice({ start }) {
 +  async readSlice({ start, readContext = { depth: 0 } }) {
-@@ -3324,61 +3328,69 @@ class GitPackIndex {
+     if (this.offsetCache[start]) {
+       return Object.assign({}, this.offsetCache[start])
+     }
 -    this.readDepth++;
 -    const types = {
 -      0b0010000: 'commit',
@@ -175,9 +211,13 @@ index 80a5167..358b3ed 100644
 +      return { type, format: 'content', object }
 +    } finally {
 +      readContext.depth--;
-@@ -3386 +3397,0 @@ class GitPackIndex {
+     }
 -    return { type, format: 'content', object }
-@@ -3391,0 +3403,12 @@ const PackfileCache = Symbol('PackfileCache');
+   }
+ }
+
+ const PackfileCache = Symbol('PackfileCache');
+
 +const packIndexCacheKey = (gitdir, filename) =>
 +  `${gitdir}/objects/pack/${filename}`;
 +
@@ -190,15 +230,33 @@ index 80a5167..358b3ed 100644
 +  cache[PackfileCache].set(filename, Promise.resolve(index));
 +}
 +
-@@ -3440 +3463 @@ async function readObjectPacked({
+ async function loadPackIndex({
+   fs,
+   filename,
+@@ -3437,7 +3460,7 @@
+   let list = await fs.readdir(join(gitdir, 'objects/pack'));
+   list = list.filter(x => x.endsWith('.idx'));
+   for (const filename of list) {
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -4525 +4548,3 @@ class GitWalkerFs {
+     const p = await readPackIndex({
+       fs,
+       cache,
+@@ -4522,7 +4545,9 @@
+     const { fs, dir } = this;
+     const names = await fs.readdir(join(dir, filepath));
+     if (names === null) return null
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-@@ -6656,5 +6681,7 @@ const worthWalking = (filepath, root) => {
+   }
+
+   async type(entry) {
+@@ -6653,11 +6678,13 @@
+   if (filepath === '.' || root == null || root.length === 0 || root === '.') {
+     return true
+   }
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -211,7 +269,13 @@ index 80a5167..358b3ed 100644
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
-@@ -7310,9 +7337,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+ };
+
+ // @ts-check
+@@ -7307,15 +7334,11 @@
+ }
+
+ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -226,7 +290,13 @@ index 80a5167..358b3ed 100644
 +    stats,
 +    oid,
 +  });
-@@ -7357,6 +7380,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+ }
+ async function updateWorkingDir(
+   { fs, cache, gitdir, dir },
+@@ -7354,27 +7377,32 @@
+
+ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+   const results = [];
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -246,7 +316,7 @@ index 80a5167..358b3ed 100644
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-@@ -7364,7 +7393,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+       });
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -254,12 +324,12 @@ index 80a5167..358b3ed 100644
 -          total: tasks.length,
 -        });
 -      }
-@@ -7372,4 +7394,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+     }
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-@@ -7377 +7396,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+   }
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -271,14 +341,324 @@ index 80a5167..358b3ed 100644
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-@@ -8155 +8183 @@ async function hasObjectPacked({
+   return results
+ }
+
+@@ -7484,6 +7512,282 @@
+   }
+ }
+
++const freshCheckoutOidPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
++
++function freshCheckoutError(message) {
++  return new InternalError(`Fresh checkout: ${message}`)
++}
++
++class FreshCheckoutResourceLimitError extends BaseError {
++  constructor(filepath, decodedBytes, maxDecodedBytes) {
++    super(
++      `Fresh checkout: ${filepath} decodes to ${decodedBytes} bytes, exceeding ` +
++      `maxDecodedBytes ${maxDecodedBytes}`
++    );
++    this.code = this.name = 'FreshCheckoutResourceLimitError';
++    this.data = { filepath, decodedBytes, maxDecodedBytes };
++  }
++}
++
++function validateFreshCheckoutBound(value, name) {
++  if (!Number.isSafeInteger(value) || value <= 0) {
++    throw freshCheckoutError(`${name} must be a positive safe integer`)
++  }
++  return value
++}
++
++function validateFreshCheckoutFrame(value, index) {
++  if (!value || typeof value !== 'object' ||
++      !freshCheckoutOidPattern.test(value.treeOid) ||
++      typeof value.path !== 'string' || value.path.length > 4096 ||
++      (index === 0 ? value.path !== '' : value.path.length === 0) ||
++      !Number.isSafeInteger(value.nextChildIndex) || value.nextChildIndex < 0) {
++    throw freshCheckoutError(`cursor frame ${index} is invalid`)
++  }
++  return {
++    treeOid: value.treeOid,
++    path: value.path,
++    nextChildIndex: value.nextChildIndex,
++  }
++}
++
++async function readFreshCheckoutTree({ fs, cache, gitdir, oid }) {
++  const { type, object } = await _readObject({ fs, cache, gitdir, oid });
++  if (type !== 'tree') throw new ObjectTypeError(oid, type, 'tree')
++  return GitTree.from(object).entries()
++}
++
++function strictFreshCheckoutFs(input) {
++  const base = new FileSystem(input);
++  const fs = Object.create(base);
++  fs.read = async function(filepath, options = {}) {
++    try {
++      const value = await this._readFile(filepath, options);
++      return typeof value === 'string' ? value : Buffer.from(value)
++    } catch (error) {
++      if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null
++      throw error
++    }
++  };
++  fs.readdir = async function(filepath) {
++    try {
++      const names = await this._readdir(filepath);
++      names.sort(compareStrings);
++      return names
++    } catch (error) {
++      if (error && error.code === 'ENOENT') return []
++      if (error && error.code === 'ENOTDIR') return null
++      throw error
++    }
++  };
++  fs.write = async function(filepath, contents, options = {}) {
++    await this._writeFile(filepath, contents, options);
++  };
++  fs.mkdir = async function(filepath) {
++    try {
++      await this._mkdir(filepath);
++    } catch (error) {
++      if (!error || error.code !== 'EEXIST') throw error
++    }
++  };
++  fs.writelink = async function(filepath, buffer) {
++    try {
++      await this._unlink(filepath);
++    } catch (error) {
++      if (!error || error.code !== 'ENOENT') throw error
++    }
++    await this._symlink(buffer.toString('utf8'), filepath);
++  };
++  return fs
++}
++
++async function validateFreshCheckoutCursor({ fs, cache, gitdir, treeOid, cursor }) {
++  if (cursor === null || cursor === undefined) {
++    return [{ treeOid, path: '', nextChildIndex: 0 }]
++  }
++  if (!cursor || typeof cursor !== 'object' || cursor.version !== 1 ||
++      cursor.tree !== treeOid || !Array.isArray(cursor.stack) ||
++      cursor.stack.length === 0 || cursor.stack.length > 4096) {
++    throw freshCheckoutError('cursor does not match the resolved tree')
++  }
++  const stack = cursor.stack.map(validateFreshCheckoutFrame);
++  if (stack[0].treeOid !== treeOid || stack[0].path !== '') {
++    throw freshCheckoutError('cursor root frame does not match the resolved tree')
++  }
++  for (let index = 0; index < stack.length; index++) {
++    const frame = stack[index];
++    const entries = await readFreshCheckoutTree({
++      fs,
++      cache,
++      gitdir,
++      oid: frame.treeOid,
++    });
++    if (frame.nextChildIndex > entries.length) {
++      throw freshCheckoutError(`cursor frame ${index} is past the end of its tree`)
++    }
++    if (index === 0) continue
++    const parent = stack[index - 1];
++    if (parent.nextChildIndex === 0) {
++      throw freshCheckoutError(`cursor frame ${index} has no parent entry`)
++    }
++    const parentEntries = await readFreshCheckoutTree({
++      fs,
++      cache,
++      gitdir,
++      oid: parent.treeOid,
++    });
++    const entry = parentEntries[parent.nextChildIndex - 1];
++    const path = parent.path ? `${parent.path}/${entry && entry.path}` : entry && entry.path;
++    if (!entry || entry.mode !== '040000' || entry.oid !== frame.treeOid || path !== frame.path) {
++      throw freshCheckoutError(`cursor frame ${index} does not match its parent tree`)
++    }
++  }
++  return stack
++}
++
++/**
++ * Materialize one bounded, replay-safe slice of a fresh checkout.
++ *
++ * The destination emptiness and clone ownership precondition is enforced by
++ * the caller. The returned cursor is opaque, serializable, and valid only for
++ * the resolved root tree.
++ */
++async function checkoutFreshChunk({
++  fs: inputFs,
++  cache = {},
++  onProgress,
++  dir,
++  gitdir = join(dir, '.git'),
++  ref = 'HEAD',
++  cursor = null,
++  maxEntries,
++  maxDecodedBytes,
++  maxWallMs,
++}) {
++  try {
++    assertParameter('fs', inputFs);
++    assertParameter('dir', dir);
++    assertParameter('gitdir', gitdir);
++    validateFreshCheckoutBound(maxEntries, 'maxEntries');
++    validateFreshCheckoutBound(maxDecodedBytes, 'maxDecodedBytes');
++    validateFreshCheckoutBound(maxWallMs, 'maxWallMs');
++
++    const fs = strictFreshCheckoutFs(inputFs);
++    const commitOid = await GitRefManager.resolve({ fs, gitdir, ref });
++    const { oid: treeOid } = await resolveTree({ fs, cache, gitdir, oid: commitOid });
++    const stack = await validateFreshCheckoutCursor({
++      fs,
++      cache,
++      gitdir,
++      treeOid,
++      cursor,
++    });
++    const startedAt = Date.now();
++    const trees = new Map();
++    let files = 0;
++    let decodedBytes = 0;
++    let treeEntriesVisited = 0;
++    let indexEntries = 0;
++
++    await GitIndexManager.acquire(
++      { fs, gitdir, cache, allowUnmerged: true },
++      async function(index) {
++        while (stack.length > 0) {
++          const frame = stack[stack.length - 1];
++          let entries = trees.get(frame.treeOid);
++          if (!entries) {
++            entries = await readFreshCheckoutTree({
++              fs,
++              cache,
++              gitdir,
++              oid: frame.treeOid,
++            });
++            trees.clear();
++            trees.set(frame.treeOid, entries);
++          }
++          if (frame.nextChildIndex === entries.length) {
++            stack.pop();
++            continue
++          }
++          if (treeEntriesVisited >= maxEntries ||
++              (treeEntriesVisited > 0 && Date.now() - startedAt >= maxWallMs)) {
++            break
++          }
++
++          const entry = entries[frame.nextChildIndex];
++          const fullpath = frame.path ? `${frame.path}/${entry.path}` : entry.path;
++          const filepath = join(dir, fullpath);
++          const mode = parseInt(entry.mode, 8);
++          let object = null;
++          if (mode === 0o100644 || mode === 0o100755 || mode === 0o120000) {
++            const result = await _readObject({ fs, cache, gitdir, oid: entry.oid });
++            if (result.type !== 'blob') {
++              throw new ObjectTypeError(entry.oid, result.type, 'blob')
++            }
++            object = result.object;
++            if (object.byteLength > maxDecodedBytes) {
++              throw new FreshCheckoutResourceLimitError(
++                fullpath,
++                object.byteLength,
++                maxDecodedBytes
++              )
++            }
++            if (decodedBytes + object.byteLength > maxDecodedBytes) break
++          }
++
++          if (mode === 0o040000) {
++            await fs.mkdir(filepath);
++          } else if (mode === 0o100644 || mode === 0o100755) {
++            await fs.write(filepath, object, mode === 0o100755 ? { mode: 0o777 } : {});
++          } else if (mode === 0o120000) {
++            await fs.writelink(filepath, object);
++          } else if (mode === 0o160000) {
++            await fs.mkdir(filepath);
++          } else {
++            throw freshCheckoutError(
++              `invalid mode 0o${mode.toString(8)} detected at ${fullpath}`
++            )
++          }
++
++          if (mode !== 0o040000) {
++            const stats = await fs.lstat(filepath);
++            if (!stats) throw freshCheckoutError(`lstat returned no result for ${fullpath}`)
++            if (mode === 0o100644) stats.mode = 0o644;
++            if (mode === 0o100755) stats.mode = 0o755;
++            if (mode === 0o160000) stats.mode = 0o160000;
++            index.insert({ filepath: fullpath, stats, oid: entry.oid });
++            if (mode !== 0o160000) files++;
++          }
++          if (object) decodedBytes += object.byteLength;
++          frame.nextChildIndex++;
++          treeEntriesVisited++;
++          if (mode === 0o040000) {
++            stack.push({ treeOid: entry.oid, path: fullpath, nextChildIndex: 0 });
++          }
++          if (onProgress) {
++            await onProgress({
++              phase: 'Updating workdir',
++              loaded: treeEntriesVisited,
++            });
++          }
++        }
++        indexEntries = index.entries.length;
++      }
++    );
++
++    return {
++      nextCursor: stack.length === 0 ? null : { version: 1, tree: treeOid, stack },
++      files,
++      decodedBytes,
++      treeEntriesVisited,
++      indexEntries,
++    }
++  } catch (err) {
++    err.caller = 'git.checkoutFreshChunk';
++    throw err
++  }
++}
++
+ // @see https://git-scm.com/docs/git-rev-parse.html#_specifying_revisions
+ const abbreviateRx = new RegExp('^refs/(heads/|tags/|remotes/)?(.*)');
+
+@@ -8152,7 +8456,7 @@
+   let list = await fs.readdir(join(gitdir, 'objects/pack'));
+   list = list.filter(x => x.endsWith('.idx'));
+   for (const filename of list) {
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8893 +8921,3 @@ async function _fetch({
+     const p = await readPackIndex({
+       fs,
+       cache,
+@@ -8890,7 +9194,9 @@
+       getExternalRefDelta,
+       onProgress,
+     });
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -9552 +9582 @@ async function expandOidPacked({
+   }
+   return res
+ }
+@@ -9549,7 +9855,7 @@
+   let list = await fs.readdir(join(gitdir, 'objects/pack'));
+   list = list.filter(x => x.endsWith('.idx'));
+   for (const filename of list) {
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
+     const p = await readPackIndex({
+       fs,
+       cache,
+@@ -17573,4 +17879,4 @@
+ };
+
+ export default index;
+-export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
++export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };

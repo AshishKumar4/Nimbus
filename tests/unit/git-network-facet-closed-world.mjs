@@ -133,14 +133,46 @@ export const git = {
     return ref;
   },
 
-  async checkout({ fs, dir, cache, onProgress }) {
+  async checkoutFreshChunk({ fs, dir, cache, cursor, maxEntries, maxDecodedBytes, maxWallMs, onProgress }) {
     assert(cache.prepared === true, 'checkout did not reuse the prepared cache');
+    assert(maxEntries > 0 && maxDecodedBytes > 0 && maxWallMs > 0,
+      'checkout bounds were not forwarded');
     const root = dir.replace(/^\\/+/, '').split('/').filter(segment => segment && segment !== '.').join('/');
     if (root === 'repo') {
       assert(globalThis.__prepareDurable === true,
         'checkout began before prepared .git state was durably flushed');
     }
     assert(root !== 'unborn', 'empty repository unexpectedly ran checkout');
+    if (root === 'continuation' || root.startsWith('chunk-failure-')) {
+      if (cursor === null) {
+        await fs.promises.writeFile(root + '/first.txt', 'first');
+        return {
+          nextCursor: {
+            version: 1,
+            tree: '2'.repeat(40),
+            stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 1 }],
+          },
+          files: 1,
+          decodedBytes: 5,
+          treeEntriesVisited: 1,
+          indexEntries: 1,
+        };
+      }
+      assert(cursor.stack[0].nextChildIndex === 1, 'continuation cursor changed');
+      if (root === 'continuation') {
+        assert(globalThis.__continuationFirstDurable === true,
+          'next chunk started before the prior chunk was durable');
+      }
+      await fs.promises.writeFile(root + '/second.txt', 'second');
+      return {
+        nextCursor: null,
+        files: 1,
+        decodedBytes: 6,
+        treeEntriesVisited: 1,
+        indexEntries: 2,
+      };
+    }
+    assert(cursor === null, 'closed-world fixture received an unexpected continuation');
     if (root === 'progress') {
       const originalNow = Date.now;
       const startedAt = originalNow();
@@ -151,11 +183,17 @@ export const git = {
       } finally {
         Date.now = originalNow;
       }
-      return;
+      return {
+        nextCursor: null, files: 0, decodedBytes: 0,
+        treeEntriesVisited: 0, indexEntries: 0,
+      };
     }
     if (root === 'empty' || root === 'empty-vfs') {
       await fs.promises.writeFile(dir + '/created.txt', 'created');
-      return;
+      return {
+        nextCursor: null, files: 1, decodedBytes: 7,
+        treeEntriesVisited: 1, indexEntries: 1,
+      };
     }
     const packDir = root + '/.git/objects/pack';
 
@@ -255,6 +293,13 @@ export const git = {
 
     const outside = await fs.promises.stat('/outside/existing.txt');
     assert(outside.isFile() && outside.size === 9, 'path outside clone root did not fall through');
+    return {
+      nextCursor: null,
+      files: 554,
+      decodedBytes: 4096,
+      treeEntriesVisited: 560,
+      indexEntries: 554,
+    };
   },
 
   async fetch({ fs, dir }) {
@@ -319,6 +364,12 @@ export const git = {
               jobId,
               optionsHash,
               prepared: prepare.prepared,
+              checkoutCursor: null,
+              checkoutBounds: {
+                maxEntries: 10_000,
+                maxDecodedBytes: 32 * 1024 * 1024,
+                maxWallMs: 20_000,
+              },
               phaseDeadline: Date.now() + 30_000,
             }),
           }),
@@ -400,6 +451,9 @@ export const git = {
           paths.includes('repo/dir-link')) {
         globalThis.__symlinkBatchDurable = result.ok === true;
       }
+      if (paths.includes('continuation/first.txt')) {
+        globalThis.__continuationFirstDurable = result.ok === true;
+      }
       return result;
     },
     async stdout() { rawCalls.stdout++; },
@@ -428,8 +482,8 @@ export const git = {
   assert.equal(result.supervisorRpc.stat, 1, 'only outside-root stat should cross');
   assert.equal(result.supervisorRpc.lstat, 1, 'only destination proof should cross');
   assert.equal(result.supervisorRpc.readdir, 0, 'absent destination and pack listings must stay local');
-  assert.equal(result.supervisorRpc.readFile, 4,
-    'checkout should read durable HEAD/ref identity plus the explicit outside-root fixture');
+  assert.equal(result.supervisorRpc.readFile, 5,
+    'checkout should read durable ownership/HEAD/ref identity plus the outside-root fixture');
   assert.equal(result.supervisorRpc.fsReadRange, 0);
   assert.equal(result.supervisorRpc.writeBatchStream, rawCalls.writeBatchStream);
   assert.equal(result.supervisorRpc.legacySymlinkSubtree, 1);
@@ -478,6 +532,14 @@ export const git = {
   coldPackMetadata[1].size = coldPackSize;
   globalThis.__coldPackSize = coldPackSize;
   globalThis.__coldPackReloaded = false;
+  await bridge.writeFile(
+    '/repo/.git/nimbus-clone-job',
+    JSON.stringify({
+      version: 1,
+      jobId: coldPrepared.jobId,
+      optionsHash: coldPrepared.optionsHash,
+    }),
+  );
   writeFileSync(join(tempDir, 'git-network-worker-cold.mjs'), assembleGitNetworkFacetSource());
   const coldWorker = await import(
     pathToFileURL(join(tempDir, 'git-network-worker-cold.mjs')).href
@@ -496,6 +558,12 @@ export const git = {
         jobId: coldPrepared.jobId,
         optionsHash: coldPrepared.optionsHash,
         prepared: coldPrepared,
+        checkoutCursor: null,
+        checkoutBounds: {
+          maxEntries: 10_000,
+          maxDecodedBytes: 32 * 1024 * 1024,
+          maxWallMs: 20_000,
+        },
         phaseDeadline: Date.now() + 30_000,
       }),
     }),
@@ -570,6 +638,7 @@ export const git = {
     }),
     {
       SUPERVISOR: {
+        ...supervisor,
         async lstat(path) {
           assert.equal(path, 'empty');
           return supervisorStat('directory');
@@ -580,15 +649,10 @@ export const git = {
         },
         async hasLegacySymlinkUnder() { return false; },
         async writeBatchStream(stream) {
-          const paths = await drainWave(stream);
+          const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+          const paths = await drainWave(byteStream(bytes.slice()));
           emptyWaves.push(paths);
-          return {
-            ok: true,
-            committedGroupSequence: paths.length,
-            committedPathCount: paths.length,
-            inodes: paths.length,
-            chunks: 0,
-          };
+          return vfs.writeStream(byteStream(bytes.slice()));
         },
         async stdout() {},
       },
@@ -788,6 +852,83 @@ export const git = {
   const modeResult = await modeResponse.json();
   assert.equal(modeResult.success, true, modeResult.error);
   assert.equal(vfs.stat('mode/executable.sh').mode, 0o755);
+
+  const runChunkedClone = async (dir, chunkSupervisor) => {
+    setCtxExports({ SupervisorRPC: () => chunkSupervisor });
+    return execGitNetwork(
+      { id: { toString: () => 'closed-world-chunk-do' } },
+      {
+        LOADER: {
+          load() {
+            return {
+              getEntrypoint() {
+                return {
+                  fetch(request) {
+                    return facetWorker.default.fetch(request, { SUPERVISOR: chunkSupervisor });
+                  },
+                };
+              },
+            };
+          },
+        },
+      },
+      {
+        op: 'clone',
+        dir: `/${dir}`,
+        url: 'https://example.invalid/repo.git',
+        exclusiveDestination: true,
+        exclusiveMutationRoot: dir,
+        mutationOwner: 'owner',
+      },
+    );
+  };
+
+  const continued = await runChunkedClone('continuation', supervisor);
+  assert.equal(continued.success, true, continued.error);
+  assert.deepEqual(
+    continued.phases.map(phase => phase.phase),
+    ['clone-prepare', 'clone-checkout', 'clone-checkout'],
+  );
+  assert.equal(vfs.readFileString('continuation/first.txt'), 'first');
+  assert.equal(vfs.readFileString('continuation/second.txt'), 'second');
+  assert.equal(vfs.exists('continuation/.git/nimbus-clone-job'), false,
+    'final chunk left the ownership marker behind');
+
+  for (const failurePoint of ['before', 'during', 'after']) {
+    const dir = `chunk-failure-${failurePoint}`;
+    const failingSupervisor = {
+      ...supervisor,
+      async writeBatchStream(stream) {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        const paths = await drainWave(byteStream(bytes.slice()));
+        if (!paths.includes(`${dir}/second.txt`)) {
+          return vfs.writeStream(byteStream(bytes.slice()));
+        }
+        if (failurePoint === 'before') {
+          throw new Error('injected before-flush failure');
+        }
+        const durable = await vfs.writeStream(byteStream(bytes.slice()));
+        assert.equal(durable.ok, true);
+        if (failurePoint === 'during') {
+          return {
+            ok: false,
+            committedGroupSequence: 1,
+            committedPathCount: 1,
+            error: { message: 'injected during-flush failure' },
+          };
+        }
+        throw new Error('injected after-flush response loss');
+      },
+    };
+    const failedChunk = await runChunkedClone(dir, failingSupervisor);
+    assert.equal(failedChunk.success, false, `${failurePoint} flush failure reported success`);
+    assert.equal(failedChunk.errorPhase, 'clone-checkout');
+    assert.match(failedChunk.error, new RegExp(`injected ${failurePoint}`));
+    assert.equal(vfs.readFileString(`${dir}/first.txt`), 'first',
+      `${failurePoint} flush failure lost the prior durable chunk`);
+    assert.equal(vfs.exists(`${dir}/.git`), false,
+      `${failurePoint} flush failure did not run the owned abort`);
+  }
 
   const fallbackRaw = { stat: 0, readdir: 0 };
   const fetchResponse = await worker.default.fetch(

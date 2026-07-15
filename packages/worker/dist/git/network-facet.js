@@ -32,6 +32,9 @@ import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '../_shared/w7-frame.js';
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const CLONE_ABORT_TIMEOUT_MS = 30_000;
+const DEFAULT_CHECKOUT_CHUNK_MAX_ENTRIES = 10_000;
+const DEFAULT_CHECKOUT_CHUNK_MAX_DECODED_BYTES = 32 * 1024 * 1024;
+const DEFAULT_CHECKOUT_CHUNK_MAX_WALL_MS = 20_000;
 const EMPTY_SUPERVISOR_RPC_COUNTERS = {
     stat: 0,
     lstat: 0,
@@ -53,6 +56,42 @@ const EMPTY_METADATA_OVERLAY_STATS = {
 function nonNegativeCounter(value) {
     const number = Number(value);
     return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+}
+function positiveSafeInteger(value, fallback, label) {
+    if (value === undefined)
+        return fallback;
+    if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+        throw new Error(`${label} must be a positive safe integer`);
+    }
+    return Number(value);
+}
+function checkoutChunkBounds(opts) {
+    return {
+        maxEntries: positiveSafeInteger(opts.checkoutChunkMaxEntries, DEFAULT_CHECKOUT_CHUNK_MAX_ENTRIES, 'checkoutChunkMaxEntries'),
+        maxDecodedBytes: positiveSafeInteger(opts.checkoutChunkMaxDecodedBytes, DEFAULT_CHECKOUT_CHUNK_MAX_DECODED_BYTES, 'checkoutChunkMaxDecodedBytes'),
+        maxWallMs: positiveSafeInteger(opts.checkoutChunkMaxWallMs, DEFAULT_CHECKOUT_CHUNK_MAX_WALL_MS, 'checkoutChunkMaxWallMs'),
+    };
+}
+function parseCheckoutChunkProgress(result) {
+    const nextCursor = result.nextCursor === null
+        ? null
+        : result.nextCursor && typeof result.nextCursor === 'object' &&
+            !Array.isArray(result.nextCursor)
+            ? result.nextCursor
+            : undefined;
+    if (nextCursor === undefined) {
+        throw new Error('clone-checkout returned an invalid continuation cursor');
+    }
+    const treeEntriesVisited = nonNegativeCounter(result.treeEntriesVisited);
+    if (nextCursor !== null && treeEntriesVisited === 0) {
+        throw new Error('clone-checkout continuation made no progress');
+    }
+    return {
+        nextCursor,
+        treeEntriesVisited,
+        decodedBytes: nonNegativeCounter(result.decodedBytes),
+        indexEntries: nonNegativeCounter(result.indexEntries),
+    };
 }
 function parseSupervisorRpcCounters(value) {
     const counters = value && typeof value === 'object'
@@ -263,6 +302,18 @@ async function writeClonePhaseProgress(supervisor, diagnostic) {
         // Terminal progress is best-effort; the phase result remains authoritative.
     }
 }
+async function writeCloneChunkProgress(supervisor, diagnostic, chunk, progress) {
+    try {
+        const result = await supervisor.stdout(`\n[git] clone-checkout chunk ${chunk} complete ` +
+            `(entries=${progress.treeEntriesVisited} decoded=${progress.decodedBytes}B ` +
+            `index=${progress.indexEntries} continuation=${progress.nextCursor === null ? 'done' : 'yes'} ` +
+            `wall=${diagnostic.elapsed}ms w7=${diagnostic.w7Waves})\n`);
+        disposeRpcResource(result);
+    }
+    catch {
+        // Terminal progress is best-effort; the chunk result remains authoritative.
+    }
+}
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
@@ -327,6 +378,7 @@ export async function execGitNetwork(ctx, env, opts) {
             if (opts.op === 'clone') {
                 const jobId = crypto.randomUUID();
                 const optionsHash = await hashCloneOptions(opts);
+                const checkoutBounds = checkoutChunkBounds(opts);
                 const phases = [];
                 const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
                 let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
@@ -354,21 +406,35 @@ export async function execGitNetwork(ctx, env, opts) {
                             : 'clone-prepare returned an invalid result', prepare.diagnostic);
                     }
                     await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
-                    const checkoutInvocationId = crypto.randomUUID();
-                    const checkout = await invokeFacet(entrypoint, 'clone-checkout', checkoutInvocationId, {
-                        ...facetOpts,
-                        jobId,
-                        optionsHash,
-                        prepared: prepare.result.prepared,
-                    }, outerDeadline, CLONE_PHASE_TIMEOUT_MS);
-                    phases.push(checkout.diagnostic);
-                    accountResult(checkout.result);
-                    if (checkout.result.success !== true) {
-                        throw new GitClonePhaseError('clone-checkout', typeof checkout.result.error === 'string'
-                            ? checkout.result.error
-                            : 'clone-checkout failed', checkout.diagnostic);
-                    }
-                    await writeClonePhaseProgress(supervisorBinding, checkout.diagnostic);
+                    let checkoutCursor = null;
+                    let checkoutChunk = 0;
+                    do {
+                        checkoutChunk++;
+                        const checkout = await invokeFacet(entrypoint, 'clone-checkout', crypto.randomUUID(), {
+                            ...facetOpts,
+                            jobId,
+                            optionsHash,
+                            prepared: prepare.result.prepared,
+                            checkoutCursor,
+                            checkoutBounds,
+                        }, outerDeadline, CLONE_PHASE_TIMEOUT_MS);
+                        phases.push(checkout.diagnostic);
+                        accountResult(checkout.result);
+                        if (checkout.result.success !== true) {
+                            throw new GitClonePhaseError('clone-checkout', typeof checkout.result.error === 'string'
+                                ? checkout.result.error
+                                : 'clone-checkout failed', checkout.diagnostic);
+                        }
+                        let progress;
+                        try {
+                            progress = parseCheckoutChunkProgress(checkout.result);
+                        }
+                        catch (error) {
+                            throw new GitClonePhaseError('clone-checkout', phaseErrorMessage(error), checkout.diagnostic);
+                        }
+                        checkoutCursor = progress.nextCursor;
+                        await writeCloneChunkProgress(supervisorBinding, checkout.diagnostic, checkoutChunk, progress);
+                    } while (checkoutCursor !== null);
                     return {
                         success: true,
                         elapsed: Date.now() - start,
@@ -560,6 +626,12 @@ function requireMetadataNumber(value, label) {
     throw protocolError(label + ' is invalid');
   }
   return value;
+}
+
+function requirePositiveMetadataNumber(value, label) {
+  const number = requireMetadataNumber(value, label);
+  if (number === 0) throw protocolError(label + ' is invalid');
+  return number;
 }
 
 function cloneJobMarkerPath(dir) {
@@ -1827,6 +1899,7 @@ export default {
       let authoritativeRootMetadata = null;
       let initialMetadata = [];
       let prepared = null;
+      let checkoutResult = null;
       const phaseDeadline = phase === 'operation'
         ? null
         : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
@@ -1907,6 +1980,28 @@ export default {
           authoritativeRoot = normalizePath(opts.exclusiveMutationRoot || opts.dir);
           initialMetadata = prepared.metadata;
         }
+        if (opts.checkoutCursor !== null &&
+            (!opts.checkoutCursor || typeof opts.checkoutCursor !== 'object' ||
+             Array.isArray(opts.checkoutCursor))) {
+          throw protocolError('checkout cursor is invalid');
+        }
+        if (!opts.checkoutBounds || typeof opts.checkoutBounds !== 'object') {
+          throw protocolError('checkout bounds are invalid');
+        }
+        opts.checkoutBounds = {
+          maxEntries: requirePositiveMetadataNumber(
+            opts.checkoutBounds.maxEntries,
+            'checkout max entries',
+          ),
+          maxDecodedBytes: requirePositiveMetadataNumber(
+            opts.checkoutBounds.maxDecodedBytes,
+            'checkout max decoded bytes',
+          ),
+          maxWallMs: requirePositiveMetadataNumber(
+            opts.checkoutBounds.maxWallMs,
+            'checkout max wall time',
+          ),
+        };
       } else if (phase === 'clone-abort') {
         requireProtocolString(opts.jobId, 'job id', 128);
         requireProtocolString(opts.optionsHash, 'options hash', 128);
@@ -2001,6 +2096,9 @@ export default {
       } else if (phase === 'clone-checkout') {
         const warmJob = cloneJobs.get(opts.jobId);
         const cache = warmJob ? warmJob.cache : {};
+        if (!await ownsCloneJob(fs, opts)) {
+          throw protocolError('checkout clone job marker does not match');
+        }
         bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
         mutated = true;
         const durableHeadRef = await git.currentBranch({
@@ -2040,21 +2138,34 @@ export default {
           if (durableCommit !== prepared.commit || durableTree !== prepared.tree) {
             throw protocolError('durable HEAD does not match prepared commit/tree');
           }
-          await git.checkout({
+          checkoutResult = await git.checkoutFreshChunk({
             fs,
             cache,
             dir: opts.dir,
             ref: 'HEAD',
-            noUpdateHead: true,
-            nonBlocking: true,
-            batchSize: 50,
+            cursor: opts.checkoutCursor,
+            maxEntries: opts.checkoutBounds.maxEntries,
+            maxDecodedBytes: opts.checkoutBounds.maxDecodedBytes,
+            maxWallMs: opts.checkoutBounds.maxWallMs,
             onProgress,
           });
         }
-        bufferedFs.unpinFile(cloneJobMarkerPath(opts.dir));
-        await fs.promises.unlink(cloneJobMarkerPath(opts.dir));
+        if (checkoutResult === null) {
+          checkoutResult = {
+            nextCursor: null,
+            files: 0,
+            decodedBytes: 0,
+            treeEntriesVisited: 0,
+            indexEntries: 0,
+          };
+        }
         await flushWave();
-        cloneJobs.delete(opts.jobId);
+        if (checkoutResult.nextCursor === null) {
+          bufferedFs.unpinFile(cloneJobMarkerPath(opts.dir));
+          await fs.promises.unlink(cloneJobMarkerPath(opts.dir));
+          await flushWave();
+          cloneJobs.delete(opts.jobId);
+        }
       } else if (phase === 'clone-abort') {
         const warmJob = cloneJobs.get(opts.jobId);
         if (warmJob && warmJob.optionsHash !== opts.optionsHash) {
@@ -2109,6 +2220,12 @@ export default {
 
       return respond(true, {
         prepared: phase === 'clone-prepare' ? prepared : undefined,
+        nextCursor: phase === 'clone-checkout' ? checkoutResult.nextCursor : undefined,
+        treeEntriesVisited: phase === 'clone-checkout'
+          ? checkoutResult.treeEntriesVisited
+          : undefined,
+        decodedBytes: phase === 'clone-checkout' ? checkoutResult.decodedBytes : undefined,
+        indexEntries: phase === 'clone-checkout' ? checkoutResult.indexEntries : undefined,
         metadataOverlay: overlayStats(),
       });
     } catch (e) {

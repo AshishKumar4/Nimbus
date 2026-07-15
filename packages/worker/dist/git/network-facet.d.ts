@@ -55,6 +55,12 @@ export interface GitNetworkOpts {
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
+    /** Clone-only bounded checkout entries per fresh facet invocation. */
+    checkoutChunkMaxEntries?: number;
+    /** Clone-only decoded blob bytes per fresh facet invocation. */
+    checkoutChunkMaxDecodedBytes?: number;
+    /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
+    checkoutChunkMaxWallMs?: number;
 }
 export interface GitSupervisorRpcCounters {
     stat: number;
