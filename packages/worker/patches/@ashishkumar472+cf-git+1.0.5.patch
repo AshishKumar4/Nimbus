@@ -1,26 +1,50 @@
 diff --git a/index.js b/index.js
-index 80a5167..7b0a849 100644
+index 80a5167..358b3ed 100644
 --- a/index.js
 +++ b/index.js
-@@ -3217 +3216,0 @@ class GitPackIndex {
+@@ -3175,0 +3176 @@ class GitPackIndex {
++        const oid = await shasum(GitObject.wrap({ type, object: data }));
+@@ -3178,0 +3180 @@ class GitPackIndex {
++          oid,
+@@ -3217 +3218,0 @@ class GitPackIndex {
 -    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-@@ -3236,2 +3234,0 @@ class GitPackIndex {
+@@ -3234 +3235,6 @@ class GitPackIndex {
+-      if (o.oid) continue
++      if (o.oid) {
++        hashes.push(o.oid);
++        offsets.set(o.oid, offset);
++        crcs[o.oid] = o.crc;
++        continue
++      }
+@@ -3236,2 +3241,0 @@ class GitPackIndex {
 -        p.readDepth = 0;
 -        p.externalReadDepth = 0;
-@@ -3239 +3235,0 @@ class GitPackIndex {
+@@ -3239 +3242,0 @@ class GitPackIndex {
 -        objectsByDepth[p.readDepth] += 1;
-@@ -3307 +3303 @@ class GitPackIndex {
+@@ -3264,0 +3268,5 @@ class GitPackIndex {
++    const fanout = new Uint32Array(256);
++    for (const hash of this.hashes) {
++      fanout[parseInt(hash.slice(0, 2), 16)]++;
++    }
++    let count = 0;
+@@ -3266,4 +3274 @@ class GitPackIndex {
+-      let count = 0;
+-      for (const hash of this.hashes) {
+-        if (parseInt(hash.slice(0, 2), 16) <= i) count++;
+-      }
++      count += fanout[i];
+@@ -3307 +3312 @@ class GitPackIndex {
 -  async read({ oid }) {
 +  async read({ oid, readContext = { depth: 0 } }) {
-@@ -3310 +3305,0 @@ class GitPackIndex {
+@@ -3310 +3314,0 @@ class GitPackIndex {
 -        this.externalReadDepth++;
-@@ -3317 +3312 @@ class GitPackIndex {
+@@ -3317 +3321 @@ class GitPackIndex {
 -    return this.readSlice({ start })
 +    return this.readSlice({ start, readContext })
-@@ -3320 +3315 @@ class GitPackIndex {
+@@ -3320 +3324 @@ class GitPackIndex {
 -  async readSlice({ start }) {
 +  async readSlice({ start, readContext = { depth: 0 } }) {
-@@ -3324,61 +3319,69 @@ class GitPackIndex {
+@@ -3324,61 +3328,69 @@ class GitPackIndex {
 -    this.readDepth++;
 -    const types = {
 -      0b0010000: 'commit',
@@ -151,9 +175,9 @@ index 80a5167..7b0a849 100644
 +      return { type, format: 'content', object }
 +    } finally {
 +      readContext.depth--;
-@@ -3386 +3388,0 @@ class GitPackIndex {
+@@ -3386 +3397,0 @@ class GitPackIndex {
 -    return { type, format: 'content', object }
-@@ -3391,0 +3394,12 @@ const PackfileCache = Symbol('PackfileCache');
+@@ -3391,0 +3403,12 @@ const PackfileCache = Symbol('PackfileCache');
 +const packIndexCacheKey = (gitdir, filename) =>
 +  `${gitdir}/objects/pack/${filename}`;
 +
@@ -166,15 +190,15 @@ index 80a5167..7b0a849 100644
 +  cache[PackfileCache].set(filename, Promise.resolve(index));
 +}
 +
-@@ -3440 +3454 @@ async function readObjectPacked({
+@@ -3440 +3463 @@ async function readObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -4525 +4539,3 @@ class GitWalkerFs {
+@@ -4525 +4548,3 @@ class GitWalkerFs {
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-@@ -6656,5 +6672,7 @@ const worthWalking = (filepath, root) => {
+@@ -6656,5 +6681,7 @@ const worthWalking = (filepath, root) => {
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -187,7 +211,7 @@ index 80a5167..7b0a849 100644
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
-@@ -7310,9 +7328,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+@@ -7310,9 +7337,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -202,7 +226,7 @@ index 80a5167..7b0a849 100644
 +    stats,
 +    oid,
 +  });
-@@ -7357,6 +7371,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7357,6 +7380,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -222,7 +246,7 @@ index 80a5167..7b0a849 100644
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-@@ -7364,7 +7384,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7364,7 +7393,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -230,12 +254,12 @@ index 80a5167..7b0a849 100644
 -          total: tasks.length,
 -        });
 -      }
-@@ -7372,4 +7385,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7372,4 +7394,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-@@ -7377 +7387,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7377 +7396,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -247,14 +271,14 @@ index 80a5167..7b0a849 100644
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-@@ -8155 +8174 @@ async function hasObjectPacked({
+@@ -8155 +8183 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8893 +8912,3 @@ async function _fetch({
+@@ -8893 +8921,3 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -9552 +9573 @@ async function expandOidPacked({
+@@ -9552 +9582 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
