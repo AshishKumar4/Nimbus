@@ -1,5 +1,10 @@
 import { EventEmitter } from './events.js';
-import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
+import {
+  isLoopbackHost,
+  type LoopbackRouter,
+  type VirtualRequestHandler,
+  type VirtualResponse,
+} from '../kernel/index.js';
 
 /** Extended VirtualResponse with a done promise for async middleware */
 export interface VirtualResponseWithDone extends VirtualResponse {
@@ -79,13 +84,21 @@ class ClientRequest extends EventEmitter {
   private body = '';
   private aborted = false;
   private portRegistry?: Map<number, VirtualRequestHandler>;
+  private routeLoopback?: LoopbackRouter;
   private protocol: 'http:' | 'https:';
 
-  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
+  constructor(
+    options: RequestOptions,
+    cb?: (res: IncomingMessage) => void,
+    portRegistry?: Map<number, VirtualRequestHandler>,
+    protocol: 'http:' | 'https:' = 'http:',
+    routeLoopback?: LoopbackRouter,
+  ) {
     super();
     this.options = options;
     this.portRegistry = portRegistry;
     this.protocol = protocol;
+    this.routeLoopback = routeLoopback;
     if (cb) this.on('response', cb as (...args: unknown[]) => void);
 
     // Defer the actual fetch
@@ -108,11 +121,12 @@ class ClientRequest extends EventEmitter {
     if (this.aborted) return;
 
     const host = this.options.hostname || this.options.host || 'localhost';
-    const port = this.options.port ? Number(this.options.port) : undefined;
+    const port = this.options.port ? Number(this.options.port) : (this.protocol === 'http:' ? 80 : 443);
     const path = this.options.path || '/';
+    const loopback = isLoopbackHost(host);
 
     // Check if target is a virtual server
-    if (this.portRegistry && port && (host === 'localhost' || host === '127.0.0.1')) {
+    if (this.portRegistry && loopback) {
       const handler = this.portRegistry.get(port);
       if (handler) {
         const vReq = {
@@ -142,6 +156,38 @@ class ClientRequest extends EventEmitter {
         }
         return;
       }
+    }
+
+    if (loopback) {
+      if (this.routeLoopback) {
+        try {
+          const method = this.options.method || 'GET';
+          const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
+          const response = await this.routeLoopback(port, new Request(
+            `${this.protocol}//${host}:${port}${path}`,
+            {
+              method,
+              headers: this.options.headers,
+              body: hasBody ? this.body : undefined,
+            },
+          ));
+          if (response) {
+            const headers: Record<string, string> = {};
+            response.headers.forEach((value, key) => { headers[key] = value; });
+            const msg = new IncomingMessage(response.status, response.statusText, headers);
+            this.emit('response', msg);
+            const text = await response.text();
+            msg.emit('data', text);
+            msg.emit('end');
+            return;
+          }
+        } catch (error) {
+          this.emit('error', error);
+          return;
+        }
+      }
+      this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+      return;
     }
 
     // Fall through to real fetch
@@ -429,7 +475,11 @@ class Server extends EventEmitter {
 
 // --- Factory function ---
 
-export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
+export function createHttp(
+  portRegistry?: Map<number, VirtualRequestHandler>,
+  protocol: 'http:' | 'https:' = 'http:',
+  routeLoopback?: LoopbackRouter,
+) {
   // Track active servers created by this http module instance
   const activeServers: Server[] = [];
 
@@ -460,7 +510,7 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
       callback = optionsOrCb as ((res: IncomingMessage) => void) | undefined;
     }
 
-    return new ClientRequest(options, callback, portRegistry, protocol);
+    return new ClientRequest(options, callback, portRegistry, protocol, routeLoopback);
   }
 
   function httpGet(

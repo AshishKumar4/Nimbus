@@ -8,7 +8,7 @@ import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 import * as utilModule from './util.js';
 import { createHttp } from './http.js';
-import type { VirtualRequestHandler } from '../kernel/index.js';
+import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import { createChildProcess } from './child_process.js';
 import * as streamModule from './stream.js';
 import * as urlModule from './url.js';
@@ -35,6 +35,7 @@ export interface NodeContext {
   signal: AbortSignal;
   executeCapture?: (input: string) => Promise<string>;
   portRegistry?: Map<number, VirtualRequestHandler>;
+  routeLoopback?: LoopbackRouter;
 }
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
@@ -59,8 +60,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     },
     buffer: () => ({ Buffer }),
     util: () => utilModule,
-    http: () => createHttp(ctx.portRegistry, 'http:'),
-    https: () => createHttp(ctx.portRegistry, 'https:'),
+    http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
+    https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
     child_process: () => createChildProcess(ctx.executeCapture),
     stream: () => {
       // Node.js CJS: require('stream') returns the Stream base class with

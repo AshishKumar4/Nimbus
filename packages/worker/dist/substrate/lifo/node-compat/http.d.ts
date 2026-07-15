@@ -1,5 +1,5 @@
 import { EventEmitter } from './events.js';
-import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
+import { type LoopbackRouter, type VirtualRequestHandler, type VirtualResponse } from '../kernel/index.js';
 /** Extended VirtualResponse with a done promise for async middleware */
 export interface VirtualResponseWithDone extends VirtualResponse {
     _donePromise?: Promise<void>;
@@ -46,8 +46,9 @@ declare class ClientRequest extends EventEmitter {
     private body;
     private aborted;
     private portRegistry?;
+    private routeLoopback?;
     private protocol;
-    constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol?: 'http:' | 'https:');
+    constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol?: 'http:' | 'https:', routeLoopback?: LoopbackRouter);
     write(data: string): void;
     end(data?: string): void;
     abort(): void;
@@ -108,7 +109,7 @@ declare class Server extends EventEmitter {
     } | null;
     getPromise(): Promise<void> | null;
 }
-export declare function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol?: 'http:' | 'https:'): {
+export declare function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol?: 'http:' | 'https:', routeLoopback?: LoopbackRouter): {
     request: (urlOrOptions: string | RequestOptions, optionsOrCb?: RequestOptions | ((res: IncomingMessage) => void), cb?: (res: IncomingMessage) => void) => ClientRequest;
     get: (urlOrOptions: string | RequestOptions, optionsOrCb?: RequestOptions | ((res: IncomingMessage) => void), cb?: (res: IncomingMessage) => void) => ClientRequest;
     createServer: (requestHandler?: (req: unknown, res: unknown) => void) => Server;

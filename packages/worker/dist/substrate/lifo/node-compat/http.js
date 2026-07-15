@@ -1,4 +1,5 @@
 import { EventEmitter } from './events.js';
+import { isLoopbackHost, } from '../kernel/index.js';
 class IncomingMessage extends EventEmitter {
     statusCode;
     statusMessage;
@@ -48,12 +49,14 @@ class ClientRequest extends EventEmitter {
     body = '';
     aborted = false;
     portRegistry;
+    routeLoopback;
     protocol;
-    constructor(options, cb, portRegistry, protocol = 'http:') {
+    constructor(options, cb, portRegistry, protocol = 'http:', routeLoopback) {
         super();
         this.options = options;
         this.portRegistry = portRegistry;
         this.protocol = protocol;
+        this.routeLoopback = routeLoopback;
         if (cb)
             this.on('response', cb);
         // Defer the actual fetch
@@ -73,10 +76,11 @@ class ClientRequest extends EventEmitter {
         if (this.aborted)
             return;
         const host = this.options.hostname || this.options.host || 'localhost';
-        const port = this.options.port ? Number(this.options.port) : undefined;
+        const port = this.options.port ? Number(this.options.port) : (this.protocol === 'http:' ? 80 : 443);
         const path = this.options.path || '/';
+        const loopback = isLoopbackHost(host);
         // Check if target is a virtual server
-        if (this.portRegistry && port && (host === 'localhost' || host === '127.0.0.1')) {
+        if (this.portRegistry && loopback) {
             const handler = this.portRegistry.get(port);
             if (handler) {
                 const vReq = {
@@ -104,6 +108,35 @@ class ClientRequest extends EventEmitter {
                 }
                 return;
             }
+        }
+        if (loopback) {
+            if (this.routeLoopback) {
+                try {
+                    const method = this.options.method || 'GET';
+                    const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
+                    const response = await this.routeLoopback(port, new Request(`${this.protocol}//${host}:${port}${path}`, {
+                        method,
+                        headers: this.options.headers,
+                        body: hasBody ? this.body : undefined,
+                    }));
+                    if (response) {
+                        const headers = {};
+                        response.headers.forEach((value, key) => { headers[key] = value; });
+                        const msg = new IncomingMessage(response.status, response.statusText, headers);
+                        this.emit('response', msg);
+                        const text = await response.text();
+                        msg.emit('data', text);
+                        msg.emit('end');
+                        return;
+                    }
+                }
+                catch (error) {
+                    this.emit('error', error);
+                    return;
+                }
+            }
+            this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+            return;
         }
         // Fall through to real fetch
         const proto = this.protocol.replace(':', ''); // 'http:' -> 'http' or 'https:' -> 'https'
@@ -355,7 +388,7 @@ class Server extends EventEmitter {
     }
 }
 // --- Factory function ---
-export function createHttp(portRegistry, protocol = 'http:') {
+export function createHttp(portRegistry, protocol = 'http:', routeLoopback) {
     // Track active servers created by this http module instance
     const activeServers = [];
     function httpRequest(urlOrOptions, optionsOrCb, cb) {
@@ -381,7 +414,7 @@ export function createHttp(portRegistry, protocol = 'http:') {
             options = urlOrOptions;
             callback = optionsOrCb;
         }
-        return new ClientRequest(options, callback, portRegistry, protocol);
+        return new ClientRequest(options, callback, portRegistry, protocol, routeLoopback);
     }
     function httpGet(urlOrOptions, optionsOrCb, cb) {
         const req = httpRequest(urlOrOptions, optionsOrCb, cb);

@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import type { Kernel } from '../../kernel/index.js';
+import { isLoopbackHost, type Kernel } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
 
 type CurlOptions = {
@@ -345,7 +345,7 @@ async function fetchVirtualCurlResponse(
 
   let host = requestUrl.hostname;
   const port = requestUrl.port ? Number(requestUrl.port) : (requestUrl.protocol === 'http:' ? 80 : 443);
-  if (kernel.networkStack && host !== '127.0.0.1' && host !== 'localhost') {
+  if (kernel.networkStack && !isLoopbackHost(host)) {
     try {
       host = await kernel.networkStack.resolveHostname(host);
     } catch {
@@ -353,47 +353,70 @@ async function fetchVirtualCurlResponse(
     }
   }
 
-  if (host !== 'localhost' && host !== '127.0.0.1') {
+  if (!isLoopbackHost(host)) {
     return null;
   }
 
   const handler = kernel.portRegistry.get(port);
-  if (!handler) {
-    return null;
+  if (handler) {
+    const vReq = {
+      method: options.method,
+      url: requestUrl.pathname + requestUrl.search,
+      headers: options.headers,
+      body: options.data || '',
+    };
+    const vRes: VirtualResponse = {
+      statusCode: 200,
+      headers: {},
+      body: '',
+    };
+
+    handler(vReq, vRes);
+
+    if (vRes._donePromise) {
+      const result = await waitForSignalOrTimeout(vRes._donePromise, ctx.signal, 30_000);
+      if (result.type === 'aborted') {
+        return { exitCode: 130 };
+      }
+      if (result.type === 'timeout') {
+        ctx.stderr.write('curl: request timeout after 30s\n');
+        return { exitCode: 7 };
+      }
+    }
+
+    return {
+      status: vRes.statusCode,
+      statusText: statusText(vRes.statusCode),
+      headers: vRes.headers,
+      body: vRes.body,
+      url,
+    };
   }
 
-  const vReq = {
-    method: options.method,
-    url: requestUrl.pathname + requestUrl.search,
-    headers: options.headers,
-    body: options.data || '',
-  };
-  const vRes: VirtualResponse = {
-    statusCode: 200,
-    headers: {},
-    body: '',
-  };
-
-  handler(vReq, vRes);
-
-  if (vRes._donePromise) {
-    const result = await waitForSignalOrTimeout(vRes._donePromise, ctx.signal, 30_000);
-    if (result.type === 'aborted') {
-      return { exitCode: 130 };
-    }
-    if (result.type === 'timeout') {
-      ctx.stderr.write('curl: request timeout after 30s\n');
-      return { exitCode: 7 };
+  if (kernel.routeLoopback) {
+    const hasBody = options.method !== 'GET' && options.method !== 'HEAD' && options.data !== undefined;
+    const request = new Request(requestUrl, {
+      method: options.method,
+      headers: options.headers,
+      body: hasBody ? options.data : undefined,
+      signal: ctx.signal,
+    });
+    const response = await kernel.routeLoopback(port, request);
+    if (response) {
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headersToRecord(response.headers),
+        body: options.outputFile
+          ? new Uint8Array(await response.arrayBuffer())
+          : await response.text(),
+        url: response.url || url,
+      };
     }
   }
 
-  return {
-    status: vRes.statusCode,
-    statusText: statusText(vRes.statusCode),
-    headers: vRes.headers,
-    body: vRes.body,
-    url,
-  };
+  ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
+  return { exitCode: 7 };
 }
 
 function handleCurlResponse(ctx: Parameters<Command>[0], options: CurlOptions, response: CurlResponse): number {

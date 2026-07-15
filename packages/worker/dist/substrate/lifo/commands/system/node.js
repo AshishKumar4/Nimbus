@@ -560,6 +560,9 @@ function createNodeImpl(kernelOrPortRegistry) {
             dirname: dir,
             signal: ctx.signal,
             portRegistry,
+            routeLoopback: kernelOrPortRegistry instanceof Map
+                ? undefined
+                : kernelOrPortRegistry?.routeLoopback,
         };
         const moduleMap = createModuleMap(nodeCtx);
         const moduleCache = new Map();

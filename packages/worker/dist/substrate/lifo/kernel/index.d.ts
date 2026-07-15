@@ -17,9 +17,12 @@ export interface VirtualResponse {
     body: string;
 }
 export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) => void;
+export type LoopbackRouter = (port: number, request: Request) => Promise<Response | null>;
+export declare function isLoopbackHost(host: string): boolean;
 export declare class Kernel {
     vfs: VFS;
     portRegistry: Map<number, VirtualRequestHandler>;
+    routeLoopback?: LoopbackRouter;
     portBridge: PortBridge;
     processRegistry: ProcessRegistry;
     networkStack: NetworkStack;

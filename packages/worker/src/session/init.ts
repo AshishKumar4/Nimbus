@@ -823,6 +823,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }),
     );
 
+    kernel.routeLoopback = (port, request) => {
+      if (!self.portRegistry.has(port)) return Promise.resolve(null);
+      return self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
+    };
+
     try {
       registry.register('curl', createCurlCommand(kernel));
     } catch {}

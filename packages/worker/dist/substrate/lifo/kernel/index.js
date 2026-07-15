@@ -46,9 +46,13 @@ export PAGER=less
 const DEFAULT_HOSTS = `127.0.0.1       localhost
 ::1             localhost ip6-localhost ip6-loopback
 `;
+export function isLoopbackHost(host) {
+    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]';
+}
 export class Kernel {
     vfs;
     portRegistry = new Map();
+    routeLoopback;
     portBridge;
     processRegistry;
     networkStack;

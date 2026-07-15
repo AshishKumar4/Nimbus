@@ -100,18 +100,10 @@ await sleep(1_500);
   }
 }
 
-// 3b. In-shell `curl http://127.0.0.1:<port>` — KNOWN PLATFORM LIMIT.
-//    Workers' fetch() can't reach the worker's own loopback (CF returns
-//    error code 1003). This is a CF-platform-side limit, not a Nimbus
-//    gap. Recorded informationally; not gated.
+// 3b. In-shell curl routes loopback requests through the session port registry.
 {
   const r = await t.run(`curl -s --max-time 5 http://127.0.0.1:${SERVER_PORT}/`, 25_000);
-  if (/hello-from-http-server/.test(r.output)) {
-    a.check('in-shell curl localhost returns the body', true);
-  } else {
-    console.log(`  (info) in-shell curl localhost: ${r.output.slice(-200)}`);
-    console.log(`  (info) CF Workers fetch can't reach worker's own loopback (error 1003). Platform-gated.`);
-  }
+  a.check('in-shell curl localhost returns the body', /hello-from-http-server/.test(r.output), r.output.slice(-200));
 }
 
 // 4. Two FOREGROUND node invocations (non-overlapping) get distinct
