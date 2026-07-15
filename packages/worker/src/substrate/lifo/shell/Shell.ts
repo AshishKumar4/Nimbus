@@ -22,6 +22,7 @@ import { signalAbortReason } from './signals.js';
 import { complete, type CompletionContext } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
+import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
 
 export interface ExecuteOptions {
   cwd?: string;
@@ -1521,9 +1522,7 @@ export class Shell {
   }
 
   private writeToTerminal(text: string): void {
-    // Convert \n to \r\n for xterm.js
-    const converted = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-    this.terminal.write(converted);
+    this.terminal.write(normalizeTerminalNewlines(text));
   }
 
 }

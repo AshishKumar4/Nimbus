@@ -53,7 +53,7 @@ export function installNpmBinFallbackResolver(
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
     terminal?: Output | null;
-    notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
+    notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; attachedTty?: boolean; code?: number }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
   },
@@ -127,7 +127,7 @@ export function installNpmBinFallbackResolver(
 
       const label = longRunning ? 'started (long-running)' : 'started';
       deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
-      deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning });
+      deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning, attachedTty });
 
       const writeThrough = (stream: 'stdout' | 'stderr', target: Output) => (data: string) => {
         const text = String(data);
@@ -184,7 +184,7 @@ async function runStagedArtifact(
   deps: {
     getFacetManager(): FacetManager;
     terminal?: Output | null;
-    notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; code?: number }): void;
+    notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; attachedTty?: boolean; code?: number }): void;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
   },
   name: string,
@@ -221,7 +221,9 @@ async function runStagedArtifact(
   // long-running attached node bin.
   if (attachedTty) {
     deps.terminal?.write(`\x1b[2m[bin started (long-running): pid=${result.pid} cmd="${shellLine}"]\x1b[0m\r\n`);
-    deps.notifyTerminalEvent({ type: 'spawn', pid: result.pid, command: shellLine, longRunning: true });
+    deps.notifyTerminalEvent({
+      type: 'spawn', pid: result.pid, command: shellLine, longRunning: true, attachedTty: true,
+    });
     return 0;
   }
   if (result.stdout) ctx.stdout.write(result.stdout);

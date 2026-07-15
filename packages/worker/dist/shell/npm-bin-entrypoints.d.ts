@@ -21,6 +21,7 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
         pid: number;
         command: string;
         longRunning?: boolean;
+        attachedTty?: boolean;
         code?: number;
     }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;

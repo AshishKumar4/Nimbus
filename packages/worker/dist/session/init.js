@@ -1477,6 +1477,7 @@ export function initSession(self, ws) {
                 pid: viteProcEntry.pid,
                 command: 'vite ' + expandedArgs.join(' '),
                 longRunning: true,
+                attachedTty: false,
             });
         }
         // Banner — reports the resolved port and PID so the user can
@@ -1826,7 +1827,7 @@ export function initSession(self, ws) {
         // onSpawn hook). Long-running shell commands like `vite` and
         // `wrangler dev` trigger auto-open of a log tab.
         notifyTerminalEvent(self.terminal, {
-            type: 'spawn', pid, command: cmd, longRunning: !!opts.longRunning,
+            type: 'spawn', pid, command: cmd, longRunning: !!opts.longRunning, attachedTty: false,
         });
         // Wrap the caller-supplied streams so every chunk is both displayed
         // AND captured in the ring buffer keyed by this PID.

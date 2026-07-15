@@ -11,6 +11,7 @@
  * live in src/runtime/<name>-repl.ts and implement the ReplAdapter
  * interface declared below.
  */
+import { normalizeTerminalNewlines } from '../_shared/terminal.js';
 /**
  * Manages an interactive REPL session: stdin buffering with minimal
  * readline UX (line-mode), output routing to the WS terminal, prompt
@@ -291,11 +292,11 @@ export class ReplSession {
         // are true: bytes-in-order AND frame-boundary-after-each-stream.
         if (result.kind === 'output') {
             if (result.stdout) {
-                this.terminal.write(this.normalizeNewlines(result.stdout));
+                this.terminal.write(normalizeTerminalNewlines(result.stdout));
                 this.terminal.flushNow();
             }
             if (result.stderr) {
-                this.terminal.write(this.normalizeNewlines(result.stderr));
+                this.terminal.write(normalizeTerminalNewlines(result.stderr));
                 this.terminal.flushNow();
             }
             this.blockBuf = [];
@@ -310,7 +311,7 @@ export class ReplSession {
         }
         if (result.kind === 'error') {
             if (result.stderr) {
-                this.terminal.write(this.normalizeNewlines(result.stderr));
+                this.terminal.write(normalizeTerminalNewlines(result.stderr));
                 this.terminal.flushNow();
             }
             this.blockBuf = [];
@@ -320,11 +321,11 @@ export class ReplSession {
         }
         if (result.kind === 'exit') {
             if (result.stdout) {
-                this.terminal.write(this.normalizeNewlines(result.stdout));
+                this.terminal.write(normalizeTerminalNewlines(result.stdout));
                 this.terminal.flushNow();
             }
             if (result.stderr) {
-                this.terminal.write(this.normalizeNewlines(result.stderr));
+                this.terminal.write(normalizeTerminalNewlines(result.stderr));
                 this.terminal.flushNow();
             }
             await this.endSession(result.exitCode);
@@ -362,12 +363,6 @@ export class ReplSession {
         this.lineBuf = text;
         this.cursorPos = text.length;
         this.terminal.write(text);
-    }
-    /** Normalize LF → CRLF for terminal display. The WS terminal does not
-     *  do this automatically; raw \n leaves the cursor at column-0 of a
-     *  new row WITHOUT carriage return (xterm convention). */
-    normalizeNewlines(s) {
-        return s.replace(/\r?\n/g, '\r\n');
     }
     /** Close the session: detach input hook, free adapter, resolve. */
     async endSession(code) {

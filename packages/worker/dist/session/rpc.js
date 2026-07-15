@@ -22,6 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 import { enc, dec } from '../_shared/bytes.js';
+import { normalizeTerminalNewlines } from '../_shared/terminal.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
@@ -371,8 +372,9 @@ export async function _rpcStdout(self, pid, data) {
     try {
         if (pid > 0)
             self.processes.appendOutput(pid, 'stdout', data);
-        if (self.terminal && shouldMirrorProcessOutputToShell(self, pid))
-            self.terminal.write(data);
+        if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
+            self.terminal.write(normalizeTerminalNewlines(data));
+        }
     }
     catch (e) {
         // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
@@ -395,8 +397,9 @@ export async function _rpcStderr(self, pid, data) {
             self.processes.appendOutput(pid, 'stderr', data);
         // Terminal gets red wrapping; the ring buffer keeps it raw so the
         // stream tag can drive color decisions at replay time.
-        if (self.terminal && shouldMirrorProcessOutputToShell(self, pid))
-            self.terminal.write(`\x1b[31m${data}\x1b[0m`);
+        if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
+            self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(data)}\x1b[0m`);
+        }
     }
     catch (e) {
         if (self.nimbusDebug && self.terminal) {
@@ -522,7 +525,8 @@ export function _emitExitDump(self, pid, code) {
         `Process ${pid} (${cmd}) exited with code ${code}\r\n` +
         `${sep}\x1b[0m\r\n`);
     for (const c of chunks) {
-        const painted = c.stream === 'stderr' ? `\x1b[31m${c.data}\x1b[0m` : c.data;
+        const terminalData = normalizeTerminalNewlines(c.data);
+        const painted = c.stream === 'stderr' ? `\x1b[31m${terminalData}\x1b[0m` : terminalData;
         self.terminal.write(painted);
     }
     self.terminal.write(`${color}${sep}\x1b[0m\r\n`);

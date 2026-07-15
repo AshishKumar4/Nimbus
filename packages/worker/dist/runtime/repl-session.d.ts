@@ -148,10 +148,6 @@ export declare class ReplSession {
     private historyDown;
     /** Erase the current displayed line and replace with `text`. */
     private replaceCurrentLine;
-    /** Normalize LF → CRLF for terminal display. The WS terminal does not
-     *  do this automatically; raw \n leaves the cursor at column-0 of a
-     *  new row WITHOUT carriage return (xterm convention). */
-    private normalizeNewlines;
     /** Close the session: detach input hook, free adapter, resolve. */
     private endSession;
 }

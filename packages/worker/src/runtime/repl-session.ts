@@ -13,6 +13,7 @@
  */
 
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
+import { normalizeTerminalNewlines } from '../_shared/terminal.js';
 
 /**
  * Per-runtime adapter contract. The shell-side ReplSession orchestrates
@@ -323,11 +324,11 @@ export class ReplSession {
     // are true: bytes-in-order AND frame-boundary-after-each-stream.
     if (result.kind === 'output') {
       if (result.stdout) {
-        this.terminal.write(this.normalizeNewlines(result.stdout));
+        this.terminal.write(normalizeTerminalNewlines(result.stdout));
         this.terminal.flushNow();
       }
       if (result.stderr) {
-        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.write(normalizeTerminalNewlines(result.stderr));
         this.terminal.flushNow();
       }
       this.blockBuf = [];
@@ -342,7 +343,7 @@ export class ReplSession {
     }
     if (result.kind === 'error') {
       if (result.stderr) {
-        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.write(normalizeTerminalNewlines(result.stderr));
         this.terminal.flushNow();
       }
       this.blockBuf = [];
@@ -352,11 +353,11 @@ export class ReplSession {
     }
     if (result.kind === 'exit') {
       if (result.stdout) {
-        this.terminal.write(this.normalizeNewlines(result.stdout));
+        this.terminal.write(normalizeTerminalNewlines(result.stdout));
         this.terminal.flushNow();
       }
       if (result.stderr) {
-        this.terminal.write(this.normalizeNewlines(result.stderr));
+        this.terminal.write(normalizeTerminalNewlines(result.stderr));
         this.terminal.flushNow();
       }
       await this.endSession(result.exitCode);
@@ -392,13 +393,6 @@ export class ReplSession {
     this.lineBuf = text;
     this.cursorPos = text.length;
     this.terminal.write(text);
-  }
-
-  /** Normalize LF → CRLF for terminal display. The WS terminal does not
-   *  do this automatically; raw \n leaves the cursor at column-0 of a
-   *  new row WITHOUT carriage return (xterm convention). */
-  private normalizeNewlines(s: string): string {
-    return s.replace(/\r?\n/g, '\r\n');
   }
 
   /** Close the session: detach input hook, free adapter, resolve. */

@@ -852,6 +852,7 @@ export class NimbusSession extends CloudflareDurableObject {
         {
           onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
           onSpawn: (pid, command, longRunning) => {
+            const attachedTty = this.processes.get(pid)?.attachedTty === true;
             if (longRunning) {
               try { this.processes.openInput(pid); } catch {}
             }
@@ -865,7 +866,9 @@ export class NimbusSession extends CloudflareDurableObject {
             );
             // Structured event so the tabs UI can auto-open a log tab
             // for long-running processes (vite, wrangler dev, etc.).
-            notifyTerminalEvent(this.terminal, { type: 'spawn', pid, command, longRunning });
+            notifyTerminalEvent(this.terminal, {
+              type: 'spawn', pid, command, longRunning, attachedTty,
+            });
           },
         },
       );

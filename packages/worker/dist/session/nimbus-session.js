@@ -722,6 +722,7 @@ export class NimbusSession extends CloudflareDurableObject {
             this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
                 onSpawn: (pid, command, longRunning) => {
+                    const attachedTty = this.processes.get(pid)?.attachedTty === true;
                     if (longRunning) {
                         try {
                             this.processes.openInput(pid);
@@ -737,7 +738,9 @@ export class NimbusSession extends CloudflareDurableObject {
                     this.terminal.write(`\x1b[2m[facet ${label}: pid=${pid} cmd="${command}"]\x1b[0m\r\n`);
                     // Structured event so the tabs UI can auto-open a log tab
                     // for long-running processes (vite, wrangler dev, etc.).
-                    notifyTerminalEvent(this.terminal, { type: 'spawn', pid, command, longRunning });
+                    notifyTerminalEvent(this.terminal, {
+                        type: 'spawn', pid, command, longRunning, attachedTty,
+                    });
                 },
             });
         }

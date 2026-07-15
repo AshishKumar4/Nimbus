@@ -1521,6 +1521,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           pid: viteProcEntry.pid,
           command: 'vite ' + expandedArgs.join(' '),
           longRunning: true,
+          attachedTty: false,
         });
       }
 
@@ -1917,7 +1918,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // onSpawn hook). Long-running shell commands like `vite` and
       // `wrangler dev` trigger auto-open of a log tab.
       notifyTerminalEvent(self.terminal, {
-        type: 'spawn', pid, command: cmd, longRunning: !!opts.longRunning,
+        type: 'spawn', pid, command: cmd, longRunning: !!opts.longRunning, attachedTty: false,
       });
 
       // Wrap the caller-supplied streams so every chunk is both displayed
