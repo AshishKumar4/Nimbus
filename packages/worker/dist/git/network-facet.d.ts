@@ -10,9 +10,10 @@
  *   - Pre-flush ordinary waves with headroom below W7's 128-path limit or
  *     before 4 MiB via ONE supervisor.writeBatchStream() RPC. Each published
  *     path is atomic; a later publish-group failure may leave a committed prefix.
- *   - At clone end, a final flush commits remaining buffered state.
- *   - Fresh clones retain a metadata-only closed-world overlay across waves;
- *     regular-file bytes still fall through to the supervisor after flush.
+ *   - Clone prepare durably flushes Git metadata, then a second entrypoint
+ *     invocation validates HEAD and flushes the worktree/index.
+ *   - Fresh clones carry a metadata-only closed-world overlay across the
+ *     invocation boundary; regular-file bytes still fall through after flush.
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
@@ -73,6 +74,23 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-checkout' | 'clone-abort';
+export interface GitNetworkPhaseDiagnostic {
+    phase: GitCloneInvocationPhase | 'operation';
+    invocationId: string;
+    startedAt: number;
+    endedAt: number;
+    elapsed: number;
+    outcome: 'success' | 'error' | 'timeout';
+    error?: string;
+    lastProgress?: {
+        phase: string;
+        loaded: number;
+        total?: number;
+    };
+    w7Waves: number;
+    supervisorRpc: GitSupervisorRpcCounters;
+}
 export interface GitNetworkResult {
     success: boolean;
     error?: string;
@@ -81,6 +99,9 @@ export interface GitNetworkResult {
     bytesWritten: number;
     supervisorRpc: GitSupervisorRpcCounters;
     metadataOverlay: GitMetadataOverlayStats;
+    phases?: GitNetworkPhaseDiagnostic[];
+    errorPhase?: GitCloneInvocationPhase | 'operation';
+    cleanupError?: string;
 }
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.

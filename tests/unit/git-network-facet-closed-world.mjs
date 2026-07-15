@@ -9,6 +9,7 @@ import {
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
 } from '../../packages/worker/src/_shared/w7-frame.ts';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/worker/src/constants.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
@@ -58,7 +59,8 @@ function assert(condition, message) {
 
 export const gitHttp = {};
 export const git = {
-  async clone({ fs, dir }) {
+  async clone({ fs, dir, cache, noCheckout }) {
+    assert(noCheckout === true, 'clone prepare did not disable checkout');
     globalThis.__cloneCalls = (globalThis.__cloneCalls || 0) + 1;
     const root = dir.replace(/^\\/+/, '').split('/').filter(segment => segment && segment !== '.').join('/');
     if (root === 'workspace/new/nested/repo') {
@@ -68,20 +70,78 @@ export const git = {
     if (root === 'empty' || root === 'empty-vfs') {
       const existingRoot = await fs.promises.stat(dir);
       assert(existingRoot.isDirectory(), 'existing empty clone root was not seeded');
-      await fs.promises.writeFile(dir + '/created.txt', 'created');
+    }
+    if (root === 'unborn') {
+      await fs.promises.mkdir(root + '/.git');
+      await fs.promises.writeFile(root + '/.git/HEAD', 'ref: refs/heads/main\\n');
+      cache.prepared = true;
       return;
     }
     const packDir = root + '/.git/objects/pack';
-    const pack = packDir + '/pack-test.pack';
-    const idx = packDir + '/pack-test.idx';
+    const packName = 'pack-' + '3'.repeat(40);
+    const pack = packDir + '/' + packName + '.pack';
+    const idx = packDir + '/' + packName + '.idx';
 
     await fs.promises.mkdir(packDir);
     await fs.promises.writeFile(pack, enc.encode('pack'));
     await fs.promises.writeFile(idx, enc.encode('idx'));
+    await fs.promises.mkdir(root + '/.git/refs/heads');
+    await fs.promises.writeFile(root + '/.git/HEAD', 'ref: refs/heads/main\\n');
+    await fs.promises.writeFile(root + '/.git/refs/heads/main', '1'.repeat(40) + '\\n');
 
     const packNames = await fs.promises.readdir(packDir);
-    assert(packNames.includes('pack-test.pack') && packNames.includes('pack-test.idx'),
+    assert(packNames.includes(packName + '.pack') && packNames.includes(packName + '.idx'),
       'local pack directory listing omitted a written object file');
+    cache.prepared = true;
+  },
+
+  async resolveRef({ fs, dir }) {
+    if (dir === '/empty' || dir === '/empty-vfs') return '1'.repeat(40);
+    const head = (await fs.promises.readFile(dir + '/.git/HEAD', { encoding: 'utf8' })).trim();
+    if (!head.startsWith('ref: ')) return head;
+    return (await fs.promises.readFile(
+      dir + '/.git/' + head.slice('ref: '.length),
+      { encoding: 'utf8' },
+    )).trim();
+  },
+  async readCommit({ fs, dir, cache }) {
+    if (cache.prepared !== true) {
+      const packName = 'pack-' + '3'.repeat(40) + '.pack';
+      const pack = await fs.promises.readFile(dir + '/.git/objects/pack/' + packName);
+      assert(pack.byteLength === globalThis.__coldPackSize,
+        'cold checkout did not reconstruct the complete pack');
+      assert(pack[0] === 7 && pack[pack.byteLength - 1] === 9,
+        'cold checkout reconstructed different pack bytes');
+      cache.prepared = true;
+      globalThis.__coldPackReloaded = true;
+    }
+    return { commit: { tree: '2'.repeat(40) } };
+  },
+  async currentBranch({ fs, dir, test }) {
+    if (dir === '/empty' || dir === '/empty-vfs') return 'refs/heads/main';
+    const head = (await fs.promises.readFile(dir + '/.git/HEAD', { encoding: 'utf8' })).trim();
+    if (!head.startsWith('ref: ')) return undefined;
+    const ref = head.slice('ref: '.length);
+    if (test) {
+      try { await fs.promises.readFile(dir + '/.git/' + ref); }
+      catch { return undefined; }
+    }
+    return ref;
+  },
+
+  async checkout({ fs, dir, cache }) {
+    assert(cache.prepared === true, 'checkout did not reuse the prepared cache');
+    const root = dir.replace(/^\\/+/, '').split('/').filter(segment => segment && segment !== '.').join('/');
+    if (root === 'repo') {
+      assert(globalThis.__prepareDurable === true,
+        'checkout began before prepared .git state was durably flushed');
+    }
+    assert(root !== 'unborn', 'empty repository unexpectedly ran checkout');
+    if (root === 'empty' || root === 'empty-vfs') {
+      await fs.promises.writeFile(dir + '/created.txt', 'created');
+      return;
+    }
+    const packDir = root + '/.git/objects/pack';
 
     for (let index = 0; index < 260; index++) {
       const oid = index.toString(16).padStart(40, '0');
@@ -197,7 +257,64 @@ export const git = {
 };
 `);
 
-  const worker = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
+  const facetWorker = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
+  let cloneJobSequence = 0;
+  let lastPrepared = null;
+  const worker = {
+    default: {
+      async fetch(request, env) {
+        const body = await request.clone().json();
+        if (body.op !== 'clone' || body.phase) {
+          return facetWorker.default.fetch(request, env);
+        }
+        const jobId = `closed-world-${++cloneJobSequence}`;
+        const optionsHash = 'a'.repeat(64);
+        const prepareInvocationId = `${jobId}-prepare`;
+        const prepareResponse = await facetWorker.default.fetch(
+          new Request(`http://git/git/clone-prepare/${prepareInvocationId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              ...body,
+              phase: 'clone-prepare',
+              invocationId: prepareInvocationId,
+              jobId,
+              optionsHash,
+            }),
+          }),
+          env,
+        );
+        const prepare = await prepareResponse.json();
+        if (!prepare.success) return Response.json(prepare);
+        lastPrepared = structuredClone(prepare.prepared);
+        const checkoutInvocationId = `${jobId}-checkout`;
+        const checkoutResponse = await facetWorker.default.fetch(
+          new Request(`http://git/git/clone-checkout/${checkoutInvocationId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              ...body,
+              phase: 'clone-checkout',
+              invocationId: checkoutInvocationId,
+              jobId,
+              optionsHash,
+              prepared: prepare.prepared,
+            }),
+          }),
+          env,
+        );
+        const checkout = await checkoutResponse.json();
+        const supervisorRpc = {};
+        for (const key of Object.keys(prepare.supervisorRpc)) {
+          supervisorRpc[key] = prepare.supervisorRpc[key] + checkout.supervisorRpc[key];
+        }
+        return Response.json({
+          ...checkout,
+          filesWritten: prepare.filesWritten + checkout.filesWritten,
+          bytesWritten: prepare.bytesWritten + checkout.bytesWritten,
+          supervisorRpc,
+        });
+      },
+    },
+  };
 
   const rawCalls = {
     stat: [],
@@ -212,6 +329,7 @@ export const git = {
   const wavePaths = [];
   globalThis.__symlinkBatchDurable = false;
   globalThis.__nestedParentsDurable = false;
+  globalThis.__prepareDurable = false;
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const bridge = new SqliteRuntimeFsBridge(vfs);
@@ -247,6 +365,13 @@ export const git = {
       const paths = await drainWave(byteStream(bytes.slice()));
       const result = await vfs.writeStream(byteStream(bytes.slice()));
       wavePaths.push(paths);
+      if (result.ok === true &&
+          vfs.exists('repo/.git/HEAD') &&
+          vfs.exists('repo/.git/refs/heads/main') &&
+          vfs.exists('repo/.git/objects/pack/pack-' + '3'.repeat(40) + '.pack') &&
+          vfs.exists('repo/.git/objects/pack/pack-' + '3'.repeat(40) + '.idx')) {
+        globalThis.__prepareDurable = true;
+      }
       if (paths.includes('repo/link.txt') &&
           paths.includes('repo/real-dir/child-link') &&
           paths.includes('repo/dir-link')) {
@@ -276,7 +401,8 @@ export const git = {
   assert.equal(result.supervisorRpc.stat, 1, 'only outside-root stat should cross');
   assert.equal(result.supervisorRpc.lstat, 1, 'only destination proof should cross');
   assert.equal(result.supervisorRpc.readdir, 0, 'absent destination and pack listings must stay local');
-  assert.equal(result.supervisorRpc.readFile, 1, 'flushed bytes should not be duplicated in metadata');
+  assert.equal(result.supervisorRpc.readFile, 4,
+    'checkout should read durable HEAD/ref identity plus the explicit outside-root fixture');
   assert.equal(result.supervisorRpc.fsReadRange, 0);
   assert.equal(result.supervisorRpc.writeBatchStream, rawCalls.writeBatchStream);
   assert.equal(result.supervisorRpc.legacySymlinkSubtree, 1);
@@ -314,6 +440,77 @@ export const git = {
   assert.equal(vfs.readlink('repo/dir-link'), 'real-dir');
   assert.equal((await bridge.stat('repo/link.txt', { followSymlinks: false })).type, 'symlink');
   assert.equal(vfs.stat('repo/gitlink').type, 'directory');
+
+  const warmOutput = vfs.readFileString('repo/src/file-259.txt');
+  const coldPrepared = structuredClone(lastPrepared);
+  const coldPackSize = MAX_RPC_SAFE_PAYLOAD_BYTES + 1;
+  const coldPack = coldPrepared.packs[0];
+  coldPack.packBytes = coldPackSize;
+  const coldPackMetadata = coldPrepared.metadata.find(([path]) => path === coldPack.packPath);
+  assert.ok(coldPackMetadata, 'prepare result omitted pack metadata');
+  coldPackMetadata[1].size = coldPackSize;
+  globalThis.__coldPackSize = coldPackSize;
+  globalThis.__coldPackReloaded = false;
+  writeFileSync(join(tempDir, 'git-network-worker-cold.mjs'), assembleGitNetworkFacetSource());
+  const coldWorker = await import(
+    pathToFileURL(join(tempDir, 'git-network-worker-cold.mjs')).href
+  );
+  const coldRanges = [];
+  const coldResponse = await coldWorker.default.fetch(
+    new Request('http://git/git/clone-checkout/cold-cache-checkout', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/repo',
+        url: 'https://example.invalid/repo.git',
+        exclusiveDestination: true,
+        phase: 'clone-checkout',
+        invocationId: 'cold-cache-checkout',
+        jobId: coldPrepared.jobId,
+        optionsHash: coldPrepared.optionsHash,
+        prepared: coldPrepared,
+      }),
+    }),
+    {
+      SUPERVISOR: {
+        ...supervisor,
+        async fsReadRange(path, offset, length) {
+          assert.equal(path, coldPack.packPath);
+          coldRanges.push({ offset, length });
+          const bytes = new Uint8Array(length);
+          bytes.fill(5);
+          if (offset === 0) bytes[0] = 7;
+          if (offset + length === coldPackSize) bytes[bytes.length - 1] = 9;
+          return bytes;
+        },
+      },
+    },
+  );
+  const cold = await coldResponse.json();
+  assert.equal(cold.success, true, cold.error);
+  assert.equal(globalThis.__coldPackReloaded, true, 'cold checkout incorrectly required job cache');
+  assert.ok(coldRanges.length > 1, 'cold pack reload did not use bounded range reads');
+  assert.ok(coldRanges.every(({ length }) => length <= 4 * 1024 * 1024));
+  assert.equal(cold.supervisorRpc.fsReadRange, coldRanges.length);
+  assert.equal(vfs.readFileString('repo/src/file-259.txt'), warmOutput,
+    'cold-cache checkout output differs from warm-cache checkout');
+
+  const unbornResponse = await worker.default.fetch(
+    new Request('http://git/op', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/unborn',
+        url: 'https://example.invalid/empty.git',
+        exclusiveDestination: true,
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const unborn = await unbornResponse.json();
+  assert.equal(unborn.success, true, unborn.error);
+  assert.equal(vfs.readFileString('unborn/.git/HEAD'), 'ref: refs/heads/main\n');
+  assert.equal(vfs.exists('unborn/src'), false, 'empty repository materialized a worktree');
 
   vfs.mkdir('empty-vfs');
   const existingEmptyResponse = await worker.default.fetch(
@@ -598,6 +795,42 @@ export const git = {
   assert.equal(fallback.supervisorRpc.stat, 1);
   assert.equal(fallback.supervisorRpc.lstat, 1);
   assert.equal(fallback.supervisorRpc.readdir, 1);
+
+  const abortResponse = await coldWorker.default.fetch(
+    new Request('http://git/git/clone-abort/abort-invocation', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/repo',
+        phase: 'clone-abort',
+        invocationId: 'abort-invocation',
+        jobId: 'abort-job',
+        optionsHash: 'b'.repeat(64),
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const abort = await abortResponse.json();
+  assert.equal(abort.success, true, abort.error);
+  assert.equal(vfs.exists('repo/.git'), false, 'abort left partial Git metadata behind');
+  assert.equal(vfs.readFileString('repo/src/file-259.txt'), warmOutput,
+    'abort removed the committed worktree prefix');
+  const repeatedAbortResponse = await coldWorker.default.fetch(
+    new Request('http://git/git/clone-abort/abort-invocation-repeat', {
+      method: 'POST',
+      body: JSON.stringify({
+        op: 'clone',
+        dir: '/repo',
+        phase: 'clone-abort',
+        invocationId: 'abort-invocation-repeat',
+        jobId: 'abort-job',
+        optionsHash: 'b'.repeat(64),
+      }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const repeatedAbort = await repeatedAbortResponse.json();
+  assert.equal(repeatedAbort.success, true, repeatedAbort.error);
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

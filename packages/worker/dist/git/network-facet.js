@@ -10,9 +10,10 @@
  *   - Pre-flush ordinary waves with headroom below W7's 128-path limit or
  *     before 4 MiB via ONE supervisor.writeBatchStream() RPC. Each published
  *     path is atomic; a later publish-group failure may leave a committed prefix.
- *   - At clone end, a final flush commits remaining buffered state.
- *   - Fresh clones retain a metadata-only closed-world overlay across waves;
- *     regular-file bytes still fall through to the supervisor after flush.
+ *   - Clone prepare durably flushes Git metadata, then a second entrypoint
+ *     invocation validates HEAD and flushes the worktree/index.
+ *   - Fresh clones carry a metadata-only closed-world overlay across the
+ *     invocation boundary; regular-file bytes still fall through after flush.
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
@@ -29,6 +30,8 @@ import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '../_shared/w7-frame.js';
+const CLONE_PHASE_TIMEOUT_MS = 240_000;
+const CLONE_ABORT_TIMEOUT_MS = 30_000;
 const EMPTY_SUPERVISOR_RPC_COUNTERS = {
     stat: 0,
     lstat: 0,
@@ -79,11 +82,184 @@ function parseMetadataOverlayStats(value) {
         maxAccountedBytes: nonNegativeCounter(stats.maxAccountedBytes),
     };
 }
+function addSupervisorRpcCounters(total, value) {
+    const counters = parseSupervisorRpcCounters(value);
+    for (const key of Object.keys(total)) {
+        total[key] += counters[key];
+    }
+}
+function parseLastProgress(value) {
+    if (!value || typeof value !== 'object')
+        return undefined;
+    const progress = value;
+    if (typeof progress.phase !== 'string')
+        return undefined;
+    const loaded = nonNegativeCounter(progress.loaded);
+    const total = progress.total === undefined
+        ? undefined
+        : nonNegativeCounter(progress.total);
+    return { phase: progress.phase, loaded, total };
+}
+function parsePhaseDiagnostic(value, fallback, result) {
+    const diagnostic = value && typeof value === 'object'
+        ? value
+        : {};
+    const phase = diagnostic.phase === 'clone-prepare' ||
+        diagnostic.phase === 'clone-checkout' ||
+        diagnostic.phase === 'clone-abort' ||
+        diagnostic.phase === 'operation'
+        ? diagnostic.phase
+        : fallback.phase;
+    const outcome = diagnostic.outcome === 'success' ||
+        diagnostic.outcome === 'error' ||
+        diagnostic.outcome === 'timeout'
+        ? diagnostic.outcome
+        : fallback.outcome;
+    const supervisorRpc = parseSupervisorRpcCounters(diagnostic.supervisorRpc ?? result.supervisorRpc);
+    return {
+        phase,
+        invocationId: typeof diagnostic.invocationId === 'string'
+            ? diagnostic.invocationId
+            : fallback.invocationId,
+        startedAt: nonNegativeCounter(diagnostic.startedAt) || fallback.startedAt,
+        endedAt: nonNegativeCounter(diagnostic.endedAt) || fallback.endedAt,
+        elapsed: nonNegativeCounter(diagnostic.elapsed) || fallback.elapsed,
+        outcome,
+        error: typeof diagnostic.error === 'string'
+            ? diagnostic.error
+            : fallback.error,
+        lastProgress: parseLastProgress(diagnostic.lastProgress),
+        w7Waves: nonNegativeCounter(diagnostic.w7Waves) ||
+            supervisorRpc.writeBatchStream,
+        supervisorRpc,
+    };
+}
+class GitClonePhaseError extends Error {
+    phase;
+    diagnostic;
+    constructor(phase, message, diagnostic) {
+        super(message);
+        this.name = 'GitClonePhaseError';
+        this.phase = phase;
+        this.diagnostic = diagnostic;
+    }
+}
+async function hashCloneOptions(opts) {
+    const immutable = JSON.stringify({
+        op: opts.op,
+        dir: opts.dir,
+        url: opts.url,
+        remote: opts.remote ?? 'origin',
+        ref: opts.ref ?? null,
+        depth: opts.depth ?? 1,
+        exclusiveDestination: opts.exclusiveDestination === true,
+        exclusiveMutationRoot: opts.exclusiveMutationRoot ?? null,
+    });
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(immutable));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+function phaseErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline, phaseLimitMs) {
+    const startedAt = Date.now();
+    const remaining = outerDeadline - startedAt;
+    const timeoutMs = Math.min(phaseLimitMs, remaining);
+    if (timeoutMs <= 0) {
+        const diagnostic = {
+            phase,
+            invocationId,
+            startedAt,
+            endedAt: startedAt,
+            elapsed: 0,
+            outcome: 'timeout',
+            error: `git clone outer timeout reached before ${phase}`,
+            w7Waves: 0,
+            supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+        };
+        throw new GitClonePhaseError(phase, diagnostic.error, diagnostic);
+    }
+    const controller = new AbortController();
+    let timeoutHandle;
+    const timeout = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+            const message = `git ${phase} timed out after ${timeoutMs / 1000}s`;
+            controller.abort(message);
+            reject(new Error(message));
+        }, timeoutMs);
+    });
+    try {
+        const response = await Promise.race([
+            entrypoint.fetch(new Request(`http://git/git/${phase}/${encodeURIComponent(invocationId)}`, {
+                method: 'POST',
+                body: JSON.stringify({ ...body, phase, invocationId }),
+                signal: controller.signal,
+            })),
+            timeout,
+        ]);
+        let result;
+        try {
+            result = await response.json();
+        }
+        finally {
+            disposeRpcResource(response);
+        }
+        const endedAt = Date.now();
+        const diagnostic = parsePhaseDiagnostic(result.diagnostic, {
+            phase,
+            invocationId,
+            startedAt,
+            endedAt,
+            elapsed: endedAt - startedAt,
+            outcome: result.success === true ? 'success' : 'error',
+            error: typeof result.error === 'string' ? result.error : undefined,
+        }, result);
+        return { result, diagnostic };
+    }
+    catch (error) {
+        if (error instanceof GitClonePhaseError)
+            throw error;
+        const endedAt = Date.now();
+        const message = phaseErrorMessage(error);
+        const diagnostic = {
+            phase,
+            invocationId,
+            startedAt,
+            endedAt,
+            elapsed: endedAt - startedAt,
+            outcome: controller.signal.aborted ? 'timeout' : 'error',
+            error: message,
+            w7Waves: 0,
+            supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+        };
+        throw new GitClonePhaseError(phase, message, diagnostic);
+    }
+    finally {
+        if (timeoutHandle !== undefined)
+            clearTimeout(timeoutHandle);
+    }
+}
+async function writeClonePhaseProgress(supervisor, diagnostic) {
+    try {
+        const rpcCount = Object.values(diagnostic.supervisorRpc)
+            .reduce((total, count) => total + count, 0);
+        const status = diagnostic.outcome === 'success' ? 'complete' : diagnostic.outcome;
+        const result = await supervisor.stdout(`\n[git] ${diagnostic.phase} ${status} ` +
+            `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
+            `w7=${diagnostic.w7Waves} rpc=${rpcCount})\n`);
+        disposeRpcResource(result);
+    }
+    catch {
+        // Terminal progress is best-effort; the phase result remains authoritative.
+    }
+}
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export async function execGitNetwork(ctx, env, opts) {
     const start = Date.now();
+    const timeoutMs = opts.timeout ?? 300_000;
+    const outerDeadline = start + timeoutMs;
     try {
         if (!env?.LOADER?.load) {
             return {
@@ -134,26 +310,161 @@ export async function execGitNetwork(ctx, env, opts) {
             env: { SUPERVISOR: supervisorBinding },
         });
         const entrypoint = worker.getEntrypoint();
-        const timeoutMs = opts.timeout ?? 300_000;
-        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)), timeoutMs));
-        // Parse the facet's response and dispose its RPC stub before the
-        // caller sees the value. A bare `.then(r => r.json())` drops the `r`
-        // reference but leaves the stub live until the surrounding event
-        // handler completes.
-        const call = entrypoint.fetch(new Request('http://git/op', {
-            method: 'POST',
-            body: JSON.stringify(facetOpts),
-        })).then(async (r) => {
+        try {
+            if (opts.op === 'clone') {
+                const jobId = crypto.randomUUID();
+                const optionsHash = await hashCloneOptions(opts);
+                const phases = [];
+                const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
+                let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
+                let filesWritten = 0;
+                let bytesWritten = 0;
+                const accountResult = (result) => {
+                    filesWritten += nonNegativeCounter(result.filesWritten);
+                    bytesWritten += nonNegativeCounter(result.bytesWritten);
+                    addSupervisorRpcCounters(supervisorRpc, result.supervisorRpc);
+                    const overlay = parseMetadataOverlayStats(result.metadataOverlay);
+                    if (overlay.entries > 0 || overlay.accountedBytes > 0) {
+                        metadataOverlay = overlay;
+                    }
+                };
+                try {
+                    const prepareInvocationId = crypto.randomUUID();
+                    const prepare = await invokeFacet(entrypoint, 'clone-prepare', prepareInvocationId, { ...facetOpts, jobId, optionsHash }, outerDeadline, CLONE_PHASE_TIMEOUT_MS);
+                    phases.push(prepare.diagnostic);
+                    accountResult(prepare.result);
+                    if (prepare.result.success !== true ||
+                        !prepare.result.prepared ||
+                        typeof prepare.result.prepared !== 'object') {
+                        throw new GitClonePhaseError('clone-prepare', typeof prepare.result.error === 'string'
+                            ? prepare.result.error
+                            : 'clone-prepare returned an invalid result', prepare.diagnostic);
+                    }
+                    await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
+                    const checkoutInvocationId = crypto.randomUUID();
+                    const checkout = await invokeFacet(entrypoint, 'clone-checkout', checkoutInvocationId, {
+                        ...facetOpts,
+                        jobId,
+                        optionsHash,
+                        prepared: prepare.result.prepared,
+                    }, outerDeadline, CLONE_PHASE_TIMEOUT_MS);
+                    phases.push(checkout.diagnostic);
+                    accountResult(checkout.result);
+                    if (checkout.result.success !== true) {
+                        throw new GitClonePhaseError('clone-checkout', typeof checkout.result.error === 'string'
+                            ? checkout.result.error
+                            : 'clone-checkout failed', checkout.diagnostic);
+                    }
+                    await writeClonePhaseProgress(supervisorBinding, checkout.diagnostic);
+                    return {
+                        success: true,
+                        elapsed: Date.now() - start,
+                        filesWritten,
+                        bytesWritten,
+                        supervisorRpc,
+                        metadataOverlay,
+                        phases,
+                    };
+                }
+                catch (error) {
+                    const phaseError = error instanceof GitClonePhaseError
+                        ? error
+                        : new GitClonePhaseError('clone-prepare', phaseErrorMessage(error), {
+                            phase: 'clone-prepare',
+                            invocationId: 'unavailable',
+                            startedAt: start,
+                            endedAt: Date.now(),
+                            elapsed: Date.now() - start,
+                            outcome: 'error',
+                            error: phaseErrorMessage(error),
+                            w7Waves: 0,
+                            supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+                        });
+                    if (!phases.some(phase => phase.invocationId === phaseError.diagnostic.invocationId)) {
+                        phases.push(phaseError.diagnostic);
+                    }
+                    let cleanupError;
+                    try {
+                        const abort = await invokeFacet(entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash }, outerDeadline, CLONE_ABORT_TIMEOUT_MS);
+                        phases.push(abort.diagnostic);
+                        accountResult(abort.result);
+                        await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
+                        if (abort.result.success !== true) {
+                            cleanupError = typeof abort.result.error === 'string'
+                                ? abort.result.error
+                                : 'clone-abort failed';
+                        }
+                    }
+                    catch (abortError) {
+                        if (abortError instanceof GitClonePhaseError) {
+                            phases.push(abortError.diagnostic);
+                        }
+                        cleanupError = phaseErrorMessage(abortError);
+                    }
+                    return {
+                        success: false,
+                        error: phaseError.message,
+                        errorPhase: phaseError.phase,
+                        cleanupError,
+                        elapsed: Date.now() - start,
+                        filesWritten,
+                        bytesWritten,
+                        supervisorRpc,
+                        metadataOverlay,
+                        phases,
+                    };
+                }
+            }
+            const invocationId = crypto.randomUUID();
+            const startedAt = Date.now();
+            const remaining = outerDeadline - startedAt;
+            if (remaining <= 0) {
+                throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
+            }
+            let timeoutHandle;
+            const timeout = new Promise((_, reject) => {
+                timeoutHandle = setTimeout(() => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)), remaining);
+            });
+            const call = entrypoint.fetch(new Request('http://git/op', {
+                method: 'POST',
+                body: JSON.stringify({ ...facetOpts, invocationId }),
+            })).then(async (response) => {
+                try {
+                    return await response.json();
+                }
+                finally {
+                    disposeRpcResource(response);
+                }
+            });
+            let result;
             try {
-                return await r.json();
+                result = await Promise.race([call, timeout]);
             }
             finally {
-                disposeRpcResource(r);
+                if (timeoutHandle !== undefined)
+                    clearTimeout(timeoutHandle);
             }
-        });
-        let result;
-        try {
-            result = await Promise.race([call, timeout]);
+            const endedAt = Date.now();
+            const diagnostic = parsePhaseDiagnostic(result.diagnostic, {
+                phase: 'operation',
+                invocationId,
+                startedAt,
+                endedAt,
+                elapsed: endedAt - startedAt,
+                outcome: result.success === true ? 'success' : 'error',
+                error: typeof result.error === 'string' ? result.error : undefined,
+            }, result);
+            return {
+                success: result.success === true,
+                error: typeof result.error === 'string' ? result.error : undefined,
+                errorPhase: result.success === true ? undefined : 'operation',
+                elapsed: Date.now() - start,
+                filesWritten: nonNegativeCounter(result.filesWritten),
+                bytesWritten: nonNegativeCounter(result.bytesWritten),
+                supervisorRpc: parseSupervisorRpcCounters(result.supervisorRpc),
+                metadataOverlay: parseMetadataOverlayStats(result.metadataOverlay),
+                phases: [diagnostic],
+            };
         }
         finally {
             // Tear down the facet's RPC stubs regardless of success / timeout.
@@ -168,15 +479,6 @@ export async function execGitNetwork(ctx, env, opts) {
             disposeRpcResource(worker);
             disposeRpcResource(supervisorBinding);
         }
-        return {
-            success: !!result?.success,
-            error: result?.error,
-            elapsed: Date.now() - start,
-            filesWritten: Number(result?.filesWritten ?? 0),
-            bytesWritten: Number(result?.bytesWritten ?? 0),
-            supervisorRpc: parseSupervisorRpcCounters(result?.supervisorRpc),
-            metadataOverlay: parseMetadataOverlayStats(result?.metadataOverlay),
-        };
     }
     catch (e) {
         return {
@@ -214,6 +516,126 @@ const READ_RANGE_BYTES = 4 * 1024 * 1024;
 const METADATA_MAX_ENTRIES = 100_000;
 const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
+const cloneJobs = new Map();
+const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+function protocolError(message) {
+  return new Error('git clone protocol: ' + message);
+}
+
+function requireProtocolString(value, label, maxLength = 1024) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
+    throw protocolError(label + ' is invalid');
+  }
+  return value;
+}
+
+function requireOid(value, label) {
+  if (typeof value !== 'string' || !OID_PATTERN.test(value)) {
+    throw protocolError(label + ' is invalid');
+  }
+  return value;
+}
+
+function requireMetadataNumber(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw protocolError(label + ' is invalid');
+  }
+  return value;
+}
+
+function validateMetadataManifest(value, root) {
+  if (!Array.isArray(value) || value.length > METADATA_MAX_ENTRIES) {
+    throw protocolError('prepared metadata manifest is invalid');
+  }
+  const manifest = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (!Array.isArray(item) || item.length !== 2 ||
+        typeof item[0] !== 'string' || !item[1] || typeof item[1] !== 'object') {
+      throw protocolError('prepared metadata entry is invalid');
+    }
+    const path = normalizePath(item[0]);
+    if (path !== item[0] ||
+        (path !== root && !path.startsWith(root + '/')) ||
+        seen.has(path)) {
+      throw protocolError('prepared metadata path is invalid');
+    }
+    seen.add(path);
+    const raw = item[1];
+    if (raw.kind !== 'dir' && raw.kind !== 'file' && raw.kind !== 'symlink') {
+      throw protocolError('prepared metadata kind is invalid');
+    }
+    const entry = {
+      kind: raw.kind,
+      size: requireMetadataNumber(raw.size, 'prepared metadata size'),
+      mode: requireMetadataNumber(raw.mode, 'prepared metadata mode'),
+      mtimeMs: requireMetadataNumber(raw.mtimeMs, 'prepared metadata mtime'),
+      ctimeMs: requireMetadataNumber(raw.ctimeMs, 'prepared metadata ctime'),
+      atimeMs: requireMetadataNumber(raw.atimeMs, 'prepared metadata atime'),
+    };
+    if (raw.kind === 'symlink') {
+      entry.target = requireProtocolString(raw.target, 'prepared symlink target', 64 * 1024);
+    }
+    manifest.push([path, entry]);
+  }
+  return manifest;
+}
+
+function validatePreparedClone(value, opts) {
+  if (!value || typeof value !== 'object') throw protocolError('prepared result is missing');
+  const root = normalizePath(opts.dir);
+  const metadataRoot = normalizePath(opts.exclusiveMutationRoot || root);
+  const emptyRepository = value.commit === null && value.tree === null;
+  const prepared = {
+    jobId: requireProtocolString(value.jobId, 'job id', 128),
+    optionsHash: requireProtocolString(value.optionsHash, 'options hash', 128),
+    dir: requireProtocolString(value.dir, 'prepared dir', 4096),
+    commit: emptyRepository ? null : requireOid(value.commit, 'prepared commit'),
+    tree: emptyRepository ? null : requireOid(value.tree, 'prepared tree'),
+    headRef: value.headRef === null
+      ? null
+      : requireProtocolString(value.headRef, 'prepared HEAD ref', 4096),
+    packOnlyObjectStore: value.packOnlyObjectStore === true,
+    packs: value.packs,
+    metadata: validateMetadataManifest(value.metadata, metadataRoot),
+  };
+  if (prepared.jobId !== opts.jobId ||
+      prepared.optionsHash !== opts.optionsHash ||
+      normalizePath(prepared.dir) !== root) {
+    throw protocolError('prepared identity does not match checkout request');
+  }
+  if (!Array.isArray(prepared.packs) || prepared.packs.length > 32) {
+    throw protocolError('prepared pack manifest is invalid');
+  }
+  prepared.packs = prepared.packs.map((pack) => {
+    if (!pack || typeof pack !== 'object') throw protocolError('prepared pack is invalid');
+    const packPath = requireProtocolString(pack.packPath, 'pack path', 4096);
+    const idxPath = requireProtocolString(pack.idxPath, 'idx path', 4096);
+    const packSha = requireOid(pack.packSha, 'pack sha');
+    const packRoot = root + '/.git/objects/pack/';
+    if (!packPath.startsWith(packRoot) || !idxPath.startsWith(packRoot) ||
+        packPath !== packRoot + 'pack-' + packSha + '.pack' ||
+        idxPath !== packRoot + 'pack-' + packSha + '.idx') {
+      throw protocolError('prepared pack paths are invalid');
+    }
+    return {
+      packPath,
+      packBytes: requireMetadataNumber(pack.packBytes, 'pack bytes'),
+      idxPath,
+      idxBytes: requireMetadataNumber(pack.idxBytes, 'idx bytes'),
+      packSha,
+    };
+  });
+  const metadata = new Map(prepared.metadata);
+  for (const pack of prepared.packs) {
+    if (metadata.get(pack.packPath)?.size !== pack.packBytes ||
+        metadata.get(pack.idxPath)?.size !== pack.idxBytes) {
+      throw protocolError('prepared pack sizes do not match metadata');
+    }
+  }
+  return prepared;
+}
 
 function disposeRpcResult(value) {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
@@ -437,7 +859,13 @@ function collectDirectoryPaths(paths, path, authoritativeRoot) {
  * Create the buffered fs adapter isomorphic-git will use.
  * Writes buffer in-memory; reads check buffer then fall back to supervisor.
  */
-function createBufferedFs(supervisor, stats, authoritativeRoot, authoritativeRootMetadata) {
+function createBufferedFs(
+  supervisor,
+  stats,
+  authoritativeRoot,
+  authoritativeRootMetadata,
+  initialMetadata = [],
+) {
   const writeBuffer = new Map(); // path → Uint8Array (insertion ordered = FIFO)
   const pendingWriteMetadata = new Map();
   const dirBuffer = new Set();
@@ -607,9 +1035,14 @@ function createBufferedFs(supervisor, stats, authoritativeRoot, authoritativeRoo
     };
   }
 
+  function metadataSnapshot() {
+    return [...metadata].map(([path, entry]) => [path, { ...entry }]);
+  }
+
   if (authoritativeRoot !== null && authoritativeRootMetadata) {
     setMetadata(authoritativeRoot, authoritativeRootMetadata);
   }
+  for (const [path, entry] of initialMetadata) setMetadata(path, entry);
 
   function bufferedOwnership(extraPath, includeParents = true) {
     const paths = new Set(deleteBuffer);
@@ -1133,7 +1566,44 @@ function createBufferedFs(supervisor, stats, authoritativeRoot, authoritativeRoo
     },
   };
 
-  return { fs, flushWave, overlayStats };
+  return { fs, flushWave, overlayStats, metadataSnapshot };
+}
+
+function preparedPackManifest(metadata, cloneRoot) {
+  const files = new Map(
+    metadata
+      .filter(([, entry]) => entry.kind === 'file')
+      .map(([path, entry]) => [path, entry]),
+  );
+  const packRoot = cloneRoot + '/.git/objects/pack/';
+  const packs = [];
+  for (const [packPath, packEntry] of files) {
+    if (!packPath.startsWith(packRoot) || !packPath.endsWith('.pack')) continue;
+    const filename = packPath.slice(packRoot.length);
+    const match = /^pack-([0-9a-f]{40}(?:[0-9a-f]{24})?)\\.pack$/.exec(filename);
+    if (!match) throw protocolError('persisted pack path is invalid');
+    const idxPath = packPath.slice(0, -5) + '.idx';
+    const idxEntry = files.get(idxPath);
+    if (!idxEntry) throw protocolError('persisted pack is missing its index');
+    packs.push({
+      packPath,
+      packBytes: packEntry.size,
+      idxPath,
+      idxBytes: idxEntry.size,
+      packSha: match[1],
+    });
+  }
+  packs.sort((left, right) => left.packPath.localeCompare(right.packPath));
+  return packs;
+}
+
+function isPackOnlyObjectStore(metadata, cloneRoot) {
+  const objectRoot = cloneRoot + '/.git/objects/';
+  const packRoot = objectRoot + 'pack/';
+  return metadata.every(([path, entry]) =>
+    entry.kind !== 'file' ||
+    !path.startsWith(objectRoot) ||
+    path.startsWith(packRoot));
 }
 
 export default {
@@ -1160,11 +1630,56 @@ export default {
       }, { status: 400 });
     }
 
+    const phase = opts.phase === 'clone-prepare' ||
+        opts.phase === 'clone-checkout' ||
+        opts.phase === 'clone-abort'
+      ? opts.phase
+      : 'operation';
+    const invocationId = typeof opts.invocationId === 'string'
+      ? opts.invocationId
+      : 'unavailable';
+    const startedAt = Date.now();
+    const startedMonotonic = performance.now();
     const stats = {
       filesWritten: 0,
       bytesWritten: 0,
       supervisorRpc: createSupervisorRpcCounters(),
     };
+    let lastProgress = null;
+    const respond = (success, payload = {}, status = 200) => {
+      const endedAt = Date.now();
+      const error = !success && typeof payload.error === 'string'
+        ? payload.error
+        : undefined;
+      return Response.json({
+        success,
+        ...payload,
+        filesWritten: stats.filesWritten,
+        bytesWritten: stats.bytesWritten,
+        supervisorRpc: stats.supervisorRpc,
+        diagnostic: {
+          phase,
+          invocationId,
+          startedAt,
+          endedAt,
+          elapsed: Math.max(0, Math.round(performance.now() - startedMonotonic)),
+          outcome: success ? 'success' : 'error',
+          error,
+          lastProgress,
+          w7Waves: stats.supervisorRpc.writeBatchStream,
+          supervisorRpc: stats.supervisorRpc,
+        },
+      }, { status });
+    };
+    if (phase !== 'operation') {
+      const expectedPath = '/git/' + phase + '/' + encodeURIComponent(invocationId);
+      if (new URL(request.url).pathname !== expectedPath) {
+        return respond(false, {
+          error: 'git clone protocol: request trace marker does not match its phase identity',
+          metadataOverlay: emptyMetadataOverlayStats(),
+        }, 400);
+      }
+    }
     const log = (msg) => {
       stats.supervisorRpc.stdout++;
       try { useRpcResult(supervisor.stdout(msg), () => undefined).catch(() => {}); } catch {}
@@ -1182,15 +1697,14 @@ export default {
       // what isomorphic-git looks for.
       http = bundle.gitHttp;
     } catch (e) {
-      return Response.json({
-        success: false, error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),
-        filesWritten: 0, bytesWritten: 0,
-        supervisorRpc: stats.supervisorRpc,
+      return respond(false, {
+        error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),
         metadataOverlay: emptyMetadataOverlayStats(),
-      }, { status: 500 });
+      }, 500);
     }
 
-    // Throttle onProgress emissions to ≥100ms apart (audit R1).
+    // Keep progress bounded: phase transitions/completions, plus one timed
+    // network update every two seconds. Checkout has no timed per-file output.
     // isomorphic-git fires this callback per packfile object — thousands
     // of times for a medium repo. Each call does supervisor.stdout(...),
     // a facet→supervisor RPC that consumes input-gate time on the
@@ -1203,9 +1717,14 @@ export default {
     const onProgress = async (e) => {
       if (!e || !e.phase) return;
       const now = Date.now();
+      lastProgress = {
+        phase: e.phase,
+        loaded: Number(e.loaded) || 0,
+        total: Number.isFinite(Number(e.total)) ? Number(e.total) : undefined,
+      };
       const phaseChanged = e.phase !== lastLoggedPhase;
       const phaseDone = e.total && e.loaded === e.total;
-      const dueByTime = now - lastLogAt >= 100;
+      const dueByTime = phase !== 'clone-checkout' && now - lastLogAt >= 2000;
       if (!phaseChanged && !phaseDone && !dueByTime) return;
       lastLogAt = now;
       lastLoggedPhase = e.phase;
@@ -1219,7 +1738,12 @@ export default {
       if (typeof opts.dir !== 'string') throw new Error('git ' + opts.op + ': dir required');
       let authoritativeRoot = null;
       let authoritativeRootMetadata = null;
-      if (opts.op === 'clone') {
+      let initialMetadata = [];
+      let prepared = null;
+      if (phase === 'clone-prepare') {
+        if (opts.op !== 'clone') throw protocolError('prepare requires clone operation');
+        requireProtocolString(opts.jobId, 'job id', 128);
+        requireProtocolString(opts.optionsHash, 'options hash', 128);
         if (!opts.url) throw new Error('clone: url required');
         const cloneRoot = normalizePath(opts.dir);
         if (!cloneRoot) {
@@ -1279,6 +1803,25 @@ export default {
           }
         }
         if (opts.exclusiveDestination === true) authoritativeRoot = exclusiveRoot;
+      } else if (phase === 'clone-checkout') {
+        if (opts.op !== 'clone') throw protocolError('checkout requires clone operation');
+        prepared = validatePreparedClone(opts.prepared, opts);
+        const warmJob = cloneJobs.get(opts.jobId);
+        if (warmJob &&
+            (warmJob.optionsHash !== opts.optionsHash ||
+             warmJob.prepared.commit !== prepared.commit ||
+             warmJob.prepared.tree !== prepared.tree)) {
+          throw protocolError('warm clone job does not match prepared identity');
+        }
+        if (opts.exclusiveDestination === true && prepared.packOnlyObjectStore) {
+          authoritativeRoot = normalizePath(opts.exclusiveMutationRoot || opts.dir);
+          initialMetadata = prepared.metadata;
+        }
+      } else if (phase === 'clone-abort') {
+        requireProtocolString(opts.jobId, 'job id', 128);
+        requireProtocolString(opts.optionsHash, 'options hash', 128);
+      } else if (opts.op === 'clone') {
+        throw protocolError('clone requires the prepare/checkout protocol');
       }
 
       const bufferedFs = createBufferedFs(
@@ -1286,27 +1829,136 @@ export default {
         stats,
         authoritativeRoot,
         authoritativeRootMetadata,
+        initialMetadata,
       );
       const fs = bufferedFs.fs;
       flushWave = bufferedFs.flushWave;
       overlayStats = bufferedFs.overlayStats;
+      const metadataSnapshot = bufferedFs.metadataSnapshot;
 
-      if (opts.op === 'clone') {
+      if (phase === 'clone-prepare') {
         if (authoritativeRoot !== null && authoritativeRoot !== normalizePath(opts.dir)) {
           await fs.promises.mkdir(opts.dir);
           await flushWave();
         }
+        const cache = {};
         await git.clone({
-          fs, http,
+          fs, http, cache,
           dir: opts.dir,
           url: opts.url,
           singleBranch: true,
           depth: opts.depth || 1,
+          noCheckout: true,
           nonBlocking: true,
           batchSize: 50,
           onProgress,
           onAuth,
         });
+        const headRef = await git.currentBranch({
+          fs,
+          dir: opts.dir,
+          fullname: true,
+          test: false,
+        }) || null;
+        let commit = null;
+        let tree = null;
+        try {
+          commit = await git.resolveRef({ fs, dir: opts.dir, ref: 'HEAD' });
+        } catch (error) {
+          const existingBranch = await git.currentBranch({
+            fs,
+            dir: opts.dir,
+            fullname: true,
+            test: true,
+          });
+          if (existingBranch !== undefined) throw error;
+          commit = null;
+          tree = null;
+        }
+        if (commit !== null) {
+          const commitResult = await git.readCommit({ fs, dir: opts.dir, oid: commit, cache });
+          tree = commitResult && commitResult.commit && commitResult.commit.tree;
+          requireOid(commit, 'prepared commit');
+          requireOid(tree, 'prepared tree');
+        }
+        // A prepare response is an acknowledgement that all .git mutations
+        // are durable. Checkout is not allowed to start before this resolves.
+        await flushWave();
+        const metadata = metadataSnapshot();
+        const cloneRoot = normalizePath(opts.dir);
+        prepared = {
+          jobId: opts.jobId,
+          optionsHash: opts.optionsHash,
+          dir: cloneRoot,
+          commit,
+          tree,
+          headRef,
+          packs: preparedPackManifest(metadata, cloneRoot),
+          packOnlyObjectStore: isPackOnlyObjectStore(metadata, cloneRoot),
+          metadata,
+        };
+        cloneJobs.set(opts.jobId, { optionsHash: opts.optionsHash, cache, prepared });
+      } else if (phase === 'clone-checkout') {
+        const warmJob = cloneJobs.get(opts.jobId);
+        const cache = warmJob ? warmJob.cache : {};
+        const durableHeadRef = await git.currentBranch({
+          fs,
+          dir: opts.dir,
+          fullname: true,
+          test: false,
+        }) || null;
+        if (durableHeadRef !== prepared.headRef) {
+          throw protocolError('durable HEAD does not match prepared commit/tree');
+        }
+        if (prepared.commit === null) {
+          let durableCommit = null;
+          try {
+            durableCommit = await git.resolveRef({ fs, dir: opts.dir, ref: 'HEAD' });
+          } catch {}
+          const existingBranch = await git.currentBranch({
+            fs,
+            dir: opts.dir,
+            fullname: true,
+            test: true,
+          });
+          if (durableCommit !== null || existingBranch !== undefined) {
+            throw protocolError('durable unborn HEAD does not match prepared state');
+          }
+        } else {
+          const durableCommit = await git.resolveRef({ fs, dir: opts.dir, ref: 'HEAD' });
+          const durableCommitResult = await git.readCommit({
+            fs,
+            dir: opts.dir,
+            oid: durableCommit,
+            cache,
+          });
+          const durableTree = durableCommitResult &&
+            durableCommitResult.commit &&
+            durableCommitResult.commit.tree;
+          if (durableCommit !== prepared.commit || durableTree !== prepared.tree) {
+            throw protocolError('durable HEAD does not match prepared commit/tree');
+          }
+          await git.checkout({
+            fs,
+            cache,
+            dir: opts.dir,
+            ref: 'HEAD',
+            noUpdateHead: true,
+            nonBlocking: true,
+            batchSize: 50,
+            onProgress,
+          });
+        }
+        await flushWave();
+        cloneJobs.delete(opts.jobId);
+      } else if (phase === 'clone-abort') {
+        const warmJob = cloneJobs.get(opts.jobId);
+        if (warmJob && warmJob.optionsHash !== opts.optionsHash) {
+          throw protocolError('abort job identity does not match');
+        }
+        cloneJobs.delete(opts.jobId);
+        await fs.promises.rmdir(normalizePath(opts.dir) + '/.git', { recursive: true });
+        await flushWave();
       } else if (opts.op === 'fetch') {
         await git.fetch({
           fs, http,
@@ -1341,26 +1993,18 @@ export default {
         throw new Error('Unknown op: ' + opts.op);
       }
 
-      // Final flush — commit any remaining buffered writes
-      await flushWave();
-      log('\\n');
+      if (phase === 'operation') await flushWave();
 
-      return Response.json({
-        success: true,
-        filesWritten: stats.filesWritten,
-        bytesWritten: stats.bytesWritten,
-        supervisorRpc: stats.supervisorRpc,
+      return respond(true, {
+        prepared: phase === 'clone-prepare' ? prepared : undefined,
         metadataOverlay: overlayStats(),
       });
     } catch (e) {
       // Best-effort flush of partial state so user can inspect what landed
       try { await flushWave(); } catch {}
-      return Response.json({
-        success: false,
+      if (phase === 'clone-prepare') cloneJobs.delete(opts.jobId);
+      return respond(false, {
         error: (e && e.message) || String(e),
-        filesWritten: stats.filesWritten,
-        bytesWritten: stats.bytesWritten,
-        supervisorRpc: stats.supervisorRpc,
         metadataOverlay: overlayStats(),
       });
     }
