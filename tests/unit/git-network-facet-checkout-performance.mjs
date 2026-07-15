@@ -97,6 +97,10 @@ function metadataEntry(kind, size = 0, mode = kind === 'dir' ? 0o755 : 0o644) {
   return { kind, size, mode, mtimeMs: 1, ctimeMs: 1, atimeMs: 1 };
 }
 
+const SUPERVISOR_RPC_LATENCY_MS = 30;
+const supervisorRpcDelay = () => new Promise(resolve =>
+  setTimeout(resolve, SUPERVISOR_RPC_LATENCY_MS));
+
 try {
   const sourceRoot = join(temp, 'source');
   const fixture = await createLargePackedRepository(sourceRoot);
@@ -189,6 +193,7 @@ try {
   };
   const supervisor = {
     async stat(path) {
+      await supervisorRpcDelay();
       calls.stat.push(path);
       const entry = durable.get(path);
       if (!entry) return null;
@@ -202,10 +207,21 @@ try {
       };
     },
     async lstat(path) {
+      await supervisorRpcDelay();
       calls.lstat.push(path);
-      return this.stat(path);
+      const entry = durable.get(path);
+      if (!entry) return null;
+      return {
+        type: entry.kind,
+        size: entry.data?.byteLength || 0,
+        mode: entry.mode,
+        atime: 1,
+        ctime: 1,
+        mtime: 1,
+      };
     },
     async readdir(path) {
+      await supervisorRpcDelay();
       calls.readdir.push(path);
       const prefix = path ? `${path}/` : '';
       const children = new Map();
@@ -218,14 +234,17 @@ try {
       return [...children].map(([name, entry]) => ({ name, type: entry.kind }));
     },
     async readFileBytes(path) {
+      await supervisorRpcDelay();
       calls.readFile.push(path);
       return durable.get(path)?.data?.slice() || null;
     },
     async fsReadRange(path, offset, length) {
+      await supervisorRpcDelay();
       calls.fsReadRange.push(path);
       return durable.get(path)?.data?.slice(offset, offset + length) || null;
     },
     async writeBatchStream(stream) {
+      await supervisorRpcDelay();
       calls.writeBatchStream++;
       const decoded = await decodeWriteBatchStream(stream);
       let activeFile = null;
@@ -272,11 +291,20 @@ try {
         chunks,
       };
     },
-    async stdout() { calls.stdout++; },
+    async stdout() {
+      await supervisorRpcDelay();
+      calls.stdout++;
+    },
   };
 
   const checkout = async (cursor, invocation, worker = facet) => {
-    const before = { waves: calls.writeBatchStream, reads: calls.readFile.length };
+    const before = {
+      waves: calls.writeBatchStream,
+      reads: calls.readFile.length,
+      stats: calls.stat.length,
+      lstats: calls.lstat.length,
+      ranges: calls.fsReadRange.length,
+    };
     const started = performance.now();
     const response = await worker.default.fetch(
       new Request(`http://git/git/clone-checkout/${invocation}`, {
@@ -295,7 +323,7 @@ try {
           checkoutBounds: {
             maxEntries: 10_000,
             maxDecodedBytes: 32 * 1024 * 1024,
-            maxWallMs: 20_000,
+            maxWallMs: 150_000,
           },
           phaseDeadline: Date.now() + 240_000,
         }),
@@ -308,6 +336,11 @@ try {
       measuredWallMs: Math.round(performance.now() - started),
       waveDelta: calls.writeBatchStream - before.waves,
       readDelta: calls.readFile.length - before.reads,
+      statDelta: calls.stat.length - before.stats,
+      lstatDelta: calls.lstat.length - before.lstats,
+      statPaths: calls.stat.slice(before.stats),
+      lstatPaths: calls.lstat.slice(before.lstats),
+      rangeDelta: calls.fsReadRange.length - before.ranges,
     };
   };
 
@@ -316,10 +349,14 @@ try {
   assert.equal(first.success, true, first.error);
   assert.equal(first.treeEntriesVisited, 10_000,
     'first real chunk hit its wall bound before its entry bound');
+  assert.equal(first.diagnostic.cold, true,
+    'first checkout without module job state did not report a cold invocation');
   chunks.push(first);
   const firstCursor = structuredClone(first.nextCursor);
   const replay = await checkout(null, 'large-chunk-1-replay');
   assert.equal(replay.success, true, replay.error);
+  assert.equal(replay.diagnostic.cold, false,
+    'same-module replay did not report its warm job state');
   assert.deepEqual(replay.nextCursor, firstCursor,
     'replaying the old cursor selected a different real checkout slice');
 
@@ -330,6 +367,21 @@ try {
   const cold = await checkout(firstCursor, 'large-chunk-cold-resume', coldFacet);
   assert.equal(cold.success, true, cold.error);
   assert.equal(cold.treeEntriesVisited, 10_000);
+  assert.equal(cold.diagnostic.cold, true,
+    'physically separate checkout module did not report a cold invocation');
+  assert.ok(cold.statDelta + cold.lstatDelta <= 2,
+    'cold continuation performed per-entry supervisor stat/lstat RPCs');
+  assert.deepEqual(
+    [...cold.statPaths, ...cold.lstatPaths].filter(path =>
+      path.startsWith(`${root}/`) && !path.startsWith(`${gitdir}/`)),
+    [],
+    'cold continuation leaked worktree metadata lookups to the supervisor',
+  );
+  assert.deepEqual(
+    cold.nextCursor.directories.slice(0, firstCursor.directories.length),
+    firstCursor.directories,
+    'cold continuation lost the committed directory prefix',
+  );
   const coldReads = calls.readFile.slice(readsBeforeCold);
   assert.equal(coldReads.filter(path => path === `${gitdir}/index`).length, 1,
     'cold real continuation did not parse the durable cumulative index exactly once');
@@ -340,8 +392,24 @@ try {
 
   let cursor = firstCursor;
   while (cursor !== null) {
-    const result = await checkout(cursor, `large-chunk-${chunks.length + 1}`);
+    const invocation = `large-chunk-${chunks.length + 1}`;
+    const coldModulePath = join(moduleRoot, `git-network-worker-${invocation}.mjs`);
+    await writeFile(coldModulePath, facetSource);
+    const coldWorker = await import(
+      pathToFileURL(coldModulePath).href
+    );
+    const result = await checkout(cursor, invocation, coldWorker);
     assert.equal(result.success, true, result.error);
+    assert.equal(result.diagnostic.cold, true,
+      'latency-modeled continuation unexpectedly reused module job state');
+    assert.ok(result.statDelta + result.lstatDelta <= 2,
+      'latency-modeled cold chunk performed per-entry supervisor stat/lstat RPCs');
+    assert.deepEqual(
+      [...result.statPaths, ...result.lstatPaths].filter(path =>
+        path.startsWith(`${root}/`) && !path.startsWith(`${gitdir}/`)),
+      [],
+      'latency-modeled cold chunk leaked a worktree metadata lookup',
+    );
     chunks.push(result);
     cursor = result.nextCursor;
   }
@@ -352,12 +420,12 @@ try {
     chunks.reduce((total, chunk) => total + chunk.treeEntriesVisited, 0),
     30_017,
   );
-  assert.equal(calls.readFile.filter(path => path === idxPath).length, 2,
-    'warm real chunks reparsed the pack index outside the one forced-cold resume');
-  assert.equal(calls.readFile.filter(path => path === packPath).length, 2,
-    'warm real chunks reloaded the pack outside the one forced-cold resume');
-  assert.equal(calls.readFile.filter(path => path === `${gitdir}/index`).length, 1,
-    'warm real chunks reparsed the cumulative Git index outside the forced-cold resume');
+  assert.equal(calls.readFile.filter(path => path === idxPath).length, chunks.length + 1,
+    'each physical-cold checkout did not parse its pack index exactly once');
+  assert.equal(calls.readFile.filter(path => path === packPath).length, chunks.length + 1,
+    'each physical-cold checkout did not load its pack exactly once');
+  assert.equal(calls.readFile.filter(path => path === `${gitdir}/index`).length, chunks.length,
+    'each cold continuation did not parse its cumulative Git index exactly once');
   assert.ok(calls.writeBatchStream < 700,
     'supervisor writes scaled per entry instead of by bounded W7 waves');
   assert.equal(durable.has(markerPath), false, 'completed real checkout left its job marker');
@@ -370,18 +438,27 @@ try {
       wallMs: chunk.measuredWallMs,
       waves: chunk.waveDelta,
       reads: chunk.readDelta,
+      stat: chunk.statDelta,
+      lstat: chunk.lstatDelta,
+      ranges: chunk.rangeDelta,
+      rpc: Object.values(chunk.supervisorRpc).reduce((total, count) => total + count, 0),
+      cold: chunk.diagnostic.cold,
     })),
     replay: {
       entries: replay.treeEntriesVisited,
       wallMs: replay.measuredWallMs,
       waves: replay.waveDelta,
       reads: replay.readDelta,
+      stat: replay.statDelta,
+      lstat: replay.lstatDelta,
     },
     cold: {
       entries: cold.treeEntriesVisited,
       wallMs: cold.measuredWallMs,
       waves: cold.waveDelta,
       reads: cold.readDelta,
+      stat: cold.statDelta,
+      lstat: cold.lstatDelta,
     },
     supervisor: {
       stat: calls.stat.length,

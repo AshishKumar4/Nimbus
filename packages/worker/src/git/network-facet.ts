@@ -107,7 +107,13 @@ export interface GitNetworkPhaseDiagnostic {
   lastProgress?: { phase: string; loaded: number; total?: number };
   w7Waves: number;
   supervisorRpc: GitSupervisorRpcCounters;
+  /** Whether clone-checkout started without module-local job state. */
+  cold?: boolean;
 }
+
+export type GitNetworkErrorCode =
+  | 'GitCloneBudgetExceeded'
+  | 'FreshCheckoutDirectoryLimitError';
 
 export interface GitNetworkResult {
   success: boolean;
@@ -119,7 +125,7 @@ export interface GitNetworkResult {
   metadataOverlay: GitMetadataOverlayStats;
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
-  errorCode?: 'GitCloneBudgetExceeded';
+  errorCode?: GitNetworkErrorCode;
   budget?: GitCloneBudgetDiagnostic;
   cleanupError?: string;
 }
@@ -148,6 +154,8 @@ interface FacetInvocationResult {
   treeEntriesVisited?: unknown;
   decodedBytes?: unknown;
   indexEntries?: unknown;
+  errorCode?: unknown;
+  cold?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -164,7 +172,7 @@ const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 const DEFAULT_CHECKOUT_CHUNK_MAX_ENTRIES = 10_000;
 const DEFAULT_CHECKOUT_CHUNK_MAX_DECODED_BYTES = 32 * 1024 * 1024;
-const DEFAULT_CHECKOUT_CHUNK_MAX_WALL_MS = 20_000;
+const DEFAULT_CHECKOUT_CHUNK_MAX_WALL_MS = 150_000;
 
 const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
   stat: 0,
@@ -252,6 +260,13 @@ function parseCheckoutChunkProgress(result: FacetInvocationResult): GitCheckoutC
     decodedBytes: nonNegativeCounter(result.decodedBytes),
     indexEntries: nonNegativeCounter(result.indexEntries),
   };
+}
+
+function parseGitNetworkErrorCode(value: unknown): GitNetworkErrorCode | undefined {
+  return value === 'GitCloneBudgetExceeded' ||
+      value === 'FreshCheckoutDirectoryLimitError'
+    ? value
+    : undefined;
 }
 
 function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
@@ -350,6 +365,11 @@ function parsePhaseDiagnostic(
     w7Waves: nonNegativeCounter(diagnostic.w7Waves) ||
       supervisorRpc.writeBatchStream,
     supervisorRpc,
+    cold: typeof diagnostic.cold === 'boolean'
+      ? diagnostic.cold
+      : typeof result.cold === 'boolean'
+        ? result.cold
+        : undefined,
   };
 }
 
@@ -357,17 +377,20 @@ class GitClonePhaseError extends Error {
   readonly phase: GitCloneInvocationPhase;
   readonly diagnostic: GitNetworkPhaseDiagnostic;
   readonly mutated: boolean | undefined;
+  readonly errorCode: GitNetworkErrorCode | undefined;
 
   constructor(
     phase: GitCloneInvocationPhase,
     message: string,
     diagnostic: GitNetworkPhaseDiagnostic,
+    errorCode?: GitNetworkErrorCode,
   ) {
     super(message);
     this.name = 'GitClonePhaseError';
     this.phase = phase;
     this.diagnostic = diagnostic;
     this.mutated = diagnostic.mutated;
+    this.errorCode = errorCode;
   }
 }
 
@@ -386,6 +409,7 @@ class GitCloneBudgetExceededError extends GitClonePhaseError {
         `${budget.processedEntries} entries (elapsed=${budget.elapsedMs}ms ` +
         `limit=${budget.limitMs}ms decoded=${budget.decodedBytes}B)`,
       diagnostic,
+      'GitCloneBudgetExceeded',
     );
     this.name = 'GitCloneBudgetExceededError';
     this.budget = budget;
@@ -582,11 +606,14 @@ async function writeCloneChunkProgress(
   progress: GitCheckoutChunkProgress,
 ): Promise<void> {
   try {
+    const rpcCount = Object.values(diagnostic.supervisorRpc)
+      .reduce((total, count) => total + count, 0);
     const result = await supervisor.stdout(
       `\n[git] clone-checkout chunk ${chunk} complete ` +
       `(entries=${progress.treeEntriesVisited} decoded=${progress.decodedBytes}B ` +
       `index=${progress.indexEntries} continuation=${progress.nextCursor === null ? 'done' : 'yes'} ` +
-      `wall=${diagnostic.elapsed}ms w7=${diagnostic.w7Waves})\n`,
+      `wall=${diagnostic.elapsed}ms w7=${diagnostic.w7Waves} rpc=${rpcCount} ` +
+      `cold=${diagnostic.cold === true ? 'yes' : 'no'})\n`,
     );
     disposeRpcResource(result);
   } catch {
@@ -746,6 +773,7 @@ export async function execGitNetwork(
                   ? checkout.result.error
                   : 'clone-checkout failed',
                 checkout.diagnostic,
+                parseGitNetworkErrorCode(checkout.result.errorCode),
               );
             }
             let progress: GitCheckoutChunkProgress;
@@ -835,7 +863,7 @@ export async function execGitNetwork(
             errorPhase: phaseError.phase,
             errorCode: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.code
-              : undefined,
+              : phaseError.errorCode,
             budget: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.budget
               : undefined,
@@ -951,9 +979,12 @@ const READ_RANGE_BYTES = 4 * 1024 * 1024;
 const METADATA_MAX_ENTRIES = 100_000;
 const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
+const CHECKOUT_DIRECTORY_MAX_ENTRIES = 20_000;
+const CHECKOUT_DIRECTORY_MAX_ACCOUNTED_BYTES = 4 * 1024 * 1024;
 const CLONE_JOB_MARKER = 'nimbus-clone-job';
 const cloneJobs = new Map();
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const protocolTextEncoder = new TextEncoder();
 
 function protocolError(message) {
   return new Error('git clone protocol: ' + message);
@@ -984,6 +1015,40 @@ function requirePositiveMetadataNumber(value, label) {
   const number = requireMetadataNumber(value, label);
   if (number === 0) throw protocolError(label + ' is invalid');
   return number;
+}
+
+function checkoutDirectoryLimitError(entries, accountedBytes) {
+  const error = new Error(
+    'git clone checkout directories exceeded their bound (' + entries + ' entries, ' +
+    accountedBytes + ' accounted bytes)',
+  );
+  error.code = 'FreshCheckoutDirectoryLimitError';
+  return error;
+}
+
+function validateCheckoutDirectories(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw protocolError('checkout directories are invalid');
+  if (value.length > CHECKOUT_DIRECTORY_MAX_ENTRIES) {
+    throw checkoutDirectoryLimitError(value.length, 0);
+  }
+  const directories = [];
+  const seen = new Set();
+  let accountedBytes = 0;
+  for (const path of value) {
+    if (typeof path !== 'string' || path.length === 0 || path.length > 4096 ||
+        path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') ||
+        seen.has(path)) {
+      throw protocolError('checkout directory is invalid');
+    }
+    accountedBytes += protocolTextEncoder.encode(path).byteLength;
+    if (accountedBytes > CHECKOUT_DIRECTORY_MAX_ACCOUNTED_BYTES) {
+      throw checkoutDirectoryLimitError(value.length, accountedBytes);
+    }
+    seen.add(path);
+    directories.push(path);
+  }
+  return directories;
 }
 
 function cloneJobMarkerPath(dir) {
@@ -1035,7 +1100,12 @@ function validateCloneMarkerCursor(value, tree) {
   if (stack[0].treeOid !== tree) {
     throw protocolError('clone job marker cursor root is invalid');
   }
-  return { version: 1, tree, stack };
+  return {
+    version: 1,
+    tree,
+    stack,
+    directories: validateCheckoutDirectories(value.directories),
+  };
 }
 
 function parseCloneJobMarker(raw, opts) {
@@ -1410,6 +1480,7 @@ function createBufferedFs(
   authoritativeRoot,
   authoritativeRootMetadata,
   initialMetadata = [],
+  initialDirectories = [],
   phaseDeadline = null,
   authoritativeFallbackPaths = [],
 ) {
@@ -1596,6 +1667,7 @@ function createBufferedFs(
     setMetadata(authoritativeRoot, authoritativeRootMetadata);
   }
   for (const [path, entry] of initialMetadata) setMetadata(path, entry);
+  for (const path of initialDirectories) recordDirectory(path);
 
   function bufferedOwnership(extraPath, includeParents = true) {
     const paths = new Set(deleteBuffer);
@@ -2243,6 +2315,7 @@ export default {
       supervisorRpc: createSupervisorRpcCounters(),
     };
     let mutated = false;
+    let cold = false;
     let lastProgress = null;
     const respond = (success, payload = {}, status = 200) => {
       const endedAt = Date.now();
@@ -2256,6 +2329,7 @@ export default {
         filesWritten: stats.filesWritten,
         bytesWritten: stats.bytesWritten,
         supervisorRpc: stats.supervisorRpc,
+        cold: phase === 'clone-checkout' ? cold : undefined,
         diagnostic: {
           phase,
           invocationId,
@@ -2268,6 +2342,7 @@ export default {
           lastProgress,
           w7Waves: stats.supervisorRpc.writeBatchStream,
           supervisorRpc: stats.supervisorRpc,
+          cold: phase === 'clone-checkout' ? cold : undefined,
         },
       }, { status });
     };
@@ -2339,6 +2414,7 @@ export default {
       let authoritativeRoot = null;
       let authoritativeRootMetadata = null;
       let initialMetadata = [];
+      let initialDirectories = [];
       let prepared = null;
       let checkoutResult = null;
       const phaseDeadline = phase === 'operation'
@@ -2411,6 +2487,7 @@ export default {
         if (opts.op !== 'clone') throw protocolError('checkout requires clone operation');
         prepared = validatePreparedClone(opts.prepared, opts);
         const warmJob = cloneJobs.get(opts.jobId);
+        cold = !warmJob;
         if (warmJob &&
             (warmJob.optionsHash !== opts.optionsHash ||
              warmJob.prepared.commit !== prepared.commit ||
@@ -2425,6 +2502,11 @@ export default {
             (!opts.checkoutCursor || typeof opts.checkoutCursor !== 'object' ||
              Array.isArray(opts.checkoutCursor))) {
           throw protocolError('checkout cursor is invalid');
+        }
+        if (opts.checkoutCursor !== null) {
+          const cloneRoot = normalizePath(opts.dir);
+          initialDirectories = validateCheckoutDirectories(opts.checkoutCursor.directories)
+            .map(path => cloneRoot + '/' + path);
         }
         if (!opts.checkoutBounds || typeof opts.checkoutBounds !== 'object') {
           throw protocolError('checkout bounds are invalid');
@@ -2456,6 +2538,7 @@ export default {
         authoritativeRoot,
         authoritativeRootMetadata,
         initialMetadata,
+        initialDirectories,
         phaseDeadline,
         phase === 'clone-checkout'
           ? [normalizePath(opts.dir) + '/.git/index']
@@ -2707,6 +2790,7 @@ export default {
       if (phase === 'clone-prepare') cloneJobs.delete(opts.jobId);
       return respond(false, {
         error: (e && e.message) || String(e),
+        errorCode: e && typeof e.code === 'string' ? e.code : undefined,
         metadataOverlay: overlayStats(),
       });
     }

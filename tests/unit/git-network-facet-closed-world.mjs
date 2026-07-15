@@ -151,6 +151,7 @@ export const git = {
             version: 1,
             tree: '2'.repeat(40),
             stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 1 }],
+            directories: [],
           },
           files: 1,
           decodedBytes: 5,
@@ -906,6 +907,7 @@ export const git = {
     version: 1,
     tree: '2'.repeat(40),
     stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 1 }],
+    directories: [],
   };
   assert.ok(
     continuationMarkerWaves.some(({ paths, marker }) =>

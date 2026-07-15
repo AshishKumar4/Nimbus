@@ -98,7 +98,10 @@ export interface GitNetworkPhaseDiagnostic {
     };
     w7Waves: number;
     supervisorRpc: GitSupervisorRpcCounters;
+    /** Whether clone-checkout started without module-local job state. */
+    cold?: boolean;
 }
+export type GitNetworkErrorCode = 'GitCloneBudgetExceeded' | 'FreshCheckoutDirectoryLimitError';
 export interface GitNetworkResult {
     success: boolean;
     error?: string;
@@ -109,7 +112,7 @@ export interface GitNetworkResult {
     metadataOverlay: GitMetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
-    errorCode?: 'GitCloneBudgetExceeded';
+    errorCode?: GitNetworkErrorCode;
     budget?: GitCloneBudgetDiagnostic;
     cleanupError?: string;
 }

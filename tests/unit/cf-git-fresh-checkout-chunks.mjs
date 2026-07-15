@@ -276,6 +276,16 @@ try {
   } while (cursor !== null);
 
   assert.equal(chunks[0].nextCursor.tree, tree);
+  assert.deepEqual(
+    chunks[0].nextCursor.directories,
+    ['large'],
+    'continuation cursor did not carry the directory created by its committed chunk',
+  );
+  assert.ok(
+    chunks.every((chunk, index) => chunk.nextCursor === null ||
+      chunk.nextCursor.directories.length >= (chunks[index - 1]?.nextCursor?.directories.length || 0)),
+    'continuation cursor lost previously committed directory knowledge',
+  );
   assert.ok(
     chunks.some(chunk => chunk.nextCursor?.stack.some(
       frame => frame.path === 'large' && frame.nextChildIndex > 0,
@@ -324,6 +334,40 @@ try {
       maxWallMs: 60_000,
     }),
     /does not match its parent tree/,
+  );
+  await assert.rejects(
+    () => git.checkoutFreshChunk({
+      fs,
+      dir: root,
+      cursor: {
+        ...chunks[0].nextCursor,
+        directories: Array.from({ length: 20_001 }, (_, index) => `dir-${index}`),
+      },
+      maxEntries: 4,
+      maxDecodedBytes: 1024,
+      maxWallMs: 60_000,
+    }),
+    (error) => error?.code === 'FreshCheckoutDirectoryLimitError' &&
+      error.data?.directories === 20_001 &&
+      error.data?.maxDirectories === 20_000,
+    'directory-count overflow did not fail with the typed resource limit',
+  );
+  await assert.rejects(
+    () => git.checkoutFreshChunk({
+      fs,
+      dir: root,
+      cursor: {
+        ...chunks[0].nextCursor,
+        directories: Array.from({ length: 1_500 }, (_, index) =>
+          `dir-${index}-`.padEnd(3_000, 'x')),
+      },
+      maxEntries: 4,
+      maxDecodedBytes: 1024,
+      maxWallMs: 60_000,
+    }),
+    (error) => error?.code === 'FreshCheckoutDirectoryLimitError' &&
+      error.data?.directoryBytes > error.data?.maxDirectoryBytes,
+    'directory-byte overflow did not fail with the typed resource limit',
   );
 
   const wallRoot = join(temp, 'wall-bound');

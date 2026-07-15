@@ -10,14 +10,16 @@ let loadCount = 0;
 let entrypointCount = 0;
 let committedFailurePrefix = false;
 let abortObservedPrefix = false;
+const terminalLines = [];
 const continuationCursor = {
   version: 1,
   tree: '2'.repeat(40),
   stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 3 }],
+  directories: ['src'],
 };
 
 const supervisor = {
-  async stdout() {},
+  async stdout(message) { terminalLines.push(message); },
   [Symbol.dispose]() { supervisorDisposeCount++; },
 };
 
@@ -91,6 +93,17 @@ const entrypoint = {
 
     assert.equal(body.phase, 'clone-checkout');
     assert.equal(prepareDurable, true, 'checkout started before prepare became durable');
+    if (body.dir === '/directory-limit') {
+      return Response.json({
+        success: false,
+        error: 'git clone checkout directories exceeded their bound',
+        errorCode: 'FreshCheckoutDirectoryLimitError',
+        filesWritten: 0,
+        bytesWritten: 0,
+        supervisorRpc: {},
+        metadataOverlay: { entries: 5, accountedBytes: 640 },
+      });
+    }
     if (body.dir === '/failure') {
       committedFailurePrefix = true;
       return Response.json({
@@ -112,6 +125,7 @@ const entrypoint = {
         filesWritten: 2,
         bytesWritten: 6,
         supervisorRpc: { writeBatchStream: 1 },
+        cold: true,
         metadataOverlay: { entries: 6, accountedBytes: 768 },
       });
     }
@@ -125,6 +139,7 @@ const entrypoint = {
       filesWritten: 2,
       bytesWritten: 6,
       supervisorRpc: { writeBatchStream: 1 },
+      cold: false,
       metadataOverlay: { entries: 6, accountedBytes: 768 },
     });
   },
@@ -180,7 +195,7 @@ assert.deepEqual(calls[2].body.checkoutCursor, continuationCursor);
 assert.deepEqual(calls[1].body.checkoutBounds, {
   maxEntries: 10_000,
   maxDecodedBytes: 32 * 1024 * 1024,
-  maxWallMs: 20_000,
+  maxWallMs: 150_000,
 });
 assert.deepEqual(calls[1].body.prepared, calls[0].body.phase === 'clone-prepare'
   ? {
@@ -204,6 +219,10 @@ assert.deepEqual(calls[1].body.prepared, calls[0].body.phase === 'clone-prepare'
 assert.equal(result.filesWritten, 8);
 assert.equal(result.bytesWritten, 30);
 assert.equal(result.supervisorRpc.writeBatchStream, 3);
+const chunkLines = terminalLines.filter(line => line.includes('clone-checkout chunk'));
+assert.equal(chunkLines.length, 2, 'checkout emitted more than one terminal line per chunk');
+assert.match(chunkLines[0], /chunk 1 complete .*w7=1 rpc=1 cold=yes\)/s);
+assert.match(chunkLines[1], /chunk 2 complete .*w7=1 rpc=1 cold=no\)/s);
 
 const callsBeforeFailure = calls.length;
 prepareDurable = false;
@@ -231,6 +250,22 @@ assert.deepEqual(failureCalls.map(({ body }) => body.phase), [
 ]);
 assert.equal(abortObservedPrefix, true, 'abort did not leave the committed worktree prefix inspectable');
 assert.equal(failed.filesWritten, 5, 'partial checkout writes were not reported');
+
+prepareDurable = false;
+const directoryLimit = await execGitNetwork(
+  { id: { toString: () => 'test-do' } },
+  env,
+  {
+    op: 'clone',
+    dir: '/directory-limit',
+    url: 'https://example.invalid/repo.git',
+    exclusiveDestination: true,
+    exclusiveMutationRoot: 'directory-limit',
+    mutationOwner: 'owner',
+  },
+);
+assert.equal(directoryLimit.success, false);
+assert.equal(directoryLimit.errorCode, 'FreshCheckoutDirectoryLimitError');
 
 const callsBeforeExisting = calls.length;
 const existing = await execGitNetwork(

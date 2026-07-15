@@ -1,56 +1,26 @@
+diff --git a/index.js b/index.js
+index 80a5167..c33c378 100644
 --- a/index.js
 +++ b/index.js
-@@ -1073,11 +1073,15 @@
-    * @param {string} opts.gitdir - The path to the `.git` directory.
-    * @param {object} opts.cache - A shared cache object for storing index data.
-    * @param {boolean} [opts.allowUnmerged=true] - Whether to allow unmerged paths in the index.
+@@ -1075,0 +1076 @@ class GitIndexManager {
 +   * @param {boolean} [opts.trustIndexCache=false] - Skip the stat check when the caller exclusively owns index mutation.
-    * @param {function(GitIndex): any} closure - A function to execute with the Git index.
-    * @returns {Promise<any>} The result of the closure function.
-    * @throws {UnmergedPathsError} If unmerged paths exist and `allowUnmerged` is `false`.
-    */
+@@ -1080 +1081,4 @@ class GitIndexManager {
 -  static async acquire({ fs, gitdir, cache, allowUnmerged = true }, closure) {
 +  static async acquire(
 +    { fs, gitdir, cache, allowUnmerged = true, trustIndexCache = false },
 +    closure
 +  ) {
-     if (!cache[IndexCache]) {
-       cache[IndexCache] = createCache();
-     }
-@@ -1092,7 +1096,8 @@
-       // simultaneously, which could result in a corrupted index.
-       // const fileLock = await Lock(filepath)
-       const theIndexCache = cache[IndexCache];
+@@ -1095 +1099,2 @@ class GitIndexManager {
 -      if (await isIndexStale(fs, filepath, theIndexCache)) {
 +      if (!theIndexCache.map.has(filepath) ||
 +          (!trustIndexCache && await isIndexStale(fs, filepath, theIndexCache))) {
-         await updateCachedIndexFile(fs, filepath, theIndexCache);
-       }
-       const index = theIndexCache.map.get(filepath);
-@@ -3173,9 +3178,11 @@
-       type = listpackTypes[type];
-
-       if (['commit', 'tree', 'blob', 'tag'].includes(type)) {
+@@ -3175,0 +3181 @@ class GitPackIndex {
 +        const oid = await shasum(GitObject.wrap({ type, object: data }));
-         offsetToObject[offset] = {
-           type,
-           offset,
+@@ -3178,0 +3185 @@ class GitPackIndex {
 +          oid,
-         };
-       } else if (type === 'ofs-delta') {
-         offsetToObject[offset] = {
-@@ -3214,7 +3221,6 @@
-     // Resolve deltas and compute the oids
-     lastPercent = null;
-     let count = 0;
+@@ -3217 +3223,0 @@ class GitPackIndex {
 -    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-     for (let offset in offsetToObject) {
-       offset = Number(offset);
-       const percent = Math.floor((count * 100) / totalObjectCount);
-@@ -3231,12 +3237,14 @@
-       lastPercent = percent;
-
-       const o = offsetToObject[offset];
+@@ -3234 +3240,6 @@ class GitPackIndex {
 -      if (o.oid) continue
 +      if (o.oid) {
 +        hashes.push(o.oid);
@@ -58,56 +28,35 @@
 +        crcs[o.oid] = o.crc;
 +        continue
 +      }
-       try {
+@@ -3236,2 +3246,0 @@ class GitPackIndex {
 -        p.readDepth = 0;
 -        p.externalReadDepth = 0;
-         const { type, object } = await p.readSlice({ start: offset });
+@@ -3239 +3247,0 @@ class GitPackIndex {
 -        objectsByDepth[p.readDepth] += 1;
-         const oid = await shasum(GitObject.wrap({ type, object }));
-         o.oid = oid;
-         hashes.push(oid);
-@@ -3262,11 +3270,13 @@
-     write('00000002', 'hex');
-     // Write fanout table
-     const fanoutBuffer = new BufferCursor(Buffer.alloc(256 * 4));
+@@ -3264,0 +3273,5 @@ class GitPackIndex {
 +    const fanout = new Uint32Array(256);
 +    for (const hash of this.hashes) {
 +      fanout[parseInt(hash.slice(0, 2), 16)]++;
 +    }
 +    let count = 0;
-     for (let i = 0; i < 256; i++) {
+@@ -3266,4 +3279 @@ class GitPackIndex {
 -      let count = 0;
 -      for (const hash of this.hashes) {
 -        if (parseInt(hash.slice(0, 2), 16) <= i) count++;
 -      }
 +      count += fanout[i];
-       fanoutBuffer.writeUInt32BE(count);
-     }
-     buffers.push(fanoutBuffer.buffer);
-@@ -3304,91 +3314,109 @@
-     this.pack = null;
-   }
-
+@@ -3307 +3317 @@ class GitPackIndex {
 -  async read({ oid }) {
 +  async read({ oid, readContext = { depth: 0 } }) {
-     if (!this.offsets.get(oid)) {
-       if (this.getExternalRefDelta) {
+@@ -3310 +3319,0 @@ class GitPackIndex {
 -        this.externalReadDepth++;
-         return this.getExternalRefDelta(oid)
-       } else {
-         throw new InternalError(`Could not read object ${oid} from packfile`)
-       }
-     }
-     const start = this.offsets.get(oid);
+@@ -3317 +3326 @@ class GitPackIndex {
 -    return this.readSlice({ start })
 +    return this.readSlice({ start, readContext })
-   }
-
+@@ -3320 +3329 @@ class GitPackIndex {
 -  async readSlice({ start }) {
 +  async readSlice({ start, readContext = { depth: 0 } }) {
-     if (this.offsetCache[start]) {
-       return Object.assign({}, this.offsetCache[start])
-     }
+@@ -3324,61 +3333,69 @@ class GitPackIndex {
 -    this.readDepth++;
 -    const types = {
 -      0b0010000: 'commit',
@@ -238,13 +187,9 @@
 +      return { type, format: 'content', object }
 +    } finally {
 +      readContext.depth--;
-     }
+@@ -3386 +3402,0 @@ class GitPackIndex {
 -    return { type, format: 'content', object }
-   }
- }
-
- const PackfileCache = Symbol('PackfileCache');
-
+@@ -3391,0 +3408,12 @@ const PackfileCache = Symbol('PackfileCache');
 +const packIndexCacheKey = (gitdir, filename) =>
 +  `${gitdir}/objects/pack/${filename}`;
 +
@@ -257,33 +202,15 @@
 +  cache[PackfileCache].set(filename, Promise.resolve(index));
 +}
 +
- async function loadPackIndex({
-   fs,
-   filename,
-@@ -3437,7 +3465,7 @@
-   let list = await fs.readdir(join(gitdir, 'objects/pack'));
-   list = list.filter(x => x.endsWith('.idx'));
-   for (const filename of list) {
+@@ -3440 +3468 @@ async function readObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-     const p = await readPackIndex({
-       fs,
-       cache,
-@@ -4522,7 +4550,9 @@
-     const { fs, dir } = this;
-     const names = await fs.readdir(join(dir, filepath));
-     if (names === null) return null
+@@ -4525 +4553,3 @@ class GitWalkerFs {
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-   }
-
-   async type(entry) {
-@@ -6653,11 +6683,13 @@
-   if (filepath === '.' || root == null || root.length === 0 || root === '.') {
-     return true
-   }
+@@ -6656,5 +6686,7 @@ const worthWalking = (filepath, root) => {
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -296,13 +223,7 @@
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
- };
-
- // @ts-check
-@@ -7307,15 +7339,11 @@
- }
-
- async function updateIndex({ index, fullpath, stats, oid }) {
+@@ -7310,9 +7342,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -317,13 +238,7 @@
 +    stats,
 +    oid,
 +  });
- }
- async function updateWorkingDir(
-   { fs, cache, gitdir, dir },
-@@ -7354,27 +7382,32 @@
-
- async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
-   const results = [];
+@@ -7357,6 +7385,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -343,7 +258,7 @@
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-       });
+@@ -7364,7 +7398,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -351,12 +266,12 @@
 -          total: tasks.length,
 -        });
 -      }
-     }
+@@ -7372,4 +7399,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-   }
+@@ -7377 +7401,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -368,14 +283,10 @@
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-   return results
- }
-
-@@ -7484,6 +7517,290 @@
-   }
- }
-
+@@ -7486,0 +7520,361 @@ async function checkout({
 +const freshCheckoutOidPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
++const freshCheckoutMaxDirectories = 20_000;
++const freshCheckoutMaxDirectoryBytes = 4 * 1024 * 1024;
 +
 +function freshCheckoutError(message) {
 +  return new InternalError(`Fresh checkout: ${message}`)
@@ -389,6 +300,24 @@
 +    );
 +    this.code = this.name = 'FreshCheckoutResourceLimitError';
 +    this.data = { filepath, decodedBytes, maxDecodedBytes };
++  }
++}
++
++class FreshCheckoutDirectoryLimitError extends BaseError {
++  constructor(directories, directoryBytes) {
++    super(
++      `Fresh checkout: directory cursor exceeds its bound ` +
++      `(${directories} directories, ${directoryBytes} bytes; max ` +
++      `${freshCheckoutMaxDirectories} directories, ` +
++      `${freshCheckoutMaxDirectoryBytes} bytes)`
++    );
++    this.code = this.name = 'FreshCheckoutDirectoryLimitError';
++    this.data = {
++      directories,
++      directoryBytes,
++      maxDirectories: freshCheckoutMaxDirectories,
++      maxDirectoryBytes: freshCheckoutMaxDirectoryBytes,
++    };
 +  }
 +}
 +
@@ -414,6 +343,42 @@
 +  }
 +}
 +
++function validateFreshCheckoutDirectories(value) {
++  if (value === undefined) return { directories: new Set(), directoryBytes: 0 }
++  if (!Array.isArray(value)) {
++    throw freshCheckoutError('cursor directories are invalid')
++  }
++  if (value.length > freshCheckoutMaxDirectories) {
++    throw new FreshCheckoutDirectoryLimitError(value.length, 0)
++  }
++  const directories = new Set();
++  let directoryBytes = 0;
++  for (const path of value) {
++    if (typeof path !== 'string' || path.length === 0 || path.length > 4096 ||
++        path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') ||
++        directories.has(path)) {
++      throw freshCheckoutError('cursor directory is invalid')
++    }
++    directoryBytes += Buffer.byteLength(path);
++    if (directoryBytes > freshCheckoutMaxDirectoryBytes) {
++      throw new FreshCheckoutDirectoryLimitError(value.length, directoryBytes)
++    }
++    directories.add(path);
++  }
++  return { directories, directoryBytes }
++}
++
++function addFreshCheckoutDirectory(directories, directoryBytes, path) {
++  if (directories.has(path)) return directoryBytes
++  const nextBytes = directoryBytes + Buffer.byteLength(path);
++  if (directories.size + 1 > freshCheckoutMaxDirectories ||
++      nextBytes > freshCheckoutMaxDirectoryBytes) {
++    throw new FreshCheckoutDirectoryLimitError(directories.size + 1, nextBytes)
++  }
++  directories.add(path);
++  return nextBytes
++}
++
 +async function readFreshCheckoutTree({ fs, cache, gitdir, oid }) {
 +  const { type, object } = await _readObject({ fs, cache, gitdir, oid });
 +  if (type !== 'tree') throw new ObjectTypeError(oid, type, 'tree')
@@ -423,6 +388,13 @@
 +function strictFreshCheckoutFs(input) {
 +  const base = new FileSystem(input);
 +  const fs = Object.create(base);
++  const assertParentDirectory = async function(filepath) {
++    const parent = dirname(filepath);
++    const stats = await this._lstat(parent);
++    if (!stats || !stats.isDirectory()) {
++      throw freshCheckoutError(`parent directory is missing for ${filepath}`)
++    }
++  };
 +  fs.read = async function(filepath, options = {}) {
 +    try {
 +      const value = await this._readFile(filepath, options);
@@ -444,16 +416,19 @@
 +    }
 +  };
 +  fs.write = async function(filepath, contents, options = {}) {
++    await assertParentDirectory.call(this, filepath);
 +    await this._writeFile(filepath, contents, options);
 +  };
 +  fs.mkdir = async function(filepath) {
 +    try {
++      await assertParentDirectory.call(this, filepath);
 +      await this._mkdir(filepath);
 +    } catch (error) {
 +      if (!error || error.code !== 'EEXIST') throw error
 +    }
 +  };
 +  fs.writelink = async function(filepath, buffer) {
++    await assertParentDirectory.call(this, filepath);
 +    try {
 +      await this._unlink(filepath);
 +    } catch (error) {
@@ -466,7 +441,11 @@
 +
 +async function validateFreshCheckoutCursor({ fs, cache, gitdir, treeOid, cursor }) {
 +  if (cursor === null || cursor === undefined) {
-+    return [{ treeOid, path: '', nextChildIndex: 0 }]
++    return {
++      stack: [{ treeOid, path: '', nextChildIndex: 0 }],
++      directories: new Set(),
++      directoryBytes: 0,
++    }
 +  }
 +  if (!cursor || typeof cursor !== 'object' || cursor.version !== 1 ||
 +      cursor.tree !== treeOid || !Array.isArray(cursor.stack) ||
@@ -474,6 +453,7 @@
 +    throw freshCheckoutError('cursor does not match the resolved tree')
 +  }
 +  const stack = cursor.stack.map(validateFreshCheckoutFrame);
++  const { directories, directoryBytes } = validateFreshCheckoutDirectories(cursor.directories);
 +  if (stack[0].treeOid !== treeOid || stack[0].path !== '') {
 +    throw freshCheckoutError('cursor root frame does not match the resolved tree')
 +  }
@@ -505,7 +485,7 @@
 +      throw freshCheckoutError(`cursor frame ${index} does not match its parent tree`)
 +    }
 +  }
-+  return stack
++  return { stack, directories, directoryBytes }
 +}
 +
 +/**
@@ -538,13 +518,15 @@
 +    const fs = strictFreshCheckoutFs(inputFs);
 +    const commitOid = await GitRefManager.resolve({ fs, gitdir, ref });
 +    const { oid: treeOid } = await resolveTree({ fs, cache, gitdir, oid: commitOid });
-+    const stack = await validateFreshCheckoutCursor({
++    const checkoutCursor = await validateFreshCheckoutCursor({
 +      fs,
 +      cache,
 +      gitdir,
 +      treeOid,
 +      cursor,
 +    });
++    const { stack, directories } = checkoutCursor;
++    let directoryBytes = checkoutCursor.directoryBytes;
 +    const startedAt = Date.now();
 +    const trees = new Map();
 +    let files = 0;
@@ -607,12 +589,14 @@
 +          }
 +
 +          if (mode === 0o040000) {
++            directoryBytes = addFreshCheckoutDirectory(directories, directoryBytes, fullpath);
 +            await fs.mkdir(filepath);
 +          } else if (mode === 0o100644 || mode === 0o100755) {
 +            await fs.write(filepath, object, mode === 0o100755 ? { mode: 0o777 } : {});
 +          } else if (mode === 0o120000) {
 +            await fs.writelink(filepath, object);
 +          } else if (mode === 0o160000) {
++            directoryBytes = addFreshCheckoutDirectory(directories, directoryBytes, fullpath);
 +            await fs.mkdir(filepath);
 +          } else {
 +            throw freshCheckoutError(
@@ -647,7 +631,9 @@
 +    );
 +
 +    return {
-+      nextCursor: stack.length === 0 ? null : { version: 1, tree: treeOid, stack },
++      nextCursor: stack.length === 0
++        ? null
++        : { version: 1, tree: treeOid, stack, directories: [...directories] },
 +      files,
 +      decodedBytes,
 +      treeEntriesVisited,
@@ -659,41 +645,17 @@
 +  }
 +}
 +
- // @see https://git-scm.com/docs/git-rev-parse.html#_specifying_revisions
- const abbreviateRx = new RegExp('^refs/(heads/|tags/|remotes/)?(.*)');
-
-@@ -8152,7 +8469,7 @@
-   let list = await fs.readdir(join(gitdir, 'objects/pack'));
-   list = list.filter(x => x.endsWith('.idx'));
-   for (const filename of list) {
+@@ -8155 +8549 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-     const p = await readPackIndex({
-       fs,
-       cache,
-@@ -8890,7 +9207,9 @@
-       getExternalRefDelta,
-       onProgress,
-     });
+@@ -8893 +9287,3 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-   }
-   return res
- }
-@@ -9549,7 +9868,7 @@
-   let list = await fs.readdir(join(gitdir, 'objects/pack'));
-   list = list.filter(x => x.endsWith('.idx'));
-   for (const filename of list) {
+@@ -9552 +9948 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-     const p = await readPackIndex({
-       fs,
-       cache,
-@@ -17573,4 +17892,4 @@
- };
-
- export default index;
+@@ -17576 +17972 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
