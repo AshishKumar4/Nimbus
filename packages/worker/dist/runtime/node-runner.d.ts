@@ -56,18 +56,13 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { FacetBundleProfile } from './bundle-profile.js';
 /**
- * Argv-only long-running detection. The ONLY signals we honour:
+ * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)
  *   --inspect     (node --inspect)
  *   --inspect-brk (node --inspect-brk)
- *
- * No content sniff; no heuristic over the script source. False-positive
- * class is gone. False-negative class is "user runs a server without
- * --watch and the supervisor RPC blocks for 5 min" — accepted; users
- * are guided in docs to add `--watch` for keep-alive servers OR rely
- * on the 5-min timeout to recover.
  */
 export declare function isLongRunningInvocation(args: string[]): boolean;
+export declare function looksLikeServer(code: string): boolean;
 /** Result of a `runFresh` call. */
 export interface RunFreshResult {
     exitCode: number;

@@ -350,36 +350,6 @@ ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 const USER_CODE = ${safeCode};
 const __NimbusHostResponse = globalThis.Response;
 
-// A shell-launched server (\`node server.js\` doing http.createServer().listen())
-// runs on this one-shot entrypoint, not the \`--watch\` long-running facet. When
-// it binds a port the http shim calls SUPERVISOR.registerPort and the supervisor
-// binds THIS entrypoint as the port's route stub, so external /port/<n> and
-// in-session loopback curl reach the in-facet server for the facet's lifetime.
-// Routed requests arrive on fetch() carrying the X-Nimbus-Port header (set by
-// PortRegistry.routeRequest); we dispatch them to the shim server registry
-// instead of re-running the script.
-async function __nimbusOneShotDispatchHttp(request) {
-  const url = new URL(request.url);
-  const ports = globalThis.__portRegistry;
-  const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);
-  const server = ports && (ports.get(hinted) || ports.values().next().value);
-  if (!server || typeof server._handleRequest !== "function") {
-    return new __NimbusHostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
-  }
-  const headers = {};
-  request.headers.forEach((v, k) => { headers[k] = v; });
-  let body = "";
-  if (request.method !== "GET" && request.method !== "HEAD") body = await request.text();
-  const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
-  if (!res._ended) {
-    await new Promise((resolve) => {
-      try { res.on("finish", resolve); } catch { resolve(); }
-      setTimeout(resolve, 5000);
-    });
-  }
-  return new __NimbusHostResponse((res._body || []).join(""), { status: res.statusCode || 200, headers: res.headers || {} });
-}
-
 function __mkCompiledFn(code) {
   // Node strips a leading shebang from every module before evaluation;
   // bin scripts are commonly bundled verbatim with their
@@ -437,11 +407,6 @@ class __ProcessExit extends Error {
 
 export default {
   async fetch(request, workerEnv) {
-    // Routed HTTP request (external /port/<n> or in-session loopback curl) —
-    // serve it from the in-facet http server instead of re-running the script.
-    if (request.headers.has("X-Nimbus-Port")) {
-      return __nimbusOneShotDispatchHttp(request);
-    }
     const args = await request.json();
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, diag: __diag } = args;
     let __drainPasses = 0;
@@ -2709,11 +2674,6 @@ export class FacetManager {
             if (typeof entrypoint.fetch !== 'function') {
                 throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
             }
-            // Bind this entrypoint as the pid's route stub BEFORE the script runs, so
-            // that when user code calls http.listen() (→ SUPERVISOR.registerPort) the
-            // port resolves to a routeable handler. A one-shot facet that never binds
-            // a port leaves this stub unreferenced; the finally below drops it.
-            this.portRegistry.bindFacetStub(entry.pid, entrypoint);
             if (diagSink)
                 diagSink.loadMs = Date.now() - __loadStart;
             const __runStart = diagSink ? Date.now() : 0;
@@ -2733,8 +2693,11 @@ export class FacetManager {
             }
         }
         finally {
-            // Drop any port routes bound to this pid before the entrypoint stub is
-            // disposed, so a torn-down facet never lingers as a routeable target.
+            // A one-shot facet is unkeyed (LOADER.load) and cannot be re-resolved
+            // into a later request's context, so it can never be a routeable target
+            // (server scripts are promoted to the keyed long-running facet instead).
+            // But its http shim still calls SUPERVISOR.registerPort on listen(); drop
+            // any such reservation here so a dead facet leaves no stale null-stub port.
             this.portRegistry.unregisterByPid(entry.pid);
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);

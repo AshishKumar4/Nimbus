@@ -2,17 +2,19 @@
 // Port-registry routeable-stub association.
 //
 // A shell-launched server — `node server.js` doing
-// http.createServer().listen(5000) — runs on the one-shot exec facet, not the
-// `--watch` long-running facet. FacetManager binds that facet's entrypoint as
-// the pid's route stub (PortRegistry.bindFacetStub) BEFORE the script runs;
-// when user code calls listen(), the http shim calls SUPERVISOR.registerPort
-// which lands as register(port, pid, null). This test pins that contract:
+// http.createServer().listen(5000) — is promoted to the keyed long-running
+// facet (spawnNode). spawnNode binds that facet's re-resolvable
+// NimbusLoadedEntrypoint as the pid's route stub (PortRegistry.bindFacetStub)
+// BEFORE the script runs; when user code calls listen(), the http shim calls
+// SUPERVISOR.registerPort which lands as register(port, pid, null), resolving to
+// the pid-bound stub. This test pins that association contract:
 //
 //   1. bindFacetStub(pid) THEN register(port, pid, null) → routeRequest reaches
 //      the bound stub (external /port/<n> AND in-session loopback curl).
-//   2. a null-stub reservation with NO bound stub → routeRequest returns an
-//      honest 501, never a route to a non-existent handler.
-//   3. an explicit routeable stub (the vite/long-running path) routes too.
+//   2. a null-stub reservation with NO bound stub (a one-shot exec facet whose
+//      unkeyed stub is never bound) → routeRequest returns an honest 501, never
+//      a route to a non-existent handler.
+//   3. an explicit routeable stub (the vite/makeLongRunningPortStub path) routes.
 //   4. unregisterByPid (facet teardown) drops the route so a disposed facet
 //      never lingers as a routeable target.
 

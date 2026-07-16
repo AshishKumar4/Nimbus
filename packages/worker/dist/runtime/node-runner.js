@@ -55,16 +55,10 @@
  */
 import { resolveLongRunningPort } from './long-running-handle.js';
 /**
- * Argv-only long-running detection. The ONLY signals we honour:
+ * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)
  *   --inspect     (node --inspect)
  *   --inspect-brk (node --inspect-brk)
- *
- * No content sniff; no heuristic over the script source. False-positive
- * class is gone. False-negative class is "user runs a server without
- * --watch and the supervisor RPC blocks for 5 min" — accepted; users
- * are guided in docs to add `--watch` for keep-alive servers OR rely
- * on the 5-min timeout to recover.
  */
 export function isLongRunningInvocation(args) {
     for (const a of args) {
@@ -76,6 +70,26 @@ export function isLongRunningInvocation(args) {
             return true;
     }
     return false;
+}
+/**
+ * A shell-launched server — `node server.js` doing http.createServer().listen()
+ * (or express `app.listen()`, `Bun.serve()`, net.createServer(), …) — must run
+ * in the KEYED long-running facet (spawnNode), not the one-shot exec facet: only
+ * the keyed facet exposes a re-resolvable NimbusLoadedEntrypoint route stub, so
+ * external `/port/<n>` and in-session loopback `curl` reach the server. The
+ * one-shot facet is `LOADER.load` (unkeyed) and its stub cannot be re-entered
+ * from a later request's context, so it is never routeable.
+ *
+ * Argv flags (`--watch`) can't express "this script binds a port", so we detect
+ * the bind at the only place it is knowable ahead of running: a listen/serve
+ * call in the source. A false positive (source mentions `.listen(` but exits)
+ * only means the script runs in the persistent facet instead of the one-shot
+ * one — identical observable behaviour to `node --watch <script>`. A miss keeps
+ * the pre-existing "unreachable one-shot server" behaviour, never a regression.
+ */
+const SERVER_BIND_RE = /\.listen\s*\(|\bcreateServer\s*\(|\bserve\s*\(/;
+export function looksLikeServer(code) {
+    return SERVER_BIND_RE.test(code);
 }
 /**
  * Build a small Worker Loader entrypoint that wraps the user's `code`
@@ -126,7 +140,15 @@ function buildLongRunningEntrypoint(code) {
  */
 export async function runFresh(facetMgr, code, opts) {
     const args = opts.argv || [];
-    if (!opts.forceLongRunning && !isLongRunningInvocation(args)) {
+    // Promote server-shaped scripts to the keyed long-running facet even without
+    // an explicit --watch flag: it is the only path whose route stub is
+    // re-resolvable across requests, so its bound port is actually reachable.
+    // .bin wrapper invocations (skipSpawn) keep the one-shot fast path — those
+    // are CLIs, and their PID accounting assumes a single foreground exec.
+    const wantsLongRunning = opts.forceLongRunning ||
+        isLongRunningInvocation(args) ||
+        (!opts.skipSpawn && looksLikeServer(code));
+    if (!wantsLongRunning) {
         // Short path: fresh-isolate-per-call via facetMgr.exec.
         // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
         // invocation gets a fresh isolate; warm slots are reused only
@@ -139,9 +161,10 @@ export async function runFresh(facetMgr, code, opts) {
             longRunning: false,
         };
     }
-    // Long path: argv flag --watch/--inspect/--inspect-brk explicitly
-    // opts in. Fork to a long-lived Worker Loader via facetMgr.spawn
-    // (LOADER.load — one-shot, not cached). Returns immediately with
+    // Long path: an argv flag (--watch/--inspect/--inspect-brk) or a server-bind
+    // in the source opted in. Fork to a keyed long-lived facet via
+    // facetMgr.spawnNode — its NimbusLoadedEntrypoint route stub is re-resolvable
+    // across requests, so a bound port is reachable. Returns immediately with
     // {pid, facetStub}.
     const command = opts.command || `node ${opts.filename || '<script>'}`;
     const workerCode = buildLongRunningEntrypoint(code);
