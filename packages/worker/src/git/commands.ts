@@ -313,6 +313,12 @@ export function registerGitCommands(
                 exclusiveDestination: true,
                 exclusiveMutationRoot: mutationLease.root,
                 mutationOwner: mutationLease.owner,
+                // Verification/tuning knob: force a small per-chunk entry bound
+                // so ordinary repos exercise the multi-invocation chunked
+                // checkout path. Unset in production → the 10k default applies.
+                checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
+                  ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
+                  : undefined,
                 auth: {
                   username: ctx.env.GIT_USERNAME || '',
                   password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
