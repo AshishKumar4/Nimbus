@@ -608,14 +608,18 @@ function __wasiMakeImports(opts) {
 
   let stdoutBuf = '';
   let stderrBuf = '';
+  // A sink and the readable buffer are mutually exclusive: with a sink the
+  // output is forwarded live (the resident TUI runs for hours), so accumulating
+  // it too would grow stdoutBuf/stderrBuf without bound inside the facet. Absent
+  // a sink the buffer stays readable via getStdout()/getStderr().
   function appendStream(kind, bytes) {
     const s = utf8dec.decode(bytes);
     if (kind === 'stdout') {
-      stdoutBuf += s;
       if (opts.stdoutWrite) opts.stdoutWrite(s);
+      else stdoutBuf += s;
     } else {
-      stderrBuf += s;
       if (opts.stderrWrite) opts.stderrWrite(s);
+      else stderrBuf += s;
     }
   }
 

@@ -309,6 +309,162 @@ if (!globalThis.__nimbusOpenTUIBackend && !existsSync2(targetLibPath)) {
     file,
   )
 
+  // Seam 9 — span-feed consumption acks through LIVE wasm memory. The Zig core
+  // (NativeSpanFeed) tracks chunk refcounts in a state_buffer it hands the host
+  // by pointer; the ONLY way a chunk is ever freed for reuse is the host writing
+  // a decrement directly into that shared memory (there is no markChunkFree FFI
+  // export). On native FFI `toArrayBuffer(statePtr,…)` is a LIVE window, so
+  // `decrementRefcount` writing into `this.stateBuffer` IS the ack. The Nimbus
+  // `toArrayBuffer` is a detach-safe SNAPSHOT (correct for read-then-decode
+  // callers), so the upstream event-8 snapshot + write-back would decrement a
+  // DEAD copy — Zig's real state_buffer only ever increments, no chunk is ever
+  // reused, and `addChunkLocked` mallocs a fresh 64KiB chunk every frame until
+  // the isolate OOMs (and `hasPinnedChunks()`/`idle()` wedge on stale counts).
+  //
+  // When the registry backend is active: event-8 stores {backend,ptr,len} (the
+  // backend ref captured so the refcount path never depends on the mutable
+  // registry global, which a teardown may clear mid-flight), and
+  // `decrementRefcount`/`hasPinnedChunks` re-derive a live view over linear
+  // memory PER ACCESS. Per-access re-derivation is mandatory (the codebase's
+  // grow-safe discipline): a cached live view silently detaches on `memory.grow`
+  // and its writes no-op, reintroducing the leak. Backend-mode is detected by the
+  // stored object's own `__nimbusBackend` marker; absent it (a normal Bun run,
+  // where stateBuffer is a Uint8Array) every branch behaves exactly as upstream.
+
+  // Seam 9a — event 8 (StateBuffer): store {backend,ptr,len}, don't snapshot.
+  source = replaceOnce(
+    source,
+    `        case 8 /* StateBuffer */: {
+          const len = toNumber2(arg1);
+          if (len > 0 && arg0) {
+            const buffer = toArrayBuffer(arg0, 0, len);
+            this.stateBuffer = new Uint8Array(buffer);
+          }
+          break;
+        }`,
+    `        case 8 /* StateBuffer */: {
+          const len = toNumber2(arg1);
+          if (len > 0 && arg0) {
+            this.stateBuffer = globalThis.__nimbusOpenTUIBackend
+              ? { __nimbusBackend: globalThis.__nimbusOpenTUIBackend, __nimbusStatePtr: arg0, __nimbusStateLen: len }
+              : new Uint8Array(toArrayBuffer(arg0, 0, len));
+          }
+          break;
+        }`,
+    label,
+    file,
+  )
+
+  // Seam 9b — hasPinnedChunks: read refcounts through a per-access live view.
+  source = replaceOnce(
+    source,
+    `  hasPinnedChunks() {
+    if (!this.stateBuffer)
+      return false;
+    for (const refcount of this.stateBuffer) {
+      if (refcount > 0)
+        return true;
+    }
+    return false;
+  }`,
+    `  hasPinnedChunks() {
+    if (!this.stateBuffer)
+      return false;
+    const stateView = this.stateBuffer.__nimbusBackend
+      ? this.stateBuffer.__nimbusBackend.liveView(Uint8Array, this.stateBuffer.__nimbusStatePtr, this.stateBuffer.__nimbusStateLen)
+      : this.stateBuffer;
+    for (const refcount of stateView) {
+      if (refcount > 0)
+        return true;
+    }
+    return false;
+  }`,
+    label,
+    file,
+  )
+
+  // Seam 9c — decrementRefcount: write the ack into a per-access live view so it
+  // lands in Zig's real state_buffer (the chunk becomes reusable).
+  source = replaceOnce(
+    source,
+    `  decrementRefcount(chunkIndex) {
+    if (this.stateBuffer && chunkIndex < this.stateBuffer.length) {
+      const prev = this.stateBuffer[chunkIndex];
+      this.stateBuffer[chunkIndex] = prev > 0 ? prev - 1 : 0;
+    }
+  }`,
+    `  decrementRefcount(chunkIndex) {
+    if (!this.stateBuffer)
+      return;
+    const stateView = this.stateBuffer.__nimbusBackend
+      ? this.stateBuffer.__nimbusBackend.liveView(Uint8Array, this.stateBuffer.__nimbusStatePtr, this.stateBuffer.__nimbusStateLen)
+      : this.stateBuffer;
+    if (chunkIndex < stateView.length) {
+      const prev = stateView[chunkIndex];
+      stateView[chunkIndex] = prev > 0 ? prev - 1 : 0;
+    }
+  }`,
+    label,
+    file,
+  )
+
+  // Seam 9d — event 2 (ChunkAdded): skip the chunkMap ArrayBuffer snapshot when
+  // the backend is active. In facet mode the drain reads chunk bytes live (seam
+  // 6), so the snapshot is pure dead weight (a 64KiB copy per chunk). chunkSizes
+  // is still recorded for the non-backend fallback shape.
+  source = replaceOnce(
+    source,
+    `        case 2 /* ChunkAdded */: {
+          const chunkLen = toNumber2(arg1);
+          if (chunkLen > 0 && arg0) {
+            if (!this.chunkMap.has(arg0)) {
+              const buffer = toArrayBuffer(arg0, 0, chunkLen);
+              this.chunkMap.set(arg0, buffer);
+            }
+            this.chunkSizes.set(arg0, chunkLen);
+          }
+          break;
+        }`,
+    `        case 2 /* ChunkAdded */: {
+          const chunkLen = toNumber2(arg1);
+          if (chunkLen > 0 && arg0) {
+            if (!globalThis.__nimbusOpenTUIBackend && !this.chunkMap.has(arg0)) {
+              const buffer = toArrayBuffer(arg0, 0, chunkLen);
+              this.chunkMap.set(arg0, buffer);
+            }
+            this.chunkSizes.set(arg0, chunkLen);
+          }
+          break;
+        }`,
+    label,
+    file,
+  )
+
+  // Seam 9e — drainOnce fallback: skip the same chunkMap snapshot at drain time
+  // when the backend is active (seam 9d moves the miss here otherwise). The live
+  // read (seam 6) needs neither `buffer` nor the byteLength bounds check.
+  source = replaceOnce(
+    source,
+    `        let buffer = this.chunkMap.get(span.chunkPtr);
+        if (!buffer) {
+          const size = this.chunkSizes.get(span.chunkPtr);
+          if (!size)
+            continue;
+          buffer = toArrayBuffer(span.chunkPtr, 0, size);
+          this.chunkMap.set(span.chunkPtr, buffer);
+        }`,
+    `        let buffer = this.chunkMap.get(span.chunkPtr);
+        if (!buffer && !globalThis.__nimbusOpenTUIBackend) {
+          const size = this.chunkSizes.get(span.chunkPtr);
+          if (!size)
+            continue;
+          buffer = toArrayBuffer(span.chunkPtr, 0, size);
+          this.chunkMap.set(span.chunkPtr, buffer);
+        }`,
+    label,
+    file,
+  )
+
   return source
 }
 

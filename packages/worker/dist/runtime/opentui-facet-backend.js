@@ -89,6 +89,12 @@ export function generateOpenTUIBackendBootCode() {
     makeImports: (o) => __wasiMakeImports(o),
     initFS: (o) => __wasiInitFS(o),
   };
+  // Frames surface through the NativeSpanFeed, never the reactor's WASI stdout
+  // (the wasm32 core performs no terminal syscalls). Any WASI fd1/fd2 output is
+  // Zig diagnostics/panics, so drain BOTH to the facet's (bounded) stderr rather
+  // than the frame stream — and providing a sink stops the WASI host from
+  // accumulating it in an unbounded buffer for the resident TUI's lifetime.
+  const __otuiDiag = (s) => { try { globalThis.process && globalThis.process.stderr && globalThis.process.stderr.write(s); } catch {} };
   globalThis.${OPENTUI_BACKEND_GLOBAL} = OpenTUIWasmBackend.create({
     module: __nimbusOpenTUIWasmModule,
     wasi: __otuiWasi,
@@ -96,6 +102,8 @@ export function generateOpenTUIBackendBootCode() {
       TERM: (env && env.TERM) || "xterm-256color",
       COLORTERM: (env && env.COLORTERM) || "truecolor",
     },
+    stdoutWrite: __otuiDiag,
+    stderrWrite: __otuiDiag,
   });
 }
 `;

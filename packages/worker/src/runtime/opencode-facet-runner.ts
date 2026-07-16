@@ -39,6 +39,7 @@
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
+  OPENTUI_BACKEND_GLOBAL,
   OPENTUI_WASM_MODULE_NAME,
   generateOpenTUIBackendBootCode,
 } from './opentui-facet-backend.js';
@@ -642,7 +643,22 @@ const __vfsManifest = ${opts.vfsManifest};
 const __vfsWrites = {};
 const __vfsDirs = {};
 const __vfsBaseUrl = "";
+// Ledger of in-flight facet I/O the teardown drain must await. The shims push
+// here on every fs/sqlite/child-process op, so over a resident TUI's lifetime a
+// plain append-only array would grow without bound. Keep it a real Array (a
+// shim guard checks Array.isArray) but self-prune: each pushed promise removes
+// itself once settled, so length tracks only outstanding I/O.
 const __pendingIO = [];
+const __pendingIOAppend = __pendingIO.push.bind(__pendingIO);
+__pendingIO.push = (p) => {
+  const __wrapped = Promise.resolve(p);
+  __pendingIOAppend(__wrapped);
+  __wrapped.finally(() => {
+    const __i = __pendingIO.indexOf(__wrapped);
+    if (__i >= 0) __pendingIO.splice(__i, 1);
+  });
+  return __pendingIO.length;
+};
 
 // The shim (node-shims.ts) throws/catches this sentinel for process.exit and
 // the SIGINT stdin-pump teardown; the host runner must provide the class (same
@@ -656,6 +672,18 @@ class __ProcessExit extends Error {
 ${opts.shimsCode}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
+// Capture workerd's real process.memoryUsage BEFORE the shim process takes over
+// (the shim's memoryUsage is a stub returning zeros). workerd exposes a working
+// memoryUsage inside dynamic isolates; the [oc-mem] diagnostic reads it to watch
+// the OpenTUI wasm heap. Bound to the current process so the globalThis.process
+// swap below cannot detach it.
+const __realMemUsage = (() => {
+  try {
+    const __p = globalThis.process;
+    if (__p && typeof __p.memoryUsage === "function") return __p.memoryUsage.bind(__p);
+  } catch {}
+  return null;
+})();
 // Interactive TUI: make the Nimbus shim process authoritative for the bundle's
 // BARE \`process\` references (raw-mode stdin pump, live stdout/stderr,
 // SIGWINCH/columns/rows). The node:process bridge (module map) covers the
@@ -786,17 +814,40 @@ ${OPENTUI_CLOCK_SRC}
 }
 
 async function __drainPendingIO(maxPasses = 12) {
-  let __settledIO = 0;
   for (let __pass = 0; __pass < maxPasses; __pass++) {
     await new Promise((r) => setTimeout(r, 0));
-    // In-flight live writes (attached path) drain alongside the one-shot
-    // pendingIO ledger; settled writes have already removed themselves.
+    // Both ledgers self-prune settled entries, so a snapshot holds only what is
+    // still outstanding; await it and loop until both drain (or the pass cap).
     const __live = [...__pendingWrites];
-    if (__pendingIO.length <= __settledIO && __live.length === 0) break;
-    const __slice = __pendingIO.slice(__settledIO).concat(__live);
-    __settledIO = __pendingIO.length;
-    await Promise.allSettled(__slice);
+    if (__pendingIO.length === 0 && __live.length === 0) break;
+    await Promise.allSettled([...__pendingIO, ...__live]);
   }
+}
+
+// Bounded 1Hz memory diagnostic for the resident TUI, gated on the existing
+// NIMBUS_DIAG_EXEC surface. Emits one line/second through the facet's bounded
+// stderr chain so the OpenTUI wasm heap (\`wasm=\`) and the I/O ledgers can be
+// watched for a flat slope while live-gating the span-feed OOM fix. Off by
+// default: returns null (no interval) so the resident path stays silent.
+function __startOcMemDiag() {
+  if (!(env && env.NIMBUS_DIAG_EXEC === "1")) return null;
+  let __t = 0;
+  return setInterval(() => {
+    __t += 1;
+    let __m = null;
+    try { __m = __realMemUsage ? __realMemUsage() : null; } catch {}
+    let __wasm = -1;
+    try { __wasm = globalThis.${OPENTUI_BACKEND_GLOBAL}.memory.buffer.byteLength; } catch {}
+    const __line =
+      "[oc-mem] t=" + __t +
+      " heap=" + (__m ? __m.heapUsed : -1) +
+      " ab=" + (__m ? (__m.arrayBuffers || 0) : -1) +
+      " ext=" + (__m ? (__m.external || 0) : -1) +
+      " wasm=" + __wasm +
+      " pend=" + __pendingWrites.size +
+      " pio=" + __pendingIO.length + "\\n";
+    try { process.stderr.write(__line); } catch {}
+  }, 1000);
 }
 
 // Interactive TUI lifecycle: stream live, run opencode's createCliRenderer path,
@@ -807,39 +858,44 @@ async function __ocRunAttachedTui() {
   // Activate the shim's raw-mode stdin pump (SUPERVISOR.cpReadStdin →
   // process.stdin, with setRawMode/resize→SIGWINCH/signal handling).
   try { process.stdin.__nimbusStartLivePump?.(); } catch {}
+  const __memDiag = __startOcMemDiag();
   try {
-    if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
-    const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
-    if (typeof __ocBundle.nimbusMain !== "function") {
-      throw new Error(
-        "opencode bundle does not export nimbusMain() — the staged build is " +
-        "missing the Nimbus deferred-entry patch (see build-node.ts)"
-      );
+    try {
+      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
+      const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
+      if (typeof __ocBundle.nimbusMain !== "function") {
+        throw new Error(
+          "opencode bundle does not export nimbusMain() — the staged build is " +
+          "missing the Nimbus deferred-entry patch (see build-node.ts)"
+        );
+      }
+      await __ocBundle.nimbusMain();
+    } catch (e) {
+      if (e instanceof __ProcessExit) { exitCode = e.code; }
+      else if (e && e.__ocProcessExit) { exitCode = e.code; }
+      else {
+        __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
+        stderr += __ocLoadError + "\\n";
+        if (exitCode === 0) exitCode = 1;
+      }
     }
-    await __ocBundle.nimbusMain();
-  } catch (e) {
-    if (e instanceof __ProcessExit) { exitCode = e.code; }
-    else if (e && e.__ocProcessExit) { exitCode = e.code; }
-    else {
-      __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
-      stderr += __ocLoadError + "\\n";
-      if (exitCode === 0) exitCode = 1;
+    // Apply the shim's recorded exit code (the native process.exit path sets it).
+    if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
+    await __drainPendingIO();
+    const __failedWrites = {};
+    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
+      for (const [path, content] of Object.entries(__vfsWrites)) {
+        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      }
     }
-  }
-  // Apply the shim's recorded exit code (the native process.exit path sets it).
-  if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
-  await __drainPendingIO();
-  const __failedWrites = {};
-  if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-    for (const [path, content] of Object.entries(__vfsWrites)) {
-      __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+    await __drainPendingIO();
+    // The shim's native exit already reported via __nimbusReportProcessExit;
+    // report here only if it did not (load error / external teardown).
+    if (__supervisor && !__nimbusProcessExitReported) {
+      try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
     }
-  }
-  await __drainPendingIO();
-  // The shim's native exit already reported via __nimbusReportProcessExit;
-  // report here only if it did not (load error / external teardown).
-  if (__supervisor && !__nimbusProcessExitReported) {
-    try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
+  } finally {
+    if (__memDiag) clearInterval(__memDiag);
   }
 }
 
