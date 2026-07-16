@@ -346,11 +346,7 @@ async function fetchVirtualCurlResponse(
   let host = requestUrl.hostname;
   const port = requestUrl.port ? Number(requestUrl.port) : (requestUrl.protocol === 'http:' ? 80 : 443);
   if (kernel.networkStack && !isLoopbackHost(host)) {
-    try {
-      host = await kernel.networkStack.resolveHostname(host);
-    } catch {
-      // Keep the original host; non-virtual names fall through to fetch.
-    }
+    host = kernel.networkStack.getDNS().lookup(host)?.value ?? host;
   }
 
   if (!isLoopbackHost(host)) {

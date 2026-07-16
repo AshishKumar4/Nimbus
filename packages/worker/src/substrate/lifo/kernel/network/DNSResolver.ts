@@ -1,8 +1,7 @@
 import type { DNSRecord, DNSRecordType } from './types.js';
 
 /**
- * DNS resolver with caching
- * Supports both local records and external resolution
+ * DNS resolver for static hosts and explicitly cached records.
  */
 export class DNSResolver {
   private cache = new Map<string, DNSRecord[]>();
@@ -64,11 +63,6 @@ export class DNSResolver {
       return cached.value;
     }
 
-    // Try external resolution (browser or Node.js)
-    if (typeof globalThis.fetch !== 'undefined') {
-      return this.resolveExternal(hostname, type);
-    }
-
     throw new Error(`Unable to resolve: ${hostname}`);
   }
 
@@ -99,43 +93,6 @@ export class DNSResolver {
     );
 
     return null;
-  }
-
-  /**
-   * Resolve using external DNS (browser DNS-over-HTTPS or real DNS)
-   */
-  private async resolveExternal(
-    hostname: string,
-    type: DNSRecordType
-  ): Promise<string> {
-    try {
-      // Use Google DNS-over-HTTPS
-      const dohUrl = `https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=${type}`;
-      const response = await fetch(dohUrl);
-      const data = await response.json() as {
-        Status: number;
-        Answer?: Array<{ data: string; type: number }>;
-      };
-
-      if (data.Status === 0 && data.Answer && data.Answer.length > 0) {
-        const answer = data.Answer[0];
-        const ip = answer.data;
-
-        // Cache result
-        this.addRecord({
-          type,
-          name: hostname,
-          value: ip,
-          ttl: 300, // 5 minutes
-        });
-
-        return ip;
-      }
-    } catch (error) {
-      console.error('DNS resolution failed:', error);
-    }
-
-    throw new Error(`DNS resolution failed for ${hostname}`);
   }
 
   /**

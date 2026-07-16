@@ -19,20 +19,21 @@ try {
     });
   };
   globalThis.fetch = async (input, init) => {
+    fetched.push({ input, init });
     if (String(input).startsWith('https://dns.google/resolve?')) {
       return Response.json({ Status: 0, Answer: [{ data: '192.0.2.1', type: 1 }] });
     }
-    fetched.push({ input, init });
     return new Response('external-body', { status: 200 });
   };
 
-  for (const host of ['localhost', '127.0.0.1', '0.0.0.0', '[::1]']) {
+  box.kernel.networkStack.getDNS().addHost('app.local', '127.0.0.1');
+  for (const host of ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'app.local']) {
     const result = await box.commands.run(`curl -s http://${host}:5000/path?q=1`);
     assert.equal(result.exitCode, 0, `${host}: exitCode`);
     assert.equal(result.stdout, 'facet-loopback-body\n', `${host}: stdout`);
     assert.equal(result.stderr, '', `${host}: stderr`);
   }
-  assert.equal(routed.length, 4);
+  assert.equal(routed.length, 5);
   assert.equal(fetched.length, 0, 'loopback registry hits must not reach external fetch');
   assert.equal(routed[0].port, 5000);
   assert.equal(routed[0].request.method, 'GET');
@@ -50,7 +51,7 @@ try {
   assert.equal(external.exitCode, 0);
   assert.equal(external.stdout, 'external-body\n');
   assert.equal(external.stderr, '');
-  assert.equal(fetched.length, 1, 'non-loopback requests still use external fetch');
+  assert.equal(fetched.length, 1, 'external curl must make only its destination fetch');
   assert.equal(String(fetched[0].input), 'https://example.test/resource');
 
   const http = createHttp(new Map(), 'http:', box.kernel.routeLoopback);
