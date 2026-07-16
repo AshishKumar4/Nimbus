@@ -45,6 +45,7 @@ interface NimbusSessionRpcStub {
     _rpcReady(options?: {
         preinstall?: string[];
     }): Promise<unknown>;
+    _rpcBootProbe(): Promise<unknown>;
     _rpcExec(command: string, options?: Record<string, unknown>): Promise<unknown>;
     _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<unknown>;
     _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<unknown>;

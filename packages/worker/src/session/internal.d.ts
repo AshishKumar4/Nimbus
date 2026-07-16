@@ -178,6 +178,8 @@ export interface SessionInternal {
 
   // Programmatic sandbox SDK RPC.
   _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;
+  // perf(boot): cold DO placement + constructor probe (no initSession).
+  _rpcBootProbe(): Promise<{ ok: true }>;
   _rpcExec(command: string, options?: any): Promise<any>;
   _rpcStartProcess(command: string, options?: any): Promise<any>;
   _rpcRunCode(code: string, options?: any): Promise<any>;

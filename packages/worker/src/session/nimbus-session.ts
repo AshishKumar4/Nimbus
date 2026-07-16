@@ -700,6 +700,12 @@ export class NimbusSession extends CloudflareDurableObject {
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: _programmatic.ProgrammaticReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }
+  /** perf(boot): cold placement + constructor probe. First access runs the
+   *  DO constructor (placement + blockConcurrencyWhile storage I/O) but this
+   *  method does NOT run initSession, so measuring its `rpcMs` against a
+   *  full `ready` isolates the platform DO-placement floor from the
+   *  initSession build cost. */
+  async _rpcBootProbe(): Promise<{ ok: true }> { return { ok: true }; }
   async _rpcExec(command: string, options?: _programmatic.ProgrammaticExecOptions) { return _programmatic.rpcExec(this as any, command, options); }
   async _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions) { return _programmatic.rpcStartProcess(this as any, command, options); }
   async _rpcRunCode(code: string, options?: _programmatic.ProgrammaticExecOptions & { language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell'; install?: 'never' | 'ifMissing' }) {

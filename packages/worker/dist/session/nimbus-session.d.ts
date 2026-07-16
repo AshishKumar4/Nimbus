@@ -303,6 +303,14 @@ export declare class NimbusSession extends CloudflareDurableObject {
         ok: true;
         preinstalled: string[];
     }>;
+    /** perf(boot): cold placement + constructor probe. First access runs the
+     *  DO constructor (placement + blockConcurrencyWhile storage I/O) but this
+     *  method does NOT run initSession, so measuring its `rpcMs` against a
+     *  full `ready` isolates the platform DO-placement floor from the
+     *  initSession build cost. */
+    _rpcBootProbe(): Promise<{
+        ok: true;
+    }>;
     _rpcExec(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticExecResult>;
     _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticStartResult>;
     _rpcRunCode(code: string, options?: _programmatic.ProgrammaticExecOptions & {
