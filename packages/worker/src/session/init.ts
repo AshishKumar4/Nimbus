@@ -706,9 +706,9 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         '       bun -e "code"\n' +
         '       bun install [pkg ...]\n' +
         '       bun run <script>\n\n' +
-        'Bun-runtime shim provides Bun.serve/Bun.file/Bun.write/\n' +
+        'Bun-runtime shim provides Bun.file/Bun.write/\n' +
         'Bun.spawn/Bun.password/Bun.gunzip backed by Workers-native\n' +
-        'primitives. Bun.sql / Bun.S3 throw (use D1/Hyperdrive/R2).\n' +
+        'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
         'Execution via DO Facets (isolated V8 isolate per call).',
       run: runBunScript,
       subcommands: {
