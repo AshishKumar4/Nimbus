@@ -7,10 +7,10 @@ import {
   applyModeSpec,
 } from '../../packages/worker/src/substrate/lifo/commands/fs/chmod.ts';
 
-function apply(spec, current) {
+function apply(spec, current, isDir = false) {
   const parsed = parseModeSpec(spec);
   assert.ok(parsed, `spec '${spec}' must parse`);
-  return applyModeSpec(parsed, current);
+  return applyModeSpec(parsed, current, isDir);
 }
 
 // ── octal ────────────────────────────────────────────────────────────────
@@ -37,6 +37,12 @@ assert.equal(apply('g=', 0o777), 0o707, '= with no perms clears');
 assert.equal(apply('u+x,go-r', 0o644), 0o700);
 // Symbolic ops on a filetype-stamped current mode operate on perms only.
 assert.equal(apply('+x', 0o100644), 0o755);
+
+// ── conditional execute (X) ─────────────────────────────────────────────
+assert.equal(apply('a+rX', 0o600, true), 0o755, 'X grants x to directories');
+assert.equal(apply('a+rX', 0o700, false), 0o755, 'X grants x when a file already has exec');
+assert.equal(apply('a+rX', 0o600, false), 0o644, 'X skips non-exec files');
+assert.equal(apply('a-X', 0o755, false), 0o644, '-X removes exec from exec files');
 
 // ── invalid specs ────────────────────────────────────────────────────────
 assert.equal(parseModeSpec('banana'), null);
