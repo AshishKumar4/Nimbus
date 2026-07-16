@@ -7,6 +7,8 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
 	site: 'https://nimbus.ashishkumarsingh.com',
 	base: '/docs',
+	// Serve from a /docs subtree so the assets-only Worker maps URLs 1:1.
+	outDir: './dist/docs',
 	integrations: [
 		starlight({
 			title: 'Nimbus',

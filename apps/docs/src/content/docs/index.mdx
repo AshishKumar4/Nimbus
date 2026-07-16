@@ -10,6 +10,9 @@ head:
 import FabricDiagram from '../../components/FabricDiagram.astro';
 import NimbusSandbox from '../../components/NimbusSandbox.astro';
 
+{/* The custom hero below replaces the auto page title on this page. */}
+<style>{`.content-panel:has(h1#_top) { display: none; }`}</style>
+
 <div class="nimbus-hero">
   <p class="kicker">Nimbus documentation</p>
   <h1>Give every agent its own computer.</h1>

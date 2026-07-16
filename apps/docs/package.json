@@ -6,7 +6,7 @@
   "description": "Nimbus documentation site (Astro + Starlight), deployed as a Cloudflare Worker with Static Assets.",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "astro build && cp _redirects dist/_redirects",
     "preview": "astro preview",
     "deploy": "astro build && wrangler deploy",
     "astro": "astro"
