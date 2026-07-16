@@ -37,7 +37,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
-import { runNodeScript } from '../runtime/node-runner.js';
+import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, type RuntimeSpec } from '../runtime/runtime-registry.js';
 import { parseViteConfigSource, type ParsedViteConfig } from '../runtime/vite-config-parser.js';
@@ -61,7 +61,6 @@ import {
   makeLongRunningPortStub,
   resolveLongRunningPort,
   expandArgvShellDefaults,
-  pickDefaultPreviewPort,
 } from '../runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
@@ -640,7 +639,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     //   - G4 binSpawn ctx propagation (when the .bin handler set
     //     ctx.__nimbusBinSpawn, runFresh reuses the caller's PID
     //     instead of double-spawning)
-    //   - --watch/--inspect/--inspect-brk routing via runNodeScript →
+    //   - --watch/--inspect/--inspect-brk routing via runFresh →
     //     isLongRunningInvocation
     //
     // The registry encodes the shared shape; per-runtime overrides
@@ -658,7 +657,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         '  -v, --version       Print version\n' +
         '  -h, --help          Print help\n' +
         '\nExecution via DO Facets (isolated V8 isolate)',
-      run: async (fm, code, opts) => runNodeScript(fm, code, opts as any),
+      run: runFresh,
       supportsBinSpawn: true,
     };
     {
@@ -711,7 +710,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         'Bun.spawn/Bun.password/Bun.gunzip backed by Workers-native\n' +
         'primitives. Bun.sql / Bun.S3 throw (use D1/Hyperdrive/R2).\n' +
         'Execution via DO Facets (isolated V8 isolate per call).',
-      run: async (fm, code, opts) => runBunScript(fm, code, opts as any),
+      run: runBunScript,
       subcommands: {
         // bun install / i / add → npm install (same VFS, same R2 caches).
         install: async (ctx: any, reg) => {

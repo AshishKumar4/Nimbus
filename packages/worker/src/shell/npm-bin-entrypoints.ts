@@ -98,7 +98,7 @@ export function installNpmBinFallbackResolver(
       // FacetManager's ESM-mainModule path instead of the node CJS runner.
       if (isStagedArtifactTarget(bin.targetPath)) {
         const artifact = stagedArtifactId(bin.targetPath);
-        const disposition = classifyStagedArtifact(artifact, argv, ctx.env);
+        const disposition = classifyStagedArtifact(artifact, argv);
         return await runStagedArtifact(
           deps, name, artifact, argv, invocationCwd, ctx, disposition,
         );
@@ -267,7 +267,6 @@ export type StagedArtifactDisposition = 'dual' | 'server' | 'attached' | 'onesho
 export function classifyStagedArtifact(
   artifact: string,
   argv: string[],
-  _env?: Record<string, string> | undefined,
 ): StagedArtifactDisposition {
   if (artifact !== 'opencode') return 'oneshot';
   if (argv.some(isNonInteractiveBinArg)) return 'oneshot';

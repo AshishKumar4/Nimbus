@@ -70,8 +70,8 @@
  * ──────────────────────────────
  *
  * Strategy: bulk-snapshot + flush. The supervisor snapshots the user's
- * session VFS subtree into a JSON-serializable {files, dirs} shape, ships
- * it as the loader-pool `context` field. The facet's preamble installs
+ * session VFS subtree into a JSON-serializable {files, dirs} shape and ships
+ * it as the facet argument. The facet's preamble installs
  * `__wasiInitFS(snapshot)` which builds an in-memory virtual FS keyed by
  * canonical path strings. WASI fd≥3 ops act on that VFS. After `_start`
  * returns, `__wasiSnapshotFS()` extracts the mutated state which the
@@ -2054,8 +2054,7 @@ async function __wasiRunStartAsync(instance, ctx) {
 
 /**
  * A bundle of file/dir state passed from supervisor → facet for a WASI
- * invocation. Files are base64-encoded so the JSON-serializable
- * loader-pool `context` field can carry them.
+ * invocation. Files are base64-encoded for structured-clone transport.
  *
  * WASI socket and polling support B1+B3: added optional `times` and `symlinks` fields.
  * `roots` is additive and lets language runtimes snapshot a cwd plus targeted

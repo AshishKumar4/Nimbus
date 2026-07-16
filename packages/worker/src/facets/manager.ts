@@ -3699,28 +3699,6 @@ export class FacetManager {
   }
 
   /**
-   * Spawn a long-running facet process.
-   * Returns immediately with the process entry.
-   * The facet stays alive and can handle HTTP requests via its fetch() method.
-   * Used for: vite dev server, node HTTP servers, etc.
-   *
-   * @param workerCode The dynamic worker code (must export a default fetch handler)
-   * @param command Display name for process listing
-   * @returns Process entry with pid and facet stub
-   */
-  async spawn(
-    workerCode: string,
-    command: string,
-    cwd: string,
-    opts: { port?: number } = {},
-  ): Promise<{ pid: number; facetStub: any }> {
-    return await this.spawnWorker(workerCode, command, cwd, {
-      port: opts.port,
-      compatibilityFlags: ['nodejs_compat'],
-    });
-  }
-
-  /**
    * Spawn a long-running dynamic Worker and register its routeable port.
    *
    * This is the shared primitive for any runtime that exposes

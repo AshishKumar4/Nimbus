@@ -25,7 +25,7 @@ import {
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 
 /** Base asset path of the staged opencode bundle directory. */
-export const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
+const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
 
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface OpencodeAssetEnv {

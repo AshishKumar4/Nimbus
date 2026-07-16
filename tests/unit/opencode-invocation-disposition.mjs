@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { classifyStagedArtifact } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 
-const oc = (argv, env) => classifyStagedArtifact('opencode', argv, env);
+const oc = (argv) => classifyStagedArtifact('opencode', argv);
 
 // bare opencode → dual (serve + attach)
 assert.equal(oc([]), 'dual', 'bare opencode → dual');

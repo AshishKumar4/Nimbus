@@ -31,7 +31,6 @@
  *   - __vfsBundle: Record<string, string>  (path→utf8 content)
  *   - __vfsWrites: Record<string, string | Uint8Array> (sync writes / failed async writes)
  *   - __vfsDirs:   Record<string, boolean> (dirs created)
- *   - __vfsBaseUrl: string                 (supervisor URL for lazy VFS reads)
  *   - cwd: string
  *   - argv, env, filename, dirname: from args
  *   - stdout, stderr, exitCode: capture variables

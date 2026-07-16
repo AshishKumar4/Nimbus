@@ -656,7 +656,6 @@ const __vfsBundle = ${opts.vfsBundle};
 const __vfsManifest = ${opts.vfsManifest};
 const __vfsWrites = {};
 const __vfsDirs = {};
-const __vfsBaseUrl = "";
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push
 // here on every fs/sqlite/child-process op, so over a resident TUI's lifetime a
 // plain append-only array would grow without bound. Keep it a real Array (a

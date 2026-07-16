@@ -1166,7 +1166,6 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   const rubyInit = instance.exports['ruby-init: func(args: list<string>) -> ()'];
   const rubyInitLoadpath = instance.exports['ruby-init-loadpath: func() -> ()'];
   const rbEvalStringProtect = instance.exports['rb-eval-string-protect: func(str: string) -> tuple<handle<rb-abi-value>, s32>'];
-  const rubyShowVersion = instance.exports['ruby-show-version: func() -> ()'];
   const cabiRealloc = instance.exports.cabi_realloc;
   if (!rubyInit || !rubyInitLoadpath || !rbEvalStringProtect || !cabiRealloc) {
     return { ok: false, error: 'Required Ruby ABI exports missing (ruby-init/init-loadpath/eval-string-protect/cabi_realloc)' };
@@ -1218,7 +1217,6 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     rubyInit,
     rubyInitLoadpath,
     rbEvalStringProtect,
-    rubyShowVersion,
     writeListString,
     writeString,
     rubyInitialized: false,  // mutated to true by __rubyRun on first call
@@ -1314,8 +1312,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   // STAGED execution: we split the prelude (stdout sync + ARGV/ENV/$0
   // setup) from the user-code eval. The prelude has no failure modes
   // we care about; user-code is wrapped in begin/rescue for SystemExit
-  // and Exception. If the wrapper itself trips a syntax/runtime error,
-  // we surface it via the __NIMBUS_RUBY_DIAG side channel.
+  // and Exception. Wrapper failures are reported through the captured
+  // stderr diagnostic stream.
   // Build env list as string-keyed Ruby hash via the rocket-syntax.
   // Ruby treats colon-style hash literals as Symbol-keyed; we need
   // String keys so ENV[k] = v works without TypeError.
@@ -1421,20 +1419,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] user wrapper returned non-zero status: ' + evalStatus.status + '\\n');
   }
 
-  // Read $__nimbus_exit by evaluating it and inspecting the result
-  // via Ruby's puts (captured into stderr). Simpler: call exit through
-  // rb-eval-string-protect and parse the status code from there.
-  //
-  // Actually rbEvalStringProtect already returns a status (second
-  // tuple element). When the wrapper completes normally, status is 0
-  // and we read $__nimbus_exit. We use a follow-up eval that prints
-  // the exit code to a sentinel marker on stderr we can scrape, but
-  // a cleaner approach: have the wrapper's last expression BE the
-  // exit code (so it's the return value of eval).
-  //
-  // Re-do: eval $__nimbus_exit and read it from a marker line we
-  // emit to a side channel — easiest is to call $stdout via a unique
-  // marker that we then strip from output.
+  // Read $__nimbus_exit through a sentinel on captured stderr, then remove
+  // the sentinel before returning user-visible output.
   const NIMBUS_EXIT_MARKER = '__NIMBUS_RUBY_EXIT_';
   let exitCode = 0;
   try {

@@ -90,7 +90,6 @@ const SPECS = {
   'clang/binji-2020': {
     license: 'Apache-2.0-with-LLVM-exception',
     wasi_namespace: 'wasi_unstable',
-    memfs_companion: 'share/clang/memfs.wasm',
     upstream_base: 'https://raw.githubusercontent.com/binji/wasm-clang/master',
     files: [
       { src: 'clang',       vfs: 'bin/clang',                  mode: 'exec',   runner: 'clang-runner', binName: 'clang' },
@@ -119,7 +118,6 @@ const SPECS = {
   'ruby/3.3.4': {
     license: 'Ruby+BSD-2-Clause',
     wasi_namespace: 'wasi_snapshot_preview1',
-    memfs_companion: null,
     upstream_base: 'https://registry.npmjs.org/@ruby/3.3-wasm-wasi/-/3.3-wasm-wasi-2.9.3-2.9.4.tgz',
     tarball_extract: 'package/dist',  // strip this prefix from src paths inside the tarball
     files: [
@@ -148,7 +146,6 @@ const SPECS = {
   'python/0.29.4': {
     license: 'MPL-2.0',
     wasi_namespace: null,        // Pyodide is Emscripten, not WASI
-    memfs_companion: null,
     upstream_base: 'https://cdn.jsdelivr.net/pyodide/v0.29.4/full',
     files: [
       // The wasm module Pyodide instantiates. Goes to share/ so the
@@ -386,7 +383,6 @@ if (spec.ingest_only) {
     version: VERSION,
     license: spec.license,
     wasi_namespace: spec.wasi_namespace || null,
-    memfs_companion: spec.memfs_companion || null,
     files: downloaded.map((f) => ({
       path: f.vfs,
       content: f.r2Key,

@@ -346,10 +346,6 @@ export function makeClangRunnerFactory(deps: {
 interface ParsedArgv {
   /** All input source files (.c/.cpp/.cc/.cxx) in user-supplied order. */
   inputPaths: string[];
-  /** Backward-compat alias for the FIRST input. Several existing code
-   *  paths still reference `inputPath`; we keep this name pointing at
-   *  inputPaths[0] for those callers. */
-  inputPath: string;
   /** -I include directories (cwd-relative or absolute) passed by user. */
   includePaths: string[];
   /** -L library search directories (cwd-relative or absolute). */
@@ -411,12 +407,12 @@ function parseUserArgv(argv: string[]): ParsedArgv {
   }
   if (inputPaths.length === 0) {
     return {
-      inputPaths: [], inputPath: '', includePaths, libraryPaths, libraries,
+      inputPaths: [], includePaths, libraryPaths, libraries,
       outputPath: '', compileOnly, exitCode: 2, error: 'no input files',
     };
   }
   return {
-    inputPaths, inputPath: inputPaths[0], includePaths, libraryPaths, libraries,
+    inputPaths, includePaths, libraryPaths, libraries,
     outputPath, compileOnly, exitCode: 0,
   };
 }
@@ -679,7 +675,7 @@ async function dispatchClangFacet(
   target: ClangFacetTarget,
   args: ClangFacetArgs,
 ): Promise<ClangFacetResult> {
-  // Encode sysroot files as base64 for context ferrying. We do this on
+  // Encode sysroot files as base64 for facet transport. We do this on
   // the supervisor to keep the facet preamble small and CPU-light.
   const filesB64: Record<string, string> = {};
   for (const [path, bytes] of Object.entries(args.sysrootFiles)) {
@@ -785,7 +781,6 @@ export const CLANG_RUNNER_PREAMBLE = `
 
 const __ESUCCESS = 0;
 const __EBADF    = 8;
-const __EINVAL   = 28;
 const __ENOSYS   = 52;
 
 class __ProcExit {
@@ -1035,10 +1030,8 @@ globalThis.__clangRun = async function __clangRun(args) {
 
   // env namespace for the primary — stub canvas_*, etc.
   const primaryEnv = new Proxy({}, {
-    get(_t, prop) {
+    get(_t, _prop) {
       return function envStub() {
-        // Only log first occurrence per name to avoid log floods on
-        // wasm-ld which may probe many env imports.
         return 0;
       };
     },

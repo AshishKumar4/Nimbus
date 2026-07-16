@@ -874,13 +874,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // vites on different ports, …) reach each one without changing
       // the user-facing URL shape.
       //
-      // Behaviour:
-      //   /preview/         → first port in PortRegistry by registration
-      //                       time, OR if a non-port-registered cirrus
-      //                       shim / cirrusReal is live (legacy path),
-      //                       use it directly. The legacy path is the
-      //                       fast path because it avoids stub-rebuild.
-      //   /preview/?port=N  → routeRequest(N, …) regardless of legacy.
+      // `/preview/?port=N` routes to an explicitly registered process;
+      // bare `/preview/` continues through the Vite/Cirrus paths below.
       const queryPort = (() => {
         const raw = url.searchParams.get('port');
         if (!raw) return null;

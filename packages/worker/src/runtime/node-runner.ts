@@ -3,11 +3,9 @@
  *
  * Architectural promise (post fresh-isolate-bun-behavioral wave)
  * ─────────────────────────────────────────────────────────────
- * Every external runtime invocation (`node script`, `node -e`,
- * `node --version`, `bun X`, `npx X`) is dispatched into a FRESH
- * Worker Loader isolate. There is NO content-sniffing heuristic; the
- * only routing signal is argv flags that explicitly mean "this is
- * supposed to be long-lived" (`--watch`, `--inspect`, `--inspect-brk`).
+ * Every external runtime invocation is dispatched into a Worker Loader
+ * isolate. Explicit long-running flags and source that binds a server use
+ * a keyed facet so later requests can resolve its route stub.
  *
  * Two execution modes
  * ───────────────────
@@ -18,7 +16,7 @@
  *           awaits and returns the consolidated {exitCode, stdout,
  *           stderr}. The facet is deleted at completion.
  *
- *   long  — `facetMgr.spawn(workerCode, command, cwd)`. Fire-and-
+ *   long  — `facetMgr.spawnNode(code, opts)`. Fire-and-
  *           forget LOADER.load(). Returns {pid, facetStub} immediately;
  *           the shell prints a `[started (long-running): pid=N
  *           cmd=...]` notice and returns. The facet outlives the
@@ -26,26 +24,14 @@
  *
  * Routing
  * ───────
- *   args.includes('--watch' | '--inspect' | '--inspect-brk')  → long
- *   default                                                    → short
- *
- * The previous `detectLongRunning(code, args)` content-regex sniff
- * (deprecated) is removed. False-positives (a script that *imports*
- * http but exits quickly) used to fork unnecessarily; with
- * argv-only routing, the user gets the inline behaviour they expect
- * unless they explicitly opted into long-running with a flag.
- *
- * For scripts that don't terminate but also don't carry one of the
- * argv flags (e.g. an http.listen with no --watch), `facetMgr.exec`'s
- * 5-minute timeout caps the worst case. The supervisor returns the
- * timeout exit code; the facet is torn down. Documented trade-off.
+ *   long-running argv flag or server bind in source  → long
+ *   default                                          → short
  *
  * Anti-requirements observed
  * ──────────────────────────
  *   - NO setTimeout / sleep on hot paths.
  *   - NO fallback to in-supervisor execution. facetMgr.exec /
- *     facetMgr.spawn throw if env.LOADER is missing.
- *   - NO content-sniffing heuristic. argv-only routing.
+ *     facetMgr.spawnNode throw if env.LOADER is missing.
  *
  * Cold-start (measured against prod 9d30dc95):
  *   first-run `node -e`     : 152–608 ms (warm-isolate cold case)
@@ -131,54 +117,7 @@ export interface RunFreshOpts {
   bundleProfile?: FacetBundleProfile;
 }
 
-/**
- * Build a small Worker Loader entrypoint that wraps the user's `code`
- * for the long-running fork path. The entrypoint exports a fetch
- * handler stub (FacetManager.spawn requires it) that returns 404 for
- * everything; the user's code runs once at module init.
- */
-function buildLongRunningEntrypoint(code: string): string {
-  const safeCode = JSON.stringify(code);
-  return [
-    'async function __nimbusDispatchHttp(req) {',
-    '  const ports = globalThis.__portRegistry;',
-    '  const hinted = Number(req.headers.get("X-Nimbus-Port") || 0);',
-    '  const server = ports && (ports.get(hinted) || ports.values().next().value);',
-    '  if (!server || typeof server._handleRequest !== "function") {',
-    '    return new Response("Nimbus: no HTTP server is listening in this process", { status: 502 });',
-    '  }',
-    '  const url = new URL(req.url);',
-    '  const headers = {};',
-    '  req.headers.forEach((v, k) => { headers[k] = v; });',
-    '  let body = "";',
-    '  if (req.method !== "GET" && req.method !== "HEAD") body = await req.text();',
-    '  const res = server._handleRequest(url.pathname + url.search, req.method, headers, body);',
-    '  if (!res._ended) {',
-    '    await new Promise((resolve) => {',
-    '      try { res.on("finish", resolve); } catch { resolve(); }',
-    '      setTimeout(resolve, 5000);',
-    '    });',
-    '  }',
-    '  return new Response((res._body || []).join(""), { status: res.statusCode || 200, headers: res.headers || {} });',
-    '}',
-    'export default {',
-    '  async fetch(req) { return __nimbusDispatchHttp(req); },',
-    '  async handleHttpRequest(req) { return __nimbusDispatchHttp(req); }',
-    '};',
-    'try {',
-    '  // eslint-disable-next-line no-new-func',
-    '  new Function(' + safeCode + ')();',
-    '} catch (e) {',
-    '  console.error("[long-running] startup error:", e && e.message ? e.message : String(e));',
-    '}',
-  ].join('\n');
-}
-
-/**
- * Always-fresh-isolate dispatcher. Replaces the previous
- * `runNodeScript` content-sniff variant. Used by both `node` and
- * `bun` shell handlers.
- */
+/** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export async function runFresh(
   facetMgr: FacetManager,
   code: string,
@@ -216,7 +155,6 @@ export async function runFresh(
   // across requests, so a bound port is reachable. Returns immediately with
   // {pid, facetStub}.
   const command = opts.command || `node ${opts.filename || '<script>'}`;
-  const workerCode = buildLongRunningEntrypoint(code);
   const cwd = opts.cwd || '/home/user';
   let spawned: { pid: number; facetStub: any };
   const port = resolveLongRunningPort({
@@ -225,23 +163,19 @@ export async function runFresh(
     fallback: 3000,
   });
   try {
-    if (typeof facetMgr.spawnNode === 'function') {
-      spawned = await facetMgr.spawnNode(code, {
-        argv: args,
-        env: opts.env,
-        cwd,
-        filename: opts.filename,
-        dirname: opts.dirname,
-        command,
-        port,
-        attachedTty: opts.attachedTty,
-        skipSpawn: opts.skipSpawn,
-        callerPid: opts.callerPid,
-        bundleProfile: opts.bundleProfile,
-      });
-    } else {
-      spawned = await facetMgr.spawn(workerCode, command, cwd, { port });
-    }
+    spawned = await facetMgr.spawnNode(code, {
+      argv: args,
+      env: opts.env,
+      cwd,
+      filename: opts.filename,
+      dirname: opts.dirname,
+      command,
+      port,
+      attachedTty: opts.attachedTty,
+      skipSpawn: opts.skipSpawn,
+      callerPid: opts.callerPid,
+      bundleProfile: opts.bundleProfile,
+    });
   } catch (e: any) {
     // Hard-fail per anti-requirement: missing env.LOADER throws here.
     return {
@@ -262,10 +196,3 @@ export async function runFresh(
     longRunning: true,
   };
 }
-
-/**
- * BACKWARD-COMPAT shim. The child-process isolation design's `runNodeScript` is now an
- * alias for `runFresh` so the call sites in src/session/init.ts don't
- * need to change in this commit.
- */
-export const runNodeScript = runFresh;
