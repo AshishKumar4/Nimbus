@@ -50,6 +50,7 @@ import {
   type PythonPipRuntimeContext,
 } from './python-pip.js';
 import { z } from 'zod/v4';
+import { hasLeadingCliFlag } from './cli-flags.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -297,17 +298,6 @@ async function buildPythonModulePipInvocation(
     return { mode: 'none', code: '', exitCode: 0 };
   }
   return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
-}
-
-function hasLeadingCliFlag(argv: string[], flags: Set<string>): boolean {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (flags.has(arg)) return true;
-    if (arg === '--') return false;
-    if (arg === '-c' || arg === '-m' || arg === '-') return false;
-    if (!arg.startsWith('-')) return false;
-  }
-  return false;
 }
 
 // ── argv parser ──────────────────────────────────────────────────────

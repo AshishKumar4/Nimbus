@@ -39,6 +39,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
+import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -55,6 +56,7 @@ import {
 } from './ruby-gems.js';
 
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
+const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 
 type RubyRunnerFactory = (
   manifest: RuntimeManifest,
@@ -119,7 +121,7 @@ export function makeRubyRunnerFactory(deps: {
       }
 
       // --version / --help fast paths (no wasm boot).
-      if (toolInvocation.mode !== 'tool' && (argv.includes('--version') || argv.includes('-v'))) {
+      if (toolInvocation.mode !== 'tool' && hasLeadingCliFlag(argv, RUBY_VERSION_FLAGS)) {
         ctx.stdout.write(`ruby 3.3.3 (ruby.wasm, Nimbus runtime) [wasm32-wasi]\n`);
         return 0;
       }

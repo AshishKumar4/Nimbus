@@ -32,6 +32,9 @@ import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { hasLeadingCliFlag } from './cli-flags.js';
+
+const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps: {
@@ -58,7 +61,7 @@ export function makeClangRunnerFactory(deps: {
       const cwd: string = ctx.cwd || '/home/user';
 
       // Fast paths — no wasm boot.
-      if (argv.includes('--version') || argv.includes('-v')) {
+      if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
         ctx.stdout.write(`Nimbus wasm-clang (binji-2020, LLVM 8.0.1)\n`);
         ctx.stdout.write(`Target: ${WASM32_WASI_NIMBUS_ABI.id} (via wasm-ld linker)\n`);
         return 0;
