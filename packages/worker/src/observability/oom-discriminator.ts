@@ -207,15 +207,6 @@ export function getFailures(): DiagFailure[] {
   return getState().failures.slice(0);
 }
 
-/** Reset everything. Used by tests; safe in production but typically
- *  unnecessary. */
-export function resetFailures(): void {
-  const s = getState();
-  s.failures.length = 0;
-  s.lastRpcFrame = null;
-  s.lastFacetId = null;
-}
-
 /** Record the current RPC frame (called at every RPC entry). Bounded
  *  to a single slot — the LATEST frame wins. */
 export function setLastRpcFrame(method: string, payloadBytes: number): void {

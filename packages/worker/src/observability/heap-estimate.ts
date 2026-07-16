@@ -37,7 +37,7 @@
  * recovery_event ring, separate from this module.
  */
 
-import { CHUNK_SIZE, LRU_MAX_ENTRIES, SUPERVISOR_HEAP_CEILING_BYTES } from '../constants.js';
+import { SUPERVISOR_HEAP_CEILING_BYTES } from '../constants.js';
 import type { DiagCounters } from './diag-counters.js';
 
 /**
@@ -55,8 +55,6 @@ export const WORKERD_EVICTION_LABELS = [
   'dynamic_worker',
   'dynamic_worker_banned',
 ] as const;
-
-export type WorkerdEvictionLabel = typeof WORKERD_EVICTION_LABELS[number];
 
 /**
  * Supervisor heap snapshot. Components are PEAK-OR-CURRENT bytes from
@@ -80,18 +78,10 @@ export interface HeapBreakdown {
   vfsLruBytes: number;
   /** SqliteVFS current logical retained write payload bytes. */
   vfsInFlightBytes: number;
-  /** Resolver in-flight packument bytes (rough cap = live stubs × last
-   *  packument size). Post A'.1 the resolver runs in a facet and this
-   *  is always 0; the slot is preserved so a regression that
-   *  re-introduces supervisor-side resolution is locatable. */
-  resolverInFlightBytes: number;
   /** Pre-bundle slice bytes resident in supervisor heap (peak across
    *  in-flight pool slots × SLICE_CAP_BYTES). Drops to 0 once
    *  A'.2/A'.3 stream the slice through ReadableStream-over-RPC. */
   preBundleSliceBytes: number;
-  /** esbuild-wasm bytes resident in supervisor. Phase 2 A'.5 moved
-   *  these to env.ASSETS; the slot is 0 by construction now. */
-  esbuildResidentBytes: number;
   /**
    * In-flight supervisor RPC payload bytes (Phase 2 A'.2).
    *
@@ -145,64 +135,6 @@ export interface VfsHeapInputs {
 const SUPERVISOR_BASELINE_BYTES = 9 * 1024 * 1024;
 
 /**
- * esbuild-wasm bytes resident in supervisor heap.
- *
- * Pre-A'.5: 16 MiB module-scope cache in src/esbuild-wasm-bytes.ts —
- * the decoded ArrayBuffer was held for the lifetime of the supervisor
- * isolate so multiple pool constructions amortised the base64 decode.
- *
- * Post-A'.5: 0. The bytes live in env.ASSETS; src/esbuild-wasm-bytes.ts
- * fetches on demand and the supervisor releases its reference after
- * the LOADER hand-off. There IS a transient ~12 MiB pulse during pool
- * construction, but it's not resident — by the time anyone polls the
- * estimator we're back to zero. The constant captures the resident
- * floor; transient bytes don't show up here.
- */
-const ESBUILD_RESIDENT_BYTES = 0;
-
-/**
- * Maximum SqliteVFS LRU footprint (architectural cap). Used as the
- * upper bound for the LRU contribution when the SqliteVFS hasn't been
- * instantiated yet (cacheHotBytes = 0 from the inputs).
- *
- * Defensive — the live cacheHotBytes is the source of truth once the
- * VFS exists. This value is NOT used in production; the estimator
- * receives the live count via VfsHeapInputs.
- */
-export const VFS_LRU_MAX_BYTES = LRU_MAX_ENTRIES * CHUNK_SIZE;
-
-/**
- * Estimate resolver in-flight bytes from diag-counters.
- *
- * The resolver in-supervisor path (pre-A'.1) holds packument JSON in
- * memory while parsing. We don't have a "current in-flight bytes"
- * counter directly, but we DO have:
- *   - inFlightPackumentFetches (live count of awaited fetches)
- *   - lastPackumentBytes (size of the most recent packument)
- *
- * Average packument size on real registries is dominated by the largest
- * outliers (lucide-react, framer-motion at ~5 MiB each) so using
- * lastPackumentBytes as a per-fetch upper bound is a reasonable proxy.
- *
- * Caller can also pass an explicit `cumulativeBytesDecoded` snapshot
- * (resolverPath = 'in-supervisor') for a different estimation strategy
- * — but right now the most useful signal is "is the resolver currently
- * holding bytes in supervisor heap or has it moved to a facet?".
- *
- * After A'.1 lands and resolverPath becomes hard-pinned to 'in-facet',
- * this contribution drops to 0 by construction.
- */
-export function estimateResolverInFlightBytes(c: DiagCounters): number {
-  if (c.resolverPath === 'in-facet') return 0;
-  if (c.inFlightPackumentFetches === 0) return 0;
-  // Conservative: each in-flight fetch counted at the size of the
-  // most recent packument. This OVER-estimates when the in-flight
-  // packuments are smaller than lastPackumentBytes (which they
-  // probably are — lastPackumentBytes is a worst-of-recent value).
-  return c.inFlightPackumentFetches * c.lastPackumentBytes;
-}
-
-/**
  * Estimate pre-bundle slice bytes resident in the supervisor heap.
  *
  * Pre A'.2: the supervisor builds the slice in heap (up to
@@ -245,9 +177,7 @@ export function estimateSupervisorHeap(
     supervisorBaselineBytes: SUPERVISOR_BASELINE_BYTES,
     vfsLruBytes: vfs.cacheHotBytes,
     vfsInFlightBytes: vfs.inFlightWriteBytes,
-    resolverInFlightBytes: estimateResolverInFlightBytes(c),
     preBundleSliceBytes: estimatePreBundleSliceBytes(c),
-    esbuildResidentBytes: ESBUILD_RESIDENT_BYTES,
     streamingBuffersBytes: c.inFlightRpcPayloadBytes,
   };
 
@@ -255,9 +185,7 @@ export function estimateSupervisorHeap(
     breakdown.supervisorBaselineBytes +
     breakdown.vfsLruBytes +
     breakdown.vfsInFlightBytes +
-    breakdown.resolverInFlightBytes +
     breakdown.preBundleSliceBytes +
-    breakdown.esbuildResidentBytes +
     breakdown.streamingBuffersBytes;
 
   const percentOfCeiling = Math.round(

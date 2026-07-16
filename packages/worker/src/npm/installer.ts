@@ -53,8 +53,7 @@ import {
   type InstallBatchResult,
 } from './install-batch-facet.js';
 import {
-  setInstallPhase, setResolverPath,
-  setInstallFacetPath, recordInstallFacetCounters,
+  setInstallPhase, recordInstallFacetCounters,
   recordPreBundleSummary,
   recordR2RaceCounters,
   recordCacheStatEvents,
@@ -99,11 +98,6 @@ import {
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-// CLN-1 (2026-05-11): InstallPhase moved to _shared/install-phase.ts so
-// installer.ts and observability/diag-counters.ts can't drift again.
-// Re-exported here so external callers that already imported InstallPhase
-// from this module continue to work.
-export type { InstallPhase } from '../_shared/install-phase.js';
 import type { InstallPhase } from '../_shared/install-phase.js';
 
 export interface InstallProgress {
@@ -254,7 +248,6 @@ export class NpmInstaller {
       // wide-layer submitMany.
       phaseStart = Date.now();
       setInstallPhase('resolve');
-      setResolverPath('in-facet');
       log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
       resolved = await this.resolveTreeViaFanout(specs, log, { frameworkAware });
       phases['resolve'] = Date.now() - phaseStart;
@@ -343,7 +336,6 @@ export class NpmInstaller {
     // removed in Phase 2 A'.1 — they re-introduced the supervisor-heap
     // pressure the facet path eliminates.
     if (toFetch.length > 0) {
-      setInstallFacetPath('batch-facet');
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
       totalFiles += batchResult.filesWritten;
@@ -962,11 +954,7 @@ export class NpmInstaller {
         okCount++;
       }
 
-      // Fold facet counters into the supervisor's diag state so
-      // /api/_diag/memory shows the install ran in the facet (the
-      // smoking gun: cumulativeBytesDecoded grows on the FACET side
-      // while the supervisor's cumulativePackumentBytesDecoded stays
-      // flat).
+      // Fold facet counters into the supervisor's diagnostic state.
       recordInstallFacetCounters(result.facetCounters);
       // [W4] Fold tarball R2 race outcomes into supervisor diag.r2.
       const fc: any = result.facetCounters;
@@ -1683,7 +1671,6 @@ export class NpmInstaller {
     let attempted = 0;
     let errorCount = 0;
     let skippedCount = 0;
-    let lastError = '';
     // Per-module error map for THIS batch. Replaces (not aggregates)
     // diag-counters.preBundleFacet.errorsByModule on phase end so
     // /api/_diag/memory surfaces "which modules failed THIS time" —
@@ -1759,7 +1746,6 @@ export class NpmInstaller {
           const msg = e?.message || String(e);
           safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
           errorCount++;
-          lastError = msg;
           errorsByModule[next.specifier] = msg;
           continue;
         }
@@ -1781,7 +1767,6 @@ export class NpmInstaller {
           const msg = e?.message || String(e);
           safeProgress(`  pre-bundle externals threw for ${next.specifier}: ${msg}`);
           errorCount++;
-          lastError = msg;
           errorsByModule[next.specifier] = msg;
           continue;
         }
@@ -1813,7 +1798,6 @@ export class NpmInstaller {
           const msg = e?.remoteMessage || e?.message || String(e);
           safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
           errorCount++;
-          lastError = msg;
           errorsByModule[next.specifier] = msg;
         } finally {
           // Drop the spec reference (which transitively held slice.slice)
@@ -1831,7 +1815,6 @@ export class NpmInstaller {
           if (result) {
             safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
             errorCount++;
-            lastError = why;
             errorsByModule[next.specifier] = why;
           }
           result = null;
@@ -1864,7 +1847,6 @@ export class NpmInstaller {
           const msg = e?.message || String(e);
           safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
           errorCount++;
-          lastError = msg;
           errorsByModule[next.specifier] = msg;
         }
         // result.esmCode is now durably in SQLite; drop our heap copy
@@ -1889,7 +1871,6 @@ export class NpmInstaller {
     } catch (e: any) {
       const msg = e?.message || String(e);
       safeProgress(`Pre-bundle aborted: ${msg}`);
-      lastError = msg;
     } finally {
       // Fold pre-bundle outcomes into the diag counter singleton so
       // /api/_diag/memory surfaces them (commit 3 observability).
@@ -1902,7 +1883,6 @@ export class NpmInstaller {
           bundlesCompleted: okCount,
           errors: errorCount,
           skipped: skippedCount,
-          lastError,
           errorsByModule,
         });
       } catch (e: any) {
