@@ -88,14 +88,12 @@ export class PortRegistry {
     return this.ports.get(port);
   }
 
-  /** Attach a routeable facet stub to ports previously reserved by a PID. */
-  attachFacetStubByPid(pid: number, facetStub: unknown): number[] {
-    const routeable = routeableFacetTarget(facetStub);
-    if (!routeable) return [];
+  /** Attach a normalized route target to ports previously reserved by a PID. */
+  private attachFacetStubByPid(pid: number, target: RouteableFacetTarget): number[] {
     const ports: number[] = [];
     for (const entry of this.ports.values()) {
       if (entry.pid !== pid || entry.facetStub) continue;
-      entry.facetStub = routeable;
+      entry.facetStub = target;
       ports.push(entry.port);
     }
     if (ports.length > 0) this.notifyPortWaiters(pid);
@@ -113,7 +111,6 @@ export class PortRegistry {
     const immediate = this.getRouteablePortsByPid(pid);
     if (immediate.length > 0) return immediate;
     await this.waitForPidPortChange(pid, timeoutMs);
-    this.bindFacetStub(pid, facetStub);
     return this.getRouteablePortsByPid(pid);
   }
 

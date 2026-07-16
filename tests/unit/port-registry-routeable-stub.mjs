@@ -128,4 +128,20 @@ function makeHandleStub(bodyText) {
   assert.equal(await res.text(), 'late-bind');
 }
 
+// ── 6. waiting normalizes the supplied route stub only once ─────────────
+{
+  const reg = new PortRegistry();
+  let fetchReads = 0;
+  const stub = {
+    get fetch() {
+      fetchReads++;
+      return async () => new Response('waited-route');
+    },
+  };
+  const waiting = reg.waitForRouteablePortsByPid(17, stub, 100);
+  queueMicrotask(() => reg.register(4170, 17, null));
+  assert.deepEqual(await waiting, [4170]);
+  assert.equal(fetchReads, 1, 'wait must not normalize and bind the same stub twice');
+}
+
 console.log('port-registry-routeable-stub: ok');

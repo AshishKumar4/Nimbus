@@ -3790,10 +3790,6 @@ export class FacetManager {
     }
   }
 
-  attachReservedPorts(pid: number, facetStub: any): number[] {
-    return this.portRegistry.attachFacetStubByPid(pid, facetStub);
-  }
-
   waitForRouteablePorts(
     pid: number,
     facetStub: unknown,
