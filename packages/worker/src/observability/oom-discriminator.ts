@@ -12,8 +12,8 @@
  * Same pattern as src/diag-counters.ts (q.v.). The supervisor bundle
  * is the consumer; all writers (sqlite-vfs, facet-pool, facet-manager,
  * supervisor-rpc, npm-installer, nimbus-session) live in the same
- * isolate. globalThis-keyed storage avoids threading a handle through
- * ~10 sites for what is essentially a process-local diagnostic.
+ * isolate. Module scope provides one process-local diagnostic without
+ * threading a handle through each writer.
  *
  * Two distinct rings
  * ──────────────────
@@ -32,12 +32,11 @@
  *   - per-RPC-frame: single slot, one object.
  *   - per-facet-id: single slot, one object.
  *
- * Snapshot ≤40 KB even with both rings full. Verified by
+ * Snapshot size stays bounded even with both rings full.
  */
 
-import type { OomCause } from './oom-classify.js';
+import { isOomCause, type OomCause } from './oom-classify.js';
 
-const KEY = '__NIMBUS_W5_OOM_DISC__';
 const RING_SIZE = 50;
 const RECOVERY_RING_SIZE = 50;
 const MESSAGE_CAP = 200;
@@ -156,24 +155,15 @@ interface RingState {
   lastFacetId: FacetId | null;
 }
 
+const state: RingState = {
+  failures: [],
+  recoveryEvents: [],
+  lastRpcFrame: null,
+  lastFacetId: null,
+};
+
 function getState(): RingState {
-  const g = globalThis as any;
-  if (!g[KEY]) {
-    g[KEY] = {
-      failures: [],
-      recoveryEvents: [],
-      lastRpcFrame: null,
-      lastFacetId: null,
-    } as RingState;
-  }
-  // Defensive: older snapshots predating C'.2 have no recoveryEvents
-  // field. The rehydrate path adds the field on read; this guard is a
-  // belt-and-braces second line so any legacy state object on
-  // globalThis (e.g. from an in-process restart that beat the new
-  // module load) doesn't make the ring methods crash.
-  const s = g[KEY] as RingState;
-  if (!Array.isArray(s.recoveryEvents)) s.recoveryEvents = [];
-  return s;
+  return state;
 }
 
 /** Append a failure to the ring. Newest first. Capped at RING_SIZE. */
@@ -183,7 +173,7 @@ export function recordFailure(f: DiagFailure): void {
   const entry: DiagFailure = {
     at: Number(f.at) || Date.now(),
     phase: String(f.phase ?? 'unknown'),
-    cause: (f.cause as OomCause) ?? 'unknown',
+    cause: f.cause,
     rssEstimateBytes: Number(f.rssEstimateBytes) || 0,
     heapUsedBytes: Number(f.heapUsedBytes) || 0,
     lruBytes: Number(f.lruBytes) || 0,
@@ -289,15 +279,11 @@ export function resetRecoveryEvents(): void {
  * messages. Schema version embedded so a future shape change can
  * cleanly reject old snapshots.
  *
- * Schema versions:
- *   v = 1  →  {failures, lastRpcFrame, lastFacetId} (pre-C'.2)
- *   v = 2  →  v1 + {recoveryEvents}                   (C'.2)
- *
- * Rehydrate accepts v=1 (treats recoveryEvents as empty) and v=2.
+ * Schema version 2 includes both failure and recovery-event rings.
  */
 export interface DiagSnapshot {
   /** Schema version. Bump when shape changes. */
-  v: number;
+  v: 2;
   failures: DiagFailure[];
   recoveryEvents: DiagRecoveryEvent[];
   lastRpcFrame: RpcFrame | null;
@@ -320,43 +306,109 @@ export function snapshotForStorage(): DiagSnapshot {
  * silently ignored. Does NOT throw — constructor-time rehydration must
  * never block DO startup.
  *
- * Accepts v=1 (pre-C'.2, no recoveryEvents field) and v=2. v=1
- * snapshots rehydrate failures only; recoveryEvents starts empty.
+ * Only the current v2 schema is accepted.
  */
 export function rehydrateFromStorage(blob: unknown): void {
-  if (!blob || typeof blob !== 'object') return;
-  const b = blob as Partial<DiagSnapshot>;
-  if (b.v !== 1 && b.v !== 2) return;
+  if (!isRecord(blob) || blob.v !== 2) return;
+  const b = blob;
   if (!Array.isArray(b.failures)) return;
 
   const s = getState();
   s.failures.length = 0;
   for (const f of b.failures) {
-    if (!f || typeof f !== 'object') continue;
-    const entry = (f as DiagFailure);
-    if (typeof entry.at !== 'number' || typeof entry.phase !== 'string') continue;
+    const entry = parseFailure(f);
+    if (!entry) continue;
     s.failures.push(entry);
     if (s.failures.length >= RING_SIZE) break;
   }
-  // v >= 2: recoveryEvents (skipped for v=1 by the shape-check below).
   s.recoveryEvents.length = 0;
-  if (b.v === 2 && Array.isArray(b.recoveryEvents)) {
+  if (Array.isArray(b.recoveryEvents)) {
     for (const e of b.recoveryEvents) {
-      if (!e || typeof e !== 'object') continue;
-      const entry = (e as DiagRecoveryEvent);
-      if (typeof entry.at !== 'number'
-          || typeof entry.fromState !== 'string'
-          || typeof entry.toState !== 'string') continue;
+      const entry = parseRecoveryEvent(e);
+      if (!entry) continue;
       s.recoveryEvents.push(entry);
       if (s.recoveryEvents.length >= RECOVERY_RING_SIZE) break;
     }
   }
-  if (b.lastRpcFrame && typeof b.lastRpcFrame === 'object'
-      && typeof (b.lastRpcFrame as RpcFrame).method === 'string') {
-    s.lastRpcFrame = b.lastRpcFrame as RpcFrame;
-  }
-  if (b.lastFacetId && typeof b.lastFacetId === 'object'
-      && typeof (b.lastFacetId as FacetId).codeId === 'string') {
-    s.lastFacetId = b.lastFacetId as FacetId;
-  }
+  const lastRpcFrame = parseRpcFrame(b.lastRpcFrame);
+  if (lastRpcFrame) s.lastRpcFrame = lastRpcFrame;
+  const lastFacetId = parseFacetId(b.lastFacetId);
+  if (lastFacetId) s.lastFacetId = lastFacetId;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseRpcFrame(value: unknown): RpcFrame | null {
+  if (!isRecord(value)
+      || typeof value.method !== 'string'
+      || typeof value.payloadBytes !== 'number'
+      || typeof value.atMs !== 'number') return null;
+  return { method: value.method, payloadBytes: value.payloadBytes, atMs: value.atMs };
+}
+
+function parseFacetId(value: unknown): FacetId | null {
+  if (!isRecord(value)
+      || typeof value.codeId !== 'string'
+      || typeof value.slotIndex !== 'number'
+      || typeof value.atMs !== 'number') return null;
+  return { codeId: value.codeId, slotIndex: value.slotIndex, atMs: value.atMs };
+}
+
+function parseFailure(value: unknown): DiagFailure | null {
+  if (!isRecord(value)
+      || typeof value.at !== 'number'
+      || typeof value.phase !== 'string'
+      || !isOomCause(value.cause)
+      || typeof value.rssEstimateBytes !== 'number'
+      || typeof value.heapUsedBytes !== 'number'
+      || typeof value.lruBytes !== 'number'
+      || typeof value.inFlightBytes !== 'number') return null;
+  const entry: DiagFailure = {
+    at: value.at,
+    phase: value.phase,
+    cause: value.cause,
+    rssEstimateBytes: value.rssEstimateBytes,
+    heapUsedBytes: value.heapUsedBytes,
+    lruBytes: value.lruBytes,
+    inFlightBytes: value.inFlightBytes,
+    lastRpcFrame: parseRpcFrame(value.lastRpcFrame),
+    lastFacetId: parseFacetId(value.lastFacetId),
+  };
+  if (typeof value.exitCode === 'number') entry.exitCode = value.exitCode;
+  if (typeof value.pid === 'number') entry.pid = value.pid;
+  if (typeof value.message === 'string') entry.message = value.message.slice(0, MESSAGE_CAP);
+  return entry;
+}
+
+const SESSION_STATES: readonly SessionState[] = [
+  'cold', 'hydrated', 'active', 'drained',
+  'rehydrate', 'build', 'wire', 'online',
+];
+
+function isSessionState(value: unknown): value is SessionState {
+  return SESSION_STATES.some((state) => state === value);
+}
+
+function parseRecoveryEvent(value: unknown): DiagRecoveryEvent | null {
+  if (!isRecord(value)
+      || typeof value.at !== 'number'
+      || !isSessionState(value.fromState)
+      || !isSessionState(value.toState)
+      || typeof value.trigger !== 'string'
+      || typeof value.isolateGen !== 'number'
+      || typeof value.dataLoss !== 'boolean'
+      || typeof value.snapshotKeysRehydrated !== 'number') return null;
+  const entry: DiagRecoveryEvent = {
+    at: value.at,
+    fromState: value.fromState,
+    toState: value.toState,
+    trigger: value.trigger,
+    isolateGen: value.isolateGen,
+    dataLoss: value.dataLoss,
+    snapshotKeysRehydrated: value.snapshotKeysRehydrated,
+  };
+  if (typeof value.notes === 'string') entry.notes = value.notes.slice(0, MESSAGE_CAP);
+  return entry;
 }

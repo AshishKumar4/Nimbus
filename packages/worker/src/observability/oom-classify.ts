@@ -40,15 +40,22 @@
  * never re-purpose an existing one.
  */
 
-export type OomCause =
-  | 'sqlite_nomem'
-  | 'oom'
-  | 'clone_refused'
-  | 'rpc_timeout'
-  | 'subrequest_cap'
-  | 'condemnation'
-  | 'hard_evict'
-  | 'unknown';
+const OOM_CAUSES = [
+  'sqlite_nomem',
+  'oom',
+  'clone_refused',
+  'rpc_timeout',
+  'subrequest_cap',
+  'condemnation',
+  'hard_evict',
+  'unknown',
+] as const;
+
+export type OomCause = typeof OOM_CAUSES[number];
+
+export function isOomCause(input: unknown): input is OomCause {
+  return OOM_CAUSES.some((cause) => cause === input);
+}
 
 /**
  * Classify an error or message string into an OomCause. Returns

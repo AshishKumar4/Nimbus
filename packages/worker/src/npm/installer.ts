@@ -543,7 +543,7 @@ export class NpmInstaller {
     // cache-obs-2: accumulator for per-tier cache events across all
     // resolve-one tasks in this fanout walk. Drained at end-of-walk
     // into the DO singleton via recordCacheStatEvents.
-    const fanoutCacheStatEvents: any[] = [];
+    const fanoutCacheStatEvents: NonNullable<ResolveOneResult['cacheStatEvents']> = [];
 
     // Counter for diagnostics — peak in-flight inside a layer = layer
     // width (parallelism mirrors the in-DO/peer-DO pool's task count).
@@ -649,9 +649,7 @@ export class NpmInstaller {
         // Accumulate cache writes for end-of-walk flush.
         for (const cw of res.cacheWrites) cacheWritesPending.push(cw);
         // cache-obs-2: harvest per-task cache events for end-of-walk fold.
-        if (Array.isArray((res as any).cacheStatEvents)) {
-          for (const e of (res as any).cacheStatEvents) fanoutCacheStatEvents.push(e);
-        }
+        if (res.cacheStatEvents) fanoutCacheStatEvents.push(...res.cacheStatEvents);
         totalPackumentBytes += res.packumentBytesDecoded;
         if (res.packumentSource === 'r2-cache') r2Wins++;
         else if (res.packumentSource === 'network') r2Losses++;
@@ -932,8 +930,8 @@ export class NpmInstaller {
         facetCounters: mergeFacetCounters(shardResults.map((r) => r.facetCounters)),
         // cache-obs-2: merge per-shard cacheStatEvents (flat
         // concatenation). Each shard's events are independent.
-        cacheStatEvents: shardResults.flatMap((r) => (r as any).cacheStatEvents ?? []),
-      } as InstallBatchResult;
+        cacheStatEvents: shardResults.flatMap((r) => r.cacheStatEvents),
+      };
 
       let okCount = 0;
       let failCount = 0;
@@ -957,7 +955,7 @@ export class NpmInstaller {
       // Fold facet counters into the supervisor's diagnostic state.
       recordInstallFacetCounters(result.facetCounters);
       // [W4] Fold tarball R2 race outcomes into supervisor diag.r2.
-      const fc: any = result.facetCounters;
+      const fc = result.facetCounters;
       recordR2RaceCounters({
         pipelinedTarballRaceWins: fc.pipelinedTarballRaceWins ?? 0,
         pipelinedTarballRaceLosses: fc.pipelinedTarballRaceLosses ?? 0,
@@ -966,7 +964,7 @@ export class NpmInstaller {
         pipelinedPackumentRaceLosses: 0,
       });
       // cache-obs-2: fold per-tier tarball cache events into DO singleton.
-      recordCacheStatEvents((result as any).cacheStatEvents);
+      recordCacheStatEvents(result.cacheStatEvents);
       const r2WinSuffix = (fc.pipelinedTarballRaceWins ?? 0) > 0
         ? `, R2 cache wins=${fc.pipelinedTarballRaceWins}/${(fc.pipelinedTarballRaceWins ?? 0) + (fc.pipelinedTarballRaceLosses ?? 0)}`
         : '';

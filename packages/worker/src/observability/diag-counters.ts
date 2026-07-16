@@ -323,19 +323,12 @@ export type CacheStatEvent =
   | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
   | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
 
-export function recordCacheStatEvents(events: readonly unknown[] | undefined): void {
+export function recordCacheStatEvents(events: readonly CacheStatEvent[] | undefined): void {
   if (!events || events.length === 0) return;
-  const validTiers = new Set<CacheTier>(['L1', 'L2', 'L3', 'L4']);
-  const validKinds = new Set<CacheKind>(['tarball', 'packument', 'asset']);
-  for (const raw of events) {
-    if (!raw || typeof raw !== 'object') continue;
-    const e: any = raw;
-    if (!validTiers.has(e.tier)) continue;
-    if (!validKinds.has(e.cacheKind)) continue;
+  for (const e of events) {
     if (e.kind === 'hit') {
-      const bytes = typeof e.bytes === 'number' && e.bytes > 0 ? e.bytes : 0;
-      _cacheRecordHit(e.tier, e.cacheKind, bytes);
-    } else if (e.kind === 'miss') {
+      _cacheRecordHit(e.tier, e.cacheKind, e.bytes);
+    } else {
       _cacheRecordMiss(e.tier, e.cacheKind);
     }
   }
