@@ -118,6 +118,8 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-en
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_CONCURRENCY = 12;
 export const NPM_DECOMPRESS_TIMEOUT = 15_000;
+export const PRE_BUNDLE_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
+export const PRE_BUNDLE_CONCURRENCY = 1;
 
 // ── Dev Server Constants ────────────────────────────────────────────────
 export const DEFAULT_VITE_PORT = 5173;

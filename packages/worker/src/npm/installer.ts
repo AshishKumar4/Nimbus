@@ -76,7 +76,11 @@ import {
 } from './pre-bundle-facet.js';
 import { PRE_BUNDLE_PREAMBLE } from '../loaders/pre-bundle-preamble.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
-import { CHUNK_SIZE } from '../constants.js';
+import {
+  CHUNK_SIZE,
+  PRE_BUNDLE_CONCURRENCY,
+  PRE_BUNDLE_SLICE_CAP_BYTES,
+} from '../constants.js';
 import { waitForLowAllocPressure } from '../observability/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import {
@@ -1596,9 +1600,6 @@ export class NpmInstaller {
     // esbuild's WASM linear memory is per-FACET (~30–80 MiB) and lives
     // outside the supervisor. Per-slot try/catch handles failures —
     // /preview/@modules/ on-demand bundling recovers.
-    const PRE_BUNDLE_CONCURRENCY = 1;
-    const SLICE_CAP_BYTES = 28 * 1024 * 1024;
-
     // Fetch the esbuild-wasm bytes from the static-assets layer.
     // The supervisor briefly holds the 12 MiB ArrayBuffer between this
     // line and the LOADER hand-off below; after pool construction
@@ -1737,7 +1738,7 @@ export class NpmInstaller {
             slice = built;
           } else {
             slice = buildSliceForSpecifierWithCap(
-              this.vfs, next.specifier, nmDir, SLICE_CAP_BYTES,
+              this.vfs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES,
             );
           }
         } catch (e: any) {
@@ -1749,7 +1750,7 @@ export class NpmInstaller {
         }
         if (!slice) {
           safeProgress(
-            `  skipped pre-bundle for ${next.specifier}: slice exceeded ${(SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`,
+            `  skipped pre-bundle for ${next.specifier}: slice exceeded ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`,
           );
           skippedCount++;
           continue;

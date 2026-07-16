@@ -37,7 +37,11 @@
  * recovery_event ring, separate from this module.
  */
 
-import { SUPERVISOR_HEAP_CEILING_BYTES } from '../constants.js';
+import {
+  PRE_BUNDLE_CONCURRENCY,
+  PRE_BUNDLE_SLICE_CAP_BYTES,
+  SUPERVISOR_HEAP_CEILING_BYTES,
+} from '../constants.js';
 import type { DiagCounters } from './diag-counters.js';
 
 /**
@@ -153,14 +157,11 @@ const SUPERVISOR_BASELINE_BYTES = 9 * 1024 * 1024;
 export function estimatePreBundleSliceBytes(c: DiagCounters): number {
   // Conservative: if the most recent batch attempted >0 specs and the
   // batch hasn't fully completed, assume one slice's worth of bytes
-  // are in flight. The 28 MiB constant must stay in lockstep with
-  // PRE_BUNDLE_CONCURRENCY × SLICE_CAP_BYTES in npm-installer.ts.
-  const SLICE_CAP_BYTES = 28 * 1024 * 1024;
-  const PRE_BUNDLE_CONCURRENCY = 1;
+  // are in flight.
   const f = c.preBundleFacet;
   const inFlight = f.attempted - f.bundlesCompleted - f.errors - f.skipped;
   if (inFlight <= 0) return 0;
-  return Math.min(inFlight, PRE_BUNDLE_CONCURRENCY) * SLICE_CAP_BYTES;
+  return Math.min(inFlight, PRE_BUNDLE_CONCURRENCY) * PRE_BUNDLE_SLICE_CAP_BYTES;
 }
 
 /**
