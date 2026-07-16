@@ -965,6 +965,9 @@ export class SqliteVFS {
                 data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
             });
         }
+        // POSIX: rewriting an existing file never changes its mode; the mode
+        // is chosen only at creation (open(2) O_CREAT).
+        const prior = this.inodes.get(path);
         const inode = {
             path,
             parentPath: pp,
@@ -973,7 +976,7 @@ export class SqliteVFS {
             size: data.length,
             atime: now,
             mtime: now,
-            mode: 0o644,
+            mode: prior?.kind === 'file' ? prior.mode : 0o644,
             chunkCount,
         };
         try {
@@ -1326,6 +1329,34 @@ export class SqliteVFS {
         this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, path);
         this.bumpRevision([path]);
         this.events.emit('change', path);
+    }
+    /**
+     * Set the permission bits durably. Follows symlinks (POSIX chmod).
+     *
+     * The stored value is a full POSIX st_mode: S_IF* filetype bits ORed
+     * with the permission bits. Filetype bits double as the "mode was
+     * explicitly set" marker: rows written before chmod existed carry
+     * bare permission values (0o644/0o755), and the exec-dispatch
+     * grandfather rule (see shell/exec-dispatch.ts) keeps wasm-magic
+     * files with such untouched modes executable. No migration — legacy
+     * rows upgrade the first time they are chmod'ed.
+     */
+    chmod(path, mode) {
+        let inode = this.inodes.get(path);
+        if (inode?.kind === 'symlink') {
+            const target = this.resolveSymlink(path);
+            if (target === null)
+                throw new Error('ELOOP: ' + path);
+            inode = this.inodes.get(target);
+        }
+        if (!inode)
+            throw new Error('ENOENT: ' + path);
+        this.assertMutationsAllowed([inode.path]);
+        const full = inodeTypeBits(inode.kind) | (mode & 0o7777);
+        inode.mode = full;
+        this.sql.exec("UPDATE inodes SET mode = ? WHERE path = ?", full, inode.path);
+        this.bumpRevision([inode.path]);
+        this.events.emit('change', inode.path);
     }
     readdir(path) {
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -2683,6 +2714,14 @@ function inodeKindFromCode(code) {
         return 'symlink';
     throw new Error(`EIO: invalid durable inode kind ${code}`);
 }
+/** POSIX S_IFMT filetype bits for a stored st_mode (S_IFREG/S_IFDIR/S_IFLNK). */
+function inodeTypeBits(kind) {
+    if (kind === 'file')
+        return 0o100000;
+    if (kind === 'directory')
+        return 0o040000;
+    return 0o120000;
+}
 function batchMutationPaths(payload) {
     const paths = new Set(payload.deletePaths ?? []);
     for (const inode of payload.inodes)
@@ -2774,4 +2813,5 @@ export class SqliteVFSProvider {
     rmdir(sub) { this.vfs.rmdir(this.resolve(sub)); }
     rename(o, n) { this.vfs.rename(this.resolve(o), this.resolve(n)); }
     copyFile(s, d) { this.vfs.copyFile(this.resolve(s), this.resolve(d)); }
+    chmod(sub, mode) { this.vfs.chmod(this.resolve(sub), mode); }
 }

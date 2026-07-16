@@ -6,7 +6,7 @@
  *
  * Commands: which, env, export, unset, history, clear, alias, date,
  * uptime, tree, find, grep -r, head, tail, wc, diff, sort, uniq,
- * sed (s///), awk (field extract), xargs, tee, chmod, chown, ln -s,
+ * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
  * du, man/help, basename, dirname, printf, true, false, seq, sleep,
  * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
  */
@@ -3579,8 +3579,8 @@ export function registerUnixCommands(registry, vfs) {
     registry.register('sha256sum', wrap(mkSha256sum(vfs)));
     registry.register('file', wrap(mkFile(vfs)));
     registry.register('xxd', wrap(mkXxd(vfs)));
-    // chmod/chown — no-ops (succeed silently, many npm scripts call these)
-    registry.register('chmod', wrap(() => 0));
+    // chmod is real (substrate/lifo/commands/fs/chmod.ts → vfs.chmod);
+    // chown stays a no-op (single-user VFS, but many npm scripts call it).
     registry.register('chown', wrap(() => 0));
     // ln — symlink stub (no-ops on VFS but doesn't error)
     /**

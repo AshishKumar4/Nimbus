@@ -76,6 +76,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     lstat(path: string): Promise<any>;
     hasLegacySymlinkUnder(path: string): Promise<boolean>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+    chmod(path: string, mode: number): Promise<void>;
     readdir(path: string): Promise<{
         name: string;
         type: string;

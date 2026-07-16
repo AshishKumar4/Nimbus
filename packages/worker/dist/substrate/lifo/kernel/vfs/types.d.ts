@@ -62,6 +62,8 @@ export interface MountProvider extends VirtualProvider {
     rmdir(subpath: string): void;
     rename(oldSubpath: string, newSubpath: string): void;
     copyFile(srcSubpath: string, destSubpath: string): void;
+    /** Set permission bits. Providers without chmod reject it (read-only fs). */
+    chmod?(subpath: string, mode: number): void;
 }
 export declare class VFSError extends Error {
     code: ErrorCodeType;

@@ -269,6 +269,18 @@ export declare class SqliteVFS {
         mode: number;
     };
     utimes(path: string, atimeMs: number, mtimeMs: number): void;
+    /**
+     * Set the permission bits durably. Follows symlinks (POSIX chmod).
+     *
+     * The stored value is a full POSIX st_mode: S_IF* filetype bits ORed
+     * with the permission bits. Filetype bits double as the "mode was
+     * explicitly set" marker: rows written before chmod existed carry
+     * bare permission values (0o644/0o755), and the exec-dispatch
+     * grandfather rule (see shell/exec-dispatch.ts) keeps wasm-magic
+     * files with such untouched modes executable. No migration — legacy
+     * rows upgrade the first time they are chmod'ed.
+     */
+    chmod(path: string, mode: number): void;
     readdir(path: string): {
         name: string;
         type: string;
@@ -541,6 +553,7 @@ export declare class SqliteVFSProvider {
     rmdir(sub: string): void;
     rename(o: string, n: string): void;
     copyFile(s: string, d: string): void;
+    chmod(sub: string, mode: number): void;
 }
 export {};
 //# sourceMappingURL=sqlite-vfs.d.ts.map

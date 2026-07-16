@@ -72,7 +72,7 @@ export declare function createFs(vfs: VFS, cwd: string): {
     }) => void;
     renameSync: (oldPath: string | URL, newPath: string | URL) => void;
     copyFileSync: (src: string | URL, dest: string | URL) => void;
-    chmodSync: (_path: string | URL, _mode: number) => void;
+    chmodSync: (path: string | URL, mode: number) => void;
     chownSync: (_path: string | URL, _uid: number, _gid: number) => void;
     accessSync: (path: string | URL, _mode?: number) => void;
     realpathSync: ((path: string | URL) => string) & {
@@ -155,7 +155,7 @@ export declare function createFs(vfs: VFS, cwd: string): {
         access: (path: string | URL, mode?: number) => Promise<void>;
         realpath: (path: string | URL) => Promise<string>;
         truncate: (path: string | URL, len?: number) => Promise<void>;
-        chmod: (_path: string | URL, _mode: number) => Promise<void>;
+        chmod: (path: string | URL, mode: number) => Promise<void>;
         chown: (_path: string | URL, _uid: number, _gid: number) => Promise<void>;
         open: (path: string | URL, flags?: string | number, mode?: number) => Promise<{
             fd: number;

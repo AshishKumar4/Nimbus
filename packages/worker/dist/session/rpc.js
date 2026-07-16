@@ -159,6 +159,9 @@ export async function _rpcHasLegacySymlinkUnder(self, path) {
 export async function _rpcUtimes(self, path, atimeMs, mtimeMs) {
     await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
 }
+export async function _rpcChmod(self, path, mode) {
+    await runtimeFs(self).chmod(path, mode);
+}
 export async function _rpcReaddir(self, path) {
     return runtimeFs(self).readdir(path);
 }

@@ -103,6 +103,12 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ENOENT', 'utimes', path);
         this.vfs.utimes(p, atimeMs, mtimeMs);
     }
+    async chmod(path, mode) {
+        const p = this.resolveMutationPath(path, true, 'chmod');
+        if (!this.vfs.exists(p))
+            throw fsError('ENOENT', 'chmod', path);
+        this.vfs.chmod(p, mode);
+    }
     async open(path, flags) {
         const normalizedFlags = normalizeOpenFlags(flags);
         const mutates = normalizedFlags.write || normalizedFlags.create ||

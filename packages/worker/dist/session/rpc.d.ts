@@ -60,6 +60,7 @@ export declare function _rpcStat(self: RpcHost, path: string): Promise<any>;
 export declare function _rpcLstat(self: RpcHost, path: string): Promise<any>;
 export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean>;
 export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+export declare function _rpcChmod(self: RpcHost, path: string, mode: number): Promise<void>;
 export declare function _rpcReaddir(self: RpcHost, path: string): Promise<{
     name: string;
     type: string;

@@ -310,6 +310,9 @@ export function makeClangRunnerFactory(deps) {
                 vfs.mkdir(parent, { recursive: true });
             }
             vfs.writeFile(outVfsPath, wasmBytes);
+            // Real linkers chmod their output executable (+x even after a
+            // prior chmod -x) — so `./a.out` runs with no manual chmod.
+            vfs.chmod(outVfsPath, 0o755);
             return 0;
         };
     };

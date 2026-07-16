@@ -1,42 +1,43 @@
 import { resolve } from '../../utils/path.js';
 import { VFSError } from '../../kernel/vfs/index.js';
-function parseMode(modeStr, currentMode) {
-    // Octal mode: 755, 644, etc.
-    if (/^[0-7]+$/.test(modeStr)) {
-        return parseInt(modeStr, 8);
+/** Parse an octal (755, 0644) or symbolic (+x, u+x, go-w, a=rx) mode spec. */
+export function parseModeSpec(spec) {
+    if (/^[0-7]{1,4}$/.test(spec)) {
+        return { kind: 'absolute', mode: parseInt(spec, 8) };
     }
-    // Symbolic mode: +x, -w, u+rwx, etc.
-    let mode = currentMode;
-    const match = modeStr.match(/^([ugoa]*)([+\-=])([rwx]+)$/);
-    if (!match)
-        return mode;
-    const who = match[1] || 'a';
-    const op = match[2];
-    const perms = match[3];
-    let bits = 0;
-    if (perms.includes('r'))
-        bits |= 4;
-    if (perms.includes('w'))
-        bits |= 2;
-    if (perms.includes('x'))
-        bits |= 1;
-    const targets = [];
-    if (who.includes('u') || who.includes('a'))
-        targets.push(6); // user bits shift
-    if (who.includes('g') || who.includes('a'))
-        targets.push(3); // group bits shift
-    if (who.includes('o') || who.includes('a'))
-        targets.push(0); // other bits shift
-    for (const shift of targets) {
-        const shifted = bits << shift;
-        if (op === '+')
-            mode |= shifted;
-        else if (op === '-')
-            mode &= ~shifted;
-        else if (op === '=') {
-            mode &= ~(7 << shift);
-            mode |= shifted;
+    const clauses = [];
+    for (const clause of spec.split(',')) {
+        const match = clause.match(/^([ugoa]*)([+\-=])([rwx]*)$/);
+        if (!match)
+            return null;
+        clauses.push({ who: match[1], op: match[2], perms: match[3] });
+    }
+    return clauses.length > 0 ? { kind: 'symbolic', clauses } : null;
+}
+const PERM_BITS = { r: 4, w: 2, x: 1 };
+const WHO_SHIFTS = { u: 6, g: 3, o: 0 };
+/** Apply a parsed mode spec to the current permission bits. */
+export function applyModeSpec(spec, currentMode) {
+    if (spec.kind === 'absolute')
+        return spec.mode & 0o7777;
+    let mode = currentMode & 0o7777;
+    for (const { who, op, perms } of spec.clauses) {
+        const targets = who === '' || who.includes('a') ? 'ugo' : who;
+        let bits = 0;
+        for (const p of perms)
+            bits |= PERM_BITS[p] ?? 0;
+        let mask = 0;
+        let selected = 0;
+        for (const w of targets) {
+            mask |= 7 << WHO_SHIFTS[w];
+            selected |= bits << WHO_SHIFTS[w];
         }
+        if (op === '+')
+            mode |= selected;
+        else if (op === '-')
+            mode &= ~selected;
+        else
+            mode = (mode & ~mask) | selected;
     }
     return mode;
 }
@@ -45,7 +46,7 @@ const command = async (ctx) => {
     let modeStr = '';
     const files = [];
     for (const arg of ctx.args) {
-        if (arg === '-R' || arg === '-r') {
+        if (!modeStr && (arg === '-R' || arg === '-r' || arg === '--recursive')) {
             recursive = true;
         }
         else if (!modeStr) {
@@ -59,45 +60,29 @@ const command = async (ctx) => {
         ctx.stderr.write('chmod: missing operand\n');
         return 1;
     }
-    function applyChmod(filePath) {
-        const st = ctx.vfs.stat(filePath);
-        const newMode = parseMode(modeStr, st.mode);
-        // VFS stat returns mode but we need to update via the internal node.
-        // Since VFS doesn't expose a chmod method, we'll use writeFile trick
-        // Actually the INode.mode is exposed through stat, but we need to set it.
-        // For now, we read and rewrite (preserving content) to update via the VFS.
-        // This is a limitation -- ideally VFS would have a chmod method.
-        // We'll just report the mode change for now.
-        if (st.type === 'directory' && recursive) {
-            try {
-                const entries = ctx.vfs.readdir(filePath);
-                for (const entry of entries) {
-                    const childPath = filePath === '/' ? '/' + entry.name : filePath + '/' + entry.name;
-                    applyChmod(childPath);
-                }
-            }
-            catch {
-                // skip
-            }
-        }
-        // Since we can't directly set mode on VFS nodes without a chmod method,
-        // we report success. In a real implementation, VFS.chmod() would be added.
-        void newMode;
+    const spec = parseModeSpec(modeStr);
+    if (!spec) {
+        ctx.stderr.write(`chmod: invalid mode: '${modeStr}'\n`);
+        return 1;
     }
     let exitCode = 0;
+    function applyChmod(filePath) {
+        const st = ctx.vfs.stat(filePath);
+        ctx.vfs.chmod(filePath, applyModeSpec(spec, st.mode));
+        if (recursive && st.type === 'directory') {
+            for (const entry of ctx.vfs.readdir(filePath)) {
+                applyChmod(filePath === '/' ? '/' + entry.name : filePath + '/' + entry.name);
+            }
+        }
+    }
     for (const file of files) {
-        const path = resolve(ctx.cwd, file);
         try {
-            applyChmod(path);
+            applyChmod(resolve(ctx.cwd, file));
         }
         catch (e) {
-            if (e instanceof VFSError) {
-                ctx.stderr.write(`chmod: ${file}: ${e.message}\n`);
-                exitCode = 1;
-            }
-            else {
-                throw e;
-            }
+            const message = e instanceof VFSError || e instanceof Error ? e.message : String(e);
+            ctx.stderr.write(`chmod: cannot access '${file}': ${message}\n`);
+            exitCode = 1;
         }
     }
     return exitCode;

@@ -227,6 +227,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcLstat(path: string): Promise<any>;
     _rpcHasLegacySymlinkUnder(path: string): Promise<boolean>;
     _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+    _rpcChmod(path: string, mode: number): Promise<void>;
     _rpcReaddir(path: string): Promise<{
         name: string;
         type: string;
