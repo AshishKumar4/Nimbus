@@ -978,27 +978,14 @@ ${ENTRYPOINT_STARTUP_DRAIN}
 }
 
 async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
-  const url = new URL(req.url);
   await __nimbusEnsureStarted(workerEnv, workerCtx);
-  const ports = globalThis.__portRegistry;
-  const hinted = Number(req.headers.get("X-Nimbus-Port") || 0);
-  const server = ports && (ports.get(hinted) || ports.values().next().value);
-  if (!server || typeof server._handleRequest !== "function") {
-    return new __NimbusHostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
-  }
-  const headers = {};
-  req.headers.forEach((v, k) => { headers[k] = v; });
-  let body = "";
-  if (req.method !== "GET" && req.method !== "HEAD") body = await req.text();
-  const res = server._handleRequest(url.pathname + url.search, req.method, headers, body);
-  if (!res._ended) {
-    await new Promise((resolve) => {
-      try { res.on("finish", resolve); } catch { resolve(); }
-      setTimeout(resolve, 5000);
-    });
-  }
+  // Streaming dispatch lives in the node-shims http shim (globalThis.__nimbusServeHttp):
+  // it returns the in-facet server's response as a streaming host Response the
+  // moment headers are known, so SSE / chunked bodies flow live over the RPC
+  // boundary instead of being buffered to "finish". Flush process stdout first
+  // (independent of the response stream).
   await __nimbusFlushRuntime();
-  return new __NimbusHostResponse((res._body || []).join(""), { status: res.statusCode || 200, headers: res.headers || {} });
+  return globalThis.__nimbusServeHttp(req);
 }
 
 export class NimbusNodeProcess extends WorkerEntrypoint {

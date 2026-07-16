@@ -846,25 +846,14 @@ async function __ocRunAttachedTui() {
 // node path's __nimbusDispatchHttp: pick the server for the hinted port, replay
 // the request through its _handleRequest, and return the buffered Response.
 async function __ocDispatchHttp(request) {
-  const url = new URL(request.url);
-  const ports = globalThis.__portRegistry;
-  const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);
-  const server = ports && (ports.get(hinted) || ports.values().next().value);
-  if (!server || typeof server._handleRequest !== "function") {
-    return new __ocHostResponse("Nimbus: no HTTP server is listening in this opencode serve facet", { status: 502 });
-  }
-  const headers = {};
-  request.headers.forEach((v, k) => { headers[k] = v; });
-  let body = "";
-  if (request.method !== "GET" && request.method !== "HEAD") body = await request.text();
-  const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
-  if (!res._ended) {
-    await new Promise((resolve) => {
-      try { res.on("finish", resolve); } catch { resolve(); }
-      setTimeout(resolve, 5000);
-    });
-  }
-  return new __ocHostResponse((res._body || []).join(""), { status: res.statusCode || 200, headers: res.headers || {} });
+  // Streaming dispatch lives in the node-shims http shim (globalThis.__nimbusServeHttp),
+  // built at module-init over the shared builtins: it replays the request
+  // through the in-facet opencode server's _handleRequest and returns a
+  // streaming host Response the moment headers are known. This is what lets
+  // opencode's TUI live-sync SSE (GET /event, a response that never ends) flow
+  // live over the loopback → RPC boundary instead of being buffered to a dead
+  // finish-capped response (the frozen-TUI defect).
+  return globalThis.__nimbusServeHttp(request);
 }
 
 class NimbusOpencodeProcess extends __NimbusWorkerEntrypoint {

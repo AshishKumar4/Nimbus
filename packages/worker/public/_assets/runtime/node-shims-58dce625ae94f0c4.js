@@ -4266,14 +4266,116 @@ builtins.process = __processMod;
 builtins.console = __consoleMod;
 builtins.http = (() => {
   if (!globalThis.__portRegistry) globalThis.__portRegistry = new Map();
+  // Capture the host Response/encoder at shim-init (before any user code can
+  // shadow globalThis.Response) — the dispatch layer wraps the response stream
+  // in a host Response and streams it across the RPC boundary.
+  const __httpEnc = new TextEncoder();
+  const __hostResponse = globalThis.Response;
+  // Streaming ServerResponse: writes flow into a ReadableStream that the
+  // dispatch layer (__nimbusServeHttp) returns the moment response headers are
+  // known — nothing is buffered to "finish". A live SSE / chunked body that
+  // never ends streams indefinitely; a slow-but-finite response streams as it
+  // is produced. res.write() enqueues bytes (binary-safe), res.end() closes the
+  // stream, and a downstream cancel (client disconnect) releases the handler.
   class ServerResponse extends __eventsMod {
-    constructor() { super(); this.statusCode = 200; this.headers = {}; this._body = []; this._ended = false; }
-    writeHead(code, hdrs) { this.statusCode = code; if (hdrs) Object.assign(this.headers, hdrs); return this; }
-    setHeader(k, v) { this.headers[k.toLowerCase()] = v; return this; }
-    getHeader(k) { return this.headers[k.toLowerCase()]; }
-    write(chunk) { this._body.push(typeof chunk === "string" ? chunk : String(chunk)); return true; }
-    end(data) { if (data) this.write(data); this._ended = true; this.emit("finish"); }
-    get headersSent() { return this._ended; }
+    constructor() {
+      super();
+      this.statusCode = 200;
+      this.statusMessage = undefined;
+      this.headers = {};
+      this._headersSent = false;
+      this._ended = false;
+      this._destroyed = false;
+      this._closed = false;
+      this._controller = null;
+      this._needDrain = false;
+      const self = this;
+      // Bounded backpressure: up to 16 queued chunks before write() reports
+      // backpressure (returns false) and a 'drain' fires on the next pull.
+      this._stream = new ReadableStream({
+        start(c) { self._controller = c; },
+        pull() { if (self._needDrain) { self._needDrain = false; self.emit("drain"); } },
+        cancel() {
+          // Downstream (client / attach facet) went away — release the handler
+          // so a dead SSE does not keep the producer writing into a void.
+          self._destroyed = true;
+          self._ended = true;
+          self.emit("aborted");
+          self._emitClose();
+        },
+      }, new CountQueuingStrategy({ highWaterMark: 16 }));
+      // Resolves as soon as headers are flushed (writeHead / first write / end).
+      this._headersReady = new Promise((resolve) => { self._resolveHeaders = resolve; });
+    }
+    _emitClose() { if (!this._closed) { this._closed = true; this.emit("close"); } }
+    _flushHeaders() { if (this._headersSent) return; this._headersSent = true; this._resolveHeaders(); }
+    _toBytes(chunk) {
+      if (typeof chunk === "string") return __httpEnc.encode(chunk);
+      if (chunk instanceof Uint8Array) return chunk;
+      if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+      if (chunk && chunk.buffer instanceof ArrayBuffer && typeof chunk.byteLength === "number") {
+        return new Uint8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength);
+      }
+      return __httpEnc.encode(String(chunk));
+    }
+    writeHead(code, reasonOrHeaders, maybeHeaders) {
+      this.statusCode = code;
+      let hdrs = maybeHeaders;
+      if (reasonOrHeaders && typeof reasonOrHeaders === "object") hdrs = reasonOrHeaders;
+      else if (typeof reasonOrHeaders === "string") this.statusMessage = reasonOrHeaders;
+      if (hdrs) {
+        if (Array.isArray(hdrs)) { for (let i = 0; i + 1 < hdrs.length; i += 2) this.headers[String(hdrs[i]).toLowerCase()] = hdrs[i + 1]; }
+        else for (const k of Object.keys(hdrs)) this.headers[k.toLowerCase()] = hdrs[k];
+      }
+      this._flushHeaders();
+      return this;
+    }
+    flushHeaders() { this._flushHeaders(); return this; }
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; return this; }
+    getHeader(k) { return this.headers[String(k).toLowerCase()]; }
+    getHeaders() { return { ...this.headers }; }
+    hasHeader(k) { return Object.prototype.hasOwnProperty.call(this.headers, String(k).toLowerCase()); }
+    removeHeader(k) { delete this.headers[String(k).toLowerCase()]; }
+    write(chunk, enc, cb) {
+      if (typeof enc === "function") { cb = enc; }
+      this._flushHeaders();
+      if (this._ended || this._destroyed) { if (cb) queueMicrotask(cb); return false; }
+      if (chunk != null && !(typeof chunk === "string" && chunk.length === 0)) {
+        try { this._controller.enqueue(this._toBytes(chunk)); }
+        catch { this._destroyed = true; if (cb) queueMicrotask(cb); return false; }
+      }
+      if (cb) queueMicrotask(cb);
+      const ds = this._controller ? this._controller.desiredSize : null;
+      const ok = ds === null || ds > 0;
+      if (!ok) this._needDrain = true;
+      return ok;
+    }
+    end(data, enc, cb) {
+      if (typeof data === "function") { cb = data; data = undefined; }
+      else if (typeof enc === "function") { cb = enc; }
+      if (data != null) this.write(data);
+      this._flushHeaders();
+      if (!this._ended) {
+        this._ended = true;
+        if (!this._destroyed) { try { this._controller.close(); } catch {} }
+        this.emit("finish");
+        this._emitClose();
+      }
+      if (cb) queueMicrotask(cb);
+      return this;
+    }
+    destroy(err) {
+      if (this._destroyed) return this;
+      this._destroyed = true;
+      if (!this._ended) { this._ended = true; try { this._controller.error(err || new Error("aborted")); } catch {} }
+      if (err) this.emit("error", err);
+      this._emitClose();
+      return this;
+    }
+    get headersSent() { return this._headersSent; }
+    get writableEnded() { return this._ended; }
+    get writableFinished() { return this._ended; }
+    get destroyed() { return this._destroyed; }
   }
   class IncomingMessage extends __eventsMod {
     constructor(u, m, h) { super(); this.url = u || "/"; this.method = m || "GET"; this.headers = h || {}; this.httpVersion = "1.1"; }
@@ -4328,6 +4430,47 @@ builtins.http = (() => {
     _handleRequest(u, m, h, b) { const req = new IncomingMessage(u, m, h); const res = new ServerResponse(); this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } return res; }
   }
   function createServer(o, h) { if (typeof o === "function") { h = o; } return new Server(h); }
+  // Shared streaming HTTP dispatch for every facet server (generic node
+  // long-running, opencode serve, …). A request forwarded by the port registry
+  // (loopback OR external /port/<n>, stamped X-Nimbus-Port) is replayed through
+  // the in-facet server's _handleRequest, and the response is returned as a
+  // streaming host Response the moment its headers are known — never buffered.
+  // This is what lets an SSE / chunked body flow live across the RPC boundary
+  // (the registry + loopback both return this Response as-is). The single
+  // source of truth for facet HTTP dispatch: manager.ts (__nimbusDispatchHttp)
+  // and the opencode runner (__ocDispatchHttp) both delegate here.
+  globalThis.__nimbusServeHttp = async function __nimbusServeHttp(request) {
+    const ports = globalThis.__portRegistry;
+    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);
+    const server = ports && (ports.get(hinted) || ports.values().next().value);
+    if (!server || typeof server._handleRequest !== "function") {
+      return new __hostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
+    }
+    const url = new URL(request.url);
+    const headers = {};
+    request.headers.forEach((v, k) => { headers[k] = v; });
+    let body = "";
+    if (request.method !== "GET" && request.method !== "HEAD") body = await request.text();
+    const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
+    // Return once headers are known. A handler that never sends headers is
+    // bounded by a header timeout (NOT a body-finish cap) so a hung handler
+    // can't wedge the request, while a live stream that never "finishes" flows.
+    // The timeout defaults to 30s; tests pin it low via __nimbusHttpHeaderTimeoutMs.
+    if (!res._headersSent) {
+      const headerTimeoutMs = Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000;
+      let timer;
+      const timedOut = await Promise.race([
+        res._headersReady.then(() => false),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(true), headerTimeoutMs); }),
+      ]);
+      clearTimeout(timer);
+      if (timedOut && !res._headersSent) {
+        try { res.destroy(); } catch {}
+        return new __hostResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 });
+      }
+    }
+    return new __hostResponse(res._stream, { status: res.statusCode || 200, headers: res.headers || {} });
+  };
   return { createServer, Server, IncomingMessage, ServerResponse, Agent: class {}, STATUS_CODES: {}, METHODS: ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"], request: () => { throw new Error("Use fetch()"); }, get: () => { throw new Error("Use fetch()"); } };
 })();
 builtins.https = (() => {
