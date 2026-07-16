@@ -60,6 +60,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
         doId: z.ZodString;
         pid: z.ZodNumber;
     }, z.core.$strip>>;
+    stage: z.ZodOptional<z.ZodUnknown>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**

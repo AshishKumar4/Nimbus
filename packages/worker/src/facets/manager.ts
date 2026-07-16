@@ -32,27 +32,9 @@ import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
-import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
+import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
-  fetchOpencodeBundle,
-  fetchOpencodeChunkSources,
-  fetchOpencodeWasmBytes,
-  fetchOpencodeWorkerSource,
-} from '../runtime/opencode-artifact.js';
-import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
-import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
-import {
-  OPENCODE_CHUNKS_PACK,
-  OPENCODE_TREE_SITTER_WASMS,
-  OPENCODE_TUI_WORKERS,
-  OPENCODE_YOGA_WASM,
-} from '../opencode-artifact.generated.js';
-import {
-  generateOpencodeRunnerCode,
-  opencodeBuiltinBridgeModules,
-  OPENCODE_BUNDLE_MODULE_NAME,
   SQLITE_WASM_MODULE_NAME,
-  YOGA_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
   type OpencodeRunnerMode,
 } from '../runtime/opencode-facet-runner.js';
@@ -190,6 +172,7 @@ interface NimbusCtxExports {
       depth: number;
       code: unknown;
       supervisor: { doId: string; pid: number };
+      stage?: OpencodeStageSpec;
     };
   }) => LoadedWorkerEntrypointStub;
 }
@@ -236,6 +219,7 @@ async function createLoadedWorkerEntrypoint(
   supervisor: { doId: string; pid: number },
   name: string | null = null,
   key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
+  stage?: OpencodeStageSpec,
 ): Promise<LoadedWorkerEntrypointStub> {
   if (!ctxExports.NimbusLoadedEntrypoint) {
     throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
@@ -247,6 +231,7 @@ async function createLoadedWorkerEntrypoint(
       depth: 0,
       code,
       supervisor,
+      ...(stage ? { stage } : {}),
     },
   });
 }
@@ -2395,15 +2380,6 @@ export class FacetManager {
    * to avoid double-init.
    */
   private esbuild: EsbuildService | null = null;
-  /**
-   * Memoized sql.js wasm bytes for the node:sqlite facet path. Fetched
-   * once from env.ASSETS (sqlite-wasm-bytes.ts) on the first facet that
-   * imports node:sqlite, then reused for every subsequent sqlite facet in
-   * this isolate. Held as an ArrayBuffer because the Worker Loader module
-   * map needs a fresh `{ wasm }` entry per facet config.
-   */
-  private sqliteWasmBytes: ArrayBuffer | null = null;
-  private sqliteWasmBytesPromise: Promise<ArrayBuffer> | null = null;
 
   /**
    * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
@@ -2427,35 +2403,13 @@ export class FacetManager {
   }>();
   private static readonly PREFETCH_CACHE_MAX = 16;
 
-  // NOTE: the opencode bundle source (20.9 MB), the TUI worker sources
-  // (12 MB), and the tree-sitter sidecar bytes (2.6 MB) are deliberately NOT
-  // memoized on this manager. Pinning ~35 MB of artifact content on every
-  // session DO both wastes memory and shrinks headroom around the TUI facet,
-  // which boots close to the Worker memory limit (its OOM kill was the
-  // opencode-tui-render first-frame stall). fetchAsset already L2-caches
-  // these in caches.default, so a per-spawn refetch is a ~100 ms colo-cache
-  // hit. Only the sub-MB wasm byte buffers below stay memoized.
-
-  /**
-   * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
-   * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
-   * against OPENTUI_WASM_SHA256 in fetchOpenTUIWasmBytes); each facet config
-   * gets a fresh `{ wasm }` entry over the shared buffer.
-   */
-  private openTuiWasmBytes: ArrayBuffer | null = null;
-  private openTuiWasmBytesPromise: Promise<ArrayBuffer> | null = null;
-
-  /** In-flight (never resident) opencode chunk-pack fetch+parse dedupe. */
-  private opencodeChunkEntriesInflight: Promise<Record<string, string>> | null = null;
-
-  /**
-   * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
-   * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
-   * carries them as a pre-compiled `{ wasm }` module so the patched yoga loader
-   * instantiates a Module instead of doing the blocked request-time compile.
-   */
-  private opencodeYogaWasmBytes: ArrayBuffer | null = null;
-  private opencodeYogaWasmBytesPromise: Promise<ArrayBuffer> | null = null;
+  // NOTE: the opencode artifact sources (entry bundle, chunk pack, TUI worker
+  // sources, wasm sidecars) are NEVER materialized on this manager — the
+  // supervisor DO OOM-reset at the 128 MiB isolate cap when the dual
+  // serve+attach spawn staged them here. facets/opencode-staging.ts assembles
+  // the facet config inside NimbusLoadedEntrypoint (a stateless worker
+  // isolate) on the Worker-Loader cache-miss path; this manager only builds
+  // the small OpencodeStageSpec (argv/env/VFS snapshot).
 
   constructor(
     ctx: DurableObjectState,
@@ -2527,206 +2481,12 @@ export class FacetManager {
    * Build the Worker Loader module-map fragment that carries the sql.js
    * WebAssembly.Module into a facet, when that facet imports node:sqlite.
    * Returns `{}` for the common case (no sqlite) so the spread is free.
-   *
-   * The bytes are fetched once per isolate and reused (a fresh ArrayBuffer
-   * view per facet config). workerd compiles the `wasm` module ahead of
-   * dispatch, so the facet's static `import "sqlite.wasm"` resolves to a
-   * ready WebAssembly.Module — no request-time compile(bytes).
-   *
-   * Throws if env.ASSETS is unavailable: the facet code already imports
-   * `sqlite.wasm` (usesSqlite is true), so a missing module entry would
-   * fail facet load with an opaque resolver error; surfacing the cause
-   * here is clearer.
+   * Delegates to the shared per-isolate memoizer in opencode-staging.ts.
    */
-  private async sqliteModuleEntry(
+  private sqliteModuleEntry(
     usesSqlite: boolean,
   ): Promise<Record<string, { wasm: ArrayBuffer }>> {
-    if (!usesSqlite) return {};
-    if (!this.env.ASSETS) {
-      throw new Error(
-        'node:sqlite requires an env.ASSETS binding to load the sql.js wasm; ' +
-          'this Nimbus deployment is missing the static-assets binding',
-      );
-    }
-    if (!this.sqliteWasmBytes) {
-      if (!this.sqliteWasmBytesPromise) {
-        const assets = this.env.ASSETS;
-        this.sqliteWasmBytesPromise = fetchSqliteWasmBytes({ ASSETS: assets });
-      }
-      try {
-        this.sqliteWasmBytes = await this.sqliteWasmBytesPromise;
-      } catch (e) {
-        this.sqliteWasmBytesPromise = null;
-        throw e;
-      }
-    }
-    return { [SQLITE_WASM_MODULE_NAME]: { wasm: this.sqliteWasmBytes } };
-  }
-
-  /**
-   * Build the Worker Loader module-map fragment that carries the opencode
-   * tree-sitter wasm sidecars (core + bash + powershell grammars) into the
-   * opencode facet as pre-compiled WebAssembly.Modules, keyed by staged
-   * filename. The runner registers them on the facet's tree-sitter registry
-   * global so the bash tool's command parser instantiates them instead of
-   * hitting the blocked request-time WebAssembly.compile path.
-   */
-  private async treeSitterModuleEntries(): Promise<Record<string, { wasm: ArrayBuffer }>> {
-    const wasms = OPENCODE_TREE_SITTER_WASMS;
-    if (!wasms) {
-      throw new Error(
-        'opencode tree-sitter wasm sidecars are not staged — rerun ' +
-          'scripts/bundle-opencode.mjs with the opencode dist present',
-      );
-    }
-    if (!this.env.ASSETS) {
-      throw new Error(
-        'opencode tree-sitter wasm requires an env.ASSETS binding; this Nimbus ' +
-          'deployment is missing the static-assets binding',
-      );
-    }
-    const assets = this.env.ASSETS;
-    const entries = await Promise.all(
-      [wasms.core, wasms.bash, wasms.powershell].map(
-        async (file) =>
-          [file, { wasm: await fetchOpencodeWasmBytes({ ASSETS: assets }, file) }] as const,
-      ),
-    );
-    return Object.fromEntries(entries);
-  }
-
-  /**
-   * Build the Worker Loader module-map fragment carrying the split-build
-   * shared chunks (chunk-<hash>.js) both opencode entry bundles import. One
-   * pack asset fetch (L2-cached), expanded into per-chunk ESM module entries.
-   */
-  private async opencodeChunkModuleEntries(): Promise<Record<string, string>> {
-    if (!OPENCODE_CHUNKS_PACK) {
-      throw new Error(
-        'opencode chunk pack is not staged — rerun scripts/bundle-opencode.mjs ' +
-          'with a split-build opencode dist (build-node.ts)',
-      );
-    }
-    if (!this.env.ASSETS) {
-      throw new Error(
-        'opencode chunk pack requires an env.ASSETS binding; this Nimbus ' +
-          'deployment is missing the static-assets binding',
-      );
-    }
-    // In-flight dedupe ONLY: concurrent spawns share one fetch + 21 MB JSON
-    // parse, but nothing stays pinned on the DO once it settles (permanent
-    // per-DO residency of the artifact sources is what crowded the memory
-    // envelope in the first place; the L2 cache makes refetches cheap).
-    if (!this.opencodeChunkEntriesInflight) {
-      const assets = this.env.ASSETS;
-      this.opencodeChunkEntriesInflight = fetchOpencodeChunkSources(
-        { ASSETS: assets },
-        OPENCODE_CHUNKS_PACK,
-      ).finally(() => {
-        this.opencodeChunkEntriesInflight = null;
-      });
-    }
-    return this.opencodeChunkEntriesInflight;
-  }
-
-  /**
-   * Build the Worker Loader module-map fragment carrying the staged OpenTUI
-   * wasm32-wasi reactor into the opencode facet as a pre-compiled
-   * WebAssembly.Module under OPENTUI_WASM_MODULE_NAME. The runner instantiates
-   * it via OpenTUIWasmBackend (the patched @opentui/core seams resolve their
-   * render library from the parked backend) — request-time
-   * WebAssembly.compile(bytes) is blocked in facets.
-   */
-  private async openTuiModuleEntry(): Promise<Record<string, { wasm: ArrayBuffer }>> {
-    if (!this.env.ASSETS) {
-      throw new Error(
-        'opencode OpenTUI render backend requires an env.ASSETS binding; this ' +
-          'Nimbus deployment is missing the static-assets binding',
-      );
-    }
-    if (!this.openTuiWasmBytes) {
-      if (!this.openTuiWasmBytesPromise) {
-        const assets = this.env.ASSETS;
-        this.openTuiWasmBytesPromise = fetchOpenTUIWasmBytes({ ASSETS: assets });
-      }
-      try {
-        this.openTuiWasmBytes = await this.openTuiWasmBytesPromise;
-      } catch (e) {
-        this.openTuiWasmBytesPromise = null;
-        throw e;
-      }
-    }
-    return { [OPENTUI_WASM_MODULE_NAME]: { wasm: this.openTuiWasmBytes } };
-  }
-
-  /**
-   * Build the Worker Loader module-map fragment carrying the opencode TUI
-   * worker bundles (the API server worker.js + the OpenTUI parser.worker.js)
-   * into the interactive-TUI facet as ESM modules. The in-isolate Worker
-   * polyfill (opencode-facet-runner.ts) dynamically imports them by specifier
-   * when the TUI client calls `new Worker(...)`. Only needed for the attached
-   * TUI; the one-shot `opencode run` path never spawns these.
-   */
-  private async opencodeWorkerModuleEntries(): Promise<Record<string, string>> {
-    const workers = OPENCODE_TUI_WORKERS;
-    if (!workers) {
-      throw new Error(
-        'opencode TUI worker bundles are not staged — rerun ' +
-          'scripts/bundle-opencode.mjs with an opencode dist that built ' +
-          'worker.js + parser.worker.js (build-node.ts entrypoints)',
-      );
-    }
-    if (!this.env.ASSETS) {
-      throw new Error(
-        'opencode TUI workers require an env.ASSETS binding; this Nimbus ' +
-          'deployment is missing the static-assets binding',
-      );
-    }
-    const assets = this.env.ASSETS;
-    const entries = await Promise.all(
-      [workers.server, workers.parser].map(
-        async (file) =>
-          [file, await fetchOpencodeWorkerSource({ ASSETS: assets }, file)] as const,
-      ),
-    );
-    return Object.fromEntries(entries);
-  }
-
-  /**
-   * Build the Worker Loader module-map fragment carrying the yoga-layout wasm
-   * into the interactive-TUI facet as a pre-compiled WebAssembly.Module. The
-   * runner parks it on globalThis.__nimbusYogaModule and the patched OpenTUI
-   * yoga loader instantiates it (request-time WebAssembly.instantiate of bytes
-   * is blocked in facets). Attached-TTY only — `opencode run` never renders.
-   */
-  private async opencodeYogaModuleEntry(): Promise<Record<string, { wasm: ArrayBuffer }>> {
-    const yoga = OPENCODE_YOGA_WASM;
-    if (!yoga) {
-      throw new Error(
-        'opencode yoga-layout wasm is not staged — rerun ' +
-          'scripts/bundle-opencode.mjs with an opencode dist that extracted ' +
-          'yoga.wasm (build-node.ts)',
-      );
-    }
-    if (!this.env.ASSETS) {
-      throw new Error(
-        'opencode yoga-layout wasm requires an env.ASSETS binding; this Nimbus ' +
-          'deployment is missing the static-assets binding',
-      );
-    }
-    if (!this.opencodeYogaWasmBytes) {
-      if (!this.opencodeYogaWasmBytesPromise) {
-        const assets = this.env.ASSETS;
-        this.opencodeYogaWasmBytesPromise = fetchOpencodeWasmBytes({ ASSETS: assets }, yoga);
-      }
-      try {
-        this.opencodeYogaWasmBytes = await this.opencodeYogaWasmBytesPromise;
-      } catch (e) {
-        this.opencodeYogaWasmBytesPromise = null;
-        throw e;
-      }
-    }
-    return { [YOGA_WASM_MODULE_NAME]: { wasm: this.opencodeYogaWasmBytes } };
+    return sqliteWasmModuleEntry(this.env, usesSqlite);
   }
 
   private trackProcessRpcResources(
@@ -3057,21 +2817,22 @@ export class FacetManager {
   ): Promise<StagedArtifactExecResult> {
     const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
     const staged = await this._stageOpencodeFacet(artifact, opts, mode);
-    const workerConfig: WorkerCode = staged.supervisorBinding
-      ? { ...staged.baseConfig, env: { SUPERVISOR: staged.supervisorBinding } }
-      : staged.baseConfig;
 
     if (mode === 'attached') {
-      return await this._execStagedArtifactAttached(
-        staged.pid, staged.command, workerConfig, staged.supervisorBinding,
-      );
+      return await this._execStagedArtifactAttached(staged.pid, staged.command, staged.stageSpec);
     }
 
-    let worker: LoadedWorkerStub | undefined;
+    // One-shot: run through a keyed, stage-carrying NimbusLoadedEntrypoint —
+    // the ~23 MB module map is assembled inside the stateless entrypoint on
+    // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
+    // context, which stays open for the whole run), never in this DO.
+    const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid };
+    const ctxExports = getNimbusCtxExports();
     let entrypoint: LoadedWorkerEntrypointStub | undefined;
     try {
-      worker = this.env.LOADER.load(workerConfig);
-      entrypoint = worker.getEntrypoint();
+      entrypoint = await createLoadedWorkerEntrypoint(
+        ctxExports, undefined, supervisor, null, undefined, staged.stageSpec,
+      );
       if (typeof entrypoint.fetch !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
       }
@@ -3091,25 +2852,23 @@ export class FacetManager {
       throw e;
     } finally {
       disposeRpcResource(entrypoint);
-      disposeRpcResource(worker);
-      disposeRpcResource(staged.supervisorBinding);
     }
   }
 
   /**
-   * Assemble a staged-opencode facet for one of the three runtime modes:
-   * spawns the process-table entry, snapshots the VFS, fetches the wasm/module
-   * sidecars (worker + yoga only for the attached TUI), generates the runner
-   * mainModule, and builds the module map (`baseConfig`, WITHOUT the SUPERVISOR
-   * env binding — callers add it, and the resident-server path needs a
-   * supervisor-free copy for its re-resolvable route stub). The SUPERVISOR RPC
-   * binding is returned separately.
+   * Prepare a staged-opencode spawn: spawn the process-table entry, snapshot
+   * the VFS, and build the small OpencodeStageSpec. The artifact sources
+   * (entry bundle, chunk pack, wasm sidecars — ~23 MB of module map) are NOT
+   * materialized here: NimbusLoadedEntrypoint assembles them from the spec in
+   * a stateless worker isolate on the Worker-Loader cache-miss path, so the
+   * supervisor DO never carries them (it OOM-reset at the 128 MiB isolate cap
+   * when it did — live-diagnosed 2026-07-16).
    */
   private async _stageOpencodeFacet(
     artifact: string,
     opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin?: string; command?: string },
     mode: OpencodeRunnerMode,
-  ): Promise<{ pid: number; command: string; baseConfig: WorkerCode; supervisorBinding: unknown }> {
+  ): Promise<{ pid: number; command: string; stageSpec: OpencodeStageSpec }> {
     if (artifact !== 'opencode') {
       throw new Error(`Nimbus: unknown staged artifact '${artifact}'`);
     }
@@ -3119,7 +2878,6 @@ export class FacetManager {
           'deployment is missing the static-assets binding',
       );
     }
-    const bundle = await this.opencodeBundleSource();
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
     const attached = mode === 'attached';
@@ -3155,62 +2913,18 @@ export class FacetManager {
     const vfsState: FacetVfsState = this.vfs
       ? await buildPrefetchBundle(this.vfs, undefined, opts.cwd, '', this.esbuild || undefined)
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
-    // The opencode bundle imports node:sqlite (drizzle/effect-sql); the runner
-    // bridges it to the VFS-backed sql.js shim and statically imports the
-    // sql.js wasm under the shared SQLITE_WASM_MODULE_NAME — always supplied.
-    // The tree-sitter core + bash/powershell grammar wasm ride in the same
-    // way for the bash tool's command parser.
-    const [sqliteModules, treeSitterModules, openTuiModules, chunkModules, tuiWorkerModules, yogaModules] =
-      await Promise.all([
-        this.sqliteModuleEntry(true),
-        this.treeSitterModuleEntries(),
-        this.openTuiModuleEntry(),
-        // Split-build shared chunks — imported by the entry bundle (and the
-        // TUI server worker), so every mode carries them.
-        this.opencodeChunkModuleEntries(),
-        // The TUI client spawns its API server + OpenTUI parser as in-isolate
-        // Workers, and OpenTUI lays out frames with yoga-layout. Only the
-        // attached renderer reaches those; serve + one-shot skip them.
-        attached ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
-        attached ? this.opencodeYogaModuleEntry() : Promise.resolve({}),
-      ]);
 
-    const runnerCode = generateOpencodeRunnerCode({
+    const stageSpec: OpencodeStageSpec = {
+      mode,
       argv: opts.argv,
       env: runnerEnv,
       cwd: opts.cwd,
       stdin: opts.stdin ?? '',
-      shimsCode: await fetchNodeShimsCode(this.env),
       vfsBundle: _serializeBundleForFacet(vfsState.bundle),
       vfsManifest: JSON.stringify(vfsState.manifest),
-      mode,
-    });
-
-    // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
-    // live SQLite VFS (same wiring as the standard one-shot facet path).
-    const ctxExports = getCtxExports();
-    const supervisorBinding = ctxExports?.SupervisorRPC
-      ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid } })
-      : undefined;
-
-    const baseConfig: WorkerCode = {
-      compatibilityDate: CF_COMPAT_DATE,
-      compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-      mainModule: 'runner.js',
-      modules: {
-        'runner.js': runnerCode,
-        [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
-        ...sqliteModules,
-        ...treeSitterModules,
-        ...openTuiModules,
-        ...chunkModules,
-        ...tuiWorkerModules,
-        ...yogaModules,
-        ...opencodeBuiltinBridgeModules(attached),
-      },
     };
 
-    return { pid, command, baseConfig, supervisorBinding };
+    return { pid, command, stageSpec };
   }
 
   /**
@@ -3224,24 +2938,26 @@ export class FacetManager {
   private async _execStagedArtifactAttached(
     pid: number,
     command: string,
-    workerConfig: WorkerCode,
-    supervisorBinding: unknown,
+    stageSpec: OpencodeStageSpec,
   ): Promise<StagedArtifactExecResult> {
-    let worker: LoadedWorkerStub | undefined;
     let startStub: LoadedWorkerEntrypointStub | undefined;
     try {
-      // Named loader entry, exactly like the long-running node path
-      // (spawnNode): the resident TUI facet's isolate is keyed, and the
-      // startProcess RPC below stays open for the process lifetime.
+      // Keyed, stage-carrying NimbusLoadedEntrypoint, exactly like the
+      // long-running node path (spawnNode) but with the module map assembled
+      // in the stateless entrypoint isolate; the startProcess RPC below stays
+      // open for the process lifetime (its context owns the facet's
+      // SUPERVISOR binding).
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-      worker = this.env.LOADER.get(workerKey, async () => workerConfig);
-      startStub = worker.getEntrypoint();
+      const ctxExports = getNimbusCtxExports();
+      startStub = await createLoadedWorkerEntrypoint(
+        ctxExports, undefined, { doId: this.ctx.id.toString(), pid }, null, workerKey, stageSpec,
+      );
       if (typeof startStub.startProcess !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no startProcess method');
       }
       this.trackProcessRpcResources(
         pid,
-        [startStub, worker, supervisorBinding],
+        [startStub],
         { releaseOnReportExit: false },
       );
       const startPromise = startStub.startProcess();
@@ -3266,7 +2982,7 @@ export class FacetManager {
       return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
     } catch (e) {
       this.releaseProcessRpcResources(pid);
-      disposeRpcResources([startStub, worker, supervisorBinding]);
+      disposeRpcResource(startStub);
       this.processes.exit(pid, 1);
       throw e;
     }
@@ -3355,33 +3071,35 @@ export class FacetManager {
   }
 
   private async _runOpencodeServerFacet(
-    staged: { pid: number; command: string; baseConfig: WorkerCode; supervisorBinding: unknown },
+    staged: { pid: number; command: string; stageSpec: OpencodeStageSpec },
     port: number,
   ): Promise<StagedArtifactExecResult> {
-    const { pid, baseConfig, supervisorBinding } = staged;
+    const { pid, stageSpec } = staged;
     const ctxExports = getNimbusCtxExports();
     const supervisor = { doId: this.ctx.id.toString(), pid };
-    const workerConfig: WorkerCode = supervisorBinding
-      ? { ...baseConfig, env: { SUPERVISOR: supervisorBinding } }
-      : baseConfig;
-    let worker: { getEntrypoint(): LoadedWorkerEntrypointStub } | undefined;
     let startStub: LoadedWorkerEntrypointStub | undefined;
     let routeStub: LoadedWorkerEntrypointStub | undefined;
     let resourcesTracked = false;
     try {
       const workerKey = `nimbus-process:${supervisor.doId}:${pid}`;
-      const loadedWorker: { getEntrypoint(): LoadedWorkerEntrypointStub } =
-        this.env.LOADER.get(workerKey, async () => workerConfig);
-      worker = loadedWorker;
-      startStub = loadedWorker.getEntrypoint();
-      // A re-resolvable NimbusLoadedEntrypoint route stub (keyed on workerKey):
-      // the serve facet's port must resolve to a handler that can be re-entered
-      // from a LATER routing request's context — an unkeyed one-shot stub can't.
-      // This is the same routeable-facet primitive spawnNode uses.
-      routeStub = await createLoadedWorkerEntrypoint(ctxExports, baseConfig, supervisor, null, workerKey);
+      // Stage-carrying start stub: NimbusLoadedEntrypoint assembles the ~23 MB
+      // module map in ITS stateless isolate on the Worker-Loader cache-miss
+      // path (with SUPERVISOR bound to the held-open startProcess context) —
+      // the supervisor DO never materializes the artifact sources.
+      startStub = await createLoadedWorkerEntrypoint(
+        ctxExports, undefined, supervisor, null, workerKey, stageSpec,
+      );
+      // A re-resolvable, CODE-FREE NimbusLoadedEntrypoint route stub (keyed on
+      // workerKey): the serve facet's port must resolve to a handler that can
+      // be re-entered from a LATER routing request's context. It resolves the
+      // already-loaded worker from the loader cache and fails loud on eviction
+      // — re-loading from code would boot an empty isolate whose server isn't
+      // listening. A poll racing the initial load simply errors (502) and is
+      // retried by the readiness gate.
+      routeStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, workerKey);
       this.trackProcessRpcResources(
         pid,
-        [routeStub, startStub, worker, supervisorBinding],
+        [routeStub, startStub],
         { releaseOnReportExit: false },
       );
       resourcesTracked = true;
@@ -3413,7 +3131,7 @@ export class FacetManager {
     } catch (e) {
       this.portRegistry.unregisterByPid(pid);
       if (resourcesTracked) this.releaseProcessRpcResources(pid);
-      else disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+      else disposeRpcResources([routeStub, startStub]);
       this.processes.exit(pid, 1);
       const reason = 'opencode serve boot failed: ' + errorMessage(e);
       this._w5RecordTermination(pid, 1, 'facet', reason);
@@ -3432,15 +3150,20 @@ export class FacetManager {
 
   /**
    * Poll `http://127.0.0.1:<port>/doc` through the loopback port router until it
-   * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail)
-   * if the serve facet exits early or never becomes ready.
+   * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail
+   * and the last poll outcome) if the serve facet exits early or never becomes
+   * ready. Each poll is individually capped at `pollTimeoutMs` so a request
+   * wedged in the booting facet cannot starve the loop; the 30s default budget
+   * covers the live-measured ~14s cold boot-to-serving time with margin.
    */
   private async _awaitOpencodeServerReady(
     pid: number,
     port: number,
-    timeoutMs = 20000,
+    timeoutMs = 30000,
+    pollTimeoutMs = 2000,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
+    let lastPoll = 'no poll completed';
     while (Date.now() < deadline) {
       const proc = this.processes.get(pid);
       if (!proc || proc.state !== 'running') {
@@ -3450,20 +3173,37 @@ export class FacetManager {
         );
       }
       if (this.portRegistry.has(port)) {
-        try {
-          const res = await this.portRegistry.routeRequest(
-            port,
-            new Request(`http://127.0.0.1:${port}/doc`),
-            '/doc',
-          );
-          if (res && res.status === 200) return;
-        } catch { /* not ready yet — keep polling */ }
+        // Cap each poll at pollTimeoutMs and abandon it on overrun: a request
+        // that reaches the facet mid-boot can hang until the dispatcher's 30s
+        // header timeout (live-measured 2026-07-16), and awaiting it unbounded
+        // starves the loop — one wedged poll must not consume the readiness
+        // budget while the server comes up behind it.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const pollPromise = this.portRegistry
+          .routeRequest(port, new Request(`http://127.0.0.1:${port}/doc`), '/doc')
+          .catch((e: unknown) => { lastPoll = 'error: ' + errorMessage(e); return null; });
+        const res = await Promise.race([
+          pollPromise,
+          new Promise<null>((r) => { timer = setTimeout(() => r(null), pollTimeoutMs); }),
+        ]);
+        if (timer !== undefined) clearTimeout(timer);
+        // The gate only needs the status; cancel the (streamed) body so the
+        // relay pipe and its facet-side resources release — including polls
+        // this race abandoned that resolve later.
+        const discardBody = (r: Response | null) => { if (r) r.body?.cancel().catch(() => {}); };
+        if (res) {
+          discardBody(res);
+          if (res.status === 200) return;
+          lastPoll = `status ${res.status}`;
+        } else {
+          void pollPromise.then(discardBody);
+        }
       }
       await new Promise((r) => setTimeout(r, 200));
     }
     throw new Error(
       `opencode serve (pid ${pid}) did not become ready on port ${port} within ` +
-        `${timeoutMs}ms\n${this._processLogTail(pid)}`,
+        `${timeoutMs}ms (last poll: ${lastPoll})\n${this._processLogTail(pid)}`,
     );
   }
 
@@ -3476,12 +3216,6 @@ export class FacetManager {
     } catch {
       return '(no output captured)';
     }
-  }
-
-  private async opencodeBundleSource(): Promise<string> {
-    // Fetched per spawn (L2-cached in caches.default) — see the memoization
-    // note above the wasm byte fields.
-    return fetchOpencodeBundle({ ASSETS: this.env.ASSETS! });
   }
 
   /** Flush files written by the script back to the supervisor's VFS. */

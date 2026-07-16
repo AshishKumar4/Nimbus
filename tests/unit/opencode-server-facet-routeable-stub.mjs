@@ -37,19 +37,29 @@ function makeRouteStub(bodyText) {
 
 const routeStub = makeRouteStub('{"openapi":"3.0.0"}');
 let loaderLoadCalled = false;
-let loaderGetKey = null;
+let loaderGetCalled = false;
+const nleProps = [];
 
-// Inject the ctx.exports the keyed route-stub path resolves through.
+// Inject the ctx.exports the keyed stubs resolve through. The manager creates
+// TWO NimbusLoadedEntrypoint stubs per serve facet: a stage-carrying START
+// stub (assembles the module map in the stateless entrypoint isolate) and a
+// code-free ROUTE stub. Neither carries `code` — the supervisor DO must never
+// materialize the ~23 MB opencode module map (it OOM-reset at the 128 MiB
+// isolate cap when it did; live-diagnosed 2026-07-16).
+const startStub = { async startProcess() { return new Promise(() => {}); } }; // resident
 setCtxExports({
-  NimbusLoadedEntrypoint: (_opts) => routeStub,
+  NimbusLoadedEntrypoint: (opts) => {
+    nleProps.push(opts.props);
+    assert.equal(opts.props.code, undefined, 'stubs must not pin facet code in props');
+    return opts.props.stage ? startStub : routeStub;
+  },
   SupervisorRPC: (_opts) => ({ __supervisor: true }),
 });
 
-const startStub = { async startProcess() { return new Promise(() => {}); } }; // resident
 const env = {
   LOADER: {
-    load() { loaderLoadCalled = true; throw new Error('one-shot LOADER.load must not be used for a server facet'); },
-    get(key, _cb) { loaderGetKey = key; return { getEntrypoint: () => startStub }; },
+    load() { loaderLoadCalled = true; throw new Error('the DO must not load the facet directly'); },
+    get(_key, _cb) { loaderGetCalled = true; throw new Error('the DO must not load the facet directly'); },
   },
   ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
 };
@@ -58,8 +68,8 @@ const processes = new SessionProcessSupervisor();
 const portRegistry = new PortRegistry();
 const fm = new FacetManager(ctx, env, processes, portRegistry, {});
 
-// Fabricate the staged facet (bypass the heavy bundle/vfs/wasm assembly that
-// _stageOpencodeFacet does — this test targets the routeing decision).
+// Fabricate the staged facet (bypass the VFS snapshot that _stageOpencodeFacet
+// does — this test targets the routeing decision).
 const entry = processes.spawn('opencode serve --port 4096', ['opencode', 'serve'], '/home/user');
 const pid = entry.pid;
 processes.setLongRunning(pid);
@@ -67,15 +77,23 @@ const port = 4096;
 const staged = {
   pid,
   command: 'opencode serve --port 4096',
-  baseConfig: { mainModule: 'runner.js', modules: { 'runner.js': '' } },
-  supervisorBinding: { __supervisor: true },
+  stageSpec: {
+    mode: 'server', argv: ['serve', '--port', '4096'], env: {}, cwd: '/home/user',
+    stdin: '', vfsBundle: '{}', vfsManifest: '{}',
+  },
 };
 
 const result = await fm._runOpencodeServerFacet(staged, port);
 
-// ── 1. keyed path, never the one-shot LOADER.load ────────────────────────────
+// ── 1. keyed NLE stubs; the DO never touches the Worker Loader itself ────────
 assert.equal(loaderLoadCalled, false, 'server facet must not use the one-shot LOADER.load');
-assert.equal(loaderGetKey, `nimbus-process:do-test:${pid}`, 'keyed LOADER.get on the pid workerKey');
+assert.equal(loaderGetCalled, false, 'the DO must not materialize the facet config');
+assert.equal(nleProps.length, 2, 'one stage-carrying start stub + one code-free route stub');
+for (const props of nleProps) {
+  assert.equal(props.key, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
+}
+assert.ok(nleProps.some((p) => p.stage && p.stage.mode === 'server'), 'start stub carries the stage spec');
+assert.ok(nleProps.some((p) => p.stage === undefined), 'route stub is code- and stage-free');
 assert.equal(result.pid, pid);
 assert.equal(result.exitCode, 0);
 

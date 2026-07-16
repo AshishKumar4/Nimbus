@@ -23,6 +23,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
+import { assembleOpencodeFacetConfig } from '../facets/opencode-staging.js';
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
 // These WorkerEntrypoint classes are top-level exports so that ctx.exports
@@ -220,6 +221,14 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
         doId: z.string().min(1),
         pid: z.number().int().nonnegative(),
     }).optional(),
+    /**
+     * Staged-artifact spec (opencode). When present (and `code` is not), the
+     * facet's ~23 MB module map is assembled HERE — in this stateless
+     * entrypoint's isolate — on the Worker-Loader cache-miss path, so the
+     * supervisor DO never materializes the artifact sources (it OOM-reset at
+     * the 128 MiB isolate cap when it did). Validated by the assembler.
+     */
+    stage: z.unknown().optional(),
 }).passthrough();
 async function materializeNestedRpcRequest(request) {
     const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
@@ -440,9 +449,37 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
         const code = await this._codeWithSupervisor(props, options.includeSupervisor);
-        const outerStub = code === undefined
-            ? _resolveStubInCurrentContext(outerLoader, props.key)
-            : outerLoader.get(props.key, async () => code);
+        let outerStub;
+        if (code !== undefined) {
+            outerStub = outerLoader.get(props.key, async () => code);
+        }
+        else if (props.stage !== undefined) {
+            // Staged artifact (opencode): assemble the full module map lazily, ONLY
+            // on a loader miss, in THIS stateless isolate. The facet's SUPERVISOR
+            // binding is created in this request context — the caller holds the
+            // call open for the facet's lifetime (startProcess / one-shot fetch),
+            // which is what keeps the binding's context alive.
+            const stage = props.stage;
+            outerStub = outerLoader.get(props.key, async () => {
+                const assembled = await assembleOpencodeFacetConfig(this.env, stage);
+                const supervisorBinding = await this._supervisorBinding(props);
+                if (!supervisorBinding)
+                    return assembled;
+                return { ...assembled, env: { SUPERVISOR: supervisorBinding } };
+            });
+        }
+        else {
+            // No code in props: resolve the ALREADY-LOADED worker. First the inner
+            // Worker Loader shim's code map (nimbus-in-nimbus), else the outer
+            // loader's own cache. The cache-miss callback fails loud: code-free
+            // stubs are routing handles to a RUNNING facet (e.g. opencode serve) —
+            // re-loading from code would boot an empty isolate whose server isn't
+            // listening, a silent wrong answer.
+            outerStub = _resolveStubInCurrentContext(outerLoader, props.key)
+                ?? outerLoader.get(props.key, async () => {
+                    throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
+                });
+        }
         const outer = await outerStub;
         if (!outer)
             throw new Error('Nimbus: loaded worker code missing');

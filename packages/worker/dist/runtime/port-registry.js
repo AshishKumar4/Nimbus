@@ -120,13 +120,18 @@ export class PortRegistry {
      */
     async routeRequest(port, request, pathname) {
         const entry = this.ports.get(port);
+        // Honour the documented contract: no entry at all → null, so callers
+        // report "no process listening". (Pre-fix this fell into the 501 below,
+        // which mislabelled a wiped/unregistered port as a half-registered one.)
+        if (!entry)
+            return null;
         // Some short-lived/foreground paths can reserve a port through
         // SupervisorRPC.registerPort before a routeable WorkerEntrypoint
         // exists. Explicit long-running processes (for example
         // `node --watch server.js`) register a non-null facet stub and route
         // below. For a null-stub reservation, return an honest 501 instead
         // of a misleading "no process listening" 502.
-        if (!entry?.facetStub) {
+        if (!entry.facetStub) {
             return new Response(JSON.stringify({
                 error: 'port is registered but has no routeable facet handler',
                 port,

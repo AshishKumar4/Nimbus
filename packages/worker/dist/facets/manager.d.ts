@@ -210,15 +210,6 @@ export declare class FacetManager {
      */
     private esbuild;
     /**
-     * Memoized sql.js wasm bytes for the node:sqlite facet path. Fetched
-     * once from env.ASSETS (sqlite-wasm-bytes.ts) on the first facet that
-     * imports node:sqlite, then reused for every subsequent sqlite facet in
-     * this isolate. Held as an ArrayBuffer because the Worker Loader module
-     * map needs a fresh `{ wasm }` entry per facet config.
-     */
-    private sqliteWasmBytes;
-    private sqliteWasmBytesPromise;
-    /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
      * exec — dominant wall-clock on large node_modules. This memoizes the
@@ -236,24 +227,6 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
-    /**
-     * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
-     * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
-     * against OPENTUI_WASM_SHA256 in fetchOpenTUIWasmBytes); each facet config
-     * gets a fresh `{ wasm }` entry over the shared buffer.
-     */
-    private openTuiWasmBytes;
-    private openTuiWasmBytesPromise;
-    /** In-flight (never resident) opencode chunk-pack fetch+parse dedupe. */
-    private opencodeChunkEntriesInflight;
-    /**
-     * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
-     * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
-     * carries them as a pre-compiled `{ wasm }` module so the patched yoga loader
-     * instantiates a Module instead of doing the blocked request-time compile.
-     */
-    private opencodeYogaWasmBytes;
-    private opencodeYogaWasmBytesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -278,59 +251,9 @@ export declare class FacetManager {
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
      * Returns `{}` for the common case (no sqlite) so the spread is free.
-     *
-     * The bytes are fetched once per isolate and reused (a fresh ArrayBuffer
-     * view per facet config). workerd compiles the `wasm` module ahead of
-     * dispatch, so the facet's static `import "sqlite.wasm"` resolves to a
-     * ready WebAssembly.Module — no request-time compile(bytes).
-     *
-     * Throws if env.ASSETS is unavailable: the facet code already imports
-     * `sqlite.wasm` (usesSqlite is true), so a missing module entry would
-     * fail facet load with an opaque resolver error; surfacing the cause
-     * here is clearer.
+     * Delegates to the shared per-isolate memoizer in opencode-staging.ts.
      */
     private sqliteModuleEntry;
-    /**
-     * Build the Worker Loader module-map fragment that carries the opencode
-     * tree-sitter wasm sidecars (core + bash + powershell grammars) into the
-     * opencode facet as pre-compiled WebAssembly.Modules, keyed by staged
-     * filename. The runner registers them on the facet's tree-sitter registry
-     * global so the bash tool's command parser instantiates them instead of
-     * hitting the blocked request-time WebAssembly.compile path.
-     */
-    private treeSitterModuleEntries;
-    /**
-     * Build the Worker Loader module-map fragment carrying the split-build
-     * shared chunks (chunk-<hash>.js) both opencode entry bundles import. One
-     * pack asset fetch (L2-cached), expanded into per-chunk ESM module entries.
-     */
-    private opencodeChunkModuleEntries;
-    /**
-     * Build the Worker Loader module-map fragment carrying the staged OpenTUI
-     * wasm32-wasi reactor into the opencode facet as a pre-compiled
-     * WebAssembly.Module under OPENTUI_WASM_MODULE_NAME. The runner instantiates
-     * it via OpenTUIWasmBackend (the patched @opentui/core seams resolve their
-     * render library from the parked backend) — request-time
-     * WebAssembly.compile(bytes) is blocked in facets.
-     */
-    private openTuiModuleEntry;
-    /**
-     * Build the Worker Loader module-map fragment carrying the opencode TUI
-     * worker bundles (the API server worker.js + the OpenTUI parser.worker.js)
-     * into the interactive-TUI facet as ESM modules. The in-isolate Worker
-     * polyfill (opencode-facet-runner.ts) dynamically imports them by specifier
-     * when the TUI client calls `new Worker(...)`. Only needed for the attached
-     * TUI; the one-shot `opencode run` path never spawns these.
-     */
-    private opencodeWorkerModuleEntries;
-    /**
-     * Build the Worker Loader module-map fragment carrying the yoga-layout wasm
-     * into the interactive-TUI facet as a pre-compiled WebAssembly.Module. The
-     * runner parks it on globalThis.__nimbusYogaModule and the patched OpenTUI
-     * yoga loader instantiates it (request-time WebAssembly.instantiate of bytes
-     * is blocked in facets). Attached-TTY only — `opencode run` never renders.
-     */
-    private opencodeYogaModuleEntry;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;
@@ -399,13 +322,13 @@ export declare class FacetManager {
         attachedTty?: boolean;
     }): Promise<StagedArtifactExecResult>;
     /**
-     * Assemble a staged-opencode facet for one of the three runtime modes:
-     * spawns the process-table entry, snapshots the VFS, fetches the wasm/module
-     * sidecars (worker + yoga only for the attached TUI), generates the runner
-     * mainModule, and builds the module map (`baseConfig`, WITHOUT the SUPERVISOR
-     * env binding — callers add it, and the resident-server path needs a
-     * supervisor-free copy for its re-resolvable route stub). The SUPERVISOR RPC
-     * binding is returned separately.
+     * Prepare a staged-opencode spawn: spawn the process-table entry, snapshot
+     * the VFS, and build the small OpencodeStageSpec. The artifact sources
+     * (entry bundle, chunk pack, wasm sidecars — ~23 MB of module map) are NOT
+     * materialized here: NimbusLoadedEntrypoint assembles them from the spec in
+     * a stateless worker isolate on the Worker-Loader cache-miss path, so the
+     * supervisor DO never carries them (it OOM-reset at the 128 MiB isolate cap
+     * when it did — live-diagnosed 2026-07-16).
      */
     private _stageOpencodeFacet;
     /**
@@ -451,13 +374,15 @@ export declare class FacetManager {
     private _allocateLoopbackPort;
     /**
      * Poll `http://127.0.0.1:<port>/doc` through the loopback port router until it
-     * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail)
-     * if the serve facet exits early or never becomes ready.
+     * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail
+     * and the last poll outcome) if the serve facet exits early or never becomes
+     * ready. Each poll is individually capped at `pollTimeoutMs` so a request
+     * wedged in the booting facet cannot starve the loop; the 30s default budget
+     * covers the live-measured ~14s cold boot-to-serving time with margin.
      */
     private _awaitOpencodeServerReady;
     /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
     private _processLogTail;
-    private opencodeBundleSource;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
     /** Execution timeout. */

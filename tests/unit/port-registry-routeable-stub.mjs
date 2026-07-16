@@ -109,8 +109,11 @@ function makeHandleStub(bodyText) {
   assert.equal(dropped, 1, 'one port dropped for the pid');
   assert.equal(reg.get(8080), undefined, 'port entry gone after teardown');
 
+  // Documented contract: a port with NO entry routes to null so callers
+  // report "no process listening" — not the 501 reserved for a registered
+  // port whose stub hasn't attached yet (they mean different things).
   const res = await reg.routeRequest(8080, new Request('http://s/port/8080/'), '/');
-  assert.equal(res.status, 501, 'a torn-down facet no longer routes');
+  assert.equal(res, null, 'a torn-down facet no longer routes');
 }
 
 // ── 5. bind AFTER a null reservation still attaches (order-independent) ───────
