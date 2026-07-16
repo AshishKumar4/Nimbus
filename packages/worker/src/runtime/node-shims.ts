@@ -3453,8 +3453,8 @@ builtins.http = (() => {
   }
   class Server extends __eventsMod {
     constructor(handler) { super(); if (handler) this.on("request", handler); this._port = 0; this._listening = false; }
-    listen(port, host, cb) { if (typeof host === "function") { cb = host; } this._port = port || 0; this._listening = true; globalThis.__portRegistry.set(this._port, this); if (cb) queueMicrotask(cb); this.emit("listening"); return this; }
-    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); if (cb) cb(); this.emit("close"); }
+    listen(port, host, cb) { if (typeof host === "function") { cb = host; } this._port = port || 0; this._listening = true; globalThis.__portRegistry.set(this._port, this); try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {} if (cb) queueMicrotask(cb); this.emit("listening"); return this; }
+    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); try { if (__supervisor && typeof __supervisor.unregisterPort === "function") { Promise.resolve(__supervisor.unregisterPort(this._port)).catch(() => {}); } } catch {} if (cb) cb(); this.emit("close"); }
     get listening() { return this._listening; }
     // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
     // fastify's lib/server.js calls server.setTimeout(connectionTimeout)
