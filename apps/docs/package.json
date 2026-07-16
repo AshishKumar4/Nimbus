@@ -1,0 +1,19 @@
+{
+  "name": "@nimbus-sh/docs",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Nimbus documentation site (Astro + Starlight), deployed as a Cloudflare Worker with Static Assets.",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "deploy": "astro build && wrangler deploy",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.3",
+    "astro": "^7.0.2",
+    "sharp": "^0.34.5"
+  }
+}
