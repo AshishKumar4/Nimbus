@@ -88,6 +88,7 @@
  *   ESUCCESS = 0     EBADF = 8     ENOENT = 44   EEXIST = 20
  *   EISDIR   = 31    ENOTDIR = 54  EINVAL = 28   ENOSYS = 52
  *   ELOOP    = 32    ENOTEMPTY = 55  ENOTCAPABLE = 76
+ *   ESPIPE   = 70    (stdio is a non-seekable pipe)
  *
  * Clock IDs
  * ─────────
@@ -129,6 +130,7 @@ const __WASI_ENOTDIR        = 54;
 const __WASI_ENOTEMPTY      = 55;
 const __WASI_ENOTSOCK       = 57;
 const __WASI_EPIPE          = 64;
+const __WASI_ESPIPE         = 70;
 const __WASI_ENOTCAPABLE    = 76;
 // clock ids
 const __WASI_CLOCK_REALTIME           = 0;
@@ -142,6 +144,8 @@ const __WASI_O_EXCL      = 4;
 const __WASI_O_TRUNC     = 8;
 // lookupflags (passed to path_open, path_filestat_get, etc.)
 const __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW = 1;
+// fdflags (fd_write / path_open) — bit 0 is O_APPEND.
+const __WASI_FDFLAGS_APPEND = 1;
 // fstflags (filestat_set_times)
 const __WASI_FSTFLAGS_ATIM     = 1;
 const __WASI_FSTFLAGS_ATIM_NOW = 2;
@@ -482,7 +486,7 @@ function __wasiSnapshotFS() {
 //   { kind: 'preopen', wasiPath, vfsPath, rights? }
 //   { kind: 'file',    vfsPath, offset, oflags, fdflags, rights? }
 //   { kind: 'dir',     vfsPath, readdirEntries: null | Array, cookie, rights? }
-//   { kind: 'symlink', vfsPath, target, rights? }   // WASI socket and polling support B3 (only when O_NOFOLLOW)
+//   { kind: 'socket',  socket, reader, writer, readBuf, ... }
 //
 // WASI socket and polling support B6: 'rights' is an optional BigInt mask. When set, fd_fdstat_get
 // returns it (instead of the wide-open default). fd_fdstat_set_rights
@@ -753,7 +757,13 @@ function __wasiMakeImports(opts) {
     fd_read(fd, iovsPtr, iovsLen, nreadPtr) {
       if (fd === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
       const entry = fdTable.get(fd);
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
+      if (!entry) return __WASI_EBADF;
+      // wasi-libc maps read(2) to fd_read for every fd kind. A socket fd
+      // reads via the JSPI socket body (returns a Promise the Suspending
+      // wrapper awaits); a directory fd is EISDIR per POSIX, not EBADF.
+      if (entry.kind === 'socket') return __rawSockRecv(fd, iovsPtr, iovsLen, 0, nreadPtr, 0);
+      if (entry.kind === 'dir' || entry.kind === 'preopen') return __WASI_EISDIR;
+      if (entry.kind !== 'file') return __WASI_EBADF;
       const file = getFile(entry.vfsPath);
       if (!file) return __WASI_ENOENT;
       const dv = view();
@@ -776,6 +786,12 @@ function __wasiMakeImports(opts) {
     },
 
     fd_write(fd, iovsPtr, iovsLen, nwrittenPtr) {
+      // wasi-libc maps write(2) to fd_write for every fd kind; a socket fd
+      // sends via the JSPI socket body (returns a Promise).
+      const sockEntry = fdTable.get(fd);
+      if (sockEntry && sockEntry.kind === 'socket') {
+        return __rawSockSend(fd, iovsPtr, iovsLen, 0, nwrittenPtr);
+      }
       const dv = view();
       const memU8 = u8();
       // Gather all iov bytes
@@ -804,13 +820,16 @@ function __wasiMakeImports(opts) {
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       const file = getFile(entry.vfsPath) || new Uint8Array(0);
-      // Splice combined into file at entry.offset
-      const newLen = Math.max(file.length, entry.offset + total);
+      // O_APPEND: each write atomically seeks to EOF, ignoring the current
+      // offset, then advances the offset past the written bytes (POSIX).
+      const appendMode = (entry.fdflags & __WASI_FDFLAGS_APPEND) !== 0;
+      const writeAt = appendMode ? file.length : entry.offset;
+      const newLen = Math.max(file.length, writeAt + total);
       const next = new Uint8Array(newLen);
       next.set(file, 0);
-      next.set(combined, entry.offset);
+      next.set(combined, writeAt);
       setFile(entry.vfsPath, next);
-      entry.offset += total;
+      entry.offset = writeAt + total;
       writeU32LE(nwrittenPtr, total);
       return __WASI_ESUCCESS;
     },
@@ -820,8 +839,9 @@ function __wasiMakeImports(opts) {
       // (lo, hi) i32 pairs; that worked only because hello-world never
       // exercised seek. filesystem WASI: accept BigInt directly.
       if (fd === 0 || fd === 1 || fd === 2) {
-        writeU64LE(newOffsetPtr, 0n);
-        return __WASI_ESUCCESS;
+        // Seeking a pipe/tty is ESPIPE — lets guests detect non-seekable
+        // stdio (POSIX lseek on a pipe).
+        return __WASI_ESPIPE;
       }
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
@@ -842,8 +862,8 @@ function __wasiMakeImports(opts) {
 
     fd_tell(fd, offsetPtr) {
       if (fd === 0 || fd === 1 || fd === 2) {
-        writeU64LE(offsetPtr, 0n);
-        return __WASI_ESUCCESS;
+        // ftell on a pipe/tty is ESPIPE, same non-seekable rule as fd_seek.
+        return __WASI_ESPIPE;
       }
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
@@ -862,8 +882,6 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_DIRECTORY;
       } else if (entry.kind === 'file') {
         ftype = __WASI_FT_REGULAR_FILE;
-      } else if (entry.kind === 'symlink') {
-        ftype = __WASI_FT_SYMBOLIC_LINK;
       } else if (entry.kind === 'socket') {
         ftype = __WASI_FT_SOCKET_STREAM;  // WASI socket and polling support B7
       }
@@ -941,10 +959,10 @@ function __wasiMakeImports(opts) {
       if (pathArg.startsWith(__WASI_TCP_PATH_PREFIX)) {
         return __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE);
       }
-      // WASI socket and polling support B3: honor LOOKUPFLAGS_SYMLINK_FOLLOW (default behavior
-      // when bit is set or dirflags omitted). When NOT set, surface the
-      // symlink itself as a 'symlink' fd kind so readlink can introspect.
-      const follow = (dirflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || dirflags === 0;
+      // Honor LOOKUPFLAGS_SYMLINK_FOLLOW strictly: bit 0 set → follow.
+      // wasi-libc clears this bit for O_NOFOLLOW, so dirflags === 0 IS
+      // O_NOFOLLOW and must NOT be treated as follow.
+      const follow = (dirflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
       const rp = __wasiResolvePathFull(baseFd, pathArg, follow);
       if (rp.err === __WASI_EBADF) return __WASI_EBADF;
       if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
@@ -954,14 +972,10 @@ function __wasiMakeImports(opts) {
       const isExcl      = (oflags & __WASI_O_EXCL) !== 0;
       const isTrunc     = (oflags & __WASI_O_TRUNC) !== 0;
 
-      // If the unfollowed path is a symlink and follow=false, open as
-      // a symlink fd (only readlink-style introspection works on it).
+      // O_NOFOLLOW (symlink_follow cleared) on a trailing symlink: POSIX
+      // open() fails with ELOOP rather than opening the link itself.
       if (!follow && rp.isSymlink) {
-        const fd = nextFd++;
-        const target = __wasiFS.symlinks.get(resolved);
-        fdTable.set(fd, { kind: 'symlink', vfsPath: resolved, target, oflags, fdflags });
-        writeU32LE(fdOutPtr, fd);
-        return __WASI_ESUCCESS;
+        return __WASI_ELOOP;
       }
 
       const fileExists = __wasiFS.files.has(resolved);
@@ -1046,39 +1060,65 @@ function __wasiMakeImports(opts) {
       const src = __wasiResolvePath(srcFd, srcPath);
       const dst = __wasiResolvePath(dstFd, dstPath);
       if (src === null || dst === null) return __WASI_EBADF;
-      // src must exist as either a file or dir
-      const srcFile = __wasiFS.files.get(src);
-      const srcIsDir = __wasiFS.dirs.has(src);
-      if (!srcFile && !srcIsDir) return __WASI_ENOENT;
-      // pre-unlink destination if present (the W-3 semantic for file → file).
-      if (__wasiFS.files.has(dst)) __wasiFS.files.delete(dst);
-      if (__wasiFS.dirs.has(dst))  __wasiFS.dirs.delete(dst);
-      if (srcFile) {
-        __wasiFS.files.delete(src);
+      // rename operates on the entry itself (no symlink-follow on the final
+      // component, per POSIX). src may be a file, a directory, or a symlink.
+      const srcFile      = __wasiFS.files.get(src);
+      const srcIsDir     = __wasiFS.dirs.has(src);
+      const srcIsSymlink = __wasiFS.symlinks.has(src);
+      if (srcFile === undefined && !srcIsDir && !srcIsSymlink) return __WASI_ENOENT;
+      if (src === dst) return __WASI_ESUCCESS;  // rename to itself is a no-op
+      // Move the path's timestamps with it, bumping ctime (metadata change).
+      const moveTimes = (from, to) => {
+        const t = __wasiFS.times.get(from);
+        __wasiFS.times.delete(from);
+        const now = __wasiNowNs();
+        __wasiFS.times.set(to, t
+          ? { mtime: t.mtime, atime: t.atime, ctime: now }
+          : { mtime: now, atime: now, ctime: now });
+      };
+      // Pre-remove the destination of any kind (atomic overwrite).
+      __wasiFS.files.delete(dst);
+      __wasiFS.dirs.delete(dst);
+      __wasiFS.symlinks.delete(dst);
+      __wasiFS.times.delete(dst);
+      if (srcIsSymlink) {
+        __wasiFS.symlinks.set(dst, __wasiFS.symlinks.get(src));
+        __wasiFS.symlinks.delete(src);
+        moveTimes(src, dst);
+      } else if (srcFile !== undefined) {
         __wasiFS.files.set(dst, srcFile);
+        __wasiFS.files.delete(src);
+        moveTimes(src, dst);
       } else {
         __wasiFS.dirs.delete(src);
         __wasiFS.dirs.add(dst);
-        // Move children (rare; mostly the rename target is a single file).
-        // For directories we walk and rebase any matching path key.
+        moveTimes(src, dst);
+        // Rebase every descendant key (files, dirs, symlinks) + its times.
         const srcPrefix = src + '/';
-        const toMove = [];
-        for (const key of __wasiFS.files.keys()) {
-          if (key.startsWith(srcPrefix)) toMove.push(key);
+        const rebase = (key) => dst + '/' + key.substring(srcPrefix.length);
+        for (const key of [...__wasiFS.files.keys()]) {
+          if (key.startsWith(srcPrefix)) {
+            const nk = rebase(key);
+            __wasiFS.files.set(nk, __wasiFS.files.get(key));
+            __wasiFS.files.delete(key);
+            moveTimes(key, nk);
+          }
         }
-        for (const key of toMove) {
-          const newKey = dst + '/' + key.substring(srcPrefix.length);
-          __wasiFS.files.set(newKey, __wasiFS.files.get(key));
-          __wasiFS.files.delete(key);
+        for (const key of [...__wasiFS.dirs]) {
+          if (key.startsWith(srcPrefix)) {
+            const nk = rebase(key);
+            __wasiFS.dirs.add(nk);
+            __wasiFS.dirs.delete(key);
+            moveTimes(key, nk);
+          }
         }
-        const dirsToMove = [];
-        for (const key of __wasiFS.dirs) {
-          if (key.startsWith(srcPrefix)) dirsToMove.push(key);
-        }
-        for (const key of dirsToMove) {
-          const newKey = dst + '/' + key.substring(srcPrefix.length);
-          __wasiFS.dirs.add(newKey);
-          __wasiFS.dirs.delete(key);
+        for (const key of [...__wasiFS.symlinks.keys()]) {
+          if (key.startsWith(srcPrefix)) {
+            const nk = rebase(key);
+            __wasiFS.symlinks.set(nk, __wasiFS.symlinks.get(key));
+            __wasiFS.symlinks.delete(key);
+            moveTimes(key, nk);
+          }
         }
       }
       return __WASI_ESUCCESS;
@@ -1087,8 +1127,8 @@ function __wasiMakeImports(opts) {
     // ── path_filestat_get ──
     path_filestat_get(baseFd, lookupflags, pathPtr, pathLen, statPtr) {
       const path = readPath(pathPtr, pathLen);
-      // WASI socket and polling support B3: follow symlinks unless explicitly told not to.
-      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || lookupflags === 0;
+      // Follow symlinks only when SYMLINK_FOLLOW is set (stat); flags=0 is lstat.
+      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
       const rp = __wasiResolvePathFull(baseFd, path, follow);
       if (rp.err === __WASI_EBADF) return __WASI_EBADF;
       if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
@@ -1130,7 +1170,7 @@ function __wasiMakeImports(opts) {
     // to clamp to "now". ENOENT if path doesn't exist.
     path_filestat_set_times(baseFd, lookupflags, pathPtr, pathLen, atimArg, mtimArg, fstflags) {
       const path = readPath(pathPtr, pathLen);
-      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || lookupflags === 0;
+      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
       const rp = __wasiResolvePathFull(baseFd, path, follow);
       if (rp.err === __WASI_EBADF) return __WASI_EBADF;
       if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
@@ -1210,7 +1250,7 @@ function __wasiMakeImports(opts) {
     path_link(oldFd, oldFlags, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
       const oldPath = readPath(oldPathPtr, oldPathLen);
       const newPath = readPath(newPathPtr, newPathLen);
-      const follow = (oldFlags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0 || oldFlags === 0;
+      const follow = (oldFlags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
       const rpOld = __wasiResolvePathFull(oldFd, oldPath, follow);
       if (rpOld.err === __WASI_EBADF) return __WASI_EBADF;
       if (rpOld.err === __WASI_ELOOP) return __WASI_ELOOP;
@@ -1244,10 +1284,6 @@ function __wasiMakeImports(opts) {
       } else if (entry.kind === 'dir' || entry.kind === 'preopen') {
         ftype = __WASI_FT_DIRECTORY;
         timesPath = entry.vfsPath;
-      } else if (entry.kind === 'symlink') {
-        ftype = __WASI_FT_SYMBOLIC_LINK;
-        size = BigInt(new TextEncoder().encode(entry.target || '').length);
-        timesPath = entry.vfsPath;
       } else if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
         ftype = __WASI_FT_CHARACTER_DEVICE;
       }
@@ -1277,8 +1313,8 @@ function __wasiMakeImports(opts) {
     fd_filestat_set_times(fd, atimArg, mtimArg, fstflags) {
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
-      if (entry.kind !== 'file' && entry.kind !== 'dir' && entry.kind !== 'preopen' && entry.kind !== 'symlink') {
-        // stdio fds: no-op success (POSIX touches /dev/stdin etc. silently).
+      if (entry.kind !== 'file' && entry.kind !== 'dir' && entry.kind !== 'preopen') {
+        // stdio / socket fds: no-op success (POSIX touches /dev/stdin etc. silently).
         return __WASI_ESUCCESS;
       }
       const setAtim    = (fstflags & __WASI_FSTFLAGS_ATIM) !== 0;
@@ -1607,7 +1643,7 @@ function __wasiMakeImports(opts) {
         // Regular files, dirs, stdio: always ready (POSIX: regular files
         // never block — read returns immediately even if at EOF).
         if (entry.kind === 'file' || entry.kind === 'dir' ||
-            entry.kind === 'preopen' || entry.kind === 'symlink' ||
+            entry.kind === 'preopen' ||
             entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
           let nbytes = 0n;
           if (entry.kind === 'file' && s.tag === __WASI_EVENTTYPE_FD_READ) {
@@ -1921,6 +1957,12 @@ function __wasiMakeImports(opts) {
     },
   };
 
+  // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
+  // fd_write can route socket fds through them (wasi-libc maps read(2)/
+  // write(2) to fd_read/fd_write for every fd kind, sockets included).
+  const __rawSockRecv = imports.sock_recv;
+  const __rawSockSend = imports.sock_send;
+
   // WASI socket and polling support B7: wrap the async socket imports in WebAssembly.Suspending
   // so the wasm caller can use sync-shape calls that yield to the JS
   // event loop. Requires V8 14.2+ (workerd Oct 2025+) — see
@@ -1935,6 +1977,13 @@ function __wasiMakeImports(opts) {
     // subscriptions (await setTimeout) and socket-fd readiness
     // (await reader.read()). Same Suspending shape as sock_*.
     imports.poll_oneoff   = new WebAssembly.Suspending(imports.poll_oneoff);
+    // fd_read/fd_write become suspending too: a socket fd routes to the
+    // async sock bodies (Promise → JSPI suspends). File/stdio ops return a
+    // plain errno number, which JSPI passes straight through with no
+    // suspender required — so sync callers (ruby _initialize, opentui
+    // render) that only touch files/stdio are unaffected.
+    imports.fd_read       = new WebAssembly.Suspending(imports.fd_read);
+    imports.fd_write      = new WebAssembly.Suspending(imports.fd_write);
   }
 
   return {
