@@ -538,6 +538,97 @@ export function nimbusPatchRpcWorkerScope(source: string, file: string): string 
   return source
 }
 
+// opencode's birpc transport (src/util/rpc.ts) is fire-and-forget on the error
+// path: the server `listen` dispatch does `const result = await rpc[method](input)`
+// with NO try/catch, and the client `client()` only ever settles a pending call
+// on a `rpc.result` frame. So when a server method REJECTS — far more common on
+// Nimbus's VFS/DO substrate than on native Bun — the server posts NOTHING back,
+// the client's `pending.set(id, resolve)` entry is never deleted, and its Promise
+// never settles. Each leaked entry retains the resolver plus the caller's entire
+// awaiting continuation; the TUI fans out RPC per keystroke, so the leak is
+// activity-scaled and OOMs the 128 MiB facet in ~10-15 s.
+//
+// This seam closes the transport contract so a rejected method still settles the
+// caller and frees the pending entry (the right, proper fix — a strict superset
+// of upstream that also cures a latent upstream HANG on any throwing method, on
+// every host). It is NOT registry-gated: the happy path is byte-for-byte
+// identical (results still resolve through the same `rpc.result` frame), and the
+// error path is pure fail-loud added behaviour, correct under Bun and workerd
+// alike. It runs AFTER nimbusPatchRpcWorkerScope (chained in build-node.ts's
+// rpc.ts onLoad) so the server anchor matches the `target.postMessage` form that
+// patch produces; the client anchors are untouched by the scope patch.
+export function nimbusPatchRpcFailLoud(source: string, file: string): string {
+  const label = 'nimbus rpc fail-loud patch'
+
+  // SERVER — wrap the dispatch in try/catch and post a mirrored `rpc.error`
+  // frame (same id field) on rejection, so the client can settle+free the call.
+  source = replaceOnce(
+    source,
+    `      const result = await rpc[parsed.method](parsed.input)
+      target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
+    `      try {
+        const result = await rpc[parsed.method](parsed.input)
+        target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))
+      } catch (error) {
+        target.postMessage(JSON.stringify({ type: "rpc.error", error: error instanceof Error ? error.message : String(error), id: parsed.id }))
+      }`,
+    label,
+    file,
+  )
+
+  // CLIENT — the pending map now stores { resolve, reject } instead of the bare
+  // resolver. Settle on `rpc.result` via `entry.resolve`, and add the `rpc.error`
+  // branch that REJECTS and deletes the entry (releasing the resolver + the
+  // caller's continuation). Both frames delete the entry — no path leaks.
+  source = replaceOnce(
+    source,
+    `  const pending = new Map<number, (result: any) => void>()`,
+    `  const pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void }>()`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `    if (parsed.type === "rpc.result") {
+      const resolve = pending.get(parsed.id)
+      if (resolve) {
+        resolve(parsed.result)
+        pending.delete(parsed.id)
+      }
+    }`,
+    `    if (parsed.type === "rpc.result") {
+      const entry = pending.get(parsed.id)
+      if (entry) {
+        entry.resolve(parsed.result)
+        pending.delete(parsed.id)
+      }
+    }
+    if (parsed.type === "rpc.error") {
+      const entry = pending.get(parsed.id)
+      if (entry) {
+        entry.reject(new Error(parsed.error))
+        pending.delete(parsed.id)
+      }
+    }`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `      return new Promise((resolve) => {
+        pending.set(requestId, resolve)
+        target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
+      })`,
+    `      return new Promise((resolve, reject) => {
+        pending.set(requestId, { resolve, reject })
+        target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
+      })`,
+    label,
+    file,
+  )
+  return source
+}
+
 // The worker entry claims the per-worker messaging context the in-isolate
 // Worker polyfill parks on `globalThis.__nimbusWorkerClaim` during this
 // module's import. The claim is read at MODULE-BODY START — before the entry's
