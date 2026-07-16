@@ -168,6 +168,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs));
   }
 
+  async chmod(path: string, mode: number): Promise<void> {
+    return this._call(this._getStub()._rpcChmod(path, mode));
+  }
+
   async readdir(path: string): Promise<{ name: string; type: string }[]> {
     return this._call(this._getStub()._rpcReaddir(path));
   }

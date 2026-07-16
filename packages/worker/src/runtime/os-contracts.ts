@@ -60,6 +60,8 @@ export interface RuntimeFsBridge {
   /** Truncate or zero-extend to `size`, touching only the boundary chunk. */
   truncate(path: string, size: number, options?: { followSymlinks?: boolean }): Promise<void>;
   utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
+  /** Set permission bits (POSIX chmod — follows symlinks). */
+  chmod(path: string, mode: number): Promise<void>;
   open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;

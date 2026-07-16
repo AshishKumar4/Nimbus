@@ -325,6 +325,13 @@ const __fsMod = (() => {
   }
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
+  const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+
+  function _coerceMode(value, syscall, p) {
+    const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
+    if (!Number.isInteger(n) || n < 0) throw _fsErr("EINVAL", syscall, p);
+    return n & 0o7777;
+  }
 
   function _coerceTimeMs(value, syscall, p) {
     if (value instanceof Date) {
@@ -353,6 +360,7 @@ const __fsMod = (() => {
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
+    const localMode = _localModes[k];
     return {
       isFile: () => !isDir && !isSymlink,
       isDirectory: () => isDir,
@@ -362,7 +370,7 @@ const __fsMod = (() => {
       mtime,
       ctime: mtime,
       birthtime: mtime,
-      mode,
+      mode: localMode === undefined ? mode : (isDir ? 0o040000 : 0o100000) | localMode,
     };
   }
 
@@ -395,10 +403,14 @@ const __fsMod = (() => {
       await supervisor.writeFile(absPath, __vfsWrites[k]);
       delete __vfsWrites[k];
       _markVfsStale();
-      return;
-    }
-    if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
+    } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
       await supervisor.mkdir(absPath);
+      _markVfsStale();
+    }
+    // Pending sync chmod rides along with any flush of the same path
+    // (idempotent — the entry stays so local statSync remains coherent).
+    if (k in _localModes && typeof supervisor.chmod === "function") {
+      await supervisor.chmod(absPath, _localModes[k]);
       _markVfsStale();
     }
   }
@@ -743,6 +755,31 @@ const __fsMod = (() => {
     if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", syscall, p);
   }
 
+  function chmodSync(p, mode) {
+    if (!existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
+    // Local-visible immediately (statSync overlay); the live write-through
+    // rides the next flush of the same path — same fidelity as utimesSync.
+    _localModes[_strip(_resolve(p))] = _coerceMode(mode, "chmod", p);
+  }
+
+  async function _chmodAsync(p, mode) {
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    let localExists = false;
+    try { localExists = existsSync(p); } catch {}
+    if (!localExists && (!supervisor || typeof supervisor.chmod !== "function")) {
+      throw _fsErr("ENOENT", "chmod", p);
+    }
+    const m = _coerceMode(mode, "chmod", p);
+    _localModes[_strip(absPath)] = m;
+    if (supervisor && typeof supervisor.chmod === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      _markVfsStale();
+      return;
+    }
+    if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
+  }
+
   // ── readFileSync ──
   // Returns a Buffer when no encoding requested, a string otherwise.
   // The cell shape (string vs Uint8Array) drives conversion:
@@ -1038,6 +1075,7 @@ const __fsMod = (() => {
   function rename(oldP, newP, cb) { _renameAsync(oldP, newP).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function utimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function lutimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function chmod(p, mode, cb) { _chmodAsync(p, mode).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function access(p, mode, cb) {
     if (typeof mode === "function") { cb = mode; mode = undefined; }
     _existsAsync(p).then((ok) => {
@@ -1177,7 +1215,7 @@ const __fsMod = (() => {
       await _truncateAsync(this._path, size);
       this._size = size;
     }
-    async chmod() {} async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
+    async chmod(mode) { await _chmodAsync(this._path, mode); } async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
     async close() { this._closed = true; }
     [Symbol.asyncDispose]() { return this.close(); }
   }
@@ -1279,7 +1317,7 @@ const __fsMod = (() => {
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
     truncate: async (p, len) => { await _truncateAsync(p, len || 0); },
-    chmod: async () => {}, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
+    chmod: async (p, mode) => { await _chmodAsync(p, mode); }, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
     utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
     lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
@@ -1392,8 +1430,8 @@ const __fsMod = (() => {
   const __fsExports = {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
-    realpathSync, utimesSync, lutimesSync,
-    readFile, writeFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, access,
+    realpathSync, utimesSync, lutimesSync, chmodSync,
+    readFile, writeFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({

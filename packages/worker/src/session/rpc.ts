@@ -197,6 +197,10 @@ export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, m
     await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
 }
 
+export async function _rpcChmod(self: RpcHost, path: string, mode: number): Promise<void> {
+    await runtimeFs(self).chmod(path, mode);
+}
+
 export async function _rpcReaddir(self: RpcHost, path: string): Promise<{ name: string; type: string }[]> {
     return runtimeFs(self).readdir(path);
 }

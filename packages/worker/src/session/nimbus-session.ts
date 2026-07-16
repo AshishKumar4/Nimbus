@@ -620,6 +620,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs);
   }
+  async _rpcChmod(path: string, mode: number): Promise<void> {
+    return _rpc._rpcChmod(this as any, path, mode);
+  }
   async _rpcReaddir(path: string): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path); }
   async _rpcExists(path: string): Promise<boolean> { return _rpc._rpcExists(this as any, path); }
   async _rpcMkdir(path: string): Promise<void> { return _rpc._rpcMkdir(this as any, path); }

@@ -129,6 +129,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     this.vfs.utimes(p, atimeMs, mtimeMs);
   }
 
+  async chmod(path: string, mode: number): Promise<void> {
+    const p = this.resolveMutationPath(path, true, 'chmod');
+    if (!this.vfs.exists(p)) throw fsError('ENOENT', 'chmod', path);
+    this.vfs.chmod(p, mode);
+  }
+
   async open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
     const normalizedFlags = normalizeOpenFlags(flags);
     const mutates = normalizedFlags.write || normalizedFlags.create ||
