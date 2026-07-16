@@ -14,7 +14,7 @@ const factory = new Function(
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = factory(
-  { 'home/user/present.txt': 'hi' }, {}, {}, {}, '', null,
+  { 'home/user/present.txt': 'hi' }, {}, {}, {}, null,
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );
 const fs = sandbox.fs;

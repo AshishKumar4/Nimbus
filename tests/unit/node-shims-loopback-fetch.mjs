@@ -33,7 +33,7 @@ const factory = new Function(
   'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return null;',
 );
-factory({}, {}, {}, {}, '', supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+factory({}, {}, {}, {}, supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
 
 // ── loopback via 127.0.0.1 is routed to the supervisor ───────────────────────
 {

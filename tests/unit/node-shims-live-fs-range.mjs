@@ -43,7 +43,7 @@ const factory = new Function(
   'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
-const sandbox = factory({}, {}, {}, null, '', supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+const sandbox = factory({}, {}, {}, null, supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
 const fsp = sandbox.fs.promises;
 const enc = new TextEncoder();
 

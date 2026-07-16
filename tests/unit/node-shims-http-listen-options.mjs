@@ -21,7 +21,7 @@ function makeHttp() {
     '"use strict";' + code + '\n;return { http: builtins.http, portRegistry: globalThis.__portRegistry };',
   );
   const sandbox = factory(
-    {}, {}, {}, {}, '', supervisor,
+    {}, {}, {}, {}, supervisor,
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
   return { http: sandbox.http, portRegistry: sandbox.portRegistry, registered };

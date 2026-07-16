@@ -29,7 +29,7 @@ function makeFacet() {
     '"use strict";' + code + '\n;return { http: builtins.http, portRegistry: globalThis.__portRegistry, serveHttp: globalThis.__nimbusServeHttp };',
   );
   const sandbox = factory(
-    {}, {}, {}, {}, '', supervisor,
+    {}, {}, {}, {}, supervisor,
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
   return sandbox;

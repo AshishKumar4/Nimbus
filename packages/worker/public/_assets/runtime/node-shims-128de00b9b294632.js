@@ -3839,7 +3839,7 @@ const __consoleMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __nimbusAttachedTty = !!(env && (env.NIMBUS_ATTACHED_TTY === "1" || env.FORCE_TTY === "1"));
+const __nimbusAttachedTty = env?.NIMBUS_ATTACHED_TTY === "1";
 let __nimbusTtyColumns = Number(env && env.COLUMNS) || 80;
 let __nimbusTtyRows = Number(env && env.LINES) || 24;
 const __nimbusTerminalOutputStreams = [];

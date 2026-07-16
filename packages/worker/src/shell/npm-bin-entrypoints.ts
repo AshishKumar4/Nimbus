@@ -388,7 +388,7 @@ function looksAttachedTtyNpmBin(
   env: Record<string, string> | undefined,
 ): boolean {
   if (argv.some(isNonInteractiveBinArg)) return false;
-  if (env?.NIMBUS_ATTACHED_TTY === '1' || env?.FORCE_TTY === '1') return true;
+  if (env?.NIMBUS_ATTACHED_TTY === '1') return true;
   const explicit = metadata?.nimbus?.terminal;
   if (explicit === 'attached') return true;
   if (explicit === 'detached') return false;
