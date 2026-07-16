@@ -199,9 +199,8 @@ export function makePythonRunnerFactory(deps: {
       // env passed to Python's os.environ. We forward NIMBUS_*,
       // PATH-ish, and a default HOME if not set.
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      if (!userEnv.HOME) userEnv.HOME = '/home/pyodide';
+      if (!userEnv.HOME) userEnv.HOME = '/home/user';
       if (!userEnv.PYTHONUNBUFFERED) userEnv.PYTHONUNBUFFERED = '1';
-      if (userEnv.HOME === '/home/pyodide') userEnv.HOME = '/home/user';
 
       // Per-subtree watermark over exactly what the snapshot covers (cwd +
       // site-packages), so unrelated VFS writes don't evict the cache.

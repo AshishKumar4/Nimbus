@@ -187,8 +187,7 @@ export function makeRubyRunnerFactory(deps: {
       }
 
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      if (!userEnv.HOME) userEnv.HOME = '/home/ruby';
-      if (userEnv.HOME === '/home/ruby') userEnv.HOME = '/home/user';
+      if (!userEnv.HOME) userEnv.HOME = '/home/user';
       if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
       userEnv.GEM_HOME ||= '/' + defaultGemHome();
       userEnv.GEM_PATH ||= userEnv.GEM_HOME;
