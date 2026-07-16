@@ -3452,8 +3452,39 @@ builtins.http = (() => {
     constructor(u, m, h) { super(); this.url = u || "/"; this.method = m || "GET"; this.headers = h || {}; this.httpVersion = "1.1"; }
   }
   class Server extends __eventsMod {
-    constructor(handler) { super(); if (handler) this.on("request", handler); this._port = 0; this._listening = false; }
-    listen(port, host, cb) { if (typeof host === "function") { cb = host; } this._port = port || 0; this._listening = true; globalThis.__portRegistry.set(this._port, this); try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {} if (cb) queueMicrotask(cb); this.emit("listening"); return this; }
+    constructor(handler) { super(); if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
+    // Node's listen has several overloads; the two we honour are
+    // listen(options[, cb]) — options = { port, host, path, backlog, ... } —
+    // and listen([port[, host[, backlog]]][, cb]). opencode's server adaptor
+    // binds via the OPTIONS-OBJECT form (server.listen({ host, port }, cb)), so
+    // we read port/host off the object; a bare positional port is the classic
+    // form. The port is normalized to a number (number|string) so the ACTUAL
+    // listened port is what lands in the registry + SUPERVISOR.registerPort.
+    listen(...args) {
+      let portArg, host, cb;
+      const first = args[0];
+      if (first !== null && typeof first === "object") {
+        portArg = first.port;
+        host = first.host;
+        if (typeof args[1] === "function") cb = args[1];
+      } else {
+        portArg = first;
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i];
+          if (typeof a === "function") { cb = a; break; }
+          if (typeof a === "string") host = a;
+        }
+      }
+      const numPort = typeof portArg === "string" ? parseInt(portArg, 10) : portArg;
+      this._port = Number.isFinite(numPort) ? numPort : 0;
+      this._host = host;
+      this._listening = true;
+      globalThis.__portRegistry.set(this._port, this);
+      try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {}
+      if (cb) queueMicrotask(cb);
+      this.emit("listening");
+      return this;
+    }
     close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); try { if (__supervisor && typeof __supervisor.unregisterPort === "function") { Promise.resolve(__supervisor.unregisterPort(this._port)).catch(() => {}); } } catch {} if (cb) cb(); this.emit("close"); }
     get listening() { return this._listening; }
     // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
@@ -3466,7 +3497,7 @@ builtins.http = (() => {
     // 1-arg callback form so listeners that emit on 'timeout' still run.
     setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
     setKeepAlive() { return this; }
-    address() { return { address: "0.0.0.0", port: this._port, family: "IPv4" }; }
+    address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
     _handleRequest(u, m, h, b) { const req = new IncomingMessage(u, m, h); const res = new ServerResponse(); this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } return res; }
   }
   function createServer(o, h) { if (typeof o === "function") { h = o; } return new Server(h); }
