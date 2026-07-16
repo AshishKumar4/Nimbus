@@ -226,12 +226,12 @@ export class PortRegistry {
       // whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
       return response;
-    } catch (e: any) {
+    } catch (error: unknown) {
       // Server-side triage — users see only the 502 body, operators
       // see the full error + stack in Worker logs.
-      console.error('[port-registry] routeRequest failed for port', port, ':', e);
+      console.error('[port-registry] routeRequest failed for port', port, ':', error);
       return new Response(
-        JSON.stringify({ error: e?.message || String(e) }),
+        JSON.stringify({ error: errorMessage(error) }),
         {
           status: 502,
           headers: { 'Content-Type': 'application/json' },
@@ -284,4 +284,8 @@ function routeableFacetTarget(value: unknown): RouteableFacetTarget | null {
   return {
     handleHttpRequest: method.bind(value),
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

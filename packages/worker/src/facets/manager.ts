@@ -3784,7 +3784,7 @@ export class FacetManager {
     }
   }
 
-  registerPort(pid: number, port: number, facetStub: any): void {
+  registerPort(pid: number, port: number, facetStub: unknown): void {
     if (port > 0 && port < 65536) {
       this.portRegistry.register(port, pid, facetStub);
     }
@@ -3796,7 +3796,7 @@ export class FacetManager {
 
   waitForRouteablePorts(
     pid: number,
-    facetStub: any,
+    facetStub: unknown,
     timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS,
   ): Promise<number[]> {
     return this.portRegistry.waitForRouteablePortsByPid(pid, facetStub, timeoutMs);
