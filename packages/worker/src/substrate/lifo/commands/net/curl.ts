@@ -20,11 +20,13 @@ type CurlOptions = {
   url?: string;
 };
 
+type CurlBody = string | Uint8Array | ReadableStream<Uint8Array>;
+
 type CurlResponse = {
   status: number;
   statusText: string;
   headers: Record<string, string>;
-  body: string | Uint8Array;
+  body: CurlBody;
   url: string;
 };
 
@@ -85,10 +87,12 @@ function createCurlImpl(kernel?: Kernel): Command {
       try {
         const response = await fetch(url, fetchOptions);
         const effectiveUrl = response.url || url;
+        // Body streams to stdout as it arrives (SSE/chunked responses flow
+        // live); an -o file needs the whole payload for a single VFS write.
         const body = options.outputFile
           ? new Uint8Array(await response.arrayBuffer())
-          : await response.text();
-        return handleCurlResponse(ctx, options, {
+          : response.body ?? '';
+        return await handleCurlResponse(ctx, options, {
           status: response.status,
           statusText: response.statusText,
           headers: headersToRecord(response.headers),
@@ -316,6 +320,7 @@ async function resolveVirtualCurlResponse(
       if (location) {
         try {
           currentUrl = new URL(location, currentUrl).toString();
+          cancelStreamBody(response.body);
           continue;
         } catch {
           return { kind: 'response', response };
@@ -403,9 +408,11 @@ async function fetchVirtualCurlResponse(
         status: response.status,
         statusText: response.statusText,
         headers: headersToRecord(response.headers),
+        // Stream to stdout as bytes arrive (a facet's SSE flows live);
+        // an -o file needs the whole payload for a single VFS write.
         body: options.outputFile
           ? new Uint8Array(await response.arrayBuffer())
-          : await response.text(),
+          : response.body ?? '',
         url: response.url || url,
       };
     }
@@ -415,12 +422,13 @@ async function fetchVirtualCurlResponse(
   return { exitCode: 7 };
 }
 
-function handleCurlResponse(ctx: Parameters<Command>[0], options: CurlOptions, response: CurlResponse): number {
+async function handleCurlResponse(ctx: Parameters<Command>[0], options: CurlOptions, response: CurlResponse): Promise<number> {
   const failed = options.fail && response.status >= 400;
 
   if (options.headOnly) {
+    cancelStreamBody(response.body);
     if (!failed) {
-      writeCurlOutput(ctx, options, curlHeaders(response));
+      await writeCurlOutput(ctx, options, curlHeaders(response));
     }
     writeCurlFailure(ctx, options, response);
     writeCurlWriteOut(ctx, options, response);
@@ -428,17 +436,25 @@ function handleCurlResponse(ctx: Parameters<Command>[0], options: CurlOptions, r
   }
 
   if (!failed) {
-    writeCurlOutput(ctx, options, response.body);
+    await writeCurlOutput(ctx, options, response.body);
     if (options.outputFile && !options.silent) {
       const size = bodySize(response.body);
       ctx.stderr.write(`  % Total    % Received\n`);
       ctx.stderr.write(`  ${size}    ${size}\n`);
     }
+  } else {
+    cancelStreamBody(response.body);
   }
 
   writeCurlFailure(ctx, options, response);
   writeCurlWriteOut(ctx, options, response);
   return curlExitCode(options, response.status);
+}
+
+function cancelStreamBody(body: CurlBody): void {
+  if (body instanceof ReadableStream) {
+    body.cancel().catch(() => {});
+  }
 }
 
 function writeCurlFailure(ctx: Parameters<Command>[0], options: CurlOptions, response: CurlResponse): void {
@@ -447,18 +463,65 @@ function writeCurlFailure(ctx: Parameters<Command>[0], options: CurlOptions, res
   }
 }
 
-function writeCurlOutput(ctx: Parameters<Command>[0], options: CurlOptions, body: string | Uint8Array): void {
+async function writeCurlOutput(ctx: Parameters<Command>[0], options: CurlOptions, body: CurlBody): Promise<void> {
   if (!options.outputFile) {
     if (typeof body === 'string') {
       ctx.stdout.write(body);
       if (!body.endsWith('\n')) ctx.stdout.write('\n');
-    } else {
+    } else if (body instanceof Uint8Array) {
       ctx.stdout.write(new TextDecoder().decode(body));
+    } else {
+      await streamCurlBodyToStdout(ctx, body);
     }
     return;
   }
-  if (options.outputFile === '/dev/null') return;
+  if (options.outputFile === '/dev/null') {
+    cancelStreamBody(body);
+    return;
+  }
+  if (body instanceof ReadableStream) {
+    // Streams reach here only via the no-outputFile construction paths;
+    // fail loud rather than silently writing a broken file.
+    cancelStreamBody(body);
+    throw new Error('curl: internal error — streaming body cannot be written to an output file');
+  }
   ctx.vfs.writeFile(resolve(ctx.cwd, options.outputFile), body);
+}
+
+/**
+ * Relay a streaming body to stdout chunk-by-chunk as bytes arrive — this is
+ * what lets `curl -N` against an SSE/chunked endpoint display live instead of
+ * flushing everything at stream end. Ctrl-C (ctx.signal) cancels the read.
+ */
+async function streamCurlBodyToStdout(ctx: Parameters<Command>[0], body: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = body.getReader();
+  const onAbort = () => { reader.cancel().catch(() => {}); };
+  if (ctx.signal.aborted) {
+    onAbort();
+    return;
+  }
+  ctx.signal.addEventListener('abort', onAbort, { once: true });
+  const decoder = new TextDecoder();
+  let tail = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      if (text) {
+        ctx.stdout.write(text);
+        tail = text;
+      }
+    }
+    const flushed = decoder.decode();
+    if (flushed) {
+      ctx.stdout.write(flushed);
+      tail = flushed;
+    }
+    if (tail && !tail.endsWith('\n')) ctx.stdout.write('\n');
+  } finally {
+    ctx.signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function writeCurlWriteOut(
@@ -511,8 +574,9 @@ function getHeader(headers: Record<string, string>, name: string): string | unde
   return undefined;
 }
 
-function bodySize(body: string | Uint8Array): number {
-  return typeof body === 'string' ? body.length : body.byteLength;
+function bodySize(body: CurlBody): number {
+  if (typeof body === 'string') return body.length;
+  return body instanceof Uint8Array ? body.byteLength : 0;
 }
 
 function statusText(status: number): string {

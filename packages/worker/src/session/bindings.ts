@@ -241,16 +241,6 @@ async function materializeNestedRpcRequest(request: Request): Promise<Request> {
   return new Request(request.url, init);
 }
 
-async function materializeNestedRpcResponse(response: Response): Promise<Response> {
-  const bodyAllowed = response.status !== 204 && response.status !== 205 && response.status !== 304;
-  const body = bodyAllowed ? await response.arrayBuffer() : null;
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: new Headers(response.headers),
-  });
-}
-
 /**
  * Insert OR refresh a key in the LRU. New keys may evict the oldest
  * entry if at the cap; existing keys are re-inserted to update their
@@ -484,24 +474,52 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     }
   }
 
+  /**
+   * Relay the inner entrypoint's Response to the caller with a LIVE body.
+   * The body streams through an identity pipe and the entrypoint stub is
+   * disposed only once the body finishes — materializing (arrayBuffer) here
+   * buffered every routed response to stream-end, which froze SSE/chunked
+   * bodies (opencode's /event live-sync, `curl -N` loopback, external
+   * preview) until the facet closed the stream.
+   */
+  private _relayNestedRpcResponse(ep: unknown, response: unknown): Response {
+    if (!(response instanceof Response)) {
+      disposeRpcResource(response);
+      disposeRpcResource(ep);
+      return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
+    }
+    const init = {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers),
+    };
+    if (!response.body) {
+      disposeRpcResource(ep);
+      return new Response(null, init);
+    }
+    const { readable, writable } = new IdentityTransformStream();
+    this.ctx.waitUntil(
+      response.body
+        .pipeTo(writable)
+        .catch(() => {})
+        .finally(() => disposeRpcResource(ep)),
+    );
+    return new Response(readable, init);
+  }
+
   async handleHttpRequest(request: Request): Promise<Response> {
     const ep = await this._resolveEntrypoint({ includeSupervisor: false });
     try {
       const method = ep.handleHttpRequest || ep.fetch;
       if (typeof method !== 'function') {
+        disposeRpcResource(ep);
         return new Response('Nimbus: loaded worker entrypoint has no HTTP request handler', { status: 502 });
       }
-      return await useRpcResource(
-        method.call(ep, await materializeNestedRpcRequest(request)),
-        async (response) => {
-          if (!(response instanceof Response)) {
-            return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
-          }
-          return await materializeNestedRpcResponse(response);
-        },
-      );
-    } finally {
+      const response = await method.call(ep, await materializeNestedRpcRequest(request));
+      return this._relayNestedRpcResponse(ep, response);
+    } catch (e) {
       disposeRpcResource(ep);
+      throw e;
     }
   }
 
@@ -514,17 +532,11 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
   async fetch(request: Request): Promise<Response> {
     const ep = await this._resolveEntrypoint({ includeSupervisor: false });
     try {
-      return await useRpcResource(
-        ep.fetch(await materializeNestedRpcRequest(request)),
-        async (response) => {
-          if (!(response instanceof Response)) {
-            return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
-          }
-          return await materializeNestedRpcResponse(response);
-        },
-      );
-    } finally {
+      const response = await ep.fetch(await materializeNestedRpcRequest(request));
+      return this._relayNestedRpcResponse(ep, response);
+    } catch (e) {
       disposeRpcResource(ep);
+      throw e;
     }
   }
 }
