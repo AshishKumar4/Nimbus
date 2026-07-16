@@ -2498,7 +2498,7 @@ export class FacetManager {
     bundleProfile?: FacetBundleProfile,
   ): Promise<FacetVfsState> {
     const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
-    const key = `${profile} ${cwd} ${scriptPath ?? ''} ${_fnv1a(entryCode)}`;
+    const key = `${profile}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
     const revision = vfs.revision();
     const cached = this.prefetchBundleCache.get(key);
     if (cached && cached.revision === revision) {
