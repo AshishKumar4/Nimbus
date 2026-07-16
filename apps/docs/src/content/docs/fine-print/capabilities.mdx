@@ -1,0 +1,40 @@
+---
+title: Capability matrix
+description: Exactly what works today, live-probed — filterable by status.
+---
+
+import CapabilityExplorer from '../../../components/CapabilityExplorer.astro';
+
+Every row below mirrors the README's "What works today" table — the source
+of truth, covered by the black-box behavioral probe suite in
+`tests/behavioral/` (probes drive a real session via `POST /new` + WebSocket
+and assert user-visible behavior; an HTTP 200 alone is not a pass).
+
+You can run the suite against any live deployment yourself:
+
+```bash
+BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
+```
+
+<CapabilityExplorer />
+
+## Framework support
+
+- **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers,
+  Workers with Static Assets, npm + git workflows, Python and Ruby scripts,
+  clang C compilation (single-file and multi-file).
+- **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use
+  the Vite path. Nuxt has Vite/Nitro caveats.
+
+## In progress (honest list)
+
+Unfinished OS work, verbatim from the README: broader Pyodide/Nimbus
+extension artifact catalogs beyond declared packages, complete upstream
+`pip`/Bundler CLI parity, opencode TUI live-update streaming (the split pair
+boots and survives; SSE streaming through the facet HTTP shim is in
+progress), index-pack CPU headroom for 75,000+-object clones, full POSIX PTY
+parity, and live filesystem bridges for every long-running runtime.
+
+Hard "no" items live in [what does not work](/docs/fine-print/limitations/);
+research-stage work lives on the
+[research frontier](/docs/fine-print/research/).

@@ -1,0 +1,54 @@
+---
+title: What does not work
+description: The explicit limits — stated plainly, so you can decide fast.
+---
+
+Nimbus is a Cloudflare Worker/DO/WASM operating environment, not a Linux VM.
+This page is the deliberate "no" list. If your workload needs one of these,
+use a microVM or container sandbox instead
+([where Nimbus fits](/docs/start/where-it-fits/)).
+
+## Not supported
+
+- **Docker** and any container workflow
+- **apt** / yum / native Linux package managers
+- **Native Linux ELF execution** — there is no ELF loader
+- **Native platform-only CLI shards** (`linux-x64`, `darwin`, `win32`
+  package binaries)
+- **Native Linux Python wheels** (manylinux/musllinux) and **native Ruby
+  extensions** without Nimbus-compatible artifacts
+- **Raw public TCP listeners** — inbound traffic is HTTP(S) through session
+  routes only
+- **Next.js dev server**
+- **Cloudflare Pages** (`wrangler pages dev`)
+- **GPUs**
+- **`wasi-threads` / `-pthread`** — refused at link time, by design
+  ([why](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md))
+
+The failure mode is designed to be honest: package managers classify
+artifacts by ABI and native artifacts **fail early with an exact
+diagnostic** — before import, with the reason — rather than half-installing.
+
+## Known constraints
+
+- **One active terminal owner per session.** Sequential reconnect/share
+  preserves filesystem and shell state; two concurrent drivers are not
+  supported.
+- **`node`/`bun` REPL statefulness** — workerd's CSP blocks runtime `eval`,
+  so declarations don't persist across REPL submits (scripts are unaffected;
+  Python/Ruby REPLs are fully stateful).
+- **Very large clones** — index-pack CPU headroom for 75,000+-object
+  repositories is still in progress.
+- **git over HTTPS only** — no SSH transport.
+- **opencode TUI** — the split pair boots and survives, but live TUI
+  streaming is in progress; the full interactive TUI is not yet claimed.
+- **Hosted demo** — free evaluation only: no SLA, may be rate-limited or
+  reset; don't put secrets or production data in it.
+
+## Where the line moves
+
+The line between this page and the
+[capability matrix](/docs/fine-print/capabilities/) moves only one way:
+when a behavioral probe proves a capability against a live deployment.
+Anything in between lives on the
+[research frontier](/docs/fine-print/research/).

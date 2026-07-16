@@ -1,0 +1,2 @@
+# The site lives under /docs (base path); send the bare origin there.
+/ /docs/ 302

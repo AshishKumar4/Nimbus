@@ -1,0 +1,69 @@
+---
+title: Budgets & limits
+description: The platform numbers the fabric is designed around — and the engineering moves that turn hard caps into segments.
+---
+
+Nimbus doesn't fight its platform's limits; it's *shaped* by them. This page
+lists the constraints (Cloudflare's published figures) and the specific
+design move each one produced.
+
+## The numbers
+
+| Constraint | Published figure | Applies to |
+|---|---|---|
+| Isolate memory | 128 MB per isolate | supervisor DO and every facet alike |
+| Durable Object SQLite storage | 10 GB per object | the session filesystem |
+| CPU time | per-invocation CPU budgets (Workers default: 30 s CPU per invocation) {/* VERIFY: confirm current published CPU-limit wording/figures to cite for Workers + DOs */} | every request/RPC into an isolate |
+
+Nimbus intentionally publishes **only** Cloudflare's official figures here —
+no folklore numbers, no unofficial measurements.
+
+## What each limit produced
+
+### 128 MB → the multi-isolate process model
+
+A hard per-isolate cap would normally be the ceiling on what an app can be.
+Nimbus's answer is the OS answer: **128 MB is a segment, not a ceiling** —
+
+- every process gets its **own** isolate, so its budget is its own;
+- heavy apps **span isolates** (opencode: serve + TUI, two processes, two
+  budgets) joined by loopback;
+- the supervisor never materializes heavy artifacts (staging module maps is
+  offloaded out of the DO's isolate);
+- facet OOM is a clean, catchable error — the supervisor observes it, the
+  session survives.
+
+### 10 GB → one disk, owned by the DO
+
+The session filesystem is sized by the platform's SQLite storage: **10 GB
+per session**, chunked, atomically published, and streamed into via credit
+backpressure so no writer — however parallel — can exceed the supervisor's
+memory while filling it ([inside the disk](/docs/internals/disk/)).
+
+### CPU budgets → phases and continuations
+
+Long jobs are sliced to fit invocation budgets instead of hoping:
+
+- the git engine runs **fetch / index / checkout as separate phases**, each
+  with a fresh budget, and checkout advances by bounded continuation
+  ([the git engine](/docs/internals/git-engine/));
+- npm installs **fan out across peer DOs**, turning one big budget problem
+  into many small ones;
+- the known remaining ceiling (index-pack on 75,000+-object clones) is
+  documented, not hidden.
+
+## What idle costs
+
+Nothing. Sessions hibernate: the Durable Object is evicted, the WebSocket is
+hibernatable, the SQLite disk stays. Reconnect and the supervisor wakes with
+files, process records, and shell state — the "$0 when idle" claim is a
+direct consequence of DO hibernation, not a billing trick.
+
+## Session-level bounds
+
+Beyond platform numbers, Nimbus bounds its own surfaces: process logs,
+input queues, output rings, LRU content caches, staged content generations,
+and write-credit pools are all capped — the OS spec's standing rule is that
+nothing user-driven may grow unbounded inside the supervisor. One
+product-level bound worth knowing: a session allows **one active terminal
+owner at a time** (sequential reconnect/share preserves state).

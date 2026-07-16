@@ -1,0 +1,67 @@
+---
+title: The disk
+description: 10 GB of persistent, SQLite-backed storage per session — durable across reconnects, hibernation, and eviction.
+---
+
+Every session gets a persistent filesystem: **10 GB, SQLite-backed, owned by
+the session's Durable Object**. It is not scratch space. It survives
+WebSocket drops, browser restarts, session hibernation, and Durable Object
+eviction. Come back tomorrow — the URL still works and your files are still
+there.
+
+## The layout
+
+A stable POSIX-like tree:
+
+| Path | Role |
+|---|---|
+| `/home/user` | Default home and working tree |
+| `/tmp` | Temporary files |
+| `/bin`, `/usr/bin`, `/usr/local/bin` | Virtual command paths |
+
+with the environment you'd expect: `PATH`, `HOME`, `PWD`, `TMPDIR`, `SHELL`.
+
+## What the filesystem really supports
+
+- **Regular files, directories, symlinks**, stat metadata, and timestamps.
+- **Binary-safe round-trips** — `fs.writeFileSync` / `readFileSync` with
+  arbitrary bytes is probed behavior, not an accident.
+- **The exec bit is real.** `chmod +x` persists a durable mode on the inode,
+  and `./prog` dispatch honors it (with shebang and WASM-magic detection).
+- **File watching** — the editor and dev servers receive coalesced
+  change events from the VFS event bus (this is part of what makes Vite HMR
+  work).
+- **Revision tracking** — every path carries a subtree revision watermark, so
+  runtime caches invalidate precisely instead of guessing.
+
+## Who else sees the disk
+
+The same filesystem is visible from every side of the machine:
+
+- the **shell** and all 60+ commands,
+- **every runtime** — Node/Bun, Python, Ruby, WASI binaries (a compiled C
+  program's `fopen("./data.txt", "r")` reads the same bytes `cat` sees),
+- the **editor** in the browser workspace,
+- the **SDK** (`box.files.read/write/list/…`), and
+- the **session agent**'s tools.
+
+## Durability model, honestly
+
+The Durable Object is the single owner of durable state. Writes from
+processes stream back to it through a credit-backpressured RPC pipeline —
+that's what lets a parallel `npm install` or an 84,000-file checkout land
+without overwhelming the supervisor. `fsync` and process exit are durability
+boundaries; hibernation never loses committed writes.
+
+One honest nuance: for speed, some runtime paths serve *reads* from bounded
+snapshots or caches (invalidated by VFS revisions), while long-running
+processes increasingly use the live bridge. The contract — what you read is
+either the latest committed state or your own unflushed write — is the
+design rule the implementation converges on. Details in
+[Inside the disk](/docs/internals/disk/).
+
+## Related
+
+- [Inside the disk](/docs/internals/disk/) — chunked storage, content
+  generations, backpressure.
+- [Budgets & limits](/docs/internals/budgets/) — where 10 GB comes from.

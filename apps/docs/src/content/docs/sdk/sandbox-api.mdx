@@ -1,0 +1,139 @@
+---
+title: The sandbox API
+description: The full programmatic surface of a NimbusSandbox — exec, files, runtimes, processes, ports, and agent tools.
+---
+
+Everything below is the real, typed surface of `@nimbus-sh/sdk`
+(`packages/sdk/src/sandbox.ts`). The same methods work over both transports:
+a colocated Durable Object binding (`Nimbus.fromEnv`) or the authenticated
+remote API (`Nimbus.connect`, which POSTs to
+`/api/nimbus/v1/sandboxes/<id>/rpc` with a Bearer token).
+
+## Getting a handle
+
+```ts
+const nimbus = Nimbus.fromEnv(env, config);          // colocated
+const nimbus = Nimbus.connect({ endpoint, token });  // remote
+
+const box = nimbus.sandbox('job-123', {
+  profile: 'default',   // sandbox profile from your NimbusConfig
+  tenant: 'acme',       // namespaces the underlying DO: tenant:subject:id
+  subject: 'agent',
+  root: '/home/user',
+});
+```
+
+## Lifecycle
+
+```ts
+await box.ready();     // headless session boot (+ profile preinstalls); memoized
+await box.destroy({ reason: 'job done' });
+// → { ok: true, killed: number, destroyedAt: number, reason: string | null }
+```
+
+Every other call awaits `ready()` internally — you only call it yourself
+when you want to pay the boot cost up front.
+
+## Running things
+
+```ts
+const result = await box.exec('npm test', {
+  cwd: '/home/user/app',
+  env: { CI: 'true' },
+  timeoutMs: 60_000,
+  stdin: 'y\n',
+});
+// NimbusExecResult:
+// { command, exitCode, success, stdout, stderr, duration, timestamp }
+
+await box.runCode('print(2 + 2)', {
+  language: 'python',        // 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell'
+  install: 'ifMissing',      // auto-install the runtime if the profile allows
+});
+
+const proc = await box.startProcess('node --watch server.js');
+// NimbusStartResult = NimbusExecResult & { pid, process, ports }
+```
+
+## Files
+
+```ts
+await box.files.write('/home/user/app/server.js', code);  // string | Uint8Array
+const text  = await box.files.read('/home/user/app/server.js');   // string | null
+const bytes = await box.files.readBytes('/home/user/data.bin');   // Uint8Array | null
+const stat  = await box.files.stat('/home/user/app');             // NimbusFileStat | null
+const list  = await box.files.list('/home/user');                 // { name, type }[]
+await box.files.mkdir('/home/user/app');
+await box.files.exists('/home/user/app');                         // boolean
+await box.files.delete('/home/user/app', { recursive: true });
+```
+
+## Runtimes
+
+```ts
+await box.runtimes.ensure(['python', 'clang']);   // install if missing
+await box.runtimes.install('ruby', { force: false });
+await box.runtimes.list();        // { installed, available }
+await box.runtimes.installed();   // NimbusRuntimeSummary[]
+await box.runtimes.available();   // NimbusAvailableRuntime[]
+```
+
+Installs are policy-checked against the sandbox profile's
+`runtimes.allow` / `onDemand` before any RPC happens.
+
+## Processes
+
+```ts
+const procs = await box.processes.list();   // NimbusProcess[]
+// { pid, command, argv, cwd, state, exitCode, startTime, endTime,
+//   longRunning, attachedTty }
+
+await box.processes.kill(pid);
+await box.processes.write(pid, 'input\n');     // stdin
+await box.processes.endInput(pid);
+await box.processes.resize(pid, { columns: 120, rows: 32 });
+await box.processes.signal(pid, 'SIGINT');
+const logs = await box.processes.logs(pid, { afterSeq: 0 });
+```
+
+For streaming interaction, `attach` returns an async-iterable attachment:
+
+```ts
+const attachment = box.processes.attach(pid);
+await attachment.write('q');
+for await (const chunk of attachment) {
+  // { seq, ts, stream: 'stdout' | 'stderr', data, binary? }
+}
+```
+
+## Ports
+
+```ts
+const port = await box.ports.expose(3000);   // → { ..., url: '/s/<id>/port/3000/' }
+await box.ports.list();                      // NimbusPort[]
+await box.ports.unexpose(3000);
+box.ports.url(3000);
+```
+
+The returned URL is a path on the deployment; it's directly usable when the
+caller already has browser/session auth ([tokens & auth](/docs/sdk/tokens/)).
+
+## Agent tools
+
+```ts
+const provider = box.tools({ namespace: 'sandbox' });
+```
+
+Returns a Proteus-style tool provider wrapping the sandbox: `readFile`,
+`writeFile`, `listFiles`, `deleteFile`, `exists`, exec, process control
+(`killProcess`, `writeProcessInput`, `resizeProcess`, `signalProcess`,
+`processLogs`), ports (`exposePort`, `listPorts`), and runtime install —
+ready to hand to an agent loop. `box.capabilities()` reports the runtime
+allow-list as capability strings.
+
+## Errors
+
+Remote calls throw `NimbusRemoteError` with `status`, optional `code`, and
+the response `body` — no silent nulls. Wire payloads are schema-validated
+(zod) on the client, so a drifted server fails loudly instead of returning
+malformed shapes.

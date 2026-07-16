@@ -1,0 +1,85 @@
+---
+title: Nimbus documentation
+description: Give every agent its own computer. Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network.
+template: splash
+head:
+  - tag: title
+    content: Nimbus — give every agent its own computer
+---
+
+import FabricDiagram from '../../components/FabricDiagram.astro';
+import NimbusSandbox from '../../components/NimbusSandbox.astro';
+
+<div class="nimbus-hero">
+  <p class="kicker">Nimbus documentation</p>
+  <h1>Give every agent its own computer.</h1>
+  <p class="sub">
+    Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on
+    Cloudflare's network. Open a URL — or call the SDK — and get a real shell
+    with <code>node</code>, <code>npm</code>, <code>git</code>, <code>python</code>,
+    <code>ruby</code>, <code>clang</code>, and 60+ Unix commands.
+    No Docker. No containers. No VMs. No image pull.
+  </p>
+  <div class="ctas">
+    <a class="nimbus-btn primary" href="/docs/start/boot/">Boot your first computer</a>
+    <a class="nimbus-btn" href="https://nimbus.ashishkumarsingh.com" target="_blank" rel="noopener">Try the live demo ↗</a>
+    <a class="nimbus-btn" href="https://github.com/AshishKumar4/Nimbus" target="_blank" rel="noopener">GitHub</a>
+  </div>
+  <div class="nimbus-badges">
+    <span>10 GB per session</span>
+    <span>~0.6 s to first command</span>
+    <span>$0 when idle</span>
+    <span>the URL is the session</span>
+    <span>MIT</span>
+  </div>
+</div>
+
+<NimbusSandbox
+  title="nimbus — /home/user"
+  rows={11}
+  cast={[
+    { cmd: `node -e 'console.log("hello from the edge")'`, out: ['hello from the edge'] },
+    { cmd: `python3 -c 'print(2 + 2)'`, out: ['4'] },
+    {
+      cmd: 'clang hello.c -o hello.wasm && ./hello.wasm',
+      out: ['hello from clang on the edge'],
+    },
+  ]}
+/>
+
+## One session is a computer
+
+Every Nimbus session is a supervisor Durable Object plus a fabric of isolate
+"facets" — one per process, each with its own memory and CPU budget, wired
+together over a session-local loopback network. That fabric is the whole
+architecture; the rest of these docs explain each part of it.
+
+<FabricDiagram />
+
+<div class="nimbus-cardgrid">
+  <a class="nimbus-card" href="/docs/start/tour/">
+    <span class="t">A tour of the machine</span>
+    <span class="d">Shell, disk, toolchains, servers, previews — one guided walk through everything the computer can do.</span>
+  </a>
+  <a class="nimbus-card" href="/docs/sdk/embed/">
+    <span class="t">Computers for your agents</span>
+    <span class="d">Embed Nimbus in your Worker and mint a sandbox per task with <code>@nimbus-sh/sdk</code>.</span>
+  </a>
+  <a class="nimbus-card" href="/docs/internals/fabric/">
+    <span class="t">Under the hood</span>
+    <span class="d">The supervisor DO, the facet fabric, the SQLite disk, the port registry — how it actually works.</span>
+  </a>
+  <a class="nimbus-card" href="/docs/fine-print/capabilities/">
+    <span class="t">The fine print</span>
+    <span class="d">Exactly what works, what's alpha, what doesn't work, and honest benchmarks. Everything here is live-probed.</span>
+  </a>
+</div>
+
+:::note[Honesty first]
+Nimbus is an MIT-licensed **hobby/research alpha** — an experiment in how far
+Cloudflare Durable Objects can be pushed. It works, and every capability claim
+in these docs traces to a live behavioral probe, but there are rough edges.
+The [capability matrix](/docs/fine-print/capabilities/) and
+[what does not work](/docs/fine-print/limitations/) pages are kept as honest
+as the code.
+:::

@@ -1,0 +1,99 @@
+---
+title: Tokens & auth
+description: The HS256 JWT model — claims, scopes, TTLs, secret rotation, and the single-use attach exchange.
+---
+
+Nimbus auth is deliberately simple: **HS256 JWTs signed with a shared
+`JWT_SECRET`** (set via `wrangler secret put JWT_SECRET`). No external IdP,
+zero dependencies — WebCrypto HMAC, identical in workerd, Node ≥ 18, and
+browsers. The verifier never reads `alg` from the token header, which
+eliminates the `alg: "none"` confusion class outright (RFC 8725 §3.1).
+
+## Claims
+
+```ts
+import { issueNimbusToken } from '@nimbus-sh/sdk';
+
+const token = await issueNimbusToken(env, {
+  tn: 'acme',                 // tenant (required)
+  sub: 'alice',               // subject
+  scopes: ['sandbox:use'],    // grants; absent = all permitted
+  sid: 'job-123',             // pin the token to one session id
+});
+```
+
+| Claim | Meaning |
+|---|---|
+| `scope` | Always `"nimbus"` — set by the library, never passed in |
+| `tn` | Tenant identifier (required, shape-validated) |
+| `sub` | Subject (user/agent) within the tenant |
+| `scopes` | Grant list — see below. Absent = all permitted |
+| `sid` | Optional session pin: the token only works for that session |
+| `jti` | Token id — used for single-use bootstrap tokens |
+| `iat` / `exp` | Issued-at / expiry, set from `ttlMs` |
+
+## Scopes
+
+v1 honors: `session:create`, `session:attach`, `session:bootstrap`,
+`session:destroy`, `session:admin`, and `sandbox:use`. Scopes, tenant/session
+pins, and destroy permissions are enforced **server-side**, not just in the
+SDK client.
+
+## TTLs
+
+| | Value |
+|---|---|
+| Default | 1 hour (`DEFAULT_TOKEN_TTL_MS`) |
+| Maximum | 30 days (`MAX_TOKEN_TTL_MS`) — larger requests throw `TTL_TOO_LARGE` |
+| Attach bootstrap | 90 seconds, single-use |
+
+## Secret rotation
+
+Set `JWT_SECRET_PREVIOUS` alongside a new `JWT_SECRET`: verification accepts
+tokens signed by either, while issuing always uses the primary. Rotate, wait
+out the longest TTL, then drop the previous secret.
+
+## How a browser session gets authorized
+
+Long-lived tokens travel **only in `Authorization: Bearer` headers, never in
+URLs**. The one URL-carried token is the short-lived attach exchange:
+
+1. `POST /new` with a verified Bearer token redirects to an attach URL
+   carrying a **90-second, single-use, `session:bootstrap`-scoped** token.
+   Its `jti` is consumed set-if-absent in the session DO's storage — replays
+   get `401`.
+2. The session shell GET exchanges `?nimbus_token=` for a freshly minted,
+   sid-pinned `session:attach` **cookie** (`HttpOnly`, `SameSite=None`,
+   `Secure`, `Partitioned`), then redirects to the clean `/s/<id>/` URL —
+   the token never stays in the location bar or history.
+3. HTML, WebSocket, and API requests all ride that cookie from then on.
+
+For embedders, `sessionAttachUrl(endpoint, sessionId, token)` (and the
+`mintAndAttach` convenience) computes the iframe-safe attach URL:
+
+```ts
+import { sessionAttachUrl, issueNimbusToken } from '@nimbus-sh/sdk';
+
+const token = await issueNimbusToken(env, { tn: 'acme', sub: 'alice' });
+const url = sessionAttachUrl('https://my-nimbus.workers.dev', 'pretty-otter-1234', token);
+// → "https://my-nimbus.workers.dev/s/pretty-otter-1234/?nimbus_token=eyJ…"
+```
+
+:::note[Known limit]
+The exchange stores one sid-pinned cookie per browser partition, so two
+Nimbus sessions embedded concurrently on the same page evict each other's
+cookie. Concurrent multi-session embeds need a per-session cookie design
+(tracked follow-up).
+:::
+
+## Typed errors
+
+Auth failures are typed, not stringly: `NimbusAuthConfigError` (missing
+secret), `NimbusTokenMalformedError`, `NimbusTokenSignatureError`,
+`NimbusTokenClaimsError`, `NimbusTokenExpiredError`, `NimbusTokenTtlError`,
+and `E_BOOTSTRAP_CONSUMED` for replayed bootstrap tokens.
+
+## Related
+
+- [Security & isolation](/docs/internals/security/) — the wider trust model
+  these tokens live in.

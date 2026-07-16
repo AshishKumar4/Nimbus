@@ -1,0 +1,71 @@
+---
+title: Package managers
+description: npm against the live registry with cross-session caching; pip and gem for pure packages with honest ABI diagnostics.
+---
+
+Nimbus installs packages **by ABI, not by hope**. JavaScript packages,
+pure-Python wheels, pure-Ruby gems, and Nimbus-compatible artifacts install
+cleanly; native platform shards fail early with a precise diagnostic that
+says exactly why.
+
+## npm — fully supported
+
+`npm install` resolves against the live registry (`registry.npmjs.org`):
+
+```bash
+npm install zod                 # ~6 s on a cold session
+npm install                     # full app installs — a 611-package app lands in ~165 s
+npx cowsay hello                # npx: first-class shebang + auto-install fallback
+./node_modules/.bin/tsc --help  # package bins resolve and execute
+```
+
+- **Cross-session cache.** Tarballs and packuments are cached in R2 across
+  all sessions; warm installs are 9–16× faster than cold.
+- **Fan-out installs.** Large dependency trees shard across peer Durable
+  Objects, so one session isolate is never the bottleneck.
+- **Alias dependencies** (`"alias": "npm:<pkg>@<version>"`) work.
+- **Native shards**: packages that require `linux-x64`/`darwin` binaries
+  fail with an exact unsupported-ABI diagnostic. Optional native
+  dependencies soft-skip the way npm intends.
+
+## pip — alpha
+
+`pip`, `pip3`, and `python -m pip` install:
+
+- **Pure wheels** from PyPI (`py3-none-any`), with requirements files,
+  constraints, extras, and environment markers.
+- **Curated pure-source artifacts** for packages whose native extension is
+  avoidable (MarkupSafe is the probed example).
+- **Declared Pyodide startup-module packages** from the runtime catalog —
+  prebuilt WASM extension modules loaded through the Workers-supported
+  startup path (request-time WASM compilation is blocked by the platform).
+
+`site-packages` persists in the VFS across sessions of work. Flask installs
+and runs — `python -m flask run` and `python -m http.server` both serve
+preview tabs (production-probed).
+
+Not claimed: manylinux wheels, arbitrary compiled extensions, or complete
+upstream `pip` CLI parity. Unsupported artifacts fail **before import** with
+an ABI diagnostic.
+
+## gem & bundle — alpha
+
+`gem`, `bundle`, and `bundler` install compatible **pure Ruby gems** from
+RubyGems.org into a persistent `GEM_HOME`, handle simple Gemfiles, and
+generate a Nimbus lockfile. Rack and WEBrick apps serve preview tabs
+(production-probed). Native-extension gems are rejected with a precise ABI
+diagnostic; full Bundler resolution is not implemented yet.
+
+## The install-hint loop
+
+Runtimes themselves are packages: `python`, `ruby`, and `clang` install
+on-demand from the runtime catalog (R2-backed, content-addressed). Running a
+command that isn't installed prints a matching install hint, and catalog
+aliases mean `nimbus install python3`, `pip`, or `python` all resolve to the
+same runtime.
+
+## Related
+
+- [Toolchains](/docs/machine/toolchains/) — what those runtimes actually are.
+- [Budgets & limits](/docs/internals/budgets/) — why installs are engineered
+  as fan-out + streaming instead of one big process.

@@ -1,0 +1,86 @@
+---
+title: The session agent
+description: A chat surface inside every session, running in the same Durable Object as your terminal, with real sandbox tools.
+---
+
+Every Nimbus session includes an agent. The center pane of the editor
+workspace switches between the file editor and chat, while the terminal and
+preview stay visible.
+
+The important design fact: **the agent lives inside the same `NimbusSession`
+Durable Object as the terminal**. It doesn't get a copy of your environment
+or a bridge to it — it gets *the same* filesystem, shell, runtime package
+manager, process table, logs, and preview ports you're using. When it edits
+a file, your editor sees the change; when it starts a server, your preview
+tab opens.
+
+## The model behind it
+
+The agent uses the AI SDK over Cloudflare **Workers AI**'s OpenAI-compatible
+endpoint, with an optional AI Gateway. Responses stream into the chat UI with
+thinking state, tool-call status, tool inputs, and tool results rendered
+inline.
+
+Two quota models:
+
+- **User OAuth** (recommended for shared deployments): each user connects
+  their own Cloudflare account via Authorization Code + PKCE and spends their
+  own Workers AI quota.
+- **Owner token fallback**: the deployment owner's API token pays for
+  everyone.
+
+## Token handling, honestly
+
+User OAuth tokens are stored **only** in encrypted, `HttpOnly`, `Secure`,
+`SameSite=Lax` browser cookies scoped to the session URL. Nimbus does not
+persist user OAuth tokens in Durable Object storage — ever.
+
+## Configuring OAuth for your own deployment
+
+In Cloudflare's **Create OAuth client** form:
+
+- **Response Type:** `Code` · **Grant type:** `Authorization Code` ·
+  **Token Authentication Method:** `None`
+- **Redirect URL:** `https://<your-nimbus-host>/api/nimbus/oauth/callback`
+- **Client URL:** `https://<your-nimbus-host>`
+
+Select only the narrow scopes the agent needs:
+
+| Dashboard scope | Scope ID | Why |
+|---|---|---|
+| User Details Read | `user-details.read` | Read the connected user's profile |
+| Account Settings Read | `account-settings.read` | List accounts the user can choose from |
+| Workers AI Write | `ai.write` | Run Workers AI inference |
+| AI Gateway Run | `aig.run` | Only when `NIMBUS_AGENT_GATEWAY_ID` is set |
+
+(Do **not** select `Account API Gateway` — that's an API Shield permission,
+not Cloudflare AI Gateway.)
+
+Then configure the deployment:
+
+```jsonc
+// wrangler.jsonc
+{
+  "vars": {
+    "NIMBUS_CF_OAUTH_CLIENT_ID": "<oauth-client-id>",
+    "NIMBUS_CF_OAUTH_SCOPES": "<scope-id-1> <scope-id-2>",
+    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "NIMBUS_AGENT_GATEWAY_ID": "default"
+  }
+}
+```
+
+```bash
+npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
+```
+
+For the owner-token fallback instead, set `NIMBUS_CLOUDFLARE_ACCOUNT_ID` in
+vars and `NIMBUS_CLOUDFLARE_API_TOKEN` as a secret (the token needs the
+Workers AI / AI Gateway permissions for your chosen model).
+
+## Related
+
+- [Security & isolation](/docs/internals/security/) — the full cookie and
+  token posture.
+- [The sandbox API](/docs/sdk/sandbox-api/) — the same tools, exposed to
+  *your* agents via `box.tools()`.

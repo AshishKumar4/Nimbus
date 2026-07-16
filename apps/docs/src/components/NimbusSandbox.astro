@@ -1,0 +1,267 @@
+---
+/**
+ * NimbusSandbox — an embedded Nimbus terminal for docs pages.
+ *
+ * Two modes:
+ *
+ * 1. **Live** — when the site is built with `PUBLIC_NIMBUS_EMBED_BASE` (and
+ *    optionally `PUBLIC_NIMBUS_EMBED_SESSION` + `PUBLIC_NIMBUS_EMBED_TOKEN`),
+ *    a "Run live" button swaps in an iframe of the real Nimbus session UI at
+ *    `${base}/s/${session}/?nimbus_token=…`. The token rides the normal
+ *    attach exchange (packages/worker/src/auth/middleware.ts): the shell GET
+ *    consumes `?nimbus_token=`, sets the sid-pinned session cookie, and
+ *    redirects to the clean URL. No auth changes are needed server-side.
+ *
+ * 2. **Recorded** — the default everywhere else: a deterministic cast player
+ *    that replays a scripted transcript in a Nimbus-styled terminal, with an
+ *    "Open in Nimbus →" link to the hosted demo (which requires the normal
+ *    Cloudflare login — there is intentionally no anonymous session path).
+ *
+ * Cast steps are `{ cmd, out?: string[] }`. Keep outputs deterministic and
+ * traceable — no invented version strings or timings.
+ */
+interface CastStep {
+	cmd: string;
+	out?: string[];
+}
+interface Props {
+	title?: string;
+	cast: CastStep[];
+	rows?: number;
+}
+const { title = 'nimbus — /home/user', cast, rows = 14 } = Astro.props;
+
+const base = (import.meta.env.PUBLIC_NIMBUS_EMBED_BASE ?? '').replace(/\/+$/, '');
+const session = import.meta.env.PUBLIC_NIMBUS_EMBED_SESSION ?? '';
+const token = import.meta.env.PUBLIC_NIMBUS_EMBED_TOKEN ?? '';
+const liveUrl =
+	base && session
+		? `${base}/s/${session}/${token ? `?nimbus_token=${encodeURIComponent(token)}` : ''}`
+		: null;
+const demoUrl = 'https://nimbus.ashishkumarsingh.com';
+---
+
+<div class="nsx" data-nimbus-sandbox data-live-url={liveUrl} style={`--nsx-rows:${rows}`}>
+	<div class="nsx-bar">
+		<span class="nsx-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+		<span class="nsx-title">{title}</span>
+		<span class="nsx-badge" data-role="badge">recorded</span>
+		<span class="nsx-actions">
+			<button type="button" data-role="replay" title="Replay this recording">↺ replay</button>
+			{
+				liveUrl ? (
+					<button type="button" data-role="live" title="Attach to a live Nimbus session">
+						▶ run live
+					</button>
+				) : (
+					<a href={demoUrl} target="_blank" rel="noopener">
+						open in Nimbus →
+					</a>
+				)
+			}
+		</span>
+	</div>
+	<div class="nsx-screen" data-role="screen" aria-live="polite"></div>
+	<script type="application/json" data-role="cast" set:html={JSON.stringify(cast)} />
+</div>
+
+<style>
+	.nsx {
+		border: 1px solid var(--sl-color-hairline-light);
+		border-radius: 0.6rem;
+		overflow: hidden;
+		margin: 1.25rem 0;
+		background: var(--nimbus-terminal-bg, #071527);
+		box-shadow: 0 6px 30px rgba(2, 8, 20, 0.35);
+	}
+	.nsx-bar {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.45rem 0.75rem;
+		background: color-mix(in srgb, var(--nimbus-terminal-bg, #071527) 60%, #0a192f);
+		border-bottom: 1px solid rgba(30, 58, 95, 0.6);
+		font-family: var(--sl-font-mono);
+		font-size: 0.72rem;
+	}
+	.nsx-dots i {
+		display: inline-block;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		margin-right: 5px;
+	}
+	.nsx-dots i:nth-child(1) { background: #ff5f57; }
+	.nsx-dots i:nth-child(2) { background: #febc2e; }
+	.nsx-dots i:nth-child(3) { background: #28c940; }
+	.nsx-title {
+		color: #8892b0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.nsx-badge {
+		color: #64ffda;
+		border: 1px solid rgba(100, 255, 218, 0.35);
+		border-radius: 999px;
+		padding: 0 0.5rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		font-size: 0.62rem;
+	}
+	.nsx-badge[data-live] {
+		color: #ffd479;
+		border-color: rgba(255, 212, 121, 0.45);
+	}
+	.nsx-actions {
+		margin-left: auto;
+		display: flex;
+		gap: 0.55rem;
+		align-items: center;
+	}
+	.nsx-actions button,
+	.nsx-actions a {
+		font: inherit;
+		color: #ccd6f6;
+		background: none;
+		border: 1px solid rgba(30, 58, 95, 0.9);
+		border-radius: 0.35rem;
+		padding: 0.1rem 0.55rem;
+		cursor: pointer;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.nsx-actions button:hover,
+	.nsx-actions a:hover {
+		border-color: #64ffda;
+		color: #64ffda;
+	}
+	.nsx-screen {
+		font-family: var(--sl-font-mono);
+		font-size: 0.82rem;
+		line-height: 1.5;
+		color: #ccd6f6;
+		padding: 0.8rem 0.95rem;
+		height: calc(var(--nsx-rows) * 1.25rem);
+		overflow-y: auto;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.nsx-screen :global(.p) { color: #64ffda; }
+	.nsx-screen :global(.c) { color: #e6f1ff; }
+	.nsx-screen :global(.cur) {
+		display: inline-block;
+		width: 0.55em;
+		height: 1.1em;
+		vertical-align: text-bottom;
+		background: #64ffda;
+		animation: nsx-blink 1s steps(1) infinite;
+	}
+	@keyframes nsx-blink { 50% { opacity: 0; } }
+	.nsx iframe {
+		display: block;
+		width: 100%;
+		height: calc(var(--nsx-rows) * 1.25rem + 1.6rem);
+		border: 0;
+		background: #0d1117;
+	}
+</style>
+
+<script>
+	type CastStep = { cmd: string; out?: string[] };
+
+	function boot(el: HTMLElement) {
+		const screen = el.querySelector<HTMLElement>('[data-role="screen"]')!;
+		const castEl = el.querySelector('[data-role="cast"]');
+		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
+		const replayBtn = el.querySelector<HTMLButtonElement>('[data-role="replay"]');
+		const liveBtn = el.querySelector<HTMLButtonElement>('[data-role="live"]');
+		const cast: CastStep[] = castEl ? JSON.parse(castEl.textContent || '[]') : [];
+		let run = 0;
+
+		const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+		async function play() {
+			const id = ++run;
+			screen.textContent = '';
+			const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+			for (const step of cast) {
+				if (id !== run) return;
+				const line = document.createElement('div');
+				const prompt = document.createElement('span');
+				prompt.className = 'p';
+				prompt.textContent = '$ ';
+				const cmd = document.createElement('span');
+				cmd.className = 'c';
+				const cur = document.createElement('span');
+				cur.className = 'cur';
+				line.append(prompt, cmd, cur);
+				screen.append(line);
+				if (reduced) {
+					cmd.textContent = step.cmd;
+				} else {
+					for (const ch of step.cmd) {
+						if (id !== run) return;
+						cmd.textContent += ch;
+						screen.scrollTop = screen.scrollHeight;
+						await sleep(18 + Math.random() * 26);
+					}
+				}
+				await sleep(reduced ? 0 : 220);
+				cur.remove();
+				for (const outLine of step.out ?? []) {
+					if (id !== run) return;
+					const o = document.createElement('div');
+					o.textContent = outLine;
+					screen.append(o);
+					screen.scrollTop = screen.scrollHeight;
+					if (!reduced) await sleep(60);
+				}
+				if (!reduced) await sleep(420);
+			}
+			if (id !== run) return;
+			const tail = document.createElement('div');
+			const p = document.createElement('span');
+			p.className = 'p';
+			p.textContent = '$ ';
+			const cur = document.createElement('span');
+			cur.className = 'cur';
+			tail.append(p, cur);
+			screen.append(tail);
+			screen.scrollTop = screen.scrollHeight;
+		}
+
+		replayBtn?.addEventListener('click', () => void play());
+
+		liveBtn?.addEventListener('click', () => {
+			run++; // stop the cast
+			const url = el.dataset.liveUrl;
+			if (!url) return;
+			const iframe = document.createElement('iframe');
+			iframe.src = url;
+			iframe.allow = 'clipboard-read; clipboard-write';
+			iframe.title = 'Live Nimbus session';
+			screen.replaceWith(iframe);
+			badge.textContent = 'live';
+			badge.setAttribute('data-live', '');
+			liveBtn.remove();
+			replayBtn?.remove();
+		});
+
+		// Start when scrolled into view.
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					io.disconnect();
+					void play();
+				}
+			},
+			{ threshold: 0.25 },
+		);
+		io.observe(el);
+	}
+
+	document
+		.querySelectorAll<HTMLElement>('[data-nimbus-sandbox]')
+		.forEach((el) => boot(el));
+</script>
