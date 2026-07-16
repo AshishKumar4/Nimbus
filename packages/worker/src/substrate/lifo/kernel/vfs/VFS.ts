@@ -420,6 +420,23 @@ export class VFS {
     this.writeFile(dest, data); // writeFile already calls notify
   }
 
+  chmod(path: string, mode: number): void {
+    const vp = this.getProvider(path);
+    if (vp) {
+      const chmod = (vp.provider as MountProvider).chmod;
+      if (typeof chmod === 'function') {
+        chmod.call(vp.provider, vp.subpath, mode);
+        return;
+      }
+      throw new VFSError(ErrorCode.EINVAL, `'${path}': chmod unsupported on this filesystem`);
+    }
+
+    const node = this.resolveNode(path);
+    const typeBits = node.type === 'directory' ? 0o040000 : 0o100000;
+    node.mode = typeBits | (mode & 0o7777);
+    this.notify({ type: 'modify', path: this.toAbsolute(path), fileType: node.type });
+  }
+
   touch(path: string): void {
     try {
       const node = this.resolveNode(path);
