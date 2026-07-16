@@ -1,7 +1,7 @@
 /**
- * facet-pool.ts — Nimbus-specific wrapper over cloudflare-parallel.
+ * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
- * Adds on top of the vendored WorkerPool:
+ * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
@@ -19,9 +19,8 @@
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
- * This wrapper does NOT re-export the upstream surface. Users import
- * NimbusLoaderPool via src/parallel/index.ts; the vendored directory is
- * an implementation detail.
+ * The vendored directory contains only the upstream serialization, error,
+ * and binding types used by this implementation.
  */
 
 import { CF_COMPAT_DATE } from '../constants.js';
