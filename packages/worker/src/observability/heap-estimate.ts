@@ -23,8 +23,7 @@
  *
  * Eviction-label taxonomy
  * ───────────────────────
- * Workerd (per docs/research/cf-internal-dossier.md §9.2 metrics.h:300)
- * distinguishes five labelled eviction reasons:
+ * Workerd distinguishes five labelled eviction reasons:
  *   - lru                       → memory pressure on the runtime process
  *   - condemned                 → kill (operator / abuse pipeline)
  *   - inactive                  → idle eviction (70-140 s of no traffic)
@@ -49,8 +48,6 @@ import type { DiagCounters } from './diag-counters.js';
  * taxonomy in /api/_diag/memory so any consumer can count observed
  * events against the well-known set.
  *
- * Source: cloudflare/ew/edgeworker metrics.c++:1778-1790 + metrics.h:300.
- * Cross-cited in docs/research/cf-internal-dossier.md §9.2.
  */
 export const WORKERD_EVICTION_LABELS = [
   'lru',
@@ -89,10 +86,10 @@ export interface HeapBreakdown {
   /**
    * In-flight supervisor RPC payload bytes (Phase 2 A'.2).
    *
-   * Sum of bytes claimed by RPC handlers in src/supervisor-rpc.ts
+   * Sum of bytes claimed by RPC handlers in src/session/supervisor-rpc.ts
    * between RPC entry and exit — writeBatch / writeBatchStream /
    * putRegistryEntries / R2 cache RPC return values. Tracked by
-   * `inFlightRpcPayloadBytes` in src/diag-counters.ts; bumped at
+   * `inFlightRpcPayloadBytes` in src/observability/diag-counters.ts; bumped at
    * RPC entry, debited in `finally`.
    *
    * At idle this is 0. Under load it should stay bounded by the

@@ -9,7 +9,7 @@
  *
  * Why singleton-per-isolate
  * ─────────────────────────
- * Same pattern as src/diag-counters.ts (q.v.). The supervisor bundle
+ * Same pattern as src/observability/diag-counters.ts. The supervisor bundle
  * is the consumer; all writers (sqlite-vfs, facet-pool, facet-manager,
  * supervisor-rpc, npm-installer, nimbus-session) live in the same
  * isolate. Module scope provides one process-local diagnostic without
@@ -18,11 +18,8 @@
  * Two distinct rings
  * ──────────────────
  * - failures: things that failed (the original W5 ring).
- * - recoveryEvents: lifecycle transitions of the session (C'.2). Cold
- *   isolate boot → 'cold' → 'hydrated' → 'active' → 'drained'. Plan §3
- *   Track B' makes the transitions explicit; this ring records each
- *   one so probes can assert "session reached 'hydrated' from SQL with
- *   N keys, no data loss".
+ * - recoveryEvents: lifecycle transitions of the session. Cold isolate
+ *   boot → 'cold' → 'hydrated' → 'active' → 'drained'.
  *
  * Bounded-size guarantees
  * ───────────────────────
@@ -83,8 +80,7 @@ export interface DiagFailure {
 /**
  * Session lifecycle states for the C'.2 recovery_event ring.
  *
- * The state machine is owned by Track B' (plan §3.3). This module
- * records transitions; it does not enforce them.
+ * This module records state-machine transitions; it does not enforce them.
  *
  * State semantics:
  * - 'cold'      : fresh DO instance, no in-memory session state yet.
@@ -137,9 +133,7 @@ export interface DiagRecoveryEvent {
    *  (the latter implies workerd recycled the DO). */
   isolateGen: number;
   /** True when the transition could not preserve state that should
-   *  have survived (e.g. SQL persist threw, snapshot was missing on
-   *  hydrate, etc.). Probes assert this stays false under non-OOM
-   *  scenarios. */
+   *  have survived (e.g. SQL persist threw or a snapshot was missing). */
   dataLoss: boolean;
   /** Number of SQL keys/rows rehydrated on a hydrated transition.
    *  Zero when the transition is one that doesn't read SQL. */
@@ -228,11 +222,8 @@ export function getLastFacetId(): FacetId | null {
 
 // ── C'.2 recovery_event ring ────────────────────────────────────────────
 //
-// Track B' transitions call recordRecoveryEvent() at every state change.
 // The ring is bounded at RECOVERY_RING_SIZE; the diag endpoint reads via
-// getRecoveryEvents() (newest first). Probes use this ring to assert
-// that recoveries are actually transparent — a green run shows entries
-// for every reconnection but every entry has dataLoss === false.
+// getRecoveryEvents() (newest first).
 
 /** Append a recovery event to the ring. Newest first. Capped at
  *  RECOVERY_RING_SIZE. */
@@ -240,7 +231,7 @@ export function recordRecoveryEvent(e: DiagRecoveryEvent): void {
   const s = getState();
   // Defensive copy + notes cap. We intentionally do NOT validate the
   // state-machine direction here (e.g. that 'drained' only follows
-  // 'active') — the state machine lives in Track B'; this ring is a
+  // 'active') — the state machine lives elsewhere; this ring is a
   // recorder, not an enforcer. If a probe sees an impossible
   // transition, that's a real bug in the state machine and the
   // probe must fail.

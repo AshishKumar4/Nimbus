@@ -16,8 +16,8 @@
  * The fix is to dispatch each per-specifier `esbuild.build` to a
  * NimbusLoaderPool isolate. Each facet has its own 128 MB budget and
  * stable-slot reuse keeps the warm-up cost amortized across the 8
- * concurrent specs of a typical install. Same pattern as
- * src/npm-install-facet.ts (tarball extraction).
+ * concurrent specs of a typical install. The install-batch facet uses
+ * the same isolate boundary for tarball extraction.
  *
  * File-slice strategy (zero per-read RPC)
  * ──────────────────────────────────────
@@ -37,7 +37,7 @@
  *   - No `this` references (arrow / anonymous async).
  *   - No free variables other than preamble names + explicit args.
  *   - Module-level constants the function references must come from
- *     the preamble (src/parallel/pre-bundle-preamble.ts) — see
+ *     the preamble (src/loaders/pre-bundle-preamble.ts) — see
  *     `ESBUILD_PRELOAD_PREAMBLE`.
  *
  * The supervisor RPC surface (env.SUPERVISOR) is available for emergency
@@ -51,12 +51,12 @@ import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-s
 
 // Note: NO import of esbuild-wasm-bundle.generated.js here. The 16 MiB
 // of inlined assets MUST NOT enter the supervisor bundle — they reach
-// the facet via the pool preamble (src/parallel/pre-bundle-preamble.ts)
+// the facet via the pool preamble (src/loaders/pre-bundle-preamble.ts)
 // at facet-load time. The function below references the constants
 // `ESBUILD_WASM_JS` and `ESBUILD_WASM_BASE64` as bare identifiers, knowing
 // the preamble declares them in the facet's lexical scope. This mirrors
-// how npm-install-facet.ts references `streamTarEntries` etc. without
-// importing them.
+// install-batch-facet.ts, whose isolated function references preamble
+// helpers without importing them.
 //
 // resolvePackageEntry is similarly preamble-provided (it's pure JS;
 // the preamble inlines its source). NO runtime import.
@@ -288,7 +288,7 @@ export function externalsForSpecifier(specifier: string): string[] {
 // serialises it via fn.toString(); the helpers it references at module
 // scope (ESBUILD_WASM_JS_FN_BODY, resolvePackageEntry) are NOT in the
 // facet's lexical scope at runtime. Instead they're injected by the
-// pre-bundle preamble; see src/parallel/pre-bundle-preamble.ts.
+// pre-bundle preamble; see src/loaders/pre-bundle-preamble.ts.
 //
 // The wasm BYTES are NOT in the preamble (intentionally — that was a
 // 16 MiB allocation per dispatch which OOM'd the DO). They live in

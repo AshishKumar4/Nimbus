@@ -17,11 +17,8 @@ export interface ProcessEntry {
   exitCode: number | null;
   startTime: number;
   endTime: number | null;
-  /** child-process isolation: explicit long-running flag set by FacetManager.spawn
-   *  when a script is forked to a long-lived Worker Loader (vite,
-   *  http.listen, --watch, …). Distinct from the regex heuristic in
-   *  process-logs-api.ts:LONG_RUNNING_CMD_RE — when set, the API
-   *  returns this directly. */
+  /** Explicit long-running flag set when a command is handed to a
+   *  long-lived Worker Loader or shell execution path. */
   longRunning?: boolean;
   /** Output is owned by a process-terminal attachment, not the parent shell. */
   attachedTty?: boolean;
@@ -91,8 +88,8 @@ export class ProcessTable {
   /**
    * Mark a process as exited.
    *
-   * STABILITY-AUDIT.md M-S1: state-idempotent. Once a process reaches
-   * a terminal state (`killed` or `exited`), subsequent exit() calls
+   * Once a process reaches a terminal state (`killed` or `exited`),
+   * subsequent exit() calls
    * are no-ops — the first terminal state wins.
    *
    * Without this guard, a `kill <pid>` (which sets state='killed',

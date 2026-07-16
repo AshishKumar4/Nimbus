@@ -1,7 +1,6 @@
 /**
  * oom-classify.ts — discriminator for OOM-like errors at Nimbus
- * boundaries. Tagged W5 (Lever 5 / J.1.1 in CF-INTERNAL-OPTIMIZATION-
- * RESEARCH.md).
+ * boundaries.
  *
  * Why this exists
  * ───────────────

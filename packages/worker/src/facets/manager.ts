@@ -3714,10 +3714,9 @@ export class FacetManager {
   ): Promise<{ pid: number; facetStub: any }> {
     this.processes.reap();
     const entry = this.processes.spawn(command, [], cwd);
-    // child-process isolation gap #2: stamp the explicit longRunning flag on the
-    // process_table entry so /api/processes returns longRunning=true
-    // independent of the LONG_RUNNING_CMD_RE heuristic. Vite, wrangler,
-    // node servers, --watch, etc. all flow through this primitive.
+    // Stamp the process-table entry so /api/processes exposes this as a
+    // long-running process. Vite, wrangler, node servers, and --watch
+    // all flow through this primitive.
     this.processes.setLongRunning(entry.pid);
     // Long-running facets (vite, nimbus-wrangler, node servers) always
     // get a spawn notification — they're visible and users want to know

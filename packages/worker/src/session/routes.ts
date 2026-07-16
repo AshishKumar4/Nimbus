@@ -1082,13 +1082,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
 
     // ── Port route: routes to facet HTTP servers ──
-    // Audit F3 (STABILITY-AUDIT.md C-S3): routeRequest now always
-    // returns a Response — 501 when no facet has a stub registered
-    // (the normal case today, since the facet-side producer was
-    // never wired), or a real proxied response once wiring lands.
-    // The post-routeRequest null-branch + 502 fallback below is kept
-    // defensively for any future refactor that returns null for a
-    // different error condition.
+    // PortRegistry returns a proxied response when the facet handler is
+    // attached and an explicit 501 for a reserved port without a handler.
     const portMatch = url.pathname.match(/^\/port\/(\d+)(\/.*)?$/);
     if (portMatch) {
       const port = parseInt(portMatch[1]);

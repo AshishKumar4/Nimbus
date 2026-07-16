@@ -1938,6 +1938,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     ): Promise<number> => {
       const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
       const pid = entry.pid;
+      if (opts.longRunning) self.processes.setLongRunning(pid);
       const startedAt = Date.now();
 
       // Spawn banner — matches facet-manager.ts onSpawn format.

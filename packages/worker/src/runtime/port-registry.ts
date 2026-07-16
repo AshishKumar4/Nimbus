@@ -140,8 +140,9 @@ export class PortRegistry {
    * port". Headers and body are forwarded unchanged; the body is a
    * ReadableStream so binary payloads aren't materialised in memory.
    *
-   * Binary safety: both directions use structured-cloneable Request/
-   * Response values over Workers RPC. No UTF-8 round-trip anywhere.
+   * Binary safety: Workers RPC transfers Request/Response values with
+   * their streaming bodies; it does not structured-clone them. No UTF-8
+   * round-trip occurs anywhere.
    * A user-facet serving a PNG will return the exact same bytes the
    * client receives.
    */

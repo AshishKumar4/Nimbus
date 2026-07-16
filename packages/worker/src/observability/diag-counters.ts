@@ -42,7 +42,7 @@ export interface DiagCounters {
    * SUPERVISOR boundary [Phase 2 A'.2].
    *
    * Bumped at RPC entry by `rpcPayloadStart(bytes)` (called from
-   * src/supervisor-rpc.ts handlers); debited at exit by
+   * src/session/supervisor-rpc.ts handlers); debited at exit by
    * `rpcPayloadEnd(bytes)`. Goes back to zero after every RPC settles.
    *
    * The C'.1 heap estimator surfaces this as
@@ -253,20 +253,15 @@ export function recordR2RaceCounters(c: {
  * cache-obs-2: fold facet-collected per-tier cache events into the
  * DO-side cache-stats singleton. Called from installer.ts after a
  * batch-facet / resolve-facet returns — mirrors recordR2RaceCounters
- * (a wave-1 establish ed pattern where the facet collects metrics in
- * its result and the supervisor folds them in the DO isolate).
+ * (the facet collects metrics in its result and the supervisor folds
+ * them into the DO isolate).
  *
  * Each event has shape:
  *   { kind: 'hit', tier: 'L2'|'L3'|'L4', cacheKind: 'tarball'|'packument'|'asset', bytes: number }
  *   { kind: 'miss', tier: ..., cacheKind: ... }
  *
- * Defensively validates each event so a future facet shape mismatch
- * doesn't poison the DO singleton.
- *
- * Imports cache-stats dynamically (the recordHit/recordMiss surface
- * is defined in src/_shared/cache-stats.ts which is off-limits for
- * direct extension in this wave — we only consume it). Static import
- * is fine; the module is already a peer of this one.
+ * The recordHit/recordMiss surface is defined in
+ * src/_shared/cache-stats.ts.
  */
 import {
   recordHit as _cacheRecordHit,

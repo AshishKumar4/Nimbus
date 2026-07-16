@@ -3,11 +3,11 @@
  *
  * Why this exists
  * ───────────────
- * The previous architecture (src/npm-install-facet.ts + pool.map) spawned
+ * The previous per-package pool.map architecture spawned
  * ONE dynamic worker per pool slot. With concurrency=4, that's 4 permanent
  * loader entries in workerd's loader cache (each `loader.get(id, …)` call
  * is cached by id and the cache is never released — confirmed in
- * src/parallel/facet-pool.ts:328-348). Combine with:
+ * src/loaders/loader-pool.ts). Combine with:
  *   - resolver-facet pool: 1 loader entry
  *   - fetch-proxy: 1 loader entry
  *   - pre-bundle pool: 1 effective entry
@@ -26,11 +26,9 @@
  * credit pool and transaction builder remain the authoritative hard bounds.
  *
  * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
- * writeBatch flush) is identical to src/npm-install-facet.ts — kept
- * inlined here as a closure rather than imported because cloudflare-parallel
- * serializes via fn.toString() and we cannot import from sibling modules
- * across the isolate boundary. If the per-package logic in the legacy
- * facet changes, mirror the change here.
+ * writeBatch flush) stays in this function because cloudflare-parallel
+ * serializes it via fn.toString() and cannot import sibling modules across
+ * the isolate boundary.
  *
  * Stability invariants (cloudflare-parallel):
  *   - No `this` references.
@@ -73,7 +71,7 @@ export interface InstallBatchResult {
   perPackage: InstallBatchPerPackage[];
   /** Wall-clock ms inside the facet (whole batch). */
   elapsed: number;
-  /** Counter snapshot at end of batch. Mirrors src/diag-counters.ts shape
+  /** Counter snapshot at end of batch. Mirrors src/observability/diag-counters.ts shape
    *  for the install-facet subset (commit 3 surfaces these in /api/_diag/memory). */
   facetCounters: {
     tarballsCompleted: number;
@@ -428,10 +426,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
   // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
   //
-  // Mirrors src/npm-install-facet.ts:fetchAndStagePackage. Kept inline
-  // because cloudflare-parallel serializes this whole function via
-  // fn.toString() — we cannot import from a sibling module across the
-  // isolate boundary. Keep this logic in sync with npm-install-facet.ts.
+  // Kept inline because cloudflare-parallel serializes this whole function
+  // via fn.toString(); it cannot import a sibling module across the isolate
+  // boundary. Retry behavior matches resolve-one-facet and _shared/retry.
   const installOne = async (
     spec: FacetPackageSpec,
     ownerId: number,
