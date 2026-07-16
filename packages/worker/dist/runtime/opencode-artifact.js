@@ -20,7 +20,7 @@
 import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 /** Base asset path of the staged opencode bundle directory. */
-export const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
+const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
 // The build id (content hash of the staged dist) is part of the L2 key so a
 // same-version rebuild with different bytes never serves stale content from a
 // warm colo cache.

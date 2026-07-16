@@ -12,8 +12,7 @@
  *
  * Pre-cache metrics support: hit/miss counters lived in
  * src/observability/diag-counters.ts but only tracked the RPC-call
- * boundary (`r2.tarballHit`, `r2.packumentMiss`), not per-tier. From
- * prod we couldn't tell whether L2 hit-rate was 90% or 30%.
+ * boundary, not per-tier. Those flat counters have since been removed.
  *
  * This module adds per-tier × per-kind counters. SAME singleton-per-
  * isolate pattern as diag-counters.ts so any supervisor code path can

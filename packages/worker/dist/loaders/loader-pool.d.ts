@@ -1,7 +1,7 @@
 /**
- * facet-pool.ts — Nimbus-specific wrapper over cloudflare-parallel.
+ * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
- * Adds on top of the vendored WorkerPool:
+ * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
@@ -19,9 +19,8 @@
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
- * This wrapper does NOT re-export the upstream surface. Users import
- * NimbusLoaderPool via src/parallel/index.ts; the vendored directory is
- * an implementation detail.
+ * The vendored directory contains only the upstream serialization, error,
+ * and binding types used by this implementation.
  */
 /** Options handed to NimbusLoaderPool's constructor. */
 export interface NimbusLoaderPoolOptions {
@@ -77,10 +76,9 @@ export interface NimbusLoaderPoolOptions {
     supervisorDoIdOverride?: string;
     /**
      * Raw JavaScript source prepended to every generated worker module.
-     * Lets callers inject helpers that cannot be captured via `context`
-     * (which is JSON-only) — typically a bundled dependency like a tar
-     * parser. The user function can reference top-level names declared in
-     * the preamble as if they were in lexical scope.
+     * Lets callers inject bundled helpers, such as a tar parser. The user
+     * function can reference top-level names declared in the preamble as if
+     * they were in lexical scope.
      *
      * Example: `preamble: 'export const parse = ...; const helper = ...;'`
      * — the preamble runs at module-load time; any side effects happen
@@ -125,11 +123,6 @@ export interface NimbusLoaderPoolOptions {
 export interface NimbusLoaderCallOptions {
     timeoutMs?: number;
     retries?: number;
-    /**
-     * Extra module-level constants injected into the generated worker source
-     * BEFORE the user function is declared. JSON-serializable only.
-     */
-    context?: Record<string, unknown>;
     /**
      * Per-call WebAssembly modules. Merged with the pool's
      * constructor-time `wasmModules` at dispatch time and shipped via
@@ -177,7 +170,6 @@ export interface NimbusLoaderMapOptions extends NimbusLoaderCallOptions {
 export interface LoaderWorkerModuleSourceOptions {
     fnSource: string;
     preamble?: string;
-    context?: Record<string, unknown>;
     wasmEntries?: ReadonlyArray<{
         name: string;
         id: string;
@@ -287,6 +279,4 @@ export declare class NimbusLoaderPool {
      */
     dispose(): void;
 }
-/** Re-export the subset of error types callers need to catch. */
-export { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
 //# sourceMappingURL=loader-pool.d.ts.map

@@ -666,7 +666,7 @@ export class SqliteVFS {
     // cap back to LRU_MAX_ENTRIES.
     //
     // Default target 128 entries × 64 KB = 8 MiB. Matches
-    // CF-INTERNAL-OPTIMIZATION-RESEARCH.md J.1.2.
+    // Reduce hot cache pressure while a memory-heavy install is active.
     //
     // The cache is disposable. Cold-cache bounce is acceptable for install
     // workloads because accepted writes are already durable in SQLite.

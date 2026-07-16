@@ -184,19 +184,12 @@ export interface FacetProcessManagerDeps {
             delete?: (name: string) => void;
         };
     };
-    /**
-     * child-process isolation gap #1: optional ChildProcessSpawnPool. When supplied,
-     * `_dispatch` routes each spawn through the pool (one-task
-     * NimbusFanoutPool.submitMany call per spawn), giving each spawn a
-     * fresh Worker Loader isolate. When omitted, falls back to the
-     * legacy in-supervisor dispatch (unit-test path; production wiring
-     * always supplies it).
-     */
+    /** Optional Worker Loader pool for isolating child-process dispatch. */
     spawnPool?: {
-        runOne: (req: any, kind: CommandKind, hooks: {
+        runOne: (req: any, kind: Exclude<CommandKind, 'unknown'>, hooks: {
             onStdout: (d: string) => void;
             onStderr: (d: string) => void;
-        }, childId: number | string) => Promise<number>;
+        }) => Promise<number>;
     };
 }
 /** Cap recursion depth to defend against runaway spawn loops. */

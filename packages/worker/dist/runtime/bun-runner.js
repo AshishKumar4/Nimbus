@@ -13,9 +13,8 @@
  * shim object that maps the most common Bun APIs onto Workers /
  * Cloudflare-native equivalents:
  *
- *   Bun.serve(opts)          — wraps via the long-running fork; opts.fetch
- *                               is the only required field. Returns
- *                               {port, hostname, stop, url}.
+ *   Bun.serve(opts)          — stub that throws "not implemented"; use
+ *                               node:http or a Worker fetch handler.
  *   Bun.file(path)           — VFS-backed BunFile {text, json, exists,
  *                               arrayBuffer, size, type}.
  *   Bun.write(dst, data)     — VFS write, accepts string|Uint8Array|
@@ -167,25 +166,7 @@ export const BUN_SHIM_PREAMBLE = `
       }
       throw new Error('Bun.spawnSync: child_process.spawnSync unavailable');
     },
-    serve(opts) {
-      // Minimal Bun.serve shim: registers the user fetch handler under
-      // a CommonJS module export so the long-running facet wraps it.
-      // The user-visible "started (long-running)" notice fires.
-      // Returns a Bun.Server-shaped object.
-      const port = (opts && opts.port) || 3000;
-      const hostname = (opts && opts.hostname) || '0.0.0.0';
-      // Stash the handler globally so the runFresh long-running shim
-      // can wire it as the worker entrypoint's fetch handler.
-      globalThis.__nimbus_bun_serve = { fetch: opts && opts.fetch, port, hostname };
-      console.log('[bun.serve] listening on ' + hostname + ':' + port);
-      return {
-        port, hostname, url: new URL('http://' + hostname + ':' + port + '/'),
-        stop() { /* no-op; facet kill handles teardown */ },
-        reload(_opts) { /* no-op */ },
-        development: false,
-        pendingRequests: 0,
-      };
-    },
+    serve() { throw new Error('Bun.serve: not implemented on Cloudflare Workers; use node:http or a Worker fetch handler'); },
     sql() { throw new Error('Bun.sql: not implemented on Cloudflare Workers; use D1 or Hyperdrive bindings'); },
     S3: new Proxy({}, {
       get() { throw new Error('Bun.S3: not implemented on Cloudflare Workers; use R2 binding'); },

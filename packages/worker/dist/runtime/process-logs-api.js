@@ -77,12 +77,11 @@ export function handleLogsWebSocketRequest(request, pid, deps) {
     // fires will usually see `hasLogs(pid)===false` even though the pid is
     // perfectly valid and about to start producing output.
     //
-    // Subscribing in that window is safe: `subscribeLogs` creates state,
-    // so when the first chunk arrives we fan it out to this client too.
-    // The only downside is a client that opens a log WS for a typo'd pid
-    // gets an empty live stream instead of an immediate error —
-    // acceptable tradeoff for removing the racy "no log buffer for pid N"
-    // banner users saw on EVERY short-lived process.
+    // Live output is broadcast to hibernatable sockets by attachment, so
+    // this connection does not need per-instance subscription state. A
+    // client that opens a log WS for a typo'd pid gets an empty live stream
+    // instead of an immediate close; that also avoids rejecting a valid pid
+    // during the spawn-to-first-write window.
     const pidKnown = processes.hasLogs(pid) || !!processes.get(pid);
     if (!pidKnown) {
         // Informational only — do NOT close. A pid can be legitimately
@@ -202,15 +201,9 @@ export function wireProcessLogSocketBroadcast(processes, ctx) {
  * (running + recently exited, bounded by the ring buffer's 10 min
  * post-exit retention).
  *
- * The `longRunning` flag is derived from the command string so the
- * client can filter to "likely user-visible dev servers" without
- * needing ProcessTable to expose the FacetManager/Shell-level spawn
- * options (which it doesn't — the `longRunning` decision is made by
- * FacetManager for facets and by shellExecuteTracked opts for scripts).
- * A regex match is good enough because false positives cost nothing
- * (they just show an extra tab the user can close).
+ * The explicit `longRunning` flag lets the client filter to
+ * user-visible dev servers without re-classifying command strings.
  */
-const LONG_RUNNING_CMD_RE = /^(vite|wrangler|next|nuxt|astro|remix|dev|serve|start|watch|npm\s+run\s+dev)\b/;
 export function handleProcessesListRequest(processes) {
     const listed = [];
     for (const p of processes.getAll()) {
@@ -220,10 +213,7 @@ export function handleProcessesListRequest(processes) {
             command: p.command,
             state: p.state,
             exitCode: p.exitCode,
-            // child-process isolation gap #2: prefer the explicit longRunning flag set by
-            // FacetManager.spawn; fall back to the command-string heuristic
-            // for legacy entries that didn't go through that primitive.
-            longRunning: p.longRunning === true || LONG_RUNNING_CMD_RE.test(p.command),
+            longRunning: p.longRunning === true,
             attachedTty: p.attachedTty === true,
             hasLogs: !!snap && snap.chunks > 0,
             logBytes: snap?.bytes ?? 0,

@@ -110,6 +110,8 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024; // 22 MiB JSON-encoded
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_CONCURRENCY = 12;
 export const NPM_DECOMPRESS_TIMEOUT = 15_000;
+export const PRE_BUNDLE_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
+export const PRE_BUNDLE_CONCURRENCY = 1;
 // ── Dev Server Constants ────────────────────────────────────────────────
 export const DEFAULT_VITE_PORT = 5173;
 export const DEFAULT_PREVIEW_BASE = '/preview';
@@ -128,20 +130,8 @@ export const CF_COMPAT_DATE = '2026-04-01';
 //
 // 64 MiB is a budget, not a measurement. Every supervisor allocation
 // site is accounted for in src/observability/heap-estimate.ts which sums
-// known contributors (VFS LRU, in-flight writes, resolver, pre-bundle
-// slice, esbuild residency, supervisor baseline). When the estimator
-// surpasses this ceiling, plan §3 Track A' has a target to chase down.
-//
-// Components that contribute (current architecture, before A'):
-//   supervisorBaselineBytes  ~30 MiB  ← static module bundle + runtime
-//   esbuildResidentBytes     ~16 MiB  ← addressed by A'.5 (move to R2)
-//   vfsLruBytes (max)        ~32 MiB  ← LRU_MAX_ENTRIES × CHUNK_SIZE
-//   vfsInFlightBytes (peak)  ~few MiB ← bounded by SqliteVFS batch size
-//   resolverInFlightBytes    ~few MiB ← addressed by A'.1 (facet-only)
-//   preBundleSliceBytes (max) 28 MiB  ← addressed by A'.2 (streaming)
-//
-// Pre-A' worst-case: 30 + 16 + 32 + 28 ≈ 106 MiB → over budget. Phase 2
-// A' brings it under 64 MiB by removing supervisor-resident components.
+// known contributors: the supervisor baseline, VFS LRU and in-flight
+// writes, pre-bundle slices, and streaming RPC buffers.
 export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';

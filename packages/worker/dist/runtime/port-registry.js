@@ -65,16 +65,13 @@ export class PortRegistry {
     get(port) {
         return this.ports.get(port);
     }
-    /** Attach a routeable facet stub to ports previously reserved by a PID. */
-    attachFacetStubByPid(pid, facetStub) {
-        const routeable = routeableFacetTarget(facetStub);
-        if (!routeable)
-            return [];
+    /** Attach a normalized route target to ports previously reserved by a PID. */
+    attachFacetStubByPid(pid, target) {
         const ports = [];
         for (const entry of this.ports.values()) {
             if (entry.pid !== pid || entry.facetStub)
                 continue;
-            entry.facetStub = routeable;
+            entry.facetStub = target;
             ports.push(entry.port);
         }
         if (ports.length > 0)
@@ -92,7 +89,6 @@ export class PortRegistry {
         if (immediate.length > 0)
             return immediate;
         await this.waitForPidPortChange(pid, timeoutMs);
-        this.bindFacetStub(pid, facetStub);
         return this.getRouteablePortsByPid(pid);
     }
     /** Check if a port is registered. */
@@ -116,8 +112,9 @@ export class PortRegistry {
      * port". Headers and body are forwarded unchanged; the body is a
      * ReadableStream so binary payloads aren't materialised in memory.
      *
-     * Binary safety: both directions use structured-cloneable Request/
-     * Response values over Workers RPC. No UTF-8 round-trip anywhere.
+     * Binary safety: Workers RPC transfers Request/Response values with
+     * their streaming bodies; it does not structured-clone them. No UTF-8
+     * round-trip occurs anywhere.
      * A user-facet serving a PNG will return the exact same bytes the
      * client receives.
      */
@@ -192,11 +189,11 @@ export class PortRegistry {
             // discourages gratuitous wildcards on non-static routes).
             return response;
         }
-        catch (e) {
+        catch (error) {
             // Server-side triage — users see only the 502 body, operators
             // see the full error + stack in Worker logs.
-            console.error('[port-registry] routeRequest failed for port', port, ':', e);
-            return new Response(JSON.stringify({ error: e?.message || String(e) }), {
+            console.error('[port-registry] routeRequest failed for port', port, ':', error);
+            return new Response(JSON.stringify({ error: errorMessage(error) }), {
                 status: 502,
                 headers: { 'Content-Type': 'application/json' },
             });
@@ -249,4 +246,7 @@ function routeableFacetTarget(value) {
     return {
         handleHttpRequest: method.bind(value),
     };
+}
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
 }

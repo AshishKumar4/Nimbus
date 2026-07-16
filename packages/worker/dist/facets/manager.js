@@ -2270,7 +2270,7 @@ export class FacetManager {
      */
     async _buildPrefetchBundleCached(vfs, scriptPath, cwd, entryCode, bundleProfile) {
         const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
-        const key = `${profile} ${cwd} ${scriptPath ?? ''} ${_fnv1a(entryCode)}`;
+        const key = `${profile}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
         const revision = vfs.revision();
         const cached = this.prefetchBundleCache.get(key);
         if (cached && cached.revision === revision) {
@@ -3319,22 +3319,6 @@ export class FacetManager {
         }
     }
     /**
-     * Spawn a long-running facet process.
-     * Returns immediately with the process entry.
-     * The facet stays alive and can handle HTTP requests via its fetch() method.
-     * Used for: vite dev server, node HTTP servers, etc.
-     *
-     * @param workerCode The dynamic worker code (must export a default fetch handler)
-     * @param command Display name for process listing
-     * @returns Process entry with pid and facet stub
-     */
-    async spawn(workerCode, command, cwd, opts = {}) {
-        return await this.spawnWorker(workerCode, command, cwd, {
-            port: opts.port,
-            compatibilityFlags: ['nodejs_compat'],
-        });
-    }
-    /**
      * Spawn a long-running dynamic Worker and register its routeable port.
      *
      * This is the shared primitive for any runtime that exposes
@@ -3345,10 +3329,9 @@ export class FacetManager {
     async spawnWorker(workerCode, command, cwd, opts = {}) {
         this.processes.reap();
         const entry = this.processes.spawn(command, [], cwd);
-        // child-process isolation gap #2: stamp the explicit longRunning flag on the
-        // process_table entry so /api/processes returns longRunning=true
-        // independent of the LONG_RUNNING_CMD_RE heuristic. Vite, wrangler,
-        // node servers, --watch, etc. all flow through this primitive.
+        // Stamp the process-table entry so /api/processes exposes this as a
+        // long-running process. Vite, wrangler, node servers, and --watch
+        // all flow through this primitive.
         this.processes.setLongRunning(entry.pid);
         // Long-running facets (vite, nimbus-wrangler, node servers) always
         // get a spawn notification — they're visible and users want to know
@@ -3413,9 +3396,6 @@ export class FacetManager {
         if (port > 0 && port < 65536) {
             this.portRegistry.register(port, pid, facetStub);
         }
-    }
-    attachReservedPorts(pid, facetStub) {
-        return this.portRegistry.attachFacetStubByPid(pid, facetStub);
     }
     waitForRouteablePorts(pid, facetStub, timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS) {
         return this.portRegistry.waitForRouteablePortsByPid(pid, facetStub, timeoutMs);

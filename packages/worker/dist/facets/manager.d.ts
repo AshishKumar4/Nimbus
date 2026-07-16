@@ -483,22 +483,6 @@ export declare class FacetManager {
         facetStub: any;
     }>;
     /**
-     * Spawn a long-running facet process.
-     * Returns immediately with the process entry.
-     * The facet stays alive and can handle HTTP requests via its fetch() method.
-     * Used for: vite dev server, node HTTP servers, etc.
-     *
-     * @param workerCode The dynamic worker code (must export a default fetch handler)
-     * @param command Display name for process listing
-     * @returns Process entry with pid and facet stub
-     */
-    spawn(workerCode: string, command: string, cwd: string, opts?: {
-        port?: number;
-    }): Promise<{
-        pid: number;
-        facetStub: any;
-    }>;
-    /**
      * Spawn a long-running dynamic Worker and register its routeable port.
      *
      * This is the shared primitive for any runtime that exposes
@@ -510,9 +494,8 @@ export declare class FacetManager {
         pid: number;
         facetStub: any;
     }>;
-    registerPort(pid: number, port: number, facetStub: any): void;
-    attachReservedPorts(pid: number, facetStub: any): number[];
-    waitForRouteablePorts(pid: number, facetStub: any, timeoutMs?: number): Promise<number[]>;
+    registerPort(pid: number, port: number, facetStub: unknown): void;
+    waitForRouteablePorts(pid: number, facetStub: unknown, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
     kill(pid: number): boolean;

@@ -9,20 +9,17 @@
  *
  * Why singleton-per-isolate
  * ─────────────────────────
- * Same pattern as src/diag-counters.ts (q.v.). The supervisor bundle
+ * Same pattern as src/observability/diag-counters.ts. The supervisor bundle
  * is the consumer; all writers (sqlite-vfs, facet-pool, facet-manager,
  * supervisor-rpc, npm-installer, nimbus-session) live in the same
- * isolate. globalThis-keyed storage avoids threading a handle through
- * ~10 sites for what is essentially a process-local diagnostic.
+ * isolate. Module scope provides one process-local diagnostic without
+ * threading a handle through each writer.
  *
  * Two distinct rings
  * ──────────────────
  * - failures: things that failed (the original W5 ring).
- * - recoveryEvents: lifecycle transitions of the session (C'.2). Cold
- *   isolate boot → 'cold' → 'hydrated' → 'active' → 'drained'. Plan §3
- *   Track B' makes the transitions explicit; this ring records each
- *   one so probes can assert "session reached 'hydrated' from SQL with
- *   N keys, no data loss".
+ * - recoveryEvents: lifecycle transitions of the session. Cold isolate
+ *   boot → 'cold' → 'hydrated' → 'active' → 'drained'.
  *
  * Bounded-size guarantees
  * ───────────────────────
@@ -32,31 +29,20 @@
  *   - per-RPC-frame: single slot, one object.
  *   - per-facet-id: single slot, one object.
  *
- * Snapshot ≤40 KB even with both rings full. Verified by
+ * Snapshot size stays bounded even with both rings full.
  */
-const KEY = '__NIMBUS_W5_OOM_DISC__';
+import { isOomCause } from './oom-classify.js';
 const RING_SIZE = 50;
 const RECOVERY_RING_SIZE = 50;
 const MESSAGE_CAP = 200;
+const state = {
+    failures: [],
+    recoveryEvents: [],
+    lastRpcFrame: null,
+    lastFacetId: null,
+};
 function getState() {
-    const g = globalThis;
-    if (!g[KEY]) {
-        g[KEY] = {
-            failures: [],
-            recoveryEvents: [],
-            lastRpcFrame: null,
-            lastFacetId: null,
-        };
-    }
-    // Defensive: older snapshots predating C'.2 have no recoveryEvents
-    // field. The rehydrate path adds the field on read; this guard is a
-    // belt-and-braces second line so any legacy state object on
-    // globalThis (e.g. from an in-process restart that beat the new
-    // module load) doesn't make the ring methods crash.
-    const s = g[KEY];
-    if (!Array.isArray(s.recoveryEvents))
-        s.recoveryEvents = [];
-    return s;
+    return state;
 }
 /** Append a failure to the ring. Newest first. Capped at RING_SIZE. */
 export function recordFailure(f) {
@@ -65,7 +51,7 @@ export function recordFailure(f) {
     const entry = {
         at: Number(f.at) || Date.now(),
         phase: String(f.phase ?? 'unknown'),
-        cause: f.cause ?? 'unknown',
+        cause: f.cause,
         rssEstimateBytes: Number(f.rssEstimateBytes) || 0,
         heapUsedBytes: Number(f.heapUsedBytes) || 0,
         lruBytes: Number(f.lruBytes) || 0,
@@ -89,14 +75,6 @@ export function recordFailure(f) {
  *  do not affect the singleton. */
 export function getFailures() {
     return getState().failures.slice(0);
-}
-/** Reset everything. Used by tests; safe in production but typically
- *  unnecessary. */
-export function resetFailures() {
-    const s = getState();
-    s.failures.length = 0;
-    s.lastRpcFrame = null;
-    s.lastFacetId = null;
 }
 /** Record the current RPC frame (called at every RPC entry). Bounded
  *  to a single slot — the LATEST frame wins. */
@@ -125,18 +103,15 @@ export function getLastFacetId() {
 }
 // ── C'.2 recovery_event ring ────────────────────────────────────────────
 //
-// Track B' transitions call recordRecoveryEvent() at every state change.
 // The ring is bounded at RECOVERY_RING_SIZE; the diag endpoint reads via
-// getRecoveryEvents() (newest first). Probes use this ring to assert
-// that recoveries are actually transparent — a green run shows entries
-// for every reconnection but every entry has dataLoss === false.
+// getRecoveryEvents() (newest first).
 /** Append a recovery event to the ring. Newest first. Capped at
  *  RECOVERY_RING_SIZE. */
 export function recordRecoveryEvent(e) {
     const s = getState();
     // Defensive copy + notes cap. We intentionally do NOT validate the
     // state-machine direction here (e.g. that 'drained' only follows
-    // 'active') — the state machine lives in Track B'; this ring is a
+    // 'active') — the state machine lives elsewhere; this ring is a
     // recorder, not an enforcer. If a probe sees an impossible
     // transition, that's a real bug in the state machine and the
     // probe must fail.
@@ -181,51 +156,117 @@ export function snapshotForStorage() {
  * silently ignored. Does NOT throw — constructor-time rehydration must
  * never block DO startup.
  *
- * Accepts v=1 (pre-C'.2, no recoveryEvents field) and v=2. v=1
- * snapshots rehydrate failures only; recoveryEvents starts empty.
+ * Only the current v2 schema is accepted.
  */
 export function rehydrateFromStorage(blob) {
-    if (!blob || typeof blob !== 'object')
+    if (!isRecord(blob) || blob.v !== 2)
         return;
     const b = blob;
-    if (b.v !== 1 && b.v !== 2)
-        return;
     if (!Array.isArray(b.failures))
         return;
     const s = getState();
     s.failures.length = 0;
     for (const f of b.failures) {
-        if (!f || typeof f !== 'object')
-            continue;
-        const entry = f;
-        if (typeof entry.at !== 'number' || typeof entry.phase !== 'string')
+        const entry = parseFailure(f);
+        if (!entry)
             continue;
         s.failures.push(entry);
         if (s.failures.length >= RING_SIZE)
             break;
     }
-    // v >= 2: recoveryEvents (skipped for v=1 by the shape-check below).
     s.recoveryEvents.length = 0;
-    if (b.v === 2 && Array.isArray(b.recoveryEvents)) {
+    if (Array.isArray(b.recoveryEvents)) {
         for (const e of b.recoveryEvents) {
-            if (!e || typeof e !== 'object')
-                continue;
-            const entry = e;
-            if (typeof entry.at !== 'number'
-                || typeof entry.fromState !== 'string'
-                || typeof entry.toState !== 'string')
+            const entry = parseRecoveryEvent(e);
+            if (!entry)
                 continue;
             s.recoveryEvents.push(entry);
             if (s.recoveryEvents.length >= RECOVERY_RING_SIZE)
                 break;
         }
     }
-    if (b.lastRpcFrame && typeof b.lastRpcFrame === 'object'
-        && typeof b.lastRpcFrame.method === 'string') {
-        s.lastRpcFrame = b.lastRpcFrame;
-    }
-    if (b.lastFacetId && typeof b.lastFacetId === 'object'
-        && typeof b.lastFacetId.codeId === 'string') {
-        s.lastFacetId = b.lastFacetId;
-    }
+    const lastRpcFrame = parseRpcFrame(b.lastRpcFrame);
+    if (lastRpcFrame)
+        s.lastRpcFrame = lastRpcFrame;
+    const lastFacetId = parseFacetId(b.lastFacetId);
+    if (lastFacetId)
+        s.lastFacetId = lastFacetId;
+}
+function isRecord(value) {
+    return typeof value === 'object' && value !== null;
+}
+function parseRpcFrame(value) {
+    if (!isRecord(value)
+        || typeof value.method !== 'string'
+        || typeof value.payloadBytes !== 'number'
+        || typeof value.atMs !== 'number')
+        return null;
+    return { method: value.method, payloadBytes: value.payloadBytes, atMs: value.atMs };
+}
+function parseFacetId(value) {
+    if (!isRecord(value)
+        || typeof value.codeId !== 'string'
+        || typeof value.slotIndex !== 'number'
+        || typeof value.atMs !== 'number')
+        return null;
+    return { codeId: value.codeId, slotIndex: value.slotIndex, atMs: value.atMs };
+}
+function parseFailure(value) {
+    if (!isRecord(value)
+        || typeof value.at !== 'number'
+        || typeof value.phase !== 'string'
+        || !isOomCause(value.cause)
+        || typeof value.rssEstimateBytes !== 'number'
+        || typeof value.heapUsedBytes !== 'number'
+        || typeof value.lruBytes !== 'number'
+        || typeof value.inFlightBytes !== 'number')
+        return null;
+    const entry = {
+        at: value.at,
+        phase: value.phase,
+        cause: value.cause,
+        rssEstimateBytes: value.rssEstimateBytes,
+        heapUsedBytes: value.heapUsedBytes,
+        lruBytes: value.lruBytes,
+        inFlightBytes: value.inFlightBytes,
+        lastRpcFrame: parseRpcFrame(value.lastRpcFrame),
+        lastFacetId: parseFacetId(value.lastFacetId),
+    };
+    if (typeof value.exitCode === 'number')
+        entry.exitCode = value.exitCode;
+    if (typeof value.pid === 'number')
+        entry.pid = value.pid;
+    if (typeof value.message === 'string')
+        entry.message = value.message.slice(0, MESSAGE_CAP);
+    return entry;
+}
+const SESSION_STATES = [
+    'cold', 'hydrated', 'active', 'drained',
+    'rehydrate', 'build', 'wire', 'online',
+];
+function isSessionState(value) {
+    return SESSION_STATES.some((state) => state === value);
+}
+function parseRecoveryEvent(value) {
+    if (!isRecord(value)
+        || typeof value.at !== 'number'
+        || !isSessionState(value.fromState)
+        || !isSessionState(value.toState)
+        || typeof value.trigger !== 'string'
+        || typeof value.isolateGen !== 'number'
+        || typeof value.dataLoss !== 'boolean'
+        || typeof value.snapshotKeysRehydrated !== 'number')
+        return null;
+    const entry = {
+        at: value.at,
+        fromState: value.fromState,
+        toState: value.toState,
+        trigger: value.trigger,
+        isolateGen: value.isolateGen,
+        dataLoss: value.dataLoss,
+        snapshotKeysRehydrated: value.snapshotKeysRehydrated,
+    };
+    if (typeof value.notes === 'string')
+        entry.notes = value.notes.slice(0, MESSAGE_CAP);
+    return entry;
 }

@@ -1,6 +1,5 @@
 /**
- * DNS resolver with caching
- * Supports both local records and external resolution
+ * DNS resolver for static hosts and explicitly cached records.
  */
 export class DNSResolver {
     cache = new Map();
@@ -55,10 +54,6 @@ export class DNSResolver {
         if (cached) {
             return cached.value;
         }
-        // Try external resolution (browser or Node.js)
-        if (typeof globalThis.fetch !== 'undefined') {
-            return this.resolveExternal(hostname, type);
-        }
         throw new Error(`Unable to resolve: ${hostname}`);
     }
     /**
@@ -81,33 +76,6 @@ export class DNSResolver {
         // Clean expired records
         this.cache.set(name, records.filter((r) => r.ttl === -1 || r.ttl > now));
         return null;
-    }
-    /**
-     * Resolve using external DNS (browser DNS-over-HTTPS or real DNS)
-     */
-    async resolveExternal(hostname, type) {
-        try {
-            // Use Google DNS-over-HTTPS
-            const dohUrl = `https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=${type}`;
-            const response = await fetch(dohUrl);
-            const data = await response.json();
-            if (data.Status === 0 && data.Answer && data.Answer.length > 0) {
-                const answer = data.Answer[0];
-                const ip = answer.data;
-                // Cache result
-                this.addRecord({
-                    type,
-                    name: hostname,
-                    value: ip,
-                    ttl: 300, // 5 minutes
-                });
-                return ip;
-            }
-        }
-        catch (error) {
-            console.error('DNS resolution failed:', error);
-        }
-        throw new Error(`DNS resolution failed for ${hostname}`);
     }
     /**
      * Reverse lookup (IP to hostname)

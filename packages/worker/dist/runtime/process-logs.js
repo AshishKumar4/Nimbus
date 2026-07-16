@@ -26,8 +26,7 @@
  *   - Routing raw Uint8Array. RPC boundary already strings the data
  *     (SupervisorRPC.stdout(data: string)), so we store strings.
  *
- * W9 — hibernation persistence (CF-INTERNAL-OPTIMIZATION-RESEARCH §C.2,
- * Lever 11):
+ * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
  *   `setPersist`). When set:
  *     - `append` / `markExit` mark the pid dirty in memory; the actual
@@ -78,7 +77,7 @@ export class ProcessLogStore {
     retainAfterExitMs;
     maxPids;
     pids = new Map();
-    /** Cumulative count of PIDs evicted by the cap (STABILITY-AUDIT.md M-S5). */
+    /** Cumulative count of PIDs evicted by the cap. */
     _droppedPids = 0;
     // ── W9 persistence state ────────────────────────────────────────────
     /** Optional persistence backend. When null, store is in-memory only. */
@@ -515,8 +514,8 @@ export class ProcessLogStore {
     _getOrCreate(pid) {
         let s = this.pids.get(pid);
         if (!s) {
-            // Enforce the global cap BEFORE inserting (STABILITY-AUDIT.md
-            // M-S5). A 1000-pid fork-bomb would otherwise pin ~50 MB of
+            // Enforce the global cap before inserting. A 1000-pid fork-bomb
+            // would otherwise pin ~50 MB of
             // buffers for the full 10-min retention window, crowding the
             // 128 MB DO isolate cap alongside npm install / git clone peaks.
             if (this.pids.size >= this.maxPids) {

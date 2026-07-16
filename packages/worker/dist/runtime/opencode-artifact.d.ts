@@ -17,8 +17,6 @@
  * pre-compiled WebAssembly.Modules for opencode's bash-tool command parser
  * (see OPENCODE_TREE_SITTER_WASMS and FacetManager.treeSitterModuleEntries).
  */
-/** Base asset path of the staged opencode bundle directory. */
-export declare const OPENCODE_ASSET_BASE: string;
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface OpencodeAssetEnv {
     ASSETS: {

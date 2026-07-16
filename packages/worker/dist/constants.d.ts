@@ -29,6 +29,8 @@ export declare const BUNDLE_MAX_ENCODED_BYTES: number;
 export declare const NPM_REGISTRY = "https://registry.npmjs.org";
 export declare const NPM_CONCURRENCY = 12;
 export declare const NPM_DECOMPRESS_TIMEOUT = 15000;
+export declare const PRE_BUNDLE_SLICE_CAP_BYTES: number;
+export declare const PRE_BUNDLE_CONCURRENCY = 1;
 export declare const DEFAULT_VITE_PORT = 5173;
 export declare const DEFAULT_PREVIEW_BASE = "/preview";
 export declare const DEFAULT_WORKER_BASE = "/worker";

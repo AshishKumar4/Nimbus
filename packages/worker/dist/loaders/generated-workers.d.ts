@@ -19,7 +19,5 @@
  * W7 size:  28.91 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
-export declare const TAR_STREAM_PREAMBLE_SIZE: number;
 export declare const W7_FRAME_PREAMBLE: string;
-export declare const W7_FRAME_PREAMBLE_SIZE: number;
 //# sourceMappingURL=generated-workers.d.ts.map

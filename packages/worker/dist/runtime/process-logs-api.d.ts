@@ -78,6 +78,15 @@ export declare function handleLogsWebSocketRequest(request: Request, pid: number
 export declare function wireProcessLogSocketBroadcast(processes: SessionProcessSupervisor, ctx: {
     getWebSockets?(tag?: string): WebSocket[];
 }): void;
+/**
+ * GET /api/processes — lightweight listing for the tabs UI's hydrate-
+ * on-refresh path. Returns every process the DO currently knows about
+ * (running + recently exited, bounded by the ring buffer's 10 min
+ * post-exit retention).
+ *
+ * The explicit `longRunning` flag lets the client filter to
+ * user-visible dev servers without re-classifying command strings.
+ */
 export declare function handleProcessesListRequest(processes: SessionProcessSupervisor): Response;
 /**
  * Utility: does this pathname match `/api/logs/<pid>`? Returns the pid

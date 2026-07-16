@@ -27,19 +27,14 @@
  * `release()` is a one-shot (returned by acquire) so callers can't
  * accidentally double-decrement.
  *
- * Why globalThis vs. dependency injection
- * ───────────────────────────────────────
+ * Lifetime
+ * ────────
  * Pre-bundle runs in the supervisor isolate, called from npm-installer
  * which is constructed by NimbusSession's command handler. cirrus-real
  * is constructed by a different command handler in the same session.
- * Both share the supervisor's globalThis. Threading an explicit handle
- * from the session through every command path would touch ~10 sites
- * for a one-bit signal. globalThis-keyed singletons are already the
- * pattern for `__NIMBUS_*` symbols in the codebase.
- *
- * Lifetime: the coordinator is process-local, lasts as long as the
- * supervisor isolate. After a DO restart it's re-created — that's
- * acceptable since pre-bundle would also re-dispatch from scratch.
+ * Module scope gives both paths one process-local coordinator for the
+ * lifetime of the supervisor isolate. After a DO restart it is
+ * re-created, along with the pre-bundle work it coordinates.
  */
 /**
  * W5 Lever 8: a registered observer (typically a SqliteVFS) that
@@ -67,8 +62,6 @@ interface AllocObserver {
  * heavy-alloc-coord while keeping the observer pattern simple.
  */
 export declare function registerAllocObserver(o: AllocObserver): () => void;
-/** True if any heavy-alloc owner has the gate open. */
-export declare function isHeavyAllocActive(): boolean;
 /**
  * Mark a heavy-alloc phase as active. Returns a one-shot release fn —
  * call it once the phase is complete. Safe to discard the release

@@ -23,7 +23,6 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
-export type { InstallPhase } from '../_shared/install-phase.js';
 import type { InstallPhase } from '../_shared/install-phase.js';
 export interface InstallProgress {
     phase: InstallPhase;

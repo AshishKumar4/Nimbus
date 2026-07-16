@@ -1,7 +1,6 @@
 import type { DNSRecord, DNSRecordType } from './types.js';
 /**
- * DNS resolver with caching
- * Supports both local records and external resolution
+ * DNS resolver for static hosts and explicitly cached records.
  */
 export declare class DNSResolver {
     private cache;
@@ -31,10 +30,6 @@ export declare class DNSResolver {
      * Lookup DNS record in cache
      */
     lookup(name: string, type?: DNSRecordType): DNSRecord | null;
-    /**
-     * Resolve using external DNS (browser DNS-over-HTTPS or real DNS)
-     */
-    private resolveExternal;
     /**
      * Reverse lookup (IP to hostname)
      */

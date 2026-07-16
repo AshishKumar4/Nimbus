@@ -19,7 +19,7 @@
  * via the `RuntimeSpec` parameter:
  *
  *   - name + version + helpText
- *   - run(): runner fn (runNodeScript / runBunScript / wasm-runner)
+ *   - run(): runner fn (runFresh / runBunScript / wasm-runner)
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
@@ -85,13 +85,6 @@ export interface RuntimeSpec {
      * function-call helper.
      */
     run(facetMgr: FacetManager, code: string, opts: RuntimeRunOpts): Promise<RuntimeRunResult>;
-    /**
-     * Optional pre-execution code transform. Used by Bun to prepend
-     * BUN_SHIM_PREAMBLE; native-WASM runtimes typically skip
-     * this entirely and route around the read-script-from-VFS path
-     * (see `bypassesScriptRead`).
-     */
-    transformCode?(code: string, scriptPath: string): string;
     /**
      * Subcommand router. When the first positional arg is a key in
      * this map, the handler is invoked instead of the standard

@@ -30,7 +30,7 @@ import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
-import { runNodeScript } from '../runtime/node-runner.js';
+import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler } from '../runtime/runtime-registry.js';
 import { parseViteConfigSource } from '../runtime/vite-config-parser.js';
@@ -607,7 +607,7 @@ export function initSession(self, ws) {
     //   - G4 binSpawn ctx propagation (when the .bin handler set
     //     ctx.__nimbusBinSpawn, runFresh reuses the caller's PID
     //     instead of double-spawning)
-    //   - --watch/--inspect/--inspect-brk routing via runNodeScript →
+    //   - --watch/--inspect/--inspect-brk routing via runFresh →
     //     isLongRunningInvocation
     //
     // The registry encodes the shared shape; per-runtime overrides
@@ -624,7 +624,7 @@ export function initSession(self, ws) {
             '  -v, --version       Print version\n' +
             '  -h, --help          Print help\n' +
             '\nExecution via DO Facets (isolated V8 isolate)',
-        run: async (fm, code, opts) => runNodeScript(fm, code, opts),
+        run: runFresh,
         supportsBinSpawn: true,
     };
     {
@@ -671,11 +671,11 @@ export function initSession(self, ws) {
             '       bun -e "code"\n' +
             '       bun install [pkg ...]\n' +
             '       bun run <script>\n\n' +
-            'Bun-runtime shim provides Bun.serve/Bun.file/Bun.write/\n' +
+            'Bun-runtime shim provides Bun.file/Bun.write/\n' +
             'Bun.spawn/Bun.password/Bun.gunzip backed by Workers-native\n' +
-            'primitives. Bun.sql / Bun.S3 throw (use D1/Hyperdrive/R2).\n' +
+            'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
             'Execution via DO Facets (isolated V8 isolate per call).',
-        run: async (fm, code, opts) => runBunScript(fm, code, opts),
+        run: runBunScript,
         subcommands: {
             // bun install / i / add → npm install (same VFS, same R2 caches).
             install: async (ctx, reg) => {
@@ -1844,6 +1844,8 @@ export function initSession(self, ws) {
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
         const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
         const pid = entry.pid;
+        if (opts.longRunning)
+            self.processes.setLongRunning(pid);
         const startedAt = Date.now();
         // Spawn banner — matches facet-manager.ts onSpawn format.
         if (self.terminal) {

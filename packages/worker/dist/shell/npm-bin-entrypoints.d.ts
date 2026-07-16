@@ -44,6 +44,6 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
  *                Nimbus tree-sitter diagnostic): fresh isolate, buffered result.
  */
 export type StagedArtifactDisposition = 'dual' | 'server' | 'attached' | 'oneshot';
-export declare function classifyStagedArtifact(artifact: string, argv: string[], _env?: Record<string, string> | undefined): StagedArtifactDisposition;
+export declare function classifyStagedArtifact(artifact: string, argv: string[]): StagedArtifactDisposition;
 export {};
 //# sourceMappingURL=npm-bin-entrypoints.d.ts.map

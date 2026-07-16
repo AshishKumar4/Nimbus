@@ -23,7 +23,7 @@
  *     globalThis.__NIMBUS_WASM['esbuild.wasm']. The pre-bundle facet
  *     reads it at request time and passes to esb.initialize().
  *
- * resolvePackageEntry is a pure-JS function from src/npm-resolver.ts;
+ * resolvePackageEntry is a pure-JS function from src/_shared/exports-resolver.ts;
  * we inline its source here so the facet doesn't need to fault back
  * to the supervisor for it.
  *

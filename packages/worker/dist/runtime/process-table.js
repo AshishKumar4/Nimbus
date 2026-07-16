@@ -65,8 +65,8 @@ export class ProcessTable {
     /**
      * Mark a process as exited.
      *
-     * STABILITY-AUDIT.md M-S1: state-idempotent. Once a process reaches
-     * a terminal state (`killed` or `exited`), subsequent exit() calls
+     * Once a process reaches a terminal state (`killed` or `exited`),
+     * subsequent exit() calls
      * are no-ops — the first terminal state wins.
      *
      * Without this guard, a `kill <pid>` (which sets state='killed',

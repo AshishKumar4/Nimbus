@@ -1,7 +1,7 @@
 /**
- * facet-pool.ts — Nimbus-specific wrapper over cloudflare-parallel.
+ * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
- * Adds on top of the vendored WorkerPool:
+ * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
@@ -19,9 +19,8 @@
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
- * This wrapper does NOT re-export the upstream surface. Users import
- * NimbusLoaderPool via src/parallel/index.ts; the vendored directory is
- * an implementation detail.
+ * The vendored directory contains only the upstream serialization, error,
+ * and binding types used by this implementation.
  */
 import { CF_COMPAT_DATE } from '../constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
@@ -77,12 +76,6 @@ export function assembleLoaderWorkerModuleSource(options) {
     lines.push('', '// ── esbuild runtime shim ──────────────────────────────────', '// When Nimbus is bundled by wrangler/esbuild, our facet function', '// is transformed into `__name(async function …, "…")` at emit', '// time. `fn.toString()` then yields the wrapped function body,', '// but `__name` and its helpers are module-local in the SUPERVISOR', '// bundle and do NOT cross into the facet isolate. Redeclare them', '// here so facet bodies survive the toString() round-trip.', ESBUILD_RUNTIME_SHIM, '// ── End esbuild runtime shim ──────────────────────────────', '');
     if (options.preamble) {
         lines.push('// ── Preamble (pool-level helpers) ─────────────────────────', options.preamble, '// ── End preamble ──────────────────────────────────────────', '');
-    }
-    if (options.context) {
-        for (const [key, value] of Object.entries(options.context)) {
-            lines.push(`const ${key} = ${JSON.stringify(value)};`);
-        }
-        lines.push('');
     }
     lines.push(`const __fn__ = ${options.fnSource};`);
     lines.push('');
@@ -320,15 +313,15 @@ export class NimbusLoaderPool {
     }
     /**
      * Build the WorkerCode blob that the loader callback will return.
-     * Same bytes every time for a given (fnHash, slot, context) → lets
-     * workerd treat it as a cache hit and reuse the isolate.
+     * Same bytes every time for a given function and slot, allowing workerd
+     * to reuse the isolate.
      *
      * Always prepends the ESBUILD_RUNTIME_SHIM so stringified functions that
      * reference esbuild-emitted helpers (__name, __defProp, etc.) don't
      * crash the facet with "__name is not defined". User preambles are
      * appended below the shim.
      */
-    #buildCode(fnSource, context, perCallWasmEntries) {
+    #buildCode(fnSource, perCallWasmEntries) {
         const workerOpts = {
             compatibilityDate: CF_COMPAT_DATE,
             compatibilityFlags: ['nodejs_compat'],
@@ -359,7 +352,6 @@ export class NimbusLoaderPool {
         const moduleSource = assembleLoaderWorkerModuleSource({
             fnSource,
             preamble: this.preamble,
-            context,
             wasmEntries: allWasmEntries,
             hasBindings: this.bindings !== undefined,
         });
@@ -394,7 +386,7 @@ export class NimbusLoaderPool {
      * Dispatch a single task to the slot isolate. `slotIndex` picks which
      * warm isolate services the call; callers round-robin slots themselves.
      */
-    async #dispatchSlot(fnSource, fnHash, slotIndex, args, context, resilience, perCallWasm) {
+    async #dispatchSlot(fnSource, fnHash, slotIndex, args, resilience, perCallWasm) {
         // Per-call wasm fingerprint. Mixed into the cache key so two calls
         // with different bytes hit different slots (no cache poisoning).
         // For the common case (no per-call wasm) the fingerprint is '0',
@@ -408,7 +400,7 @@ export class NimbusLoaderPool {
         // binding), and writeBatch RPCs land in the wrong DO's VFS.
         const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}:g${generation}`;
         let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
-        const code = this.#buildCode(fnSource, context, perCallWasmEntries);
+        const code = this.#buildCode(fnSource, perCallWasmEntries);
         // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
         // last-facet-id even on a hang or silent kill. Bounded — single
         // slot updated on every dispatch.
@@ -551,7 +543,7 @@ export class NimbusLoaderPool {
     async submit(fn, arg, opts) {
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
-        return (await this.#dispatchSlot(fnSource, fnHash, 0, [arg], opts?.context, resilience, opts?.wasmModules));
+        return (await this.#dispatchSlot(fnSource, fnHash, 0, [arg], resilience, opts?.wasmModules));
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
@@ -600,7 +592,7 @@ export class NimbusLoaderPool {
                 if (idx >= items.length)
                     return;
                 try {
-                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, [items[idx]], opts?.context, resilience, opts?.wasmModules));
+                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, [items[idx]], resilience, opts?.wasmModules));
                     settled[idx] = { ok: true, value };
                 }
                 catch (err) {
@@ -648,5 +640,3 @@ export class NimbusLoaderPool {
         this.bindings = undefined;
     }
 }
-/** Re-export the subset of error types callers need to catch. */
-export { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';

@@ -32,7 +32,6 @@ import { setLastRpcFrame } from '../observability/oom-discriminator.js';
 import { rpcPayloadStart, rpcPayloadEnd } from '../observability/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
-import { r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss, r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail, } from '../observability/diag-counters.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
 import { W7_MAX_RECORD_BYTES } from '../_shared/w7-frame.js';
 /**
@@ -322,10 +321,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const bytes = await r2.getTarball(name, version);
         const events = _drainCacheEvents(r2);
         if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
-            r2TarballHit();
             return { bytes, events };
         }
-        r2TarballMiss();
         return { bytes: null, events };
     }
     /**
@@ -341,12 +338,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // This RPC remains a one-way write (returns bool); the L4 event
         // does NOT flow through this return path.
         const r2 = this._r2();
-        const ok = await r2.putTarball(name, version, bytes);
-        if (ok)
-            r2TarballPutOk();
-        else
-            r2TarballPutFail();
-        return ok;
+        return r2.putTarball(name, version, bytes);
     }
     /**
      * Look up a packument in the R2 cross-tenant cache. Returns
@@ -376,16 +368,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const cached = await r2.getPackument(name);
         const events = _drainCacheEvents(r2);
         if (cached && !cached.expired) {
-            r2PackumentHit();
             return { cached, events };
         }
         if (cached && cached.expired) {
-            // Treat expired as a miss for hit-rate accounting; still return
-            // the data so callers can use it for stale-while-error.
-            r2PackumentMiss();
             return { cached, events };
         }
-        r2PackumentMiss();
         return { cached: null, events };
     }
     /**
@@ -396,12 +383,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // L4 hit captured facet-side (the facet did the registry fetch).
         // This RPC is one-way write.
         const r2 = this._r2();
-        const ok = await r2.putPackument(name, json);
-        if (ok)
-            r2PackumentPutOk();
-        else
-            r2PackumentPutFail();
-        return ok;
+        return r2.putPackument(name, json);
     }
     /**
      * Admin: purge a single tarball from R2. Used in incident response.

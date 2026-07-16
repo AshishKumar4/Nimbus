@@ -26,8 +26,7 @@
  *   - Routing raw Uint8Array. RPC boundary already strings the data
  *     (SupervisorRPC.stdout(data: string)), so we store strings.
  *
- * W9 — hibernation persistence (CF-INTERNAL-OPTIMIZATION-RESEARCH §C.2,
- * Lever 11):
+ * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
  *   `setPersist`). When set:
  *     - `append` / `markExit` mark the pid dirty in memory; the actual
@@ -126,7 +125,7 @@ export interface ProcessLogStoreOptions {
      *      subscribed; the new entry is still inserted and the cap is
      *      briefly exceeded.
      * Default 500. Protects against a 1000-pid fork-bomb pinning
-     * ~50 MB of ring buffers for 10 minutes (STABILITY-AUDIT.md M-S5).
+     * ~50 MB of ring buffers for 10 minutes.
      */
     maxPids?: number;
 }
@@ -141,7 +140,7 @@ export declare class ProcessLogStore {
     private readonly retainAfterExitMs;
     private readonly maxPids;
     private pids;
-    /** Cumulative count of PIDs evicted by the cap (STABILITY-AUDIT.md M-S5). */
+    /** Cumulative count of PIDs evicted by the cap. */
     private _droppedPids;
     /** Optional persistence backend. When null, store is in-memory only. */
     private _persist;

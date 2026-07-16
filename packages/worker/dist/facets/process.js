@@ -200,13 +200,8 @@ export class FacetProcessManager {
             onStdout: (d) => this._appendOutput(child, 1, d),
             onStderr: (d) => this._appendOutput(child, 2, d),
         };
-        // child-process isolation gap #1: if a spawnPool is configured (production
-        // wiring), route the dispatch through a fresh Worker Loader
-        // isolate via NimbusFanoutPool. The pool's task body emits a
-        // per-isolate marker token + delegates the actual command back
-        // to the supervisor via env.SUPERVISOR.cpDispatchInline (preserves
-        // pure-builtin / facet-direct correctness; only the dispatch
-        // envelope moves to a fresh isolate).
+        // When configured, the pool moves the dispatch envelope into a Worker
+        // Loader isolate and delegates command execution through supervisor RPC.
         if (this.deps.spawnPool) {
             const liveStdin = kind === 'facet-direct' || kind === 'shell-direct';
             // Pure builtins consume stdin from the request payload. Facet-direct
@@ -230,7 +225,7 @@ export class FacetProcessManager {
             // Register the facet-slot so kill() can find the abort handle.
             child.facetSlot = { abort: undefined, killed: false };
             try {
-                const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks, child.pid);
+                const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks);
                 this._stampExit(child, code, null);
             }
             catch (e) {

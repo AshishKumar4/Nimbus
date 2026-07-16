@@ -104,25 +104,18 @@ export class NimbusFanoutPool {
         }
         return this._dispatchPeerDo(tasks, fn);
     }
-    /**
-     * Diagnostic: report which topology a given task count would use.
-     * Used by tests to assert routing without exercising the full
-     * dispatch path.
-     */
+    /** Report which topology a task count uses without dispatching. */
     topologyFor(taskCount) {
         if (taskCount === 0)
             return 'empty';
         return taskCount < IN_DO_THRESHOLD ? 'in-do' : 'peer-do';
     }
     /**
-     * Compute the deterministic peer-DO id for a given task key, given
-     * the peer count. Exposed so tests can assert routing predictions
-     * BEFORE running the dispatch.
+     * Compute the deterministic peer-DO id for a task key and peer count.
      *
      * Shape: `nbf:${tag}:${coordDoIdShort}:${shard}` where
-     * `shard = hash(key) mod peerCount`. The hash is hashSource()
-     * (FNV-1a over a single-string input — adequate for routing; not
-     * cryptographic). Peer count is `min(tasks.length, MAX_PEER_FANOUT)`.
+     * `shard = hash(key) mod peerCount`. Peer count is
+     * `min(tasks.length, MAX_PEER_FANOUT)`.
      */
     peerSiblingId(key, peerCount) {
         const shard = hashKeyToShard(key, peerCount);

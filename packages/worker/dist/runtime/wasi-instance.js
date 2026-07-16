@@ -70,8 +70,8 @@
  * ──────────────────────────────
  *
  * Strategy: bulk-snapshot + flush. The supervisor snapshots the user's
- * session VFS subtree into a JSON-serializable {files, dirs} shape, ships
- * it as the loader-pool `context` field. The facet's preamble installs
+ * session VFS subtree into a JSON-serializable {files, dirs} shape and ships
+ * it as the facet argument. The facet's preamble installs
  * `__wasiInitFS(snapshot)` which builds an in-memory virtual FS keyed by
  * canonical path strings. WASI fd≥3 ops act on that VFS. After `_start`
  * returns, `__wasiSnapshotFS()` extracts the mutated state which the

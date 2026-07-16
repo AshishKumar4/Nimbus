@@ -52,7 +52,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             // FacetManager's ESM-mainModule path instead of the node CJS runner.
             if (isStagedArtifactTarget(bin.targetPath)) {
                 const artifact = stagedArtifactId(bin.targetPath);
-                const disposition = classifyStagedArtifact(artifact, argv, ctx.env);
+                const disposition = classifyStagedArtifact(artifact, argv);
                 return await runStagedArtifact(deps, name, artifact, argv, invocationCwd, ctx, disposition);
             }
             const bundleProfile = bundleProfileForNpmBin(bin);
@@ -186,7 +186,7 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, dispositi
     deps.emitShellExecDone(result.pid, shellLine, result.exitCode, Date.now() - startedAt);
     return result.exitCode;
 }
-export function classifyStagedArtifact(artifact, argv, _env) {
+export function classifyStagedArtifact(artifact, argv) {
     if (artifact !== 'opencode')
         return 'oneshot';
     if (argv.some(isNonInteractiveBinArg))
@@ -304,7 +304,7 @@ function looksLongRunningNpmBin(binName, argv) {
 function looksAttachedTtyNpmBin(metadata, argv, env) {
     if (argv.some(isNonInteractiveBinArg))
         return false;
-    if (env?.NIMBUS_ATTACHED_TTY === '1' || env?.FORCE_TTY === '1')
+    if (env?.NIMBUS_ATTACHED_TTY === '1')
         return true;
     const explicit = metadata?.nimbus?.terminal;
     if (explicit === 'attached')

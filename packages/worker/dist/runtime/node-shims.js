@@ -30,7 +30,6 @@
  *   - __vfsBundle: Record<string, string>  (path→utf8 content)
  *   - __vfsWrites: Record<string, string | Uint8Array> (sync writes / failed async writes)
  *   - __vfsDirs:   Record<string, boolean> (dirs created)
- *   - __vfsBaseUrl: string                 (supervisor URL for lazy VFS reads)
  *   - cwd: string
  *   - argv, env, filename, dirname: from args
  *   - stdout, stderr, exitCode: capture variables
@@ -3074,7 +3073,7 @@ const __consoleMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __nimbusAttachedTty = !!(env && (env.NIMBUS_ATTACHED_TTY === "1" || env.FORCE_TTY === "1"));
+const __nimbusAttachedTty = env?.NIMBUS_ATTACHED_TTY === "1";
 let __nimbusTtyColumns = Number(env && env.COLUMNS) || 80;
 let __nimbusTtyRows = Number(env && env.LINES) || 24;
 const __nimbusTerminalOutputStreams = [];
