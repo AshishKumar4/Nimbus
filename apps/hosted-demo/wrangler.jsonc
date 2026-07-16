@@ -73,6 +73,7 @@
   // Safe to keep enabled in prod: preview URLs only resolve when
   // someone has the version-id prefix (random per upload). No traffic
   // shaping risk.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
   "preview_urls": true,
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
   // [docs](https://developers.cloudflare.com/workers/configuration/placement/),
