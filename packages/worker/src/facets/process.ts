@@ -188,20 +188,12 @@ export interface FacetProcessManagerDeps {
   shellExecutor?: ShellExecutorLike;
   /** Optional: ctx for facets.abort/delete in production. */
   ctx?: { facets?: { abort?: (name: string, e?: any) => void; delete?: (name: string) => void } };
-  /**
-   * child-process isolation gap #1: optional ChildProcessSpawnPool. When supplied,
-   * `_dispatch` routes each spawn through the pool (one-task
-   * NimbusFanoutPool.submitMany call per spawn), giving each spawn a
-   * fresh Worker Loader isolate. When omitted, falls back to the
-   * legacy in-supervisor dispatch (unit-test path; production wiring
-   * always supplies it).
-   */
+  /** Optional Worker Loader pool for isolating child-process dispatch. */
   spawnPool?: {
     runOne: (
       req: any,
-      kind: CommandKind,
+      kind: Exclude<CommandKind, 'unknown'>,
       hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
-      childId: number | string,
     ) => Promise<number>;
   };
 }
@@ -395,13 +387,8 @@ export class FacetProcessManager {
       onStderr: (d) => this._appendOutput(child, 2, d),
     };
 
-    // child-process isolation gap #1: if a spawnPool is configured (production
-    // wiring), route the dispatch through a fresh Worker Loader
-    // isolate via NimbusFanoutPool. The pool's task body emits a
-    // per-isolate marker token + delegates the actual command back
-    // to the supervisor via env.SUPERVISOR.cpDispatchInline (preserves
-    // pure-builtin / facet-direct correctness; only the dispatch
-    // envelope moves to a fresh isolate).
+    // When configured, the pool moves the dispatch envelope into a Worker
+    // Loader isolate and delegates command execution through supervisor RPC.
     if (this.deps.spawnPool) {
       const liveStdin = kind === 'facet-direct' || kind === 'shell-direct';
       // Pure builtins consume stdin from the request payload. Facet-direct
@@ -425,7 +412,7 @@ export class FacetProcessManager {
       // Register the facet-slot so kill() can find the abort handle.
       child.facetSlot = { abort: undefined, killed: false };
       try {
-        const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks, child.pid);
+        const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks);
         this._stampExit(child, code, null);
       } catch (e: any) {
         this._appendOutput(child, 2, `spawn-pool error: ${e?.message || String(e)}\n`);

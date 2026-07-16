@@ -1027,12 +1027,8 @@ export class NimbusSession extends CloudflareDurableObject {
         }
       },
     };
-    // child-process isolation gap #1: per-spawn fresh-isolate envelope. The pool wraps
-    // NimbusFanoutPool — auto-routes <5 → in-DO fanout in-DO, ≥5 → peer-DO fanout
-    // peer-DO. Hard-fails at construction if env.LOADER missing (no
-    // fallback). The pool is constructed lazily on the same path that
-    // builds FacetProcessManager so unit tests that don't supply
-    // env.LOADER still work via the legacy in-supervisor dispatch.
+    // Construct the child-process Loader pool when the binding is available.
+    // Unit-test hosts without LOADER continue through direct dispatch.
     let spawnPool: ChildProcessSpawnPool | undefined;
     try {
       const envAny = this.env as any;

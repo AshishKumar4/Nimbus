@@ -52,7 +52,7 @@ import { handleAgentRequest } from './agent.js';
 // shape used here automatically.
 import { R2CacheClient, R2_CACHE_PREFIX, L2_KEY_HOST } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT, hashKeyToShard } from '../loaders/fanout-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
 import { z } from 'zod/v4';
 
 type RoutesHost = any;
@@ -1313,9 +1313,13 @@ async function handleFanoutTestEndpoint(
 
   if (path === '/api/_test/fanout/topology' && request.method === 'GET') {
     const n = Math.max(0, parseInt(url.searchParams.get('n') || '0', 10));
+    const pool = new NimbusFanoutPool(env, self.ctx, {
+      tag: 'fanout-bench',
+      timeoutMs: 60_000,
+    });
     return Response.json({
       n,
-      topology: n === 0 ? 'empty' : (n < IN_DO_THRESHOLD ? 'in-do' : 'peer-do'),
+      topology: pool.topologyFor(n),
       inDoThreshold: IN_DO_THRESHOLD,
       maxPeerFanout: MAX_PEER_FANOUT,
     });
@@ -1325,9 +1329,13 @@ async function handleFanoutTestEndpoint(
     const keysRaw = url.searchParams.get('keys') || '';
     const keys = keysRaw.split(',').map((k) => k.trim()).filter(Boolean);
     const peerCount = Math.max(1, Math.min(parseInt(url.searchParams.get('n') || String(keys.length), 10), MAX_PEER_FANOUT));
+    const pool = new NimbusFanoutPool(env, self.ctx, {
+      tag: 'fanout-bench',
+      timeoutMs: 60_000,
+    });
     const placement = keys.map((k) => ({
       key: k,
-      shard: hashKeyToShard(k, peerCount),
+      siblingId: pool.peerSiblingId(k, peerCount),
     }));
     return Response.json({ peerCount, placement });
   }
@@ -1373,7 +1381,7 @@ async function handleFanoutTestEndpoint(
     // doId is observable to confirm peer routing (if peer-DO topology
     // is in use, each task's SUPERVISOR.doId differs from the
     // coordinator's). We don't expose doId here directly — we rely
-    // on hashKeyToShard predicting placement and inspecting the
+    // on peerSiblingId predicting placement and inspecting the
     // overlap in start/end timestamps to infer parallelism.
     const startTimes = results.map((r) => r.startMs);
     const endTimes = results.map((r) => r.endMs);
@@ -1390,7 +1398,7 @@ async function handleFanoutTestEndpoint(
         maxEnd,
         spanMs: maxEnd - minStart,
         sumDurations: totalDurations.reduce((a, b) => a + b, 0),
-        topology: n < IN_DO_THRESHOLD ? 'in-do' : 'peer-do',
+        topology: pool.topologyFor(n),
       },
     });
   }

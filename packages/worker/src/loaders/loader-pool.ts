@@ -92,10 +92,9 @@ export interface NimbusLoaderPoolOptions {
   supervisorDoIdOverride?: string;
   /**
    * Raw JavaScript source prepended to every generated worker module.
-   * Lets callers inject helpers that cannot be captured via `context`
-   * (which is JSON-only) — typically a bundled dependency like a tar
-   * parser. The user function can reference top-level names declared in
-   * the preamble as if they were in lexical scope.
+   * Lets callers inject bundled helpers, such as a tar parser. The user
+   * function can reference top-level names declared in the preamble as if
+   * they were in lexical scope.
    *
    * Example: `preamble: 'export const parse = ...; const helper = ...;'`
    * — the preamble runs at module-load time; any side effects happen
@@ -141,11 +140,6 @@ export interface NimbusLoaderPoolOptions {
 export interface NimbusLoaderCallOptions {
   timeoutMs?: number;
   retries?: number;
-  /**
-   * Extra module-level constants injected into the generated worker source
-   * BEFORE the user function is declared. JSON-serializable only.
-   */
-  context?: Record<string, unknown>;
   /**
    * Per-call WebAssembly modules. Merged with the pool's
    * constructor-time `wasmModules` at dispatch time and shipped via
@@ -227,7 +221,6 @@ const ESBUILD_RUNTIME_SHIM = [
 export interface LoaderWorkerModuleSourceOptions {
   fnSource: string;
   preamble?: string;
-  context?: Record<string, unknown>;
   wasmEntries?: ReadonlyArray<{ name: string; id: string }>;
   hasBindings: boolean;
 }
@@ -276,12 +269,6 @@ export function assembleLoaderWorkerModuleSource(
       '// ── End preamble ──────────────────────────────────────────',
       '',
     );
-  }
-  if (options.context) {
-    for (const [key, value] of Object.entries(options.context)) {
-      lines.push(`const ${key} = ${JSON.stringify(value)};`);
-    }
-    lines.push('');
   }
   lines.push(`const __fn__ = ${options.fnSource};`);
   lines.push('');
@@ -560,8 +547,8 @@ export class NimbusLoaderPool {
 
   /**
    * Build the WorkerCode blob that the loader callback will return.
-   * Same bytes every time for a given (fnHash, slot, context) → lets
-   * workerd treat it as a cache hit and reuse the isolate.
+   * Same bytes every time for a given function and slot, allowing workerd
+   * to reuse the isolate.
    *
    * Always prepends the ESBUILD_RUNTIME_SHIM so stringified functions that
    * reference esbuild-emitted helpers (__name, __defProp, etc.) don't
@@ -570,7 +557,6 @@ export class NimbusLoaderPool {
    */
   #buildCode(
     fnSource: string,
-    context?: Record<string, unknown>,
     perCallWasmEntries?: Array<{ name: string; id: string; bytes: ArrayBuffer }>,
   ) {
     const workerOpts = {
@@ -604,7 +590,6 @@ export class NimbusLoaderPool {
     const moduleSource = assembleLoaderWorkerModuleSource({
       fnSource,
       preamble: this.preamble,
-      context,
       wasmEntries: allWasmEntries,
       hasBindings: this.bindings !== undefined,
     });
@@ -647,7 +632,6 @@ export class NimbusLoaderPool {
     fnHash: string,
     slotIndex: number,
     args: unknown[],
-    context: Record<string, unknown> | undefined,
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, ArrayBuffer>,
   ): Promise<unknown> {
@@ -666,7 +650,7 @@ export class NimbusLoaderPool {
     const buildId = (generation: number): string =>
       `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}:g${generation}`;
     let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
-    const code = this.#buildCode(fnSource, context, perCallWasmEntries);
+    const code = this.#buildCode(fnSource, perCallWasmEntries);
 
     // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
     // last-facet-id even on a hang or silent kill. Bounded — single
@@ -815,7 +799,6 @@ export class NimbusLoaderPool {
       fnHash,
       0,
       [arg],
-      opts?.context,
       resilience,
       opts?.wasmModules,
     )) as Awaited<R>;
@@ -894,7 +877,6 @@ export class NimbusLoaderPool {
             fnHash,
             slotIndex,
             [items[idx]],
-            opts?.context,
             resilience,
             opts?.wasmModules,
           )) as Awaited<R>;
@@ -947,11 +929,3 @@ export class NimbusLoaderPool {
     this.bindings = undefined;
   }
 }
-
-/** Re-export the subset of error types callers need to catch. */
-export {
-  BindingError,
-  ExecutionError,
-  RetryExhaustedError,
-  TimeoutError,
-} from './vendor/errors.js';
