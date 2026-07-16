@@ -89,6 +89,8 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | npm alias dependencies such as `alias: "npm:<pkg>@<version>"` | ✅ |
 | `git clone` over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation | ✅ |
 | In-session loopback networking — `curl http://127.0.0.1:<port>` reaches servers in other isolates; `node server.js` auto-promotes to a routeable resident process | ✅ |
+| Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike | ✅ |
+| Unix permissions groundwork — durable `st_mode`, real `chmod` (octal + symbolic), exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
 | Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate) | Alpha |
 | Vite SPA dev server — full HMR to the preview iframe | ✅ |
 | `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
@@ -111,7 +113,8 @@ Nimbus is under active development. Current framework support is:
 
 - **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers, Workers with Static Assets, npm + git workflows, Python and Ruby scripts, clang C compilation (single-file and multi-file).
 - **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use the Vite path. Nuxt has Vite/Nitro caveats.
-- **Unfinished OS work:** broader Pyodide/Nimbus extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, opencode TUI live-update streaming (the split pair boots and survives; SSE streaming through the facet HTTP shim is in progress), index-pack CPU headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU budget on repos like microsoft/TypeScript), full POSIX PTY parity, and live filesystem bridges for every long-running runtime.
+- **Unfinished OS work:** broader Pyodide/Nimbus extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, opencode TUI first-frame rendering (the serve half boots, answers readiness, and streams SSE; the attach half's boot still trips a supervisor memory reset under investigation), index-pack CPU headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU budget on repos like microsoft/TypeScript), full POSIX PTY parity, live filesystem bridges for every long-running runtime, and permission *enforcement* beyond the exec bit (uid/gid ownership, `EACCES` on read/write, real `umask`/`chown` — designed, not yet implemented).
+- **Active research, mechanism proven live:** real `fork()`/`exec()` for compiled binaries over the isolate fabric via Binaryen Asyncify — execution-state capture, parent/child divergence, and grandchild forks all validated inside a production facet (fork of a 16 MiB image in under 1 ms). Target: unmodified GNU bash as the acid test of the process model.
 - **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, native Linux Python wheels, native Ruby extensions without Nimbus-compatible artifacts, and raw public TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
 
 ## Quickstart
@@ -307,6 +310,7 @@ What's wired today (v12 sysroot, currently deployed):
 - User headers in cwd or under `-I<dir>`.
 - `fopen("...", "r" | "w" | "a")` against VFS paths (relative + absolute).
 - 128-bit math intrinsics (`__muloti4`, `__divti3`) provided via linked `libclang_rt.builtins-wasm32.a`.
+- OS-grade binary dispatch: `clang` marks linked executables `0o755`, so `clang hello.c -o hello && ./hello` runs directly — no wrapper, no manual step. `chmod -x hello && ./hello` honestly fails with `Permission denied` (exit 126); non-wasm files with the exec bit dispatch via `#!` shebang or fall back to `sh`.
 
 The stdio/atexit behavior is covered by the v13 probes in `tests/behavioral/clang-stdio/`. Sysroot selection is catalog-driven in R2, so after a catalog flip, verify the live deploy with those probes.
 
