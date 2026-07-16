@@ -3618,7 +3618,27 @@ builtins.http = (() => {
     constructor(u, m, h) { super(); this.url = u || "/"; this.method = m || "GET"; this.headers = h || {}; this.httpVersion = "1.1"; }
   }
   class Server extends __eventsMod {
-    constructor(handler) { super(); if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
+    constructor(handler) { super(); this._parkedRequests = []; if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
+    // effect-platform (opencode serve) binds via listen() FIRST and attaches
+    // its "request" handler only after the HTTP-app layer is built. A request
+    // emitted into zero listeners is silently lost — the ServerResponse never
+    // gets headers and the dispatcher's header timeout fires. Park requests
+    // that arrive in that window and flush them when the handler attaches.
+    on(n, fn) {
+      super.on(n, fn);
+      if (n === "request") this._flushParkedRequests();
+      return this;
+    }
+    prependListener(n, fn) {
+      super.prependListener(n, fn);
+      if (n === "request") this._flushParkedRequests();
+      return this;
+    }
+    _flushParkedRequests() {
+      if (!this._parkedRequests || this._parkedRequests.length === 0) return;
+      const parked = this._parkedRequests.splice(0);
+      for (const dispatch of parked) queueMicrotask(dispatch);
+    }
     // Node's listen has several overloads; the two we honour are
     // listen(options[, cb]) — options = { port, host, path, backlog, ... } —
     // and listen([port[, host[, backlog]]][, cb]). opencode's server adaptor
@@ -3664,7 +3684,14 @@ builtins.http = (() => {
     setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
     setKeepAlive() { return this; }
     address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
-    _handleRequest(u, m, h, b) { const req = new IncomingMessage(u, m, h); const res = new ServerResponse(); this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } return res; }
+    _handleRequest(u, m, h, b) {
+      const req = new IncomingMessage(u, m, h);
+      const res = new ServerResponse();
+      const dispatch = () => { this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } };
+      if (this.listenerCount("request") === 0) this._parkedRequests.push(dispatch);
+      else dispatch();
+      return res;
+    }
   }
   function createServer(o, h) { if (typeof o === "function") { h = o; } return new Server(h); }
   // Shared streaming HTTP dispatch for every facet server (generic node
