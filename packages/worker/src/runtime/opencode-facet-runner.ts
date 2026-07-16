@@ -137,6 +137,13 @@ const OS_NAMES: readonly string[] = [
   'platform', 'release', 'setPriority', 'tmpdir', 'totalmem', 'type', 'uptime',
   'userInfo', 'version', 'availableParallelism',
 ];
+// The shim http surface (node-shims.ts builtins.http). request/get throw
+// "Use fetch()" — honest failure; nodejs_compat's fetch-backed client is NOT
+// preserved by this bridge, so a chunk that does http.request() fails loud.
+const HTTP_NAMES: readonly string[] = [
+  'createServer', 'Server', 'IncomingMessage', 'ServerResponse',
+  'Agent', 'STATUS_CODES', 'METHODS', 'request', 'get',
+];
 
 const BUILTIN_BRIDGES: readonly BuiltinBridge[] = [
   { specifier: 'node:fs', builtin: 'fs', names: FS_NAMES },
@@ -144,6 +151,14 @@ const BUILTIN_BRIDGES: readonly BuiltinBridge[] = [
   { specifier: 'node:os', builtin: 'os', names: OS_NAMES },
   // node:sqlite is not in nodejs_compat; bridge to the VFS-backed sql.js shim.
   { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
+  // node:http MUST land on the shim server, not nodejs_compat: the serve
+  // facet's HTTP server is only routeable (loopback + external preview +
+  // the /doc readiness gate) if listen() registers on globalThis.__portRegistry
+  // and SUPERVISOR.registerPort. nodejs_compat's http.Server binds invisibly —
+  // "listening" is printed but no request can ever be routed to it (the
+  // empty-registry 502). CJS require("http") already resolves to this shim;
+  // this bridge gives the ESM `import "node:http"` chunks the same server.
+  { specifier: 'node:http', builtin: 'http', names: HTTP_NAMES },
 ];
 
 // node:process public surface opencode/OpenTUI consume by name. The bundle uses
