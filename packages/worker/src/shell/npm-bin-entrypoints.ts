@@ -98,9 +98,9 @@ export function installNpmBinFallbackResolver(
       // FacetManager's ESM-mainModule path instead of the node CJS runner.
       if (isStagedArtifactTarget(bin.targetPath)) {
         const artifact = stagedArtifactId(bin.targetPath);
-        const attachedTty = looksAttachedTtyStagedArtifact(artifact, argv, ctx.env);
+        const disposition = classifyStagedArtifact(artifact, argv, ctx.env);
         return await runStagedArtifact(
-          deps, name, artifact, argv, invocationCwd, ctx, attachedTty,
+          deps, name, artifact, argv, invocationCwd, ctx, disposition,
         );
       }
 
@@ -192,37 +192,47 @@ async function runStagedArtifact(
   argv: string[],
   cwd: string,
   ctx: CommandContext,
-  attachedTty: boolean,
+  disposition: StagedArtifactDisposition,
 ): Promise<number> {
   const shellLine = `${name} ${argv.join(' ')}`.trim();
   const startedAt = Date.now();
+  const fm = deps.getFacetManager();
+  // Piped stdin is not yet wired for staged artifacts; the interactive TUI reads
+  // keystrokes from the live ProcessInputStore via the attached-TTY stdin pump.
+  const base = { argv, env: ctx.env ?? {}, cwd, command: shellLine } as const;
   let result: StagedArtifactExecResult;
   try {
-    result = await deps.getFacetManager().execStagedArtifact(artifact, {
-      argv,
-      env: ctx.env ?? {},
-      cwd,
-      // Piped stdin is not yet wired for staged artifacts; the proven matrix
-      // is argv-based (--version/--help/run-to-model-resolution). The
-      // interactive TUI reads keystrokes from the live ProcessInputStore via
-      // the attached-TTY stdin pump rather than this seed string.
-      stdin: '',
-      command: shellLine,
-      attachedTty,
-    });
+    switch (disposition) {
+      case 'dual':
+        result = await fm.execStagedArtifactDual(artifact, base);
+        break;
+      case 'server':
+        result = await fm.execStagedArtifactServer(artifact, base);
+        break;
+      case 'attached':
+        result = await fm.execStagedArtifact(artifact, { ...base, stdin: '', attachedTty: true });
+        break;
+      case 'oneshot':
+        result = await fm.execStagedArtifact(artifact, { ...base, stdin: '', attachedTty: false });
+        break;
+      default: {
+        const _exhaustive: never = disposition;
+        throw new Error(`unknown staged-artifact disposition: ${String(_exhaustive)}`);
+      }
+    }
   } catch (e: unknown) {
     ctx.stderr.write(`${name}: ${formatError(e)}\n`);
     return 1;
   }
-  // Attached-TTY TUI: the facet is now resident, streaming frames live to the
-  // terminal and reading keystrokes; it reports its own exit through the
-  // supervisor. Surface the long-running spawn (visible line + structured event)
-  // and hand off (no exit / exec-done here) — the same lifecycle as a
-  // long-running attached node bin.
-  if (attachedTty) {
+  // Resident dispositions (dual / server / attached): the facet(s) are now
+  // resident, streaming live and reporting their own exit through the
+  // supervisor. Surface the long-running spawn and hand off — the same
+  // lifecycle as a long-running attached node bin.
+  if (disposition !== 'oneshot') {
     deps.terminal?.write(`\x1b[2m[bin started (long-running): pid=${result.pid} cmd="${shellLine}"]\x1b[0m\r\n`);
     deps.notifyTerminalEvent({
-      type: 'spawn', pid: result.pid, command: shellLine, longRunning: true, attachedTty: true,
+      type: 'spawn', pid: result.pid, command: shellLine, longRunning: true,
+      attachedTty: disposition !== 'server',
     });
     return 0;
   }
@@ -237,28 +247,39 @@ async function runStagedArtifact(
 }
 
 /**
- * Whether a staged-artifact invocation launches an interactive attached TUI.
- * For opencode: the default `opencode` command and `opencode attach` render the
- * TUI; `opencode run <prompt>`, `--version`/`--help`/`-v`/`-h`, and the Nimbus
- * tree-sitter diagnostic are non-interactive and stay on the one-shot path. An
- * explicit `--interactive` flag forces the TUI; FORCE_TTY/NIMBUS_ATTACHED_TTY
- * override for probes.
+ * How a staged-artifact (opencode) invocation runs. opencode's TUI + in-process
+ * server exceed the fixed 128 MiB isolate cap when co-resident, so the OS runs
+ * the interactive TUI as a MULTI-ISOLATE process pair: a headless `opencode
+ * serve` facet + an `opencode attach` client facet, each in its own isolate with
+ * its own 128 MiB cap, joined by the session loopback port registry.
+ *
+ *   - 'dual'     bare `opencode` (interactive TUI): transparently split into a
+ *                resident serve facet + an attached-TTY attach facet.
+ *   - 'server'   `opencode serve` / `opencode web`: a headless long-running HTTP
+ *                server → resident keyed+routeable facet (never grabs the TTY).
+ *   - 'attached' `opencode attach <url>`: the interactive TUI client → resident
+ *                attached-TTY facet.
+ *   - 'oneshot'  everything else (`run`, `models`, `--version`/`--help`, the
+ *                Nimbus tree-sitter diagnostic): fresh isolate, buffered result.
  */
-function looksAttachedTtyStagedArtifact(
+export type StagedArtifactDisposition = 'dual' | 'server' | 'attached' | 'oneshot';
+
+export function classifyStagedArtifact(
   artifact: string,
   argv: string[],
-  env: Record<string, string> | undefined,
-): boolean {
-  if (artifact !== 'opencode') return false;
-  if (argv.some(isNonInteractiveBinArg)) return false;
-  if (argv.includes(OPENCODE_TREE_SITTER_DIAG_ARG)) return false;
-  if (env?.NIMBUS_ATTACHED_TTY === '1' || env?.FORCE_TTY === '1') return true;
-  if (argv.includes('--interactive')) return true;
+  _env?: Record<string, string> | undefined,
+): StagedArtifactDisposition {
+  if (artifact !== 'opencode') return 'oneshot';
+  if (argv.some(isNonInteractiveBinArg)) return 'oneshot';
+  if (argv.includes(OPENCODE_TREE_SITTER_DIAG_ARG)) return 'oneshot';
   const sub = argv.find((a) => !a.startsWith('-'));
-  if (sub === undefined) return true; // bare `opencode` → TUI
-  return OPENCODE_TUI_SUBCOMMANDS.has(sub);
+  if (sub === undefined) return 'dual'; // bare `opencode` → serve + attach
+  if (OPENCODE_SERVER_SUBCOMMANDS.has(sub)) return 'server';
+  if (OPENCODE_TUI_SUBCOMMANDS.has(sub)) return 'attached';
+  return 'oneshot';
 }
 
+const OPENCODE_SERVER_SUBCOMMANDS = new Set(['serve', 'web']);
 const OPENCODE_TUI_SUBCOMMANDS = new Set(['attach']);
 
 function formatError(error: unknown): string {

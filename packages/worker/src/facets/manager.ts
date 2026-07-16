@@ -54,7 +54,9 @@ import {
   SQLITE_WASM_MODULE_NAME,
   YOGA_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
+  type OpencodeRunnerMode,
 } from '../runtime/opencode-facet-runner.js';
+import { parsePortFromArgv, resolveLongRunningPort } from '../runtime/long-running-handle.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
@@ -97,6 +99,8 @@ export interface FacetExecResult {
  */
 export interface StagedArtifactExecResult extends FacetExecResult {
   pid: number;
+  /** For the resident server path: the loopback port the facet is bound to. */
+  port?: number;
 }
 
 /**
@@ -2392,6 +2396,10 @@ export class FacetManager {
   private hooks: FacetManagerHooks;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   private timedOutProcessIds = new Set<number>();
+  // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
+  // spawn created as an OS-child of the attach TUI. When the attach process
+  // exits (reported / killed), its serve facet is torn down with it.
+  private _pairedServeFacet = new Map<number, number>();
   /**
    * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
    * over the prefetch bundle. Created on first exec where vfs is set;
@@ -2758,6 +2766,19 @@ export class FacetManager {
     this.processes.exit(pid, exitCode);
     const tracked = this.processRpcResources.get(pid);
     if (tracked?.releaseOnReportExit) this.releaseProcessRpcResources(pid);
+    this._teardownPairedServeFacet(pid);
+  }
+
+  /**
+   * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
+   * Called when the attach TUI exits (reported / killed) so the OS-child serve
+   * facet never outlives its foreground process.
+   */
+  private _teardownPairedServeFacet(attachPid: number): void {
+    const servePid = this._pairedServeFacet.get(attachPid);
+    if (servePid === undefined) return;
+    this._pairedServeFacet.delete(attachPid);
+    try { this.kill(servePid); } catch {}
   }
 
   /** Execute one-shot JS code in an isolated dynamic Worker. */
@@ -3045,8 +3066,63 @@ export class FacetManager {
    */
   async execStagedArtifact(
     artifact: string,
-    opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode'> & { command?: string },
+    opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode' | 'mode'> & { command?: string; attachedTty?: boolean },
   ): Promise<StagedArtifactExecResult> {
+    const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
+    const staged = await this._stageOpencodeFacet(artifact, opts, mode);
+    const workerConfig: WorkerCode = staged.supervisorBinding
+      ? { ...staged.baseConfig, env: { SUPERVISOR: staged.supervisorBinding } }
+      : staged.baseConfig;
+
+    if (mode === 'attached') {
+      return await this._execStagedArtifactAttached(
+        staged.pid, staged.command, workerConfig, staged.supervisorBinding,
+      );
+    }
+
+    let worker: LoadedWorkerStub | undefined;
+    let entrypoint: LoadedWorkerEntrypointStub | undefined;
+    try {
+      worker = this.env.LOADER.load(workerConfig);
+      entrypoint = worker.getEntrypoint();
+      if (typeof entrypoint.fetch !== 'function') {
+        throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
+      }
+      const response = await entrypoint.fetch(
+        new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
+      );
+      try {
+        const result = await response.json() as FacetExecResult;
+        this.processes.exit(staged.pid, result.exitCode);
+        this._flushVfsWrites(result);
+        return { ...result, pid: staged.pid };
+      } finally {
+        disposeRpcResource(response);
+      }
+    } catch (e) {
+      this.processes.exit(staged.pid, 1);
+      throw e;
+    } finally {
+      disposeRpcResource(entrypoint);
+      disposeRpcResource(worker);
+      disposeRpcResource(staged.supervisorBinding);
+    }
+  }
+
+  /**
+   * Assemble a staged-opencode facet for one of the three runtime modes:
+   * spawns the process-table entry, snapshots the VFS, fetches the wasm/module
+   * sidecars (worker + yoga only for the attached TUI), generates the runner
+   * mainModule, and builds the module map (`baseConfig`, WITHOUT the SUPERVISOR
+   * env binding — callers add it, and the resident-server path needs a
+   * supervisor-free copy for its re-resolvable route stub). The SUPERVISOR RPC
+   * binding is returned separately.
+   */
+  private async _stageOpencodeFacet(
+    artifact: string,
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin?: string; command?: string },
+    mode: OpencodeRunnerMode,
+  ): Promise<{ pid: number; command: string; baseConfig: WorkerCode; supervisorBinding: unknown }> {
     if (artifact !== 'opencode') {
       throw new Error(`Nimbus: unknown staged artifact '${artifact}'`);
     }
@@ -3059,18 +3135,20 @@ export class FacetManager {
     const bundle = await this.opencodeBundleSource();
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
-    const attachedTty = opts.attachedTty === true;
+    const attached = mode === 'attached';
     const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd);
     const pid = entry.pid;
-    if (attachedTty) {
-      this.processes.setLongRunning(pid);
+    // attached TUI + headless serve are resident long-running processes; only the
+    // attached TUI grabs the terminal (raw-mode stdin + live geometry).
+    if (mode !== 'oneshot') this.processes.setLongRunning(pid);
+    if (attached) {
       this.processes.setAttachedTty(pid);
       this.processes.openInput(pid);
     }
 
-    // attachedTty: opencode's shim TTY (node-shims.ts) keys raw-mode stdin and
+    // attached: opencode's shim TTY (node-shims.ts) keys raw-mode stdin and
     // columns/rows off these env vars, exactly like the long-running node path.
-    const runnerEnv = attachedTty
+    const runnerEnv = attached
       ? {
           ...opts.env,
           NIMBUS_ATTACHED_TTY: '1',
@@ -3101,27 +3179,24 @@ export class FacetManager {
         this.treeSitterModuleEntries(),
         this.openTuiModuleEntry(),
         // Split-build shared chunks — imported by the entry bundle (and the
-        // TUI server worker), so both the one-shot and attached paths carry
-        // them.
+        // TUI server worker), so every mode carries them.
         this.opencodeChunkModuleEntries(),
         // The TUI client spawns its API server + OpenTUI parser as in-isolate
-        // Workers, and OpenTUI lays out frames with yoga-layout. The polyfill
-        // imports the worker bundles + the runner instantiates the yoga Module.
-        // One-shot runs never render, so both are fetched only for the attached
-        // path.
-        attachedTty ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
-        attachedTty ? this.opencodeYogaModuleEntry() : Promise.resolve({}),
+        // Workers, and OpenTUI lays out frames with yoga-layout. Only the
+        // attached renderer reaches those; serve + one-shot skip them.
+        attached ? this.opencodeWorkerModuleEntries() : Promise.resolve({}),
+        attached ? this.opencodeYogaModuleEntry() : Promise.resolve({}),
       ]);
 
     const runnerCode = generateOpencodeRunnerCode({
       argv: opts.argv,
       env: runnerEnv,
       cwd: opts.cwd,
-      stdin: opts.stdin,
+      stdin: opts.stdin ?? '',
       shimsCode: await fetchNodeShimsCode(this.env),
       vfsBundle: _serializeBundleForFacet(vfsState.bundle),
       vfsManifest: JSON.stringify(vfsState.manifest),
-      attachedTty,
+      mode,
     });
 
     // SUPERVISOR binding so the VFS-backed shim's async writes/mkdir reach the
@@ -3131,7 +3206,7 @@ export class FacetManager {
       ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid } })
       : undefined;
 
-    const workerConfig = {
+    const baseConfig: WorkerCode = {
       compatibilityDate: CF_COMPAT_DATE,
       compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
       mainModule: 'runner.js',
@@ -3144,44 +3219,11 @@ export class FacetManager {
         ...chunkModules,
         ...tuiWorkerModules,
         ...yogaModules,
-        ...opencodeBuiltinBridgeModules(attachedTty),
+        ...opencodeBuiltinBridgeModules(attached),
       },
-      ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
     };
 
-    if (attachedTty) {
-      return await this._execStagedArtifactAttached(
-        pid, command, workerConfig, supervisorBinding,
-      );
-    }
-
-    let worker: LoadedWorkerStub | undefined;
-    let entrypoint: LoadedWorkerEntrypointStub | undefined;
-    try {
-      worker = this.env.LOADER.load(workerConfig);
-      entrypoint = worker.getEntrypoint();
-      if (typeof entrypoint.fetch !== 'function') {
-        throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
-      }
-      const response = await entrypoint.fetch(
-        new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
-      );
-      try {
-        const result = await response.json() as FacetExecResult;
-        this.processes.exit(pid, result.exitCode);
-        this._flushVfsWrites(result);
-        return { ...result, pid };
-      } finally {
-        disposeRpcResource(response);
-      }
-    } catch (e) {
-      this.processes.exit(pid, 1);
-      throw e;
-    } finally {
-      disposeRpcResource(entrypoint);
-      disposeRpcResource(worker);
-      disposeRpcResource(supervisorBinding);
-    }
+    return { pid, command, baseConfig, supervisorBinding };
   }
 
   /**
@@ -3240,6 +3282,212 @@ export class FacetManager {
       disposeRpcResources([startStub, worker, supervisorBinding]);
       this.processes.exit(pid, 1);
       throw e;
+    }
+  }
+
+  /**
+   * Run a headless `opencode serve` as a resident, routeable server facet. The
+   * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,
+   * else an allocated free port injected into argv) so the in-session loopback
+   * router and external `/port/<n>` both reach it. Returns immediately with the
+   * pid once the facet is spawned + its route stub bound; readiness is gated by
+   * the caller (dual path health-gates on `/doc`).
+   */
+  async execStagedArtifactServer(
+    artifact: string,
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; command?: string; port?: number },
+  ): Promise<StagedArtifactExecResult> {
+    const explicit = parsePortFromArgv(opts.argv);
+    const port = opts.port
+      ?? resolveLongRunningPort({ argv: opts.argv, env: opts.env, fallback: this._allocateLoopbackPort() });
+    // opencode's default `--port 0` binds an unroutable ephemeral port; when the
+    // user gave no explicit port, inject the resolved one so the bind is known.
+    const argv = explicit != null || opts.port != null
+      ? opts.argv
+      : [...opts.argv, '--port', String(port)];
+    const staged = await this._stageOpencodeFacet(artifact, { ...opts, argv }, 'server');
+    const result = await this._runOpencodeServerFacet(staged, port);
+    return { ...result, port };
+  }
+
+  /**
+   * Bare `opencode` (the interactive TUI) as a MULTI-ISOLATE process pair: a
+   * headless `opencode serve` facet + an `opencode attach <url>` attached-TTY
+   * facet, each in its own 128 MiB isolate, joined by the session loopback port
+   * registry. The serve facet is an OS-child of the attach facet: it is health-
+   * gated before attach launches, and torn down when the attach TUI exits.
+   * Returns the ATTACH pid — the user-facing foreground process.
+   */
+  async execStagedArtifactDual(
+    artifact: string,
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; command?: string },
+  ): Promise<StagedArtifactExecResult> {
+    const port = this._allocateLoopbackPort();
+    // (a) resident serve facet on the allocated loopback port.
+    const serveStaged = await this._stageOpencodeFacet(
+      artifact,
+      {
+        argv: ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--print-logs'],
+        env: opts.env,
+        cwd: opts.cwd,
+        command: `opencode serve --port ${port}`,
+      },
+      'server',
+    );
+    const servePid = serveStaged.pid;
+    try {
+      await this._runOpencodeServerFacet(serveStaged, port);
+      // (b) health-gate: wait for the server to answer /doc through the loopback
+      // router (fail loud with the server's log tail on timeout / early exit).
+      await this._awaitOpencodeServerReady(servePid, port);
+    } catch (e) {
+      try { this.kill(servePid); } catch {}
+      throw e;
+    }
+
+    // (c) attach the interactive TUI to the ready server on the user's terminal.
+    let attach: StagedArtifactExecResult;
+    try {
+      attach = await this.execStagedArtifact(artifact, {
+        argv: ['attach', `http://127.0.0.1:${port}`],
+        env: opts.env,
+        cwd: opts.cwd,
+        stdin: '',
+        command: opts.command || 'opencode',
+        attachedTty: true,
+      });
+    } catch (e) {
+      try { this.kill(servePid); } catch {}
+      throw e;
+    }
+
+    // Tie their lifecycles: when the attach TUI exits (reported / killed), tear
+    // down the serve facet too.
+    this._pairedServeFacet.set(attach.pid, servePid);
+    return attach;
+  }
+
+  private async _runOpencodeServerFacet(
+    staged: { pid: number; command: string; baseConfig: WorkerCode; supervisorBinding: unknown },
+    port: number,
+  ): Promise<StagedArtifactExecResult> {
+    const { pid, baseConfig, supervisorBinding } = staged;
+    const ctxExports = getNimbusCtxExports();
+    const supervisor = { doId: this.ctx.id.toString(), pid };
+    const workerConfig: WorkerCode = supervisorBinding
+      ? { ...baseConfig, env: { SUPERVISOR: supervisorBinding } }
+      : baseConfig;
+    let worker: { getEntrypoint(): LoadedWorkerEntrypointStub } | undefined;
+    let startStub: LoadedWorkerEntrypointStub | undefined;
+    let routeStub: LoadedWorkerEntrypointStub | undefined;
+    let resourcesTracked = false;
+    try {
+      const workerKey = `nimbus-process:${supervisor.doId}:${pid}`;
+      const loadedWorker: { getEntrypoint(): LoadedWorkerEntrypointStub } =
+        this.env.LOADER.get(workerKey, async () => workerConfig);
+      worker = loadedWorker;
+      startStub = loadedWorker.getEntrypoint();
+      // A re-resolvable NimbusLoadedEntrypoint route stub (keyed on workerKey):
+      // the serve facet's port must resolve to a handler that can be re-entered
+      // from a LATER routing request's context — an unkeyed one-shot stub can't.
+      // This is the same routeable-facet primitive spawnNode uses.
+      routeStub = await createLoadedWorkerEntrypoint(ctxExports, baseConfig, supervisor, null, workerKey);
+      this.trackProcessRpcResources(
+        pid,
+        [routeStub, startStub, worker, supervisorBinding],
+        { releaseOnReportExit: false },
+      );
+      resourcesTracked = true;
+      // Bind the route stub for the pid BEFORE boot so the shim's
+      // listen()→SUPERVISOR.registerPort resolves against it; also reserve the
+      // known port explicitly (belt-and-suspenders with the in-facet listen()).
+      this.portRegistry.bindFacetStub(pid, routeStub);
+
+      if (typeof startStub.startProcess !== 'function') {
+        throw new Error('Nimbus: opencode serve runner entrypoint has no startProcess method');
+      }
+      const startPromise = startStub.startProcess();
+      this.ctx.waitUntil(
+        startPromise
+          .catch((e: unknown) => {
+            const current = this.processes.get(pid);
+            if (!current || current.state !== 'running') return;
+            const reason = 'opencode serve process failed: ' + errorMessage(e);
+            try { this.processes.exit(pid, 1); } catch {}
+            try { this._w5RecordTermination(pid, 1, 'facet', reason); } catch {}
+            try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
+          })
+          .finally(() => {
+            this.releaseProcessRpcResources(pid);
+          }),
+      );
+      this.portRegistry.register(port, pid, routeStub);
+      return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+    } catch (e) {
+      this.portRegistry.unregisterByPid(pid);
+      if (resourcesTracked) this.releaseProcessRpcResources(pid);
+      else disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+      this.processes.exit(pid, 1);
+      const reason = 'opencode serve boot failed: ' + errorMessage(e);
+      this._w5RecordTermination(pid, 1, 'facet', reason);
+      try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
+      throw e;
+    }
+  }
+
+  /** Allocate a free loopback port for a resident server facet (from 4096 up). */
+  private _allocateLoopbackPort(): number {
+    for (let port = 4096; port < 4096 + 4096; port++) {
+      if (!this.portRegistry.has(port)) return port;
+    }
+    return 4096;
+  }
+
+  /**
+   * Poll `http://127.0.0.1:<port>/doc` through the loopback port router until it
+   * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail)
+   * if the serve facet exits early or never becomes ready.
+   */
+  private async _awaitOpencodeServerReady(
+    pid: number,
+    port: number,
+    timeoutMs = 20000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const proc = this.processes.get(pid);
+      if (!proc || proc.state !== 'running') {
+        throw new Error(
+          `opencode serve (pid ${pid}) exited before becoming ready on port ${port}\n` +
+            this._processLogTail(pid),
+        );
+      }
+      if (this.portRegistry.has(port)) {
+        try {
+          const res = await this.portRegistry.routeRequest(
+            port,
+            new Request(`http://127.0.0.1:${port}/doc`),
+            '/doc',
+          );
+          if (res && res.status === 200) return;
+        } catch { /* not ready yet — keep polling */ }
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    throw new Error(
+      `opencode serve (pid ${pid}) did not become ready on port ${port} within ` +
+        `${timeoutMs}ms\n${this._processLogTail(pid)}`,
+    );
+  }
+
+  /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
+  private _processLogTail(pid: number, lines = 40): string {
+    try {
+      const chunks = this.processes.tailLogs(pid, { lines });
+      const text = chunks.map((c) => c.data).join('');
+      return text ? `--- ${chunks.length ? 'log tail' : ''} ---\n${text}` : '(no output captured)';
+    } catch {
+      return '(no output captured)';
     }
   }
 
@@ -3594,6 +3842,7 @@ export class FacetManager {
     this.portRegistry.unregisterByPid(pid);
     this.processes.exit(pid, exitCode);
     this.releaseProcessRpcResources(pid);
+    this._teardownPairedServeFacet(pid);
     if (exitCode !== 0) {
       this._w5RecordTermination(pid, exitCode, 'facet', reason);
       try { this.hooks.onExternalExit?.(pid, exitCode, reason); } catch {}
@@ -3612,6 +3861,7 @@ export class FacetManager {
     if (result) {
       try { this.hooks.onExternalExit?.(pid, 137, 'killed'); } catch {}
     }
+    this._teardownPairedServeFacet(pid);
     return result;
   }
 

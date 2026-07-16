@@ -54,6 +54,8 @@ export interface FacetExecResult {
  */
 export interface StagedArtifactExecResult extends FacetExecResult {
     pid: number;
+    /** For the resident server path: the loopback port the facet is bound to. */
+    port?: number;
 }
 export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPromiseTracker() {\n  const __tracked = new Set();\n  const __origThen = Promise.prototype.then;\n  const __origCatch = Promise.prototype.catch;\n  const __origFinally = Promise.prototype.finally;\n  let __active = false;\n  const __track = (p) => {\n    if (!p || typeof p.then !== \"function\") return p;\n    __tracked.add(p);\n    try {\n      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });\n    } catch {\n      __tracked.delete(p);\n    }\n    return p;\n  };\n  return {\n    start() {\n      __active = true;\n      try {\n        Promise.prototype.then = function(...args) {\n          const __next = __origThen.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.catch = function(...args) {\n          const __next = __origCatch.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.finally = function(...args) {\n          const __next = __origFinally.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n      } catch {\n        __active = false;\n      }\n    },\n    stop() {\n      __active = false;\n      try {\n        Promise.prototype.then = __origThen;\n        Promise.prototype.catch = __origCatch;\n        Promise.prototype.finally = __origFinally;\n      } catch {}\n    },\n    track: __track,\n    // Drain floating entry work until it settles, the process exits, or a\n    // bound is hit. Two distinct kinds of pending work need different\n    // treatment to match Node's event-loop semantics:\n    //\n    //   - Unsettled tracked PROMISES are microtask chains. Per Node a pending\n    //     promise does NOT keep the process alive \u2014 only handles/timers do.\n    //     A settling chain (create-vite's clack scaffold, c3 / create-astro\n    //     streaming their project to the live VFS) must be allowed to finish,\n    //     but a NEVER-settling chain\n    //     (`Promise.resolve().then(() => new Promise(() => {}))`) must not\n    //     pin the facet. So tracked promises are drained only up to a finite\n    //     `maxPromisePasses` budget \u2014 generous enough for the multi-tick\n    //     scaffolders, finite enough that a stuck chain still exits.\n    //\n    //   - Pending macrotask TIMERS/intervals (`__timersPending`) DO keep the\n    //     loop alive (nuxi settles through setTimeout-driven steps).\n    //\n    // BOTH branches are bounded by the wall-clock deadline AND the pass\n    // budget, because each bound covers the other's blind spot: workerd does\n    // not advance `Date.now()` while an isolate spins without I/O (measured\n    // `elapsed=0` across the whole drain), so a no-I/O drain loops forever\n    // against a deadline that never trips \u2014 the pass budget is the frozen-\n    // clock backstop. Under a live clock (host tests, drains interleaved with\n    // real I/O) a setTimeout(0) pass costs ~1ms of clamped timer, so the 50k\n    // budget alone would spin for tens of seconds \u2014 the deadline is the\n    // live-clock bound, tripping long before the budget. Scaffolders settle\n    // their multi-tick chains well inside both bounds, so a stuck chain, an\n    // idle long-running server's keep-alive, a TTL timeout, or a `--watch`\n    // poller ends the drain promptly instead of pinning the facet and the\n    // shell prompt.\n    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {\n      const __start = Date.now();\n      const __maxPromisePasses = 50000;\n      const __timersPending = () => (typeof globalThis.__nimbusPendingTimers === \"number\" ? globalThis.__nimbusPendingTimers : 0);\n      let __exited = false;\n      if (exitPromise && typeof exitPromise.then === \"function\") {\n        exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n      }\n      const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n        ? globalThis.__nimbusRawSetTimeout\n        : globalThis.setTimeout;\n      let __pass = 0;\n      for (\n        ;\n        !__exited\n          && (__pass < minPasses\n            || (__timersPending() > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses)\n            || (__tracked.size > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses));\n        __pass++\n      ) {\n        await new Promise((resolve) => __rawSetTimeout(resolve, 0));\n      }\n      return __pass;\n    },\n  };\n}\n";
 /**
@@ -198,6 +200,7 @@ export declare class FacetManager {
     private hooks;
     private processRpcResources;
     private timedOutProcessIds;
+    private _pairedServeFacet;
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
      * over the prefetch bundle. Created on first exec where vfs is set;
@@ -331,6 +334,12 @@ export declare class FacetManager {
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;
+    /**
+     * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
+     * Called when the attach TUI exits (reported / killed) so the OS-child serve
+     * facet never outlives its foreground process.
+     */
+    private _teardownPairedServeFacet;
     /** Execute one-shot JS code in an isolated dynamic Worker. */
     exec(code: string, opts: {
         argv?: string[];
@@ -385,9 +394,20 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode'> & {
+    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode' | 'mode'> & {
         command?: string;
+        attachedTty?: boolean;
     }): Promise<StagedArtifactExecResult>;
+    /**
+     * Assemble a staged-opencode facet for one of the three runtime modes:
+     * spawns the process-table entry, snapshots the VFS, fetches the wasm/module
+     * sidecars (worker + yoga only for the attached TUI), generates the runner
+     * mainModule, and builds the module map (`baseConfig`, WITHOUT the SUPERVISOR
+     * env binding — callers add it, and the resident-server path needs a
+     * supervisor-free copy for its re-resolvable route stub). The SUPERVISOR RPC
+     * binding is returned separately.
+     */
+    private _stageOpencodeFacet;
     /**
      * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
      * the runner's startProcess() — which holds the facet open via ctx.waitUntil
@@ -397,6 +417,46 @@ export declare class FacetManager {
      * release on report-exit, the same contract the long-running node path uses.
      */
     private _execStagedArtifactAttached;
+    /**
+     * Run a headless `opencode serve` as a resident, routeable server facet. The
+     * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,
+     * else an allocated free port injected into argv) so the in-session loopback
+     * router and external `/port/<n>` both reach it. Returns immediately with the
+     * pid once the facet is spawned + its route stub bound; readiness is gated by
+     * the caller (dual path health-gates on `/doc`).
+     */
+    execStagedArtifactServer(artifact: string, opts: {
+        argv: string[];
+        env: Record<string, string>;
+        cwd: string;
+        command?: string;
+        port?: number;
+    }): Promise<StagedArtifactExecResult>;
+    /**
+     * Bare `opencode` (the interactive TUI) as a MULTI-ISOLATE process pair: a
+     * headless `opencode serve` facet + an `opencode attach <url>` attached-TTY
+     * facet, each in its own 128 MiB isolate, joined by the session loopback port
+     * registry. The serve facet is an OS-child of the attach facet: it is health-
+     * gated before attach launches, and torn down when the attach TUI exits.
+     * Returns the ATTACH pid — the user-facing foreground process.
+     */
+    execStagedArtifactDual(artifact: string, opts: {
+        argv: string[];
+        env: Record<string, string>;
+        cwd: string;
+        command?: string;
+    }): Promise<StagedArtifactExecResult>;
+    private _runOpencodeServerFacet;
+    /** Allocate a free loopback port for a resident server facet (from 4096 up). */
+    private _allocateLoopbackPort;
+    /**
+     * Poll `http://127.0.0.1:<port>/doc` through the loopback port router until it
+     * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail)
+     * if the serve facet exits early or never becomes ready.
+     */
+    private _awaitOpencodeServerReady;
+    /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
+    private _processLogTail;
     private opencodeBundleSource;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
