@@ -445,6 +445,21 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async unregisterPort(port) {
         return this._call(this._getStub()._rpcUnregisterPort(port));
     }
+    /**
+     * Route an in-session loopback HTTP request (a facet's fetch to
+     * 127.0.0.1/localhost:<port>) to the facet that owns <port> via the session
+     * port registry — the same routing the shell curl/node loopback uses. Lets a
+     * facet reach another facet's server in-session (e.g. `opencode attach` →
+     * `opencode serve`). Returns the target's Response, streamed over RPC.
+     *
+     * NOT routed through `_call`: that disposes the RPC resource after mapping,
+     * which would close a streaming Response body (SSE). We return the RPC promise
+     * directly so the body streams to the caller for the response's lifetime —
+     * exactly how PortRegistry.routeRequest returns the facet's Response as-is.
+     */
+    async routeLoopback(port, request) {
+        return this._getStub()._rpcRouteLoopback(port, request);
+    }
     // ── Esbuild transform ─────────────────────────────────────────────────
     async transform(code, loader) {
         return this._call(this._getStub()._rpcTransform(code, loader));

@@ -571,6 +571,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcPrefetch(cwd, entryCode) { return _rpc._rpcPrefetch(this, cwd, entryCode); }
     async _rpcRegisterPort(pid, port) { return _rpc._rpcRegisterPort(this, pid, port); }
     async _rpcUnregisterPort(port) { return _rpc._rpcUnregisterPort(this, port); }
+    async _rpcRouteLoopback(port, request) { return _rpc._rpcRouteLoopback(this, port, request); }
     async _rpcTransform(code, loader) { return _rpc._rpcTransform(this, code, loader); }
     // two-tier-fanout: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
     async _rpcFanoutExecute(fnSource, args, poolOpts) {

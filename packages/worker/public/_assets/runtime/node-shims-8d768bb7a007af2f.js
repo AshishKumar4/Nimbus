@@ -41,7 +41,34 @@ async function __nimbusUseRpcResult(promise, use) {
     if (Array.isArray(h)) return h.some((p) => String(p?.[0]).toLowerCase() === "user-agent");
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
+  const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
+  // to the facet that owns <port> through the supervisor's port registry (the
+  // same routing the shell curl/node loopback uses), so a facet can reach another
+  // facet's server in-session (opencode attach reaching opencode serve). Returns
+  // the target's Response (streamed over RPC, so SSE flows). Anything non-
+  // loopback, or when no supervisor is bound, falls through to real fetch.
+  const __maybeRouteLoopback = (input, init) => {
+    if (!__supervisor || typeof __supervisor.routeLoopback !== "function") return null;
+    let url;
+    try {
+      const href = typeof input === "string" ? input
+        : (input && typeof input === "object" && input.url) ? input.url : String(input);
+      url = new URL(href);
+    } catch { return null; }
+    if (!__loopbackHosts.has(url.hostname)) return null;
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    if (!Number.isFinite(port) || port <= 0) return null;
+    const request = (typeof Request !== "undefined" && input instanceof Request)
+      ? new Request(input, init)
+      : new Request(url.href, init);
+    return Promise.resolve(__supervisor.routeLoopback(port, request));
+  };
   globalThis.fetch = function fetch(input, init) {
+    try {
+      const routed = __maybeRouteLoopback(input, init);
+      if (routed) return routed;
+    } catch { /* fall through to real fetch */ }
     const reqHasUa = typeof Request !== "undefined" && input instanceof Request && __hasUa(input.headers);
     if (reqHasUa || __hasUa(init && init.headers)) return __origFetch(input, init);
     const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));

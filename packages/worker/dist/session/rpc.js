@@ -664,6 +664,15 @@ export async function _rpcRegisterPort(self, pid, port) {
 export async function _rpcUnregisterPort(self, port) {
     self.portRegistry.unregister(port);
 }
+export async function _rpcRouteLoopback(self, port, request) {
+    // In-session loopback routing for a facet's outbound fetch — the same policy
+    // as kernel.routeLoopback (session/init.ts) used by the shell curl/node path.
+    if (!self.portRegistry.has(port)) {
+        return new Response(JSON.stringify({ error: 'connection refused (no server listening)', port }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    const res = await self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
+    return res ?? new Response(null, { status: 502 });
+}
 export async function _rpcTransform(self, code, loader) {
     if (!self.esbuildService) {
         self.ensureSqliteFs();

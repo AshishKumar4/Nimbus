@@ -195,6 +195,7 @@ export declare function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => 
 export declare function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>>;
 export declare function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
 export declare function _rpcUnregisterPort(self: RpcHost, port: number): Promise<void>;
+export declare function _rpcRouteLoopback(self: RpcHost, port: number, request: Request): Promise<Response>;
 export declare function _rpcTransform(self: RpcHost, code: string, loader: string): Promise<{
     code: string;
     map: string;
