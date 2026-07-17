@@ -5,14 +5,17 @@
  *
  * WHY (defect #20): a runtime dynamic import of a chunk graph inside a live
  * facet can kill the entire production workerd process (supervisor DO
- * included). The bare `opencode` TUI triggers exactly that — its command
- * handler lazy-imports the interactive-mode chunk. The attach facet therefore
- * boots an entry with the FULL TUI runtime closure (static + dynamic edges
- * from the interactive-mode chunk) inlined into the boot-time static graph —
- * the one shape never observed to kill — and its module map carries no chunk
- * modules at all. Dynamic chunk imports OUTSIDE that closure (CLI command
- * paths unreachable from `opencode attach <url>`) compile to fail-loud throw
- * stubs. See scratchpad/oc-attach-reset-rootcause.md (§JSPI bisect, B3–B5).
+ * included). The `opencode attach <url>` command lazy-imports its TUI at
+ * handler time — exactly that fatal shape. The attach facet therefore boots
+ * an entry with the FULL attach-TUI runtime closure (the transitive static +
+ * dynamic edges of the chunks the `attach` command handler imports) inlined
+ * into the boot-time static graph — the one shape never observed to kill —
+ * and its module map carries no chunk modules at all. Dynamic chunk imports
+ * OUTSIDE that closure (CLI command paths unreachable from `opencode attach`)
+ * compile to fail-loud throw stubs. The closure seeds are derived from the
+ * `attach <url>` command handler in index.js (not a pinned chunk name), so a
+ * chunk rename in a new opencode build re-resolves automatically.
+ * See scratchpad/oc-attach-reset-rootcause.md (§JSPI bisect, B3–B8).
  *
  * Invoked by scripts/bundle-opencode.mjs during staging; also runnable
  * standalone: node scripts/build-opencode-attach-entry.mjs <assetDir>.
@@ -24,8 +27,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-/** The chunk whose lazy import boots the interactive TUI (opencode 1.16.x). */
-const TUI_CHUNK = 'chunk-dy1rj21f.js';
+/** The command whose handler lazy-imports the attach TUI (`opencode attach <url>`). */
+const ATTACH_COMMAND = 'command:"attach <url>"';
 
 const STATIC_RE = /from\s*["']\.\/(chunk-[a-z0-9]+\.js)["']|import\s*["']\.\/(chunk-[a-z0-9]+\.js)["']/g;
 const DYN_RE = /import\(\s*["']\.\/(chunk-[a-z0-9]+\.js)["']\s*\)/g;
@@ -38,28 +41,50 @@ function edges(src) {
 }
 
 /**
+ * The chunks the `attach` command handler dynamically imports — the seeds of
+ * the attach-mode TUI closure. Scoped to the command's own registration block
+ * so sibling commands' lazy imports never leak into the attach closure.
+ */
+function attachSeedChunks(entry) {
+  const start = entry.indexOf(ATTACH_COMMAND);
+  if (start < 0) {
+    throw new Error(
+      `[build-opencode-attach-entry] ${ATTACH_COMMAND} not found in index.js — the attach ` +
+        'command name changed with this opencode build; update ATTACH_COMMAND',
+    );
+  }
+  const next = entry.indexOf('command:"', start + ATTACH_COMMAND.length);
+  const region = entry.slice(start, next > start ? next : entry.length);
+  const seeds = new Set([...region.matchAll(DYN_RE)].map((m) => m[1]));
+  if (seeds.size === 0) {
+    throw new Error(
+      '[build-opencode-attach-entry] the attach command handler issued no dynamic chunk ' +
+        'imports — the lazy-TUI structure changed; re-derive the attach closure seeds',
+    );
+  }
+  return seeds;
+}
+
+/**
  * Build the attach entry text from in-memory sources.
  * @param entry index.js source text.
  * @param pack chunk name → source map (the chunks.json content).
  * @returns the bundled index-attach.js text.
  */
 export async function buildOpencodeAttachEntryFromSources(entry, pack) {
-  if (!pack[TUI_CHUNK]) {
-    throw new Error(
-      `[build-opencode-attach-entry] TUI chunk ${TUI_CHUNK} not in the pack — ` +
-        'the pinned interactive-mode chunk name changed with this opencode build; update TUI_CHUNK',
-    );
-  }
-  if (!entry.includes(`import("./${TUI_CHUNK}")`)) {
-    throw new Error(
-      `[build-opencode-attach-entry] index.js no longer lazy-imports ${TUI_CHUNK} — ` +
-        'verify the TUI command path and update TUI_CHUNK',
-    );
+  const seeds = attachSeedChunks(entry);
+  for (const seed of seeds) {
+    if (!pack[seed]) {
+      throw new Error(
+        `[build-opencode-attach-entry] attach seed chunk ${seed} not in the pack — ` +
+          'the staged chunk set is inconsistent with index.js',
+      );
+    }
   }
 
-  // Full TUI runtime closure: static AND dynamic edges from the TUI chunk.
+  // Full attach-TUI runtime closure: static AND dynamic edges from the seeds.
   const tui = new Set();
-  const queue = [TUI_CHUNK];
+  const queue = [...seeds];
   while (queue.length > 0) {
     const name = queue.pop();
     if (tui.has(name) || !pack[name]) continue;
