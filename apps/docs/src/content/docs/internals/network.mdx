@@ -7,30 +7,22 @@ import PortRouting from '../../../components/diagrams/PortRouting.astro';
 
 <PortRouting caption="There is no second network. If the preview iframe can reach your server, so can every other process in the session." />
 
-All session networking converges on the supervisor's port registry, and
-because it's one path, behavior is uniform by construction — loopback
-`curl`, the port preview, and the default app preview can't drift apart.
+I use one port registry and one route. Loopback `curl`, the port preview, and
+the default app preview all go through the supervisor.
 
-The registry's two errors are the part I care most about. No entry for a
-port returns the honest 404, "No process listening". A registered port
-whose stub hasn't attached yet returns `501` — reserved for exactly the
-boot window between registration and a serving isolate. A dead port and a
-booting port are different truths, and conflating them is how systems
-grow retry loops that mask real failures.
+No registry entry returns `404`: no process is listening. A registered port
+whose stub isn't attached returns `501`. That state exists during the boot
+window between registration and a serving isolate. A dead port and a booting
+port are different truths, so I don't hide either behind retries.
 
-Streaming is end to end, verified per-tick. The inner `Response` is piped
-through an identity stream and the relay is held open until the body
-actually finishes — dispose early and you kill the stream, which is why
-naive designs buffer. Nimbus buffers nothing: live gates assert SSE ticks
-arriving incrementally both at the in-session shell and externally
-through the preview path at ~300 ms intervals. In-session `curl` writes
-chunks as they arrive and <kbd>Ctrl</kbd>+<kbd>C</kbd> cancels the read;
-abandoned readers cancel their relay pipes so stubs don't leak.
+Responses stream end to end. The relay stays open until the body finishes;
+closing it early would kill the stream. Live probes check each SSE tick in the
+session shell and through the preview path at ~300 ms intervals. In-session
+`curl` writes each chunk as it arrives, and <kbd>Ctrl</kbd>+<kbd>C</kbd>
+cancels the read. Abandoned readers also cancel their relay pipes.
 
-Where it's still transitional: Node's HTTP bridge and the Python/Ruby
-virtual-socket shims are separate adapters that both land on the
-registry. The OS spec's target is one shared virtual socket kernel under
-Node, Python, Ruby, and WASI — inbound sockets for WASM binaries don't
-exist yet (`sock_accept` is the one unimplemented preview1 function), so
-WASM servers can't take `/port` traffic. Tracked on the
-[research page](/docs/fine-print/research/).
+Node's HTTP bridge and the Python and Ruby virtual-socket shims are separate
+adapters today, but both end at this registry. The target is one shared
+virtual socket layer for Node, Python, Ruby, and WASI. `sock_accept` is the one
+unimplemented preview1 function, so WASM servers can't take `/port` traffic
+yet. That work is on the [research page](/docs/fine-print/research/).

@@ -1,47 +1,43 @@
 ---
 title: Research frontier
-description: The systems work in flight — fork() proven live, true Unix permissions, one FD layer. Nothing here is a claim.
+description: I proved the fork() mechanism live. True Unix permissions and one FD layer are still designs.
 ---
 
 import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro';
 
-Nimbus is a research project as much as a product, and this page is its
-honest edge: designed, in progress, or proven as a mechanism but not
-shipped. Nothing here is a capability claim. When something graduates,
-it moves to [what works](/docs/fine-print/capabilities/) with a probe
-next to it.
+I keep research separate from shipped features. Work here is designed,
+in progress, or proven as a mechanism. Nothing here is a capability
+claim. It moves to [what
+works](/docs/fine-print/capabilities/) only when a probe proves it live.
 
 ## fork() on V8 isolates — mechanism proven live
 
-Workers has no `fork()` primitive, so I built one and validated it on
-production Cloudflare infrastructure (2026-07-16, a dedicated probe
-worker, deleted after capture). Asyncify unwinds the running WASM
-program, a sibling instance of the same module is created at request
-time — legal, since only raw-byte compilation is blocked — the parent's
-linear memory is copied, every exported global including
-`__stack_pointer` is restored, and both sides rewind: parent resumes
-with the child pid, child with 0.
+Workers has no `fork()` primitive, so I built the mechanism and proved it
+live on 2026-07-16. I used a dedicated probe on production Cloudflare
+infrastructure, then deleted it. Asyncify unwinds the running WASM
+program. A sibling instance of the same module starts at request time;
+that is legal because workerd blocks only raw-byte compilation. I copy
+the parent's linear memory, restore every exported global including
+`__stack_pointer`, and rewind both sides. The parent resumes with the
+child pid. The child resumes with 0.
 
-It held under adversarial checks. Divergence at depth-4 call stacks and
-grandchild forks came out byte-identical to the local model across 2,000
-forks in one facet, and the negative control — skip the stack-pointer
-restore — breaks address-space identity deterministically, which is how
-you know the mechanism is real and not luck. Cost: ~0.5 ms of copy for a
-16 MiB image on the memory-reuse path; full instantiate+copy is
-GC-dominated, so instance reuse is the design lever. Overrunning the
-facet budget rejects as a catchable error — which maps exactly onto
-`fork()` returning `ENOMEM`. M0/M1 are done; exec/wait integration and
-the process-model plumbing are design-stage.
+Depth-4 call stacks and grandchild forks stayed byte-identical to the
+local model across 2,000 forks in one facet. The negative control skips
+the stack-pointer restore and breaks address-space identity
+deterministically.
+Copying a 16 MiB image on the memory-reuse path takes ~0.5 ms. Full
+instantiate+copy is GC-dominated, so the design reuses instances. A
+facet-budget overrun is a catchable error, which maps to `fork()`
+returning `ENOMEM`. M0/M1 are done. M2+ is design-stage, including
+exec/wait integration and process-model plumbing.
 
 ## True Unix permissions (S2)
 
 <PermissionsSeam caption="The S2 design: one credential, one choke point, honest EACCES. Durable chmod and exec-bit dispatch (S1) already shipped." />
 
-My standing rule is no fake-success surfaces, and today `chown` and
-`umask` are exactly that — no-ops, scheduled to die. The design adds
-`uid`/`gid` to the inode schema and threads a real credential through
-the single VFS mutation choke point, failing honestly through every
-runtime.
+Today, `chown` and `umask` are no-ops. They are scheduled to die. S2 adds
+`uid`/`gid` to the inode schema and passes one real credential through
+the VFS mutation seam, returning `EACCES` through every runtime.
 
 ## The rest, briefly
 

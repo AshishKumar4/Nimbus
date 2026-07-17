@@ -7,35 +7,24 @@ import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
 
 <DiskLayers caption="Four layers, one owner. The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
 
-The diagram is most of the story; three mechanisms deserve words.
+I store inodes and file data in 64 KiB chunks. An LRU keeps hot chunks in
+memory without making memory the source of truth. I also give every path a
+revision watermark for its subtree. It changes when that path or anything
+under it changes, so an unrelated write doesn't invalidate the cache.
 
-**Revisions.** Every path carries a subtree revision watermark that
-changes iff that path or anything under it mutates. Runtime caches — the
-Node fs snapshot, prefetch surfaces, page caches — key on it. An
-unrelated write elsewhere can't evict your cache, and a stale cache can't
-survive a real change. `chmod` bumps it like any other mutation, because
-the mode column is real.
+Facets send mutations through the supervisor's credit-pool write path. A facet
+can send only while it holds credits, and the supervisor returns them as it
+drains data. This is how a 52,500-file `npm install` and an 84,000-file checkout
+can land inside 128 MiB. Each bulk write stages a new content generation and
+publishes it atomically. A crash can't expose half of the new tree.
 
-**Credits.** Facets mutate the disk only through the supervisor's
-streaming write RPC, governed by a credit pool: a facet must hold credits
-to send, and credits return as the supervisor drains. That's a hard bound
-on supervisor memory no matter how many processes write at once — it's
-what lets a 52,500-file `npm install` or an 84,000-file checkout land
-inside a 128 MiB isolate. Bulk writes stage into a content generation
-and publish atomically, so a crashed install never leaves a half-written
-tree visible.
+Runtimes use `RuntimeFsBridge` for stat, range reads and writes, truncate,
+directory and symlink operations, `revision(path)`, and events. I keep the
+bridge stateless so it survives supervisor hibernation. Node async fs uses the
+live bridge. Node sync fs uses a bounded snapshot plus a local write cache.
+Python, Ruby, and WASI one-shots still use a snapshot and diff flush. Moving
+them to the live bridge is [active work](/docs/fine-print/research/).
 
-**The bridge.** Runtimes read and write through one contract,
-`RuntimeFsBridge` — stat, ranged read/write, truncate, directory and
-symlink ops, `revision(path)`, and event subscription. It's stateless on
-purpose: no server-side handle state means it stays correct across
-supervisor hibernation. Node's async fs rides it live, including files a
-child process created after the facet started. Node's sync fs serves
-from a bounded snapshot plus a local write cache, revision-invalidated —
-a documented optimization. Python, Ruby, and WASI one-shots still use
-snapshot-plus-diff-flush; moving their long-running I/O onto the live
-bridge is [active work](/docs/fine-print/research/).
-
-The coherence rule all of this converges on: every read observes either
-the latest committed revision or your own unflushed write. Conflicts fail
-deterministically and loudly, never by silent overwrite.
+The coherence rule is simple: every read sees the latest committed revision or
+your own unflushed write. Conflicts fail loudly instead of overwriting data in
+silence.

@@ -1,14 +1,12 @@
 ---
 title: What works & what doesn't
-description: Every claim live-probed; every limit stated with its workaround. Filterable.
+description: I list only claims proved by live probes, with each limit and workaround stated plainly. The table is filterable.
 ---
 
 import CapabilityExplorer from '../../../components/CapabilityExplorer.astro';
 
-Every row mirrors the README's capability table — the source of truth,
-covered by black-box probes that drive a real session over `POST /new`
-plus WebSocket. An HTTP 200 alone is never a pass. Run the suite against
-any live deployment yourself:
+I treat the README table as the source of truth. Black-box probes drive a
+real session over `POST /new` and WebSocket; an HTTP 200 alone isn't a pass.
 
 ```bash
 BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
@@ -18,8 +16,8 @@ BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
 
 ## The deliberate "no" list
 
-Nimbus is a Worker/DO/WASM operating environment, not a Linux VM. If you
-need a row below, use a microVM or container sandbox instead
+I built Nimbus on Workers, Durable Objects, and WASM, not as a Linux VM. If
+you need one of these missing parts, use a microVM or container sandbox
 ([where Nimbus fits](/docs/start/where-it-fits/)).
 
 | Not supported | |
@@ -43,11 +41,11 @@ need a row below, use a microVM or container sandbox instead
 | opencode TUI | serve half boots and streams SSE; attach half trips a memory reset, under investigation |
 | Hosted demo | evaluation only — no SLA, may be reset, not for secrets |
 
-**Framework support.** Stable: Vite + React, the Cloudflare Vite Plugin,
+I've verified Vite + React, the Cloudflare Vite Plugin,
 single-file Workers, Workers with Static Assets, npm and git workflows,
-Python and Ruby scripts, clang. Astro, SvelteKit, and Remix ride the
-Vite path; Nuxt has Nitro caveats.
+Python and Ruby scripts, and clang. Astro, SvelteKit, and Remix use the Vite
+path. Nuxt has Nitro caveats.
 
-The line between this page's chips moves one way only: when a behavioral
-probe proves a capability against a live deployment. Everything in
-between lives on the [research frontier](/docs/fine-print/research/).
+I move the chip line one way only: a behavioral probe must prove the
+capability live. The rest stays on the
+[research frontier](/docs/fine-print/research/).
