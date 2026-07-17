@@ -3,10 +3,10 @@ title: Interactive TTY apps
 description: Attached process tabs for full-screen CLIs. What works, what's alpha, and the current state of opencode.
 ---
 
-Some programs aren't commands, they're apps: full-screen CLIs that own the
-terminal, read raw keys, and redraw the screen. Nimbus runs these as
-attached processes. A foreground npm-bin launch gets its own interactive
-process tab backed by the process's TTY channel, separate from the shell.
+Full-screen CLIs own the terminal: they read raw keys and redraw the whole
+screen. Nimbus runs these as attached processes. A foreground npm-bin
+launch gets its own interactive process tab backed by the process's TTY
+channel, separate from the shell.
 
 ## What an attached tab gives you <span class="nimbus-chip" data-kind="alpha">alpha</span>
 

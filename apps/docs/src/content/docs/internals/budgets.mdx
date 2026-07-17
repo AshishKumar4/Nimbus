@@ -28,14 +28,14 @@ no folklore numbers, no unofficial measurements.
 ### 128 MiB → the multi-isolate process model
 
 A hard per-isolate cap would normally be the ceiling on what an app can be.
-Nimbus's answer is the OS answer: **128 MiB is a segment, not a ceiling** —
+Nimbus's answer is the OS answer: **128 MiB is a segment, not a ceiling.**
 
-- every process gets its **own** isolate, so its budget is its own;
-- heavy apps **span isolates** (opencode: serve + TUI, two processes, two
-  budgets) joined by loopback;
-- the supervisor never materializes heavy artifacts (staging module maps is
-  offloaded out of the DO's isolate);
-- facet OOM is a clean, catchable error — the supervisor observes it, the
+- Every process gets its own isolate, so its budget is its own.
+- Heavy apps span isolates, joined by loopback (opencode: serve + TUI, two
+  processes, two budgets).
+- The supervisor never materializes heavy artifacts; module-map staging is
+  offloaded out of the DO's isolate.
+- Facet OOM is a clean, catchable error. The supervisor observes it and the
   session survives.
 
 ### 10 GB → one disk, owned by the DO
@@ -49,26 +49,26 @@ memory while filling it ([inside the disk](/docs/internals/disk/)).
 
 Long jobs are sliced to fit invocation budgets instead of hoping:
 
-- the git engine runs **fetch / index / checkout as separate phases**, each
+- The git engine runs fetch, index, and checkout as separate phases, each
   with a fresh budget, and checkout advances by bounded continuation
-  ([the git engine](/docs/internals/git-engine/));
-- npm installs **fan out across peer DOs**, turning one big budget problem
-  into many small ones;
-- the known remaining ceiling (index-pack on 75,000+-object clones) is
+  ([the git engine](/docs/internals/git-engine/)).
+- npm installs fan out across peer DOs, turning one big budget problem
+  into many small ones.
+- The known remaining ceiling (index-pack on 75,000+-object clones) is
   documented, not hidden.
 
 ## What idle costs
 
 Nothing. Sessions hibernate: the Durable Object is evicted, the WebSocket is
 hibernatable, the SQLite disk stays. Reconnect and the supervisor wakes with
-files, process records, and shell state — the "$0 when idle" claim is a
+files, process records, and shell state. The "$0 when idle" claim is a
 direct consequence of DO hibernation, not a billing trick.
 
 ## Session-level bounds
 
 Beyond platform numbers, Nimbus bounds its own surfaces: process logs,
 input queues, output rings, LRU content caches, staged content generations,
-and write-credit pools are all capped — the OS spec's standing rule is that
+and write-credit pools are all capped. The OS spec's standing rule is that
 nothing user-driven may grow unbounded inside the supervisor. One
 product-level bound worth knowing: a session allows **one active terminal
 owner at a time** (sequential reconnect/share preserves state).
