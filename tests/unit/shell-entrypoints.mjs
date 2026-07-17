@@ -29,8 +29,16 @@ function makeVfs(files = {}) {
 function makeHarness(files = {}) {
   const commands = new Map();
   const calls = [];
+  const vfs = makeVfs(files);
+  const identity = {
+    pid: 1,
+    cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    vfs,
+    setUmask() {},
+    async runAs() { return 0; },
+  };
   registerShellEntrypointCommands(
-    { register: (name, handler) => commands.set(name, handler) },
+    { register: (name, handler) => commands.set(name, (ctx) => handler({ ...identity, ...ctx })) },
     {
       async execute(body, options) {
         calls.push({ body, options });
@@ -38,7 +46,7 @@ function makeHarness(files = {}) {
         return { exitCode: 7, stdout: 'executor stdout\n' };
       },
     },
-    makeVfs(files),
+    vfs,
   );
   return { commands, calls };
 }

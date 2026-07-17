@@ -2029,24 +2029,22 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           options?.cwd || '/home/user',
           { parentPid },
         );
-        const identity = commandIdentityFor(childProcess.pid);
-        const kernel = self.kernel;
-        if (kernel === null) {
-          self.processes.exit(childProcess.pid, 1);
-          throw new Error('shell kernel is not initialized');
-        }
-        const terminal = createHeadlessTerminal();
-        const childShell = new Shell(
-          terminal,
-          kernel.vfs,
-          registry,
-          { ...env, ...(options?.env || {}) },
-          processRegistry,
-          identity,
-        );
-        installShellExecutionFeatures(childShell, terminal);
-        if (options?.cwd) childShell.setCwd(options.cwd);
+        let exitCode = 1;
         try {
+          const identity = commandIdentityFor(childProcess.pid);
+          const kernel = self.kernel;
+          if (kernel === null) throw new Error('shell kernel is not initialized');
+          const terminal = createHeadlessTerminal();
+          const childShell = new Shell(
+            terminal,
+            kernel.vfs,
+            registry,
+            { ...env, ...(options?.env || {}) },
+            processRegistry,
+            identity,
+          );
+          installShellExecutionFeatures(childShell, terminal);
+          if (options?.cwd) childShell.setCwd(options.cwd);
           const result = await childShell.execute(cmd, {
             ...options,
             commandContext: {
@@ -2057,11 +2055,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             },
             runAs: runAsProcess,
           });
-          self.processes.exit(childProcess.pid, result.exitCode);
+          exitCode = result.exitCode;
           return result;
-        } catch (error) {
-          self.processes.exit(childProcess.pid, 1);
-          throw error;
+        } finally {
+          self.processes.exit(childProcess.pid, exitCode);
         }
       },
     } satisfies ShellEntrypointExecutor;
