@@ -29,6 +29,7 @@ export interface CommandContext {
     isFdTerminal?: (fd: number) => boolean;
     setUmask(mask: number): void;
     runAs(cred: VfsCred, argv: string[]): Promise<number>;
+    execInterpreterDepth?: number;
 }
 export type CommandRunAsHost = (parent: CommandContext, cred: VfsCred, argv: string[]) => Promise<number>;
 export type Command = (ctx: CommandContext) => Promise<number>;

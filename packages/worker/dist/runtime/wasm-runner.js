@@ -153,22 +153,22 @@ export function makeWasmRunner(deps) {
         //   direct mode: [exportName, intArg1, intArg2, ...]
         const wasmPath = (opts.filename || '').replace(/^\/+/, '');
         const argv = opts.argv || [];
-        if (!vfs.exists(wasmPath)) {
-            return {
-                exitCode: 1,
-                stdout: '',
-                stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
-            };
-        }
         let bytes;
         try {
+            if (!vfs.exists(wasmPath)) {
+                return {
+                    exitCode: 1,
+                    stdout: '',
+                    stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
+                };
+            }
             bytes = vfs.readFile(wasmPath);
         }
         catch (e) {
             return {
                 exitCode: 1,
                 stdout: '',
-                stderr: `wasm-runner: cannot read '${opts.filename}': ${e?.message || e}\n`,
+                stderr: `wasm-runner: cannot read '${opts.filename}': ${e instanceof Error ? e.message : String(e)}\n`,
             };
         }
         // Detect WASI imports BEFORE parsing argv as direct-mode integers.

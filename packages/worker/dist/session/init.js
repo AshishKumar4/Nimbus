@@ -39,7 +39,7 @@ import { rewriteCirrusViteConfigBundle } from '../runtime/cirrus-vite-config-rew
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { makeWasmRunner, WASM_RUNNER_VERSION, WASM_RUNNER_HELP, formatWasmRunnerWasiInfo, } from '../runtime/wasm-runner.js';
-import { decideExecDispatch, EXEC_HEAD_BYTES, basename as shebangBasename, } from '../shell/exec-dispatch.js';
+import { installPathExecResolver, } from '../shell/exec-dispatch.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '../runtime/long-running-handle.js';
@@ -348,101 +348,7 @@ export function initSession(self, ws) {
     // Implementation: monkey-patch registry.resolve. cwd and file
     // state are read at every resolve call (not cached) so `cd` and
     // recompiles between invocations are honoured.
-    const __origResolve = registry.resolve.bind(registry);
-    registry.resolve = async (name) => {
-        const found = await __origResolve(name);
-        if (found)
-            return found;
-        if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
-            return undefined;
-        }
-        const cwdN = normalizeVfsPath((self.shell && self.shell.getCwd?.()) || '/home/user');
-        const resolved = resolveVfsPath(name, cwdN);
-        // Missing paths fall through (undefined) so the npm-bin fallback
-        // and install-hint resolvers further out in the chain still see
-        // them; only real files produce a dispatch here.
-        if (!kernelFs.exists(resolved))
-            return undefined;
-        if (kernelFs.isDirectory(resolved)) {
-            return async (ctx) => {
-                ctx.stderr.write(`${name}: Is a directory\n`);
-                return 126;
-            };
-        }
-        // execve follows symlinks to the real executable.
-        const target = kernelFs.isSymlink(resolved) ? kernelFs.resolveSymlink(resolved) : resolved;
-        if (!target || !kernelFs.exists(target) || kernelFs.isDirectory(target))
-            return undefined;
-        let mode;
-        let head;
-        try {
-            mode = kernelFs.stat(target).mode;
-            head = kernelFs.readRange(target, 0, EXEC_HEAD_BYTES);
-        }
-        catch {
-            return undefined;
-        }
-        // Absolute path computed at resolve-time so the dispatch stays
-        // correct even if cd happens before the command body runs.
-        const absPath = '/' + target;
-        const decision = decideExecDispatch(mode, head);
-        switch (decision.kind) {
-            case 'denied':
-                return async (ctx) => {
-                    ctx.stderr.write(`${name}: Permission denied\n`);
-                    return 126;
-                };
-            case 'exec-format-error':
-                return async (ctx) => {
-                    ctx.stderr.write(`${name}: cannot execute binary file: exec format not supported on Nimbus (wasm32-wasi only)\n`);
-                    return 126;
-                };
-            case 'wasm': {
-                // wasm-runner's contract: args[0] is the .wasm path, args[1..]
-                // are forwarded as WASI argv. The wasm-runner shell-handler
-                // decides WASI argv[0] from the resolved filename
-                // (src/runtime/wasm-runner.ts progName).
-                const wasmRunnerCmd = await __origResolve('wasm-runner');
-                if (!wasmRunnerCmd)
-                    return undefined;
-                return async (ctx) => {
-                    return await wasmRunnerCmd({ ...ctx, args: [absPath, ...(ctx.args || [])] });
-                };
-            }
-            case 'shebang':
-            case 'shell-script': {
-                const interp = decision.kind === 'shebang' ? decision.shebang.interpreter : 'sh';
-                const interpArgs = decision.kind === 'shebang' ? decision.shebang.args : [];
-                return async (ctx) => {
-                    // Linux caps nested interpreters (BINPRM_MAX_RECURSION);
-                    // guard `#!./self`-style loops the same way.
-                    const depth = Number(ctx.__nimbusInterpDepth || 0);
-                    if (depth >= 4) {
-                        ctx.stderr.write(`${name}: too many levels of interpreters\n`);
-                        return 126;
-                    }
-                    // Resolve through the FULL registry chain (registry.resolve
-                    // gains the npm-bin fallback after this hook installs), so
-                    // `#!/usr/bin/env node`, installed runtimes, and registered
-                    // path aliases like /bin/sh all resolve. Path interpreters
-                    // fall back to their basename (registry keys are bare names).
-                    let interpCmd = await registry.resolve(interp);
-                    if (!interpCmd && interp.includes('/')) {
-                        interpCmd = await registry.resolve(shebangBasename(interp));
-                    }
-                    if (typeof interpCmd !== 'function') {
-                        ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`);
-                        return 127;
-                    }
-                    return await interpCmd({
-                        ...ctx,
-                        args: [...interpArgs, absPath, ...(ctx.args || [])],
-                        __nimbusInterpDepth: depth + 1,
-                    });
-                };
-            }
-        }
-    };
+    installPathExecResolver(registry, kernelFs, () => self.shell?.getCwd() || '/home/user');
     // W8: hand the registry to the cp broker so child_process.spawn from
     // a parent facet can resolve and dispatch commands the same way the
     // shell does. Done AFTER all registrations are complete (below).

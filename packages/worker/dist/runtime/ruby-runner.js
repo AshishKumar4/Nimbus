@@ -136,11 +136,11 @@ export function makeRubyRunnerFactory(deps) {
             }
             else if (parsed.mode === 'script') {
                 const absPath = resolveVfsPath(parsed.scriptPath, cwd);
-                if (!vfs.exists(absPath)) {
-                    ctx.stderr.write(`${binName}: No such file or directory -- ${parsed.scriptPath} (LoadError)\n`);
-                    return 1;
-                }
                 try {
+                    if (!vfs.exists(absPath)) {
+                        ctx.stderr.write(`${binName}: No such file or directory -- ${parsed.scriptPath} (LoadError)\n`);
+                        return 1;
+                    }
                     userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
                 }
                 catch (e) {

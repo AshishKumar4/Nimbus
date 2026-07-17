@@ -57,8 +57,16 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
     };
     for (const start of roots) {
         addDirWithParents(start);
-        if (!vfs.exists(start))
+        try {
+            if (!vfs.exists(start))
+                continue;
+        }
+        catch (error) {
+            if (!hasErrorCode(error, 'EACCES'))
+                throw error;
+            modes[start] = 0;
             continue;
+        }
         const stat = vfs.stat(start);
         modes[start] = effectiveMode(stat.mode, stat.uid, stat.gid, vfs.cred);
         stack.push(start);

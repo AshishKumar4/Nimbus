@@ -282,7 +282,10 @@ function addRequirementsFile(reqPath, baseDir, vfs, requirements, constraints, d
     if (depth > 8)
         return 'requirements nesting exceeded 8 files';
     const abs = resolveVfsPath(reqPath, baseDir);
-    if (!vfs.exists(abs))
+    const probe = probeVfsPath(vfs, abs);
+    if ('error' in probe)
+        return `cannot read requirements file ${reqPath}: ${probe.error}`;
+    if (!probe.exists)
         return `requirements file not found: ${reqPath}`;
     const text = readVfsText(vfs, abs);
     if ('error' in text)
@@ -322,7 +325,10 @@ function addConstraintsFile(reqPath, baseDir, vfs, constraints, depth) {
     if (depth > 8)
         return 'constraints nesting exceeded 8 files';
     const abs = resolveVfsPath(reqPath, baseDir);
-    if (!vfs.exists(abs))
+    const probe = probeVfsPath(vfs, abs);
+    if ('error' in probe)
+        return `cannot read constraints file ${reqPath}: ${probe.error}`;
+    if (!probe.exists)
         return `constraints file not found: ${reqPath}`;
     const text = readVfsText(vfs, abs);
     if ('error' in text)
@@ -356,8 +362,19 @@ function readVfsText(vfs, path) {
         return { text: new TextDecoder('utf-8').decode(vfs.readFile(path)) };
     }
     catch (e) {
-        return { error: e instanceof Error ? e.message : String(e) };
+        return { error: errorMessage(e) };
     }
+}
+function probeVfsPath(vfs, path) {
+    try {
+        return { exists: vfs.exists(path) };
+    }
+    catch (e) {
+        return { error: errorMessage(e) };
+    }
+}
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
 }
 async function resolveRequirements(roots, constraints, includeDependencies, runtimeContext) {
     const requirements = new Map();
@@ -651,7 +668,10 @@ function localWheelArtifact(rawSpec, baseDir, vfs) {
     if (!looksLikePath)
         return { artifact: null };
     const abs = resolveVfsPath(spec, baseDir);
-    if (!vfs.exists(abs))
+    const probe = probeVfsPath(vfs, abs);
+    if ('error' in probe)
+        return { error: `cannot access local wheel ${rawSpec}: ${probe.error}` };
+    if (!probe.exists)
         return { error: `local wheel not found: ${rawSpec}` };
     const fileName = abs.slice(abs.lastIndexOf('/') + 1);
     if (!fileName.endsWith('.whl')) {

@@ -11,11 +11,30 @@
  * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
  */
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { enc } from '../_shared/bytes.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
+function unixVfsFor(sqliteVfs, cred) {
+    return {
+        ...sqliteVfs.as(cred),
+        symlinks: getSymlinkRegistry(sqliteVfs),
+    };
+}
+function withInvocationVfs(sqliteVfs, factory) {
+    return (ctx) => factory(unixVfsFor(sqliteVfs, ctx.cred))(ctx);
+}
+function fsErrorMessage(error) {
+    if (error instanceof Error) {
+        const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
+        if (code === 'EACCES' || code === 'EPERM')
+            return 'Permission denied';
+        if (code === 'ENOENT')
+            return 'No such file or directory';
+        return error.message;
+    }
+    return String(error);
+}
 function isRuntimeInstallHintHandler(handler) {
     return !!handler && !!handler.__nimbusRuntimeInstallHint;
 }
@@ -1053,6 +1072,7 @@ function mkGrep(vfs) {
             return 1;
         }
         let found = false;
+        let failed = false;
         function processLines(lines, label) {
             let count = 0;
             let matchedHere = false;
@@ -1089,7 +1109,10 @@ function mkGrep(vfs) {
                 const content = vfs.readFileString(path);
                 processLines(content.split('\n'), label);
             }
-            catch { /* ignore unreadable file */ }
+            catch (error) {
+                ctx.stderr.write(`grep: ${label}: ${fsErrorMessage(error)}\n`);
+                failed = true;
+            }
         }
         function walkDir(dir) {
             try {
@@ -1115,15 +1138,22 @@ function mkGrep(vfs) {
         else {
             for (const target of targets) {
                 const fp = resolvePath(ctx.cwd, target);
-                if (vfs.exists(fp) && vfs.isDirectory(fp)) {
-                    if (recursive)
-                        walkDir(fp);
+                try {
+                    if (vfs.exists(fp) && vfs.isDirectory(fp)) {
+                        if (recursive)
+                            walkDir(fp);
+                    }
+                    else {
+                        grepFile(fp, target);
+                    }
                 }
-                else
-                    grepFile(fp, target);
+                catch (error) {
+                    ctx.stderr.write(`grep: ${target}: ${fsErrorMessage(error)}\n`);
+                    failed = true;
+                }
             }
         }
-        return found ? 0 : 1;
+        return !failed && found ? 0 : 1;
     };
 }
 /**
@@ -2709,12 +2739,6 @@ function mkCat(vfs) {
                 ctx.stdout.write(ctx.stdin);
             return 0;
         }
-        // shell compatibility follow-up: prefer ctx.vfs (Kernel.VFS, sees /dev
-        // mount) over the closure-captured SqliteVFS. Without this fallback,
-        // `cat /dev/null` errors with ENOENT because SqliteVFS doesn't know
-        // about the /dev provider mounted on Kernel.VFS. The shell
-        // executeCommand passes Kernel.VFS as ctx.vfs.
-        const kvfs = ctx.vfs;
         // Resolve both native VFS symlinks and the legacy registry before reads.
         let exit = 0;
         for (const fOrig of files) {
@@ -2733,29 +2757,11 @@ function mkCat(vfs) {
                 continue;
             }
             try {
-                let content;
-                // Try Kernel.VFS first (handles mounted providers like /dev).
-                if (kvfs && typeof kvfs.readFile === 'function') {
-                    try {
-                        const raw = kvfs.readFile(f.startsWith('/') ? f : ctx.cwd + '/' + f);
-                        content = typeof raw === 'string'
-                            ? raw
-                            : new TextDecoder('utf-8').decode(raw);
-                    }
-                    catch (kErr) {
-                        const fp = resolvePath(ctx.cwd, f);
-                        content = vfs.readFileString(fp);
-                        void kErr;
-                    }
-                }
-                else {
-                    const fp = resolvePath(ctx.cwd, f);
-                    content = vfs.readFileString(fp);
-                }
-                ctx.stdout.write(content);
+                const path = f.startsWith('/') ? f : `${ctx.cwd}/${f}`;
+                ctx.stdout.write(new TextDecoder().decode(ctx.vfs.readFile(path)));
             }
-            catch (e) {
-                ctx.stderr.write(`cat: ${fOrig}: ${e?.message || e}\n`);
+            catch (error) {
+                ctx.stderr.write(`cat: ${fOrig}: ${fsErrorMessage(error)}\n`);
                 exit = 1;
             }
         }
@@ -2822,7 +2828,7 @@ function mkRm(vfs) {
                 const msg = String(e?.message || e);
                 if (force && /ENOENT/.test(msg))
                     continue;
-                ctx.stderr.write(`rm: cannot remove '${t}': ${msg}\n`);
+                ctx.stderr.write(`rm: cannot remove '${t}': ${fsErrorMessage(e)}\n`);
                 exit = 1;
             }
         }
@@ -2914,8 +2920,8 @@ function mkBase64(vfs) {
             try {
                 input = vfs.readFileString(resolvePath(ctx.cwd, file));
             }
-            catch {
-                ctx.stderr.write(`base64: ${file}: No such file\n`);
+            catch (error) {
+                ctx.stderr.write(`base64: ${file}: ${fsErrorMessage(error)}\n`);
                 return 1;
             }
         }
@@ -3612,62 +3618,58 @@ function wrap(fn) {
     };
 }
 export function registerUnixCommands(registry, sqliteVfs) {
-    const vfs = {
-        ...sqliteVfs.as(CRED_KERNEL),
-        symlinks: getSymlinkRegistry(sqliteVfs),
-    };
-    registry.register('which', wrap(mkWhich(vfs, registry)));
-    registry.register('whereis', wrap(mkWhereis(vfs, registry)));
-    registry.register('command', wrap(mkCommand(vfs, registry)));
-    registry.register('type', wrap(mkType(vfs, registry)));
+    registry.register('which', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhich(vfs, registry))));
+    registry.register('whereis', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhereis(vfs, registry))));
+    registry.register('command', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkCommand(vfs, registry))));
+    registry.register('type', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkType(vfs, registry))));
     registry.register('env', wrap(mkEnv()));
     registry.register('export', wrap(mkExport()));
     registry.register('unset', wrap(mkUnset()));
     registry.register('clear', wrap(mkClear()));
     registry.register('date', wrap(mkDate()));
     registry.register('uptime', wrap(mkUptime()));
-    registry.register('tree', wrap(mkTree(vfs)));
-    registry.register('find', wrap(mkFind(vfs)));
-    registry.register('grep', wrap(mkGrep(vfs)));
+    registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));
+    registry.register('find', wrap(withInvocationVfs(sqliteVfs, mkFind)));
+    registry.register('grep', wrap(withInvocationVfs(sqliteVfs, mkGrep)));
     // SHELL-R6-B2: head uses streaming wrap so a pipe reader passes
     // through (head terminates after N lines, triggering the abort
     // cascade for upstream producers like `yes`).
-    registry.register('head', wrapStreaming(mkHead(vfs)));
-    registry.register('tail', wrap(mkTail(vfs)));
-    registry.register('wc', wrap(mkWc(vfs)));
-    registry.register('sort', wrap(mkSort(vfs)));
+    registry.register('head', wrapStreaming(withInvocationVfs(sqliteVfs, mkHead)));
+    registry.register('tail', wrap(withInvocationVfs(sqliteVfs, mkTail)));
+    registry.register('wc', wrap(withInvocationVfs(sqliteVfs, mkWc)));
+    registry.register('sort', wrap(withInvocationVfs(sqliteVfs, mkSort)));
     registry.register('uniq', wrap(mkUniq()));
-    registry.register('sed', wrap(mkSed(vfs)));
-    registry.register('awk', wrap(mkAwk(vfs)));
-    registry.register('xargs', wrap(mkXargs(vfs, registry)));
-    registry.register('tee', wrap(mkTee(vfs)));
-    registry.register('du', wrap(mkDu(vfs)));
-    registry.register('diff', wrap(mkDiff(vfs)));
+    registry.register('sed', wrap(withInvocationVfs(sqliteVfs, mkSed)));
+    registry.register('awk', wrap(withInvocationVfs(sqliteVfs, mkAwk)));
+    registry.register('xargs', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkXargs(vfs, registry))));
+    registry.register('tee', wrap(withInvocationVfs(sqliteVfs, mkTee)));
+    registry.register('du', wrap(withInvocationVfs(sqliteVfs, mkDu)));
+    registry.register('diff', wrap(withInvocationVfs(sqliteVfs, mkDiff)));
     // Registry-level echo + cat for xargs cross-command dispatch.
     // Shell.builtins still wins for direct `echo X` invocations; this
     // entry is only reached when a command (xargs etc.) looks them up
     // via the registry path.
     registry.register('echo', wrap(mkEcho()));
-    registry.register('cat', wrap(mkCat(vfs)));
-    registry.register('ls', wrap(mkLs(vfs)));
-    registry.register('rm', wrap(mkRm(vfs)));
-    registry.register('touch', wrap(mkTouch(vfs)));
-    registry.register('stat', wrap(mkStat(vfs)));
-    registry.register('base64', wrap(mkBase64(vfs)));
+    registry.register('cat', wrap(withInvocationVfs(sqliteVfs, mkCat)));
+    registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));
+    registry.register('rm', wrap(withInvocationVfs(sqliteVfs, mkRm)));
+    registry.register('touch', wrap(withInvocationVfs(sqliteVfs, mkTouch)));
+    registry.register('stat', wrap(withInvocationVfs(sqliteVfs, mkStat)));
+    registry.register('base64', wrap(withInvocationVfs(sqliteVfs, mkBase64)));
     registry.register('seq', wrap(mkSeq()));
     registry.register('sleep', wrap(mkSleep()));
     registry.register('id', wrap(mkId(sqliteVfs)));
     registry.register('hostname', wrap(mkHostname()));
     registry.register('basename', wrap(mkBasename()));
     registry.register('dirname', wrap(mkDirname()));
-    registry.register('realpath', wrap(mkRealpath(vfs)));
+    registry.register('realpath', wrap(withInvocationVfs(sqliteVfs, mkRealpath)));
     registry.register('printf', wrap(mkPrintf()));
     registry.register('true', wrap(mkTrue()));
     registry.register('false', wrap(mkFalse()));
-    registry.register('readlink', wrap(mkReadlink(vfs)));
-    registry.register('sha256sum', wrap(mkSha256sum(vfs)));
-    registry.register('file', wrap(mkFile(vfs)));
-    registry.register('xxd', wrap(mkXxd(vfs)));
+    registry.register('readlink', wrap(withInvocationVfs(sqliteVfs, mkReadlink)));
+    registry.register('sha256sum', wrap(withInvocationVfs(sqliteVfs, mkSha256sum)));
+    registry.register('file', wrap(withInvocationVfs(sqliteVfs, mkFile)));
+    registry.register('xxd', wrap(withInvocationVfs(sqliteVfs, mkXxd)));
     registry.register('chown', wrap(mkChown(sqliteVfs)));
     // ln — symlink stub (no-ops on VFS but doesn't error)
     /**
@@ -3693,6 +3695,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
      * registry; we patch cat directly here to dereference symlinks).
      */
     registry.register('ln', wrap((ctx) => {
+        const vfs = unixVfsFor(sqliteVfs, ctx.cred);
         const args = ctx.args;
         const symbolic = args.some(a => a === '-s' || (a.startsWith('-') && !a.startsWith('--') && a.includes('s')));
         const force = args.some(a => a === '-f' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
