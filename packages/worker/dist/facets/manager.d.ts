@@ -381,6 +381,18 @@ export declare class FacetManager {
      * covers the live-measured ~14s cold boot-to-serving time with margin.
      */
     private _awaitOpencodeServerReady;
+    /**
+     * Warm the serve facet's cold once-flight services before the attach TUI
+     * fires its startup barrage. The TUI issues its five startup requests
+     * concurrently; a COLD provider/agent init under that concurrency deadlocks
+     * on its once-flight lock (facet timers only advance across I/O), and the
+     * requests die at the dispatcher's 30s header timeout ("3 of 5 requests
+     * failed"). A single sequential request per service completes the init
+     * reliably (live-measured), so readiness for a TUI includes it. A warmup
+     * failure is not fatal here — the TUI surfaces its own precise startup
+     * error — but each leg is bounded so a wedged warmup cannot eat the boot.
+     */
+    private _warmOpencodeServer;
     /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
     private _processLogTail;
     /** Flush files written by the script back to the supervisor's VFS. */

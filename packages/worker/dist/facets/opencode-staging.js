@@ -108,17 +108,22 @@ async function tuiWorkerModuleEntries(env) {
             'scripts/bundle-opencode.mjs with an opencode dist that built ' +
             'worker.js + parser.worker.js (build-node.ts entrypoints)');
     }
-    const entries = await Promise.all([workers.server, workers.parser].map(async (file) => [file, await fetchOpencodeWorkerSource(env, file)]));
+    // Parser only: the TUI's API-server worker (worker.js) is answered by the
+    // in-polyfill RPC stub and NEVER imported (defect #20 — its chunk graph is a
+    // process-killer), and the attach map carries no chunk modules, so the real
+    // worker.js's import graph could not even link.
+    const entries = await Promise.all([workers.parser].map(async (file) => [file, await fetchOpencodeWorkerSource(env, file)]));
     return Object.fromEntries(entries);
 }
 // In-flight (never resident) chunk-pack fetch+parse dedupe: concurrent
 // assemblies in the same isolate share one fetch + ~22 MB JSON parse.
 let chunkEntriesInflight = null;
 function chunkModuleEntries(env) {
-    if (!OPENCODE_CHUNKS_PACK) {
-        throw new Error('opencode chunk pack is not staged — rerun scripts/bundle-opencode.mjs ' +
-            'with a split-build opencode dist (build-node.ts)');
-    }
+    // Flat staging: the entry bundle inlines every chunk (no runtime chunk-graph
+    // imports — the #20 process-kill trigger family); there is no pack and no
+    // chunk module-map entries.
+    if (!OPENCODE_CHUNKS_PACK)
+        return Promise.resolve({});
     if (!chunkEntriesInflight) {
         chunkEntriesInflight = fetchOpencodeChunkSources(env, OPENCODE_CHUNKS_PACK).finally(() => {
             chunkEntriesInflight = null;
@@ -136,12 +141,19 @@ export async function assembleOpencodeFacetConfig(env, specInput) {
     const assets = requireAssets(env, 'staged opencode artifact');
     const attached = spec.mode === 'attached';
     const [bundle, shimsCode, sqliteModules, treeSitterModules, openTuiModules, chunkModules, workerModules, yogaModules] = await Promise.all([
-        fetchOpencodeBundle(assets),
+        fetchOpencodeBundle(assets, attached ? 'attach' : 'default'),
         fetchNodeShimsCode(assets),
         sqliteWasmModuleEntry(assets, true),
         treeSitterModuleEntries(assets),
-        openTuiModuleEntry(assets),
-        chunkModuleEntries(assets),
+        // Rendering stack is attach-only: serve/oneshot never link the TUI
+        // graph, and the opentui wasm instance alone costs ~17 MiB of facet
+        // memory at module-init.
+        attached ? openTuiModuleEntry(assets) : Promise.resolve({}),
+        // The attach entry inlines the FULL TUI runtime closure (index-attach.js)
+        // and its map carries NO chunk modules: a runtime chunk-graph import —
+        // the #20 process-killer — is structurally impossible in the attach
+        // facet. Serve/oneshot keep the split build and expand the pack.
+        attached ? Promise.resolve({}) : chunkModuleEntries(assets),
         // The TUI client spawns its API server + OpenTUI parser as in-isolate
         // Workers, and OpenTUI lays out frames with yoga-layout. Only the
         // attached renderer reaches those; serve + one-shot skip them.

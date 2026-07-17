@@ -2885,8 +2885,10 @@ export class FacetManager {
                     r.body?.cancel().catch(() => { }); };
                 if (res) {
                     discardBody(res);
-                    if (res.status === 200)
+                    if (res.status === 200) {
+                        await this._warmOpencodeServer(port);
                         return;
+                    }
                     lastPoll = `status ${res.status}`;
                 }
                 else {
@@ -2897,6 +2899,45 @@ export class FacetManager {
         }
         throw new Error(`opencode serve (pid ${pid}) did not become ready on port ${port} within ` +
             `${timeoutMs}ms (last poll: ${lastPoll})\n${this._processLogTail(pid)}`);
+    }
+    /**
+     * Warm the serve facet's cold once-flight services before the attach TUI
+     * fires its startup barrage. The TUI issues its five startup requests
+     * concurrently; a COLD provider/agent init under that concurrency deadlocks
+     * on its once-flight lock (facet timers only advance across I/O), and the
+     * requests die at the dispatcher's 30s header timeout ("3 of 5 requests
+     * failed"). A single sequential request per service completes the init
+     * reliably (live-measured), so readiness for a TUI includes it. A warmup
+     * failure is not fatal here — the TUI surfaces its own precise startup
+     * error — but each leg is bounded so a wedged warmup cannot eat the boot.
+     */
+    async _warmOpencodeServer(port, perRequestTimeoutMs = 25000) {
+        for (const path of ['/config/providers', '/agent']) {
+            let timer;
+            try {
+                // ONE deadline bounds the whole leg — headers AND body drain. An
+                // unbounded drain here wedged the dual spawn when a cold providers
+                // body finished slowly.
+                const responseRef = { current: null };
+                const leg = this.portRegistry
+                    .routeRequest(port, new Request(`http://127.0.0.1:${port}${path}`), path)
+                    .then(async (r) => {
+                    responseRef.current = r;
+                    if (r)
+                        await r.text();
+                })
+                    .catch(() => { });
+                await Promise.race([
+                    leg,
+                    new Promise((r) => { timer = setTimeout(() => r(), perRequestTimeoutMs); }),
+                ]);
+                responseRef.current?.body?.cancel().catch(() => { });
+            }
+            finally {
+                if (timer !== undefined)
+                    clearTimeout(timer);
+            }
+        }
     }
     /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
     _processLogTail(pid, lines = 40) {
