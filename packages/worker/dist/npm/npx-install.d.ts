@@ -73,5 +73,5 @@ export interface NpxResolveResult {
  * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
-export declare function resolveNpxBinary(installer: NpmInstaller, vfs: CredentialedVfs, cwd: string, rawArgs: string[], log: (msg: string) => void): Promise<NpxResolveResult>;
+export declare function resolveNpxBinary(installer: NpmInstaller, vfs: CredentialedVfs, cwd: string, rawArgs: string[], log: (msg: string) => void, pid?: number): Promise<NpxResolveResult>;
 //# sourceMappingURL=npx-install.d.ts.map

@@ -306,6 +306,12 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
      * a loader isolate land in the PEER's VFS, invisible to the user.
      */
     coordinatorDoId?: string;
+    /**
+     * Invoking process pid, forwarded into the peer-side SUPERVISOR
+     * binding so writeBatchStream is authorized under the caller's
+     * credential (see NimbusLoaderPoolOptions.supervisorPid).
+     */
+    supervisorPid?: number;
 }): Promise<{
     results: unknown[];
 }>;

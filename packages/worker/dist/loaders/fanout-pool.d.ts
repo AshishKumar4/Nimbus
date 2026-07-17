@@ -71,6 +71,14 @@ export interface NimbusFanoutPoolOptions {
      * NimbusLoaderPool's omitSupervisor flag).
      */
     omitSupervisor?: boolean;
+    /**
+     * Invoking process pid, baked into each facet's SUPERVISOR binding so
+     * filesystem RPCs (writeBatchStream) are authorized under the caller's
+     * credential (mirrors NimbusLoaderPool's supervisorPid). Threaded to both
+     * the in-DO loader pool and, via `_rpcFanoutExecute`, the peer-DO pools.
+     * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
+     */
+    supervisorPid?: number;
 }
 /**
  * Two-tier fan-out pool. Constructed by the supervisor DO; routes

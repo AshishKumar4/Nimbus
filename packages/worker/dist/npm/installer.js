@@ -225,7 +225,7 @@ export class NpmInstaller {
         // pressure the facet path eliminates.
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
-            const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
+            const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
             totalFiles += batchResult.filesWritten;
             for (const name of batchResult.installed)
                 installed.push(name);
@@ -692,7 +692,7 @@ export class NpmInstaller {
      *   Two-tier topology re-expands the fan-out without re-introducing
      *   the V8 cap risk.
      */
-    async fetchViaBatchFacet(toFetch, hoistPlan, nmDir) {
+    async fetchViaBatchFacet(toFetch, hoistPlan, nmDir, pid) {
         const log = (msg) => this.onProgress?.(msg);
         const installed = [];
         const failed = [];
@@ -706,6 +706,7 @@ export class NpmInstaller {
             tarballUrl: p.tarballUrl,
             integrity: p.integrity || '',
             pkgDir: nmDir + '/' + p.name,
+            installRoot: nmDir,
             mtime,
             chunkSize: CHUNK_SIZE,
         }));
@@ -755,6 +756,10 @@ export class NpmInstaller {
             // to every facet (in-DO and per-peer) so each shard's facet
             // can encode its own write-batch stream.
             preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
+            // Authorize each facet's writeBatchStream under the invoking
+            // process credential; without a positive pid the supervisor
+            // rejects the write (S2a cred enforcement).
+            supervisorPid: pid,
         });
         const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
             // Stable-id router key. Same shardIdx → same peer DO across

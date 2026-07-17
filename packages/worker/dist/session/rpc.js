@@ -913,6 +913,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         // back to ctx.id.toString() — the legacy behavior, correct for
         // single-DO callers.
         supervisorDoIdOverride: poolOpts.coordinatorDoId,
+        supervisorPid: poolOpts.supervisorPid,
     });
     try {
         // mapSource accepts the pre-serialized fnSource forwarded by the

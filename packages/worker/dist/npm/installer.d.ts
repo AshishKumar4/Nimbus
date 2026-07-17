@@ -77,6 +77,7 @@ export declare class NpmInstaller {
     install(projectDir: string, opts?: {
         packages?: string[];
         production?: boolean;
+        pid?: number;
     }): Promise<NpmInstallResult>;
     private _installInner;
     /**

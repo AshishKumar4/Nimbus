@@ -75,6 +75,18 @@ export interface NimbusLoaderPoolOptions {
      */
     supervisorDoIdOverride?: string;
     /**
+     * Process pid baked into the auto-injected SUPERVISOR binding's props.
+     * The supervisor derives the write credential from this pid
+     * (`SupervisorRPC._pid()` → `processes.cred(pid)`), so any facet that
+     * calls a filesystem RPC (`writeBatchStream`, `writeFile`, …) must be
+     * dispatched with the invoking process's real pid — otherwise the RPC
+     * throws "missing or invalid process pid in props". npm install threads
+     * the shell command's `ctx.pid` here so package files land as the user.
+     * Left 0 (default) for pools whose facets touch only cache/registry RPCs
+     * (npm resolve, pre-bundle), which never call `_pid()`.
+     */
+    supervisorPid?: number;
+    /**
      * Raw JavaScript source prepended to every generated worker module.
      * Lets callers inject bundled helpers, such as a tar parser. The user
      * function can reference top-level names declared in the preamble as if

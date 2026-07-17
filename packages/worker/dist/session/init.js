@@ -1610,7 +1610,7 @@ export function initSession(self, ws) {
         self.ensureNpmInstaller((msg) => {
             ctx.stdout.write('[npm] ' + msg + '\n');
         });
-        const result = await self.npmInstaller.install(cwd, { packages });
+        const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid });
         if (result.failed.length > 0) {
             ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
         }
@@ -2214,6 +2214,7 @@ export function initSession(self, ws) {
             try {
                 const result = await self.npmInstaller.install(installCwd, {
                     packages: explicitPkgs.length > 0 ? explicitPkgs : undefined,
+                    pid: ctx.pid,
                 });
                 if (result.failed?.length > 0) {
                     ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
@@ -2360,7 +2361,7 @@ export function initSession(self, ws) {
         self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
-        const resolveResult = await resolveNpxBinary(installer, self.sqliteFs, ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'));
+        const resolveResult = await resolveNpxBinary(installer, self.sqliteFs, ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid);
         if (resolveResult.ok && resolveResult.binPath) {
             const nodeCmd = await registry.resolve('node');
             if (nodeCmd) {
