@@ -1,5 +1,7 @@
 import { Nimbus, type NimbusConfig } from '@nimbus-sh/sdk';
+import { demoSandboxPrincipal } from './demo-nimbus.js';
 import {
+  ANON_USER_ID,
   claimDemoSessionForDestroy,
   listExpiredDemoSessions,
   markDemoSessionDestroyed,
@@ -28,20 +30,18 @@ export async function cleanupExpiredDemoSessions(
 
   const nimbus = Nimbus.fromEnv(env, config);
   for (const row of rows) {
+    const reason = row.userId === ANON_USER_ID ? 'anon-ttl' : 'demo-idle-ttl';
     const claimed = await claimDemoSessionForDestroy(
       env,
       row.sessionId,
       row.userId,
-      'demo-idle-ttl',
+      reason,
     );
     if (!claimed) continue;
     result.claimed++;
     try {
-      await nimbus.sandbox(row.sessionId, {
-        tenant: 'demo',
-        subject: row.userId,
-      }).destroy({ reason: 'demo-idle-ttl' });
-      await markDemoSessionDestroyed(env, row.sessionId, 'demo-idle-ttl');
+      await nimbus.sandbox(row.sessionId, demoSandboxPrincipal(row.userId)).destroy({ reason });
+      await markDemoSessionDestroyed(env, row.sessionId, reason);
       result.destroyed++;
     } catch (e: any) {
       await markDemoSessionDestroyFailed(env, row.sessionId, e?.message || String(e));

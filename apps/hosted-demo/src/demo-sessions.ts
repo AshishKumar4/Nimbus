@@ -1,5 +1,14 @@
-import { generateSessionId, isValidSessionId } from '@nimbus-sh/sdk/worker';
+// Imported via the narrow subpath (not `@nimbus-sh/sdk/worker`) so this
+// module stays loadable outside workerd — the full worker barrel imports
+// `cloudflare:*` builtins.
+import { generateSessionId, isValidSessionId } from '@nimbus-sh/worker/session-id';
 import type { DemoAuth } from './demo-auth.js';
+
+/**
+ * The single synthetic principal that owns every anonymous docs-terminal
+ * session. Real users are always `cf_<hash>`, so it can never collide.
+ */
+export const ANON_USER_ID = 'anon';
 
 export interface DemoSession {
   sessionId: string;
@@ -67,11 +76,55 @@ export async function createDemoSession(env: any, auth: DemoAuth, requestedId?: 
   throw new Error('Could not allocate a unique Nimbus demo session id');
 }
 
-export async function loadOwnedDemoSession(
-  env: any,
-  sessionId: string,
-  auth: DemoAuth,
-): Promise<DemoSession | null> {
+/**
+ * Create an anonymous docs-terminal session: fixed lifetime (no idle
+ * extension), owned by the synthetic {@link ANON_USER_ID} principal. The
+ * global cap on concurrently live anon sessions is enforced atomically by
+ * the guarded INSERT — returns null when the cap is reached.
+ */
+export async function createAnonDemoSession(env: any): Promise<DemoSession | null> {
+  const now = Date.now();
+  const expiresAt = now + anonTtlMs(env);
+  const db = demoDb(env);
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const sessionId = generateSessionId();
+    try {
+      const results = await db.batch([
+        db.prepare(`
+          INSERT OR IGNORE INTO demo_users (user_id, cf_subject_hash, display_name, created_at, last_login_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).bind(ANON_USER_ID, ANON_USER_ID, 'Anonymous (docs terminal)', now, now),
+        db.prepare(`
+          INSERT INTO demo_sessions (session_id, user_id, created_at, last_seen_at, expires_at, status)
+          SELECT ?, ?, ?, ?, ?, 'active'
+          WHERE (
+            SELECT COUNT(*) FROM demo_sessions
+            WHERE user_id = ? AND status = 'active' AND expires_at > ?
+          ) < ?
+        `).bind(sessionId, ANON_USER_ID, now, now, expiresAt, ANON_USER_ID, now, anonMaxActive(env)),
+      ]);
+      if (Number(results[1]?.meta?.changes ?? 0) === 0) return null;
+      return {
+        sessionId,
+        userId: ANON_USER_ID,
+        createdAt: now,
+        lastSeenAt: now,
+        expiresAt,
+        status: 'active',
+        destroyedAt: null,
+        destroyReason: null,
+      };
+    } catch (e: any) {
+      // Retry only on session-id collision; surface everything else.
+      if (!/UNIQUE constraint failed/.test(String(e?.message ?? e))) throw e;
+    }
+  }
+
+  throw new Error('Could not allocate a unique Nimbus demo session id');
+}
+
+export async function loadDemoSession(env: any, sessionId: string): Promise<DemoSession | null> {
   if (!isValidSessionId(sessionId)) return null;
   const row = await demoDb(env).prepare(`
     SELECT session_id, user_id, created_at, last_seen_at, expires_at, status, destroyed_at, destroy_reason
@@ -79,8 +132,7 @@ export async function loadOwnedDemoSession(
     WHERE session_id = ?
     LIMIT 1
   `).bind(sessionId).first() as any;
-  if (!row || row.user_id !== auth.userId) return null;
-  return rowToDemoSession(row);
+  return row ? rowToDemoSession(row) : null;
 }
 
 export async function touchDemoSession(env: any, session: DemoSession): Promise<void> {
@@ -218,6 +270,14 @@ function demoDb(env: any): any {
 
 function idleTtlMs(env: any): number {
   return Math.max(1, envNumber(env, 'DEMO_SESSION_IDLE_TTL_DAYS', 3)) * 24 * 60 * 60 * 1000;
+}
+
+function anonTtlMs(env: any): number {
+  return Math.max(60, envNumber(env, 'DEMO_ANON_TTL_SECONDS', 600)) * 1000;
+}
+
+function anonMaxActive(env: any): number {
+  return Math.max(1, Math.floor(envNumber(env, 'DEMO_ANON_MAX_ACTIVE', 10)));
 }
 
 function touchDebounceMs(env: any): number {

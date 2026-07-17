@@ -106,8 +106,20 @@
 	    "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
 	    "DEMO_AUTH_COOKIE_DAYS": "30",
 	    "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
-	    "DEMO_CLEANUP_BATCH_SIZE": "100"
+	    "DEMO_CLEANUP_BATCH_SIZE": "100",
+	    "DEMO_ANON_TTL_SECONDS": "600",
+	    "DEMO_ANON_MAX_ACTIVE": "10"
 	  },
+  // Per-IP limiter for the anonymous docs-terminal endpoint
+  // (POST /api/demo/anon-session). Counters are shared across Workers on
+  // the account by namespace_id; period must be 10 or 60 (seconds).
+  "ratelimits": [
+    {
+      "name": "ANON_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 6, "period": 60 }
+    }
+  ],
   "assets": {
     // The static shell assets live in @nimbus-sh/worker even though
     // application code imports the embedder API from @nimbus-sh/sdk/worker.
@@ -159,7 +171,11 @@
 	    { "binding": "LOADER" }
 	  ],
 	  "triggers": {
-	    "crons": ["17 * * * *"]
+	    // Every 10 minutes: anonymous docs-terminal sessions live ~10 min
+	    // (DEMO_ANON_TTL_SECONDS); an hourly sweep would let their DOs
+	    // overstay the TTL by up to 6x. The cleanup scan is a cheap indexed
+	    // D1 SELECT, so the extra cadence costs nothing when idle.
+	    "crons": ["*/10 * * * *"]
 	  },
   // R2-backed cross-tenant npm cache.
   //
@@ -248,8 +264,17 @@
 	        "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
 	        "DEMO_AUTH_COOKIE_DAYS": "30",
 	        "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
-	        "DEMO_CLEANUP_BATCH_SIZE": "100"
+	        "DEMO_CLEANUP_BATCH_SIZE": "100",
+	        "DEMO_ANON_TTL_SECONDS": "600",
+	        "DEMO_ANON_MAX_ACTIVE": "10"
 	      },
+      "ratelimits": [
+        {
+          "name": "ANON_RATE_LIMITER",
+          "namespace_id": "1001",
+          "simple": { "limit": 6, "period": 60 }
+        }
+      ],
 	      "durable_objects": {
 	        "bindings": [
 	          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
@@ -266,7 +291,7 @@
 	        { "binding": "LOADER" }
 	      ],
 	      "triggers": {
-	        "crons": ["17 * * * *"]
+	        "crons": ["*/10 * * * *"]
 	      },
       "r2_buckets": [
         {
