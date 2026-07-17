@@ -154,4 +154,82 @@ function callbackResult(invoke) {
   );
 }
 
+{
+  const metadata = {
+    home: { type: 'directory', mode: 0o40755, uid: 0, gid: 0 },
+    'home/user': { type: 'directory', mode: 0o40755, uid: 1000, gid: 1000 },
+    'home/user/root-owned': { type: 'file', size: 4, mode: 0o100644, uid: 0, gid: 0 },
+    'home/user/user-owned': { type: 'file', size: 4, mode: 0o100644, uid: 1000, gid: 1000 },
+    'home/user/locked': { type: 'directory', size: 0, mode: 0o40555, uid: 0, gid: 0 },
+  };
+  const bundle = {
+    'home/user/root-owned': 'root',
+    'home/user/user-owned': 'user',
+  };
+  const user = createShim({ bundle: { ...bundle }, metadata });
+
+  for (const write of [
+    () => user.fs.writeFileSync('/home/user/root-owned', 'changed'),
+    () => user.fs.appendFileSync('/home/user/root-owned', 'changed'),
+  ]) {
+    assert.throws(write, (error) => {
+      assert.equal(error.code, 'EACCES');
+      assert.equal(error.errno, -13);
+      assert.equal(error.syscall, 'open');
+      assert.equal(error.path, '/home/user/root-owned');
+      return true;
+    });
+  }
+  assert.equal(user.fs.readFileSync('/home/user/root-owned', 'utf8'), 'root', 'denied sync writes do not mutate the local view');
+  assert.throws(
+    () => user.fs.writeFileSync('/home/user/locked/new', 'x'),
+    (error) => error.code === 'EACCES' && error.errno === -13 && error.syscall === 'open',
+    'creating a file requires write and search permission on its parent',
+  );
+  assert.doesNotThrow(() => user.fs.writeFileSync('/home/user/user-owned', 'changed'));
+  assert.equal(user.fs.readFileSync('/home/user/user-owned', 'utf8'), 'changed');
+
+  assert.equal(typeof user.fs.appendFile, 'function');
+  await assert.rejects(
+    callbackResult((done) => user.fs.appendFile('/home/user/root-owned', 'x', done)),
+    (error) => error.code === 'EACCES' && error.errno === -13 && error.syscall === 'open',
+  );
+
+  const root = createShim({
+    cred: { uid: 0, gid: 0, groups: [0], umask: 0o022 },
+    bundle: { ...bundle },
+    metadata,
+  });
+  assert.doesNotThrow(() => root.fs.writeFileSync('/home/user/root-owned', 'changed'));
+  assert.doesNotThrow(() => root.fs.appendFileSync('/home/user/root-owned', ' again'));
+}
+
+{
+  const shim = createShim({
+    metadata: {
+      home: { type: 'directory', mode: 0o40755, uid: 0, gid: 0 },
+      'home/user': { type: 'directory', mode: 0o40755, uid: 1000, gid: 1000 },
+      'home/user/private': { type: 'directory', mode: 0o40700, uid: 0, gid: 0 },
+      'home/user/private/leaf': { type: 'file', size: 6, mode: 0o100644, uid: 0, gid: 0 },
+    },
+  });
+
+  for (const read of [
+    () => shim.fs.statSync('/home/user/private/leaf'),
+    () => shim.fs.readFileSync('/home/user/private/leaf'),
+    () => shim.fs.readdirSync('/home/user/private'),
+  ]) {
+    assert.throws(read, (error) => error.code === 'EACCES' && error.errno === -13);
+  }
+  assert.equal(shim.fs.statSync('/home/user/private').isDirectory(), true, 'stat of the directory itself only traverses its parent');
+  assert.throws(
+    () => shim.fs.statSync('/home/user/missing'),
+    (error) => error.code === 'ENOENT' && error.errno === -2,
+  );
+
+  await assert.rejects(shim.fs.promises.stat('/home/user/private/leaf'), (error) => error.code === 'EACCES');
+  await assert.rejects(shim.fs.promises.readFile('/home/user/private/leaf'), (error) => error.code === 'EACCES');
+  await assert.rejects(shim.fs.promises.readdir('/home/user/private'), (error) => error.code === 'EACCES');
+}
+
 console.log('node-shims-permissions: all assertions passed');
