@@ -23,6 +23,8 @@ async function run(name, args) {
     args,
     cwd: '/home/user/native-link',
     env: {},
+    cred: CRED_KERNEL,
+    vfs,
     stdout: { write: (value) => { stdout += String(value); } },
     stderr: { write: (value) => { stderr += String(value); } },
   });
