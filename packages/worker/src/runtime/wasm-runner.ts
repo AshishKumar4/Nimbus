@@ -88,6 +88,7 @@ declare const __wasiInitFS: (opts: {
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
   files: Record<string, string>;
   dirs: string[];
+  modes: Record<string, number>;
   // WASI socket and polling support B1+B3: additive optional fields.
   times?: Record<string, { mtime: string; atime: string; ctime: string }>;
   symlinks?: Record<string, string>;
@@ -357,6 +358,7 @@ export function makeWasmRunner(deps: {
           preopens: Array<{ wasiPath: string; vfsPath: string }>;
           files: Record<string, string>;
           dirs: string[];
+          modes: Record<string, number>;
         };
       },
     ): Promise<WasmCallResult> {
@@ -413,10 +415,11 @@ export function makeWasmRunner(deps: {
             preopens: args.wasiFs.preopens,
             files:    args.wasiFs.files,
             dirs:     args.wasiFs.dirs,
+            modes:    args.wasiFs.modes,
           });
         } else {
           // Minimal FS so __wasiFS isn't null when WASI fns are called.
-          initFS({ root: '', preopens: [], files: {}, dirs: [] });
+          initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
         }
         const memRef: { mem: WebAssembly.Memory | null } = { mem: null };
         const wasi = mk({
@@ -577,6 +580,7 @@ export function makeWasmRunner(deps: {
         ],
         files: snap.snapshot.files,
         dirs:  snap.snapshot.dirs,
+        modes: snap.snapshot.modes,
       };
       wasiFsBytes = snap.bytes;
       wasiFsFiles = snap.files;

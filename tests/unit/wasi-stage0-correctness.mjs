@@ -49,11 +49,18 @@ const b64 = (s) => btoa(s);
 
 // A fresh WASI host over a controlled VFS. Preopen fd 3 = the session root.
 function host(fs) {
+  const paths = new Set([
+    'home/user',
+    ...Object.keys(fs.files || {}),
+    ...(fs.dirs || []),
+    ...Object.keys(fs.symlinks || {}),
+  ]);
   P.__wasiInitFS({
     root: 'home/user',
     preopens: [{ wasiPath: '/', vfsPath: 'home/user' }],
     files: fs.files || {},
     dirs: fs.dirs || [],
+    modes: Object.fromEntries([...paths].map((path) => [path, 0o7])),
     symlinks: fs.symlinks || {},
   });
   const mem = new WebAssembly.Memory({ initial: 8 });
