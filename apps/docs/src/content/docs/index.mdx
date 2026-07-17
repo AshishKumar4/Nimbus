@@ -11,24 +11,24 @@ hero:
 import SessionAnatomy from '../../components/diagrams/SessionAnatomy.astro';
 
 <div class="nx-hero">
-  <p class="nx-kicker">nimbus</p>
+  <p class="nx-kicker">nimbus — a cloud computer on Durable Objects</p>
   <h1 class="nx-title">Open a URL.<br />Get a computer.</h1>
   <p class="nx-lede">
-    Nimbus is my experiment in how far Cloudflare's Durable Objects can be
-    pushed: a free, open-source, POSIX-like cloud OS with a real shell,
-    <code>node</code>, <code>python</code>, <code>ruby</code>, <code>git</code>,
-    <code>npm</code>, and a <code>clang</code> that compiles C on the edge.
-    No containers anywhere.
+    Nimbus is a free, open-source, POSIX-like cloud OS on Cloudflare Durable
+    Objects. I built it alone in my spare time as a research project: a real
+    shell with <code>node</code>, <code>python</code>, <code>ruby</code>,
+    <code>git</code>, <code>npm</code>, and <code>clang</code>, with no containers
+    or VMs anywhere.
   </p>
   <div class="nx-actions">
-    <a class="nx-btn nx-btn-primary" href="/docs/start/boot/">Boot a computer</a>
-    <a class="nx-btn" href="/docs/internals/fabric/">How it works</a>
+    <a class="nx-btn nx-btn-primary" href="/docs/start/boot/">Start a session</a>
+    <a class="nx-btn" href="/docs/internals/fabric/">See how it works</a>
   </div>
   <ul class="nx-stats">
-    <li><strong>~0.6 s</strong><span>boot, no warm pool</span></li>
-    <li><strong>$0</strong><span>while idle</span></li>
-    <li><strong>10 GB</strong><span>disk that persists</span></li>
-    <li><strong>0</strong><span>containers or VMs</span></li>
+    <li><strong>~0.6 s</strong><span>median boot</span></li>
+    <li><strong>$0</strong><span>idle cost</span></li>
+    <li><strong>10 GB</strong><span>persistent disk</span></li>
+    <li><strong>0</strong><span>containers and VMs</span></li>
   </ul>
 </div>
 
@@ -38,21 +38,20 @@ import SessionAnatomy from '../../components/diagrams/SessionAnatomy.astro';
 
 <div class="nx-paths">
   <a href="/docs/start/where-it-fits/">
-    <h3>Where it fits</h3>
-    <p>The honest comparison with microVMs, containers, and agentOS — with numbers.</p>
+    <h3>Compare the tradeoffs</h3>
+    <p>See how Nimbus differs from microVMs, containers, and in-process stubs.</p>
   </a>
   <a href="/docs/sdk/embed/">
-    <h3>Computers for your agents</h3>
-    <p>Deploy to your own account, mint a sandbox per task with <code>@nimbus-sh/sdk</code>.</p>
+    <h3>Give agents a computer</h3>
+    <p>Deploy Nimbus to your account and create a sandbox for each task with <code>@nimbus-sh/sdk</code>.</p>
   </a>
   <a href="/docs/fine-print/capabilities/">
-    <h3>The fine print</h3>
-    <p>What works (live-probed), what doesn't, and what I'm still building.</p>
+    <h3>Check what works</h3>
+    <p>See what I test live, what does not work, and what is still in progress.</p>
   </a>
 </div>
 
 <p class="nx-footnote">
-  MIT-licensed hobby research, in alpha. It works — every capability claim
-  traces to a live behavioral probe — but there are rough edges, and I work
-  on it in my spare time.
+  Nimbus is MIT-licensed and in alpha. I test every capability claim against a
+  live session, but this is still spare-time research and there are rough edges.
 </p>

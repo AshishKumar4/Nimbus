@@ -8,13 +8,13 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 <NimbusSandbox title="nimbus — first boot" rows={14} />
 
-The terminal above is live — the button boots a real session, the same
-thing [nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com)
-gives you when you press **Launch**. The URL you land on, `/s/<id>/`, is
-the computer. Bookmark it. Come back next week and your files are still
-there; an idle session costs nothing.
+The terminal is live. The boot button creates a real session — the same
+thing **Launch** gives you at
+[nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com).
+The `/s/<id>/` URL is your computer. Bookmark it. Your files persist when
+you leave, and an idle session costs nothing.
 
-Things worth typing first:
+Try this first:
 
 ```bash
 node --version              # workerd nodejs_compat, the same V8 as Workers
@@ -23,8 +23,8 @@ cd Markflow && npm install  # real npm, live registry
 npm run dev                 # vite with HMR, previewed in the iframe
 ```
 
-From the SDK, sandboxes are cheap enough to mint one per task — create to
-first command is ~0.6 s median, [measured](/docs/fine-print/benchmarks/):
+The SDK can create one sandbox per task. Create to first command is ~0.6 s
+median in [my measurements](/docs/fine-print/benchmarks/).
 
 <Tabs>
 <TabItem label="Colocated (your Worker)">
@@ -56,7 +56,7 @@ await box.ready();
 </TabItem>
 </Tabs>
 
-And to put it on your own Cloudflare account:
+To run Nimbus in your own Cloudflare account:
 
 ```bash
 npx create-nimbus-app my-nimbus-worker && cd my-nimbus-worker && npm install
@@ -65,7 +65,7 @@ npx wrangler secret put JWT_SECRET
 npx wrangler deploy
 ```
 
-`setup cloudflare` creates the R2 buckets and seeds the Python, Ruby, and
-clang runtimes; [Embed Nimbus in a Worker](/docs/sdk/embed/) has the
-details. One warning about the hosted demo: it's for evaluation — no SLA,
-it may get reset, and it's not a place for secrets.
+`setup cloudflare` creates the R2 buckets and seeds the Python, Ruby, and clang
+runtimes. [Embed Nimbus in a Worker](/docs/sdk/embed/) has the details. The
+hosted demo is only for evaluation. It has no SLA, may be reset, and is not a
+place for secrets.

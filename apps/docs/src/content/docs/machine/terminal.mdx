@@ -1,6 +1,6 @@
 ---
 title: Terminal & shell
-description: A real shell — structured POSIX-like parsing, stateful REPLs, attached TTY tabs, session recovery.
+description: A POSIX-like shell with stateful Python and Ruby REPLs, attached tabs, and recovery.
 ---
 
 ```bash
@@ -11,37 +11,36 @@ banana
 $ chmod +x greet.sh && ./greet.sh   # a real, persisted exec bit
 ```
 
-That's a real shell — a lexer, parser, and interpreter for POSIX-like
-syntax, not a regex matcher. Pipes, redirects, heredocs, command
-substitution, `set -e`, `trap`, `source`, `$?`, and 60+ coreutils.
-`./script.sh` and `./hello.wasm` dispatch by shebang or WASM magic.
-Deeper corners — full IFS splitting, complete job control — aren't done;
-the probe suite in `tests/behavioral/shell/` defines what I claim.
+I built a real shell, with a lexer, parser, and interpreter for POSIX-like
+syntax. It isn't a regex matcher. Pipes, redirects, heredocs, command
+substitution, `set -e`, `trap`, `source`, `$?`, and 60+ coreutils work.
+Shebangs and WASM magic dispatch `./script.sh` and `./hello.wasm`.
+Full IFS splitting and complete job control aren't done. The probes in
+`tests/behavioral/shell/` are the source of truth for what I claim.
 
 ## REPLs
 
-`python`, `ruby`, `node`, and `bun` with no arguments drop into a REPL.
-Python and Ruby are fully stateful: real interpreters, so variables and
-imports persist across submits. `node` and `bun` can't be — workerd's CSP
-blocks runtime `eval`, so declarations don't survive between submits. The
-banner says exactly that, and scripts are unaffected.
-<kbd>Ctrl</kbd>+<kbd>D</kbd> or `exit` leaves.
+Run `python`, `ruby`, `node`, or `bun` with no arguments to open a REPL.
+Python and Ruby are stateful real interpreters, so variables and imports
+persist across submits. Node and Bun can't keep declarations: workerd's CSP
+blocks runtime `eval`. Their banners say so. Scripts are unaffected.
+Leave with <kbd>Ctrl</kbd>+<kbd>D</kbd> or `exit`.
 
 ## Full-screen CLIs <span class="nimbus-chip" data-kind="alpha">alpha</span>
 
-A foreground npm-bin launch gets its own attached tab: keystrokes go to
-the process, resizes propagate, ANSI redraws render, and the same bin
-piped sees `isTTY: false`, like a real OS. The Pi coding agent is probed
-end to end through both its install paths.
+Foreground npm bins open in attached tabs. Keystrokes reach the process,
+resizes propagate, and ANSI redraws render. Pipe the same bin and it sees
+`isTTY: false`. I probe the Pi coding agent end to end through both install
+paths.
 
-opencode is the stress test, and here's where it stands: the serve half
-boots, passes its health gate, and streams SSE; the TUI half's boot still
-trips a supervisor memory reset I'm investigating, so I don't claim the
-full TUI yet. Full PTY parity — raw/cooked modes, signals, scrollback
-replay — is roadmap, not a claim.
+opencode is my stress test. Its serve half boots, passes its health gate,
+and streams SSE. The TUI half's boot still trips a supervisor memory reset.
+I'm investigating it, so I don't claim the full TUI. Full PTY parity,
+including raw and cooked modes, signals, and scrollback replay, is roadmap.
 
 ## Recovery
 
-A dropped WebSocket reconnects with `cwd`, environment, and files intact.
-One active terminal owner at a time; on deployments that enforce auth, a
-joiner needs a valid [attach token](/docs/sdk/tokens/) too.
+After a dropped WebSocket, the terminal reconnects with `cwd`, environment,
+and files intact. One person owns the active terminal. If a deployment
+enforces auth, anyone joining also needs a valid
+[attach token](/docs/sdk/tokens/).

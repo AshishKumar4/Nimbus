@@ -1,6 +1,6 @@
 ---
 title: Toolchains & packages
-description: node, python, ruby, and a real clang — plus npm, pip, and gem, installing by ABI, not by hope.
+description: The exact runtime and package support for Node, Bun, Python, Ruby, and C.
 ---
 
 ```bash
@@ -12,18 +12,16 @@ $ clang hello.c -o hello.wasm && ./hello.wasm
 hello from clang on the edge
 ```
 
-Four toolchains ship with the machine, and I'll describe each exactly as
-it is. `node` and `bun` run on workerd's `nodejs_compat` — the same V8
-your Workers run on, with Nimbus's shims for `fs`, `child_process`, HTTP,
-streams, and the rest; not the upstream binaries, and not an interpreter
-stub. `python` is Pyodide-compiled CPython 3.13, the real interpreter.
-`ruby` is ruby.wasm 3.3. And `clang` is LLVM 8 with a modern wasi-libc
-sysroot, compiling C to `wasm32-wasi-nimbus` in-session: multi-file
-builds, your headers, `fopen` against your files. `-pthread` is refused
-at link time on purpose — a partial `wasi-threads` would silently corrupt
-data, and [I wrote up why](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md).
+`node` and `bun` run on workerd's `nodejs_compat` V8 with Nimbus shims for
+`fs`, `child_process`, HTTP, and streams. They are not upstream Node or Bun
+binaries, but they aren't stubs either. `python` is Pyodide CPython 3.13.
+`ruby` is ruby.wasm 3.3. `clang` is LLVM 8 with a modern wasi-libc sysroot.
+It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
+builds, your headers, and `fopen` against your files. I refuse `-pthread` at
+link time because partial `wasi-threads` support could corrupt data.
+[I wrote up why](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md).
 
-Packages install by ABI, not by hope:
+Package installers check the ABI:
 
 ```bash
 npm install zod                 # ~6 s cold; warm installs 9–16× faster
@@ -32,14 +30,12 @@ pip install flask               # pure wheels from PyPI (alpha)
 gem install rack                # pure gems from RubyGems (alpha)
 ```
 
-npm is fully supported against the live registry — tarballs cache in R2
-across sessions, big dependency trees shard across peer DOs, and a
-611-package app lands in ~165 s cold. `pip` and `gem` are alpha: pure
-packages work end to end (Flask and Rack apps serve preview tabs,
-probed), plus curated source artifacts and declared Pyodide extension
-modules. Runtimes are packages too — run `python` before it's installed
-and the shell prints the install hint.
+npm works against the live registry. Tarballs cache in R2 across sessions,
+large dependency trees shard across peer DOs, and a 611-package app installs
+in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end;
+probes run Flask and Rack apps in preview tabs. Curated source artifacts and
+declared Pyodide extension modules also work. Runtimes are packages too. Run
+`python` before installing it and the shell prints the install hint.
 
-The line I hold everywhere: nothing native pretends. No manylinux wheels,
-no native gems, no `.node` addons, no ELF. Every unsupported artifact
-fails before import with a diagnostic that says exactly why.
+I don't pretend native artifacts work. Manylinux wheels, native gems, `.node`
+addons, and ELF files fail before import with an exact ABI diagnostic.

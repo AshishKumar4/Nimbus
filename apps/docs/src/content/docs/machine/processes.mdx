@@ -1,6 +1,6 @@
 ---
 title: Processes & servers
-description: Every process gets its own isolate; the loopback network and port previews wire them into one machine.
+description: One isolate per process, joined through loopback ports and previews.
 ---
 
 ```bash
@@ -13,33 +13,29 @@ $ curl http://127.0.0.1:3000/
 ok from another isolate
 ```
 
-That `curl` crossed an isolate boundary. Every process here runs in its
-own V8 isolate with its own 128 MiB — the platform cap, a segment rather
-than a ceiling — and the supervisor's port registry wires them into one
-machine. Start a server and it auto-promotes to a resident process:
-keyed isolate, registered port, no flags.
+That `curl` crossed an isolate boundary. I run each process in its own V8
+isolate because the platform gives me a 128 MiB cap. I treat that cap as a
+segment, not the machine's ceiling. The supervisor joins processes through
+its port registry. Start a server and it automatically becomes resident,
+with a keyed isolate and registered port. No flags are needed.
 
-Three process kinds. One-shots spawn, run, stream their writes back,
-and exit. Residents survive across requests and own ports. Attached TTYs
-are residents with an interactive tab
-([terminal & shell](/docs/machine/terminal/), alpha). The process table
-lives in the supervisor, so `ps` stays truthful even when the platform
-evicts a facet — an unrehydratable process is marked dead with a reason,
-never left a zombie. Logs are durable and bounded, and
-`child_process.spawn`/`exec`/`execFile` work inside Node with real piped
-stdio.
+One-shot processes run, stream their writes back, and exit. Residents survive
+across requests and own ports. Attached TTYs are residents with an interactive
+tab ([terminal & shell](/docs/machine/terminal/), alpha). The supervisor owns
+the process table, so `ps` stays honest after a facet eviction. If a process
+can't be restored, I mark it dead with a reason. There are no zombies. Logs
+are durable and bounded. Node supports `child_process.spawn`, `exec`, and
+`execFile` with piped stdio.
 
-Ports become previews. When a process starts listening, its preview tab
-opens and focuses. It's a real `Request`/`Response` path — that's why
-Vite HMR works end to end (302 ms median) — and it streams: SSE ticks and
-chunked bodies relay live, `curl` writes chunks as they arrive,
-<kbd>Ctrl</kbd>+<kbd>C</kbd> cancels.
+Listening ports open and focus preview tabs. The path uses real
+`Request`/`Response` objects and streams as data arrives. SSE ticks, chunked
+bodies, and `curl` output stay live; <kbd>Ctrl</kbd>+<kbd>C</kbd> cancels.
+Vite HMR measures 302 ms median end to end.
 
-Outbound, `fetch` and Node's HTTP clients work everywhere, WASI binaries
-get real TCP through `/dev/tcp/<host>/<port>`, and npm, pip, gem, and git
-all ride it. Inbound is HTTP(S) through session routes only — the
-platform offers no raw public TCP listeners.
+Outbound access is open. `fetch`, Node HTTP clients, npm, pip, gem, and git
+use it. WASI binaries get TCP through `/dev/tcp/<host>/<port>`. Inbound access
+is HTTP(S) through session routes. The platform has no raw public TCP inbound.
 
-Because loopback crosses isolates, one app can be several cooperating
-processes — that's how opencode runs (alpha). `fork()` isn't a shipped
-syscall yet; the mechanism is [proven live](/docs/fine-print/research/).
+Loopback lets one app span cooperating isolates. The opencode server and TUI
+pair is alpha. `fork()` is proven research, but it isn't a shipped syscall;
+the evidence is [here](/docs/fine-print/research/).

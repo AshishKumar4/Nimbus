@@ -1,35 +1,34 @@
 ---
 title: The session agent
-description: A chat surface living inside the same Durable Object as your terminal — same disk, same processes, same ports.
+description: An agent that shares the terminal's Durable Object, disk, processes, and ports.
 ---
 
-The agent in every session isn't bridged in from outside — it lives in
-the same Durable Object as your terminal. Same filesystem, same shell,
-same process table, same preview ports. When it edits a file your editor
-sees the change; when it starts a server your preview tab opens.
+I run the agent in the same Durable Object as the terminal. They share one
+disk, shell, process table, and set of ports. When the agent edits a file, the
+editor sees it. When it starts a server, the preview tab opens.
 
-It speaks the AI SDK over Workers AI's OpenAI-compatible endpoint,
-optionally through an AI Gateway, and streams into the chat pane with
-thinking state and tool calls rendered inline.
+It uses the AI SDK with Workers AI's OpenAI-compatible endpoint. An AI Gateway
+is optional. Replies stream into the chat pane, with thinking state and tool
+calls shown inline.
 
-Who pays for inference is the one real decision:
+You choose who pays for inference:
 
-- **User OAuth** — each user connects their own Cloudflare account
-  (Authorization Code + PKCE) and spends their own Workers AI quota. The
-  hosted demo works this way.
-- **Owner token** — your API token pays for everyone.
+- With user OAuth, each user connects a Cloudflare account through
+  Authorization Code + PKCE and spends their own Workers AI quota. The hosted
+  demo works this way.
+- With an owner token, your API token pays for everyone.
 
-Either way, user OAuth tokens never touch Durable Object storage. They
-live only in encrypted `HttpOnly`, `Secure`, `SameSite=Lax` cookies
-scoped to the session URL.
+I never put user OAuth tokens in Durable Object storage. They live only in
+encrypted `HttpOnly`, `Secure`, `SameSite=Lax` cookies scoped to the session
+URL.
 
 ## Wiring OAuth into your deployment
 
-In Cloudflare's **Create OAuth client** form: grant type
-`Authorization Code`, token auth method `None`, redirect URL
-`https://<your-host>/api/nimbus/oauth/callback`. Select only these
-scopes — and not `Account API Gateway`, which is API Shield, not AI
-Gateway:
+In Cloudflare's **Create OAuth client** form, use grant type
+`Authorization Code`, token auth method `None`, and redirect URL
+`https://<your-host>/api/nimbus/oauth/callback`. Select only the scopes in the
+table. Don't select `Account API Gateway`; that belongs to API Shield, not AI
+Gateway.
 
 | Scope ID | Why |
 |---|---|
@@ -54,7 +53,7 @@ Gateway:
 npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 ```
 
-For the owner-token path instead, set `NIMBUS_CLOUDFLARE_ACCOUNT_ID` in
-vars and `NIMBUS_CLOUDFLARE_API_TOKEN` as a secret. Custom login flows
-can build on the OAuth helpers exported from `@nimbus-sh/sdk/worker`
+For the owner-token path, set `NIMBUS_CLOUDFLARE_ACCOUNT_ID` in vars and
+`NIMBUS_CLOUDFLARE_API_TOKEN` as a secret. For a custom login flow, use the
+OAuth helpers from `@nimbus-sh/sdk/worker`
 ([configure the handler](/docs/sdk/handler/)).
