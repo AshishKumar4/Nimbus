@@ -20,6 +20,7 @@ root.mkdir('home', { mode: 0o755 });
 root.mkdir('home/user', { mode: 0o755 });
 root.chown('home/user', USER.uid, USER.gid);
 root.writeFile('home/user/no-access', 'NEVER', { mode: 0o000 });
+root.writeFile('home/user/readable', 'VISIBLE\n', { mode: 0o644 });
 root.writeFile('home/user/root-secret', 'TOPSECRET\n', { mode: 0o600 });
 root.mkdir('home/user/locked', { mode: 0o755 });
 root.writeFile('home/user/locked/keep', 'keep', { mode: 0o644 });
@@ -48,6 +49,25 @@ assert.equal(deniedRm.exitCode, 1);
 assert.match(deniedRm.stderr, /Permission denied/);
 assert.equal(root.readFileString('home/user/locked/keep'), 'keep', 'denied rm preserves the file');
 
+const xargsCat = await run('xargs', ['cat'], USER, rawVfs.as(USER), 'readable\n');
+assert.deepEqual(xargsCat, {
+  exitCode: 0,
+  stdout: 'VISIBLE\n',
+  stderr: '',
+}, 'xargs preserves caller credentials when dispatching cat');
+
+const deniedXargsCat = await run('xargs', ['cat'], USER, rawVfs.as(USER), 'no-access\n');
+assert.equal(deniedXargsCat.exitCode, 1);
+assert.equal(deniedXargsCat.stdout, '');
+assert.match(deniedXargsCat.stderr, /Permission denied/);
+assert.doesNotMatch(deniedXargsCat.stderr, /TypeError|undefined is not an object/);
+
+const deniedXargsRm = await run('xargs', ['rm'], USER, rawVfs.as(USER), 'locked/keep\n');
+assert.equal(deniedXargsRm.exitCode, 1);
+assert.match(deniedXargsRm.stderr, /Permission denied/);
+assert.doesNotMatch(deniedXargsRm.stderr, /TypeError|undefined is not an object/);
+assert.equal(root.readFileString('home/user/locked/keep'), 'keep', 'xargs denied rm preserves the file');
+
 const elevatedCat = await run('sudo', ['cat', 'root-secret'], USER);
 assert.equal(elevatedCat.exitCode, 0);
 assert.equal(elevatedCat.stdout, 'TOPSECRET\n');
@@ -70,7 +90,7 @@ assert.equal(hiddenExists.stderr, '');
 
 console.log('shell unix command permissions: ok');
 
-async function run(name, args, cred, invocationVfs = rawVfs.as(cred)) {
+async function run(name, args, cred, invocationVfs = rawVfs.as(cred), stdin = '') {
   const command = await registry.resolve(name);
   assert.ok(command, `${name} is registered`);
   let stdout = '';
@@ -82,9 +102,11 @@ async function run(name, args, cred, invocationVfs = rawVfs.as(cred)) {
     cred,
     pid: 71,
     vfs: invocationVfs,
+    stdin,
     stdout: { write: (value) => { stdout += String(value); } },
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,
+    setUmask: () => {},
     runAs: async (targetCred, targetArgv) => {
       const result = await run(targetArgv[0], targetArgv.slice(1), targetCred);
       stdout += result.stdout;

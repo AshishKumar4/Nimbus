@@ -24,6 +24,7 @@ import {
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 
 type Ctx = {
+  pid: number;
   args: string[];
   stdout: { write(s: string): void };
   stderr: { write(s: string): void };
@@ -32,6 +33,10 @@ type Ctx = {
   stdin?: string;
   cred: VfsCred;
   vfs: CredentialedVfs;
+  signal: AbortSignal;
+  setUmask(mask: number): void;
+  runAs(cred: VfsCred, argv: string[]): Promise<number>;
+  execInterpreterDepth?: number;
 };
 
 type CmdFn = (ctx: Ctx) => number | Promise<number>;
@@ -1953,14 +1958,19 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
 
     // Run in batches.
     const newCtx = (newArgs: string[]) => ({
+      pid: ctx.pid,
+      cred: ctx.cred,
       args: newArgs,
       env: ctx.env,
       cwd: ctx.cwd,
-      vfs: (ctx as any).vfs,
+      vfs: ctx.vfs,
       stdout: ctx.stdout,
       stderr: ctx.stderr,
       stdin: '',  // xargs doesn't pipe its own stdin to children
-      signal: (ctx as any).signal,
+      signal: ctx.signal,
+      setUmask: ctx.setUmask,
+      runAs: ctx.runAs,
+      execInterpreterDepth: ctx.execInterpreterDepth,
     });
 
     let exit = 0;
