@@ -1,87 +1,84 @@
 ---
 /**
- * NimbusSandbox — an embedded Nimbus terminal for docs pages.
+ * NimbusSandbox — the one live terminal in the docs, on the boot page.
  *
- * Two modes:
+ * Live mode requires `PUBLIC_NIMBUS_ANON_ATTACH_URL` at build time, pointing
+ * at the anonymous ephemeral-session endpoint. Two accepted shapes:
  *
- * 1. **Live** — when the site is built with `PUBLIC_NIMBUS_EMBED_BASE` (and
- *    optionally `PUBLIC_NIMBUS_EMBED_SESSION` + `PUBLIC_NIMBUS_EMBED_TOKEN`),
- *    a "Run live" button swaps in an iframe of the real Nimbus session UI at
- *    `${base}/s/${session}/?nimbus_token=…`. The token rides the normal
- *    attach exchange (packages/worker/src/auth/middleware.ts): the shell GET
- *    consumes `?nimbus_token=`, sets the sid-pinned session cookie, and
- *    redirects to the clean URL. No auth changes are needed server-side.
+ *   - `wss://…` / `ws://…` — a WebSocket URL the terminal attaches to
+ *     directly. Each connection is one ephemeral session.
+ *   - `https://…` / `http://…` — an HTTP endpoint; the terminal POSTs to it
+ *     and expects `{ "wsUrl": string }` back (absolute, or a path resolved
+ *     against the endpoint's origin).
  *
- * 2. **Recorded** — the default everywhere else: a deterministic cast player
- *    that replays a scripted transcript in a Nimbus-styled terminal, with an
- *    "Open in Nimbus →" link to the hosted demo (which requires the normal
- *    Cloudflare login — there is intentionally no anonymous session path).
+ * The socket speaks the session shell protocol from
+ * packages/worker/public/s/index.html: client sends
+ * `{type:'input',data}` / `{type:'resize',cols,rows}`, server sends
+ * `{type:'output',data}` (other frame types are ignored here). Rendering is
+ * a real xterm.js instance, bundled locally, loaded only when the user
+ * boots. After attach, a short first-run script is typed into the session
+ * as real keystrokes, then the keyboard is handed to the reader.
  *
- * Cast steps are `{ cmd, out?: string[] }`. Keep outputs deterministic and
- * traceable — no invented version strings or timings.
+ * Without the env var this renders a plain "boot a computer" link to the
+ * hosted app instead. There is no canned playback in either mode.
  */
-interface CastStep {
-	cmd: string;
-	out?: string[];
-}
 interface Props {
 	title?: string;
-	cast: CastStep[];
 	rows?: number;
 }
-const { title = 'nimbus — /home/user', cast, rows = 14 } = Astro.props;
+const { title = 'nimbus — /home/user', rows = 14 } = Astro.props;
 
-const base = (import.meta.env.PUBLIC_NIMBUS_EMBED_BASE ?? '').replace(/\/+$/, '');
-const session = import.meta.env.PUBLIC_NIMBUS_EMBED_SESSION ?? '';
-const token = import.meta.env.PUBLIC_NIMBUS_EMBED_TOKEN ?? '';
-const liveUrl =
-	base && session
-		? `${base}/s/${session}/${token ? `?nimbus_token=${encodeURIComponent(token)}` : ''}`
-		: null;
-const demoUrl = 'https://nimbus.ashishkumarsingh.com';
+const attachUrl = import.meta.env.PUBLIC_NIMBUS_ANON_ATTACH_URL ?? '';
+const appUrl = 'https://nimbus.ashishkumarsingh.com';
 ---
 
-<div class="nsx" data-nimbus-sandbox data-live-url={liveUrl} style={`--nsx-rows:${rows}`}>
-	<div class="nsx-bar">
-		<span class="nsx-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-		<span class="nsx-title">{title}</span>
-		<span class="nsx-badge" data-role="badge">recorded</span>
-		<span class="nsx-actions">
-			<button type="button" data-role="replay" title="Replay this recording">↺ replay</button>
-			{
-				liveUrl ? (
-					<button type="button" data-role="live" title="Attach to a live Nimbus session">
-						▶ run live
-					</button>
-				) : (
-					<a href={demoUrl} target="_blank" rel="noopener">
-						open in Nimbus →
-					</a>
-				)
-			}
-		</span>
-	</div>
-	<div class="nsx-screen" data-role="screen" aria-live="polite"></div>
-	<script type="application/json" data-role="cast" set:html={JSON.stringify(cast)} />
-</div>
+{
+	attachUrl ? (
+		<div class="nsx" data-nimbus-sandbox data-attach-url={attachUrl} style={`--nsx-rows:${rows}`}>
+			<div class="nsx-bar">
+				<span class="nsx-dots" aria-hidden="true">
+					<i />
+					<i />
+					<i />
+				</span>
+				<span class="nsx-title">{title}</span>
+				<span class="nsx-badge" data-role="badge" hidden />
+			</div>
+			<div class="nsx-screen" data-role="screen">
+				<div class="nsx-boot" data-role="boot">
+					<button type="button" data-role="boot-btn">Boot a computer</button>
+					<p>A real session, created for you when you press the button.</p>
+				</div>
+			</div>
+		</div>
+	) : (
+		<div class="nsx-cta">
+			<p>
+				The quickest way to see all of this is to boot a computer of your own. The hosted app
+				creates one when you open it.
+			</p>
+			<a href={appUrl} target="_blank" rel="noopener">
+				Boot a computer at nimbus.ashishkumarsingh.com →
+			</a>
+		</div>
+	)
+}
 
 <style>
 	.nsx {
-		border: 1px solid var(--sl-color-hairline-light);
+		border: 1px solid var(--sl-color-hairline);
 		border-radius: 0.6rem;
 		overflow: hidden;
 		margin: 1.25rem 0;
-		background: var(--nimbus-terminal-bg, #071527);
-		box-shadow: 0 6px 30px rgba(2, 8, 20, 0.35);
+		background: #0d1117;
 	}
 	.nsx-bar {
 		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.6rem;
 		padding: 0.45rem 0.75rem;
-		background: color-mix(in srgb, var(--nimbus-terminal-bg, #071527) 60%, #0a192f);
-		border-bottom: 1px solid rgba(30, 58, 95, 0.6);
+		background: #161b22;
+		border-bottom: 1px solid #21262d;
 		font-family: var(--sl-font-mono);
 		font-size: 0.72rem;
 	}
@@ -102,173 +99,199 @@ const demoUrl = 'https://nimbus.ashishkumarsingh.com';
 	.nsx-title {
 		flex: 1 1 auto;
 		min-width: 0;
-		color: #8892b0;
+		color: #8b949e;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.nsx-badge {
-		color: #64ffda;
-		border: 1px solid rgba(100, 255, 218, 0.35);
+		color: #56d364;
+		border: 1px solid rgba(86, 211, 100, 0.4);
 		border-radius: 999px;
 		padding: 0 0.5rem;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
+		letter-spacing: 0.06em;
 		font-size: 0.62rem;
 	}
-	.nsx-badge[data-live] {
-		color: #ffd479;
-		border-color: rgba(255, 212, 121, 0.45);
-	}
-	.nsx-actions {
-		margin-left: auto;
-		display: flex;
-		gap: 0.55rem;
-		align-items: center;
-	}
-	.nsx-actions button,
-	.nsx-actions a {
-		font: inherit;
-		color: #ccd6f6;
-		background: none;
-		border: 1px solid rgba(30, 58, 95, 0.9);
-		border-radius: 0.35rem;
-		padding: 0.1rem 0.55rem;
-		cursor: pointer;
-		text-decoration: none;
-		white-space: nowrap;
-	}
-	.nsx-actions button:hover,
-	.nsx-actions a:hover {
-		border-color: #64ffda;
-		color: #64ffda;
+	.nsx-badge[data-state='connecting'],
+	.nsx-badge[data-state='ended'] {
+		color: #d29922;
+		border-color: rgba(210, 153, 34, 0.4);
 	}
 	.nsx-screen {
-		font-family: var(--sl-font-mono);
-		font-size: 0.82rem;
-		line-height: 1.5;
-		color: #ccd6f6;
-		padding: 0.8rem 0.95rem;
-		height: calc(var(--nsx-rows) * 1.25rem);
-		overflow-y: auto;
-		white-space: pre-wrap;
-		word-break: break-word;
+		position: relative;
+		height: calc(var(--nsx-rows) * 1.35rem + 1.2rem);
+		padding: 0.6rem 0.4rem 0.6rem 0.75rem;
 	}
-	.nsx-screen :global(.p) { color: #64ffda; }
-	.nsx-screen :global(.c) { color: #e6f1ff; }
-	.nsx-screen :global(.cur) {
-		display: inline-block;
-		width: 0.55em;
-		height: 1.1em;
-		vertical-align: text-bottom;
+	.nsx-screen :global(.xterm) {
+		height: 100%;
+	}
+	.nsx-boot {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.75rem;
+		text-align: center;
+		padding: 1rem;
+	}
+	.nsx-boot p {
+		margin: 0;
+		color: #8b949e;
+		font-size: var(--sl-text-sm);
+	}
+	.nsx-boot button {
+		font: inherit;
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+		color: #0d1117;
 		background: #64ffda;
-		animation: nsx-blink 1s steps(1) infinite;
-	}
-	@keyframes nsx-blink { 50% { opacity: 0; } }
-	.nsx iframe {
-		display: block;
-		width: 100%;
-		height: calc(var(--nsx-rows) * 1.25rem + 1.6rem);
 		border: 0;
-		background: #0d1117;
+		border-radius: 0.45rem;
+		padding: 0.5rem 1.1rem;
+		cursor: pointer;
+	}
+	.nsx-boot button:hover {
+		background: #8cffe6;
+	}
+	.nsx-boot button[disabled] {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.nsx-cta {
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 0.6rem;
+		padding: 1rem 1.25rem;
+		margin: 1.25rem 0;
+		background: var(--sl-color-gray-7);
+	}
+	.nsx-cta p {
+		margin: 0 0 0.5rem;
+		color: var(--sl-color-gray-2);
+	}
+	.nsx-cta a {
+		font-weight: 600;
 	}
 </style>
 
 <script>
-	type CastStep = { cmd: string; out?: string[] };
-
-	function boot(el: HTMLElement) {
+	async function boot(el: HTMLElement) {
 		const screen = el.querySelector<HTMLElement>('[data-role="screen"]')!;
-		const castEl = el.querySelector('[data-role="cast"]');
+		const bootOverlay = el.querySelector<HTMLElement>('[data-role="boot"]')!;
+		const bootBtn = el.querySelector<HTMLButtonElement>('[data-role="boot-btn"]')!;
 		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
-		const replayBtn = el.querySelector<HTMLButtonElement>('[data-role="replay"]');
-		const liveBtn = el.querySelector<HTMLButtonElement>('[data-role="live"]');
-		const cast: CastStep[] = castEl ? JSON.parse(castEl.textContent || '[]') : [];
-		let run = 0;
+		const attachUrl = el.dataset.attachUrl!;
 
-		const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-		async function play() {
-			const id = ++run;
-			screen.textContent = '';
-			const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-			for (const step of cast) {
-				if (id !== run) return;
-				const line = document.createElement('div');
-				const prompt = document.createElement('span');
-				prompt.className = 'p';
-				prompt.textContent = '$ ';
-				const cmd = document.createElement('span');
-				cmd.className = 'c';
-				const cur = document.createElement('span');
-				cur.className = 'cur';
-				line.append(prompt, cmd, cur);
-				screen.append(line);
-				if (reduced) {
-					cmd.textContent = step.cmd;
-				} else {
-					for (const ch of step.cmd) {
-						if (id !== run) return;
-						cmd.textContent += ch;
-						screen.scrollTop = screen.scrollHeight;
-						await sleep(18 + Math.random() * 26);
-					}
-				}
-				await sleep(reduced ? 0 : 220);
-				cur.remove();
-				for (const outLine of step.out ?? []) {
-					if (id !== run) return;
-					const o = document.createElement('div');
-					o.textContent = outLine;
-					screen.append(o);
-					screen.scrollTop = screen.scrollHeight;
-					if (!reduced) await sleep(60);
-				}
-				if (!reduced) await sleep(420);
-			}
-			if (id !== run) return;
-			const tail = document.createElement('div');
-			const p = document.createElement('span');
-			p.className = 'p';
-			p.textContent = '$ ';
-			const cur = document.createElement('span');
-			cur.className = 'cur';
-			tail.append(p, cur);
-			screen.append(tail);
-			screen.scrollTop = screen.scrollHeight;
+		function setState(state: 'connecting' | 'live' | 'ended', label: string) {
+			badge.hidden = false;
+			badge.dataset.state = state;
+			badge.textContent = label;
 		}
 
-		replayBtn?.addEventListener('click', () => void play());
+		bootBtn.disabled = true;
+		setState('connecting', 'booting…');
 
-		liveBtn?.addEventListener('click', () => {
-			run++; // stop the cast
-			const url = el.dataset.liveUrl;
-			if (!url) return;
-			const iframe = document.createElement('iframe');
-			iframe.src = url;
-			iframe.allow = 'clipboard-read; clipboard-write';
-			iframe.title = 'Live Nimbus session';
-			screen.replaceWith(iframe);
-			badge.textContent = 'live';
-			badge.setAttribute('data-live', '');
-			liveBtn.remove();
-			replayBtn?.remove();
-		});
+		try {
+			const wsUrl = await resolveWsUrl(attachUrl);
+			const [{ Terminal }, { FitAddon }] = await Promise.all([
+				import('@xterm/xterm'),
+				import('@xterm/addon-fit'),
+				// @ts-expect-error — Vite handles the stylesheet import.
+				import('@xterm/xterm/css/xterm.css'),
+			]);
 
-		// Start when scrolled into view.
-		const io = new IntersectionObserver(
-			(entries) => {
-				if (entries.some((e) => e.isIntersecting)) {
-					io.disconnect();
-					void play();
+			const term = new Terminal({
+				cursorBlink: true,
+				cursorStyle: 'bar',
+				fontSize: 13,
+				fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+				theme: {
+					background: '#0d1117',
+					foreground: '#c9d1d9',
+					cursor: '#58a6ff',
+					selectionBackground: '#264f78',
+					black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+					blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
+					brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+					brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+					brightCyan: '#56d364', brightWhite: '#f0f6fc',
+				},
+			});
+			const fit = new FitAddon();
+			term.loadAddon(fit);
+
+			const ws = new WebSocket(wsUrl);
+			await new Promise<void>((resolve, reject) => {
+				ws.addEventListener('open', () => resolve(), { once: true });
+				ws.addEventListener('error', () => reject(new Error('connection failed')), { once: true });
+			});
+
+			bootOverlay.remove();
+			term.open(screen);
+			fit.fit();
+			setState('live', 'live');
+
+			const send = (frame: object) => {
+				if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+			};
+			send({ type: 'resize', cols: term.cols, rows: term.rows });
+
+			ws.addEventListener('message', (e) => {
+				try {
+					const msg = JSON.parse(e.data);
+					if (msg.type === 'output') term.write(msg.data);
+				} catch {}
+			});
+			ws.addEventListener('close', () => setState('ended', 'session ended'));
+
+			term.onData((d) => send({ type: 'input', data: d }));
+			term.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }));
+			new ResizeObserver(() => fit.fit()).observe(screen);
+
+			// First run: real keystrokes into the live session, then the
+			// keyboard is the reader's.
+			const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+			const type = async (line: string) => {
+				for (const ch of line) {
+					send({ type: 'input', data: ch });
+					await sleep(24 + Math.random() * 28);
 				}
-			},
-			{ threshold: 0.25 },
-		);
-		io.observe(el);
+				send({ type: 'input', data: '\r' });
+			};
+			await sleep(1200);
+			for (const cmd of [
+				'uname -a',
+				'node -v',
+				`echo 'console.log("hello from your new computer")' > hello.js`,
+				'node hello.js',
+			]) {
+				await type(cmd);
+				await sleep(1500);
+			}
+			term.focus();
+		} catch {
+			setState('ended', 'could not boot');
+			bootBtn.disabled = false;
+		}
 	}
 
-	document
-		.querySelectorAll<HTMLElement>('[data-nimbus-sandbox]')
-		.forEach((el) => boot(el));
+	async function resolveWsUrl(attachUrl: string): Promise<string> {
+		if (/^wss?:/i.test(attachUrl)) return attachUrl;
+		const res = await fetch(attachUrl, { method: 'POST' });
+		if (!res.ok) throw new Error(`attach endpoint returned ${res.status}`);
+		const body = (await res.json()) as { wsUrl?: string };
+		if (!body.wsUrl) throw new Error('attach endpoint returned no wsUrl');
+		const resolved = new URL(body.wsUrl, attachUrl);
+		if (resolved.protocol === 'https:') resolved.protocol = 'wss:';
+		if (resolved.protocol === 'http:') resolved.protocol = 'ws:';
+		return resolved.href;
+	}
+
+	document.querySelectorAll<HTMLElement>('[data-nimbus-sandbox]').forEach((el) => {
+		el.querySelector('[data-role="boot-btn"]')?.addEventListener('click', () => void boot(el), {
+			once: false,
+		});
+	});
 </script>
