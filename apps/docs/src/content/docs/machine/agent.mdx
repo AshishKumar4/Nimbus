@@ -1,61 +1,42 @@
 ---
 title: The session agent
-description: A chat surface inside every session, running in the same Durable Object as your terminal, with real sandbox tools.
+description: A chat surface living inside the same Durable Object as your terminal — same disk, same processes, same ports.
 ---
 
-Every Nimbus session includes an agent. The center pane of the editor
-workspace switches between the file editor and chat, while the terminal and
-preview stay visible.
+The agent in every session isn't bridged in from outside — it lives in
+the same Durable Object as your terminal. Same filesystem, same shell,
+same process table, same preview ports. When it edits a file your editor
+sees the change; when it starts a server your preview tab opens.
 
-The design fact that matters: the agent lives inside the same
-`NimbusSession` Durable Object as the terminal. It doesn't get a copy of
-your environment or a bridge to it. It gets the same filesystem, shell,
-runtime package manager, process table, logs, and preview ports you're
-using. When it edits a file, your editor sees the change; when it starts a
-server, your preview tab opens.
+It speaks the AI SDK over Workers AI's OpenAI-compatible endpoint,
+optionally through an AI Gateway, and streams into the chat pane with
+thinking state and tool calls rendered inline.
 
-## The model behind it
+Who pays for inference is the one real decision:
 
-The agent uses the AI SDK over Cloudflare Workers AI's OpenAI-compatible
-endpoint, with an optional AI Gateway. Responses stream into the chat UI
-with thinking state, tool-call status, tool inputs, and tool results
-rendered inline.
+- **User OAuth** — each user connects their own Cloudflare account
+  (Authorization Code + PKCE) and spends their own Workers AI quota. The
+  hosted demo works this way.
+- **Owner token** — your API token pays for everyone.
 
-Two quota models:
+Either way, user OAuth tokens never touch Durable Object storage. They
+live only in encrypted `HttpOnly`, `Secure`, `SameSite=Lax` cookies
+scoped to the session URL.
 
-- User OAuth, recommended for shared deployments: each user connects their
-  own Cloudflare account via Authorization Code + PKCE and spends their own
-  Workers AI quota.
-- Owner token fallback: the deployment owner's API token pays for everyone.
+## Wiring OAuth into your deployment
 
-## Token handling
+In Cloudflare's **Create OAuth client** form: grant type
+`Authorization Code`, token auth method `None`, redirect URL
+`https://<your-host>/api/nimbus/oauth/callback`. Select only these
+scopes — and not `Account API Gateway`, which is API Shield, not AI
+Gateway:
 
-User OAuth tokens are stored only in encrypted, `HttpOnly`, `Secure`,
-`SameSite=Lax` browser cookies scoped to the session URL. Nimbus never
-persists user OAuth tokens in Durable Object storage.
-
-## Configuring OAuth for your own deployment
-
-In Cloudflare's **Create OAuth client** form:
-
-- Response Type: `Code`. Grant type: `Authorization Code`. Token
-  Authentication Method: `None`.
-- Redirect URL: `https://<your-nimbus-host>/api/nimbus/oauth/callback`
-- Client URL: `https://<your-nimbus-host>`
-
-Select only the narrow scopes the agent needs:
-
-| Dashboard scope | Scope ID | Why |
-|---|---|---|
-| User Details Read | `user-details.read` | Read the connected user's profile |
-| Account Settings Read | `account-settings.read` | List accounts the user can choose from |
-| Workers AI Write | `ai.write` | Run Workers AI inference |
-| AI Gateway Run | `aig.run` | Only when `NIMBUS_AGENT_GATEWAY_ID` is set |
-
-Do not select `Account API Gateway`; that's an API Shield permission, not
-Cloudflare AI Gateway.
-
-Then configure the deployment:
+| Scope ID | Why |
+|---|---|
+| `user-details.read` | Read the connected user's profile |
+| `account-settings.read` | List the user's accounts |
+| `ai.write` | Run Workers AI inference |
+| `aig.run` | Only when `NIMBUS_AGENT_GATEWAY_ID` is set |
 
 ```jsonc
 // wrangler.jsonc
@@ -73,17 +54,7 @@ Then configure the deployment:
 npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 ```
 
-For the owner-token fallback instead, set `NIMBUS_CLOUDFLARE_ACCOUNT_ID` in
-vars and `NIMBUS_CLOUDFLARE_API_TOKEN` as a secret. The token needs the
-Workers AI / AI Gateway permissions for your chosen model.
-
-Embedders who want to customize the login flow itself can build on the
-OAuth helpers exported from `@nimbus-sh/sdk/worker`
-([configure the handler](/docs/sdk/handler/#agent-oauth-for-embedders)).
-
-## Related
-
-- [Security & isolation](/docs/internals/security/): the full cookie and
-  token posture.
-- [The sandbox API](/docs/sdk/sandbox-api/): the same tools, exposed to
-  your agents via `box.tools()`.
+For the owner-token path instead, set `NIMBUS_CLOUDFLARE_ACCOUNT_ID` in
+vars and `NIMBUS_CLOUDFLARE_API_TOKEN` as a secret. Custom login flows
+can build on the OAuth helpers exported from `@nimbus-sh/sdk/worker`
+([configure the handler](/docs/sdk/handler/)).

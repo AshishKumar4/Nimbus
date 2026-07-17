@@ -1,54 +1,30 @@
 ---
 title: Git
-description: Real git clone over HTTPS with a chunked checkout engine built for big repositories.
+description: Real git clone over HTTPS, engineered as phases so big repositories fit isolate budgets.
 ---
 
-`git clone` on Nimbus is real git over HTTPS, pulling real packfiles from
-real remotes. It runs in a dedicated git engine facet so that network
-fetch, object indexing, and worktree checkout each get a fresh CPU budget.
+import GitPipeline from '../../../components/diagrams/GitPipeline.astro';
+
+<GitPipeline caption="A clone is three different resource profiles — network, CPU, writes. No single isolate budget covers all three, so each phase gets its own." />
+
+`git clone` here is real git over HTTPS — real packfiles from real
+remotes. It's also the hardest single command in the machine: fetch is
+network-heavy, pack indexing is CPU-heavy, checkout is write-heavy. The
+engine runs each phase with a fresh budget and slices checkout into
+resumable chunks, which is the whole trick the picture shows.
 
 ```bash
 git clone https://github.com/AshishKumar4/Markflow
 cd Markflow && npm install && npm run dev
 ```
 
-## Built for big repositories
+Measured: facebook/react (7,300 files) lands in ~28 s, and 84,000-file
+worktrees materialize through bounded continuation. The worktree is
+ordinary disk — the editor sees it, `npm install` runs in it, it persists
+with the session.
 
-Small repos are easy; the engineering is in the big ones. The chunked
-checkout engine materializes large worktrees through bounded continuation:
-the checkout is sliced into resumable chunks so no single phase can blow
-its isolate's CPU budget.
-
-| Repository | Measured |
-|---|---|
-| facebook/react (7,300 files) | ~28 s |
-| 84,000-file worktrees | materialize via bounded continuation |
-
-## Everyday workflows
-
-Clone, branch, inspect, commit. The common workflows agents and humans
-actually run:
-
-```bash
-git clone https://github.com/<org>/<repo>
-git status
-git log --oneline -5
-git add -A && git commit -m "change"
-```
-
-The working tree lives on [the disk](/docs/machine/disk/) like everything
-else. The editor sees it, `npm install` runs in it, and it persists across
-sessions.
-
-## Edges
-
-- HTTPS only. There is no SSH transport.
-- Very large clones: index-pack CPU headroom for repositories past roughly
-  75,000 objects (microsoft/TypeScript-class) is still in progress. The
-  fetch can exceed a per-invocation CPU budget. This is on the
-  [research frontier](/docs/fine-print/research/) list.
-
-## Related
-
-- [The git engine](/docs/internals/git-engine/): how clone-prepare, index,
-  and chunked checkout are phased across facets.
+Two edges I haven't closed. There's no SSH transport, only HTTPS. And on
+repositories past roughly 75,000 objects (microsoft/TypeScript class) the
+indexing phase can still exceed an invocation's CPU budget — slicing the
+indexer the way checkout was sliced is the known fix, and it's
+[in progress](/docs/fine-print/research/).

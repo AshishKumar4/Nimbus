@@ -1,72 +1,58 @@
 ---
-title: Give every agent its own computer
-description: Nimbus is a free, open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network.
+title: Nimbus — open a URL, get a computer
+description: A free, open-source, POSIX-like cloud OS built on Cloudflare Durable Objects. Real shell, real toolchains, no containers anywhere.
+template: splash
 tableOfContents: false
 next: false
+hero:
+  title: ''
 ---
 
-import { CardGrid, LinkCard } from '@astrojs/starlight/components';
-import FabricDiagram from '../../components/FabricDiagram.astro';
+import SessionAnatomy from '../../components/diagrams/SessionAnatomy.astro';
 
-Nimbus is a free, open-source, POSIX-like cloud OS that runs entirely on
-Cloudflare's network. Open a URL and you get a computer: a real shell with
-pipes and 60+ Unix commands, `node`, `python`, `ruby`, `git`, `npm`, and a
-`clang` that compiles C inside the session. The disk holds 10 GB and
-persists. Boot takes about half a second, and an idle computer costs
-nothing, so you can keep as many as you want.
+<div class="nx-hero">
+  <p class="nx-kicker">nimbus</p>
+  <h1 class="nx-title">Open a URL.<br />Get a computer.</h1>
+  <p class="nx-lede">
+    Nimbus is my experiment in how far Cloudflare's Durable Objects can be
+    pushed: a free, open-source, POSIX-like cloud OS with a real shell,
+    <code>node</code>, <code>python</code>, <code>ruby</code>, <code>git</code>,
+    <code>npm</code>, and a <code>clang</code> that compiles C on the edge.
+    No containers anywhere.
+  </p>
+  <div class="nx-actions">
+    <a class="nx-btn nx-btn-primary" href="/docs/start/boot/">Boot a computer</a>
+    <a class="nx-btn" href="/docs/internals/fabric/">How it works</a>
+  </div>
+  <ul class="nx-stats">
+    <li><strong>~0.6 s</strong><span>boot, no warm pool</span></li>
+    <li><strong>$0</strong><span>while idle</span></li>
+    <li><strong>10 GB</strong><span>disk that persists</span></li>
+    <li><strong>0</strong><span>containers or VMs</span></li>
+  </ul>
+</div>
 
-There are no containers or VMs anywhere in the stack. A session is one
-Durable Object for the durable parts (disk, shell, process table) plus a
-fabric of V8 isolates, one per process, joined by a private loopback
-network. That one decision explains most of what these docs describe.
+<div class="nx-anatomy">
+  <SessionAnatomy caption="One session: a supervisor Durable Object keeps what must survive; every process runs in its own isolate and is allowed to die." />
+</div>
 
-<CardGrid>
-  <LinkCard
-    title="Boot your first computer"
-    description="From the browser, the SDK, or your own Cloudflare account. Takes about a minute."
-    href="/docs/start/boot/"
-  />
-  <LinkCard
-    title="A tour of the machine"
-    description="Shell, disk, toolchains, servers, previews. One walk through what the computer can do."
-    href="/docs/start/tour/"
-  />
-  <LinkCard
-    title="Computers for your agents"
-    description="Embed Nimbus in a Worker and mint a sandbox per task with @nimbus-sh/sdk."
-    href="/docs/sdk/embed/"
-  />
-  <LinkCard
-    title="Under the hood"
-    description="The supervisor, the facet fabric, the SQLite disk, the port registry. How it actually works."
-    href="/docs/internals/fabric/"
-  />
-  <LinkCard
-    title="Where Nimbus fits"
-    description="How it compares to microVM sandboxes, container platforms, and agentOS."
-    href="/docs/start/where-it-fits/"
-  />
-  <LinkCard
-    title="The fine print"
-    description="What works, what is alpha, what does not work, and measured benchmarks."
-    href="/docs/fine-print/capabilities/"
-  />
-</CardGrid>
+<div class="nx-paths">
+  <a href="/docs/start/where-it-fits/">
+    <h3>Where it fits</h3>
+    <p>The honest comparison with microVMs, containers, and agentOS — with numbers.</p>
+  </a>
+  <a href="/docs/sdk/embed/">
+    <h3>Computers for your agents</h3>
+    <p>Deploy to your own account, mint a sandbox per task with <code>@nimbus-sh/sdk</code>.</p>
+  </a>
+  <a href="/docs/fine-print/capabilities/">
+    <h3>The fine print</h3>
+    <p>What works (live-probed), what doesn't, and what I'm still building.</p>
+  </a>
+</div>
 
-## How a session is put together
-
-Every session is one supervisor Durable Object plus a fabric of isolate
-facets, one per process, each with its own memory and CPU budget, wired
-together over a session-local loopback network. Select any part of the
-diagram to see what it owns; the rest of these docs explain each piece.
-
-<FabricDiagram />
-
-:::note
-Nimbus is an MIT-licensed hobby research project, currently in alpha. It
-works, and every capability claim in these docs traces to a live behavioral
-probe, but there are rough edges. The
-[capability matrix](/docs/fine-print/capabilities/) and
-[what does not work](/docs/fine-print/limitations/) say exactly where the
-lines are.
-:::
+<p class="nx-footnote">
+  MIT-licensed hobby research, in alpha. It works — every capability claim
+  traces to a live behavioral probe — but there are rough edges, and I work
+  on it in my spare time.
+</p>

@@ -10,6 +10,19 @@ export default defineConfig({
 	base: '/docs',
 	// Serve from a /docs subtree so the assets-only Worker maps URLs 1:1.
 	outDir: './dist/docs',
+	// Retired URLs from the 2026-07 consolidation keep working.
+	redirects: {
+		'/start/tour': '/docs/start/boot/',
+		'/machine/tty': '/docs/machine/terminal/',
+		'/machine/packages': '/docs/machine/toolchains/',
+		'/machine/network': '/docs/machine/processes/',
+		'/sdk/react': '/docs/sdk/embed/',
+		'/sdk/cli': '/docs/sdk/handler/',
+		'/internals/git-engine': '/docs/machine/git/',
+		'/internals/budgets': '/docs/internals/fabric/',
+		'/internals/security': '/docs/internals/fabric/',
+		'/fine-print/limitations': '/docs/fine-print/capabilities/',
+	},
 	integrations: [
 		starlight({
 			title: 'Nimbus',
@@ -31,7 +44,6 @@ export default defineConfig({
 					label: 'First boot',
 					items: [
 						{ label: 'Boot your first computer', slug: 'start/boot' },
-						{ label: 'A tour of the machine', slug: 'start/tour' },
 						{ label: 'Where Nimbus fits', slug: 'start/where-it-fits' },
 					],
 				},
@@ -40,13 +52,10 @@ export default defineConfig({
 					items: [
 						{ label: 'Terminal & shell', slug: 'machine/terminal' },
 						{ label: 'The disk', slug: 'machine/disk' },
-						{ label: 'Toolchains', slug: 'machine/toolchains' },
-						{ label: 'Package managers', slug: 'machine/packages' },
+						{ label: 'Toolchains & packages', slug: 'machine/toolchains' },
 						{ label: 'Git', slug: 'machine/git' },
-						{ label: 'The network', slug: 'machine/network' },
-						{ label: 'Processes', slug: 'machine/processes' },
+						{ label: 'Processes & servers', slug: 'machine/processes' },
 						{ label: 'The session agent', slug: 'machine/agent' },
-						{ label: 'Interactive TTY apps', slug: 'machine/tty' },
 					],
 				},
 				{
@@ -56,8 +65,6 @@ export default defineConfig({
 						{ label: 'Configure the handler', slug: 'sdk/handler' },
 						{ label: 'The sandbox API', slug: 'sdk/sandbox-api' },
 						{ label: 'Tokens & auth', slug: 'sdk/tokens' },
-						{ label: 'React embed', slug: 'sdk/react' },
-						{ label: 'CLI & runtime ops', slug: 'sdk/cli' },
 					],
 				},
 				{
@@ -67,17 +74,13 @@ export default defineConfig({
 						{ label: 'Inside the disk', slug: 'internals/disk' },
 						{ label: 'The process fabric', slug: 'internals/processes' },
 						{ label: 'Ports & routing', slug: 'internals/network' },
-						{ label: 'The git engine', slug: 'internals/git-engine' },
 						{ label: 'WASI & syscalls', slug: 'internals/wasi' },
-						{ label: 'Security & isolation', slug: 'internals/security' },
-						{ label: 'Budgets & limits', slug: 'internals/budgets' },
 					],
 				},
 				{
 					label: 'The fine print',
 					items: [
-						{ label: 'Capability matrix', slug: 'fine-print/capabilities' },
-						{ label: 'What does not work', slug: 'fine-print/limitations' },
+						{ label: "What works & what doesn't", slug: 'fine-print/capabilities' },
 						{ label: 'Benchmarks', slug: 'fine-print/benchmarks' },
 						{ label: 'Research frontier', slug: 'fine-print/research' },
 					],

@@ -1,17 +1,17 @@
 ---
 title: Benchmarks
-description: Measured numbers with full methodology — session create TTI (ComputeSDK methodology), burst behavior, and everyday operation timings.
+description: Measured, dated, reproducible — session-create TTI with the ComputeSDK methodology, and everyday timings.
 ---
 
-Every number on this page is measured, dated, and reproducible. Where a
-comparison appears, the caveats appear next to it.
+Every number here is measured, dated, and reproducible; where a
+comparison appears, its caveats sit next to it.
 
-## Session create → first command (TTI)
+## Session create → first command
 
-Measured 2026-07-16 with the **ComputeSDK benchmark methodology**: wall-clock
-`sandbox.create()` + first successful `runCommand('node -v')` (exit 0),
-5% trimmed at both ends, composite = 0.60·median + 0.25·P95 + 0.15·P99
-(scored against a 10 s scale) × success rate.
+Measured 2026-07-16 with the ComputeSDK methodology: wall-clock
+`sandbox.create()` plus first successful `runCommand('node -v')`,
+5% trimmed, composite = 0.60·median + 0.25·P95 + 0.15·P99 × success
+rate.
 
 | Mode | N | Success | Median | P95 | P99 | Composite |
 |---|---|---|---|---|---|---|
@@ -19,33 +19,24 @@ Measured 2026-07-16 with the **ComputeSDK benchmark methodology**: wall-clock
 | Staggered (200 ms) | 100 | 100/100 | **0.57 s** | 0.78 s | 0.92 s | 93.3 |
 | Burst (simultaneous) | 100 | 100/100 | **1.15 s** | 1.68 s | 1.96 s | 86.0 |
 
-- **100% success across all 300 full-methodology runs.** One failure
-  occurred in ~370 total sandboxes (a smoke iteration hit a Durable Object
-  storage timeout reset) — reported, not hidden.
-- **Where the time goes:** direct phase measurement (N=15) put
-  `create()`+`ready()` at **545 ms median** and first exec at **23 ms**
-  median — ~96% of TTI is session boot; once booted, exec round-trips are
-  ~20 ms.
-- **No warm pool.** These are honest per-request Durable Object boots. At
-  100 simultaneous creates the median rises to 1.15 s and everything still
-  succeeds.
+These are honest per-request Durable Object boots — no warm pool. Phase
+measurement (N=15) puts `create()`+`ready()` at 545 ms median and first
+exec at 23 ms, so ~96% of TTI is session boot; once booted, exec
+round-trips run ~20 ms. Across ~370 total sandboxes I saw one failure (a
+DO storage timeout reset during a smoke iteration) — reported, not
+hidden.
 
-### Methodology caveats, stated plainly
-
-- Run from a **residential Linux client**, not ComputeSDK's CI runner —
-  network RTT to the edge is inside these numbers. A well-placed runner
-  would likely shave tens of milliseconds.
-- Nimbus is **not** on the official ComputeSDK leaderboard; we ran the
-  unmodified harness against a Nimbus provider locally. Treat cross-provider
-  comparisons directionally.
-- One directly comparable same-platform result: against Cloudflare's own
-  container-based Sandbox SDK (published leaderboard data, run 2026-07-13),
-  Nimbus measured **~3× faster across the board** — 0.61 s vs 1.95 s
-  sequential median, 1.15 s vs 4.05 s burst median.
+Caveats, plainly: I ran from a residential Linux client, so network RTT
+to the edge is inside these numbers, and Nimbus is not on the official
+ComputeSDK leaderboard — I ran the unmodified harness locally. Treat
+cross-provider numbers directionally. The one same-platform comparison:
+against Cloudflare's container-based Sandbox SDK (published leaderboard
+data, 2026-07-13), Nimbus measured ~3× faster across the board — 0.61 s
+vs 1.95 s sequential median, 1.15 s vs 4.05 s burst.
 
 ## Everyday operations
 
-Measured against a live deployment (2026-07):
+Measured against the live deployment, 2026-07:
 
 | Operation | Wall time |
 |---|---|
@@ -55,14 +46,11 @@ Measured against a live deployment (2026-07):
 | `node -e 'console.log(...)'` (warm) | 102–152 ms |
 | Vite hot reload | 302 ms median |
 
-Cross-session caching gives **9–16×** speedups for warm package installs vs
-cold.
+Cross-session caching gives 9–16× warm-vs-cold speedups on package
+installs.
 
-## Regression discipline
-
-Performance claims don't rot silently: `tests/behavioral/perf-regression/`
-asserts thresholds on every deploy, and the behavioral suite is runnable by
-anyone against any live deployment:
+Numbers don't rot silently here: `tests/behavioral/perf-regression/`
+asserts these thresholds on every deploy, and anyone can run the suite:
 
 ```bash
 BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral

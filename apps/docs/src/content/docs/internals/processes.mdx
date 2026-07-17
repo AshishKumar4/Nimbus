@@ -1,84 +1,42 @@
 ---
 title: The process fabric
-description: How facets are staged, keyed, health-gated, evicted, and kept truthful by a supervisor-owned process table.
+description: Facet staging, keyed residents, health gates, and eviction handled honestly — no zombies, ever.
 ---
 
-Every process is a Worker Loader isolate, a facet, created and tracked by
-the supervisor. This page is about the machinery: how facets are staged,
-how big apps load without hurting the supervisor, and what happens when the
-platform takes an isolate away.
+import ProcessLifecycle from '../../../components/diagrams/ProcessLifecycle.astro';
 
-## The process table is the truth
+<ProcessLifecycle caption="The table lives in the DO; the work lives in facets. Anything a facet holds is reconstructible, or the process is marked dead." />
 
-Process state (pid, argv, cwd, state, exit code, `longRunning`,
-`attachedTty`) lives in the Durable Object, never in facets. Facet
-module-scope state is evictable at any moment without an error; the next
-call simply sees fresh state. So the rule is absolute: anything worth
-knowing about a process is supervisor-side, and facet state must be
-reconstructible or the process is marked dead.
-
-Process logs and input queues are durable and bounded; process terminals
+The rule under the diagram is absolute: anything worth knowing about a
+process is supervisor-side. Facet module-scope state can vanish between
+calls without an error — the platform just resets the isolate — so it
+must be reconstructible, and `ps` answers from the Durable Object, never
+from a facet. Logs and input queues are durable and bounded; terminals
 ride hibernatable WebSockets.
 
-## Facet lifecycles
+Residents are the interesting case. A keyed loader entry means
+`vite` or `opencode serve` keeps its warm isolate across requests, port
+registered, route stub resolving from the loader cache. Stubs are
+code-free — they resolve the already-loaded worker, never re-load from
+source, because a re-loaded isolate would be a fresh, empty worker with
+nothing listening. If the facet is gone the stub fails
+loud — the moral equivalent of SIGKILL — instead of a silent zombie. OOM
+in a facet surfaces as a clean, catchable RPC error; the session
+survives.
 
-| Kind | Loader entry | Death |
-|---|---|---|
-| One-shot | per-run | exits with the command |
-| Resident (keyed) | stable key → reused warm isolate | killed, lifecycle-tied, or evicted |
-| Git engine | dedicated | per-phase |
+Staging is where the supervisor protects itself. Big apps arrive as
+module maps — opencode's staged bundle is over 20 MB of sources — and the
+supervisor never materializes them. It builds a small stage spec (argv,
+env, VFS snapshot); the full map is assembled outside the DO on the
+Worker-Loader cache-miss path. I learned that rule live: assembling the
+map inside the supervisor crossed the memory cap and reset the session.
+Two platform facts shape the rest: workerd blocks request-time WASM
+compilation, so WASM rides the module map pre-compiled; and server facets
+are health-gated — polled with a per-poll timeout and an overall budget —
+before anything attaches.
 
-Resident facets are the interesting ones. A keyed loader entry means `vite`
-or `opencode serve` keeps its isolate across requests, its port registered
-in the supervisor's registry, its route stub resolving from the loader
-cache. Route stubs are code-free: they resolve the already-loaded worker
-rather than re-loading from code. Re-loading would silently boot an empty,
-non-listening isolate, so eviction fails loud instead.
-
-## Staging without hurting the supervisor
-
-Big apps arrive as module maps; opencode's staged bundle is over 20 MB of
-module sources. The supervisor never materializes artifact sources. It
-builds only a small stage spec (argv, env, VFS snapshot), and the full
-module map is assembled outside the DO's context on the Worker-Loader
-cache-miss path. This is a hard rule learned live: assembling multi-MB
-module maps inside the supervisor isolate, on top of session baseline,
-crossed the memory cap and reset the DO.
-
-Two more platform facts shape staging:
-
-- No request-time WASM compilation. workerd blocks
-  `WebAssembly.compile`/`new Module` on raw bytes in facets, so WASM must
-  ride the module map as `{ wasm: bytes }` entries, arriving pre-compiled.
-- Readiness is health-gated. A server facet is polled (per-poll timeout,
-  overall budget) before dependents attach, and a wedged poll is abandoned
-  rather than allowed to starve the gate.
-
-## Multi-isolate apps
-
-Because loopback crosses facets, one app can be several processes. The
-opencode pair is the working example: the supervisor spawns
-`opencode serve` as a resident facet, health-gates it over loopback, then
-spawns the TUI as an attached facet pointing at `127.0.0.1:4096`. The pair
-is lifecycle-tied; exiting the TUI reaps the server. Status: the serve half
-boots, passes its health gate, and streams SSE; the attach half's boot
-still trips a supervisor memory reset that is under investigation
-([capability matrix](/docs/fine-print/capabilities/)).
-
-## Eviction semantics
-
-Under memory pressure workerd may reset a facet isolate between calls.
-Nimbus's contract:
-
-- The supervisor treats facet-held process state as evictable, always.
-- A resident process that cannot be resolved from the loader cache fails
-  loud, the moral equivalent of SIGKILL, never a zombie that looks
-  routeable.
-- OOM inside a facet surfaces as a clean, catchable RPC error in the
-  supervisor, not a crash of the session.
-
-## Related
-
-- [Processes](/docs/machine/processes/): the user-facing model.
-- [Ports & routing](/docs/internals/network/): how resident facets receive
-  traffic.
+That gate is what makes multi-isolate apps workable. The opencode pair
+spawns serve, gates it over loopback, then attaches the TUI at
+`127.0.0.1:4096`, lifecycle-tied so exiting one reaps the other. The
+serve half is solid; the TUI half still trips a memory reset I'm
+[investigating](/docs/fine-print/capabilities/).

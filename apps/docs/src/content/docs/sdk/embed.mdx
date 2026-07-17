@@ -1,161 +1,68 @@
 ---
 title: Embed Nimbus in a Worker
-description: Deploy Nimbus into your own Cloudflare account and use it as an interactive dev environment and a programmatic sandbox layer.
+description: Deploy to your own Cloudflare account, then mint sandboxes programmatically or drop the terminal into React.
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+```bash
+npx create-nimbus-app my-nimbus-worker && cd my-nimbus-worker && npm install
+CLOUDFLARE_ACCOUNT_ID=<account-id> npx @nimbus-sh/cli setup cloudflare --name my-nimbus-worker
+npx wrangler secret put JWT_SECRET
+npx wrangler deploy
+```
 
-Nimbus deploys into your own Cloudflare account, where it becomes an
-interactive dev environment and a programmatic sandbox layer for your
-Workers and Durable Object apps.
+That's the whole deploy. `setup cloudflare` creates the R2 buckets Nimbus
+binds to and seeds the Python, Ruby, and clang runtimes. If Wrangler
+reports R2 error `10042`, enable R2 once in the dashboard for that
+account and rerun. The scaffolded Worker is a few lines around
+`createNimbusHandler` from `@nimbus-sh/sdk/worker` —
+[configure the handler](/docs/sdk/handler/) covers every option.
 
-## The packages
-
-| Package | What |
-|---|---|
-| [`@nimbus-sh/sdk`](https://github.com/AshishKumar4/Nimbus/tree/main/packages/sdk) | Public SDK: Worker embedder (`/worker`), programmatic sandboxes (`/sandbox`), Flue connector (`/flue`), token mint/verify, typed errors, session URL helpers |
-| [`@nimbus-sh/worker`](https://github.com/AshishKumar4/Nimbus/tree/main/packages/worker) | The runtime: `NimbusSession` DO, router, assets, runtimes, VFS, auth internals |
-| [`@nimbus-sh/react`](https://github.com/AshishKumar4/Nimbus/tree/main/packages/react) | `<NimbusTerminal />` React component |
-| [`@nimbus-sh/cli`](https://github.com/AshishKumar4/Nimbus/tree/main/packages/cli) | `nimbus init`, `nimbus setup cloudflare`, `token mint`, `runtime sync` |
-| [`create-nimbus-app`](https://github.com/AshishKumar4/Nimbus/tree/main/packages/create-nimbus-app) | `npx create-nimbus-app` scaffold |
-| [`@nimbus-sh/config`](https://github.com/AshishKumar4/Nimbus/tree/main/packages/config) | Typed `defineNimbusConfig()` and `buildNimbusWranglerConfig()` |
-
-## Deploy your own
-
-<Steps>
-
-1. Scaffold and install:
-
-   ```bash
-   npx create-nimbus-app my-nimbus-worker
-   cd my-nimbus-worker
-   npm install
-   ```
-
-2. Provision the account. This creates the R2 buckets Nimbus binds to and
-   seeds the runtime cache for Python, Ruby, and clang:
-
-   ```bash
-   CLOUDFLARE_ACCOUNT_ID=<account-id> npx @nimbus-sh/cli setup cloudflare --name my-nimbus-worker
-   ```
-
-   If Wrangler reports Cloudflare R2 error `10042`, enable R2 once in the
-   Cloudflare Dashboard for that account and rerun the command.
-
-3. Set the auth secret and deploy:
-
-   ```bash
-   npx wrangler secret put JWT_SECRET
-   npx wrangler deploy
-   ```
-
-</Steps>
-
-The embedder surface is `@nimbus-sh/sdk/worker`: it exports the
-`NimbusSession` Durable Object class, `createNimbusHandler`, and the auth
-helpers, so your `wrangler.jsonc` binds the DO and your Worker script stays
-a few lines. [Configure the handler](/docs/sdk/handler/) covers every
-option: auth modes, the remote SDK API, custom routes, and hooks.
-
-## Use it programmatically
-
-The same SDK handle works two ways: colocated through a Durable Object
-binding in your own Worker, or remote against any authenticated Nimbus
-deployment.
+The same SDK handle then works two ways — colocated through your own DO
+binding, or remote against any authenticated deployment:
 
 ```ts
 import { Nimbus } from '@nimbus-sh/sdk';
 import { defineNimbusConfig } from '@nimbus-sh/config';
 
-const nimbusConfig = defineNimbusConfig({
+const config = defineNimbusConfig({
   sandboxes: {
     default: {
       root: '/home/user',
-      tools: { namespace: 'sandbox', kind: 'sandbox' },
-      runtimes: {
-        preinstall: ['python', 'clang'],
-        onDemand: true,
-        allow: ['node', 'bun', 'npm', 'git', 'python', 'ruby', 'clang', 'shell'],
-      },
+      runtimes: { preinstall: ['python'], onDemand: true, allow: ['node', 'npm', 'git', 'python', 'shell'] },
     },
   },
 });
 
-export default {
-  async fetch(_request: Request, env: Env) {
-    const nimbus = Nimbus.fromEnv(env, nimbusConfig);
-    const box = nimbus.sandbox('job-123', { tenant: 'acme', subject: 'agent' });
-
-    const result = await box.exec('python -c "print(2 + 2)"');
-    return Response.json(result);
-  },
-};
+const box = Nimbus.fromEnv(env, config).sandbox('job-123', { tenant: 'acme', subject: 'agent' });
+// or: Nimbus.connect({ endpoint, token, config }).sandbox('job-123')
+const result = await box.exec('python -c "print(2 + 2)"');
 ```
 
-For a remote deployment, mint a scoped token and connect by URL:
+The profile is a real policy boundary — `runtimes.allow` and the
+preinstall/on-demand flags are enforced before any RPC. For agent
+harnesses, `box.tools({ namespace: 'sandbox' })` exposes the whole
+sandbox as a Proteus-style tool provider, and `@nimbus-sh/sdk/flue`
+adapts it to Flue's sandbox contract.
 
-```ts
-import { Nimbus, issueNimbusToken } from '@nimbus-sh/sdk';
+## From React
 
-const token = await issueNimbusToken(env, {
-  tn: 'acme',
-  sub: 'agent',
-  scopes: ['sandbox:use'],
-  sid: 'job-123',
-});
+`@nimbus-sh/react` renders the terminal as an iframe around the session
+shell — your page's JS never touches the WebSocket:
 
-const box = Nimbus.connect({
-  endpoint: 'https://my-nimbus.workers.dev',
-  token,
-  config: nimbusConfig,
-}).sandbox('job-123');
+```tsx
+import { NimbusTerminal } from '@nimbus-sh/react';
+
+<NimbusTerminal endpoint="https://my-nimbus.workers.dev" token={jwt} tenant="acme" sub="alice"
+  onReady={() => console.log('attached')} style={{ height: 500 }} />
 ```
 
-The sandbox profile in `defineNimbusConfig` is a real policy boundary: the
-`runtimes.allow` list and `preinstall`/`onDemand` flags are enforced by the
-SDK before any RPC is made.
+`useNimbusSession` is the same thing headless — it returns
+`{ sessionId, ready, error, attachUrl }`, driven by the shell's
+`nimbus:ready` / `nimbus:error` postMessages, so you can frame the iframe
+yourself.
 
-## For agent harnesses
-
-- `box.tools({ namespace: 'sandbox' })` exposes the sandbox as a
-  Proteus-style tool provider. Read and write files, run commands, manage
-  processes and ports, ready to hand to an agent loop.
-- `@nimbus-sh/sdk/flue` adapts a sandbox to Flue's sandbox-provider
-  contract:
-
-  ```ts
-  import { nimbusFlue } from '@nimbus-sh/sdk/flue';
-
-  const sandboxFactory = nimbusFlue(box);
-  const sessionEnv = await sandboxFactory.createSessionEnv({
-    id: 'job-123',
-    cwd: '/home/user',
-  });
-  ```
-
-## Scope
-
-Nimbus is a Cloudflare Worker/DO/WASM sandbox, not a Linux VM. It supports
-owned VFS, shell, npm/npx, git, long-running HTTP-like processes, Python,
-Ruby, clang-to-WASI, process logs, and port routing. It does not claim
-Docker, apt, GPUs, custom Linux images, native ELF execution, or raw TCP
-listeners.
-
-The live demo at
-[nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com) runs from
+One scope note: Nimbus is a Worker/DO/WASM sandbox, not a Linux VM — the
+boundaries are in [the fine print](/docs/fine-print/capabilities/). The
+hosted demo runs from
 [`apps/hosted-demo`](https://github.com/AshishKumar4/Nimbus/tree/main/apps/hosted-demo),
-the canonical reference embedder and the same shape any external project
-ships.
-
-## Related
-
-- [Configure the handler](/docs/sdk/handler/): every `createNimbusHandler`
-  option.
-- [The sandbox API](/docs/sdk/sandbox-api/): the full method-by-method
-  surface.
-- [Tokens & auth](/docs/sdk/tokens/): the JWT model, scopes, and the attach
-  exchange.
-- [React embed](/docs/sdk/react/): `<NimbusTerminal />` and the headless
-  hook.
-- [CLI & runtime ops](/docs/sdk/cli/): command reference and runtime-cache
-  choices.
+the same embedder shape any external project ships.

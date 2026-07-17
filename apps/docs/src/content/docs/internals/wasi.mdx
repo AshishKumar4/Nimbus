@@ -1,77 +1,45 @@
 ---
 title: WASI & syscalls
-description: The syscall layer under compiled binaries — 45 of 46 preview1 functions, JSPI-suspended sockets, and honest gaps.
+description: 45 of 46 preview1 functions, JSPI-suspended sockets, and the gaps stated exactly.
 ---
 
-Compiled binaries (`clang` output, and any `wasm32-wasi` module you bring)
-run on a hand-written `wasi_snapshot_preview1` host implemented over Nimbus
-primitives (`packages/worker/src/runtime/wasi-instance.ts`).
+Compiled binaries — `clang` output and any `wasm32-wasi` module you
+bring — run on a hand-written `wasi_snapshot_preview1` host. **45 of the
+46 functions are implemented.** The gap is `sock_accept`: preview1 has no
+inbound-socket story (`sock_open`/`bind`/`listen` don't exist in the
+spec; every serious host fills that with an extension), and Nimbus's
+extension is designed but not shipped.
 
-## Coverage
+The parts I'm pleased with:
 
-**45 of the 46 preview1 functions are implemented.** The one gap is
-`sock_accept`: there is no inbound-socket path for WASM yet (preview1
-itself has no `sock_open`/`bind`/`listen`; every serious WASI host fills
-that with an extension, and Nimbus's is designed but not shipped). A small
-number of functions are honest no-op-success stubs where POSIX semantics
-don't map.
+- Blocking I/O actually blocks. Socket calls and `poll_oneoff` are
+  wrapped in `WebAssembly.Suspending`, and `_start` runs under
+  `WebAssembly.promising`, so the module suspends on I/O like a real
+  syscall — feature-detected, with a fallback.
+- Outbound TCP is a synthetic path: `path_open('/dev/tcp/<host>/<port>')`
+  opens a real socket via `cloudflare:sockets`, with documented
+  half-close semantics. `poll_oneoff` handles fd, clock, and socket
+  subscriptions, mixed.
+- The petty POSIX details hold up: `O_NOFOLLOW` and `O_APPEND` honored,
+  symlinks survive `path_rename`, and `read(2)` on a socket fd routes
+  correctly — wasi-libc maps `read` to `fd_read` for *all* fds, and the
+  shim handles it.
 
-Highlights beyond the checklist:
+Programs see the ABI they're on — `NIMBUS_ABI=wasm32-wasi-nimbus`,
+emitted by the in-session clang and used by the runtime catalog to
+classify artifacts. A file with WASM magic (or a persisted exec bit)
+dispatches through the WASI runner as `./prog`, with a pid and a process
+tab like anything else.
 
-- **Async imports via JSPI.** Socket calls and `poll_oneoff` are wrapped in
-  `WebAssembly.Suspending`, and `_start` runs under `WebAssembly.promising`,
-  so the module suspends on I/O like a real blocking syscall
-  (feature-detected, with a fallback).
-- **Outbound TCP** through a synthetic path:
-  `path_open('/dev/tcp/<host>/<port>')` opens a real socket
-  (`cloudflare:sockets`), with documented half-close semantics.
-- **Full `poll_oneoff`**: fd, clock, and socket subscriptions; mixed
-  file/socket/timer polling is probed.
-- **Filesystem semantics that hold up**: `O_NOFOLLOW` honored,
-  `O_APPEND` honored by `fd_write`, symlinks preserved across `path_rename`,
-  and `read(2)` on socket fds routed correctly (wasi-libc maps `read` to
-  `fd_read` for *all* fds; the shim handles it).
+One platform constraint explains a lot: workerd blocks request-time WASM
+compilation from raw bytes, so every module must arrive pre-compiled
+through the module map. That's why Pyodide extension packages must be
+declared startup modules, and why arbitrary dynamic loading fails with a
+diagnostic instead of pretending.
 
-## The ABI: `wasm32-wasi-nimbus`
-
-Nimbus publishes an ABI label so toolchains and packages can target it
-explicitly. WASI programs launched by Nimbus receive `NIMBUS_OS=nimbus`,
-`NIMBUS_ABI=wasm32-wasi-nimbus`, and `NIMBUS_ABI_TARGET=wasm32-wasi-nimbus`
-in their environment; the in-session clang emits it, and the runtime catalog
-classifies binary artifacts by it.
-
-Execution is integrated with the shell: a file with WASM magic bytes (or a
-persisted exec bit) dispatches through the WASI runner as `./prog`, with a
-pid and a process tab like any other process.
-
-## Platform constraint worth knowing
-
-workerd **blocks request-time WASM compilation** from raw bytes. Every
-module, user binaries included, must arrive through the module-map path
-as pre-compiled `WebAssembly.Module` entries. This is why Pyodide extension
-packages must be *declared startup modules*, and why arbitrary dynamic
-extension loading fails by design with a diagnostic rather than pretending.
-
-## Honest gaps
-
-- **Filesystem I/O is snapshot + flush** for WASI processes today: bounded
-  and correct for one-shot commands, wrong for long-running ones. Moving
-  WASI onto the live `RuntimeFsBridge` (JSPI makes async hostcalls
-  possible) is specced and in progress.
-- **stdin is EOF** for WASI processes; interactive/streaming stdio for WASM
-  is part of the FD-layer redesign.
-- **No inbound sockets** (`sock_accept`): WASM servers can't take `/port`
-  traffic yet.
-- **`wasi-threads` is refused at link time, by design**: shared linear
-  memory across the required runtime boundaries isn't available, and a
-  partial implementation would silently corrupt user data
-  ([docs/wasi-threads.md](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)).
-
-All four are tracked with designs on the
-[research frontier](/docs/fine-print/research/).
-
-## Probes
-
-`tests/behavioral/wasi/`, `wasi-files/`, `wasi-paths/`, plus the clang
-suites (`clang/`, `clang-includes/`, `clang-stdio/`) and the stage-0
-correctness unit suite (`tests/unit/wasi-stage0-correctness.mjs`).
+The honest gaps, all [tracked with designs](/docs/fine-print/research/):
+WASI filesystem I/O is still snapshot-plus-flush (right for one-shots,
+wrong for long-running processes); stdin is EOF; no inbound sockets; and
+`wasi-threads` is refused at link time on purpose — a partial
+implementation would silently corrupt user data, and
+[I wrote up why](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md).

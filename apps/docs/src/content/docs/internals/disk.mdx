@@ -1,82 +1,41 @@
 ---
 title: Inside the disk
-description: The SQLite VFS. Chunked storage, content generations, per-path revisions, and credit-backpressured streaming writes.
+description: The SQLite VFS — inodes, 64 KiB chunks, revision watermarks, and the credit-backpressured write path.
 ---
 
-The filesystem is a purpose-built VFS over the Durable Object's SQLite
-storage (`packages/worker/src/vfs/sqlite-vfs.ts`). It is the single source
-of truth for every byte in the session.
+import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
 
-## Storage model
+<DiskLayers caption="Four layers, one owner. The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
 
-- Inodes live in a SQLite table (`path`, `parent_path`, `kind`, `size`,
-  times, `mode`, `chunk_count`, `content_id`) with the full inode map held
-  resident in memory. Path resolution and permission-style checks are Map
-  lookups, not queries.
-- File contents are chunked (64 KiB chunks) with an LRU content cache in
-  front. Range reads and writes touch only the chunks a range covers,
-  never whole-file rewrites.
-- Bulk writes stage into a bounded content generation and publish
-  atomically. A crashed install can't leave a half-written tree visible.
-- Batch writes are synchronously durable; `fsync` and process exit are
-  durability boundaries. Hibernation never loses committed writes.
-- The mode column is real: `chmod` persists durable modes (and the exec bit
-  that `./prog` dispatch honors), bumping the revision watermark like any
-  other mutation.
+The diagram is most of the story; three mechanisms deserve words.
 
-## Revisions: precise cache invalidation
+**Revisions.** Every path carries a subtree revision watermark that
+changes iff that path or anything under it mutates. Runtime caches — the
+Node fs snapshot, prefetch surfaces, page caches — key on it. An
+unrelated write elsewhere can't evict your cache, and a stale cache can't
+survive a real change. `chmod` bumps it like any other mutation, because
+the mode column is real.
 
-Every path carries a subtree revision watermark. It changes iff that path
-or anything under it mutated. Runtime caches (Node's fs snapshot, prefetch
-surfaces, page caches) key on it, so an unrelated write elsewhere in the
-tree doesn't invalidate your cache, and a stale cache can't survive a real
-change. A VFS event bus streams mutation events, coalesced for the browser
-file-watcher and used for runtime invalidation.
+**Credits.** Facets mutate the disk only through the supervisor's
+streaming write RPC, governed by a credit pool: a facet must hold credits
+to send, and credits return as the supervisor drains. That's a hard bound
+on supervisor memory no matter how many processes write at once — it's
+what lets a 52,500-file `npm install` or an 84,000-file checkout land
+inside a 128 MiB isolate. Bulk writes stage into a content generation
+and publish atomically, so a crashed install never leaves a half-written
+tree visible.
 
-## The write path: credit backpressure
+**The bridge.** Runtimes read and write through one contract,
+`RuntimeFsBridge` — stat, ranged read/write, truncate, directory and
+symlink ops, `revision(path)`, and event subscription. It's stateless on
+purpose: no server-side handle state means it stays correct across
+supervisor hibernation. Node's async fs rides it live, including files a
+child process created after the facet started. Node's sync fs serves
+from a bounded snapshot plus a local write cache, revision-invalidated —
+a documented optimization. Python, Ruby, and WASI one-shots still use
+snapshot-plus-diff-flush; moving their long-running I/O onto the live
+bridge is [active work](/docs/fine-print/research/).
 
-Facets mutate the disk only through the supervisor's streaming write RPC,
-governed by a credit pool. A facet must hold credits to send bytes, and
-credits are returned as the supervisor drains. The result is a hard bound
-on supervisor memory no matter how many processes write at once. That is
-the mechanism that lets a parallel `npm install` (52,500 files) or an
-84,000-file git checkout land safely inside a 128 MiB isolate.
-
-## The read path: bridge plus caches
-
-The runtime filesystem contract is `RuntimeFsBridge`
-(`packages/worker/src/runtime/os-contracts.ts`): `stat`, `readFile`,
-`readRange`/`writeRange`/`truncate` (stateless, and therefore correct
-across supervisor hibernation because no server-side handle state exists),
-directory and symlink operations, `revision(path)`, and event
-subscription.
-
-How runtimes consume it:
-
-- Node async fs (`fs.promises`, `FileHandle` positional I/O, truncate,
-  live appends) rides the live bridge, including files created by child
-  processes after a facet started.
-- Node sync fs serves from a bounded startup snapshot plus a local write
-  cache, a documented synchronous optimization, invalidated by revisions.
-- Python, Ruby, and WASI one-shots use bounded snapshot plus diff-flush.
-  That is acceptable for short commands; migrating their long-running I/O
-  onto the live bridge is active work
-  ([research frontier](/docs/fine-print/research/)).
-
-The coherence rule the design converges on: every read observes either the
-latest committed VFS revision or the reader's own unflushed write. Stale
-writes conflict deterministically and loudly, never by silent overwrite.
-
-## Design rules (from the OS spec)
-
-- No per-byte Durable Object RPC; 64 KiB pages or better.
-- No unbounded whole-tree snapshots for long-running processes.
-- Binary data travels as bytes (`Uint8Array`/streams), never JSON
-  envelopes.
-- Bounded dirty caches with high-water flushing.
-
-## Related
-
-- [The disk](/docs/machine/disk/): the user-facing view.
-- [Budgets & limits](/docs/internals/budgets/): the constraints this design
-  serves.
+The coherence rule all of this converges on: every read observes either
+the latest committed revision or your own unflushed write. Conflicts fail
+deterministically and loudly, never by silent overwrite.

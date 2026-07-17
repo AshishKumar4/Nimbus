@@ -1,16 +1,14 @@
 ---
-title: Capability matrix
-description: Exactly what works today, live-probed — filterable by status.
+title: What works & what doesn't
+description: Every claim live-probed; every limit stated with its workaround. Filterable.
 ---
 
 import CapabilityExplorer from '../../../components/CapabilityExplorer.astro';
 
-Every row below mirrors the README's "What works today" table — the source
-of truth, covered by the black-box behavioral probe suite in
-`tests/behavioral/` (probes drive a real session via `POST /new` + WebSocket
-and assert user-visible behavior; an HTTP 200 alone is not a pass).
-
-You can run the suite against any live deployment yourself:
+Every row mirrors the README's capability table — the source of truth,
+covered by black-box probes that drive a real session over `POST /new`
+plus WebSocket. An HTTP 200 alone is never a pass. Run the suite against
+any live deployment yourself:
 
 ```bash
 BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
@@ -18,27 +16,38 @@ BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
 
 <CapabilityExplorer />
 
-## Framework support
+## The deliberate "no" list
 
-- **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers,
-  Workers with Static Assets, npm + git workflows, Python and Ruby scripts,
-  clang C compilation (single-file and multi-file).
-- **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use
-  the Vite path. Nuxt has Vite/Nitro caveats.
+Nimbus is a Worker/DO/WASM operating environment, not a Linux VM. If you
+need a row below, use a microVM or container sandbox instead
+([where Nimbus fits](/docs/start/where-it-fits/)).
 
-## In progress (honest list)
+| Not supported | |
+|---|---|
+| Docker, apt, custom Linux images | no container substrate exists |
+| Native Linux ELF execution | there is no ELF loader |
+| Native platform CLI shards, manylinux wheels, native gems | fail before import with an exact ABI diagnostic |
+| Raw public TCP listeners | inbound is HTTP(S) through session routes |
+| Next.js dev server, `wrangler pages dev` | explicit limits today |
+| GPUs | — |
+| `wasi-threads` / `-pthread` | refused at link time, [by design](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md) |
 
-Unfinished OS work, mirroring the README's list: broader Pyodide/Nimbus
-extension artifact catalogs beyond declared packages, complete upstream
-`pip`/Bundler CLI parity, opencode TUI first-frame rendering (the serve half
-boots, answers readiness, and streams SSE; the attach half's boot still
-trips a supervisor memory reset under investigation), index-pack CPU
-headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU
-budget on repos like microsoft/TypeScript), full POSIX PTY parity, live
-filesystem bridges for every long-running runtime, and permission
-*enforcement* beyond the exec bit (uid/gid ownership, `EACCES` on
-read/write, real `umask`/`chown` — designed, not yet implemented).
+## Known constraints
 
-Hard "no" items live in [what does not work](/docs/fine-print/limitations/);
-research-stage work lives on the
-[research frontier](/docs/fine-print/research/).
+| Constraint | State |
+|---|---|
+| One active terminal owner per session | sequential reconnect/share preserves state |
+| `node`/`bun` REPL declarations don't persist | workerd CSP; scripts unaffected; Python/Ruby REPLs fully stateful |
+| 75,000+-object clones | index-pack CPU headroom in progress |
+| git transport | HTTPS only, no SSH |
+| opencode TUI | serve half boots and streams SSE; attach half trips a memory reset, under investigation |
+| Hosted demo | evaluation only — no SLA, may be reset, not for secrets |
+
+**Framework support.** Stable: Vite + React, the Cloudflare Vite Plugin,
+single-file Workers, Workers with Static Assets, npm and git workflows,
+Python and Ruby scripts, clang. Astro, SvelteKit, and Remix ride the
+Vite path; Nuxt has Nitro caveats.
+
+The line between this page's chips moves one way only: when a behavioral
+probe proves a capability against a live deployment. Everything in
+between lives on the [research frontier](/docs/fine-print/research/).

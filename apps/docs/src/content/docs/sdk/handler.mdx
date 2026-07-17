@@ -1,157 +1,80 @@
 ---
 title: Configure the handler
-description: Set up createNimbusHandler — auth modes, the remote SDK API, custom routes, hooks, and the generated wrangler config.
+description: createNimbusHandler options, the generated wrangler config, and the CLI that provisions it all.
 ---
-
-An embedded Nimbus deployment is one call. `createNimbusHandler` builds
-your Worker's default export, and its options object is the whole
-configuration surface:
 
 ```ts
 import { createNimbusHandler } from '@nimbus-sh/sdk/worker';
 
 export default createNimbusHandler({
   auth: { mode: 'enforce' },                    // 'auto' | 'enforce' | 'legacy'
-  sdk: { remote: true, config: nimbusConfig },  // programmatic HTTP API
+  sdk: { remote: true, config: nimbusConfig },  // the HTTP API Nimbus.connect talks to
   routes: myRoutes,                             // runs before the Nimbus router
-  hooks: { onSessionStart },                    // lifecycle hooks
+  hooks: { onSessionStart },                    // first WebSocket upgrade per session
 });
 ```
 
-All four keys are optional. `createNimbusHandler({})` serves the terminal
-UI with auto-detected auth and the remote API off.
+All four keys are optional; `createNimbusHandler({})` serves the terminal
+UI with auto-detected auth. Your entry module must also re-export the
+runtime classes (`NimbusSession`, the RPC classes) because wrangler
+resolves them by name — `create-nimbus-app` writes that block; keep it.
 
-## Re-export the runtime classes
+`auth.mode` decides how `/new` and `/s/<id>/` are protected. `auto`
+enforces when `JWT_SECRET` is set, `enforce` fails closed without it, and
+`legacy` never verifies — the URL is the auth. In enforce mode, `/new`
+needs a `session:create` Bearer token and redirects through the
+[attach exchange](/docs/sdk/tokens/).
 
-Your Worker's entry module must re-export the Durable Object class and the
-RPC classes, because wrangler's `class_name` lookup and
-`enable_ctx_exports` resolve them by name from the entry module:
-
-```ts
-export {
-  NimbusSession, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC,
-  NimbusLoadedWorker, NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC,
-} from '@nimbus-sh/sdk/worker';
-```
-
-`create-nimbus-app` writes this block for you; keep it intact when you
-edit the generated `src/index.ts`.
-
-## Auth modes
-
-`auth.mode` selects how `/new` and `/s/<id>/` are protected:
-
-| Mode | Behavior |
-|---|---|
-| `auto` (default) | Enforce when `JWT_SECRET` is set and `NIMBUS_LEGACY_PUBLIC` is not `'1'`; otherwise legacy-public |
-| `enforce` | Always require a valid token. Fails closed if `JWT_SECRET` is missing |
-| `legacy` | Never verify. Every session routes to a single shared tenant; the URL is the auth |
-
-`auth.legacyPublic: true` is a named alias for `mode: 'legacy'` and is
-ignored when `mode` is set explicitly.
-
-In enforce mode the request flow is:
-
-1. `POST /new` requires a Bearer token carrying the `session:create` scope.
-   It creates the session and redirects to an attach URL carrying a
-   90-second, single-use bootstrap token.
-2. The attach exchange trades that token for a sid-pinned `session:attach`
-   cookie ([tokens & auth](/docs/sdk/tokens/) walks the full exchange).
-3. Session HTML, WebSocket, and API requests all ride that cookie.
-
-## The remote SDK API
-
-`sdk.remote` mounts the programmatic HTTP surface at
-`/api/nimbus/v1/sandboxes/<id>/rpc`, the transport `Nimbus.connect` talks
-to. It stays off unless you enable it.
+`sdk.remote` mounts `/api/nimbus/v1/sandboxes/<id>/rpc`; it stays off
+unless you enable it. `routes` is where your own endpoints live — Nimbus
+ships no token-mint route on purpose, so mount one behind your own user
+auth:
 
 ```ts
-sdk: {
-  remote: {
-    basePath: '/api/nimbus/v1',       // default
-    requiredScopes: ['sandbox:use'],  // default
-    allowLegacy: false,               // dev-only: allow unauthenticated calls when JWT_SECRET is absent
-  },
-  config: nimbusConfig,               // sandbox profiles the RPC ops run under
+routes: async (request, env) => {
+  const url = new URL(request.url);
+  if (url.pathname === '/api/auth/nimbus-token' && request.method === 'POST') {
+    const user = await authenticateYourUser(request, env);
+    return Response.json({
+      token: await issueNimbusToken(env, { tn: 'acme', sub: user.id, scopes: ['session:create', 'session:attach'] }),
+    });
+  }
+  return null; // fall through to Nimbus
 },
 ```
 
-`remote: true` is shorthand for the defaults. Tokens without an explicit
-`scopes` claim keep full-trust semantics, and `destroy` additionally
-requires `session:destroy` or `session:admin`.
+## The wrangler config
 
-## Custom routes
-
-`routes` runs before the Nimbus router. Return a `Response` to
-short-circuit Nimbus, or `null` to fall through. Nimbus ships no token-mint
-endpoint, so this is where you mount your own, behind your own user auth:
-
-```ts
-import { createNimbusHandler, issueNimbusToken } from '@nimbus-sh/sdk/worker';
-
-export default createNimbusHandler({
-  routes: async (request, env) => {
-    const url = new URL(request.url);
-    if (url.pathname === '/api/auth/nimbus-token' && request.method === 'POST') {
-      const user = await authenticateYourUser(request, env);
-      const token = await issueNimbusToken(env, {
-        tn: 'acme',
-        sub: user.id,
-        scopes: ['session:create', 'session:attach'],
-      });
-      return Response.json({ token });
-    }
-    return null;
-  },
-});
-```
-
-The same hook serves `/healthz`, `/metrics`, or any embedder route that
-should not proxy through a Durable Object.
-
-## Hooks
-
-`hooks.onSessionStart(ctx)` fires on a session's first WebSocket upgrade,
-not on every HTTP call. `ctx` carries `{ tenantSegment, sessionId, request,
-env }`, and hook failures are logged without short-circuiting the request.
-`onSessionEnd` is reserved for v0.2 and does not fire yet.
-
-## Generate the wrangler config
-
-`buildNimbusWranglerConfig` from `@nimbus-sh/config` emits the full config
-shape Nimbus needs: the `NIMBUS_SESSION` DO binding and migration, the
-`LOADER` worker-loader binding, the three R2 buckets, the static-assets
-binding, `nodejs_compat`, and the required bundler aliases.
+`buildNimbusWranglerConfig` from `@nimbus-sh/config` emits everything
+Nimbus needs — DO binding and migration, the `LOADER` binding, three R2
+buckets, static assets, `nodejs_compat`, and the required bundler
+aliases (`NIMBUS_REQUIRED_ALIASES` if you maintain config by hand):
 
 ```ts
 import { buildNimbusWranglerConfig } from '@nimbus-sh/config';
 
 const config = buildNimbusWranglerConfig({
   name: 'my-nimbus-worker',
-  runtimeCache: 'byoa',    // 'shared' (default) | 'byoa' — see CLI & runtime ops
+  runtimeCache: 'byoa',   // 'shared' (default) or bring-your-own-artifacts
   agent: { model: '@cf/moonshotai/kimi-k2.6', gatewayId: 'default' },
 });
 ```
 
-If you maintain `wrangler.jsonc` by hand instead, `NIMBUS_REQUIRED_ALIASES`
-(same package) is the frozen alias map to drop into your config's `alias`
-field so it cannot drift.
+## The CLI
 
-## Agent OAuth for embedders
+`@nimbus-sh/cli` provisions and operates all of this — long flags only,
+no prompts:
 
-Deployments that let each user spend their own Cloudflare AI quota via the
-[session agent](/docs/machine/agent/) configure Cloudflare OAuth with
-`NIMBUS_CF_OAUTH_CLIENT_ID` and friends. The building blocks
-(`createNimbusAgentOAuthCookie`, `fetchNimbusCloudflareAccounts`,
-`pkceChallenge`, cookie seal/unseal) are all exported from
-`@nimbus-sh/sdk/worker` if you need to customize the login flow.
+| Command | Needs | Does |
+|---|---|---|
+| `nimbus setup cloudflare --name <worker>` | `CLOUDFLARE_ACCOUNT_ID` | Creates R2 buckets, seeds runtimes |
+| `nimbus token mint --tenant <t> [--scopes a,b --sid <id> --ttl <sec>]` | `JWT_SECRET` | Prints a JWT |
+| `nimbus token verify <token>` | `JWT_SECRET` | Prints the claims |
+| `nimbus session new` | `NIMBUS_ENDPOINT`, `NIMBUS_TOKEN` | POSTs `/new`, prints the session id |
+| `nimbus runtime sync [--bucket <name>] <runtime[@ver]…>` | `CLOUDFLARE_ACCOUNT_ID` | Stages runtime blobs (BYOA) |
+| `nimbus runtime list` | — | Shows staged runtimes |
 
-## Related
-
-- [Embed Nimbus in a Worker](/docs/sdk/embed/): the deploy walkthrough this
-  page configures.
-- [Tokens & auth](/docs/sdk/tokens/): claims, scopes, TTLs, and the attach
-  exchange.
-- [CLI & runtime ops](/docs/sdk/cli/): provisioning, runtime caches, and
-  the command reference.
+With `runtimeCache: 'shared'` the standard bucket is created and seeded
+for you; `'byoa'` binds `${prefix}-runtime-cache` and you stage blobs
+with `runtime sync`. The CLI's logic is also exported programmatically:
+`mintToken`, `syncRuntimes`, `setupCloudflare`, `scaffold`.
