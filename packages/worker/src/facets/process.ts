@@ -172,6 +172,7 @@ export interface CommandRegistryLike {
 
 export interface ShellExecutorLike {
   execute(
+    pid: number,
     commandLine: string,
     env: Record<string, string>,
     cwd: string,
@@ -188,7 +189,7 @@ export interface ShellExecutorLike {
 export interface FacetProcessManagerDeps {
   facetMgr: FacetManagerLike;
   processes: SessionProcessSupervisor;
-  vfs: Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
+  vfsForProcess: (pid: number) => Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
   /** Optional: ctx for facets.abort/delete in production. */
@@ -467,6 +468,7 @@ export class FacetProcessManager {
       env: { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) },
       cwd: req.cwd,
       stdin: '',
+      processPid: child.pid,
     });
     // Register the facet-slot so kill() can find the abort handle.
     child.facetSlot = { abort: undefined, killed: false };
@@ -513,6 +515,13 @@ export class FacetProcessManager {
       ...(req.env || {}),
     };
     if (kind === 'shell-direct') {
+      if (typeof req.processPid !== 'number' || !Number.isInteger(req.processPid) || req.processPid <= 0) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'child_process: inline dispatch requires a broker-assigned process pid\n',
+        };
+      }
       try {
         const plan = this._shellPlanFor(req);
         if (!plan) {
@@ -525,9 +534,17 @@ export class FacetProcessManager {
           stdin,
           hooks,
           shellNameForCommand(req.command),
+          req.processPid,
         );
         if (commandLine === null) return { exitCode: 127, stdout: stdoutBuf, stderr: stderrBuf };
-        const code = await this._runShellLine(commandLine, childEnv, String(req.cwd || '/home/user'), stdin, hooks);
+        const code = await this._runShellLine(
+          req.processPid,
+          commandLine,
+          childEnv,
+          String(req.cwd || '/home/user'),
+          stdin,
+          hooks,
+        );
         return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
       } catch (e: any) {
         stderrBuf += `shell error: ${e?.message || String(e)}\n`;
@@ -562,6 +579,7 @@ export class FacetProcessManager {
       env: childEnv,
       cwd: String(req.cwd || '/home/user'),
       stdin: '',
+      processPid: req.processPid,
     });
     try {
       const code = await this.deps.facetMgr.execStream(
@@ -635,12 +653,13 @@ export class FacetProcessManager {
         stdin,
         hooks,
         shellNameForCommand(req.command),
+        child.pid,
       );
       if (commandLine === null) {
         this._stampExit(child, 127, null);
         return;
       }
-      const code = await this._runShellLine(commandLine, child.env, req.cwd, stdin, hooks);
+      const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
       this._appendOutput(child, 2, `shell error: ${e?.message || String(e)}\n`);
@@ -664,17 +683,19 @@ export class FacetProcessManager {
     stdin: string,
     hooks: OutputHooks,
     shellName: ShellName,
+    processPid: number,
   ): string | null {
     if (plan.kind === 'command') return plan.commandLine;
     if (plan.kind === 'stdin') return stdin;
 
     const scriptPath = resolveVfsPath(plan.path, cwd || '/home/user');
     try {
-      if (!this.deps.vfs.exists(scriptPath) || this.deps.vfs.isDirectory(scriptPath)) {
+      const vfs = this.deps.vfsForProcess(processPid);
+      if (!vfs.exists(scriptPath) || vfs.isDirectory(scriptPath)) {
         hooks.onStderr(`${shellName}: ${plan.path}: No such file or directory\n`);
         return null;
       }
-      return this.deps.vfs.readFileString(scriptPath);
+      return vfs.readFileString(scriptPath);
     } catch (e: any) {
       hooks.onStderr(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`);
       return null;
@@ -682,6 +703,7 @@ export class FacetProcessManager {
   }
 
   private async _runShellLine(
+    pid: number,
     commandLine: string,
     env: Record<string, string>,
     cwd: string,
@@ -692,7 +714,7 @@ export class FacetProcessManager {
       hooks.onStderr('sh: shell executor unavailable\n');
       return 127;
     }
-    return this.deps.shellExecutor.execute(commandLine, env, cwd || '/home/user', stdin, hooks);
+    return this.deps.shellExecutor.execute(pid, commandLine, env, cwd || '/home/user', stdin, hooks);
   }
 
   // ── stdin queue ─────────────────────────────────────────────────────────
