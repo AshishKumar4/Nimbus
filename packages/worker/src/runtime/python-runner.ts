@@ -166,14 +166,14 @@ export function makePythonRunnerFactory(deps: {
       } else if (parsed.mode === 'script') {
         // Read script from VFS, resolving relative to cwd.
         const absPath = resolveVfsPath(parsed.scriptPath, cwd);
-        if (!vfs.exists(absPath)) {
-          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: No such file or directory\n`);
-          return 2;
-        }
         try {
+          if (!vfs.exists(absPath)) {
+            ctx.stderr.write(`${binName}: ${parsed.scriptPath}: No such file or directory\n`);
+            return 2;
+          }
           userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
-        } catch (e: any) {
-          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${e?.message || e}\n`);
+        } catch (e: unknown) {
+          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${e instanceof Error ? e.message : String(e)}\n`);
           return 1;
         }
         progName = parsed.scriptPath;
