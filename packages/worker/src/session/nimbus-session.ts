@@ -1284,15 +1284,16 @@ export class NimbusSession extends CloudflareDurableObject {
   // ── Filesystem seeding ────────────────────────────────────────────────
 
   seedFilesystem() {
-    const fs = this.sqliteFs!.as({
+    const userCred = {
       uid: 1000,
       gid: 1000,
       groups: [1000],
       umask: 0o022,
-    });
+    } as const;
+    const fs = this.sqliteFs!.as(userCred);
     const rootFs = this.sqliteFs!.as(CRED_KERNEL);
     const dirs = [
-      'bin', 'etc', 'home', 'home/user', 'home/user/.config',
+      'bin', 'home', 'home/user', 'home/user/.config',
       'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
       'usr/lib/node_modules', 'usr/share', 'usr/share/pkg',
       'usr/share/pkg/node_modules', 'opt',
@@ -1302,34 +1303,47 @@ export class NimbusSession extends CloudflareDurableObject {
       if (!fs.exists(dir)) fs.mkdir(dir, { recursive: true });
     }
 
-    if (!fs.exists('etc/hostname')) {
-      fs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
+    if (!rootFs.exists('etc')) {
+      rootFs.mkdir('etc', { mode: 0o755 });
+    } else {
+      const etc = rootFs.stat('etc');
+      if (etc.uid !== 0 || etc.gid !== 0) rootFs.chown('etc', 0, 0);
+      if ((etc.mode & 0o7777) !== 0o755) rootFs.chmod('etc', 0o755);
     }
-    if (!fs.exists('etc/os-release')) {
-      fs.writeFile('etc/os-release',
+
+    if (!rootFs.exists('etc/hostname')) {
+      rootFs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
+      rootFs.chown('etc/hostname', userCred.uid, userCred.gid);
+    }
+    if (!rootFs.exists('etc/os-release')) {
+      rootFs.writeFile('etc/os-release',
         `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
         'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n'
       );
+      rootFs.chown('etc/os-release', userCred.uid, userCred.gid);
     }
-    if (!rootFs.exists('etc/passwd')) {
-      rootFs.writeFile('etc/passwd',
-        'root:x:0:0:root:/root:/bin/sh\n' +
-        'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n',
-        { mode: 0o644 },
-      );
-    }
-    if (!rootFs.exists('etc/group')) {
-      rootFs.writeFile('etc/group',
-        'root:x:0:\n' +
-        'user:x:1000:user\n',
-        { mode: 0o644 },
-      );
-    }
+    const seedRootAccountFile = (path: string, content: string): void => {
+      if (!rootFs.exists(path)) rootFs.writeFile(path, content, { mode: 0o644 });
+      const stat = rootFs.stat(path);
+      if (stat.uid !== 0 || stat.gid !== 0) rootFs.chown(path, 0, 0);
+      if ((stat.mode & 0o7777) !== 0o644) rootFs.chmod(path, 0o644);
+    };
+    seedRootAccountFile(
+      'etc/passwd',
+      'root:x:0:0:root:/root:/bin/sh\n' +
+      'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n',
+    );
+    seedRootAccountFile(
+      'etc/group',
+      'root:x:0:\n' +
+      'user:x:1000:user\n',
+    );
     const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
-    if (!fs.exists('etc/profile')) {
-      fs.writeFile('etc/profile', defaultProfile);
-    } else if (dec.decode(fs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
-      fs.writeFile('etc/profile', defaultProfile);
+    if (!rootFs.exists('etc/profile')) {
+      rootFs.writeFile('etc/profile', defaultProfile);
+      rootFs.chown('etc/profile', userCred.uid, userCred.gid);
+    } else if (dec.decode(rootFs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
+      rootFs.writeFile('etc/profile', defaultProfile);
     }
     if (!fs.exists('home/user/.nimbusrc')) {
       fs.writeFile('home/user/.nimbusrc',
@@ -1342,14 +1356,18 @@ export class NimbusSession extends CloudflareDurableObject {
       // corrected version on next reconnect. Cheap (~200 bytes); no
       // user-edit collision concern (the file isn't user-owned).
       const expectedMotd = renderMotdBanner(NIMBUS_VERSION);
-      let needsWrite = !fs.exists('etc/motd');
+      const exists = rootFs.exists('etc/motd');
+      let needsWrite = !exists;
       if (!needsWrite) {
         try {
-          const existing = fs.readFileString('etc/motd');
+          const existing = rootFs.readFileString('etc/motd');
           if (existing !== expectedMotd) needsWrite = true;
         } catch { needsWrite = true; }
       }
-      if (needsWrite) fs.writeFile('etc/motd', expectedMotd);
+      if (needsWrite) {
+        rootFs.writeFile('etc/motd', expectedMotd);
+        if (!exists) rootFs.chown('etc/motd', userCred.uid, userCred.gid);
+      }
     }
     if (!fs.exists('home/user/hello.js')) {
       fs.writeFile('home/user/hello.js',
