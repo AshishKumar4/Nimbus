@@ -1,6 +1,6 @@
 ---
 title: The fabric
-description: One session = one supervisor Durable Object plus a fabric of Worker Loader isolates. How the pieces fit and why.
+description: One session is one supervisor Durable Object plus a fabric of Worker Loader isolates. How the pieces fit and why.
 ---
 
 import FabricDiagram from '../../../components/FabricDiagram.astro';
@@ -10,87 +10,88 @@ the map.
 
 ## The shape
 
-One session = **one Cloudflare Durable Object (the supervisor)** plus a
-fabric of Worker Loader isolates (**facets**).
+One session is one Cloudflare Durable Object (the supervisor) plus a fabric
+of Worker Loader isolates (facets).
 
 <FabricDiagram />
 
 The division of labor is strict:
 
-- **The supervisor owns all durable state**: the SQLite-backed filesystem,
-  the shell, the process table, the port registry, and the session agent.
-  It is the only thing that must survive; everything else is rebuildable.
-- **Facets own all heavy compute**: every process runs in its own facet
-  isolate with its own memory and CPU budget — one-shot facets for commands,
+- The supervisor owns all durable state: the SQLite-backed filesystem, the
+  shell, the process table, the port registry, and the session agent. It is
+  the only thing that must survive; everything else is rebuildable.
+- Facets own all heavy compute. Every process runs in its own facet isolate
+  with its own memory and CPU budget: one-shot facets for commands,
   resident keyed facets for servers, and a dedicated git engine.
-- **The platform owns cross-session state**: npm tarballs, runtime blobs,
-  and staged app bundles live in R2, with hot reads cached at the per-colo
-  edge; big npm installs fan out across peer DOs.
+- The platform owns cross-session state. npm tarballs, runtime blobs, and
+  staged app bundles live in R2, with hot reads cached at the per-colo
+  edge, and big npm installs fan out across peer DOs.
 
 ## Why this shape
 
 Two platform facts force the design:
 
-1. **Isolates are capped** (Cloudflare publishes 128 MB per isolate, plus
-   per-invocation CPU budgets). Running user workloads *inside* the
-   supervisor would make the OS compete with its own processes for one
-   budget. So the supervisor schedules; facets compute.
-2. **Durable Objects are the only durable, strongly-consistent home.**
-   Facet state is evictable at any time — so anything worth keeping streams
-   back to the supervisor, and anything in a facet is treated as
+1. Isolates are capped. Cloudflare publishes 128 MB per isolate, plus
+   per-invocation CPU budgets. Running user workloads inside the supervisor
+   would make the OS compete with its own processes for one budget. So the
+   supervisor schedules and facets compute.
+2. Durable Objects are the only durable, strongly-consistent home. Facet
+   state is evictable at any time, so anything worth keeping streams back
+   to the supervisor, and anything in a facet is treated as
    reconstructible.
 
 The payoff is the OS move: since each process already lives in its own
-isolate, **a heavy app can span several** — that's how opencode runs as a
-serve + TUI pair, each with its own budget, joined by loopback.
+isolate, a heavy app can span several. That's how opencode runs as a serve
+plus TUI pair, each with its own budget, joined by loopback.
 
 ## One request, end to end
 
 What happens when a process curls a server in another isolate:
 
-1. `curl http://127.0.0.1:4096/doc` runs in facet B. The loopback address is
-   session-internal — the shim forwards the request to the supervisor.
-2. The supervisor's **port registry** looks up port 4096 → the resident
+1. `curl http://127.0.0.1:4096/doc` runs in facet B. The loopback address
+   is session-internal; the shim forwards the request to the supervisor.
+2. The supervisor's port registry looks up port 4096, finds the resident
    facet A that registered it, and routes the `Request` through A's route
    stub.
-3. Facet A's HTTP shim dispatches to the server the app actually started;
-   the `Response` **streams** back through the relay — bodies are piped
-   live, never buffered to completion ([ports & routing](/docs/internals/network/)).
+3. Facet A's HTTP shim dispatches to the server the app actually started.
+   The `Response` streams back through the relay; bodies are piped live,
+   never buffered to completion
+   ([ports & routing](/docs/internals/network/)).
 
 The browser preview at `/s/<id>/port/4096/` takes the exact same path from
-step 2 — the fabric makes no distinction between internal and preview
+step 2. The fabric makes no distinction between internal and preview
 ingress.
 
 ## Writes flow one way
 
 Facets never own files. Every filesystem mutation streams back to the
-supervisor through a **credit-backpressured write pipeline** — the facet
-must hold credits to send, so a parallel `npm install` or an 84,000-file
+supervisor through a credit-backpressured write pipeline. The facet must
+hold credits to send, so a parallel `npm install` or an 84,000-file
 checkout physically cannot flood the supervisor's memory
 ([inside the disk](/docs/internals/disk/)).
 
-## Staying honest about failure
+## Failure, plainly
 
-- Facet isolates can be **evicted under memory pressure** — module-scope
-  state simply vanishes between calls. The process table (DO-side) stays
-  authoritative; a process that can't be rehydrated is marked dead with a
-  reason.
-- Heavy staging (e.g. opencode's ~20 MB module map) is assembled **outside
-  the supervisor's isolate** on the Worker-Loader cache-miss path, so
+- Facet isolates can be evicted under memory pressure; module-scope state
+  simply vanishes between calls. The process table on the DO side stays
+  authoritative, and a process that can't be rehydrated is marked dead with
+  a reason.
+- Heavy staging (opencode's ~20 MB module map, for example) is assembled
+  outside the supervisor's isolate on the Worker-Loader cache-miss path, so
   staging a big app can't OOM the DO that owns your files.
 
 ## The section, page by page
 
-- [Inside the disk](/docs/internals/disk/) — SQLite VFS, chunks, revisions,
+- [Inside the disk](/docs/internals/disk/): SQLite VFS, chunks, revisions,
   backpressure.
-- [The process fabric](/docs/internals/processes/) — facet lifecycles,
+- [The process fabric](/docs/internals/processes/): facet lifecycles,
   module maps, eviction.
-- [Ports & routing](/docs/internals/network/) — the port registry contract
+- [Ports & routing](/docs/internals/network/): the port registry contract
   and the streaming relay.
-- [The git engine](/docs/internals/git-engine/) — phased clones, chunked
+- [The git engine](/docs/internals/git-engine/): phased clones, chunked
   checkout.
-- [WASI & syscalls](/docs/internals/wasi/) — the syscall layer under
+- [WASI & syscalls](/docs/internals/wasi/): the syscall layer under
   compiled binaries.
-- [Security & isolation](/docs/internals/security/) — trust boundaries.
-- [Budgets & limits](/docs/internals/budgets/) — the numbers the design
+- [Security & isolation](/docs/internals/security/): trust boundaries.
+- [Budgets & limits](/docs/internals/budgets/): the numbers the design
   lives within.

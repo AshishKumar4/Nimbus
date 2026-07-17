@@ -3,16 +3,14 @@ title: Toolchains
 description: node and bun on workerd, CPython 3.13 via Pyodide, Ruby 3.3 via ruby.wasm, and a real clang that compiles C in-session.
 ---
 
-import NimbusSandbox from '../../../components/NimbusSandbox.astro';
-
 Four toolchains ship with the machine. Each one is described here exactly as
-it is — what's real, what's a compatibility layer, and where the edges are.
+it is: what's real, what's a compatibility layer, and where the edges are.
 
-## node & bun — the workerd runtime
+## node & bun, on the workerd runtime
 
-`node` and `bun` run on Cloudflare workerd's `nodejs_compat` runtime: **the
-same V8 your Workers code runs on**. This is not a JS interpreter stub — but
-it is also not the upstream Node/Bun binaries. It is the
+`node` and `bun` run on Cloudflare workerd's `nodejs_compat` runtime, the
+same V8 your Workers code runs on. This is not a JS interpreter stub, but it
+is also not the upstream Node or Bun binaries. It is the
 workerd-compatibility surface plus Nimbus's Node shims: `fs`, `path`, `os`,
 `process`, `Buffer`, `events`, streams, `crypto`, `zlib`, HTTP/HTTPS,
 `child_process`, `readline`, `tty`, timers, and more.
@@ -23,67 +21,63 @@ What that buys in practice (all probed):
   `node_modules/.bin/*`.
 - `child_process.spawn` / `exec` / `execFile` with piped stdio, streams, and
   logs.
-- `http.createServer().listen(port)` — servers become routeable resident
+- `http.createServer().listen(port)`. Servers become routeable resident
   processes ([the network](/docs/machine/network/)).
 - Vite dev servers with full HMR to the preview iframe.
 
-Boundary: workerd's CSP blocks runtime `eval` / `new Function`, which shapes
-the [REPL semantics](/docs/machine/terminal/#interactive-repls), and native
-`.node` addons cannot load — they fail with a precise ABI diagnostic.
+The boundary: workerd's CSP blocks runtime `eval` / `new Function`, which
+shapes the [REPL semantics](/docs/machine/terminal/#interactive-repls), and
+native `.node` addons cannot load. They fail with a precise ABI diagnostic.
 
-## python — CPython 3.13, compiled to WebAssembly
+## python, CPython 3.13 compiled to WebAssembly
 
-`python` / `python3` is Pyodide-compiled **CPython 3.13** — the real
-interpreter, not a reimplementation. Scripts, `-c`, `-m`, and the stdlib are
-probed; the REPL is fully stateful (it drives `PyodideConsole` directly).
+`python` / `python3` is Pyodide-compiled CPython 3.13: the real interpreter,
+not a reimplementation. Scripts, `-c`, `-m`, and the stdlib are probed, and
+the REPL is fully stateful (it drives `PyodideConsole` directly).
 
 ```bash
 python3 -c 'print(2 + 2)'
 python3 -m http.server 8000     # preview tab opens automatically
 ```
 
-Package workflows (`pip`, Flask, previews) are **alpha** — see
+Package workflows (`pip`, Flask, previews) are alpha; see
 [Package managers](/docs/machine/packages/).
 
-## ruby — Ruby 3.3 via ruby.wasm
+## ruby, Ruby 3.3 via ruby.wasm
 
-`ruby` / `ruby3` is ruby.wasm-based **Ruby 3.3**: scripts, `-e`, `-r`, the
+`ruby` / `ruby3` is ruby.wasm-based Ruby 3.3: scripts, `-e`, `-r`, the
 stdlib, and a stateful `irb`-style REPL. Rack and WEBrick previews work
-through the same virtual socket path as Python (package workflows are
-alpha).
+through the same virtual socket path as Python. Package workflows are
+alpha.
 
-## clang — compile C on the edge, then run it
+## clang: compile C on the edge, then run it
 
 The machine carries a real LLVM toolchain (LLVM 8 with a modern wasi-libc
-sysroot). `clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session, then
-`wasm-ld` links — both running in a facet isolate with your VFS mounted, so
-`#include "your-header.h"` and `fopen("./data.txt", "r")` just work.
+sysroot). `clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session,
+then `wasm-ld` links, both running in a facet isolate with your VFS
+mounted. `#include "your-header.h"` and `fopen("./data.txt", "r")` just
+work.
 
-<NimbusSandbox
-  title="nimbus — clang → run loop"
-  rows={13}
-  cast={[
-    {
-      cmd: `cat > hello.c <<'EOF'
+```bash
+$ cat > hello.c <<'EOF'
 #include <stdio.h>
-int main(void) { printf("hello from clang on the edge\\n"); return 0; }
-EOF`,
-    },
-    { cmd: 'clang hello.c -o hello.wasm' },
-    { cmd: './hello.wasm', out: ['hello from clang on the edge'] },
-    { cmd: 'chmod +x hello.wasm   # the exec bit is durable, and ./dispatch honors it' },
-  ]}
-/>
+int main(void) { printf("hello from clang on the edge\n"); return 0; }
+EOF
+$ clang hello.c -o hello.wasm
+$ ./hello.wasm
+hello from clang on the edge
+$ chmod +x hello.wasm   # the exec bit is durable, and ./ dispatch honors it
+```
 
 What's wired today (v12 sysroot, currently deployed):
 
-- Modern wasi-libc sysroot (derived from upstream wasi-sdk-19).
-- Multi-translation-unit compile + link: `clang a.c b.c -o prog`.
+- Modern wasi-libc sysroot, derived from upstream wasi-sdk-19.
+- Multi-translation-unit compile and link: `clang a.c b.c -o prog`.
 - User headers in cwd or under `-I<dir>`.
 - `fopen(..., "r" | "w" | "a")` against VFS paths, relative or absolute.
 - 128-bit math intrinsics via linked `libclang_rt.builtins-wasm32.a`.
 
-Compiled binaries run on Nimbus's WASI layer — 45 of 46 `wasi_preview1`
+Compiled binaries run on Nimbus's WASI layer: 45 of 46 `wasi_preview1`
 functions, outbound TCP via `/dev/tcp/<host>/<port>`, full `poll_oneoff`
 ([WASI & syscalls](/docs/internals/wasi/)).
 

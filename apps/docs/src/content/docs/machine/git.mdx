@@ -3,9 +3,9 @@ title: Git
 description: Real git clone over HTTPS with a chunked checkout engine built for big repositories.
 ---
 
-`git clone` on Nimbus is real git over HTTPS — real packfiles from real
-remotes — running in a dedicated **git engine facet** so that network fetch,
-object indexing, and worktree checkout each get a fresh CPU budget.
+`git clone` on Nimbus is real git over HTTPS, pulling real packfiles from
+real remotes. It runs in a dedicated git engine facet so that network
+fetch, object indexing, and worktree checkout each get a fresh CPU budget.
 
 ```bash
 git clone https://github.com/AshishKumar4/Markflow
@@ -15,9 +15,9 @@ cd Markflow && npm install && npm run dev
 ## Built for big repositories
 
 Small repos are easy; the engineering is in the big ones. The chunked
-checkout engine materializes large worktrees via **bounded continuation** —
-the checkout is sliced into resumable chunks so no single phase can blow its
-isolate's CPU budget:
+checkout engine materializes large worktrees through bounded continuation:
+the checkout is sliced into resumable chunks so no single phase can blow
+its isolate's CPU budget.
 
 | Repository | Measured |
 |---|---|
@@ -26,7 +26,7 @@ isolate's CPU budget:
 
 ## Everyday workflows
 
-Clone, branch, inspect, commit — the common workflows agents and humans
+Clone, branch, inspect, commit. The common workflows agents and humans
 actually run:
 
 ```bash
@@ -37,18 +37,18 @@ git add -A && git commit -m "change"
 ```
 
 The working tree lives on [the disk](/docs/machine/disk/) like everything
-else — the editor sees it, `npm install` runs in it, and it persists across
+else. The editor sees it, `npm install` runs in it, and it persists across
 sessions.
 
-## Honest edges
+## Edges
 
-- **HTTPS only.** No SSH transport.
-- **Very large clones**: index-pack CPU headroom for 75,000+-object
-  repositories (microsoft/TypeScript-class) is still in progress — the fetch
-  can exceed a per-invocation CPU budget. This is on the
+- HTTPS only. There is no SSH transport.
+- Very large clones: index-pack CPU headroom for repositories past roughly
+  75,000 objects (microsoft/TypeScript-class) is still in progress. The
+  fetch can exceed a per-invocation CPU budget. This is on the
   [research frontier](/docs/fine-print/research/) list.
 
 ## Related
 
-- [The git engine](/docs/internals/git-engine/) — how clone-prepare, index,
+- [The git engine](/docs/internals/git-engine/): how clone-prepare, index,
   and chunked checkout are phased across facets.

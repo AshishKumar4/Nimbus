@@ -1,12 +1,12 @@
 ---
 title: The sandbox API
-description: The full programmatic surface of a NimbusSandbox — exec, files, runtimes, processes, ports, and agent tools.
+description: The full programmatic surface of a NimbusSandbox. exec, files, runtimes, processes, ports, and agent tools.
 ---
 
 Everything below is the real, typed surface of `@nimbus-sh/sdk`
-(`packages/sdk/src/sandbox.ts`). The same methods work over both transports:
-a colocated Durable Object binding (`Nimbus.fromEnv`) or the authenticated
-remote API (`Nimbus.connect`, which POSTs to
+(`packages/sdk/src/sandbox.ts`). The same methods work over both
+transports: a colocated Durable Object binding (`Nimbus.fromEnv`) or the
+authenticated remote API (`Nimbus.connect`, which POSTs to
 `/api/nimbus/v1/sandboxes/<id>/rpc` with a Bearer token).
 
 ## Getting a handle
@@ -31,7 +31,7 @@ await box.destroy({ reason: 'job done' });
 // → { ok: true, killed: number, destroyedAt: number, reason: string | null }
 ```
 
-Every other call awaits `ready()` internally — you only call it yourself
+Every other call awaits `ready()` internally. You only call it yourself
 when you want to pay the boot cost up front.
 
 ## Running things
@@ -115,8 +115,9 @@ await box.ports.unexpose(3000);
 box.ports.url(3000);
 ```
 
-The returned URL is a path on the deployment; it's directly usable when the
-caller already has browser/session auth ([tokens & auth](/docs/sdk/tokens/)).
+The returned URL is a path on the deployment. It's directly usable when the
+caller already has browser or session auth
+([tokens & auth](/docs/sdk/tokens/)).
 
 ## Agent tools
 
@@ -127,13 +128,13 @@ const provider = box.tools({ namespace: 'sandbox' });
 Returns a Proteus-style tool provider wrapping the sandbox: `readFile`,
 `writeFile`, `listFiles`, `deleteFile`, `exists`, exec, process control
 (`killProcess`, `writeProcessInput`, `resizeProcess`, `signalProcess`,
-`processLogs`), ports (`exposePort`, `listPorts`), and runtime install —
+`processLogs`), ports (`exposePort`, `listPorts`), and runtime install,
 ready to hand to an agent loop. `box.capabilities()` reports the runtime
 allow-list as capability strings.
 
 ## Errors
 
 Remote calls throw `NimbusRemoteError` with `status`, optional `code`, and
-the response `body` — no silent nulls. Wire payloads are schema-validated
+the response `body`. No silent nulls. Wire payloads are schema-validated
 (zod) on the client, so a drifted server fails loudly instead of returning
 malformed shapes.

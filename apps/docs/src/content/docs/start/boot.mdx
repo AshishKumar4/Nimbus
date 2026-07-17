@@ -1,25 +1,27 @@
 ---
 title: Boot your first computer
-description: Get a real shell on Cloudflare's edge in under a minute — from the browser, from the SDK, or self-hosted.
+description: Get a real shell on Cloudflare's edge in under a minute, from the browser, from the SDK, or self-hosted.
 ---
 
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import { Tabs, TabItem, Steps } from '@astrojs/starlight/components';
 
 There are three ways to boot a Nimbus computer. All three end in the same
-place: a session — one Durable Object with a persistent 10 GB filesystem, a
+place: a session. One Durable Object with a persistent 10 GB filesystem, a
 shell, a process table, and a loopback network of its own.
 
-## From the browser (60 seconds)
+<NimbusSandbox title="nimbus — first boot" rows={14} />
+
+## From the browser
 
 <Steps>
 
 1. Visit [nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com).
 
-2. Click **Launch**. You'll be redirected to `/s/<your-session-id>/`.
+2. Click **Launch**. You land on `/s/<your-session-id>/`.
 
-3. That URL **is** your computer. Bookmark it. Close the tab, come back
-   tomorrow — your files are still there.
+3. That URL is your computer. Bookmark it. Close the tab, come back
+   tomorrow, and your files are still there.
 
 </Steps>
 
@@ -29,36 +31,24 @@ You're in a real shell:
 node --version              # workerd nodejs_compat (V8 + Node-API shim)
 git clone https://github.com/AshishKumar4/Markflow   # real git over HTTPS
 cd Markflow && npm install  # real npm against registry.npmjs.org
-npm run dev                 # vite dev server — preview in the iframe
+npm run dev                 # vite dev server, previewed in the iframe
 ```
 
 The preview pane on the right is tabbed: Markdown preview, the default app
-preview at `/s/<id>/preview/`, Worker preview, and live port previews. When a
-process exposes a port, Nimbus opens and focuses that port's tab
-automatically.
-
-<NimbusSandbox
-  title="nimbus — first boot"
-  rows={12}
-  cast={[
-    { cmd: 'echo "this file will still exist tomorrow" > note.txt' },
-    { cmd: 'cat note.txt', out: ['this file will still exist tomorrow'] },
-    { cmd: `node -e 'console.log("hello from the edge")'`, out: ['hello from the edge'] },
-    { cmd: `python3 -c 'print(2 + 2)'`, out: ['4'] },
-  ]}
-/>
+preview at `/s/<id>/preview/`, Worker preview, and live port previews. When
+a process starts listening on a port, Nimbus opens that port's tab for you.
 
 :::note
-The hosted demo is free for evaluation, sits behind a Cloudflare login, and is
-not a managed service — no SLA, may be rate-limited or reset, and shouldn't
-hold secrets or production data. For real workloads,
+The hosted demo is free for evaluation. It sits behind a Cloudflare login,
+carries no SLA, and may be rate-limited or reset, so don't keep secrets or
+production data in it. For real workloads,
 [deploy Nimbus to your own Cloudflare account](/docs/sdk/embed/).
 :::
 
 ## From the SDK
 
-Every agent can mint its own sandbox. Sandboxes are cheap enough to create
-per-task — session create to first command runs in ~0.6 s median, and 100
+Every agent can mint its own sandbox. They are cheap enough to create per
+task: session create to first command runs in about 0.6 s median, and 100
 simultaneous creates succeed without a warm pool
 ([benchmarks](/docs/fine-print/benchmarks/)).
 
@@ -104,10 +94,10 @@ const result = await box.exec('node -e "console.log(1 + 1)"');
 </TabItem>
 </Tabs>
 
-The full surface — files, runtimes, processes, ports, agent tools — is
-covered in [the sandbox API](/docs/sdk/sandbox-api/).
+The full surface, from files to processes to agent tools, is covered in
+[the sandbox API](/docs/sdk/sandbox-api/).
 
-## Self-hosted (your own Cloudflare account)
+## Self-hosted, on your own Cloudflare account
 
 ```bash
 npx create-nimbus-app my-nimbus-worker
@@ -119,7 +109,7 @@ npx wrangler deploy
 ```
 
 `setup cloudflare` creates the R2 buckets Nimbus binds to and seeds the
-runtime cache for Python, Ruby, and clang. Details and caveats in
+runtime cache for Python, Ruby, and clang. Details and caveats are in
 [Embed Nimbus in a Worker](/docs/sdk/embed/).
 
 Or run the repo locally:
@@ -135,7 +125,7 @@ Open `http://localhost:8787` and click **Launch**.
 
 ## Where next
 
-- [A tour of the machine](/docs/start/tour/) — one guided walk through the
-  shell, the disk, the toolchains, and the network.
-- [Where Nimbus fits](/docs/start/where-it-fits/) — honest positioning
-  against microVM sandboxes, container platforms, and agentOS.
+- [A tour of the machine](/docs/start/tour/) walks through the shell, the
+  disk, the toolchains, and the network in one sitting.
+- [Where Nimbus fits](/docs/start/where-it-fits/) compares it plainly with
+  microVM sandboxes, container platforms, and agentOS.

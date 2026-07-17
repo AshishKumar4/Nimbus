@@ -3,44 +3,44 @@ title: Ports & routing
 description: The port registry contract, route stubs, the streaming relay, and how loopback and previews share one path.
 ---
 
-All session networking converges on one component: the supervisor's
-**port registry**. Loopback traffic between processes and preview traffic
-from the browser take the same route — there is no second network.
+All session networking converges on one component: the supervisor's port
+registry. Loopback traffic between processes and preview traffic from the
+browser take the same route. There is no second network.
 
 ## The registry contract
 
 A process that starts listening registers its port with the supervisor
 (server launches auto-promote, so `node server.js` registers without
-ceremony). The registry maps `port → owning process → route stub`, and its
+ceremony). The registry maps port → owning process → route stub, and its
 routing contract is explicit:
 
-- **No entry** for a port → `null` → "No process listening" — the honest
-  404 of the fabric.
-- **Registered port whose stub hasn't attached yet** → `501` — reserved for
+- No entry for a port → `null` → "No process listening". The honest 404 of
+  the fabric.
+- A registered port whose stub hasn't attached yet → `501`, reserved for
   exactly the boot window between registration and a serving isolate.
 
-That distinction is deliberate: a dead port and a booting port are different
-truths, and the registry never conflates them.
+That distinction is deliberate. A dead port and a booting port are
+different truths, and the registry never conflates them.
 
 ## Route stubs resolve, never boot
 
 A route stub is code-free: it resolves the already-loaded resident facet
 from the Worker Loader cache and forwards the `Request`. If the facet was
-evicted, the stub **fails loud** instead of re-loading from code — a
-re-loaded isolate would be a fresh, empty worker with no server listening,
-which is precisely the silent-zombie failure the design forbids.
+evicted, the stub fails loud instead of re-loading from code. A re-loaded
+isolate would be a fresh, empty worker with no server listening, which is
+precisely the silent-zombie failure the design forbids.
 
 ## The streaming relay
 
-Routed responses are relayed with **live bodies**: the inner `Response` is
+Routed responses are relayed with live bodies. The inner `Response` is
 piped through an identity stream, and the relay (and the facet stub behind
-it) is held open until the body actually finishes — disposing early would
+it) is held open until the body actually finishes. Disposing early would
 kill the stream, which is why naive designs buffer. Nimbus buffers nothing:
 
-- SSE and chunked bodies arrive **per-tick** — verified by live gates
-  asserting incremental arrival both at the in-session shell (`curl` over
-  loopback) and externally through the preview path (~300 ms tick
-  intervals observed end to end).
+- SSE and chunked bodies arrive per tick, verified by live gates asserting
+  incremental arrival both at the in-session shell (`curl` over loopback)
+  and externally through the preview path, at ~300 ms tick intervals
+  observed end to end.
 - In-session `curl` writes chunks to stdout as they arrive and cancels the
   read on <kbd>Ctrl</kbd>+<kbd>C</kbd>.
 - Abandoned readers cancel their relay pipes so stubs don't leak.
@@ -59,13 +59,13 @@ your server, so can every other process in the session, and vice versa.
 ## Where it's still transitional
 
 Node's HTTP bridge and the Python/Ruby virtual-socket shims are separate
-adapters that both land on the registry; the OS spec's target is one shared
-virtual socket kernel under Node, Python, Ruby, *and* WASI (inbound sockets
-for WASM binaries don't exist yet — `sock_accept` is the one unimplemented
+adapters that both land on the registry. The OS spec's target is one shared
+virtual socket kernel under Node, Python, Ruby, and WASI (inbound sockets
+for WASM binaries don't exist yet; `sock_accept` is the one unimplemented
 preview1 function). See [WASI & syscalls](/docs/internals/wasi/) and the
 [research frontier](/docs/fine-print/research/).
 
 ## Related
 
-- [The network](/docs/machine/network/) — the user-facing view.
-- [The fabric](/docs/internals/fabric/) — the end-to-end request walk.
+- [The network](/docs/machine/network/): the user-facing view.
+- [The fabric](/docs/internals/fabric/): the end-to-end request walk.

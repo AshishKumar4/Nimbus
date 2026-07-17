@@ -1,50 +1,50 @@
 ---
 title: Interactive TTY apps
-description: Attached process tabs for full-screen CLIs — what works, what's alpha, and the honest state of opencode.
+description: Attached process tabs for full-screen CLIs. What works, what's alpha, and the current state of opencode.
 ---
 
-Some programs aren't commands — they're *apps*: full-screen CLIs that own
-the terminal, read raw keys, and redraw the screen. Nimbus runs these as
-**attached processes**: a foreground npm-bin launch gets its own interactive
+Some programs aren't commands, they're apps: full-screen CLIs that own the
+terminal, read raw keys, and redraw the screen. Nimbus runs these as
+attached processes. A foreground npm-bin launch gets its own interactive
 process tab backed by the process's TTY channel, separate from the shell.
 
 ## What an attached tab gives you <span class="nimbus-chip" data-kind="alpha">alpha</span>
 
-- **stdin** — keystrokes go to the process, not the shell.
-- **resize** — terminal dimensions propagate to the process.
-- **ANSI output** — colors, cursor movement, and redraws render.
-- **clean exit** — the process ends, the tab closes, the shell is untouched.
+- stdin: keystrokes go to the process, not the shell.
+- resize: terminal dimensions propagate to the process.
+- ANSI output: colors, cursor movement, and redraws render.
+- clean exit: the process ends, the tab closes, the shell is untouched.
 
-TTY detection is context-aware: a package bin launched in the foreground
+TTY detection is context-aware. A package bin launched in the foreground
 from the terminal sees `isTTY: true`; the same bin piped or backgrounded
 sees `isTTY: false`, like a real OS.
 
-Probed today: the **Pi coding agent** through both its official installer
-path and its npm path (`tests/behavioral/agentic-cli/`).
+Probed today: the Pi coding agent through both its official installer path
+and its npm path (`tests/behavioral/agentic-cli/`).
 
-## opencode — the honest status
+## Where opencode stands
 
 opencode is the flagship stress test for this surface, and it exercises the
 [multi-isolate process model](/docs/machine/processes/): bare `opencode`
-spawns a serve facet (its HTTP server) and an attach facet (its TUI) — two
+spawns a serve facet (its HTTP server) and an attach facet (its TUI), two
 isolates cooperating over loopback.
 
-Current state, exactly:
+The current state, exactly:
 
-- The split pair **boots and survives**: serve comes up, is health-gated,
-  stays externally serviceable, and the pair is lifecycle-tied.
+- The split pair boots and survives. Serve comes up, is health-gated, stays
+  externally serviceable, and the pair is lifecycle-tied.
 - `opencode --version`, `--help`, `models`, and the `opencode run` pipeline
   (DB-backed, through model dispatch) are production-probed.
-- **TUI live-update streaming is in progress** — SSE streaming through the
-  facet HTTP shim is the remaining piece before the full interactive TUI is
+- TUI live-update streaming is in progress. SSE streaming through the facet
+  HTTP shim is the remaining piece before the full interactive TUI is
   claimable.
 - opencode runs as a Nimbus-staged JS bundle with Nimbus-specific build
-  flags and source patches — not an unmodified upstream binary.
+  flags and source patches, not an unmodified upstream binary.
 
 ## What full PTY parity still needs
 
-Full POSIX PTY semantics remain a roadmap item, not a claim: raw/cooked mode
-switching driven by the app, complete signal delivery semantics,
+Full POSIX PTY semantics remain a roadmap item, not a claim: raw/cooked
+mode switching driven by the app, complete signal delivery semantics,
 attach/detach with scrollback replay, and durable process metadata across
 hibernation wake. The design is specced in the
 [OS runtime spec](https://github.com/AshishKumar4/Nimbus/blob/main/docs/architecture/nimbus-os-runtime-spec.md);
@@ -52,7 +52,7 @@ progress is tracked on the [research frontier](/docs/fine-print/research/).
 
 ## Related
 
-- [Processes](/docs/machine/processes/) — the process model these tabs sit
+- [Processes](/docs/machine/processes/): the process model these tabs sit
   on.
-- [Capability matrix](/docs/fine-print/capabilities/) — current status at a
+- [Capability matrix](/docs/fine-print/capabilities/): current status at a
   glance.

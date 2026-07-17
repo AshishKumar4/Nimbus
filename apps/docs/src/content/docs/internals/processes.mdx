@@ -1,21 +1,21 @@
 ---
 title: The process fabric
-description: How facets are staged, keyed, health-gated, evicted, and kept honest by a supervisor-owned process table.
+description: How facets are staged, keyed, health-gated, evicted, and kept truthful by a supervisor-owned process table.
 ---
 
-Every process is a Worker Loader isolate — a **facet** — created and
-tracked by the supervisor. This page is about the machinery: how facets are
-staged, how big apps load without hurting the supervisor, and what happens
-when the platform takes an isolate away.
+Every process is a Worker Loader isolate, a facet, created and tracked by
+the supervisor. This page is about the machinery: how facets are staged,
+how big apps load without hurting the supervisor, and what happens when the
+platform takes an isolate away.
 
 ## The process table is the truth
 
 Process state (pid, argv, cwd, state, exit code, `longRunning`,
-`attachedTty`) lives **in the Durable Object**, never in facets. Facet
-module-scope state is evictable at any moment without an error — the next
-call simply sees fresh state — so the rule is absolute: anything worth
+`attachedTty`) lives in the Durable Object, never in facets. Facet
+module-scope state is evictable at any moment without an error; the next
+call simply sees fresh state. So the rule is absolute: anything worth
 knowing about a process is supervisor-side, and facet state must be
-reconstructible or the process is honestly marked dead.
+reconstructible or the process is marked dead.
 
 Process logs and input queues are durable and bounded; process terminals
 ride hibernatable WebSockets.
@@ -28,55 +28,56 @@ ride hibernatable WebSockets.
 | Resident (keyed) | stable key → reused warm isolate | killed, lifecycle-tied, or evicted |
 | Git engine | dedicated | per-phase |
 
-Resident facets are the interesting ones: a keyed loader entry means
-`vite` or `opencode serve` keeps its isolate across requests, its port
-registered in the supervisor's registry, its route stub resolving from the
-loader cache. Route stubs are **code-free**: they resolve the already-loaded
-worker rather than re-loading from code — re-loading would silently boot an
-empty, non-listening isolate, so eviction fails loud instead.
+Resident facets are the interesting ones. A keyed loader entry means `vite`
+or `opencode serve` keeps its isolate across requests, its port registered
+in the supervisor's registry, its route stub resolving from the loader
+cache. Route stubs are code-free: they resolve the already-loaded worker
+rather than re-loading from code. Re-loading would silently boot an empty,
+non-listening isolate, so eviction fails loud instead.
 
 ## Staging without hurting the supervisor
 
-Big apps arrive as module maps — opencode's staged bundle is ~20+ MB of
-module sources. The supervisor **never materializes artifact sources**: it
-builds only a small stage spec (argv/env/VFS snapshot), and the full module
-map is assembled outside the DO's context on the Worker-Loader cache-miss
-path. This is a hard rule learned live: assembling multi-MB module maps
-inside the supervisor isolate, on top of session baseline, crossed the
-memory cap and reset the DO.
+Big apps arrive as module maps; opencode's staged bundle is over 20 MB of
+module sources. The supervisor never materializes artifact sources. It
+builds only a small stage spec (argv, env, VFS snapshot), and the full
+module map is assembled outside the DO's context on the Worker-Loader
+cache-miss path. This is a hard rule learned live: assembling multi-MB
+module maps inside the supervisor isolate, on top of session baseline,
+crossed the memory cap and reset the DO.
 
 Two more platform facts shape staging:
 
-- **No request-time WASM compilation.** workerd blocks
-  `WebAssembly.compile`/`new Module` on raw bytes in facets; WASM must ride
-  the module map as `{ wasm: bytes }` entries, arriving pre-compiled.
-- **Readiness is health-gated.** A server facet is polled (per-poll
-  timeout, overall budget) before dependents attach — a wedged poll is
-  abandoned rather than allowed to starve the gate.
+- No request-time WASM compilation. workerd blocks
+  `WebAssembly.compile`/`new Module` on raw bytes in facets, so WASM must
+  ride the module map as `{ wasm: bytes }` entries, arriving pre-compiled.
+- Readiness is health-gated. A server facet is polled (per-poll timeout,
+  overall budget) before dependents attach, and a wedged poll is abandoned
+  rather than allowed to starve the gate.
 
 ## Multi-isolate apps
 
 Because loopback crosses facets, one app can be several processes. The
-opencode pair is the working example: the supervisor spawns `opencode serve`
-as a resident facet, health-gates it over loopback, then spawns the TUI as
-an attached facet pointing at `127.0.0.1:4096`. The pair is lifecycle-tied —
-exiting the TUI reaps the server. Status: boots and survives; TUI streaming
-in progress ([capability matrix](/docs/fine-print/capabilities/)).
+opencode pair is the working example: the supervisor spawns
+`opencode serve` as a resident facet, health-gates it over loopback, then
+spawns the TUI as an attached facet pointing at `127.0.0.1:4096`. The pair
+is lifecycle-tied; exiting the TUI reaps the server. Status: boots and
+survives, with TUI streaming in progress
+([capability matrix](/docs/fine-print/capabilities/)).
 
-## Eviction semantics, honestly
+## Eviction semantics
 
 Under memory pressure workerd may reset a facet isolate between calls.
 Nimbus's contract:
 
 - The supervisor treats facet-held process state as evictable, always.
 - A resident process that cannot be resolved from the loader cache fails
-  loud (the honest equivalent of SIGKILL) — never a zombie that looks
+  loud, the moral equivalent of SIGKILL, never a zombie that looks
   routeable.
 - OOM inside a facet surfaces as a clean, catchable RPC error in the
   supervisor, not a crash of the session.
 
 ## Related
 
-- [Processes](/docs/machine/processes/) — the user-facing model.
-- [Ports & routing](/docs/internals/network/) — how resident facets receive
+- [Processes](/docs/machine/processes/): the user-facing model.
+- [Ports & routing](/docs/internals/network/): how resident facets receive
   traffic.
