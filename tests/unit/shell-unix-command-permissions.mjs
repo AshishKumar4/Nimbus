@@ -88,6 +88,27 @@ const hiddenExists = await run('test', ['-e', 'hidden/file'], USER);
 assert.equal(hiddenExists.exitCode, 1, 'test -e maps an untraversable path to false');
 assert.equal(hiddenExists.stderr, '');
 
+const namedOwner = await run('ls', ['-l', 'root-secret'], USER);
+assert.equal(namedOwner.exitCode, 0);
+assert.match(namedOwner.stdout, /\broot\s+root\b/, 'ls -l renders the stored owner and group names');
+
+const numericOwner = await run('ls', ['-ln', 'root-secret'], USER);
+assert.equal(numericOwner.exitCode, 0);
+assert.match(numericOwner.stdout, /\b0\s+0\b/, 'ls -ln renders numeric uid and gid');
+
+const directoryItself = await run('ls', ['-ld', 'hidden'], USER);
+assert.equal(directoryItself.exitCode, 0, 'ls -d stats an unreadable directory without reading it');
+assert.match(directoryItself.stdout, /^d[rwx-]{9}\s+1\s+root\s+root\b/m);
+assert.match(directoryItself.stdout, /\shidden\n$/);
+
+const deniedLs = await run('ls', ['hidden'], USER);
+assert.equal(deniedLs.exitCode, 2, 'ls returns serious-trouble status for an unreadable directory');
+assert.match(deniedLs.stderr, /Permission denied/);
+
+const ownedStat = await run('stat', ['root-secret'], USER);
+assert.equal(ownedStat.exitCode, 0);
+assert.match(ownedStat.stdout, /Uid:\s*\(0\/root\).*Gid:\s*\(0\/root\)/, 'stat renders stored ownership');
+
 const missingIdentity = await runWithoutCred('cat', ['readable']);
 assert.equal(missingIdentity.exitCode, 1);
 assert.match(missingIdentity.stderr, /unix command dispatch requires process credentials/);
