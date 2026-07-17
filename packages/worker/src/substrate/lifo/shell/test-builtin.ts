@@ -222,10 +222,14 @@ function hasPatternSyntax(value: string): boolean {
 function evaluateFileTest(flag: string, path: string, vfs: VFS): boolean | null {
   switch (flag) {
     case 'e': {
-      return vfs.exists(path);
+      try {
+        vfs.stat(path);
+        return true;
+      } catch {
+        return false;
+      }
     }
     case 'f': {
-      if (!vfs.exists(path)) return false;
       try {
         const stat = vfs.stat(path);
         return stat.type === 'file';
@@ -234,7 +238,6 @@ function evaluateFileTest(flag: string, path: string, vfs: VFS): boolean | null 
       }
     }
     case 'd': {
-      if (!vfs.exists(path)) return false;
       try {
         const stat = vfs.stat(path);
         return stat.type === 'directory';
@@ -243,7 +246,6 @@ function evaluateFileTest(flag: string, path: string, vfs: VFS): boolean | null 
       }
     }
     case 's': {
-      if (!vfs.exists(path)) return false;
       try {
         const stat = vfs.stat(path);
         return stat.type === 'file' && stat.size > 0;

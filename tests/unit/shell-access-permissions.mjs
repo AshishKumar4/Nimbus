@@ -6,6 +6,9 @@ import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createDefaultRegistry } from '../../packages/worker/src/substrate/lifo/commands/registry.ts';
 import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { VFS } from '../../packages/worker/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { SqliteVFSProvider } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { evaluateTest } from '../../packages/worker/src/substrate/lifo/shell/test-builtin.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -79,5 +82,19 @@ user.chmod('home/user/class-binding', 0o004);
 assert.equal((await run('test', ['-r', 'class-binding'], USER)).exitCode, 1,
   'the matching owner class is binding even when other grants access');
 assert.equal((await run('test', ['-r', 'class-binding'], OTHER)).exitCode, 0);
+
+const mountedVfs = new VFS();
+mountedVfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
+for (const flag of ['-e', '-f', '-d', '-s']) {
+  let stderr = '';
+  assert.equal(
+    evaluateTest([flag, '/home/user/hidden/file'], mountedVfs.as(USER), {
+      write: (value) => { stderr += String(value); },
+    }),
+    1,
+    `test ${flag} treats an inaccessible path as false`,
+  );
+  assert.equal(stderr, '', `test ${flag} does not diagnose inaccessible paths`);
+}
 
 console.log('shell access permissions: ok');
