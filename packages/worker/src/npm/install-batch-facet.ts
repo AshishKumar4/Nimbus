@@ -737,6 +737,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       };
       // @ts-ignore — preamble symbol.
       for await (const entry of streamTarEntries(asyncIter, onSkip)) {
+        // entry.name is already canonicalized (no "."/".." segments) by
+        // the tar parser, so joining under the canonical pkgDir yields a
+        // canonical path the w7-frame writer accepts.
         const filePath = pkgDir + '/' + entry.name;
         const parts = filePath.split('/');
         for (let i = 1; i < parts.length; i++) {

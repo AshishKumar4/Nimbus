@@ -25,6 +25,27 @@ export const MAX_FILE_BYTES = 20_000_000;
  * Read one tar header (USTAR) out of `block`. Returns parsed fields or
  * `null` for an end-of-archive block (all zeros).
  */
+/**
+ * Collapse "."/".." segments in a tar entry's package-relative path.
+ * Returns the canonical relative path, or '' when the entry escapes its
+ * package root (a leading ".." that pops above the root) — the caller
+ * treats '' as a no-name entry and skips it. Mirrors the segment logic in
+ * w7-frame's canonicalPath so joined write paths are always accepted.
+ */
+export function canonicalTarName(name) {
+    const out = [];
+    for (const seg of name.split('/')) {
+        if (seg === '..') {
+            if (out.length === 0)
+                return '';
+            out.pop();
+        }
+        else if (seg !== '' && seg !== '.') {
+            out.push(seg);
+        }
+    }
+    return out.join('/');
+}
 export function parseTarHeader(block) {
     if (block[0] === 0)
         return null;
@@ -40,6 +61,15 @@ export function parseTarHeader(block) {
         name = prefix + '/' + name;
     // Strip the npm `package/` convention.
     name = name.replace(/^package\//, '');
+    // Canonicalize the entry-relative path. npm tarballs legitimately carry
+    // entries like "./dist/index.js" (agent-base, http-proxy-agent,
+    // protobufjs, ...); left as-is the "./" survives into the VFS write path
+    // and the w7-frame writer rejects the noncanonical path, failing the
+    // whole shared install wave and dropping shard-mates' completion markers.
+    // Collapsing here (the one place entry names are assembled) keeps every
+    // downstream join canonical. An entry that escapes its package root via
+    // ".." is dropped to '' → skipped as a no-name entry.
+    name = canonicalTarName(name);
     let sizeStr = '';
     for (let i = 124; i < 136 && block[i] !== 0; i++) {
         sizeStr += String.fromCharCode(block[i]);
