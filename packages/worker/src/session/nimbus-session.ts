@@ -278,6 +278,7 @@ export class NimbusSession extends CloudflareDurableObject {
   runtimeFsBridges: Map<number, SqliteRuntimeFsBridge> | null = null;
   kernel: Kernel | null = null;
   shell: Shell | null = null;
+  shellProcessPid: number | null = null;
   terminal: WebSocketTerminal | null = null;
   facetManager: FacetManager | null = null;
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
@@ -1268,7 +1269,13 @@ export class NimbusSession extends CloudflareDurableObject {
   // ── Filesystem seeding ────────────────────────────────────────────────
 
   seedFilesystem() {
-    const fs = this.sqliteFs!.as(CRED_KERNEL);
+    const fs = this.sqliteFs!.as({
+      uid: 1000,
+      gid: 1000,
+      groups: [1000],
+      umask: 0o022,
+    });
+    const rootFs = this.sqliteFs!.as(CRED_KERNEL);
     const dirs = [
       'bin', 'etc', 'home', 'home/user', 'home/user/.config',
       'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
@@ -1287,6 +1294,20 @@ export class NimbusSession extends CloudflareDurableObject {
       fs.writeFile('etc/os-release',
         `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
         'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n'
+      );
+    }
+    if (!rootFs.exists('etc/passwd')) {
+      rootFs.writeFile('etc/passwd',
+        'root:x:0:0:root:/root:/bin/sh\n' +
+        'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n',
+        { mode: 0o644 },
+      );
+    }
+    if (!rootFs.exists('etc/group')) {
+      rootFs.writeFile('etc/group',
+        'root:x:0:\n' +
+        'user:x:1000:user\n',
+        { mode: 0o644 },
       );
     }
     const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;

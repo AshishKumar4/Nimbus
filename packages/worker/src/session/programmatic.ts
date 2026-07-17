@@ -74,6 +74,7 @@ export interface ProgrammaticHost {
   env: RuntimeCatalogEnv;
   ctx: ProgrammaticContext;
   shell: ProgrammaticShell | null;
+  shellProcessPid: number | null;
   sqliteFs: SqliteVFS | null;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
@@ -658,6 +659,7 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.sqliteFs = null;
   self.kernel = null;
   self.shell = null;
+  self.shellProcessPid = null;
   self.terminal = null;
   self.facetManager = null;
   self.facetProcessManager = null;

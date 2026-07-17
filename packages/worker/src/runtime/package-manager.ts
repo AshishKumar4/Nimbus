@@ -29,9 +29,10 @@
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest, type RuntimeCatalogEnv, type RuntimeCatalog, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, type RuntimePackageAbi } from './os-contracts.js';
+import type { CommandContext } from '../substrate/lifo/commands/types.js';
 
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
-export interface ShellCtx {
+export interface ShellCtx extends Pick<CommandContext, 'pid' | 'cred' | 'setUmask' | 'runAs'> {
   args: string[];
   env: Record<string, string>;
   cwd: string;
@@ -380,7 +381,12 @@ export async function installRuntimeProgrammatic(deps: {
 }, spec: string, opts: { force?: boolean } = {}): Promise<RuntimeInstallSummary> {
   const stdout: string[] = [];
   const stderr: string[] = [];
+  let programmaticCred = CRED_KERNEL;
   const ctx: ShellCtx = {
+    pid: 0,
+    get cred() { return programmaticCred; },
+    setUmask: (umask) => { programmaticCred = { ...programmaticCred, umask }; },
+    runAs: async () => 126,
     args: [],
     env: {},
     cwd: deps.getHome(),

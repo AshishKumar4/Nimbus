@@ -119,6 +119,8 @@ export class ServiceManager {
     }
 
     const ctx: CommandContext = {
+      pid,
+      cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
       args: cmdArgs,
       env,
       cwd,
@@ -126,6 +128,8 @@ export class ServiceManager {
       stdout: logStream,
       stderr: logStream,
       signal: abortController.signal,
+      setUmask: () => {},
+      runAs: async () => 126,
     };
 
     const promise = cmd(ctx).catch((err: unknown) => {
@@ -200,6 +204,8 @@ export class ServiceManager {
         const noop: CommandOutputStream = { write: () => {} };
         try {
           await cmd({
+            pid: svc.pid,
+            cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
             args: parts.slice(1),
             env: { ...this.defaultEnv },
             cwd: this.defaultEnv.HOME ?? '/',
@@ -207,6 +213,8 @@ export class ServiceManager {
             stdout: noop,
             stderr: noop,
             signal: AbortSignal.timeout(5000),
+            setUmask: () => {},
+            runAs: async () => 126,
           });
         } catch { /* ignore */ }
       }

@@ -32,9 +32,11 @@ import {
   rehydrateGlobalPackages,
 } from '../substrate/lifo/index.js';
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
+import type { CommandContext, CommandRunAsHost } from '../substrate/lifo/commands/types.js';
+import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, requireVfsCred } from '../runtime/os-contracts.js';
 import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -119,6 +121,10 @@ function resolveNpmPrefix(prefix: string, cwd: string): string {
   return prefix.startsWith('/')
     ? normalizeVfsPath(prefix)
     : resolveVfsPath(prefix, cwd || '/home/user');
+}
+
+function quoteShellArgument(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 
@@ -590,10 +596,26 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             const stderr = { write: (s: string) => { stderrText.push(String(s)); } };
             const py = await registry.resolve('python');
             if (py) {
+              const pid = 'pid' in ctx ? ctx.pid : undefined;
+              const setUmask = 'setUmask' in ctx ? ctx.setUmask : undefined;
+              const runAs = 'runAs' in ctx ? ctx.runAs : undefined;
+              if (
+                typeof pid !== 'number'
+                || typeof setUmask !== 'function'
+                || typeof runAs !== 'function'
+                || self.kernel === null
+              ) {
+                throw new Error('python warm-up requires a process identity');
+              }
+              const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'python warm-up');
               const code = await py({
                 ...ctx,
                 args: ['-c', 'pass'],
-                vfs: (ctx as any).vfs ?? (sqliteFs as any),
+                pid,
+                cred,
+                setUmask: (mask: number) => setUmask(mask),
+                runAs: (targetCred, argv) => runAs(targetCred, argv),
+                vfs: self.kernel.vfs,
                 signal: new AbortController().signal,
                 stdout,
                 stderr,
@@ -1848,7 +1870,86 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
     // ── Create shell ──
     const processRegistry = new ProcessRegistry();
-    self.shell = new Shell(self.terminal, self.kernel.vfs, registry, env, processRegistry);
+    if (self.shellProcessPid !== null) {
+      self.processes.exit(self.shellProcessPid, 0);
+    }
+    const shellProcess = self.processes.spawn(
+      'sh',
+      ['sh'],
+      persisted.cwd || '/home/user',
+    );
+    self.shellProcessPid = shellProcess.pid;
+
+    const runAsProcess: CommandRunAsHost = async (parent, cred, argv) => {
+      if (argv.length === 0) return 0;
+      const child = self.processes.spawn(
+        argv.join(' '),
+        argv,
+        parent.cwd,
+        { parentPid: parent.pid, cred },
+      );
+      const activeShell = self.shell;
+      if (!activeShell) {
+        self.processes.exit(child.pid, 1);
+        throw new Error('shell is not initialized');
+      }
+
+      const identity = commandIdentityFor(child.pid);
+      let exitCode = 1;
+      try {
+        const stdin = parent.stdin && parent.stdin !== parent.terminalStdin
+          ? await parent.stdin.readAll()
+          : undefined;
+        const result = await activeShell.execute(
+          argv.map(quoteShellArgument).join(' '),
+          {
+            cwd: parent.cwd,
+            env: parent.env,
+            stdin,
+            terminalStdin: parent.terminalStdin,
+            signal: parent.signal,
+            isolateShellState: true,
+            terminalFds: {
+              stdin: parent.isFdTerminal?.(0) ?? false,
+              stdout: parent.isFdTerminal?.(1) ?? false,
+              stderr: parent.isFdTerminal?.(2) ?? false,
+            },
+            onStdout: (data) => parent.stdout.write(data),
+            onStderr: (data) => parent.stderr.write(data),
+            commandContext: {
+              pid: identity.pid,
+              cred: identity.cred,
+              setUmask: identity.setUmask,
+            },
+            runAs: runAsProcess,
+          },
+        );
+        exitCode = result.exitCode;
+        return exitCode;
+      } finally {
+        self.processes.exit(child.pid, exitCode);
+      }
+    };
+
+    const commandIdentityFor = (pid: number): ShellCommandIdentity => ({
+      pid,
+      get cred() {
+        return self.processes.cred(pid);
+      },
+      setUmask(mask: number) {
+        self.processes.setUmask(pid, mask);
+      },
+      runAs: runAsProcess,
+    });
+
+    self.shell = new Shell(
+      self.terminal,
+      self.kernel.vfs,
+      registry,
+      env,
+      processRegistry,
+      commandIdentityFor(shellProcess.pid),
+    );
 
     // Primitive #7: patch NIMBUS_SESSION_ID into the live shell env.
     // sessionBasePath is "/s/<sid>" set by the X-Nimbus-Base header on
@@ -1896,29 +1997,72 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
     // ── Wire npm/npx with shellExecute ──
     const shell = self.shell;
-    const shellExecute = async (cmd: string, cmdCtx: any): Promise<number> => {
+    const shellExecute = async (cmd: string, cmdCtx: CommandContext): Promise<number> => {
+      const stdin = cmdCtx.stdin && cmdCtx.stdin !== cmdCtx.terminalStdin
+        ? await cmdCtx.stdin.readAll()
+        : undefined;
       const result = await shell.execute(cmd, {
         cwd: cmdCtx.cwd,
         env: cmdCtx.env,
         onStdout: (d: string) => cmdCtx.stdout.write(d),
         onStderr: (d: string) => cmdCtx.stderr.write(d),
-        stdin: typeof cmdCtx.stdin === 'string' ? cmdCtx.stdin : undefined,
+        stdin,
+        terminalStdin: cmdCtx.terminalStdin,
+        commandContext: {
+          pid: cmdCtx.pid,
+          cred: cmdCtx.cred,
+          setUmask: cmdCtx.setUmask,
+        },
+        runAs: runAsProcess,
       });
       return result.exitCode;
     };
     const shellEntrypointExecutor = {
       execute: async (cmd, options) => {
+        const parentPid = options?.commandContext?.['pid'];
+        if (typeof parentPid !== 'number') {
+          throw new Error('shell entrypoint requires a parent process');
+        }
+        const childProcess = self.processes.spawn(
+          'sh',
+          ['sh'],
+          options?.cwd || '/home/user',
+          { parentPid },
+        );
+        const identity = commandIdentityFor(childProcess.pid);
+        const kernel = self.kernel;
+        if (kernel === null) {
+          self.processes.exit(childProcess.pid, 1);
+          throw new Error('shell kernel is not initialized');
+        }
         const terminal = createHeadlessTerminal();
         const childShell = new Shell(
           terminal,
-          self.kernel!.vfs,
+          kernel.vfs,
           registry,
           { ...env, ...(options?.env || {}) },
           processRegistry,
+          identity,
         );
         installShellExecutionFeatures(childShell, terminal);
         if (options?.cwd) childShell.setCwd(options.cwd);
-        return childShell.execute(cmd, options);
+        try {
+          const result = await childShell.execute(cmd, {
+            ...options,
+            commandContext: {
+              ...options?.commandContext,
+              pid: identity.pid,
+              cred: identity.cred,
+              setUmask: identity.setUmask,
+            },
+            runAs: runAsProcess,
+          });
+          self.processes.exit(childProcess.pid, result.exitCode);
+          return result;
+        } catch (error) {
+          self.processes.exit(childProcess.pid, 1);
+          throw error;
+        }
       },
     } satisfies ShellEntrypointExecutor;
     registerShellEntrypointCommands(registry, shellEntrypointExecutor, kernelFs);
@@ -1927,10 +2071,15 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // process-table and log-store contract as facet-backed processes.
     const shellExecuteTracked = async (
       cmd: string,
-      cmdCtx: any,
+      cmdCtx: CommandContext,
       opts: { longRunning?: boolean } = {},
     ): Promise<number> => {
-      const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
+      const entry = self.processes.spawn(
+        cmd,
+        [cmd],
+        cmdCtx.cwd || '/home/user',
+        { parentPid: cmdCtx.pid },
+      );
       const pid = entry.pid;
       if (opts.longRunning) self.processes.setLongRunning(pid);
       const startedAt = Date.now();
@@ -1967,8 +2116,12 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           // (vite/wrangler/serve) ADOPTS this wrapper pid via the bin-spawn
           // contract instead of allocating a second one, and suppresses its
           // own `[started (long-running)]` notice.
-          commandContext: opts.longRunning
-            ? {
+          commandContext: {
+            pid,
+            cred: entry.cred,
+            setUmask: (mask: number) => self.processes.setUmask(pid, mask),
+            ...(opts.longRunning
+              ? {
                 __nimbusBinSpawn: {
                   skipSpawn: true,
                   callerPid: pid,
@@ -1976,7 +2129,9 @@ export function initSession(self: InitHost, ws: WebSocket): void {
                   forceLongRunning: true,
                 },
               }
-            : undefined,
+              : {}),
+          },
+          runAs: runAsProcess,
         });
         exitCode = result.exitCode;
       } catch (e: any) {

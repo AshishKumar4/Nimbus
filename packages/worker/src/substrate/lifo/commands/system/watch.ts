@@ -42,13 +42,9 @@ export function createWatchCommand(registry: CommandRegistry): Command {
       };
 
       await command({
+        ...ctx,
         args: cmdArgs,
-        env: ctx.env,
-        cwd: ctx.cwd,
-        vfs: ctx.vfs,
         stdout: collectStdout,
-        stderr: ctx.stderr,
-        signal: ctx.signal,
       });
 
       ctx.stdout.write(output.join(''));

@@ -3647,13 +3647,17 @@ function clampNonNegativeInt(value: number): number {
 // ── SqliteVFSProvider (MountProvider for Nimbus Kernel VFS) ────────────────────
 
 export class SqliteVFSProvider {
+  private raw: SqliteVFS;
   private vfs: CredentialedVfs;
   private prefix: string;
 
-  constructor(vfs: SqliteVFS, prefix: string) {
-    this.vfs = vfs.as(CRED_KERNEL);
+  constructor(vfs: SqliteVFS, prefix: string, cred: VfsCred = CRED_KERNEL) {
+    this.raw = vfs;
+    this.vfs = vfs.as(cred);
     this.prefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
   }
+
+  as(cred: VfsCred): SqliteVFSProvider { return new SqliteVFSProvider(this.raw, this.prefix, cred); }
 
   private resolve(sub: string): string {
     const c = sub.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -3671,6 +3675,7 @@ export class SqliteVFSProvider {
   }
 
   exists(sub: string): boolean { return this.vfs.exists(this.resolve(sub)); }
+  access(sub: string, mode: number): void { this.vfs.access(this.resolve(sub), mode); }
   stat(sub: string) { return this.vfs.stat(this.resolve(sub)); }
   readdir(sub: string) { return this.vfs.readdir(this.resolve(sub)); }
   unlink(sub: string): void { this.vfs.unlink(this.resolve(sub)); }
@@ -3683,4 +3688,7 @@ export class SqliteVFSProvider {
   rename(o: string, n: string): void { this.vfs.rename(this.resolve(o), this.resolve(n)); }
   copyFile(s: string, d: string): void { this.vfs.copyFile(this.resolve(s), this.resolve(d)); }
   chmod(sub: string, mode: number): void { this.vfs.chmod(this.resolve(sub), mode); }
+  chown(sub: string, uid: number | null, gid: number | null): void {
+    this.vfs.chown(this.resolve(sub), uid, gid);
+  }
 }

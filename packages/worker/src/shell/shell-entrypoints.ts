@@ -1,5 +1,7 @@
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import type { TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { VfsCred } from '../runtime/os-contracts.js';
+import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';
 
@@ -14,6 +16,11 @@ type ShellCommandContext = {
   stdin?: unknown;
   terminalStdin?: TerminalInputStream;
   isFdTerminal?: (fd: number) => boolean;
+  pid: number;
+  cred: VfsCred;
+  setUmask(mask: number): void;
+  runAs(cred: VfsCred, argv: string[]): Promise<number>;
+  vfs: VFS;
 };
 
 export type ShellEntrypointExecutor = {
@@ -33,6 +40,8 @@ export type ShellEntrypointExecutor = {
       stdout?: boolean;
       stderr?: boolean;
     };
+    commandContext?: Record<string, unknown>;
+    runAs?: CommandRunAsHost;
   }): Promise<{ exitCode: number; stdout?: string; stderr?: string }>;
 };
 
@@ -82,7 +91,7 @@ function makeShellEntrypoint(
       return 0;
     }
 
-    const program = await parseShellProgram(shellName, ctx, vfs);
+    const program = await parseShellProgram(shellName, ctx, ctx.vfs);
     if ('error' in program) {
       if (program.error) ctx.stderr.write(program.error + '\n');
       return program.exitCode;
@@ -117,6 +126,12 @@ function makeShellEntrypoint(
         stdout: ctx.isFdTerminal?.(1) ?? false,
         stderr: ctx.isFdTerminal?.(2) ?? false,
       },
+      commandContext: {
+        pid: ctx.pid,
+        cred: ctx.cred,
+        setUmask: ctx.setUmask,
+      },
+      runAs: (_parent, cred, argv) => ctx.runAs(cred, argv),
     });
     writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
     writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);
@@ -141,7 +156,7 @@ async function resolveInheritedStdin(
 async function parseShellProgram(
   shellName: ShellName,
   ctx: ShellCommandContext,
-  vfs: CredentialedVfs,
+  vfs: Pick<CredentialedVfs, 'exists' | 'readFileString'>,
 ): Promise<ParseResult> {
   const parsed = parseShellInvocation(shellName, ctx.args);
   if (!parsed.ok) {
@@ -192,7 +207,7 @@ function loadScript(
   args: string[],
   options: ShellInvocationOptions,
   cwd: string | undefined,
-  vfs: CredentialedVfs,
+  vfs: Pick<CredentialedVfs, 'exists' | 'readFileString'>,
 ): ParseResult {
   const path = resolveVfsPath(script, cwd || '/home/user');
   if (!vfs.exists(path)) return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };

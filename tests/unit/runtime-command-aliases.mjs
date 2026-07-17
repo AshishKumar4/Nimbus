@@ -123,6 +123,7 @@ class FakeVfs {
     this.files = new Map();
     this.dirs = new Set(['']);
   }
+  as() { return this; }
   exists(path) { return this.files.has(path) || this.dirs.has(path); }
   mkdir(path) {
     const parts = path.split('/');
