@@ -36,6 +36,22 @@ function fsErrorMessage(error) {
     }
     return String(error);
 }
+function unixUserLabel(vfs, uid) {
+    try {
+        return findUnixUserName(vfs, uid) ?? String(uid);
+    }
+    catch {
+        return String(uid);
+    }
+}
+function unixGroupLabel(vfs, gid) {
+    try {
+        return findUnixGroupName(vfs, gid) ?? String(gid);
+    }
+    catch {
+        return String(gid);
+    }
+}
 function isRuntimeInstallHintHandler(handler) {
     return !!handler && !!handler.__nimbusRuntimeInstallHint;
 }
@@ -2528,15 +2544,21 @@ function mkEcho() {
  *   - Non-symlink rows go through the same formatter so columns line up.
  *   - Hidden-file rule (skip if leading `.`) still honored unless `-a`.
  *
- * Args supported: `-l` long, `-a` all, `-1` one-per-line, plus path
+ * Args supported: `-l` long, `-a` all, `-1` one-per-line, `-n` numeric
+ * ownership, `-d` directory itself, plus path
  * positional. Matches the shell `ls` flag surface so we don't regress.
  */
 function mkLs(vfs) {
     return (ctx) => {
         const args = ctx.args;
-        const flagLong = args.some(a => /^-[la]*l[la]*$/.test(a));
-        const flagAll = args.some(a => /^-[la]*a[la]*$/.test(a));
-        const flagOne = args.some(a => /^-[la1]*1[la1]*$/.test(a));
+        const flags = new Set(args
+            .filter((arg) => arg.startsWith('-') && !arg.startsWith('--'))
+            .flatMap((arg) => [...arg.slice(1)]));
+        const flagLong = flags.has('l') || flags.has('n');
+        const flagAll = flags.has('a');
+        const flagOne = flags.has('1');
+        const flagNumeric = flags.has('n');
+        const flagDirectory = flags.has('d');
         const positionals = args.filter(a => !a.startsWith('-'));
         const targets = positionals.length > 0 ? positionals : [ctx.cwd];
         const reg = vfs.symlinks;
@@ -2566,6 +2588,7 @@ function mkLs(vfs) {
             const mm = String(d.getMinutes()).padStart(2, '0');
             return `${mon} ${day} ${hh}:${mm}`;
         }
+        let exit = 0;
         function listDir(dirPath) {
             const fp = resolvePath(ctx.cwd, dirPath);
             const out = [];
@@ -2584,16 +2607,19 @@ function mkLs(vfs) {
                         try {
                             const s = vfs.stat(childPath);
                             return { name: n.name, type: n.type, size: s.size ?? 0,
-                                mtime: s.mtime ?? Date.now(), mode: s.mode ?? 0o644 };
+                                mtime: s.mtime ?? Date.now(), mode: s.mode ?? 0o644,
+                                uid: s.uid ?? ctx.cred.uid, gid: s.gid ?? ctx.cred.gid };
                         }
                         catch {
-                            return { name: n.name, type: n.type, size: 0, mtime: Date.now(), mode: 0o644 };
+                            return { name: n.name, type: n.type, size: 0, mtime: Date.now(), mode: 0o644,
+                                uid: ctx.cred.uid, gid: ctx.cred.gid };
                         }
                     });
                 }
             }
             catch (e) {
-                ctx.stderr.write(`ls: cannot access '${dirPath}': ${e?.message || e}\n`);
+                ctx.stderr.write(`ls: cannot access '${dirPath}': ${fsErrorMessage(e)}\n`);
+                exit = 2;
                 return [];
             }
             for (const r of real) {
@@ -2609,6 +2635,8 @@ function mkLs(vfs) {
                     size: r.size ?? 0,
                     mtime: r.mtime ?? Date.now(),
                     mode: r.mode ?? 0o644,
+                    uid: r.uid ?? ctx.cred.uid,
+                    gid: r.gid ?? ctx.cred.gid,
                     ...(type === 'symlink'
                         ? { linkTarget: readSymlinkTarget(vfs, childPath) ?? undefined }
                         : {}),
@@ -2633,6 +2661,8 @@ function mkLs(vfs) {
                         size: target.length,
                         mtime: Date.now(),
                         mode: 0o777,
+                        uid: ctx.cred.uid,
+                        gid: ctx.cred.gid,
                         linkTarget: target,
                     });
                 }
@@ -2651,9 +2681,10 @@ function mkLs(vfs) {
             const size = String(e.size).padStart(6, ' ');
             const time = fmtTime(e.mtime);
             const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
-            return `${mode}  1 user user ${size} ${time} ${e.name}${arrow}`;
+            const user = flagNumeric ? String(e.uid) : unixUserLabel(vfs, e.uid);
+            const group = flagNumeric ? String(e.gid) : unixGroupLabel(vfs, e.gid);
+            return `${mode}  1 ${user} ${group} ${size} ${time} ${e.name}${arrow}`;
         }
-        let exit = 0;
         // First pass: separate file-args from dir-args (real `ls` lists
         // each file inline; dirs get listed as their contents).
         const fileEntries = [];
@@ -2670,22 +2701,26 @@ function mkLs(vfs) {
                     size: target.length,
                     mtime: Date.now(),
                     mode: 0o777,
+                    uid: ctx.cred.uid,
+                    gid: ctx.cred.gid,
                     linkTarget: target,
                 });
                 continue;
             }
             try {
                 const s = kvfs && typeof kvfs.stat === 'function' ? kvfs.stat(fp) : vfs.stat(fp);
-                if (s.type === 'directory') {
+                if (s.type === 'directory' && !flagDirectory) {
                     dirArgs.push(arg);
                 }
                 else {
                     fileEntries.push({
                         name: arg,
-                        type: 'file',
+                        type: s.type === 'directory' ? 'directory' : 'file',
                         size: s.size ?? 0,
                         mtime: s.mtime ?? Date.now(),
                         mode: s.mode ?? 0o644,
+                        uid: s.uid ?? ctx.cred.uid,
+                        gid: s.gid ?? ctx.cred.gid,
                     });
                 }
             }
@@ -2911,7 +2946,11 @@ function mkStat(vfs) {
             }
             ctx.stdout.write(`  File: ${displayPath}\n`);
             ctx.stdout.write(`  Size: ${st.size}\tType: ${st.type}\n`);
-            ctx.stdout.write(`  Mode: ${st.mode.toString(8)}\n`);
+            const uid = st.uid ?? ctx.cred.uid;
+            const gid = st.gid ?? ctx.cred.gid;
+            const user = unixUserLabel(vfs, uid);
+            const group = unixGroupLabel(vfs, gid);
+            ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${user})   Gid: (${gid}/${group})\n`);
             ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`);
         }
         return 0;

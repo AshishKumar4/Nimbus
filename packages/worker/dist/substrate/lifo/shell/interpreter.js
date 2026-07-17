@@ -37,6 +37,31 @@ export class ExitSignal {
         this.exitCode = exitCode;
     }
 }
+class RedirectionOpenError extends Error {
+    target;
+    fsError;
+    constructor(target, fsError) {
+        super(fsError instanceof Error ? fsError.message : String(fsError));
+        this.target = target;
+        this.fsError = fsError;
+    }
+}
+function redirectionDiagnostic(error) {
+    const code = typeof error.fsError === 'object' && error.fsError !== null
+        && 'code' in error.fsError && typeof error.fsError.code === 'string'
+        ? error.fsError.code
+        : /^([A-Z][A-Z0-9]+):/.exec(error.message)?.[1];
+    const reason = code === 'EACCES' || code === 'EPERM'
+        ? 'Permission denied'
+        : code === 'ENOENT'
+            ? 'No such file or directory'
+            : code === 'ENOTDIR'
+                ? 'Not a directory'
+                : code === 'EISDIR'
+                    ? 'Is a directory'
+                    : error.message;
+    return `sh: ${error.target}: ${reason}\n`;
+}
 export class Interpreter {
     config;
     lastExitCode = 0;
@@ -568,7 +593,9 @@ export class Interpreter {
         }
         catch (error) {
             const redirStderr = fds.outputFds.get(2) ?? stderr;
-            redirStderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+            redirStderr.write(error instanceof RedirectionOpenError
+                ? redirectionDiagnostic(error)
+                : `${error instanceof Error ? error.message : String(error)}\n`);
             this.lastExitCode = 1;
             return 1;
         }
@@ -954,7 +981,17 @@ export class Interpreter {
         const stdout = io.stdout ?? this.terminalSink(io);
         const stderr = io.stderr ?? this.terminalSink(io);
         const fds = this.createCommandFds(stdout, stderr, io.stdin, io);
-        await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
+        try {
+            await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
+        }
+        catch (error) {
+            if (!(error instanceof RedirectionOpenError))
+                throw error;
+            const redirStderr = fds.outputFds.get(2) ?? stderr;
+            redirStderr.write(redirectionDiagnostic(error));
+            this.lastExitCode = 1;
+            return 1;
+        }
         return execute(this.createIoFromFds(io, fds));
     }
     async applyRedirections(redirections, fds, expandCtx, io, terminalStdin) {
@@ -1066,16 +1103,27 @@ export class Interpreter {
             return { stream: this.terminalSink(io), terminal: true };
         }
         const targetPath = resolve(this.config.getCwd(), target);
-        if (mode === 'write') {
-            const vfs = io.vfs ?? this.config.vfs;
-            vfs.writeFile(targetPath, '');
-            return { stream: this.createFileWriter(vfs, targetPath), terminal: false };
-        }
         const vfs = io.vfs ?? this.config.vfs;
-        if (!vfs.exists(targetPath)) {
-            vfs.writeFile(targetPath, '');
+        try {
+            if (mode === 'write') {
+                vfs.writeFile(targetPath, '');
+                return { stream: this.createFileWriter(vfs, targetPath), terminal: false };
+            }
+            if (vfs.exists(targetPath)) {
+                const stat = vfs.stat(targetPath);
+                if (stat.type === 'directory') {
+                    throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
+                }
+                vfs.access(targetPath, 0o2);
+            }
+            else {
+                vfs.writeFile(targetPath, '');
+            }
+            return { stream: this.createFileAppender(vfs, targetPath), terminal: false };
         }
-        return { stream: this.createFileAppender(vfs, targetPath), terminal: false };
+        catch (error) {
+            throw new RedirectionOpenError(target, error);
+        }
     }
     openInputTarget(io, target, terminalStdin) {
         if (target === '/dev/null')
@@ -1085,10 +1133,15 @@ export class Interpreter {
                 throw new Error('/dev/tty: no controlling terminal');
             return { stream: terminalStdin, terminal: true };
         }
-        return {
-            stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
-            terminal: false,
-        };
+        try {
+            return {
+                stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
+                terminal: false,
+            };
+        }
+        catch (error) {
+            throw new RedirectionOpenError(target, error);
+        }
     }
     createFileWriter(vfs, path) {
         return {

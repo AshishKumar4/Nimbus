@@ -27,6 +27,18 @@
 import { type RuntimeManifest } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
+import type { WasiFsSnapshot } from './wasi-instance.js';
+interface PythonEmscriptenFs {
+    analyzePath(path: string): {
+        exists: boolean;
+    };
+    unlink(path: string): void;
+    mkdirTree(path: string): void;
+    writeFile(path: string, data: Uint8Array): void;
+    chmod(path: string, mode: number): void;
+}
+export declare function expandPythonEffectiveMode(effective: number): number;
+export declare function installPythonFsSnapshot(fs: PythonEmscriptenFs, snapshot: WasiFsSnapshot, previousFiles?: ReadonlySet<string>): Set<string>;
 /**
  * Build the python-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each

@@ -585,6 +585,7 @@ const __fsMod = (() => {
     let local;
     let localError;
     try { local = readdirSync(p, opts); } catch (e) { localError = e; }
+    if (localError && localError?.code !== "ENOENT") throw localError;
     const mayBeStale = !!globalThis.__nimbusVfsMayBeStale;
     if (Array.isArray(local) && !mayBeStale && !opts?.withFileTypes) return local;
 
@@ -857,6 +858,40 @@ const __fsMod = (() => {
     return (available & want) === want;
   }
 
+  function _ensureAncestorsTraversable(absPath, syscall, p) {
+    const parts = _strip(absPath).split("/").filter(Boolean);
+    for (let index = 1; index < parts.length; index++) {
+      const ancestorMeta = _metadata("/" + parts.slice(0, index).join("/"));
+      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p);
+    }
+  }
+
+  function _ensureWritable(absPath, syscall, p) {
+    _ensureAncestorsTraversable(absPath, syscall, p);
+    const cell = _bundleLookup(absPath);
+    const meta = _metadata(absPath);
+    if (meta !== undefined || cell !== undefined || existsSync(absPath)) {
+      const denial = _denialCode(cell);
+      if (denial || !_modeAllows(meta, 2)) throw _fsErr(denial || "EACCES", syscall, p);
+      return;
+    }
+
+    const parent = __pathMod.dirname(absPath);
+    const parentMeta = _metadata(parent);
+    if (parentMeta) {
+      if (parentMeta.type && parentMeta.type !== "directory") throw _fsErr("ENOTDIR", syscall, p);
+      if (!_modeAllows(parentMeta, 3)) throw _fsErr("EACCES", syscall, p);
+      return;
+    }
+
+    const parentKey = _strip(parent);
+    const parentIsLocal = parent === cwd || parent === "/" ||
+      (!!__vfsDirs && parentKey in __vfsDirs) ||
+      (!!__vfsManifest && parentKey in __vfsManifest);
+    if (parentIsLocal || _supervisor()) return;
+    throw _fsErr("ENOENT", syscall, p);
+  }
+
   function accessSync(p, mode) {
     const absPath = _resolve(p);
     const cell = _bundleLookup(absPath);
@@ -866,12 +901,7 @@ const __fsMod = (() => {
     if (!Number.isInteger(requested) || requested < 0 || (requested & ~7) !== 0) {
       throw _fsErr("EINVAL", "access", p);
     }
-    const parts = _strip(absPath).split("/").filter(Boolean);
-    for (let index = 1; index < parts.length; index++) {
-      const ancestor = "/" + parts.slice(0, index).join("/");
-      const ancestorMeta = _metadata(ancestor);
-      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", "access", p);
-    }
+    _ensureAncestorsTraversable(absPath, "access", p);
     const denial = _denialCode(cell);
     if ((requested & 4) !== 0 && denial) throw _fsErr(denial, "access", p);
     if (!_modeAllows(meta, requested)) throw _fsErr("EACCES", "access", p);
@@ -896,6 +926,7 @@ const __fsMod = (() => {
   //   - no encoding + bytes cell → wrap bytes as Buffer (no copy)
   function readFileSync(p, opts) {
     const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "open", p);
     const content = _bundleLookup(absPath);
     if (content === undefined) {
       throw _fsErr("ENOENT", "open", p);
@@ -919,6 +950,7 @@ const __fsMod = (() => {
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
     const absPath = _resolve(p);
+    _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     let cell;
     if (data instanceof Uint8Array) cell = data;
@@ -935,6 +967,7 @@ const __fsMod = (() => {
   // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
     const absPath = _resolve(p);
+    _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const existing = _bundleLookup(absPath);
     const existingDefined = existing !== undefined;
@@ -995,6 +1028,7 @@ const __fsMod = (() => {
   // ── statSync ──
   function statSync(p, opts) {
     const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "stat", p);
     const k = _strip(absPath);
     const metadata = _metadata(absPath);
     if (metadata) return _statObject(metadata, k);
@@ -1053,6 +1087,9 @@ const __fsMod = (() => {
   // is unioned with __vfsWrites so newly-written files become visible.
   function readdirSync(p, opts) {
     const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "scandir", p);
+    const metadata = _metadata(absPath);
+    if (metadata && !_modeAllows(metadata, 4)) throw _fsErr("EACCES", "scandir", p);
     const k = _strip(absPath);
     const prefix = k ? k + "/" : "";
     const names = new Set();
@@ -1166,6 +1203,10 @@ const __fsMod = (() => {
   function writeFile(p, d, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
     _writeFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
+  }
+  function appendFile(p, d, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _appendFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
   function stat(p, cb) { _statAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
   function lstat(p, cb) { _lstatAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
@@ -1556,7 +1597,7 @@ const __fsMod = (() => {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync, utimesSync, lutimesSync, chmodSync, accessSync,
-    readFile, writeFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, chown, lchown, fchown, access,
+    readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, chown, lchown, fchown, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({
