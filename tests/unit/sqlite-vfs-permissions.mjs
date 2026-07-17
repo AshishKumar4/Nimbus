@@ -150,4 +150,27 @@ function errorCode(fn, expected) {
   assert.doesNotThrow(() => root.utimes('d/f', 3, 4));
 }
 
+// utimes follows symlinks durably and keys mutation signals to the resolved inode.
+{
+  const db = new Database(':memory:');
+  const first = makeVfs(db);
+  first.root.mkdir('d');
+  first.root.writeFile('d/target', 'x');
+  first.root.symlink('/d/target', 'd/link');
+  const before = first.root.revision('d/target');
+  const events = [];
+  first.vfs.events.onPath('d/target', (event) => events.push(event.type));
+
+  first.root.utimes('d/link', 1111, 2222);
+
+  assert.ok(first.root.revision('d/target') > before, 'resolved target revision is bumped');
+  assert.deepEqual(events, ['change'], 'resolved target emits the change event');
+  const second = makeVfs(db);
+  assert.deepEqual(
+    { atime: second.root.stat('d/target').atime, mtime: second.root.stat('d/target').mtime },
+    { atime: 1111, mtime: 2222 },
+    'resolved target timestamps survive VFS rehydration',
+  );
+}
+
 console.log('sqlite-vfs-permissions: all assertions passed');

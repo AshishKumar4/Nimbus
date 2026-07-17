@@ -1889,10 +1889,10 @@ export class SqliteVFS {
     mtimeMs: number | null,
     cred: VfsCred,
   ): void {
-    this.assertMutationsAllowed([path]);
     const resolved = this.checkAccess(path, 0, cred);
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
+    this.assertMutationsAllowed([inode.path]);
     const useNow = atimeMs === null && mtimeMs === null;
     if (useNow) {
       if (!this.accessInode(inode, 0o2, cred)) throw vfsError('EACCES', resolved.path);
@@ -1903,9 +1903,9 @@ export class SqliteVFS {
     const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
     inode.atime = atime;
     inode.mtime = mtime;
-    this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, path);
-    this.bumpRevision([path]);
-    this.events.emit('change', path);
+    this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, inode.path);
+    this.bumpRevision([inode.path]);
+    this.events.emit('change', inode.path);
   }
 
   /**
