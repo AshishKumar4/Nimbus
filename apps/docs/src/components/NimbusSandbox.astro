@@ -1,0 +1,315 @@
+---
+/**
+ * NimbusSandbox — the one live terminal in the docs, on the boot page.
+ *
+ * Live mode requires `PUBLIC_NIMBUS_ANON_ATTACH_URL` at build time, pointing
+ * at the anonymous ephemeral-session endpoint. Two accepted shapes:
+ *
+ *   - `wss://…` / `ws://…` — a WebSocket URL the terminal attaches to
+ *     directly. Each connection is one ephemeral session.
+ *   - `https://…` / `http://…` — an HTTP endpoint; the terminal POSTs to it
+ *     and expects `{ "wsUrl": string }` back (absolute, or a path resolved
+ *     against the endpoint's origin).
+ *
+ * The socket speaks the session shell protocol from
+ * packages/worker/public/s/index.html: client sends
+ * `{type:'input',data}` / `{type:'resize',cols,rows}`, server sends
+ * `{type:'output',data}` (other frame types are ignored here). Rendering is
+ * a real xterm.js instance, bundled locally, loaded only when the user
+ * boots. After attach, a short first-run script is typed into the session
+ * as real keystrokes, then the keyboard is handed to the reader.
+ *
+ * Without the env var this renders a plain "boot a computer" link to the
+ * hosted app instead. There is no canned playback in either mode.
+ */
+interface Props {
+	title?: string;
+	rows?: number;
+}
+const { title = 'nimbus — /home/user', rows = 14 } = Astro.props;
+
+const attachUrl = import.meta.env.PUBLIC_NIMBUS_ANON_ATTACH_URL ?? '';
+const appUrl = 'https://nimbus.ashishkumarsingh.com';
+---
+
+{
+	attachUrl ? (
+		<div class="nsx" data-nimbus-sandbox data-attach-url={attachUrl} style={`--nsx-rows:${rows}`}>
+			<div class="nsx-bar">
+				<span class="nsx-dots" aria-hidden="true">
+					<i />
+					<i />
+					<i />
+				</span>
+				<span class="nsx-title">{title}</span>
+				<span class="nsx-badge" data-role="badge" hidden />
+			</div>
+			<div class="nsx-screen" data-role="screen">
+				<div class="nsx-boot" data-role="boot">
+					<button type="button" data-role="boot-btn">Boot a computer</button>
+					<p>A real session, created for you when you press the button.</p>
+				</div>
+			</div>
+		</div>
+	) : (
+		<div class="nsx-cta">
+			<p>
+				The quickest way to see all of this is to boot a computer of your own. The hosted app
+				creates one when you open it.
+			</p>
+			<a href={appUrl} target="_blank" rel="noopener">
+				Boot a computer at nimbus.ashishkumarsingh.com →
+			</a>
+		</div>
+	)
+}
+
+<style>
+	.nsx {
+		border: 1px solid var(--nimbus-terminal-border);
+		border-radius: var(--nimbus-panel-radius);
+		overflow: hidden;
+		margin: 1.25rem 0;
+		background: var(--nimbus-terminal-bg);
+	}
+	.nsx-bar {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.45rem 0.75rem;
+		background: var(--nimbus-terminal-bar-bg);
+		border-bottom: 1px solid var(--nimbus-terminal-border);
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.72rem;
+	}
+	.nsx-dots {
+		white-space: nowrap;
+		flex: 0 0 auto;
+	}
+	.nsx-dots i {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		margin-right: 5px;
+	}
+	.nsx-dots i:nth-child(1) { background: var(--nimbus-terminal-border); }
+	.nsx-dots i:nth-child(2) { background: var(--nimbus-terminal-muted); }
+	.nsx-dots i:nth-child(3) { background: var(--nimbus-terminal-accent); }
+	.nsx-title {
+		flex: 1 1 auto;
+		min-width: 0;
+		color: var(--nimbus-terminal-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.nsx-badge {
+		flex: 0 0 auto;
+		white-space: nowrap;
+		color: var(--nimbus-terminal-accent);
+		border: 1px solid color-mix(in srgb, var(--nimbus-terminal-accent) 42%, transparent);
+		border-radius: 999px;
+		padding: 0 0.5rem;
+		letter-spacing: 0.06em;
+		font-size: 0.62rem;
+	}
+	.nsx-badge[data-state='connecting'],
+	.nsx-badge[data-state='ended'] {
+		color: var(--nimbus-terminal-muted);
+		border-color: color-mix(in srgb, var(--nimbus-terminal-muted) 42%, transparent);
+	}
+	.nsx-screen {
+		position: relative;
+		height: calc(var(--nsx-rows) * 1.35rem + 1.2rem);
+		padding: 0.6rem 0.4rem 0.6rem 0.75rem;
+		background: var(--nimbus-terminal-bg);
+	}
+	.nsx-screen :global(.xterm) {
+		height: 100%;
+	}
+	.nsx-boot {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.75rem;
+		text-align: center;
+		padding: 1rem;
+	}
+	.nsx-boot p {
+		margin: 0;
+		color: var(--nimbus-terminal-muted);
+		font-size: var(--sl-text-sm);
+	}
+	.nsx-boot button {
+		font: inherit;
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+		color: var(--nimbus-terminal-bg);
+		background: var(--nimbus-terminal-accent);
+		border: 1px solid var(--nimbus-terminal-accent);
+		border-radius: var(--nimbus-control-radius);
+		padding: 0.5rem 1.1rem;
+		cursor: pointer;
+	}
+	.nsx-boot button:hover {
+		background: color-mix(in srgb, var(--nimbus-terminal-accent) 84%, white);
+	}
+	.nsx-boot button:focus-visible {
+		outline: 2px solid var(--nimbus-terminal-accent);
+		outline-offset: 3px;
+	}
+	.nsx-boot button[disabled] {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.nsx-cta {
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-panel-radius);
+		padding: 1rem 1.25rem;
+		margin: 1.25rem 0;
+		background: var(--nimbus-panel-bg);
+	}
+	.nsx-cta p {
+		margin: 0 0 0.5rem;
+		color: var(--sl-color-gray-2);
+	}
+	.nsx-cta a {
+		font-weight: 600;
+		overflow-wrap: anywhere;
+	}
+	@media (max-width: 480px) {
+		.nsx-bar {
+			gap: 0.45rem;
+			padding-inline: 0.6rem;
+		}
+		.nsx-cta { padding: 0.875rem 1rem; }
+	}
+</style>
+
+<script>
+	async function boot(el: HTMLElement) {
+		const screen = el.querySelector<HTMLElement>('[data-role="screen"]')!;
+		const bootOverlay = el.querySelector<HTMLElement>('[data-role="boot"]')!;
+		const bootBtn = el.querySelector<HTMLButtonElement>('[data-role="boot-btn"]')!;
+		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
+		const attachUrl = el.dataset.attachUrl!;
+
+		function setState(state: 'connecting' | 'live' | 'ended', label: string) {
+			badge.hidden = false;
+			badge.dataset.state = state;
+			badge.textContent = label;
+		}
+
+		bootBtn.disabled = true;
+		setState('connecting', 'booting…');
+
+		try {
+			const wsUrl = await resolveWsUrl(attachUrl);
+			const [{ Terminal }, { FitAddon }] = await Promise.all([
+				import('@xterm/xterm'),
+				import('@xterm/addon-fit'),
+				// @ts-expect-error — Vite handles the stylesheet import.
+				import('@xterm/xterm/css/xterm.css'),
+			]);
+
+			const terminalBackground = getComputedStyle(el)
+				.getPropertyValue('--nimbus-terminal-bg')
+				.trim();
+			const term = new Terminal({
+				cursorBlink: true,
+				cursorStyle: 'bar',
+				fontSize: 13,
+				fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+				theme: {
+					background: terminalBackground,
+					foreground: '#c9d1d9',
+					cursor: '#58a6ff',
+					selectionBackground: '#264f78',
+					black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+					blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
+					brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+					brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+					brightCyan: '#56d364', brightWhite: '#f0f6fc',
+				},
+			});
+			const fit = new FitAddon();
+			term.loadAddon(fit);
+
+			const ws = new WebSocket(wsUrl);
+			await new Promise<void>((resolve, reject) => {
+				ws.addEventListener('open', () => resolve(), { once: true });
+				ws.addEventListener('error', () => reject(new Error('connection failed')), { once: true });
+			});
+
+			bootOverlay.remove();
+			term.open(screen);
+			fit.fit();
+			setState('live', 'live');
+
+			const send = (frame: object) => {
+				if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+			};
+			send({ type: 'resize', cols: term.cols, rows: term.rows });
+
+			ws.addEventListener('message', (e) => {
+				try {
+					const msg = JSON.parse(e.data);
+					if (msg.type === 'output') term.write(msg.data);
+				} catch {}
+			});
+			ws.addEventListener('close', () => setState('ended', 'session ended'));
+
+			term.onData((d) => send({ type: 'input', data: d }));
+			term.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }));
+			new ResizeObserver(() => fit.fit()).observe(screen);
+
+			// First run: real keystrokes into the live session, then the
+			// keyboard is the reader's.
+			const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+			const type = async (line: string) => {
+				for (const ch of line) {
+					send({ type: 'input', data: ch });
+					await sleep(24 + Math.random() * 28);
+				}
+				send({ type: 'input', data: '\r' });
+			};
+			await sleep(1200);
+			for (const cmd of [
+				'uname -a',
+				'node -v',
+				`echo 'console.log("hello from your new computer")' > hello.js`,
+				'node hello.js',
+			]) {
+				await type(cmd);
+				await sleep(1500);
+			}
+			term.focus();
+		} catch {
+			setState('ended', 'could not boot');
+			bootBtn.disabled = false;
+		}
+	}
+
+	async function resolveWsUrl(attachUrl: string): Promise<string> {
+		if (/^wss?:/i.test(attachUrl)) return attachUrl;
+		const res = await fetch(attachUrl, { method: 'POST' });
+		if (!res.ok) throw new Error(`attach endpoint returned ${res.status}`);
+		const body = (await res.json()) as { wsUrl?: string };
+		if (!body.wsUrl) throw new Error('attach endpoint returned no wsUrl');
+		const resolved = new URL(body.wsUrl, attachUrl);
+		if (resolved.protocol === 'https:') resolved.protocol = 'wss:';
+		if (resolved.protocol === 'http:') resolved.protocol = 'ws:';
+		return resolved.href;
+	}
+
+	document.querySelectorAll<HTMLElement>('[data-nimbus-sandbox]').forEach((el) => {
+		el.querySelector('[data-role="boot-btn"]')?.addEventListener('click', () => void boot(el), {
+			once: false,
+		});
+	});
+</script>

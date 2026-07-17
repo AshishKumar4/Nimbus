@@ -1,0 +1,294 @@
+---
+/**
+ * FabricDiagram — interactive map of one Nimbus session: the supervisor
+ * Durable Object plus its facet fabric. Click a node to see what it owns
+ * and how it lives and dies.
+ *
+ * Facts are sourced from README.md ("Architecture (high level)" and the
+ * mermaid diagrams), docs/architecture/nimbus-os-runtime-spec.md, and the
+ * multi-isolate opencode work on this branch. Per-isolate memory is
+ * Cloudflare's published 128 MiB figure.
+ */
+const nodes = {
+	client: {
+		title: 'Browser terminal / SDK client',
+		lane: 'client',
+		lines: ['WebSocket + HTTPS'],
+		facts: [
+			'The web terminal speaks a WebSocket at /s/<id>/ws; the SDK speaks HTTPS RPC.',
+			'The URL is the session — bookmark it, share it, reconnect and your files are still there.',
+			'Session recovery: a dropped WebSocket reconnects with cwd, env, and files preserved.',
+		],
+	},
+	supervisor: {
+		title: 'Session DO — the supervisor',
+		lane: 'session',
+		lines: ['SQLite VFS · shell · process table', 'port registry · session agent'],
+		facts: [
+			'One session = one Cloudflare Durable Object. It owns all durable state: the SQLite-backed filesystem, shell state, the process table, and the port registry.',
+			'Hibernates when idle — $0 when nothing is running — and wakes with the filesystem intact (10 GB per session, SQLite-backed).',
+			'Routes loopback traffic between facets: the port registry is how curl in one isolate reaches a server in another.',
+			'Facets write back through a streamed, credit-backpressured RPC pipeline, so parallel installs or huge checkouts cannot overwhelm it.',
+		],
+	},
+	oneshot: {
+		title: 'One-shot facets',
+		lane: 'session',
+		lines: ['node · bun · python · wasm', 'own memory + CPU budget each'],
+		facts: [
+			'Every command runs in its own Worker Loader isolate with its own memory and CPU budget (Cloudflare publishes 128 MiB per isolate).',
+			'Lifecycle: spawn → run → stream writes back to the supervisor → exit. Nothing durable lives here.',
+			'CPU-heavy work (npm resolution, esbuild bundling, WASM execution, REPL eval) fans out here so the supervisor stays responsive.',
+		],
+	},
+	resident: {
+		title: 'Resident keyed facets',
+		lane: 'session',
+		lines: ['vite · flask · opencode serve', 'routeable ports'],
+		facts: [
+			'Long-running servers get a keyed, resident facet that survives across requests.',
+			'A server registers its port with the supervisor; the port registry routes browser previews and in-session loopback traffic to it.',
+			'node server.js auto-promotes to a routeable resident process when it starts listening.',
+			'This is what lets one app span multiple isolates: opencode runs as a serve facet plus a TUI facet, cooperating over loopback (alpha).',
+		],
+	},
+	git: {
+		title: 'Git engine facet',
+		lane: 'session',
+		lines: ['clone-prepare · chunked checkout', 'fresh CPU budget per phase'],
+		facts: [
+			'git clone runs in a dedicated engine facet: network fetch, indexing, and checkout are separate phases, each with a fresh CPU budget.',
+			'The chunked checkout engine materializes big worktrees via bounded continuation — facebook/react (7,300 files) lands in ~28 s; 84,000-file worktrees materialize.',
+			'Known ceiling: index-pack CPU headroom on 75,000+-object clones (e.g. microsoft/TypeScript) is still in progress.',
+		],
+	},
+	peers: {
+		title: 'Peer DOs',
+		lane: 'platform',
+		lines: ['npm install shards'],
+		facts: [
+			'Large npm installs fan out across peer Durable Objects so one session is not bottlenecked on a single isolate.',
+			'Cross-session caching gives 9–16× speedups for warm package installs vs cold.',
+		],
+	},
+	cache: {
+		title: 'R2 + edge cache',
+		lane: 'platform',
+		lines: ['npm tarballs · runtime blobs', 'staged apps'],
+		facts: [
+			'Cross-session assets live in R2: npm tarballs, the Python/Ruby/clang runtime blobs, and staged app bundles.',
+			'Hot reads are additionally cached at the per-colo edge (caches.default) — the L2/L3 of the fabric.',
+		],
+	},
+} as const;
+---
+
+<div class="fab" data-fabric-diagram>
+	<div class="fab-lanes">
+		<div class="fab-lane">
+			<div class="fab-lane-label">Client</div>
+			<button class="fab-node" data-node="client" aria-pressed="false">
+				<span class="fab-node-t">{nodes.client.title}</span>
+				{nodes.client.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+			</button>
+		</div>
+		<div class="fab-arrow" aria-hidden="true">⇄</div>
+		<div class="fab-lane fab-session">
+			<div class="fab-lane-label">One session — supervisor DO + facet fabric</div>
+			<button class="fab-node fab-super" data-node="supervisor" aria-pressed="false">
+				<span class="fab-node-t">{nodes.supervisor.title}</span>
+				{nodes.supervisor.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+			</button>
+			<div class="fab-facets">
+				<button class="fab-node" data-node="oneshot" aria-pressed="false">
+					<span class="fab-node-t">{nodes.oneshot.title}</span>
+					{nodes.oneshot.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+				</button>
+				<button class="fab-node" data-node="resident" aria-pressed="false">
+					<span class="fab-node-t">{nodes.resident.title}</span>
+					{nodes.resident.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+				</button>
+				<button class="fab-node" data-node="git" aria-pressed="false">
+					<span class="fab-node-t">{nodes.git.title}</span>
+					{nodes.git.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+				</button>
+			</div>
+			<div class="fab-loop" aria-hidden="true">
+				loopback 127.0.0.1:&lt;port&gt; — routed by the supervisor
+			</div>
+		</div>
+		<div class="fab-arrow" aria-hidden="true">⇄</div>
+		<div class="fab-lane">
+			<div class="fab-lane-label">Platform</div>
+			<button class="fab-node" data-node="peers" aria-pressed="false">
+				<span class="fab-node-t">{nodes.peers.title}</span>
+				{nodes.peers.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+			</button>
+			<button class="fab-node" data-node="cache" aria-pressed="false">
+				<span class="fab-node-t">{nodes.cache.title}</span>
+				{nodes.cache.lines.map((l) => <span class="fab-node-l">{l}</span>)}
+			</button>
+		</div>
+	</div>
+	<div class="fab-detail" data-role="detail">
+		<p class="fab-hint">Select any part of the fabric to see what it owns and how it lives and dies.</p>
+	</div>
+	<script type="application/json" data-role="facts" set:html={JSON.stringify(nodes)} />
+</div>
+
+<style>
+	.fab {
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-panel-radius);
+		padding: 1rem;
+		margin: 1.5rem 0;
+		background: var(--nimbus-panel-bg);
+	}
+	.fab-lanes {
+		display: flex;
+		gap: 0.5rem;
+		align-items: stretch;
+	}
+	.fab-lane {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		flex: 1;
+		min-width: 0;
+	}
+	.fab-session {
+		flex: 2.6;
+		border: 1px solid color-mix(in srgb, var(--sl-color-accent) 32%, var(--sl-color-hairline));
+		border-radius: var(--nimbus-control-radius);
+		padding: 0.6rem;
+	}
+	.fab-lane-label {
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.62rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--sl-color-gray-3);
+	}
+	.fab-arrow {
+		align-self: center;
+		color: var(--sl-color-gray-4);
+		font-size: 1.1rem;
+		flex: 0 0 auto;
+	}
+	.fab-facets {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+		gap: 0.6rem;
+	}
+	.fab-node {
+		font: inherit;
+		text-align: left;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		width: 100%;
+		border: 1px solid var(--sl-color-hairline);
+		background: var(--sl-color-black);
+		border-radius: var(--nimbus-control-radius);
+		padding: 0.55rem 0.7rem;
+		cursor: pointer;
+		transition: border-color 140ms ease, background-color 140ms ease;
+	}
+	.fab-node:hover {
+		border-color: color-mix(in srgb, var(--sl-color-accent) 60%, transparent);
+	}
+	.fab-node:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
+	.fab-node[aria-pressed='true'] {
+		border-color: var(--sl-color-accent);
+		background: color-mix(in srgb, var(--sl-color-accent) 7%, var(--sl-color-black));
+	}
+	.fab-node-t {
+		font-weight: 650;
+		font-size: 0.8rem;
+		color: var(--sl-color-white);
+	}
+	.fab-node[aria-pressed='true'] .fab-node-t {
+		color: var(--sl-color-text-accent);
+	}
+	.fab-node-l {
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.66rem;
+		color: var(--sl-color-gray-3);
+	}
+	.fab-super { border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--sl-color-hairline)); }
+	.fab-loop {
+		margin-top: 0.6rem;
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.62rem;
+		color: var(--sl-color-accent);
+		text-align: center;
+		border-top: 1px dotted color-mix(in srgb, var(--sl-color-accent) 35%, transparent);
+		padding-top: 0.45rem;
+	}
+	.fab-detail {
+		margin-top: 0.9rem;
+		border-top: 1px solid var(--sl-color-hairline-light);
+		padding-top: 0.8rem;
+		min-height: 5.2rem;
+		font-size: var(--sl-text-sm);
+	}
+	.fab-detail :global(h4) {
+		margin: 0 0 0.4rem;
+		font-size: var(--sl-text-base);
+		color: var(--sl-color-text-accent);
+	}
+	.fab-detail :global(ul) {
+		margin: 0;
+		padding-left: 1.1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		color: var(--sl-color-gray-2);
+	}
+	.fab-hint {
+		margin: 0;
+		color: var(--sl-color-gray-3);
+		font-style: italic;
+	}
+	@media (max-width: 640px) {
+		.fab-lanes { flex-direction: column; }
+		.fab-arrow { transform: rotate(90deg); align-self: center; }
+	}
+	@media (max-width: 480px) {
+		.fab { padding: 0.75rem; }
+		.fab-facets { grid-template-columns: 1fr; }
+		.fab-detail { min-height: 0; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.fab-node { transition: none; }
+	}
+</style>
+
+<script>
+	document.querySelectorAll<HTMLElement>('[data-fabric-diagram]').forEach((el) => {
+		const facts = JSON.parse(
+			el.querySelector('[data-role="facts"]')?.textContent || '{}',
+		) as Record<string, { title: string; facts: string[] }>;
+		const detail = el.querySelector<HTMLElement>('[data-role="detail"]')!;
+		const buttons = el.querySelectorAll<HTMLButtonElement>('[data-node]');
+		buttons.forEach((btn) => {
+			btn.addEventListener('click', () => {
+				buttons.forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+				const node = facts[btn.dataset.node!];
+				if (!node) return;
+				const h = document.createElement('h4');
+				h.textContent = node.title;
+				const ul = document.createElement('ul');
+				for (const f of node.facts) {
+					const li = document.createElement('li');
+					li.textContent = f;
+					ul.append(li);
+				}
+				detail.replaceChildren(h, ul);
+			});
+		});
+	});
+</script>

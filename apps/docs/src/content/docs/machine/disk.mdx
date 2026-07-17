@@ -1,0 +1,65 @@
+---
+title: The disk
+description: 10 GB of persistent, SQLite-backed storage per session, durable across reconnects, hibernation, and eviction.
+---
+
+Every session gets a persistent filesystem: 10 GB, SQLite-backed, owned by
+the session's Durable Object. It is not scratch space. It survives WebSocket
+drops, browser restarts, session hibernation, and Durable Object eviction.
+Come back tomorrow and the URL still works, with your files still there.
+
+## The layout
+
+A stable POSIX-like tree:
+
+| Path | Role |
+|---|---|
+| `/home/user` | Default home and working tree |
+| `/tmp` | Temporary files |
+| `/bin`, `/usr/bin`, `/usr/local/bin` | Virtual command paths |
+
+with the environment you'd expect: `PATH`, `HOME`, `PWD`, `TMPDIR`, `SHELL`.
+
+## What the filesystem supports
+
+- Regular files, directories, symlinks, stat metadata, and timestamps.
+- Binary-safe round-trips. `fs.writeFileSync` / `readFileSync` with
+  arbitrary bytes is probed behavior, not an accident.
+- A real exec bit. `chmod +x` persists a durable mode on the inode, and
+  `./prog` dispatch honors it, with shebang and WASM-magic detection.
+- File watching. The editor and dev servers receive coalesced change events
+  from the VFS event bus; this is part of what makes Vite HMR work.
+- Revision tracking. Every path carries a subtree revision watermark, so
+  runtime caches invalidate precisely instead of guessing.
+
+## Who else sees the disk
+
+The same filesystem is visible from every side of the machine:
+
+- the shell and all 60+ commands,
+- every runtime: Node/Bun, Python, Ruby, and WASI binaries (a compiled C
+  program's `fopen("./data.txt", "r")` reads the same bytes `cat` sees),
+- the editor in the browser workspace,
+- the SDK (`box.files.read/write/list/…`),
+- and the session agent's tools.
+
+## The durability model
+
+The Durable Object is the single owner of durable state. Writes from
+processes stream back to it through a credit-backpressured RPC pipeline,
+which is what lets a parallel `npm install` or an 84,000-file checkout land
+without overwhelming the supervisor. `fsync` and process exit are
+durability boundaries; hibernation never loses committed writes.
+
+One nuance worth knowing: for speed, some runtime paths serve reads from
+bounded snapshots or caches (invalidated by VFS revisions), while
+long-running processes increasingly use the live bridge. The contract the
+implementation converges on is that what you read is either the latest
+committed state or your own unflushed write. Details in
+[Inside the disk](/docs/internals/disk/).
+
+## Related
+
+- [Inside the disk](/docs/internals/disk/): chunked storage, content
+  generations, backpressure.
+- [Budgets & limits](/docs/internals/budgets/): where 10 GB comes from.

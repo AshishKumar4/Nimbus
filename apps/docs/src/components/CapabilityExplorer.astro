@@ -1,0 +1,234 @@
+---
+/**
+ * CapabilityExplorer — filterable, searchable view of the README
+ * "What works today" capability table. Rows mirror README.md verbatim
+ * (source of truth, live-probed); statuses are exactly ✅ / Alpha / ⛔.
+ * Rendered statically so it works without JavaScript; JS adds filtering.
+ */
+type Status = 'works' | 'alpha' | 'no';
+interface Row {
+	cap: string;
+	status: Status;
+	area: string;
+}
+
+const rows: Row[] = [
+	{ area: 'Shell', status: 'works', cap: 'Real shell, 60+ Unix commands, persistent 10 GB filesystem' },
+	{ area: 'Runtimes', status: 'works', cap: 'node, bun via Cloudflare workerd nodejs_compat (V8 + Node-API shim, not the upstream binaries)' },
+	{ area: 'Runtimes', status: 'works', cap: 'python / python3 — Pyodide-based CPython 3.13 (script + -c + -m + stdlib)' },
+	{ area: 'Runtimes', status: 'works', cap: 'ruby / ruby3 — ruby.wasm-based Ruby 3.3 (script + -e + -r + stdlib)' },
+	{ area: 'Runtimes', status: 'works', cap: 'clang — LLVM 8 → wasm32-wasi-nimbus, modern wasi-libc sysroot default, multi-TU + user headers + fopen' },
+	{ area: 'Runtimes', status: 'works', cap: 'Interactive REPLs — python, ruby, node, bun' },
+	{ area: 'Packages', status: 'works', cap: 'npm install against the live registry, with cross-session L2 cache' },
+	{ area: 'Packages', status: 'works', cap: 'npm alias dependencies such as alias: "npm:<pkg>@<version>"' },
+	{ area: 'Git', status: 'works', cap: 'git clone over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation' },
+	{ area: 'Network', status: 'works', cap: 'In-session loopback networking — curl http://127.0.0.1:<port> reaches servers in other isolates; node server.js auto-promotes to a routeable resident process' },
+	{ area: 'Network', status: 'works', cap: 'Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike' },
+	{ area: 'Shell', status: 'works', cap: 'Unix permissions groundwork — durable st_mode, real chmod (octal + symbolic), exec-bit enforcement: ./binary runs only if executable (Permission denied, exit 126 otherwise), generic #! shebang dispatch' },
+	{ area: 'Processes', status: 'alpha', cap: 'Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate)' },
+	{ area: 'Dev servers', status: 'works', cap: 'Vite SPA dev server — full HMR to the preview iframe' },
+	{ area: 'Dev servers', status: 'works', cap: 'wrangler dev for single-file Workers; Workers + Static Assets' },
+	{ area: 'SDK', status: 'works', cap: 'Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools' },
+	{ area: 'Processes', status: 'works', cap: 'JS agent CLI primitives — env/home, npm/npx, child_process.spawn/exec/execFile, piped stdio, streams, logs' },
+	{ area: 'Processes', status: 'alpha', cap: 'Foreground attached npm-bin TTY tabs — stdin, resize, ANSI output, clean exit; Pi official installer and npm path probed' },
+	{ area: 'Packages', status: 'alpha', cap: 'Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, python -m flask run, python -m http.server preview' },
+	{ area: 'Packages', status: 'alpha', cap: 'Ruby package workflows — gem, bundle, pure gems, Rack/WEBrick preview' },
+	{ area: 'Agent', status: 'works', cap: 'Session Agent — editor-workspace chat with Cloudflare OAuth / Workers AI and sandbox tools' },
+	{ area: 'Packages', status: 'works', cap: 'npx <pkg> — first-class shebang + auto-install fallback' },
+	{ area: 'Packages', status: 'works', cap: 'node_modules/.bin/* resolves and executes' },
+	{ area: 'Shell', status: 'works', cap: 'Binary file round-trip via fs.writeFileSync / readFileSync' },
+	{ area: 'Shell', status: 'works', cap: 'Session recovery — WebSocket drop → reconnect preserves cwd, env, files' },
+	{ area: 'Runtimes', status: 'works', cap: "WASI preview1 — 45 of 46 spec functions; outbound TCP via path_open('/dev/tcp/<host>/<port>') (JSPI); full poll_oneoff (fd / clock / socket subscriptions)" },
+	{ area: 'Runtimes', status: 'no', cap: 'wasi-threads (thread_spawn) — refused at link time, by design' },
+];
+
+const chip: Record<Status, { label: string; kind: string }> = {
+	works: { label: 'works', kind: 'works' },
+	alpha: { label: 'alpha', kind: 'alpha' },
+	no: { label: 'not supported', kind: 'no' },
+};
+---
+
+<div class="capx" data-capability-explorer>
+	<div class="capx-controls">
+		<input
+			type="search"
+			placeholder="Filter capabilities… (e.g. python, git, TTY)"
+			data-role="search"
+			aria-label="Filter capabilities"
+		/>
+		<div class="capx-pills" role="group" aria-label="Filter by status">
+			<button type="button" data-filter="all" aria-pressed="true">all</button>
+			<button type="button" data-filter="works" aria-pressed="false">works</button>
+			<button type="button" data-filter="alpha" aria-pressed="false">alpha</button>
+			<button type="button" data-filter="no" aria-pressed="false">not supported</button>
+		</div>
+	</div>
+	<ul class="capx-list">
+		{
+			rows.map((r) => (
+				<li data-status={r.status} data-text={`${r.area} ${r.cap}`.toLowerCase()}>
+					<span class="capx-area">{r.area}</span>
+					<span class="capx-cap">{r.cap}</span>
+					<span class="nimbus-chip" data-kind={chip[r.status].kind}>
+						{chip[r.status].label}
+					</span>
+				</li>
+			))
+		}
+	</ul>
+	<p class="capx-empty" data-role="empty" hidden>No capabilities match that filter.</p>
+	<p class="capx-note">
+		Mirrors the <a href="https://github.com/AshishKumar4/Nimbus#what-works-today">README capability table</a>
+		— the live-probed source of truth, covered by the behavioral suite in
+		<code>tests/behavioral/</code>.
+	</p>
+</div>
+
+<style>
+	.capx {
+		margin: 1.5rem 0;
+	}
+	.capx-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.6rem;
+		align-items: center;
+		margin-bottom: 0.9rem;
+		padding: 0.7rem;
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-panel-radius);
+		background: var(--nimbus-panel-bg);
+	}
+	.capx-controls input {
+		flex: 1;
+		min-width: min(100%, 16rem);
+		font: inherit;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-white);
+		background: var(--sl-color-black);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-control-radius);
+		padding: 0.5rem 0.7rem;
+	}
+	.capx-controls input::placeholder {
+		color: var(--sl-color-gray-3);
+	}
+	.capx-controls input:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+		border-color: var(--sl-color-accent);
+	}
+	.capx-pills {
+		display: flex;
+		gap: 0.35rem;
+		flex-wrap: wrap;
+	}
+	.capx-pills button {
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--sl-color-gray-2);
+		background: var(--sl-color-black);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-control-radius);
+		padding: 0.28rem 0.65rem;
+		cursor: pointer;
+	}
+	.capx-pills button:hover {
+		border-color: color-mix(in srgb, var(--sl-color-accent) 55%, var(--sl-color-hairline));
+	}
+	.capx-pills button:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
+	.capx-pills button[aria-pressed='true'] {
+		border-color: var(--sl-color-accent);
+		color: var(--sl-color-text-accent);
+		background: color-mix(in srgb, var(--sl-color-accent) 10%, transparent);
+	}
+	.capx-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.capx-list li {
+		display: grid;
+		grid-template-columns: 6.5rem minmax(0, 1fr) auto;
+		gap: 0.7rem;
+		align-items: center;
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-control-radius);
+		padding: 0.6rem 0.75rem;
+		background: var(--nimbus-panel-bg);
+		font-size: var(--sl-text-sm);
+	}
+	.capx-area {
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.66rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--sl-color-gray-3);
+	}
+	.capx-cap {
+		min-width: 0;
+		overflow-wrap: anywhere;
+		color: var(--sl-color-gray-1);
+	}
+	.capx-list .nimbus-chip {
+		justify-self: end;
+	}
+	.capx-empty,
+	.capx-note {
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-xs);
+		margin-top: 0.8rem;
+	}
+	@media (max-width: 560px) {
+		.capx-controls input { width: 100%; }
+		.capx-list li {
+			grid-template-columns: minmax(0, 1fr) auto;
+			gap: 0.35rem 0.7rem;
+		}
+		.capx-area { grid-column: 1; grid-row: 1; }
+		.capx-list .nimbus-chip { grid-column: 2; grid-row: 1; }
+		.capx-cap { grid-column: 1 / -1; grid-row: 2; }
+	}
+</style>
+
+<script>
+	document.querySelectorAll<HTMLElement>('[data-capability-explorer]').forEach((el) => {
+		const search = el.querySelector<HTMLInputElement>('[data-role="search"]')!;
+		const pills = el.querySelectorAll<HTMLButtonElement>('[data-filter]');
+		const items = el.querySelectorAll<HTMLElement>('.capx-list li');
+		const empty = el.querySelector<HTMLElement>('[data-role="empty"]')!;
+		let status = 'all';
+
+		function apply() {
+			const q = search.value.trim().toLowerCase();
+			let shown = 0;
+			items.forEach((li) => {
+				const ok =
+					(status === 'all' || li.dataset.status === status) &&
+					(!q || (li.dataset.text || '').includes(q));
+				li.hidden = !ok;
+				if (ok) shown++;
+			});
+			empty.hidden = shown > 0;
+		}
+
+		search.addEventListener('input', apply);
+		pills.forEach((p) =>
+			p.addEventListener('click', () => {
+				status = p.dataset.filter || 'all';
+				pills.forEach((b) => b.setAttribute('aria-pressed', String(b === p)));
+				apply();
+			}),
+		);
+	});
+</script>

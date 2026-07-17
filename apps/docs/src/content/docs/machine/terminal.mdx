@@ -1,0 +1,82 @@
+---
+title: Terminal & shell
+description: A real shell with 60+ Unix commands, structured POSIX-like parsing, interactive REPLs, and session recovery.
+---
+
+The terminal is the front door of the machine. It speaks a WebSocket to your
+session's supervisor, and what's behind it is a real shell: a structured
+lexer, parser, and interpreter for POSIX-like syntax, not a regex command
+matcher.
+
+## What the shell supports
+
+- 60+ Unix commands: the coreutils you expect, including `ls`, `cat`, `cp`,
+  `mv`, `rm`, `mkdir`, `grep`, `sort`, `head`, `tail`, `wc`, `printf`,
+  `chmod`, and `curl`.
+- Pipes and redirects: `sort fruits.txt | head -2`, `>` and `>>`, heredocs,
+  subshells and grouping for common forms.
+- Environment: `PATH`, `HOME` (`/home/user`), `PWD`, `TMPDIR`, `SHELL`, env
+  assignments, `$?`, command substitution.
+- Shebang dispatch and the exec bit: `chmod +x` is real and persisted;
+  `./script.sh` and `./hello.wasm` dispatch by shebang or WASM magic.
+
+```bash
+$ printf 'cherry\napple\nbanana\n' > fruits.txt
+$ sort fruits.txt | head -2
+apple
+banana
+$ grep an fruits.txt
+banana
+$ echo done > status.txt && cat status.txt
+done
+```
+
+:::caution[Where the line is]
+The shell is not complete POSIX parity. Common constructs have structured
+support: pipes, redirects, heredocs, command substitution, `set -e`,
+`trap`, `source`, `wait`, `$@`. Deeper corners are still being hardened,
+among them full IFS field-splitting semantics, alias quoting edge cases,
+and complete job control. The probe suite in `tests/behavioral/shell/`
+defines what is claimed.
+:::
+
+## Interactive REPLs
+
+`python`, `ruby`, `node`, and `bun` launch REPLs when given no arguments.
+They fall into two categories.
+
+Stateful, meaning a real interpreter with real persistence:
+
+- `python` / `python3` drives Pyodide's `PyodideConsole` directly.
+  Variables, functions, imports, and multi-line blocks persist across
+  submits. `>>> ` primary, `... ` continuation.
+- `ruby` / `ruby3` drives the long-lived ruby.wasm runtime with `irb`-style
+  prompts. Variables, methods, and requires persist.
+
+Stateless emulation, bounded by workerd's CSP:
+
+- `node` / `bun`: workerd blocks runtime `eval` and `new Function`, so
+  declarations can't persist across submits the way upstream Node allows.
+  `console.log` and per-line side effects work; for stateful work, run a
+  script. The REPL banner says exactly this.
+
+Press <kbd>Ctrl</kbd>+<kbd>D</kbd> or type `exit` / `.exit` to leave.
+Probes: `tests/behavioral/repl/`, 13 probes covering exit semantics,
+prompts, stateful Python, and error recovery.
+
+## Session recovery and sharing
+
+A dropped WebSocket reconnects with `cwd`, environment, and files
+preserved. The URL is the session: share it and a teammate joins the same
+filesystem, though on deployments that enforce auth the joiner also needs a
+valid attach token ([tokens & auth](/docs/sdk/tokens/)). One active
+terminal owner drives at a time; sequential reconnect and sharing preserve
+filesystem and shell state.
+
+## Related
+
+- [The disk](/docs/machine/disk/), where all of this persists.
+- [Processes](/docs/machine/processes/), for what happens when a command is
+  long-running.
+- [Interactive TTY apps](/docs/machine/tty/), for full-screen CLIs in
+  attached process tabs.

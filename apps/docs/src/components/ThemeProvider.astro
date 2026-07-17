@@ -1,0 +1,20 @@
+---
+/**
+ * Starlight ThemeProvider with a dark default. Stock Starlight falls back
+ * to the system color scheme; we seed a stored "dark" preference for
+ * first-time visitors instead, so the docs open in the Nimbus navy like
+ * the landing page. The theme picker keeps working: choosing light or
+ * auto overwrites the seed.
+ */
+import Default from '@astrojs/starlight/components/ThemeProvider.astro';
+---
+
+<script is:inline>
+	try {
+		// null = first visit; '' = the user explicitly chose "auto" — keep it.
+		if (localStorage.getItem('starlight-theme') === null) {
+			localStorage.setItem('starlight-theme', 'dark');
+		}
+	} catch {}
+</script>
+<Default><slot /></Default>

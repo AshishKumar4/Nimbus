@@ -1,0 +1,276 @@
+/* Nimbus docs theme — the brand navy #0a192f family with mint #64ffda accent,
+   dark by default, matching the landing page at nimbus.ashishkumarsingh.com.
+   Palette sources: packages/worker/src/session/helpers.ts and
+   packages/worker/public/index.html. Light mode keeps the mint identity,
+   darkened for contrast. Layout is left to stock Starlight. */
+
+/* Dark (default) — the Nimbus navy. */
+:root {
+	--sl-color-white: #e6f1ff;
+	--sl-color-gray-1: #ccd6f6;
+	--sl-color-gray-2: #a8b2d1;
+	--sl-color-gray-3: #8892b0;
+	--sl-color-gray-4: #4a5578;
+	--sl-color-gray-5: #1e3a5f;
+	--sl-color-gray-6: #112240;
+	--sl-color-gray-7: #0d1f3c;
+	--sl-color-black: #0a192f;
+
+	--sl-color-accent-low: #123b34;
+	--sl-color-accent: #64ffda;
+	--sl-color-accent-high: #aefff0;
+
+	--sl-color-bg-nav: #0c1d36;
+	--sl-color-bg-sidebar: #0b1b32;
+	--sl-color-hairline: #1e3a5f;
+	--sl-color-hairline-light: #16294a;
+	--sl-color-bg-inline-code: #112240;
+	--sl-color-text-accent: #64ffda;
+
+	--nimbus-terminal-bg: #071527;
+	--nimbus-terminal-bar-bg: #0b1b32;
+	--nimbus-terminal-border: #1e3a5f;
+	--nimbus-terminal-fg: #ccd6f6;
+	--nimbus-terminal-muted: #8892b0;
+	--nimbus-terminal-accent: #64ffda;
+	--nimbus-panel-bg: color-mix(in srgb, var(--sl-color-gray-7) 72%, transparent);
+	--nimbus-panel-radius: 0.625rem;
+	--nimbus-control-radius: 0.4rem;
+}
+
+/* Light — mint darkened for accessible contrast on the white canvas. */
+:root[data-theme='light'] {
+	--sl-color-white: #0a192f;
+	--sl-color-gray-1: #16294a;
+	--sl-color-gray-2: #2e3f63;
+	--sl-color-gray-3: #52618a;
+	--sl-color-gray-4: #8f9cbd;
+	--sl-color-gray-5: #ccd6ea;
+	--sl-color-gray-6: #eef2fa;
+	--sl-color-gray-7: #f6f8fd;
+	--sl-color-black: #ffffff;
+
+	--sl-color-accent-low: #d8fff6;
+	--sl-color-accent: #0e7a63;
+	--sl-color-accent-high: #075e4e;
+
+	--sl-color-bg-nav: #ffffff;
+	--sl-color-bg-sidebar: #f6f8fd;
+	--sl-color-hairline: #dde4f0;
+	--sl-color-hairline-light: #e8edf6;
+	--sl-color-bg-inline-code: #eef2fa;
+	--sl-color-text-accent: #0e7a63;
+}
+
+/* The wordmark is mono, like the terminal it documents. */
+.site-title {
+	font-family: var(--sl-font-system-mono);
+	font-weight: 600;
+	letter-spacing: 0.02em;
+}
+
+/* Sidebar group headings: quiet small caps. */
+#starlight__sidebar .top-level > li > details > summary .large,
+#starlight__sidebar .top-level > li > .large {
+	font-size: var(--sl-text-xs);
+	font-family: var(--sl-font-system-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	color: var(--sl-color-gray-3);
+}
+
+/* Current page: a tinted marker, not a solid accent field. */
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+	background: color-mix(in srgb, var(--sl-color-accent) 9%, transparent);
+	color: var(--sl-color-text-accent);
+	font-weight: 600;
+	position: relative;
+}
+
+.sidebar-content a[aria-current='page']::before {
+	content: '';
+	position: absolute;
+	inset-block: 0.3em;
+	inset-inline-start: 0;
+	width: 2px;
+	border-radius: 1px;
+	background: var(--sl-color-accent);
+}
+
+::selection {
+	background: color-mix(in srgb, var(--sl-color-accent) 22%, transparent);
+}
+
+/* Quiet heading rhythm with slightly tighter display tracking. */
+main h1#_top,
+.sl-markdown-content :is(h1, h2, h3):not(:where(.not-content *)) {
+	letter-spacing: -0.02em;
+	text-wrap: balance;
+}
+
+.sl-markdown-content :is(h4, h5, h6):not(:where(.not-content *)) {
+	letter-spacing: -0.01em;
+}
+
+/* Inline code reads as a compact chip without competing with links. */
+.sl-markdown-content code:not(:where(pre code, .not-content *)) {
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: 0.3rem;
+	box-decoration-break: clone;
+	color: var(--sl-color-gray-1);
+}
+
+/* Code blocks stay terminal-dark in both site themes. */
+.expressive-code {
+	--ec-brdRad: var(--nimbus-control-radius);
+	--ec-brdCol: var(--nimbus-terminal-border);
+	--ec-codeBg: var(--nimbus-terminal-bg);
+	--ec-codeFg: var(--nimbus-terminal-fg);
+	--ec-codeSelBg: #123b34;
+	--ec-uiSelBg: #123b34;
+	--ec-uiSelFg: var(--nimbus-terminal-fg);
+	--ec-focusBrd: var(--nimbus-terminal-accent);
+	--ec-frm-frameBoxShdCssVal: none;
+	--ec-frm-edActTabBg: var(--nimbus-terminal-bar-bg);
+	--ec-frm-edActTabFg: var(--nimbus-terminal-fg);
+	--ec-frm-edActTabBrdCol: var(--nimbus-terminal-border);
+	--ec-frm-edActTabIndTopCol: var(--nimbus-terminal-accent);
+	--ec-frm-edTabBarBg: var(--nimbus-terminal-bar-bg);
+	--ec-frm-edTabBarBrdCol: var(--nimbus-terminal-border);
+	--ec-frm-edTabBarBrdBtmCol: var(--nimbus-terminal-border);
+	--ec-frm-edBg: var(--nimbus-terminal-bg);
+	--ec-frm-trmTtbBg: var(--nimbus-terminal-bar-bg);
+	--ec-frm-trmTtbFg: var(--nimbus-terminal-muted);
+	--ec-frm-trmTtbBrdBtmCol: var(--nimbus-terminal-border);
+	--ec-frm-trmTtbDotsFg: var(--nimbus-terminal-muted);
+	--ec-frm-trmBg: var(--nimbus-terminal-bg);
+	--ec-frm-inlBtnFg: var(--nimbus-terminal-muted);
+	--ec-frm-inlBtnBg: var(--nimbus-terminal-muted);
+	--ec-frm-inlBtnBrd: var(--nimbus-terminal-muted);
+}
+
+/* Expressive Code otherwise selects its light syntax tokens in light mode. */
+:root[data-theme='light']
+	.expressive-code
+	.ec-line
+	:where(span[style^='--']:not([class])) {
+	color: var(--0, inherit);
+	background-color: var(--0bg, transparent);
+	font-style: var(--0fs, inherit);
+	font-weight: var(--0fw, inherit);
+	text-decoration: var(--0td, inherit);
+}
+
+/* Tables use a single calm surface and hairline grid. */
+.sl-markdown-content table:not(:where(.not-content *)) {
+	width: 100%;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--nimbus-control-radius);
+	background: var(--nimbus-panel-bg);
+}
+
+.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+	padding: 0.65rem 0.8rem;
+	border-bottom-color: var(--sl-color-hairline-light);
+}
+
+.sl-markdown-content th:not(:where(.not-content *)) {
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.7rem;
+	font-weight: 600;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-2);
+	background: color-mix(in srgb, var(--sl-color-gray-6) 45%, transparent);
+}
+
+.sl-markdown-content tbody tr:last-child td:not(:where(.not-content *)) {
+	border-bottom: 0;
+}
+
+/* Landing cards mirror the navigation, with a restrained interactive edge. */
+.card-grid > .sl-link-card {
+	border-color: var(--sl-color-hairline);
+	border-radius: var(--nimbus-panel-radius);
+	background: var(--nimbus-panel-bg);
+	box-shadow: none;
+	transition:
+		transform 140ms ease,
+		border-color 140ms ease,
+		background-color 140ms ease;
+}
+
+.card-grid > .sl-link-card .title {
+	color: var(--sl-color-white);
+	letter-spacing: -0.01em;
+}
+
+.card-grid > .sl-link-card:hover,
+.card-grid > .sl-link-card:has(a:focus-visible) {
+	border-color: color-mix(in srgb, var(--sl-color-accent) 72%, var(--sl-color-hairline));
+	background: color-mix(in srgb, var(--sl-color-accent) 5%, var(--nimbus-panel-bg));
+}
+
+.card-grid > .sl-link-card:hover :is(.title, .icon),
+.card-grid > .sl-link-card:has(a:focus-visible) :is(.title, .icon) {
+	color: var(--sl-color-text-accent);
+}
+
+.card-grid > .sl-link-card:has(a:focus-visible) {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 2px;
+}
+
+@media (hover: hover) {
+	.card-grid > .sl-link-card:hover {
+		transform: translateY(-2px);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.card-grid > .sl-link-card {
+		transition: none;
+	}
+	.card-grid > .sl-link-card:hover {
+		transform: none;
+	}
+}
+
+/* Status chips used in capability tables. */
+.nimbus-chip {
+	display: inline-block;
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.72rem;
+	font-weight: 600;
+	padding: 0.05rem 0.5rem;
+	border-radius: 999px;
+	border: 1px solid transparent;
+	white-space: nowrap;
+}
+.nimbus-chip[data-kind='works'] {
+	color: var(--sl-color-accent-high);
+	border-color: color-mix(in srgb, var(--sl-color-accent) 40%, transparent);
+	background: color-mix(in srgb, var(--sl-color-accent) 9%, transparent);
+}
+.nimbus-chip[data-kind='alpha'] {
+	color: #ffd479;
+	border-color: rgba(255, 212, 121, 0.4);
+	background: rgba(255, 212, 121, 0.08);
+}
+:root[data-theme='light'] .nimbus-chip[data-kind='alpha'] {
+	color: #8a5a00;
+	border-color: rgba(138, 90, 0, 0.35);
+	background: rgba(216, 160, 44, 0.12);
+}
+.nimbus-chip[data-kind='no'] {
+	color: #ff8c8c;
+	border-color: rgba(255, 140, 140, 0.4);
+	background: rgba(255, 140, 140, 0.08);
+}
+:root[data-theme='light'] .nimbus-chip[data-kind='no'] {
+	color: #a33030;
+	border-color: rgba(163, 48, 48, 0.3);
+	background: rgba(163, 48, 48, 0.08);
+}

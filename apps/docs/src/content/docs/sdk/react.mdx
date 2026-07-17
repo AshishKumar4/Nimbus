@@ -1,0 +1,92 @@
+---
+title: React embed
+description: Drop a Nimbus terminal into a React app with @nimbus-sh/react — the component, the headless hook, and the iframe contract.
+---
+
+`@nimbus-sh/react` embeds a session terminal in a React app. One component
+renders it; one headless hook powers custom UIs. Peer dependencies are
+`react >= 18` and `@nimbus-sh/sdk`.
+
+```tsx
+import { NimbusTerminal } from '@nimbus-sh/react';
+
+<NimbusTerminal
+  endpoint="https://my-nimbus.workers.dev"
+  token={jwt}
+  tenant="acme"
+  sub="alice"
+  onReady={() => console.log('session attached')}
+  style={{ width: '100%', height: '500px' }}
+/>
+```
+
+The component renders an iframe pointing at
+`${endpoint}/s/${sessionId}/?nimbus_token=…` (or `/new` when no
+`sessionId` is given, which mints a fresh session). The Nimbus deployment
+serves the xterm shell inside the iframe; your React app is a frame around
+it. That is deliberate: the shell bundle is not duplicated into your app,
+and the iframe boundary keeps your page's JS away from the terminal's
+WebSocket frames.
+
+## Props
+
+| Prop | Type | Notes |
+|---|---|---|
+| `endpoint` | `string` (required) | Base URL of your Nimbus deployment |
+| `token` | `string` (required) | JWT from `issueNimbusToken`; its `tn`/`sub` claims must match the props |
+| `tenant` | `string` (required) | Tenant identifier |
+| `sub` | `string` | Subject within the tenant |
+| `sessionId` | `string` | Attach to an existing session; absent = `/new` |
+| `onReady` | `() => void` | Fires when the iframe reports WebSocket open + first prompt |
+| `onError` | `(e: NimbusTerminalError) => void` | Fires on session 404 or unrecovered WS close |
+| `style`, `className` | | Container styling; the iframe fills 100%/100% |
+| `sandbox` | `string` | iframe sandbox attribute. Default: `allow-scripts allow-same-origin allow-downloads allow-forms` |
+| `title` | `string` | iframe accessibility title. Default: `"Nimbus terminal"` |
+
+A `ref` exposes the imperative `NimbusTerminalRef` handle: `reload()`
+re-fetches the iframe after a session reset, `getUrl()` returns the current
+iframe URL, and `getElement()` returns the underlying `<iframe>`.
+
+## The headless hook
+
+`useNimbusSession` exposes the same state the component uses internally,
+without rendering anything. Use it when you want your own surface around
+the session:
+
+```tsx
+import { useNimbusSession } from '@nimbus-sh/react';
+
+function MyTerm({ token }: { token: string }) {
+  const { ready, attachUrl, error } = useNimbusSession({
+    endpoint: 'https://my-nimbus.workers.dev',
+    token,
+    tenant: 'acme',
+  });
+  if (error) return <div>Error: {error.message}</div>;
+  if (!ready || !attachUrl) return <div>Loading…</div>;
+  return <iframe src={attachUrl} style={{ width: '100%', height: 400 }} />;
+}
+```
+
+It returns `NimbusSessionState`: `{ sessionId, ready, error, attachUrl }`.
+
+## The postMessage contract
+
+The session shell posts messages to its parent frame; the hook (and the
+component) listen for them, checking `event.origin` against the endpoint's
+origin:
+
+- `{ type: 'nimbus:ready' }` — WebSocket accepted, terminal is live.
+- `{ type: 'nimbus:error', code, message }` — the session failed. `code`
+  is one of `E_SESSION_404`, `E_WS_CLOSED`, `E_TOKEN_INVALID`, `E_UNKNOWN`
+  (the `NimbusTerminalError.code` union).
+
+If you build a fully custom embed without this package, that contract plus
+the attach URL from `sessionAttachUrl` is all you need.
+
+## Related
+
+- [Tokens & auth](/docs/sdk/tokens/): minting the `token` prop and the
+  attach exchange behind the iframe URL.
+- [Configure the handler](/docs/sdk/handler/): the deployment the iframe
+  points at.

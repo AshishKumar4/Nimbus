@@ -1,0 +1,72 @@
+---
+title: Give every agent its own computer
+description: Nimbus is a free, open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network.
+tableOfContents: false
+next: false
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import FabricDiagram from '../../components/FabricDiagram.astro';
+
+Nimbus is a free, open-source, POSIX-like cloud OS that runs entirely on
+Cloudflare's network. Open a URL and you get a computer: a real shell with
+pipes and 60+ Unix commands, `node`, `python`, `ruby`, `git`, `npm`, and a
+`clang` that compiles C inside the session. The disk holds 10 GB and
+persists. Boot takes about half a second, and an idle computer costs
+nothing, so you can keep as many as you want.
+
+There are no containers or VMs anywhere in the stack. A session is one
+Durable Object for the durable parts (disk, shell, process table) plus a
+fabric of V8 isolates, one per process, joined by a private loopback
+network. That one decision explains most of what these docs describe.
+
+<CardGrid>
+  <LinkCard
+    title="Boot your first computer"
+    description="From the browser, the SDK, or your own Cloudflare account. Takes about a minute."
+    href="/docs/start/boot/"
+  />
+  <LinkCard
+    title="A tour of the machine"
+    description="Shell, disk, toolchains, servers, previews. One walk through what the computer can do."
+    href="/docs/start/tour/"
+  />
+  <LinkCard
+    title="Computers for your agents"
+    description="Embed Nimbus in a Worker and mint a sandbox per task with @nimbus-sh/sdk."
+    href="/docs/sdk/embed/"
+  />
+  <LinkCard
+    title="Under the hood"
+    description="The supervisor, the facet fabric, the SQLite disk, the port registry. How it actually works."
+    href="/docs/internals/fabric/"
+  />
+  <LinkCard
+    title="Where Nimbus fits"
+    description="How it compares to microVM sandboxes, container platforms, and agentOS."
+    href="/docs/start/where-it-fits/"
+  />
+  <LinkCard
+    title="The fine print"
+    description="What works, what is alpha, what does not work, and measured benchmarks."
+    href="/docs/fine-print/capabilities/"
+  />
+</CardGrid>
+
+## How a session is put together
+
+Every session is one supervisor Durable Object plus a fabric of isolate
+facets, one per process, each with its own memory and CPU budget, wired
+together over a session-local loopback network. Select any part of the
+diagram to see what it owns; the rest of these docs explain each piece.
+
+<FabricDiagram />
+
+:::note
+Nimbus is an MIT-licensed hobby research project, currently in alpha. It
+works, and every capability claim in these docs traces to a live behavioral
+probe, but there are rough edges. The
+[capability matrix](/docs/fine-print/capabilities/) and
+[what does not work](/docs/fine-print/limitations/) say exactly where the
+lines are.
+:::

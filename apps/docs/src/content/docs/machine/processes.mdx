@@ -1,0 +1,62 @@
+---
+title: Processes
+description: Every process gets its own isolate. One-shot commands, resident servers, multi-isolate apps, and the process table.
+---
+
+Nimbus treats processes the way an OS treats them, with one twist born from
+the platform. Every isolate on Workers is capped at 128 MiB, so instead of
+squeezing an app into one isolate, Nimbus gives each process its own and
+wires them together over the session's loopback network. 128 MiB is a
+segment, not a ceiling.
+
+## The process model
+
+| Kind | Lifecycle | Examples |
+|---|---|---|
+| One-shot | spawn → run → stream writes back → exit | `node script.js`, `python3 -c`, `./hello.wasm`, `clang` |
+| Resident | keyed facet, survives across requests, owns ports | `npm run dev` (Vite), `python -m flask run`, `opencode serve` |
+| Attached TTY | resident, plus an interactive process tab | npm-bin CLIs ([TTY apps](/docs/machine/tty/), alpha) |
+
+The process table lives in the supervisor, not in any facet. `ps` stays
+truthful even if a facet is evicted, and process metadata survives
+hibernation.
+
+## Working with processes
+
+- Long-running commands are promoted automatically. Start a server and it
+  becomes a resident process with a routeable port
+  ([the network](/docs/machine/network/)).
+- Process logs are durable and bounded. Each process has a log/terminal
+  channel (`/api/logs/<pid>`) that the browser tabs and SDK attach to.
+- `child_process.spawn` / `exec` / `execFile` work inside Node processes,
+  with piped stdio and streams, so agent CLIs get real process primitives.
+- From the SDK: `box.startProcess(...)`, `box.processes.list/logs/kill/...`
+  ([sandbox API](/docs/sdk/sandbox-api/)).
+
+## Multi-isolate apps <span class="nimbus-chip" data-kind="alpha">alpha</span>
+
+Because loopback crosses isolates, a single app can be several cooperating
+processes. opencode runs this way today: `opencode` spawns a serve facet
+(its HTTP server) and an attach facet (its TUI). Two processes, two
+isolates, each with its own 128 MiB, talking over `127.0.0.1:4096` through
+the supervisor. The serve half is health-gated before the TUI attaches, and
+the pair is lifecycle-tied: exit the TUI and the server is reaped.
+
+Current status: the serve half boots, passes its readiness gate, and
+streams SSE through the facet HTTP shim; the attach half's boot still trips
+a supervisor memory reset that is under investigation
+([capability matrix](/docs/fine-print/capabilities/)).
+
+## Boundaries
+
+- No `fork()` yet. The mechanism is
+  [proven in live research](/docs/fine-print/research/) but not a shipped
+  syscall.
+- Facet-side state is evictable under memory pressure. The supervisor's
+  process table is the source of truth, and a process that cannot be
+  rehydrated is marked dead with a reason rather than left as a zombie.
+
+## Related
+
+- [The process fabric](/docs/internals/processes/): facet staging, module
+  maps, and eviction semantics.

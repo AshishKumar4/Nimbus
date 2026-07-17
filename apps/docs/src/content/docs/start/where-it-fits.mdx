@@ -1,0 +1,86 @@
+---
+title: Where Nimbus fits
+description: How Nimbus compares to microVM sandboxes, container platforms, and agentOS, stated factually.
+---
+
+Agent sandboxes come in three shapes today. Nimbus is a fourth. This page
+states the differences factually; where numbers appear they come from
+[our measured benchmarks](/docs/fine-print/benchmarks/) or the other
+projects' own published documentation (as of July 2026).
+
+## The four shapes
+
+| | microVM sandboxes | Container platforms | agentOS (Rivet) | Nimbus |
+|---|---|---|---|---|
+| Substrate | Firecracker-class VMs (e.g. E2B, Daytona) | OCI containers (e.g. Cloudflare Sandbox SDK) | Your own process: a Rust kernel + V8/WASM userland, shipped as an npm package | Cloudflare Durable Objects + Worker isolates + WASM |
+| Where it runs | Provider's fleet | Provider's fleet | Your servers (or Rivet Cloud) | Cloudflare's network |
+| Real Linux ELF binaries | Yes | Yes | No (WASM/V8 userland) | No (WASM/V8 userland) |
+| Docker / apt | Yes | Yes | No | No |
+| Idle cost | VM pool / suspend economics | Container lifecycle | Your server's cost, amortized | $0, sessions hibernate |
+| Persistence | Provider snapshots/volumes | Volumes | SQLite-persisted VFS | SQLite-persisted VFS, 10 GB per session |
+
+## vs. microVM sandboxes
+
+MicroVM providers give you a real Linux kernel. Anything that runs on Linux
+runs there, including Docker, apt, and native binaries. That is a genuine
+capability Nimbus does not have and does not claim
+([what does not work](/docs/fine-print/limitations/)).
+
+What Nimbus trades that for:
+
+- No infrastructure. A session is a URL on Cloudflare's network. There is
+  no fleet to run and no capacity to plan; 100 simultaneous session creates
+  succeed with a 1.15 s median (measured, N=100, 100% success).
+- True scale-to-zero. A hibernated session costs nothing and keeps its
+  filesystem. Come back in a week and the URL still works.
+- Fast boot. Session create to first command is about 0.6 s median, as
+  honest per-request boots with no pre-warmed pool.
+
+## vs. container platforms
+
+Cloudflare's own container-based Sandbox SDK runs real containers on the
+same network Nimbus runs on. In our ComputeSDK-methodology measurements,
+Nimbus sessions created about 3× faster across the board: 0.61 s vs 1.95 s
+sequential median, 1.15 s vs 4.05 s burst median. See
+[benchmarks](/docs/fine-print/benchmarks/) for the methodology and caveats.
+Containers, in exchange, run native Linux software that Nimbus cannot.
+
+## vs. agentOS
+
+[agentOS](https://agentos-sdk.dev) (by Rivet) is the closest conceptual
+peer. Both projects are an OS for agents built from V8 isolates plus
+WebAssembly with no containers, both persist the filesystem in SQLite, both
+run Pyodide-based CPython 3.13, and both route a session-internal loopback
+network. The designs converged independently from opposite deployment
+models. The factual differences:
+
+- Library vs. cloud OS. agentOS is an npm package whose Rust kernel and
+  sidecar run in or next to your own backend process, on any
+  infrastructure. Nimbus is the deployment itself: a Worker plus Durable
+  Objects on Cloudflare, with nothing to host and a hosted URL per computer.
+- Agent harness vs. dev environment. agentOS's headline surface is hosting
+  coding-agent sessions (Pi, Claude Code, Codex, OpenCode adapters over
+  ACP). Nimbus's headline surface is the computer itself: terminal, editor,
+  dev servers with HMR, previews, and SDK sandboxes, with its session agent
+  as one feature among them.
+- Dev servers. agentOS's own limitations doc lists no `inotify`/`fs.watch`,
+  which rules out watch-mode dev servers in-VM. Nimbus runs Vite with full
+  HMR to a preview iframe.
+- In-session compilation. Nimbus ships clang in the session and compiles C
+  to `wasm32-wasi-nimbus` on the spot. agentOS delegates native toolchains
+  to external container sandboxes it can mount.
+- The escape hatch. agentOS embraces hybrid: it can mount a real
+  container or VM sandbox into the VM when WASM isn't enough. Nimbus stays
+  purist, with no containers anywhere, and pushes the isolate envelope
+  instead (multi-isolate processes, in-session toolchains).
+- Trust model. agentOS isolates with its own Rust kernel and embedded V8,
+  self-described as beta and undergoing security review. Nimbus inherits
+  Cloudflare's production workerd isolation
+  ([security model](/docs/internals/security/)).
+
+## When you should not use Nimbus
+
+Pick something else if you need Docker, apt, native Linux ELF binaries,
+native Python wheels or Ruby extensions, GPUs, raw public TCP listeners, or
+the Next.js dev server. The full list lives in
+[what does not work](/docs/fine-print/limitations/).

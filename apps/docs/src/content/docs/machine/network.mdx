@@ -1,0 +1,68 @@
+---
+title: The network
+description: A session-local loopback network, a supervisor-routed port registry, live previews, and end-to-end streaming HTTP.
+---
+
+Each session has its own network with three sides: loopback between
+processes, previews into the browser, and outbound to the internet.
+
+## Loopback: 127.0.0.1 across isolates
+
+Every process runs in its own isolate, yet `curl http://127.0.0.1:3000/`
+from one process reaches a server running in another. The supervisor's port
+registry routes it, over the same path the browser preview uses. This is
+what lets one app span multiple isolates.
+
+```bash
+$ cat > server.js <<'EOF'
+const http = require('http');
+http.createServer((req, res) => res.end('ok from another isolate')).listen(3000, () => console.log('listening on 3000'));
+EOF
+$ node server.js
+listening on 3000
+$ curl http://127.0.0.1:3000/
+ok from another isolate
+```
+
+`node server.js` auto-promotes: when the script starts listening, Nimbus
+turns it into a routeable resident process with its own facet. No flags, no
+special launch command.
+
+## Previews: ports become tabs
+
+The preview pane in the browser is tabbed: Markdown preview, the default
+app preview at `/s/<id>/preview/`, Worker preview, and live port previews
+at `/s/<id>/port/<n>/`. When a new process exposes a port, Nimbus opens and
+focuses that port's tab.
+
+This is a real `Request`/`Response` path, not a screenshotting proxy, which
+is why Vite HMR works end to end (302 ms median hot reload, measured).
+
+## Streaming works end to end
+
+Routed responses stream. Server-sent events, chunked transfer, and
+long-lived HTTP bodies relay live from the serving facet through the
+supervisor to the client. Live gates verify per-tick arrival: loopback SSE
+ticks observed incrementally at the shell, and externally at ~300 ms
+intervals. `curl` streams response bodies to stdout chunk by chunk, and
+<kbd>Ctrl</kbd>+<kbd>C</kbd> cancels the read.
+
+## Outbound
+
+- `fetch` and the Node HTTP(S) clients work from every runtime.
+- WASI binaries get outbound TCP through
+  `path_open('/dev/tcp/<host>/<port>')`, a synthetic path that opens a real
+  socket ([WASI & syscalls](/docs/internals/wasi/)).
+- npm, pip, gem, and git all ride real outbound HTTPS.
+
+## The boundary
+
+There are no raw public TCP listeners. Inbound traffic is HTTP(S) through
+the session's routes. Loopback and previews cover web servers; a raw socket
+server listening on a public port is not something the platform offers.
+
+## Related
+
+- [Ports & routing](/docs/internals/network/): the port registry contract,
+  route stubs, and the streaming relay.
+- [Processes](/docs/machine/processes/): resident processes and lifecycle.

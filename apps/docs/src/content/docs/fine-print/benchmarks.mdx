@@ -1,0 +1,69 @@
+---
+title: Benchmarks
+description: Measured numbers with full methodology — session create TTI (ComputeSDK methodology), burst behavior, and everyday operation timings.
+---
+
+Every number on this page is measured, dated, and reproducible. Where a
+comparison appears, the caveats appear next to it.
+
+## Session create → first command (TTI)
+
+Measured 2026-07-16 with the **ComputeSDK benchmark methodology**: wall-clock
+`sandbox.create()` + first successful `runCommand('node -v')` (exit 0),
+5% trimmed at both ends, composite = 0.60·median + 0.25·P95 + 0.15·P99
+(scored against a 10 s scale) × success rate.
+
+| Mode | N | Success | Median | P95 | P99 | Composite |
+|---|---|---|---|---|---|---|
+| Sequential | 100 | 100/100 | **0.61 s** | 0.82 s | 0.87 s | 93.0 |
+| Staggered (200 ms) | 100 | 100/100 | **0.57 s** | 0.78 s | 0.92 s | 93.3 |
+| Burst (simultaneous) | 100 | 100/100 | **1.15 s** | 1.68 s | 1.96 s | 86.0 |
+
+- **100% success across all 300 full-methodology runs.** One failure
+  occurred in ~370 total sandboxes (a smoke iteration hit a Durable Object
+  storage timeout reset) — reported, not hidden.
+- **Where the time goes:** direct phase measurement (N=15) put
+  `create()`+`ready()` at **545 ms median** and first exec at **23 ms**
+  median — ~96% of TTI is session boot; once booted, exec round-trips are
+  ~20 ms.
+- **No warm pool.** These are honest per-request Durable Object boots. At
+  100 simultaneous creates the median rises to 1.15 s and everything still
+  succeeds.
+
+### Methodology caveats, stated plainly
+
+- Run from a **residential Linux client**, not ComputeSDK's CI runner —
+  network RTT to the edge is inside these numbers. A well-placed runner
+  would likely shave tens of milliseconds.
+- Nimbus is **not** on the official ComputeSDK leaderboard; we ran the
+  unmodified harness against a Nimbus provider locally. Treat cross-provider
+  comparisons directionally.
+- One directly comparable same-platform result: against Cloudflare's own
+  container-based Sandbox SDK (published leaderboard data, run 2026-07-13),
+  Nimbus measured **~3× faster across the board** — 0.61 s vs 1.95 s
+  sequential median, 1.15 s vs 4.05 s burst median.
+
+## Everyday operations
+
+Measured against a live deployment (2026-07):
+
+| Operation | Wall time |
+|---|---|
+| `git clone` facebook/react (7,300 files) | ~28 s |
+| `npm install` 611-package app (52,500 files, cold) | ~165 s |
+| `npm install zod` (cold session) | ~6 s |
+| `node -e 'console.log(...)'` (warm) | 102–152 ms |
+| Vite hot reload | 302 ms median |
+
+Cross-session caching gives **9–16×** speedups for warm package installs vs
+cold.
+
+## Regression discipline
+
+Performance claims don't rot silently: `tests/behavioral/perf-regression/`
+asserts thresholds on every deploy, and the behavioral suite is runnable by
+anyone against any live deployment:
+
+```bash
+BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
+```

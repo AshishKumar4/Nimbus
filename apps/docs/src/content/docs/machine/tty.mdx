@@ -1,0 +1,59 @@
+---
+title: Interactive TTY apps
+description: Attached process tabs for full-screen CLIs. What works, what's alpha, and the current state of opencode.
+---
+
+Full-screen CLIs own the terminal: they read raw keys and redraw the whole
+screen. Nimbus runs these as attached processes. A foreground npm-bin
+launch gets its own interactive process tab backed by the process's TTY
+channel, separate from the shell.
+
+## What an attached tab gives you <span class="nimbus-chip" data-kind="alpha">alpha</span>
+
+- stdin: keystrokes go to the process, not the shell.
+- resize: terminal dimensions propagate to the process.
+- ANSI output: colors, cursor movement, and redraws render.
+- clean exit: the process ends, the tab closes, the shell is untouched.
+
+TTY detection is context-aware. A package bin launched in the foreground
+from the terminal sees `isTTY: true`; the same bin piped or backgrounded
+sees `isTTY: false`, like a real OS.
+
+Probed today: the Pi coding agent through both its official installer path
+and its npm path (`tests/behavioral/agentic-cli/`).
+
+## Where opencode stands
+
+opencode is the flagship stress test for this surface, and it exercises the
+[multi-isolate process model](/docs/machine/processes/): bare `opencode`
+spawns a serve facet (its HTTP server) and an attach facet (its TUI), two
+isolates cooperating over loopback.
+
+The current state, exactly:
+
+- The serve half boots, passes its health gate, stays externally
+  serviceable, and streams SSE through the facet HTTP shim. The pair is
+  lifecycle-tied.
+- `opencode --version`, `--help`, `models`, and the `opencode run` pipeline
+  (DB-backed, through model dispatch) are production-probed.
+- The attach half's boot still trips a supervisor memory reset, under
+  investigation. Until that is fixed, the full interactive TUI is not
+  claimed.
+- opencode runs as a Nimbus-staged JS bundle with Nimbus-specific build
+  flags and source patches, not an unmodified upstream binary.
+
+## What full PTY parity still needs
+
+Full POSIX PTY semantics remain a roadmap item, not a claim: raw/cooked
+mode switching driven by the app, complete signal delivery semantics,
+attach/detach with scrollback replay, and durable process metadata across
+hibernation wake. The design is specced in the
+[OS runtime spec](https://github.com/AshishKumar4/Nimbus/blob/main/docs/architecture/nimbus-os-runtime-spec.md);
+progress is tracked on the [research frontier](/docs/fine-print/research/).
+
+## Related
+
+- [Processes](/docs/machine/processes/): the process model these tabs sit
+  on.
+- [Capability matrix](/docs/fine-print/capabilities/): current status at a
+  glance.

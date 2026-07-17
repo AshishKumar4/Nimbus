@@ -5,11 +5,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "bun run --cwd ../../packages/worker bundle",
-    "predeploy": "bun run --cwd ../../packages/worker bundle",
+    "build:assets": "node scripts/build-assets.mjs",
+    "predev": "bun run --cwd ../../packages/worker bundle && bun run build:assets",
+    "predeploy": "bun run --cwd ../../packages/worker bundle && bun run build:assets",
     "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
     "deploy": "wrangler deploy",
-    "deploy:production": "bun run --cwd ../../packages/worker bundle && wrangler deploy -e production"
+    "deploy:production": "bun run --cwd ../../packages/worker bundle && bun run build:assets && wrangler deploy -e production"
   },
   "dependencies": {
     "@nimbus-sh/sdk": "workspace:^",
