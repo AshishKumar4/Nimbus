@@ -28,12 +28,16 @@ BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
 
 ## In progress (honest list)
 
-Unfinished OS work, verbatim from the README: broader Pyodide/Nimbus
+Unfinished OS work, mirroring the README's list: broader Pyodide/Nimbus
 extension artifact catalogs beyond declared packages, complete upstream
-`pip`/Bundler CLI parity, opencode TUI live-update streaming (the split pair
-boots and survives; SSE streaming through the facet HTTP shim is in
-progress), index-pack CPU headroom for 75,000+-object clones, full POSIX PTY
-parity, and live filesystem bridges for every long-running runtime.
+`pip`/Bundler CLI parity, opencode TUI first-frame rendering (the serve half
+boots, answers readiness, and streams SSE; the attach half's boot still
+trips a supervisor memory reset under investigation), index-pack CPU
+headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU
+budget on repos like microsoft/TypeScript), full POSIX PTY parity, live
+filesystem bridges for every long-running runtime, and permission
+*enforcement* beyond the exec bit (uid/gid ownership, `EACCES` on
+read/write, real `umask`/`chown` — designed, not yet implemented).
 
 Hard "no" items live in [what does not work](/docs/fine-print/limitations/);
 research-stage work lives on the

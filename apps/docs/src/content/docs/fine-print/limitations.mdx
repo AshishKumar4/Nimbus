@@ -40,8 +40,9 @@ diagnostic** — before import, with the reason — rather than half-installing.
 - **Very large clones** — index-pack CPU headroom for 75,000+-object
   repositories is still in progress.
 - **git over HTTPS only** — no SSH transport.
-- **opencode TUI** — the split pair boots and survives, but live TUI
-  streaming is in progress; the full interactive TUI is not yet claimed.
+- **opencode TUI** — the serve half boots, answers readiness, and streams
+  SSE; the attach half's boot still trips a supervisor memory reset, under
+  investigation. The full interactive TUI is not yet claimed.
 - **Hosted demo** — free evaluation only: no SLA, may be rate-limited or
   reset; don't put secrets or production data in it.
 

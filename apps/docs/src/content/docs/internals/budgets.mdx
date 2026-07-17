@@ -11,19 +11,24 @@ design move each one produced.
 
 | Constraint | Published figure | Applies to |
 |---|---|---|
-| Isolate memory | 128 MB per isolate | supervisor DO and every facet alike |
+| Isolate memory | 128 MiB per isolate | supervisor DO and every facet alike |
 | Durable Object SQLite storage | 10 GB per object | the session filesystem |
-| CPU time | per-invocation CPU budgets (Workers default: 30 s CPU per invocation) {/* VERIFY: confirm current published CPU-limit wording/figures to cite for Workers + DOs */} | every request/RPC into an isolate |
+| CPU time | 30 s per invocation by default, raisable to 5 min via `limits.cpu_ms` ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/)) | every request/RPC into an isolate |
+
+One nuance worth knowing: a raised `cpu_ms` applies to the supervisor DO's
+invocations. Facet isolates get the ~30 s per-invocation budget regardless
+of the deployment's configured limit, which is why long facet work is
+sliced into phases below.
 
 Nimbus intentionally publishes **only** Cloudflare's official figures here —
 no folklore numbers, no unofficial measurements.
 
 ## What each limit produced
 
-### 128 MB → the multi-isolate process model
+### 128 MiB → the multi-isolate process model
 
 A hard per-isolate cap would normally be the ceiling on what an app can be.
-Nimbus's answer is the OS answer: **128 MB is a segment, not a ceiling** —
+Nimbus's answer is the OS answer: **128 MiB is a segment, not a ceiling** —
 
 - every process gets its **own** isolate, so its budget is its own;
 - heavy apps **span isolates** (opencode: serve + TUI, two processes, two

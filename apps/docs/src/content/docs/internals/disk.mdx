@@ -40,7 +40,7 @@ governed by a credit pool. A facet must hold credits to send bytes, and
 credits are returned as the supervisor drains. The result is a hard bound
 on supervisor memory no matter how many processes write at once. That is
 the mechanism that lets a parallel `npm install` (52,500 files) or an
-84,000-file git checkout land safely inside a 128 MB isolate.
+84,000-file git checkout land safely inside a 128 MiB isolate.
 
 ## The read path: bridge plus caches
 

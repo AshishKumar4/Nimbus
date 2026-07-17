@@ -4,9 +4,9 @@ description: Every process gets its own isolate. One-shot commands, resident ser
 ---
 
 Nimbus treats processes the way an OS treats them, with one twist born from
-the platform. Every isolate on Workers is capped at 128 MB, so instead of
+the platform. Every isolate on Workers is capped at 128 MiB, so instead of
 squeezing an app into one isolate, Nimbus gives each process its own and
-wires them together over the session's loopback network. 128 MB is a
+wires them together over the session's loopback network. 128 MiB is a
 segment, not a ceiling.
 
 ## The process model
@@ -38,12 +38,14 @@ hibernation.
 Because loopback crosses isolates, a single app can be several cooperating
 processes. opencode runs this way today: `opencode` spawns a serve facet
 (its HTTP server) and an attach facet (its TUI). Two processes, two
-isolates, each with its own 128 MB, talking over `127.0.0.1:4096` through
+isolates, each with its own 128 MiB, talking over `127.0.0.1:4096` through
 the supervisor. The serve half is health-gated before the TUI attaches, and
 the pair is lifecycle-tied: exit the TUI and the server is reaped.
 
-The split pair boots and survives; TUI live-update streaming is still in
-progress ([capability matrix](/docs/fine-print/capabilities/)).
+Current status: the serve half boots, passes its readiness gate, and
+streams SSE through the facet HTTP shim; the attach half's boot still trips
+a supervisor memory reset that is under investigation
+([capability matrix](/docs/fine-print/capabilities/)).
 
 ## Boundaries
 

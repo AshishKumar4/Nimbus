@@ -125,12 +125,14 @@ caller already has browser or session auth
 const provider = box.tools({ namespace: 'sandbox' });
 ```
 
-Returns a Proteus-style tool provider wrapping the sandbox: `readFile`,
-`writeFile`, `listFiles`, `deleteFile`, `exists`, exec, process control
-(`killProcess`, `writeProcessInput`, `resizeProcess`, `signalProcess`,
-`processLogs`), ports (`exposePort`, `listPorts`), and runtime install,
-ready to hand to an agent loop. `box.capabilities()` reports the runtime
-allow-list as capability strings.
+Returns a Proteus-style tool provider wrapping the sandbox. The tool map
+includes files (`readFile`, `writeFile`, `listFiles`, `readdir`,
+`deleteFile`, `exists`), execution (`exec`, `runCode`), process control
+(`startProcess`, `killProcess`, `writeProcessInput`, `endProcessInput`,
+`resizeProcess`, `signalProcess`, `logs`), ports (`exposePort`,
+`unexposePort`, `listPorts`), and runtimes (`installRuntime`,
+`listRuntimes`), ready to hand to an agent loop. `box.capabilities()`
+reports the runtime allow-list as capability strings.
 
 ## Errors
 

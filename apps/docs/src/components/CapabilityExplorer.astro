@@ -23,6 +23,8 @@ const rows: Row[] = [
 	{ area: 'Packages', status: 'works', cap: 'npm alias dependencies such as alias: "npm:<pkg>@<version>"' },
 	{ area: 'Git', status: 'works', cap: 'git clone over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation' },
 	{ area: 'Network', status: 'works', cap: 'In-session loopback networking — curl http://127.0.0.1:<port> reaches servers in other isolates; node server.js auto-promotes to a routeable resident process' },
+	{ area: 'Network', status: 'works', cap: 'Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike' },
+	{ area: 'Shell', status: 'works', cap: 'Unix permissions groundwork — durable st_mode, real chmod (octal + symbolic), exec-bit enforcement: ./binary runs only if executable (Permission denied, exit 126 otherwise), generic #! shebang dispatch' },
 	{ area: 'Processes', status: 'alpha', cap: 'Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate)' },
 	{ area: 'Dev servers', status: 'works', cap: 'Vite SPA dev server — full HMR to the preview iframe' },
 	{ area: 'Dev servers', status: 'works', cap: 'wrangler dev for single-file Workers; Workers + Static Assets' },

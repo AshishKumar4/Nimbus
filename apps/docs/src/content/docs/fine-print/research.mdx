@@ -57,8 +57,9 @@ fork's inherited descriptors.
 - **Inbound sockets for WASM** — a host extension filling preview1's
   missing `sock_open`/`bind`/`listen`/`accept`, binding WASM servers to the
   port registry.
-- **opencode TUI live-update streaming** — the split pair boots and
-  survives; SSE through the facet HTTP shim is the remaining piece.
+- **opencode TUI first-frame rendering** — the serve half boots, answers
+  readiness, and streams SSE through the facet HTTP shim; the attach half's
+  boot still trips a supervisor memory reset, under investigation.
 - **Index-pack CPU headroom** — continuation-slicing the pack indexer for
   75,000+-object clones.
 - **Full POSIX PTY parity** — raw/cooked modes, signal semantics,

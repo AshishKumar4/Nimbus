@@ -68,8 +68,10 @@ prompts, stateful Python, and error recovery.
 
 A dropped WebSocket reconnects with `cwd`, environment, and files
 preserved. The URL is the session: share it and a teammate joins the same
-filesystem. One active terminal owner drives at a time; sequential
-reconnect and sharing preserve filesystem and shell state.
+filesystem, though on deployments that enforce auth the joiner also needs a
+valid attach token ([tokens & auth](/docs/sdk/tokens/)). One active
+terminal owner drives at a time; sequential reconnect and sharing preserve
+filesystem and shell state.
 
 ## Related
 

@@ -31,13 +31,14 @@ isolates cooperating over loopback.
 
 The current state, exactly:
 
-- The split pair boots and survives. Serve comes up, is health-gated, stays
-  externally serviceable, and the pair is lifecycle-tied.
+- The serve half boots, passes its health gate, stays externally
+  serviceable, and streams SSE through the facet HTTP shim. The pair is
+  lifecycle-tied.
 - `opencode --version`, `--help`, `models`, and the `opencode run` pipeline
   (DB-backed, through model dispatch) are production-probed.
-- TUI live-update streaming is in progress. SSE streaming through the facet
-  HTTP shim is the remaining piece before the full interactive TUI is
-  claimable.
+- The attach half's boot still trips a supervisor memory reset, under
+  investigation. Until that is fixed, the full interactive TUI is not
+  claimed.
 - opencode runs as a Nimbus-staged JS bundle with Nimbus-specific build
   flags and source patches, not an unmodified upstream binary.
 

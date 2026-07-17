@@ -7,7 +7,7 @@
  * Facts are sourced from README.md ("Architecture (high level)" and the
  * mermaid diagrams), docs/architecture/nimbus-os-runtime-spec.md, and the
  * multi-isolate opencode work on this branch. Per-isolate memory is
- * Cloudflare's published 128 MB figure.
+ * Cloudflare's published 128 MiB figure.
  */
 const nodes = {
 	client: {
@@ -36,7 +36,7 @@ const nodes = {
 		lane: 'session',
 		lines: ['node · bun · python · wasm', 'own memory + CPU budget each'],
 		facts: [
-			'Every command runs in its own Worker Loader isolate with its own memory and CPU budget (Cloudflare publishes 128 MB per isolate).',
+			'Every command runs in its own Worker Loader isolate with its own memory and CPU budget (Cloudflare publishes 128 MiB per isolate).',
 			'Lifecycle: spawn → run → stream writes back to the supervisor → exit. Nothing durable lives here.',
 			'CPU-heavy work (npm resolution, esbuild bundling, WASM execution, REPL eval) fans out here so the supervisor stays responsive.',
 		],

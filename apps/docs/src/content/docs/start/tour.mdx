@@ -28,7 +28,9 @@ More in [Terminal & shell](/docs/machine/terminal/).
 Everything you write lands on a 10 GB SQLite-backed filesystem that survives
 reconnects, hibernation, and Durable Object eviction. Close the tab, come
 back tomorrow, and `fruits.txt` is still there. The URL is the session:
-share it and a teammate joins the same filesystem.
+share it and a teammate joins the same filesystem. (On deployments that
+enforce auth, including the hosted demo, joining also needs a valid attach
+token — [tokens & auth](/docs/sdk/tokens/).)
 
 More in [The disk](/docs/machine/disk/).
 

@@ -31,7 +31,7 @@ The division of labor is strict:
 
 Two platform facts force the design:
 
-1. Isolates are capped. Cloudflare publishes 128 MB per isolate, plus
+1. Isolates are capped. Cloudflare publishes 128 MiB per isolate, plus
    per-invocation CPU budgets. Running user workloads inside the supervisor
    would make the OS compete with its own processes for one budget. So the
    supervisor schedules and facets compute.
