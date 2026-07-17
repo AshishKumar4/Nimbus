@@ -342,6 +342,7 @@ function generateEntrypointCode(userCode, vfsState, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
     const safeBundle = vfsState.serializedBundle ?? _serializeBundleForFacet(vfsState.bundle);
     const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
+    const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
     return `
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
@@ -379,6 +380,7 @@ try {
 // VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
 const __MODULE_VFS_BUNDLE = ${safeBundle};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
+const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
@@ -406,10 +408,11 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, diag: __diag } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag } = args;
     let __drainPasses = 0;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
+    const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
     const __pendingIO = [];
     // Fix 6 orphan counters (same as NodeProcess.run) — count RPC writes
@@ -573,9 +576,11 @@ function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims
         dirname: opts.dirname || opts.cwd || '/home/user',
         stdin: opts.stdin || '',
         attachedTty: opts.attachedTty === true,
+        cred: opts.cred,
     });
     const safeBundle = _serializeBundleForFacet(vfsState.bundle);
     const safeManifest = JSON.stringify(vfsState.manifest);
+    const safeMetadata = JSON.stringify(vfsState.metadata);
     return `
 import { WorkerEntrypoint } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
@@ -607,6 +612,7 @@ try {
 
 const __MODULE_VFS_BUNDLE = ${safeBundle};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
+const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
@@ -650,9 +656,10 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
+    const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
     const __pendingIO = [];
     let __rpcDrops = 0;
@@ -874,11 +881,8 @@ function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
 /**
- * hardening-r5: emit a JS expression that, when evaluated inside the
- * facet's module-init context, yields a `Record<string, string |
- * Uint8Array>` with binary cells revived from base64. Strings stay as
- * JSON strings (the hot path). Binary cells become `{ __b64: "..." }`
- * markers and are revived by a tiny inline loop.
+ * hardening-r5: emit a JS expression that revives binary cells from base64
+ * and preserves permission-denial cells alongside ordinary strings.
  *
  * The output is a SELF-EXECUTING IIFE expression so it can be substituted
  * directly into `const __MODULE_VFS_BUNDLE = ${expr};` template slots.
@@ -886,11 +890,12 @@ function _bundleCellLength(cell) {
 function _serializeBundleForFacet(bundle) {
     const strCells = {};
     const binCells = {};
+    const deniedPaths = [];
     for (const [k, v] of Object.entries(bundle)) {
         if (typeof v === 'string') {
             strCells[k] = v;
         }
-        else {
+        else if (v instanceof Uint8Array) {
             // Uint8Array → base64. btoa requires a binary string; we build it
             // 8K chars at a time to avoid String.fromCharCode argument-count
             // limits on large files (~1MB+).
@@ -901,13 +906,16 @@ function _serializeBundleForFacet(bundle) {
             }
             binCells[k] = btoa(bin);
         }
+        else {
+            deniedPaths.push(k);
+        }
     }
     // The IIFE revives binary cells in-place. atob → binary string →
     // Uint8Array (Uint8Array.from(str, c=>c.charCodeAt(0))).
     // Note: when binCells is empty (the overwhelming common case —
     // source code is all text) the IIFE collapses to a JSON literal,
     // costing only the IIFE wrapper bytes (~30) per facet boot.
-    return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}return __b;})()`;
+    return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
 }
 /**
  * FNV-1a 32-bit hash, returned as an unsigned hex string. Used only to
@@ -993,6 +1001,50 @@ function buildManifest(vfs, cwd, scriptPath) {
         }
     }
     return manifest;
+}
+function buildVfsMetadata(vfs, manifest, bundle) {
+    const paths = new Set(Object.keys(bundle));
+    for (const [directory, children] of Object.entries(manifest)) {
+        paths.add(directory);
+        for (const child of children) {
+            paths.add(directory ? `${directory}/${child}` : child);
+        }
+    }
+    const metadata = {};
+    for (const path of paths) {
+        try {
+            const stat = vfs.lstat(path);
+            metadata[path] = {
+                type: stat.type,
+                size: stat.size,
+                mode: stat.mode,
+                uid: stat.uid,
+                gid: stat.gid,
+            };
+        }
+        catch {
+            // The credentialed lookup is authoritative; inaccessible ancestors do
+            // not reveal whether a leaf exists.
+        }
+    }
+    return metadata;
+}
+function addUnreadableDenialCells(vfs, bundle, metadata) {
+    for (const [path, stat] of Object.entries(metadata)) {
+        if (stat.type === 'directory' || path in bundle)
+            continue;
+        try {
+            vfs.access(path, 0o4);
+        }
+        catch (error) {
+            if (typeof error === 'object'
+                && error !== null
+                && 'code' in error
+                && error.code === 'EACCES') {
+                bundle[path] = { error: 'EACCES' };
+            }
+        }
+    }
 }
 /**
  * Greedy-oversample every installed package's main entry. The static
@@ -2161,9 +2213,11 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
             encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
         }
     }
+    const metadata = buildVfsMetadata(vfs, manifest, bundle);
+    addUnreadableDenialCells(vfs, bundle, metadata);
     // Suppress lint: `greedy.added` is observed only via diagnostics.
     void greedy;
-    return { bundle, manifest, reachableCount: fileCount, truncated };
+    return { bundle, manifest, metadata, reachableCount: fileCount, truncated };
 }
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 export class FacetManager {
@@ -2237,9 +2291,9 @@ export class FacetManager {
      * caller would build them anyway via generateEntrypointCode) and stored so
      * subsequent hits skip re-serialization too.
      */
-    async _buildPrefetchBundleCached(vfs, scriptPath, cwd, entryCode, bundleProfile) {
+    async _buildPrefetchBundleCached(vfs, scriptPath, cwd, entryCode, credKey, bundleProfile) {
         const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
-        const key = `${profile}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
+        const key = `${profile}\x00${credKey}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
         const revision = vfs.revision();
         const cached = this.prefetchBundleCache.get(key);
         if (cached && cached.revision === revision) {
@@ -2251,6 +2305,7 @@ export class FacetManager {
         const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile);
         vfsState.serializedBundle = _serializeBundleForFacet(vfsState.bundle);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
+        vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
         vfsState.cacheHit = false;
         this.prefetchBundleCache.set(key, { revision, vfsState });
         if (this.prefetchBundleCache.size > FacetManager.PREFETCH_CACHE_MAX) {
@@ -2355,9 +2410,11 @@ export class FacetManager {
         }
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
-        const vfsState = this.vfs
-            ? await this._buildPrefetchBundleCached(this.vfs, opts.filename, opts.cwd || '/home/user', code, opts.bundleProfile)
-            : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+        const processVfs = this.vfs?.as(entry.cred);
+        const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
+        const vfsState = processVfs
+            ? await this._buildPrefetchBundleCached(processVfs, opts.filename, opts.cwd || '/home/user', code, credKey, opts.bundleProfile)
+            : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const diagSink = diagOn ? { loadMs: 0, runMs: 0, moduleMapBytes: 0 } : undefined;
         const abortController = new AbortController();
@@ -2381,7 +2438,7 @@ export class FacetManager {
                     at: Date.now(),
                 });
             }
-            this._flushVfsWrites(result);
+            this._flushVfsWrites(result, entry.pid);
             return result;
         }
         catch (err) {
@@ -2468,6 +2525,7 @@ export class FacetManager {
             dirname: opts.dirname || '/home/user',
             stdin: opts.stdin || '',
             captureOutput: !!opts.captureOutput,
+            cred: { ...entry.cred, groups: [...entry.cred.groups] },
             ...(diagSink ? { diag: true } : {}),
         });
         if (diagSink) {
@@ -2553,7 +2611,7 @@ export class FacetManager {
             try {
                 const result = await response.json();
                 this.processes.exit(staged.pid, result.exitCode);
-                this._flushVfsWrites(result);
+                this._flushVfsWrites(result, staged.pid);
                 return { ...result, pid: staged.pid };
             }
             finally {
@@ -2615,17 +2673,20 @@ export class FacetManager {
         // directory manifest so readdir/stat are coherent. opencode creates its
         // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
         // other writes flush live through the SUPERVISOR RPC bridge.
-        const vfsState = this.vfs
-            ? await buildPrefetchBundle(this.vfs, undefined, opts.cwd, '', this.esbuild || undefined)
-            : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+        const processVfs = this.vfs?.as(entry.cred);
+        const vfsState = processVfs
+            ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined)
+            : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const stageSpec = {
             mode,
             argv: opts.argv,
             env: runnerEnv,
+            cred: { ...entry.cred, groups: [...entry.cred.groups] },
             cwd: opts.cwd,
             stdin: opts.stdin ?? '',
             vfsBundle: _serializeBundleForFacet(vfsState.bundle),
             vfsManifest: JSON.stringify(vfsState.manifest),
+            vfsMetadata: JSON.stringify(vfsState.metadata),
         };
         return { pid, command, stageSpec };
     }
@@ -2910,16 +2971,17 @@ export class FacetManager {
         }
     }
     /** Flush files written by the script back to the supervisor's VFS. */
-    _flushVfsWrites(result) {
+    _flushVfsWrites(result, pid) {
         if (!this.vfs || !result.vfsWrites)
             return;
+        const vfs = this.vfs.as(this.processes.cred(pid));
         for (const [path, content] of Object.entries(result.vfsWrites)) {
             try {
                 const parts = path.split('/');
                 for (let i = 1; i < parts.length; i++) {
                     const dir = parts.slice(0, i).join('/');
-                    if (dir && !this.vfs.exists(dir))
-                        this.vfs.mkdir(dir, { recursive: true });
+                    if (dir && !vfs.exists(dir))
+                        vfs.mkdir(dir, { recursive: true });
                 }
                 // binary-fs wave: __vfsWrites cells carry string | Uint8Array.
                 // The hot path here is the LIVE SUPERVISOR.writeFile RPC inside
@@ -2929,7 +2991,7 @@ export class FacetManager {
                 // {"0":...,"1":...} object. Detect that shape and reconstitute
                 // bytes; otherwise pass through (string for source code, etc.).
                 const restored = _reviveVfsWriteCell(content);
-                this.vfs.writeFile(path, restored);
+                vfs.writeFile(path, restored);
             }
             catch (e) {
                 console.error('[nimbus] VFS write-back failed:', path, e?.message);
@@ -3000,9 +3062,10 @@ export class FacetManager {
                 this.esbuild = null;
             }
         }
-        const vfsState = this.vfs
-            ? await buildPrefetchBundle(this.vfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
-            : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
+        const processVfs = this.vfs?.as(entry.cred);
+        const vfsState = processVfs
+            ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
+            : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const processEnv = opts.attachedTty
             ? {
                 ...(opts.env || {}),
@@ -3020,7 +3083,7 @@ export class FacetManager {
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
         ]);
-        const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv }, usesSqlite, shims);
+        const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
         const ctxExports = getNimbusCtxExports();
         const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
         const supervisorBinding = ctxExports?.SupervisorRPC

@@ -27,6 +27,8 @@
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 export interface GitNetworkOpts {
     op: GitNetworkOp;
+    /** Invoking process identity used to bind every supervisor filesystem RPC. */
+    pid: number;
     /** Absolute working tree directory (e.g. "/home/user/project") */
     dir: string;
     /** For clone: repository URL */

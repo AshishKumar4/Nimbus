@@ -116,10 +116,15 @@ export class ProcessTable {
     return this.credOf(pid);
   }
 
-  setUmask(pid: number, umask: number): void {
+  setUmask(pid: number, umask: number): number {
     const entry = this.processes.get(pid);
     if (!entry) throw new Error(`process pid ${pid} does not exist`);
+    if (!Number.isInteger(umask) || umask < 0 || umask > 0o777) {
+      throw new Error(`invalid umask ${umask}`);
+    }
+    const previous = entry.cred.umask;
     entry.cred = immutableCred({ ...entry.cred, umask });
+    return previous;
   }
 
   /** child-process isolation: mark an existing entry as long-running. Idempotent. */

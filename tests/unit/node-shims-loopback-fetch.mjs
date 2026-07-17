@@ -29,11 +29,15 @@ globalThis.fetch = (input, init) => {
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return null;',
 );
-factory({}, {}, {}, {}, supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+factory(
+  {}, {}, {}, {}, {}, supervisor,
+  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+);
 
 // ── loopback via 127.0.0.1 is routed to the supervisor ───────────────────────
 {

@@ -4,7 +4,7 @@
  * All functions here are pure: no class state and no `cloudflare:workers`
  * import. NimbusSession re-exports the public helpers that callers need.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
  * route. Matches the Nimbus shell MOTD aesthetic (near-black background,
@@ -95,7 +95,7 @@ export declare const WRANGLER_UNSUPPORTED_CONFIG_FIELDS: string[];
  * parse failure). The caller decides whether to warn or block — we only
  * report; nimbus-wrangler itself still runs.
  */
-export declare function detectUnsupportedWranglerConfig(vfs: SqliteVFS, root: string): string[];
+export declare function detectUnsupportedWranglerConfig(vfs: CredentialedVfs, root: string): string[];
 /**
  * W8: classify a child_process spawn target by execution kind. Used by
  * the FacetProcessManager to decide between inline pure-builtin vs
@@ -136,7 +136,7 @@ export declare function detectBundlerBin(script: string): string | null;
  *   - package.json declares zero deps (no install needed)
  *   - node_modules/ exists (even if stale — caught by runtime error overlay)
  */
-export declare function checkNodeModulesGuard(vfs: SqliteVFS, projectRoot: string): {
+export declare function checkNodeModulesGuard(vfs: CredentialedVfs, projectRoot: string): {
     missing: boolean;
     depCount: number;
 };

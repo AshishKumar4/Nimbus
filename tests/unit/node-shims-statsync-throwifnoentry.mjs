@@ -9,12 +9,13 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = factory(
-  { 'home/user/present.txt': 'hi' }, {}, {}, {}, null,
+  { 'home/user/present.txt': 'hi' }, {}, {}, {}, {}, null,
+  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );
 const fs = sandbox.fs;

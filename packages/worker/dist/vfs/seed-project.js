@@ -19,6 +19,7 @@
  */
 import { CHUNK_SIZE } from '../constants.js';
 import { enc } from '../_shared/bytes.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 /** Sentinel: if present, seed never runs again (until user deletes it). */
 export const SEED_SENTINEL_PATH = 'home/user/.nimbus-seeded';
 /** Project root. Absolute VFS path (no leading slash). */
@@ -909,10 +910,11 @@ export const SEED_FILES = [
  *   - Project dir already exists (user has their own ~/app we must not clobber)
  */
 export function shouldSeedProject(vfs) {
+    const view = vfs.as(CRED_KERNEL);
     try {
-        if (vfs.exists(SEED_SENTINEL_PATH))
+        if (view.exists(SEED_SENTINEL_PATH))
             return false;
-        if (vfs.exists(SEED_PROJECT_DIR))
+        if (view.exists(SEED_PROJECT_DIR))
             return false;
         return true;
     }
@@ -926,7 +928,7 @@ export function shouldSeedProject(vfs) {
  */
 export function hasSeededProject(vfs) {
     try {
-        return vfs.exists(SEED_SENTINEL_PATH);
+        return vfs.as(CRED_KERNEL).exists(SEED_SENTINEL_PATH);
     }
     catch {
         return false;
@@ -946,6 +948,7 @@ export function hasSeededProject(vfs) {
  */
 export function seedProject(vfs, opts) {
     const log = opts?.log;
+    const view = vfs.as(CRED_KERNEL);
     if (!shouldSeedProject(vfs)) {
         return { seeded: false, files: 0, reason: 'already-seeded-or-present' };
     }
@@ -980,6 +983,8 @@ export function seedProject(vfs, opts) {
             size,
             mtime,
             mode: 0o644,
+            uid: 1000,
+            gid: 1000,
             chunkCount,
         });
         if (size > 0) {
@@ -1007,13 +1012,15 @@ export function seedProject(vfs, opts) {
             size: 0,
             mtime,
             mode: 0o755,
+            uid: 1000,
+            gid: 1000,
             chunkCount: 0,
         });
     }
     let fileCount = 0;
     try {
         // Phase 1: all project files + directories in ONE transactionSync
-        const result = vfs.writeBatch({ inodes, chunks });
+        const result = view.writeBatch({ inodes, chunks });
         fileCount = SEED_FILES.length;
         log?.(`[seed] wrote ${SEED_FILES.length} files + ${dirSet.size} dirs (${result.inodes} inodes, ${result.chunks} chunks)`);
         // Phase 2: sentinel in a SECOND batch — only runs if Phase 1 succeeded.
@@ -1023,7 +1030,7 @@ export function seedProject(vfs, opts) {
         const sentinelData = enc.encode(`# Nimbus seed sentinel — delete this file AND ~/app to re-seed.\n` +
             `# Seeded at: ${new Date(mtime).toISOString()}\n` +
             `# Files: ${SEED_FILES.length}\n`);
-        vfs.writeBatch({
+        view.writeBatch({
             inodes: [{
                     path: SEED_SENTINEL_PATH,
                     parentPath: 'home/user',
@@ -1031,6 +1038,8 @@ export function seedProject(vfs, opts) {
                     size: sentinelData.length,
                     mtime,
                     mode: 0o644,
+                    uid: 1000,
+                    gid: 1000,
                     chunkCount: 1,
                 }],
             chunks: [{ path: SEED_SENTINEL_PATH, chunkId: 0, data: sentinelData }],

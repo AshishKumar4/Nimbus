@@ -21,6 +21,7 @@
  * HMR: VFS events → ViteDevServer detects changes → sends {type:'hmr'}
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '../_shared/crypto.js';
@@ -1144,6 +1145,7 @@ function unwrapLayerBlocks(css) {
 // ── ViteDevServer ───────────────────────────────────────────────────────
 export class ViteDevServer {
     vfs;
+    vfsEvents;
     esbuild;
     root;
     onHmrMessage;
@@ -1217,7 +1219,8 @@ export class ViteDevServer {
     logPid = null;
     logSink = null;
     constructor(opts) {
-        this.vfs = opts.vfs;
+        this.vfs = opts.vfs.as(CRED_KERNEL);
+        this.vfsEvents = opts.vfs.events;
         this.esbuild = opts.esbuild;
         this.injectBasename = opts.injectBasename !== false;
         this.logPid = (opts.pid != null) ? opts.pid : null;
@@ -1361,7 +1364,7 @@ export class ViteDevServer {
         this.running = true;
         this.moduleCache.clear();
         // Subscribe to VFS events for HMR
-        this.unsubVfs = this.vfs.events.on((events) => {
+        this.unsubVfs = this.vfsEvents.on((events) => {
             this.handleVfsEvents(events);
         });
     }

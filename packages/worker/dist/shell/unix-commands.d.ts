@@ -11,5 +11,5 @@
  * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-export declare function registerUnixCommands(registry: any, vfs: SqliteVFS): void;
+export declare function registerUnixCommands(registry: any, sqliteVfs: SqliteVFS): void;
 //# sourceMappingURL=unix-commands.d.ts.map

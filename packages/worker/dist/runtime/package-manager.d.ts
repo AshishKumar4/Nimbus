@@ -28,8 +28,9 @@
 import { type RuntimeCatalogEnv, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type RuntimePackageAbi } from './os-contracts.js';
+import type { CommandContext } from '../substrate/lifo/commands/types.js';
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
-export interface ShellCtx {
+export interface ShellCtx extends Pick<CommandContext, 'pid' | 'cred' | 'setUmask' | 'runAs'> {
     args: string[];
     env: Record<string, string>;
     cwd: string;

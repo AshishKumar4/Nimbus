@@ -26,7 +26,7 @@ function makeShellEntrypoint(shellName, shell, vfs) {
             ctx.stdout.write('Executes commands through the Nimbus shell engine with VFS-backed stdin and scripts.\n');
             return 0;
         }
-        const program = await parseShellProgram(shellName, ctx, vfs);
+        const program = await parseShellProgram(shellName, ctx, ctx.vfs);
         if ('error' in program) {
             if (program.error)
                 ctx.stderr.write(program.error + '\n');
@@ -61,6 +61,12 @@ function makeShellEntrypoint(shellName, shell, vfs) {
                 stdout: ctx.isFdTerminal?.(1) ?? false,
                 stderr: ctx.isFdTerminal?.(2) ?? false,
             },
+            commandContext: {
+                pid: ctx.pid,
+                cred: ctx.cred,
+                setUmask: ctx.setUmask,
+            },
+            runAs: (_parent, cred, argv) => ctx.runAs(cred, argv),
         });
         writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
         writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);

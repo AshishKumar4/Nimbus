@@ -36,7 +36,7 @@ const PAGES = {
     basename: { synopsis: 'basename NAME [SUFFIX]', description: 'Strip directory and optional SUFFIX from NAME.' },
     dirname: { synopsis: 'dirname NAME...', description: 'Strip last component from each NAME, outputting the parent directory.' },
     mktemp: { synopsis: 'mktemp [-d] [-p DIR] [TEMPLATE]', description: 'Create a temporary file or directory. -d creates a directory. TEMPLATE defaults to tmp.XXXXXXXXXX.' },
-    chown: { synopsis: 'chown [-R] OWNER[:GROUP] FILE...', description: 'Change file owner and group (no-op in single-user Lifo).' },
+    chown: { synopsis: 'chown [-R] OWNER[:GROUP] FILE...', description: 'Change file owner and group.' },
     // Text processing
     grep: { synopsis: 'grep [-invcrl] PATTERN [FILE...]', description: 'Search for lines matching PATTERN. -i ignore case, -n line numbers, -v invert, -c count, -r recursive, -l files only.' },
     head: { synopsis: 'head [-n NUM] [FILE...]', description: 'Output the first NUM lines of each FILE (default 10).' },

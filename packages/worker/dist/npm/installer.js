@@ -19,6 +19,7 @@
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
  */
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
@@ -45,6 +46,7 @@ import { enc } from '../_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
+    store;
     vfs;
     cache;
     esbuild;
@@ -60,7 +62,8 @@ export class NpmInstaller {
      */
     fetchFn;
     constructor(vfs, sql, opts) {
-        this.vfs = vfs;
+        this.store = vfs;
+        this.vfs = vfs.as(CRED_KERNEL);
         this.cache = new NpmCache(sql);
         this.esbuild = opts?.esbuild ?? null;
         this.ctx = opts?.ctx;
@@ -1851,7 +1854,7 @@ export class NpmInstaller {
     _estimateSupervisorHeapMiB() {
         try {
             const counters = readDiagCounters();
-            const vfsStats = this.vfs.getStats();
+            const vfsStats = this.store.getStats();
             const cacheStats = vfsStats.cache ?? {};
             const sqlStats = vfsStats.sql ?? {};
             const heap = estimateSupervisorHeap(counters, {

@@ -38,6 +38,7 @@
  */
 import type { FacetManager } from '../facets/manager.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 /**
@@ -70,6 +71,8 @@ export interface RuntimeRunOpts {
     forceLongRunning?: boolean;
     attachedTty?: boolean;
     bundleProfile?: FacetBundleProfile;
+    /** Invoking process credentials for credential-bound runtime snapshots. */
+    cred?: VfsCred;
 }
 export interface RuntimeSpec {
     /** Shell-command name: 'node' / 'bun' / 'wasm-runner' / 'python'. */

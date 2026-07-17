@@ -151,7 +151,12 @@ export interface CredentialedVfs {
   lstat(path: string): VfsStat;
   utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
   chmod(path: string, mode: number): void;
-  chown(path: string, uid: number | null, gid: number | null): void;
+  chown(
+    path: string,
+    uid: number | null,
+    gid: number | null,
+    options?: { followSymlinks?: boolean },
+  ): void;
   readdir(path: string): { name: string; type: VfsInodeKind }[];
   unlink(path: string): void;
   rmdir(path: string): void;
@@ -1160,7 +1165,13 @@ export class SqliteVFS {
       lstat: (path) => this.stat(path, bound, false),
       utimes: (path, atimeMs, mtimeMs) => this.utimes(path, atimeMs, mtimeMs, bound),
       chmod: (path, mode) => this.chmod(path, mode, bound),
-      chown: (path, uid, gid) => this.chown(path, uid, gid, bound),
+      chown: (path, uid, gid, options) => this.chown(
+        path,
+        uid,
+        gid,
+        bound,
+        options?.followSymlinks !== false,
+      ),
       readdir: (path) => this.readdir(path, bound),
       unlink: (path) => this.unlink(path, bound),
       rmdir: (path) => this.rmdir(path, bound),
@@ -1921,8 +1932,14 @@ export class SqliteVFS {
     this.events.emit('change', inode.path);
   }
 
-  private chown(path: string, uid: number | null, gid: number | null, cred: VfsCred): void {
-    const resolved = this.checkAccess(path, 0, cred);
+  private chown(
+    path: string,
+    uid: number | null,
+    gid: number | null,
+    cred: VfsCred,
+    followLeaf: boolean,
+  ): void {
+    const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0)) throw vfsError('EINVAL', `invalid uid ${uid}`);

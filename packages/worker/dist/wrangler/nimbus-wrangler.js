@@ -128,6 +128,7 @@ function renderWorkerRunningHtml(opts) {
 // ── NimbusWrangler ────────────────────────────────────────────────────────
 export class NimbusWrangler {
     vfs;
+    vfsEvents;
     esbuild;
     loaderEnv;
     supervisorCtx; // ctx.facets for DO facets, ctx.exports for bindings
@@ -146,6 +147,7 @@ export class NimbusWrangler {
     doFacetNames = new Set();
     constructor(opts) {
         this.vfs = opts.vfs;
+        this.vfsEvents = opts.vfsEvents;
         this.esbuild = opts.esbuild;
         this.loaderEnv = opts.env;
         this.supervisorCtx = opts.ctx || null;
@@ -167,7 +169,7 @@ export class NimbusWrangler {
             return false;
         // 3. Watch for file changes
         this.running = true;
-        this.unsubVfs = this.vfs.events.on((events) => {
+        this.unsubVfs = this.vfsEvents.on((events) => {
             this.handleVfsEvents(events);
         });
         return true;
@@ -898,7 +900,7 @@ export class NimbusWrangler {
      * full rebuild pipeline. */
     _installWatchersForTest() {
         this.running = true;
-        this.unsubVfs = this.vfs.events.on(async (events) => {
+        this.unsubVfs = this.vfsEvents.on(async (events) => {
             let needsRebuild = false;
             for (const event of events) {
                 if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink')

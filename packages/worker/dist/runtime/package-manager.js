@@ -26,7 +26,7 @@
  * Errors throw and bubble up to the user as a single diagnostic line.
  */
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest } from './runtime-catalog.js';
-import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI } from './os-contracts.js';
+import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI } from './os-contracts.js';
 /** Map of runner-key → factory. Populated by init.ts before install. */
 const runnerFactories = {};
 export function registerRunnerFactory(key, factory) {
@@ -182,26 +182,29 @@ export function installRoot(homeDir, name, version) {
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
 export function listInstalledManifests(vfs, homeDir) {
+    return listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir);
+}
+function listInstalledManifestsView(fs, homeDir) {
     const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
     const runtimesRoot = `${home}/.nimbus/runtimes`;
     const out = [];
-    if (!vfs.exists(runtimesRoot))
+    if (!fs.exists(runtimesRoot))
         return out;
     // Each entry under runtimesRoot is a <name>; each entry under that
     // is a <version>; each <version> dir has a manifest.json.
-    for (const nameEntry of vfs.readdir(runtimesRoot)) {
+    for (const nameEntry of fs.readdir(runtimesRoot)) {
         if (nameEntry.type !== 'directory')
             continue;
         const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-        for (const verEntry of vfs.readdir(nameDir)) {
+        for (const verEntry of fs.readdir(nameDir)) {
             if (verEntry.type !== 'directory')
                 continue;
             const verDir = `${nameDir}/${verEntry.name}`;
             const manifestPath = `${verDir}/manifest.json`;
-            if (!vfs.exists(manifestPath))
+            if (!fs.exists(manifestPath))
                 continue;
             try {
-                const manifest = parseRuntimeManifest(JSON.parse(vfs.readFileString(manifestPath)));
+                const manifest = parseRuntimeManifest(JSON.parse(fs.readFileString(manifestPath)));
                 out.push({ root: verDir, manifest });
             }
             catch {
@@ -218,8 +221,11 @@ export function listInstalledManifests(vfs, homeDir) {
  * are registered (init.ts:registerRunnerFactory blocks).
  */
 export function rehydrateInstalledRuntimes(vfs, registry, homeDir) {
+    return rehydrateInstalledRuntimesView(vfs.as(CRED_KERNEL), registry, homeDir);
+}
+function rehydrateInstalledRuntimesView(vfs, registry, homeDir) {
     const bins = [];
-    for (const { root, manifest } of listInstalledManifests(vfs, homeDir)) {
+    for (const { root, manifest } of listInstalledManifestsView(vfs, homeDir)) {
         for (const ep of runtimeEntrypoints(manifest)) {
             const factory = runnerFactories[ep.runner];
             if (!factory)
@@ -262,7 +268,12 @@ export async function listAvailableRuntimes(env) {
 export async function installRuntimeProgrammatic(deps, spec, opts = {}) {
     const stdout = [];
     const stderr = [];
+    let programmaticCred = CRED_KERNEL;
     const ctx = {
+        pid: 0,
+        get cred() { return programmaticCred; },
+        setUmask: (umask) => { programmaticCred = { ...programmaticCred, umask }; },
+        runAs: async () => 126,
         args: [],
         env: {},
         cwd: deps.getHome(),
@@ -270,7 +281,7 @@ export async function installRuntimeProgrammatic(deps, spec, opts = {}) {
         stderr: { write: (s) => stderr.push(String(s)) },
     };
     const args = opts.force ? ['--reinstall', spec] : [spec];
-    const exitCode = await runInstall(args, ctx, deps);
+    const exitCode = await runInstall(args, ctx, { ...deps, vfs: deps.vfs.as(CRED_KERNEL) });
     return {
         spec,
         exitCode,
@@ -290,7 +301,8 @@ export async function ensureRuntimesProgrammatic(deps, specs, opts = {}) {
  * `nimbus uninstall …`. Registered under the name `nimbus`.
  */
 export function makeNimbusVerbHandler(deps) {
-    const { env, vfs, registry, getHome, warmRuntime } = deps;
+    const { env, registry, getHome, warmRuntime } = deps;
+    const vfs = deps.vfs.as(CRED_KERNEL);
     return async function nimbus(ctx) {
         const argv = ctx.args || [];
         const verb = argv[0];
@@ -356,7 +368,7 @@ async function runInstall(args, ctx, deps) {
         // manifest's presence implies the install completed; we trust it.
         ctx.stdout.write(`[${name}] already installed at ${root} (use --reinstall to refetch)\n`);
         // Still re-register bins in case the registry lost them — idempotent.
-        rehydrateInstalledRuntimes(deps.vfs, deps.registry, home);
+        rehydrateInstalledRuntimesView(deps.vfs, deps.registry, home);
         let manifest = null;
         try {
             manifest = parseRuntimeManifest(JSON.parse(deps.vfs.readFileString(`${root}/manifest.json`)));
@@ -482,7 +494,7 @@ async function warmRuntimeIfConfigured(ctx, deps, target) {
 // ── --list ───────────────────────────────────────────────────────────
 async function runList(ctx, deps) {
     const home = deps.getHome();
-    const installed = listInstalledManifests(deps.vfs, home);
+    const installed = listInstalledManifestsView(deps.vfs, home);
     if (installed.length === 0) {
         ctx.stdout.write('(no runtimes installed)\n');
         return 0;
@@ -533,7 +545,7 @@ async function runUninstall(args, ctx, deps) {
     const name = atIdx >= 0 ? spec.slice(0, atIdx) : spec;
     const versionOverride = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
     const home = deps.getHome();
-    const installed = listInstalledManifests(deps.vfs, home);
+    const installed = listInstalledManifestsView(deps.vfs, home);
     const matches = installed.filter((x) => x.manifest.name === name && (!versionOverride || x.manifest.version === versionOverride));
     if (matches.length === 0) {
         ctx.stderr.write(`nimbus uninstall: '${name}' is not installed\n`);

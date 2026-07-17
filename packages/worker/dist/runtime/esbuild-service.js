@@ -16,6 +16,7 @@
  * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
  * facet once wasm module passing to dynamic workers is stable.
  */
+import { CRED_KERNEL } from './os-contracts.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 /**
@@ -839,7 +840,7 @@ export class EsbuildService {
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     _esbuild = null;
     constructor(vfs) {
-        this.vfs = vfs;
+        this.vfs = vfs.as(CRED_KERNEL);
     }
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace

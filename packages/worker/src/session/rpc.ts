@@ -221,6 +221,25 @@ export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?:
     await runtimeFs(self, pid).chmod(path, mode);
 }
 
+export async function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void> {
+  await runtimeFs(self, pid).access(path, mode);
+}
+
+export async function _rpcChown(
+  self: RpcHost,
+  path: string,
+  uid: number,
+  gid: number,
+  pid?: number,
+  options?: { followSymlinks?: boolean },
+): Promise<void> {
+  await runtimeFs(self, pid).chown(path, uid, gid, options);
+}
+
+export async function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number> {
+  return self.processes.setUmask(processPid(pid), mask);
+}
+
 export async function _rpcReaddir(self: RpcHost, path: string, pid?: number): Promise<{ name: string; type: string }[]> {
     return runtimeFs(self, pid).readdir(path);
 }

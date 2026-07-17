@@ -1,6 +1,8 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandRegistry } from '../commands/registry.js';
+import type { CommandRunAsHost } from '../commands/types.js';
+import type { VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { type ShellOptions, type TerminalFdState } from './interpreter.js';
 import { JobTable } from './jobs.js';
@@ -26,6 +28,13 @@ export interface ExecuteOptions {
      * caller already allocated instead of letting it spawn a second one.
      */
     commandContext?: Record<string, unknown>;
+    runAs?: CommandRunAsHost;
+}
+export interface ShellCommandIdentity {
+    pid: number;
+    cred: VfsCred;
+    setUmask(mask: number): void;
+    runAs?: CommandRunAsHost;
 }
 export declare class Shell {
     private terminal;
@@ -54,9 +63,10 @@ export declare class Shell {
     private shellOptions;
     private traps;
     private readonlyNames;
+    private commandIdentity;
     private tabCount;
     pasteQueue: string[];
-    constructor(terminal: ITerminal, vfs: VFS, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry);
+    constructor(terminal: ITerminal, vfs: VFS, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
     private registerBuiltins;
     getJobTable(): JobTable;
     getProcessRegistry(): ProcessRegistry;
@@ -75,6 +85,7 @@ export declare class Shell {
         stderr: string;
         exitCode: number;
     }>;
+    private resolveCommandIdentity;
     start(): void;
     private sourceRcFiles;
     printPrompt(): void;

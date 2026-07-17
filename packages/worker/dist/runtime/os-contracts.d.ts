@@ -1,4 +1,12 @@
 import type { VfsEvent } from '../vfs/events.js';
+export interface VfsCred {
+    readonly uid: number;
+    readonly gid: number;
+    readonly groups: readonly number[];
+    readonly umask: number;
+}
+export declare const CRED_KERNEL: VfsCred;
+export declare function requireVfsCred(value: unknown, source: string): VfsCred;
 export type RuntimeFileType = 'file' | 'directory' | 'symlink';
 export interface RuntimeVfsStat {
     type: RuntimeFileType;
@@ -7,6 +15,8 @@ export interface RuntimeVfsStat {
     atime: number;
     mtime: number;
     mode: number;
+    uid: number;
+    gid: number;
     /** Per-path revision: changes iff this path (or its subtree) mutated. */
     revision: number;
 }
@@ -66,6 +76,12 @@ export interface RuntimeFsBridge {
     }): Promise<void>;
     /** Set permission bits (POSIX chmod — follows symlinks). */
     chmod(path: string, mode: number): Promise<void>;
+    /** Check access using the bridge's process credential. */
+    access(path: string, mode: number): Promise<void>;
+    /** Change stored ownership, optionally operating on a symlink itself. */
+    chown(path: string, uid: number, gid: number, options?: {
+        followSymlinks?: boolean;
+    }): Promise<void>;
     open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;

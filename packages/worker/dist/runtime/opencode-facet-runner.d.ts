@@ -67,6 +67,12 @@ export declare function opencodeBuiltinBridgeModules(attachedTty?: boolean): Rec
 export interface OpencodeRunnerOptions {
     argv: string[];
     env: Record<string, string>;
+    cred: {
+        uid: number;
+        gid: number;
+        groups: readonly number[];
+        umask: number;
+    };
     cwd: string;
     stdin: string;
     /** The node-compat shim source (fetchNodeShimsCode — the staged asset). */
@@ -79,6 +85,8 @@ export interface OpencodeRunnerOptions {
     vfsBundle: string;
     /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
     vfsManifest: string;
+    /** Serialized VFS inode metadata (JSON) for stat and permission checks. */
+    vfsMetadata: string;
     /**
      * Runtime disposition of this opencode invocation:
      *   - 'oneshot'  buffer stdout/stderr into the JSON response and return

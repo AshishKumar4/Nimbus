@@ -40,6 +40,7 @@
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
+import { type VfsCred } from '../runtime/os-contracts.js';
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -59,7 +60,68 @@ export interface BatchInodeEntry {
     atime?: number;
     mtime: number;
     mode: number;
+    uid?: number;
+    gid?: number;
     chunkCount: number;
+}
+export interface VfsStat {
+    type: VfsInodeKind;
+    size: number;
+    atime: number;
+    ctime: number;
+    mtime: number;
+    mode: number;
+    uid: number;
+    gid: number;
+}
+export interface CredentialedVfs {
+    readonly cred: VfsCred;
+    exists(path: string): boolean;
+    isDirectory(path: string): boolean;
+    isFile(path: string): boolean;
+    isSymlink(path: string): boolean;
+    access(path: string, mode: number): void;
+    mkdir(path: string, options?: {
+        recursive?: boolean;
+        mode?: number;
+    }): void;
+    writeFile(path: string, content: string | Uint8Array, options?: {
+        mode?: number;
+    }): void;
+    symlink(target: string, path: string): void;
+    readlink(path: string): string;
+    resolveSymlink(path: string): string | null;
+    readFile(path: string): Uint8Array;
+    readRange(path: string, offset: number, length: number): Uint8Array;
+    writeRange(path: string, offset: number, bytes: Uint8Array): void;
+    truncate(path: string, size: number): void;
+    readFileString(path: string): string;
+    stat(path: string): VfsStat;
+    lstat(path: string): VfsStat;
+    utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
+    chmod(path: string, mode: number): void;
+    chown(path: string, uid: number | null, gid: number | null, options?: {
+        followSymlinks?: boolean;
+    }): void;
+    readdir(path: string): {
+        name: string;
+        type: VfsInodeKind;
+    }[];
+    unlink(path: string): void;
+    rmdir(path: string): void;
+    rename(oldPath: string, newPath: string): void;
+    copyFile(src: string, dest: string): void;
+    writeBatch(payload: BatchWritePayload): {
+        inodes: number;
+        chunks: number;
+    };
+    writeStream(stream: ReadableStream<Uint8Array>, options?: {
+        decodeDrainStartedAt?: number;
+        signal?: AbortSignal;
+        mutationOwner?: string;
+    }): Promise<WriteBatchStreamResult>;
+    mkdirBatch(paths: string[]): number;
+    revision(path?: string): number;
 }
 /** Entry for bulk chunk creation via writeBatch(). */
 export interface BatchChunkEntry {
@@ -201,10 +263,16 @@ export declare class SqliteVFS {
     private blobToUint8Array;
     private copyBytes;
     private readChunkFromSql;
-    exists(path: string): boolean;
-    isDirectory(path: string): boolean;
-    isFile(path: string): boolean;
-    isSymlink(path: string): boolean;
+    as(cred: VfsCred): CredentialedVfs;
+    private accessInode;
+    private accessMode;
+    private resolvePath;
+    private checkAccess;
+    private checkParentAccess;
+    private exists;
+    private isDirectory;
+    private isFile;
+    private isSymlink;
     /**
      * Without a path: the global mutation clock. With a path: the clock
      * value at the last mutation inside that path's subtree (0 if nothing
@@ -221,17 +289,15 @@ export declare class SqliteVFS {
     private withMutationOwner;
     assertMutationAllowed(path: string): void;
     private assertMutationsAllowed;
-    mkdir(path: string, options?: {
-        recursive?: boolean;
-    }): void;
+    private mkdir;
     private _mkdirSingle;
-    writeFile(path: string, content: string | Uint8Array): void;
-    symlink(target: string, path: string): void;
-    readlink(path: string): string;
-    resolveSymlink(path: string): string | null;
+    private writeFile;
+    private symlink;
+    private readlink;
+    private resolveSymlink;
     /** Read one chunk via cache → SQL, caching on miss. */
     private readChunk;
-    readFile(path: string): Uint8Array;
+    private readFile;
     private readInodeBytes;
     private requireChunk;
     /**
@@ -239,7 +305,7 @@ export declare class SqliteVFS {
      * only the chunks overlapping the range are touched. Reads past EOF
      * are clamped; missing spans retain the existing zero-fill range semantics.
      */
-    readRange(path: string, offset: number, length: number): Uint8Array;
+    private readRange;
     /**
      * Overwrite `bytes` at `offset`, rewriting only the chunks the range
      * (plus any EOF extension) touches — file-handle and page writers must
@@ -249,26 +315,19 @@ export declare class SqliteVFS {
      * Creates the file when missing; callers own parent-dir creation
      * (same contract as writeFile).
      */
-    writeRange(path: string, offset: number, bytes: Uint8Array): void;
+    private writeRange;
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
      * Shrinking drops trailing chunk rows and trims the new last chunk;
      * growing zero-fills like writeRange. Every mutation commits before return.
      */
-    truncate(path: string, size: number): void;
+    private truncate;
     private updatedFileInode;
     private commitCurrentContentMutation;
     private generatedMutationChunk;
-    readFileString(path: string): string;
-    stat(path: string): {
-        type: string;
-        size: number;
-        atime: number;
-        ctime: number;
-        mtime: number;
-        mode: number;
-    };
-    utimes(path: string, atimeMs: number, mtimeMs: number): void;
+    private readFileString;
+    private stat;
+    private utimes;
     /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
      *
@@ -280,26 +339,23 @@ export declare class SqliteVFS {
      * files with such untouched modes executable. No migration — legacy
      * rows upgrade the first time they are chmod'ed.
      */
-    chmod(path: string, mode: number): void;
-    readdir(path: string): {
-        name: string;
-        type: string;
-    }[];
-    unlink(path: string): void;
-    rmdir(path: string): void;
-    rename(oldPath: string, newPath: string): void;
-    copyFile(src: string, dest: string): void;
+    private chmod;
+    private chown;
+    private readdir;
+    private unlink;
+    private rmdir;
+    private rename;
+    private copyFile;
+    private normalizeBatchInode;
+    private authorizeBatch;
     /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
      * The complete mutation is preflighted against the Stage 2 transaction
-     * limits, then executed in one transaction with 11-inode / 33-chunk SQL
+     * limits, then executed in one transaction with 9-inode / 33-chunk SQL
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
-    writeBatch(payload: BatchWritePayload): {
-        inodes: number;
-        chunks: number;
-    };
+    private writeBatch;
     private replaceFileWithStagedContent;
     /**
      * Copy-on-write replacement for an over-limit range/truncate mutation.
@@ -316,11 +372,7 @@ export declare class SqliteVFS {
      * pool, staged in bounded synchronous transactions, then released before
      * the decoder pulls another record.
      */
-    writeStream(stream: ReadableStream<Uint8Array>, options?: {
-        decodeDrainStartedAt?: number;
-        signal?: AbortSignal;
-        mutationOwner?: string;
-    }): Promise<WriteBatchStreamResult>;
+    private writeStream;
     private _writeBatchWithRetry;
     /**
      * Estimate the byte cost of a writeBatch payload. Used by the W5
@@ -358,7 +410,7 @@ export declare class SqliteVFS {
      * Pre-creates the full directory tree before file writes to avoid
      * per-file mkdir overhead.
      */
-    mkdirBatch(paths: string[]): number;
+    private mkdirBatch;
     /**
      * Debug-only: recompute counters from scratch and return any drift
      * against the running counters. Returns null if consistent. Used by
@@ -526,25 +578,21 @@ export declare class SqliteVFS {
     };
 }
 export declare class SqliteVFSProvider {
+    private raw;
     private vfs;
     private prefix;
-    constructor(vfs: SqliteVFS, prefix: string);
+    constructor(vfs: SqliteVFS, prefix: string, cred?: VfsCred);
+    as(cred: VfsCred): SqliteVFSProvider;
     private resolve;
     readFile(sub: string): Uint8Array;
     readFileString(sub: string): string;
     writeFile(sub: string, content: string | Uint8Array): void;
     exists(sub: string): boolean;
-    stat(sub: string): {
-        type: string;
-        size: number;
-        atime: number;
-        ctime: number;
-        mtime: number;
-        mode: number;
-    };
+    access(sub: string, mode: number): void;
+    stat(sub: string): VfsStat;
     readdir(sub: string): {
         name: string;
-        type: string;
+        type: VfsInodeKind;
     }[];
     unlink(sub: string): void;
     mkdir(sub: string, opts?: {
@@ -554,6 +602,7 @@ export declare class SqliteVFSProvider {
     rename(o: string, n: string): void;
     copyFile(s: string, d: string): void;
     chmod(sub: string, mode: number): void;
+    chown(sub: string, uid: number | null, gid: number | null): void;
 }
 export {};
 //# sourceMappingURL=sqlite-vfs.d.ts.map

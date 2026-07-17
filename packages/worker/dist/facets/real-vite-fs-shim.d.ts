@@ -49,7 +49,7 @@
  *   source file) instead of a .generated.ts means editor + typecheck
  *   can read it even though TypeScript doesn't compile it.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
  * Build a LAZY snapshot of the project for the facet's sync-fs Map.
  *
@@ -72,7 +72,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
  * correctness — Vite reads deps lazily during the transform pipeline,
  * so async-first-then-cache is the natural fit.
  */
-export declare function buildFsSnapshot(vfs: SqliteVFS, projectRoot: string): {
+export declare function buildFsSnapshot(vfs: CredentialedVfs, projectRoot: string): {
     files: Record<string, string>;
     dirs: string[];
     existingPaths: string[];

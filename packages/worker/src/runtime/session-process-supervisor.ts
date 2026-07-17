@@ -102,8 +102,8 @@ export class SessionProcessSupervisor {
     return this.table.credOf(pid);
   }
 
-  setUmask(pid: number, umask: number): void {
-    this.table.setUmask(pid, umask);
+  setUmask(pid: number, umask: number): number {
+    return this.table.setUmask(pid, umask);
   }
 
   /** Mark a process as exited. First terminal state wins. */

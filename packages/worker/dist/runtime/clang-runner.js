@@ -25,13 +25,14 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps) {
-    const { facetMgr, vfs } = deps;
+    const { facetMgr } = deps;
+    const vfs = deps.vfs.as(CRED_KERNEL);
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);

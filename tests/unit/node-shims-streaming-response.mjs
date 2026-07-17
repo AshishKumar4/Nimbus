@@ -24,12 +24,13 @@ function makeFacet() {
   const supervisor = { registerPort: () => {}, unregisterPort: () => {} };
   const code = generateShimsCode();
   const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+    'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + code + '\n;return { http: builtins.http, portRegistry: globalThis.__portRegistry, serveHttp: globalThis.__nimbusServeHttp };',
   );
   const sandbox = factory(
-    {}, {}, {}, {}, supervisor,
+    {}, {}, {}, {}, {}, supervisor,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
   return sandbox;

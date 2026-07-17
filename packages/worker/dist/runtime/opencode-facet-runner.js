@@ -522,6 +522,7 @@ export function generateOpencodeRunnerCode(opts) {
     const safe = {
         argv: JSON.stringify(opts.argv),
         env: JSON.stringify(opts.env),
+        cred: JSON.stringify(opts.cred),
         cwd: JSON.stringify(opts.cwd),
         stdin: JSON.stringify(opts.stdin),
     };
@@ -579,6 +580,7 @@ ${attachedTty ? yogaImportSrc() : ''}
 // lazily, so late assignment is correct.
 const argv = ["node", "/opencode", ...${safe.argv}];
 const env = ${safe.env};
+const cred = ${safe.cred};
 let cwd = ${safe.cwd};
 const filename = "/opencode";
 const dirname = "/opencode";
@@ -589,6 +591,7 @@ let exitCode = 0;
 let __supervisor = null;
 const __vfsBundle = ${opts.vfsBundle};
 const __vfsManifest = ${opts.vfsManifest};
+const __vfsMetadata = ${opts.vfsMetadata};
 const __vfsWrites = {};
 const __vfsDirs = {};
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push

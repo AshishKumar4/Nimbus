@@ -8,6 +8,7 @@
  * Uses a VFS→isomorphic-git FS adapter that maps all operations
  * to the SqliteVFS.
  */
+import { requireVfsCred } from '../runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { dec } from '../_shared/bytes.js';
@@ -199,8 +200,9 @@ function getAuthor(ctx) {
 }
 // ── Git subcommand implementations ──────────────────────────────────────
 export function registerGitCommands(registry, vfs, doCtx, doEnv) {
-    const fs = createGitFs(vfs);
     registry.register('git', async (ctx) => {
+        const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
+        const fs = createGitFs(credentialedVfs);
         const args = ctx.args;
         const sub = args[0];
         const subArgs = args.slice(1);
@@ -238,8 +240,8 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                         initDir = initPath.startsWith('/') ? initPath : dir + '/' + initPath;
                         // Ensure the target directory exists in VFS
                         const stripped = initDir.replace(/^\/+/, '');
-                        if (!vfs.exists(stripped))
-                            vfs.mkdir(stripped, { recursive: true });
+                        if (!credentialedVfs.exists(stripped))
+                            credentialedVfs.mkdir(stripped, { recursive: true });
                     }
                     await git.init({ fs, dir: initDir });
                     ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
@@ -284,6 +286,7 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                         try {
                             const result = await execGitNetwork(doCtx, doEnv, {
                                 op: 'clone',
+                                pid: ctx.pid,
                                 dir: dest,
                                 url,
                                 depth,
@@ -500,6 +503,7 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     ctx.stdout.write(`Fetching from ${remote}...\n`);
                     const result = await execGitNetwork(doCtx, doEnv, {
                         op: 'fetch',
+                        pid: ctx.pid,
                         dir,
                         remote,
                         auth: {
@@ -526,6 +530,7 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
                     const result = await execGitNetwork(doCtx, doEnv, {
                         op: 'pull',
+                        pid: ctx.pid,
                         dir,
                         remote,
                         ref: branch,
@@ -554,6 +559,7 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
                     const result = await execGitNetwork(doCtx, doEnv, {
                         op: 'push',
+                        pid: ctx.pid,
                         dir,
                         remote,
                         ref: branch,

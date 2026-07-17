@@ -11,8 +11,11 @@
  * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
  */
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { enc } from '../_shared/bytes.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
+import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
+import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 function isRuntimeInstallHintHandler(handler) {
     return !!handler && !!handler.__nimbusRuntimeInstallHint;
 }
@@ -34,7 +37,7 @@ function resolvePath(cwd, p) {
 function readSymlinkTarget(vfs, path) {
     if (vfs.isSymlink(path))
         return vfs.readlink(path);
-    return getSymlinkRegistry(vfs).readlink(path);
+    return vfs.symlinks.readlink(path);
 }
 function resolveSymlinkPath(vfs, startPath) {
     let current = resolvePath('/', startPath);
@@ -2500,7 +2503,7 @@ function mkLs(vfs) {
         const flagOne = args.some(a => /^-[la1]*1[la1]*$/.test(a));
         const positionals = args.filter(a => !a.startsWith('-'));
         const targets = positionals.length > 0 ? positionals : [ctx.cwd];
-        const reg = getSymlinkRegistry(vfs);
+        const reg = vfs.symlinks;
         const kvfs = ctx.vfs;
         function modeStr(mode, isDir, isLink) {
             if (isLink)
@@ -2776,7 +2779,7 @@ function mkRm(vfs) {
         // vfs.exists which is false for registry-only symlink entries
         // (no real file), producing "No such file or directory" while
         // `readlink` still reported the registry entry.
-        const reg = getSymlinkRegistry(vfs);
+        const reg = vfs.symlinks;
         let exit = 0;
         for (const t of targets) {
             const fp = resolvePath(ctx.cwd, t);
@@ -2844,22 +2847,23 @@ function rmDirRec(vfs, path) {
 }
 function mkTouch(vfs) {
     return (ctx) => {
+        const targetVfs = ctx.vfs ?? vfs;
         for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
             const fp = resolvePath(ctx.cwd, f);
             // Ensure parent dirs
             const parts = fp.split('/');
             for (let i = 1; i < parts.length; i++) {
                 const dir = parts.slice(0, i).join('/');
-                if (dir && !vfs.exists(dir))
-                    vfs.mkdir(dir, { recursive: true });
+                if (dir && !targetVfs.exists(dir))
+                    targetVfs.mkdir(dir, { recursive: true });
             }
-            if (vfs.exists(fp) && !vfs.isDirectory(fp)) {
+            if (targetVfs.exists(fp) && !targetVfs.isDirectory(fp)) {
                 // Update mtime by re-writing the same content
-                const content = vfs.readFile(fp);
-                vfs.writeFile(fp, content);
+                const content = targetVfs.readFile(fp);
+                targetVfs.writeFile(fp, content);
             }
-            else if (!vfs.exists(fp)) {
-                vfs.writeFile(fp, '');
+            else if (!targetVfs.exists(fp)) {
+                targetVfs.writeFile(fp, '');
             }
         }
         return 0;
@@ -2957,10 +2961,91 @@ function mkSleep() {
         return 0;
     };
 }
-function mkId() {
+function mkId(sqliteVfs) {
     return (ctx) => {
-        ctx.stdout.write('uid=1000(user) gid=1000(user) groups=1000(user)\n');
+        const vfs = sqliteVfs.as(ctx.cred);
+        const user = findUnixUserName(vfs, ctx.cred.uid) ?? String(ctx.cred.uid);
+        const group = findUnixGroupName(vfs, ctx.cred.gid) ?? String(ctx.cred.gid);
+        const groupIds = [...new Set([ctx.cred.gid, ...ctx.cred.groups])];
+        const groups = groupIds
+            .map((gid) => `${gid}(${findUnixGroupName(vfs, gid) ?? gid})`)
+            .join(',');
+        ctx.stdout.write(`uid=${ctx.cred.uid}(${user}) gid=${ctx.cred.gid}(${group}) groups=${groups}\n`);
         return 0;
+    };
+}
+function mkChown(sqliteVfs) {
+    return (ctx) => {
+        const recursive = ctx.args.includes('-R') || ctx.args.includes('--recursive');
+        const positional = ctx.args.filter((arg) => arg !== '-R' && arg !== '--recursive');
+        if (positional.length < 2) {
+            ctx.stderr.write('chown: missing operand\n');
+            return 1;
+        }
+        const vfs = sqliteVfs.as(ctx.cred);
+        let ownership;
+        try {
+            ownership = parseChownOwnership(vfs, positional[0]);
+        }
+        catch (error) {
+            ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
+            return 1;
+        }
+        let exitCode = 0;
+        const apply = (path) => {
+            if (recursive && vfs.stat(path).type === 'directory') {
+                for (const child of vfs.readdir(path))
+                    apply(`${path}/${child.name}`);
+            }
+            vfs.chown(path, ownership.uid, ownership.gid);
+        };
+        for (const file of positional.slice(1)) {
+            try {
+                apply(resolvePath(ctx.cwd, file));
+            }
+            catch (error) {
+                ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+                exitCode = 1;
+            }
+        }
+        return exitCode;
+    };
+}
+function mkTest(sqliteVfs) {
+    return (ctx) => {
+        const args = ctx.args.filter((arg) => arg !== ']');
+        if (args.length === 0)
+            return 1;
+        const vfs = sqliteVfs.as(ctx.cred);
+        const path = resolvePath(ctx.cwd, args[1] ?? '');
+        try {
+            if (args[0] === '-r')
+                vfs.access(path, 0o4);
+            else if (args[0] === '-w')
+                vfs.access(path, 0o2);
+            else if (args[0] === '-x')
+                vfs.access(path, 0o1);
+            else if (args[0] === '-f')
+                return vfs.stat(path).type === 'file' ? 0 : 1;
+            else if (args[0] === '-d')
+                return vfs.stat(path).type === 'directory' ? 0 : 1;
+            else if (args[0] === '-e')
+                vfs.stat(path);
+            else if (args[0] === '-z')
+                return (!args[1] || args[1] === '') ? 0 : 1;
+            else if (args[0] === '-n')
+                return args[1] ? 0 : 1;
+            else if (args[1] === '=')
+                return args[0] === args[2] ? 0 : 1;
+            else if (args[1] === '!=')
+                return args[0] !== args[2] ? 0 : 1;
+            else
+                return args[0] ? 0 : 1;
+            return 0;
+        }
+        catch {
+            return 1;
+        }
     };
 }
 function mkHostname() {
@@ -3526,7 +3611,11 @@ function wrap(fn) {
         }
     };
 }
-export function registerUnixCommands(registry, vfs) {
+export function registerUnixCommands(registry, sqliteVfs) {
+    const vfs = {
+        ...sqliteVfs.as(CRED_KERNEL),
+        symlinks: getSymlinkRegistry(sqliteVfs),
+    };
     registry.register('which', wrap(mkWhich(vfs, registry)));
     registry.register('whereis', wrap(mkWhereis(vfs, registry)));
     registry.register('command', wrap(mkCommand(vfs, registry)));
@@ -3567,7 +3656,7 @@ export function registerUnixCommands(registry, vfs) {
     registry.register('base64', wrap(mkBase64(vfs)));
     registry.register('seq', wrap(mkSeq()));
     registry.register('sleep', wrap(mkSleep()));
-    registry.register('id', wrap(mkId()));
+    registry.register('id', wrap(mkId(sqliteVfs)));
     registry.register('hostname', wrap(mkHostname()));
     registry.register('basename', wrap(mkBasename()));
     registry.register('dirname', wrap(mkDirname()));
@@ -3579,9 +3668,7 @@ export function registerUnixCommands(registry, vfs) {
     registry.register('sha256sum', wrap(mkSha256sum(vfs)));
     registry.register('file', wrap(mkFile(vfs)));
     registry.register('xxd', wrap(mkXxd(vfs)));
-    // chmod is real (substrate/lifo/commands/fs/chmod.ts → vfs.chmod);
-    // chown stays a no-op (single-user VFS, but many npm scripts call it).
-    registry.register('chown', wrap(() => 0));
+    registry.register('chown', wrap(mkChown(sqliteVfs)));
     // ln — symlink stub (no-ops on VFS but doesn't error)
     /**
      * SHELL-FOLLOWUPS-4 (2026-05-11): real `ln -s` via SymlinkRegistry.
@@ -3619,7 +3706,7 @@ export function registerUnixCommands(registry, vfs) {
         const linkFp = resolvePath(ctx.cwd, linkPath);
         if (symbolic) {
             // Symbolic link via registry. Don't require target to exist.
-            const reg = getSymlinkRegistry(vfs);
+            const reg = vfs.symlinks;
             // GNU `ln` without -f errors if link exists.
             if (!force && (vfs.exists(linkFp) || reg.isSymlink(linkFp))) {
                 ctx.stderr.write(`ln: failed to create symbolic link '${linkPath}': File exists\n`);
@@ -3647,32 +3734,8 @@ export function registerUnixCommands(registry, vfs) {
         }
         return 0;
     }));
-    // test / [ — basic test command for shell scripts
-    registry.register('test', wrap((ctx) => {
-        const args = ctx.args.filter((a) => a !== ']');
-        if (args.length === 0)
-            return 1;
-        if (args[0] === '-f')
-            return vfs.exists(resolvePath(ctx.cwd, args[1] || '')) && !vfs.isDirectory(resolvePath(ctx.cwd, args[1] || '')) ? 0 : 1;
-        if (args[0] === '-d')
-            return vfs.exists(resolvePath(ctx.cwd, args[1] || '')) && vfs.isDirectory(resolvePath(ctx.cwd, args[1] || '')) ? 0 : 1;
-        if (args[0] === '-e')
-            return vfs.exists(resolvePath(ctx.cwd, args[1] || '')) ? 0 : 1;
-        if (args[0] === '-z')
-            return (!args[1] || args[1] === '') ? 0 : 1;
-        if (args[0] === '-n')
-            return (args[1] && args[1] !== '') ? 0 : 1;
-        if (args[1] === '=')
-            return args[0] === args[2] ? 0 : 1;
-        if (args[1] === '!=')
-            return args[0] !== args[2] ? 0 : 1;
-        return args[0] ? 0 : 1;
-    }));
-    registry.register('[', wrap((ctx) => {
-        // [ is alias for test with mandatory closing ]
-        const args = ctx.args.filter((a) => a !== ']');
-        return vfs.exists(resolvePath(ctx.cwd, args[1] || '')) ? 0 : 1;
-    }));
+    registry.register('test', wrap(mkTest(sqliteVfs)));
+    registry.register('[', wrap(mkTest(sqliteVfs)));
     // read — read a line (stub, returns empty for non-interactive)
     // shell-polish (2026-05-12): `read VAR` is registered here as a
     // NO-OP fallback (matches the pre-existing stub behaviour). The
@@ -3709,6 +3772,8 @@ export function registerUnixCommands(registry, vfs) {
     registry.register('set', wrap(() => 0));
     registry.register('shopt', wrap(() => 0));
     registry.register('trap', wrap(() => 0));
-    registry.register('umask', wrap(() => 0));
+    registry.register('umask', createUmaskCommand());
+    registry.register('su', createSuCommand());
+    registry.register('sudo', createSudoCommand());
     registry.register('ulimit', wrap(() => 0));
 }

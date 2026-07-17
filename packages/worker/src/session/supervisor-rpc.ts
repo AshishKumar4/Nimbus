@@ -176,6 +176,23 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._getStub()._rpcChmod(path, mode, this._pid()));
   }
 
+  async access(path: string, mode: number): Promise<void> {
+    return this._call(this._getStub()._rpcAccess(path, mode, this._pid()));
+  }
+
+  async chown(
+    path: string,
+    uid: number,
+    gid: number,
+    options?: { followSymlinks?: boolean },
+  ): Promise<void> {
+    return this._call(this._getStub()._rpcChown(path, uid, gid, this._pid(), options));
+  }
+
+  async setUmask(mask: number): Promise<number> {
+    return this._call(this._getStub()._rpcSetUmask(mask, this._pid()));
+  }
+
   async readdir(path: string): Promise<{ name: string; type: string }[]> {
     return this._call(this._getStub()._rpcReaddir(path, this._pid()));
   }

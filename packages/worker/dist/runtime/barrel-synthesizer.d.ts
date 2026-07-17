@@ -52,7 +52,7 @@
  * sees a clear remediation: "add a static import for the
  * dynamically-referenced icon."
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 /**
  * Map of package name → set of named imports observed across the
@@ -92,7 +92,7 @@ export declare function namedImportSignature(pkgName: string, names: ReadonlySet
  * Costs: O(files × content_length). For Mossaic (199 source files,
  * ~150 KiB total source) this is single-digit ms.
  */
-export declare function scanNamedImports(vfs: SqliteVFS, projDir: string): NamedImportMap;
+export declare function scanNamedImports(vfs: CredentialedVfs, projDir: string): NamedImportMap;
 /**
  * Synthesize a tiny ESM entry that re-exports the given names from
  * the package. We do NOT emit `export { X } from 'pkg'` — that resolves
@@ -148,7 +148,7 @@ export interface SyntheticEntryResult {
     code: string;
     referencedFiles: string[];
 }
-export declare function buildSyntheticEntry(vfs: SqliteVFS, nmDir: string, pkgName: string, names: ReadonlySet<string>): SyntheticEntryResult | null;
+export declare function buildSyntheticEntry(vfs: CredentialedVfs, nmDir: string, pkgName: string, names: ReadonlySet<string>): SyntheticEntryResult | null;
 /**
  * Build a SCOPED slice for a synthetic-entry bundle: include only
  * the files the synthetic entry directly references (+ their
@@ -170,7 +170,7 @@ export declare function buildSyntheticEntry(vfs: SqliteVFS, nmDir: string, pkgNa
  * which empirically covers icon-libraries with up to ~400 imported
  * icons (each pulling 1-2 transitive shared utility files).
  */
-export declare function buildScopedSliceForSynthetic(vfs: SqliteVFS, nmDir: string, pkgName: string, referencedFiles: string[], transitiveCap?: number): {
+export declare function buildScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir: string, pkgName: string, referencedFiles: string[], transitiveCap?: number): {
     entries: SliceEntry[];
     totalBytes: number;
 };

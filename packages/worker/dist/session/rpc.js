@@ -32,6 +32,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
@@ -55,15 +56,35 @@ const WriteBatchPayloadSchema = z.object({
     chunks: z.array(WriteBatchChunkSchema).default([]),
     deletePaths: z.array(z.string()).optional(),
 }).passthrough();
-function runtimeFs(self) {
-    self.ensureSqliteFs();
-    if (!self.runtimeFsBridge) {
-        self.runtimeFsBridge = new SqliteRuntimeFsBridge(self.sqliteFs);
+function processPid(pid) {
+    if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
+        throw new Error('filesystem RPC requires a valid process pid');
     }
-    return self.runtimeFsBridge;
+    return pid;
 }
-export async function _rpcReadFile(self, path) {
-    const bytes = await runtimeFs(self).readFile(path);
+function processVfs(self, pid) {
+    const processId = processPid(pid);
+    self.ensureSqliteFs();
+    const cred = self.processes.cred(processId);
+    return self.sqliteFs.as(cred);
+}
+function runtimeFs(self, pid) {
+    const processId = processPid(pid);
+    const vfs = processVfs(self, processId);
+    if (!self.runtimeFsBridges)
+        self.runtimeFsBridges = new Map();
+    let bridge = self.runtimeFsBridges.get(processId);
+    if (!bridge) {
+        bridge = new SqliteRuntimeFsBridge(vfs, self.sqliteFs);
+        self.runtimeFsBridges.set(processId, bridge);
+    }
+    else {
+        bridge.updateCredential(vfs);
+    }
+    return bridge;
+}
+export async function _rpcReadFile(self, path, pid) {
+    const bytes = await runtimeFs(self, pid).readFile(path);
     return bytes ? dec.decode(bytes) : null;
 }
 /**
@@ -71,8 +92,8 @@ export async function _rpcReadFile(self, path) {
  * binary .git/objects/** and packfile reads, where TextDecoder/TextEncoder
  * round-tripping through readFile (string) would corrupt bytes.
  */
-export async function _rpcReadFileBytes(self, path) {
-    return runtimeFs(self).readFile(path);
+export async function _rpcReadFileBytes(self, path, pid) {
+    return runtimeFs(self, pid).readFile(path);
 }
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
@@ -137,51 +158,60 @@ export async function _rpcInnerDoFetch(self, req) {
         };
     }
 }
-export async function _rpcWriteFile(self, path, content) {
+export async function _rpcWriteFile(self, path, content, pid) {
     // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
     // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
     // structured-clone preserves Uint8Array across the boundary; structured-
     // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
-    await runtimeFs(self).writeFile(path, content);
+    await runtimeFs(self, pid).writeFile(path, content);
 }
-export async function _rpcStat(self, path) {
-    return runtimeFs(self).stat(path);
+export async function _rpcStat(self, path, pid) {
+    return runtimeFs(self, pid).stat(path);
 }
-export async function _rpcLstat(self, path) {
-    return runtimeFs(self).stat(path, { followSymlinks: false });
+export async function _rpcLstat(self, path, pid) {
+    return runtimeFs(self, pid).stat(path, { followSymlinks: false });
 }
-export async function _rpcHasLegacySymlinkUnder(self, path) {
-    self.ensureSqliteFs();
+export async function _rpcHasLegacySymlinkUnder(self, path, pid) {
+    runtimeFs(self, pid);
     return getSymlinkRegistry(self.sqliteFs).hasAtOrBelow(path);
 }
-export async function _rpcUtimes(self, path, atimeMs, mtimeMs) {
-    await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
+export async function _rpcUtimes(self, path, atimeMs, mtimeMs, pid) {
+    await runtimeFs(self, pid).utimes(path, atimeMs, mtimeMs);
 }
-export async function _rpcChmod(self, path, mode) {
-    await runtimeFs(self).chmod(path, mode);
+export async function _rpcChmod(self, path, mode, pid) {
+    await runtimeFs(self, pid).chmod(path, mode);
 }
-export async function _rpcReaddir(self, path) {
-    return runtimeFs(self).readdir(path);
+export async function _rpcAccess(self, path, mode, pid) {
+    await runtimeFs(self, pid).access(path, mode);
 }
-export async function _rpcExists(self, path) {
-    return (await runtimeFs(self).stat(path)) !== null;
+export async function _rpcChown(self, path, uid, gid, pid, options) {
+    await runtimeFs(self, pid).chown(path, uid, gid, options);
 }
-export async function _rpcMkdir(self, path) {
-    await runtimeFs(self).mkdir(path, { recursive: true });
+export async function _rpcSetUmask(self, mask, pid) {
+    return self.processes.setUmask(processPid(pid), mask);
 }
-export async function _rpcRmdir(self, path) {
-    await runtimeFs(self).rmdir(path);
+export async function _rpcReaddir(self, path, pid) {
+    return runtimeFs(self, pid).readdir(path);
 }
-export async function _rpcRename(self, from, to) {
-    await runtimeFs(self).rename(from, to);
+export async function _rpcExists(self, path, pid) {
+    return (await runtimeFs(self, pid).stat(path)) !== null;
 }
-export async function _rpcReadlink(self, path) {
-    return runtimeFs(self).readlink(path);
+export async function _rpcMkdir(self, path, pid) {
+    await runtimeFs(self, pid).mkdir(path, { recursive: true });
 }
-export async function _rpcSymlink(self, target, path) {
-    await runtimeFs(self).symlink(target, path);
+export async function _rpcRmdir(self, path, pid) {
+    await runtimeFs(self, pid).rmdir(path);
+}
+export async function _rpcRename(self, from, to, pid) {
+    await runtimeFs(self, pid).rename(from, to);
+}
+export async function _rpcReadlink(self, path, pid) {
+    return runtimeFs(self, pid).readlink(path);
+}
+export async function _rpcSymlink(self, target, path, pid) {
+    await runtimeFs(self, pid).symlink(target, path);
 }
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
 const FsReadRangeArgsSchema = z.object({
@@ -197,28 +227,28 @@ const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
 });
-export async function _rpcFsRevision(self, path) {
-    return runtimeFs(self).revision(typeof path === 'string' ? path : undefined);
+export async function _rpcFsRevision(self, path, pid) {
+    return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
 }
-export async function _rpcFsReadRange(self, path, offset, length) {
+export async function _rpcFsReadRange(self, path, offset, length, pid) {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    return runtimeFs(self).readRange(args.path, args.offset, args.length);
+    return runtimeFs(self, pid).readRange(args.path, args.offset, args.length);
 }
-export async function _rpcFsWriteRange(self, path, offset, bytes) {
+export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
-    return runtimeFs(self).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+    return runtimeFs(self, pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
 }
-export async function _rpcFsTruncate(self, path, size) {
+export async function _rpcFsTruncate(self, path, size, pid) {
     const args = FsTruncateArgsSchema.parse({ path, size });
-    await runtimeFs(self).truncate(args.path, args.size);
+    await runtimeFs(self, pid).truncate(args.path, args.size);
 }
-export async function _rpcFsOpen(self, path, flags) {
-    return runtimeFs(self).open(path, flags || {});
+export async function _rpcFsOpen(self, path, flags, pid) {
+    return runtimeFs(self, pid).open(path, flags || {});
 }
-export async function _rpcFsRead(self, handleId, offset, length) {
-    return runtimeFs(self).read(handleId, offset, length);
+export async function _rpcFsRead(self, handleId, offset, length, pid) {
+    return runtimeFs(self, pid).read(handleId, offset, length);
 }
-export async function _rpcFsWrite(self, handleId, offset, bytes) {
+export async function _rpcFsWrite(self, handleId, offset, bytes, pid) {
     let data;
     if (bytes instanceof Uint8Array)
         data = bytes;
@@ -226,10 +256,10 @@ export async function _rpcFsWrite(self, handleId, offset, bytes) {
         data = new Uint8Array(bytes);
     else
         data = new Uint8Array(bytes || []);
-    return runtimeFs(self).write(handleId, offset, data);
+    return runtimeFs(self, pid).write(handleId, offset, data);
 }
-export async function _rpcFsClose(self, handleId) {
-    await runtimeFs(self).close(handleId);
+export async function _rpcFsClose(self, handleId, pid) {
+    await runtimeFs(self, pid).close(handleId);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -241,8 +271,8 @@ export async function _rpcHmrRelay(self, clientId, msg) {
         return;
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
-export async function _rpcUnlink(self, path) {
-    await runtimeFs(self).unlink(path);
+export async function _rpcUnlink(self, path, pid) {
+    await runtimeFs(self, pid).unlink(path);
 }
 /**
  * Bulk-write files and directories via one transactionSync().
@@ -255,8 +285,7 @@ export async function _rpcUnlink(self, path) {
  *   deletePaths?: string[]
  * }
  */
-export async function _rpcWriteBatch(self, payload) {
-    self.ensureSqliteFs();
+export async function _rpcWriteBatch(self, payload, pid) {
     const parsed = WriteBatchPayloadSchema.safeParse(payload);
     if (!parsed.success)
         throw new Error('writeBatch payload failed validation');
@@ -267,7 +296,7 @@ export async function _rpcWriteBatch(self, payload) {
         chunkId: c.chunkId,
         data: normalizeWriteBatchChunkData(c.data),
     }));
-    return self.sqliteFs.writeBatch({
+    return processVfs(self, pid).writeBatch({
         inodes,
         chunks,
         deletePaths,
@@ -305,8 +334,7 @@ function normalizeWriteBatchChunkData(value) {
  * groups remain durable when a later group fails. The typed result carries
  * the exact durable progress.
  */
-export async function _rpcWriteBatchStream(self, stream, mutationOwner) {
-    self.ensureSqliteFs();
+export async function _rpcWriteBatchStream(self, stream, mutationOwner, pid) {
     // [P0a — COORDINATOR-OVERLOAD]
     //
     // core WASI (semaphore here): rejected. Parking peer-side awaits in a
@@ -328,7 +356,7 @@ export async function _rpcWriteBatchStream(self, stream, mutationOwner) {
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
     const decodeDrainStartedAt = performance.now();
-    return self.sqliteFs.writeStream(stream, {
+    return processVfs(self, pid).writeStream(stream, {
         decodeDrainStartedAt,
         mutationOwner,
     });
@@ -449,6 +477,7 @@ export async function _rpcReportExit(self, pid, code, tail) {
         self.processes.closeInput(pid);
     }
     catch { }
+    self.runtimeFsBridges?.delete(pid);
     if (tail)
         self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -603,6 +632,7 @@ export function _reportExternalExit(self, pid, code, reason) {
         self.processes.closeInput(pid);
     }
     catch { }
+    self.runtimeFsBridges?.delete(pid);
     if (reason) {
         self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
@@ -772,7 +802,7 @@ export function vfsReadFile(self, path) {
     self.ensureSqliteFs();
     try {
         const stripped = path.replace(/^\/+/, '');
-        const data = self.sqliteFs.readFile(stripped);
+        const data = self.sqliteFs.as(CRED_KERNEL).readFile(stripped);
         return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     }
     catch {
@@ -784,7 +814,7 @@ export function vfsReadFileString(self, path) {
     self.ensureSqliteFs();
     try {
         const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.readFileString(stripped);
+        return self.sqliteFs.as(CRED_KERNEL).readFileString(stripped);
     }
     catch {
         return null;
@@ -795,7 +825,7 @@ export function vfsStat(self, path) {
     self.ensureSqliteFs();
     try {
         const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.stat(stripped);
+        return self.sqliteFs.as(CRED_KERNEL).stat(stripped);
     }
     catch {
         return null;
@@ -805,14 +835,14 @@ export function vfsStat(self, path) {
 export function vfsExists(self, path) {
     self.ensureSqliteFs();
     const stripped = path.replace(/^\/+/, '');
-    return self.sqliteFs.exists(stripped);
+    return self.sqliteFs.as(CRED_KERNEL).exists(stripped);
 }
 /** RPC: List directory contents. Returns array of { name, type }. */
 export function vfsReaddir(self, path) {
     self.ensureSqliteFs();
     try {
         const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.readdir(stripped);
+        return self.sqliteFs.as(CRED_KERNEL).readdir(stripped);
     }
     catch {
         return [];
@@ -822,7 +852,7 @@ export function vfsReaddir(self, path) {
 export function vfsWriteFile(self, path, data) {
     self.ensureSqliteFs();
     const stripped = path.replace(/^\/+/, '');
-    self.sqliteFs.writeFile(stripped, new Uint8Array(data));
+    self.sqliteFs.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
 }
 /**
  * RPC: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.

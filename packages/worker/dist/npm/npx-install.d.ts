@@ -28,7 +28,7 @@
  *      tracking, log buffer, process table membership)
  */
 import type { NpmInstaller } from './installer.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
@@ -73,5 +73,5 @@ export interface NpxResolveResult {
  * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
-export declare function resolveNpxBinary(installer: NpmInstaller, vfs: SqliteVFS, cwd: string, rawArgs: string[], log: (msg: string) => void): Promise<NpxResolveResult>;
+export declare function resolveNpxBinary(installer: NpmInstaller, vfs: CredentialedVfs, cwd: string, rawArgs: string[], log: (msg: string) => void): Promise<NpxResolveResult>;
 //# sourceMappingURL=npx-install.d.ts.map

@@ -87,6 +87,12 @@ export class Interpreter {
             io.writeToTerminal = options.writeToTerminal;
         if (options?.commandContext)
             io.commandContext = options.commandContext;
+        if (options?.commandIdentity)
+            io.commandIdentity = options.commandIdentity;
+        if (options?.runAs)
+            io.runAs = options.runAs;
+        if (options?.commandIdentity)
+            io.vfs = this.config.vfs.as(options.commandIdentity.cred);
         try {
             const tokens = lex(input);
             const script = parse(tokens);
@@ -115,17 +121,10 @@ export class Interpreter {
         if (list.background) {
             const abortController = new AbortController();
             const commandText = this.getListCommandText(list);
-            const backgroundIo = this.createCommandIo({
-                stdin: io.stdin,
-                stdout: io.stdout,
-                stderr: io.stderr,
-                terminalStdin: io.terminalStdin,
-                terminalFds: io.terminalFds,
-                scriptMode: io.scriptMode,
-                signal: abortController.signal,
-                registerProcess: false,
-                positionals: this.forkPositionals(io),
-            });
+            const backgroundIo = this.createCommandIo(io);
+            backgroundIo.signal = abortController.signal;
+            backgroundIo.registerProcess = false;
+            backgroundIo.positionals = this.forkPositionals(io);
             const promise = (async () => {
                 return await this.executeListEntries(list.entries, backgroundIo);
             })();
@@ -224,21 +223,22 @@ export class Interpreter {
                 const isLast = i === commands.length - 1;
                 const commandStdin = stdin ?? (i === 0 ? io.stdin : undefined);
                 const commandStdout = stdout ?? (isLast ? io.stdout : undefined);
-                const cmdIo = this.createCommandIo({
-                    stdin: commandStdin,
-                    stdout: commandStdout,
-                    stderr: io.stderr,
-                    terminalStdin: io.terminalStdin,
-                    terminalFds: {
-                        stdin: stdin ? false : io.terminalFds?.stdin,
-                        stdout: stdout ? false : io.terminalFds?.stdout,
-                        stderr: io.terminalFds?.stderr,
-                    },
-                    scriptMode: io.scriptMode,
-                    signal: pipelineAbortController.signal,
-                    registerProcess: io.registerProcess,
-                    positionals: this.forkPositionals(io),
-                });
+                const cmdIo = this.createCommandIo(io);
+                if (commandStdin)
+                    cmdIo.stdin = commandStdin;
+                else
+                    delete cmdIo.stdin;
+                if (commandStdout)
+                    cmdIo.stdout = commandStdout;
+                else
+                    delete cmdIo.stdout;
+                cmdIo.terminalFds = {
+                    stdin: stdin ? false : io.terminalFds?.stdin,
+                    stdout: stdout ? false : io.terminalFds?.stdout,
+                    stderr: io.terminalFds?.stderr,
+                };
+                cmdIo.signal = pipelineAbortController.signal;
+                cmdIo.positionals = this.forkPositionals(io);
                 const cmdPromise = (async () => {
                     try {
                         return await this.executeCommand(cmd, cmdIo);
@@ -326,7 +326,8 @@ export class Interpreter {
             const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
             const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
             const builtinIo = this.createIoFromFds(redirIo, fds);
-            const exitCode = await evaluateDoubleBracketWords(node.words, this.createExpandContext(redirIo), this.config.vfs, stderr, {
+            const exitCode = await evaluateDoubleBracketWords(node.words, this.createExpandContext(redirIo), redirIo.vfs ?? this.config.vfs, stderr, {
+                vfs: builtinIo.vfs ?? this.config.vfs,
                 stdin: builtinIo.stdin,
                 stdout,
                 stderr,
@@ -609,6 +610,7 @@ export class Interpreter {
                     if (builtin) {
                         const builtinIo = this.createIoFromFds(io, fds);
                         exitCode = await builtin(args, stdout, stderr, stdin, {
+                            vfs: builtinIo.vfs ?? this.config.vfs,
                             stdin,
                             stdout,
                             stderr,
@@ -640,12 +642,18 @@ export class Interpreter {
                             const shellSignal = io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal;
                             unlinkShellSignal = linkAbortSignal(shellSignal, abortController);
                             const terminalStdin = io.terminalStdin;
-                            const ctx = {
+                            const identity = io.commandIdentity;
+                            if (!identity)
+                                throw new Error('shell command identity is unavailable');
+                            let ctx;
+                            ctx = {
                                 ...io.commandContext,
+                                pid: identity.pid,
+                                cred: identity.cred,
                                 args,
                                 env: { ...this.config.env },
                                 cwd: this.config.getCwd(),
-                                vfs: this.config.vfs,
+                                vfs: io.vfs ?? this.config.vfs,
                                 stdout,
                                 stderr,
                                 signal: abortController.signal,
@@ -658,6 +666,10 @@ export class Interpreter {
                                     ? () => terminalStdin.rawMode
                                     : undefined,
                                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                                setUmask: identity.setUmask,
+                                runAs: (cred, argv) => io.runAs
+                                    ? io.runAs(ctx, cred, argv)
+                                    : Promise.resolve(126),
                             };
                             // Register process BEFORE executing so ps can see itself
                             let commandPromise;
@@ -833,6 +845,12 @@ export class Interpreter {
             next.positionals = io.positionals;
         if (io.commandContext)
             next.commandContext = io.commandContext;
+        if (io.commandIdentity)
+            next.commandIdentity = io.commandIdentity;
+        if (io.runAs)
+            next.runAs = io.runAs;
+        if (io.vfs)
+            next.vfs = io.vfs;
         return next;
     }
     /** Per-execution direct-terminal write, isolated from a nested capture. */
@@ -852,7 +870,7 @@ export class Interpreter {
             positionals: this.readPositionals(io),
             lastExitCode: this.lastExitCode,
             cwd: this.config.getCwd(),
-            vfs: this.config.vfs,
+            vfs: io.vfs ?? this.config.vfs,
             options: this.config.options,
             executeCapture: (input) => this.executeCapture(input, io),
         };
@@ -958,11 +976,11 @@ export class Interpreter {
                     this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', terminalStdin));
                     break;
                 case 'read':
-                    this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(target, terminalStdin));
+                    this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, terminalStdin));
                     break;
                 case 'readWrite': {
                     const fd = redir.fd ?? 0;
-                    this.setInputFd(fds, fd, this.openInputTarget(target, terminalStdin));
+                    this.setInputFd(fds, fd, this.openInputTarget(io, target, terminalStdin));
                     this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', terminalStdin));
                     break;
                 }
@@ -1049,15 +1067,17 @@ export class Interpreter {
         }
         const targetPath = resolve(this.config.getCwd(), target);
         if (mode === 'write') {
-            this.config.vfs.writeFile(targetPath, '');
-            return { stream: this.createFileWriter(targetPath), terminal: false };
+            const vfs = io.vfs ?? this.config.vfs;
+            vfs.writeFile(targetPath, '');
+            return { stream: this.createFileWriter(vfs, targetPath), terminal: false };
         }
-        if (!this.config.vfs.exists(targetPath)) {
-            this.config.vfs.writeFile(targetPath, '');
+        const vfs = io.vfs ?? this.config.vfs;
+        if (!vfs.exists(targetPath)) {
+            vfs.writeFile(targetPath, '');
         }
-        return { stream: this.createFileAppender(targetPath), terminal: false };
+        return { stream: this.createFileAppender(vfs, targetPath), terminal: false };
     }
-    openInputTarget(target, terminalStdin) {
+    openInputTarget(io, target, terminalStdin) {
         if (target === '/dev/null')
             return { stream: this.createEmptyReader(), terminal: false };
         if (target === '/dev/tty') {
@@ -1065,24 +1085,27 @@ export class Interpreter {
                 throw new Error('/dev/tty: no controlling terminal');
             return { stream: terminalStdin, terminal: true };
         }
-        return { stream: this.createFileReader(resolve(this.config.getCwd(), target)), terminal: false };
+        return {
+            stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
+            terminal: false,
+        };
     }
-    createFileWriter(path) {
+    createFileWriter(vfs, path) {
         return {
             write: (text) => {
-                this.config.vfs.writeFile(path, text);
+                vfs.writeFile(path, text);
             },
         };
     }
-    createFileAppender(path) {
+    createFileAppender(vfs, path) {
         return {
             write: (text) => {
-                this.config.vfs.appendFile(path, text);
+                vfs.appendFile(path, text);
             },
         };
     }
-    createFileReader(path) {
-        const content = this.config.vfs.readFileString(path);
+    createFileReader(vfs, path) {
+        const content = vfs.readFileString(path);
         return this.createStringReader(content);
     }
     createStringReader(content) {

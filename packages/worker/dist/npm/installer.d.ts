@@ -44,7 +44,8 @@ export interface NpmInstallResult {
     phases: Record<string, number>;
 }
 export declare class NpmInstaller {
-    private vfs;
+    private readonly store;
+    private readonly vfs;
     private cache;
     private esbuild;
     private ctx;

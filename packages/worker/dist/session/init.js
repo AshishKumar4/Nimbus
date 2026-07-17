@@ -27,6 +27,7 @@
 import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenceBackend, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages, } from '../substrate/lifo/index.js';
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL, requireVfsCred } from '../runtime/os-contracts.js';
 import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -69,8 +70,12 @@ function resolveNpmPrefix(prefix, cwd) {
         ? normalizeVfsPath(prefix)
         : resolveVfsPath(prefix, cwd || '/home/user');
 }
+function quoteShellArgument(value) {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 export function initSession(self, ws) {
     self.ensureSqliteFs();
+    const kernelFs = self.sqliteFs.as(CRED_KERNEL);
     self.ensureFacetManager();
     self.seedFilesystem();
     // ── Phase R: rehydrate session state from DO SQLite [B'.1] ──────────
@@ -231,18 +236,18 @@ export function initSession(self, ws) {
         try {
             if (msg.type === 'fs-read') {
                 const p = stripLeadingSlashes(String(msg.path || ''));
-                if (!sqliteFs.exists(p)) {
+                if (!kernelFs.exists(p)) {
                     reply({ type: 'fs-read-result', path: msg.path, error: 'ENOENT: no such file or directory' });
                     return;
                 }
-                if (sqliteFs.isDirectory(p)) {
+                if (kernelFs.isDirectory(p)) {
                     reply({ type: 'fs-read-result', path: msg.path, error: 'EISDIR: is a directory' });
                     return;
                 }
                 // Read bytes; attempt strict UTF-8 decode. Non-UTF-8 → mark
                 // binary so the editor shows a friendly placeholder rather
                 // than mojibake.
-                const bytes = sqliteFs.readFile(p);
+                const bytes = kernelFs.readFile(p);
                 try {
                     const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
                     reply({ type: 'fs-read-result', path: msg.path, content });
@@ -266,22 +271,22 @@ export function initSession(self, ws) {
                 const parent = parentVfsPath(p);
                 if (parent)
                     try {
-                        sqliteFs.mkdir(parent, { recursive: true });
+                        kernelFs.mkdir(parent, { recursive: true });
                     }
                     catch { }
                 const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
-                sqliteFs.writeFile(p, content);
+                kernelFs.writeFile(p, content);
                 reply({ type: 'fs-write-result', path: msg.path, ok: true });
                 return;
             }
             if (msg.type === 'fs-list') {
                 const dir = stripLeadingSlashes(String(msg.dir || ''));
                 const recursive = msg.recursive === true;
-                if (dir && !sqliteFs.exists(dir)) {
+                if (dir && !kernelFs.exists(dir)) {
                     reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOENT' });
                     return;
                 }
-                if (dir && !sqliteFs.isDirectory(dir)) {
+                if (dir && !kernelFs.isDirectory(dir)) {
                     reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOTDIR' });
                     return;
                 }
@@ -296,7 +301,7 @@ export function initSession(self, ws) {
                     const cur = queue.shift();
                     let entries;
                     try {
-                        entries = sqliteFs.readdir(cur);
+                        entries = kernelFs.readdir(cur);
                     }
                     catch {
                         continue;
@@ -356,23 +361,23 @@ export function initSession(self, ws) {
         // Missing paths fall through (undefined) so the npm-bin fallback
         // and install-hint resolvers further out in the chain still see
         // them; only real files produce a dispatch here.
-        if (!sqliteFs.exists(resolved))
+        if (!kernelFs.exists(resolved))
             return undefined;
-        if (sqliteFs.isDirectory(resolved)) {
+        if (kernelFs.isDirectory(resolved)) {
             return async (ctx) => {
                 ctx.stderr.write(`${name}: Is a directory\n`);
                 return 126;
             };
         }
         // execve follows symlinks to the real executable.
-        const target = sqliteFs.isSymlink(resolved) ? sqliteFs.resolveSymlink(resolved) : resolved;
-        if (!target || !sqliteFs.exists(target) || sqliteFs.isDirectory(target))
+        const target = kernelFs.isSymlink(resolved) ? kernelFs.resolveSymlink(resolved) : resolved;
+        if (!target || !kernelFs.exists(target) || kernelFs.isDirectory(target))
             return undefined;
         let mode;
         let head;
         try {
-            mode = sqliteFs.stat(target).mode;
-            head = sqliteFs.readRange(target, 0, EXEC_HEAD_BYTES);
+            mode = kernelFs.stat(target).mode;
+            head = kernelFs.readRange(target, 0, EXEC_HEAD_BYTES);
         }
         catch {
             return undefined;
@@ -557,10 +562,24 @@ export function initSession(self, ws) {
                 const stderr = { write: (s) => { stderrText.push(String(s)); } };
                 const py = await registry.resolve('python');
                 if (py) {
+                    const pid = 'pid' in ctx ? ctx.pid : undefined;
+                    const setUmask = 'setUmask' in ctx ? ctx.setUmask : undefined;
+                    const runAs = 'runAs' in ctx ? ctx.runAs : undefined;
+                    if (typeof pid !== 'number'
+                        || typeof setUmask !== 'function'
+                        || typeof runAs !== 'function'
+                        || self.kernel === null) {
+                        throw new Error('python warm-up requires a process identity');
+                    }
+                    const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'python warm-up');
                     const code = await py({
                         ...ctx,
                         args: ['-c', 'pass'],
-                        vfs: ctx.vfs ?? sqliteFs,
+                        pid,
+                        cred,
+                        setUmask: (mask) => setUmask(mask),
+                        runAs: (targetCred, argv) => runAs(targetCred, argv),
+                        vfs: self.kernel.vfs,
                         signal: new AbortController().signal,
                         stdout,
                         stderr,
@@ -713,7 +732,7 @@ export function initSession(self, ws) {
                 const pkgPath = normalizeVfsPath(ctx.cwd || '/home/user') + '/package.json';
                 let pkgScript;
                 try {
-                    const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
+                    const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
                     pkgScript = pkg.scripts?.[scriptName];
                 }
                 catch {
@@ -790,16 +809,7 @@ export function initSession(self, ws) {
             // filesystem WASI: extended VFS surface for WASI file-IO. The wasm-runner
             // snapshots a session subtree into the facet, flushes the diff
             // back via this surface after _start returns.
-            vfs: {
-                exists: (p) => sqliteFs.exists(p),
-                isDirectory: (p) => sqliteFs.isDirectory(p),
-                readFile: (p) => sqliteFs.readFile(p),
-                writeFile: (p, c) => sqliteFs.writeFile(p, c),
-                readdir: (p) => sqliteFs.readdir(p),
-                mkdir: (p, o) => sqliteFs.mkdir(p, o),
-                unlink: (p) => sqliteFs.unlink(p),
-                rmdir: (p) => sqliteFs.rmdir(p),
-            },
+            vfs: sqliteFs,
             env: self.env,
             ctx: self.ctx,
             processes: self.processes,
@@ -907,7 +917,7 @@ export function initSession(self, ws) {
             const filePath = resolveVfsPath(entryPoints[0], ctx.cwd || '/home/user');
             let code;
             try {
-                code = sqliteFs.readFileString(filePath);
+                code = kernelFs.readFileString(filePath);
             }
             catch {
                 ctx.stderr.write(`esbuild: could not read file: ${entryPoints[0]}\n`);
@@ -928,9 +938,9 @@ export function initSession(self, ws) {
                 if (flags['outfile']) {
                     const outPath = resolveVfsPath(flags['outfile'], ctx.cwd || '/home/user');
                     const parent = parentVfsPath(outPath);
-                    if (parent && !sqliteFs.exists(parent))
-                        sqliteFs.mkdir(parent, { recursive: true });
-                    sqliteFs.writeFile(outPath, result.code);
+                    if (parent && !kernelFs.exists(parent))
+                        kernelFs.mkdir(parent, { recursive: true });
+                    kernelFs.writeFile(outPath, result.code);
                     ctx.stdout.write(`  ${outPath}  ${result.code.length} bytes\n`);
                 }
                 else {
@@ -978,9 +988,9 @@ export function initSession(self, ws) {
             for (const f of result.outputFiles || []) {
                 const outPath = normalizeVfsPath(f.path);
                 const parent = parentVfsPath(outPath);
-                if (parent && !sqliteFs.exists(parent))
-                    sqliteFs.mkdir(parent, { recursive: true });
-                sqliteFs.writeFile(outPath, f.contents);
+                if (parent && !kernelFs.exists(parent))
+                    kernelFs.mkdir(parent, { recursive: true });
+                kernelFs.writeFile(outPath, f.contents);
                 ctx.stdout.write(`  ${outPath}  ${f.contents.length} bytes\n`);
             }
             ctx.stderr.write(`Done (${result.outputFiles?.length || 0} output files)\n`);
@@ -1011,9 +1021,9 @@ export function initSession(self, ws) {
         const viteConfig = {};
         for (const cfgName of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
             const cfgPath = cwd + '/' + cfgName;
-            if (self.sqliteFs.exists(cfgPath)) {
+            if (kernelFs.exists(cfgPath)) {
                 try {
-                    let cfgCode = self.sqliteFs.readFileString(cfgPath);
+                    let cfgCode = kernelFs.readFileString(cfgPath);
                     // Transform TS to JS
                     if (cfgName.endsWith('.ts')) {
                         if (!self.esbuildService)
@@ -1037,7 +1047,7 @@ export function initSession(self, ws) {
             let entryPoint = cwd + '/src/main.tsx';
             let origHtml = '';
             try {
-                origHtml = self.sqliteFs.readFileString(htmlPath);
+                origHtml = kernelFs.readFileString(htmlPath);
                 const htmlEntrypoint = await findHtmlScriptEntrypoint(origHtml);
                 if (htmlEntrypoint)
                     entryPoint = cwd + '/' + stripLeadingSlashes(htmlEntrypoint);
@@ -1045,9 +1055,9 @@ export function initSession(self, ws) {
             catch {
                 ctx.stderr.write('Warning: no index.html\n');
             }
-            if (!self.sqliteFs.exists(entryPoint)) {
+            if (!kernelFs.exists(entryPoint)) {
                 const alts = [cwd + '/src/main.tsx', cwd + '/src/main.ts', cwd + '/src/index.tsx', cwd + '/src/index.ts'];
-                entryPoint = alts.find(p => self.sqliteFs.exists(p)) || entryPoint;
+                entryPoint = alts.find(p => kernelFs.exists(p)) || entryPoint;
             }
             ctx.stdout.write('Building for production...\n');
             ctx.stdout.write('  Entry: ' + entryPoint + '\n');
@@ -1061,7 +1071,7 @@ export function initSession(self, ws) {
                 const cdnPackages = [];
                 for (const pkg of ['react', 'react-dom', 'react/jsx-runtime', 'react-dom/client']) {
                     const pkgBase = pkg.split('/')[0];
-                    if (!self.sqliteFs.exists(nmDir + '/' + pkgBase)) {
+                    if (!kernelFs.exists(nmDir + '/' + pkgBase)) {
                         externals.push(pkg);
                         if (!cdnPackages.includes(pkgBase))
                             cdnPackages.push(pkgBase);
@@ -1090,20 +1100,20 @@ export function initSession(self, ws) {
                 // Write JS with hashed filename
                 const jsFilename = 'index-' + hash + '.js';
                 const jsPath = distDir + '/assets/' + jsFilename;
-                self.sqliteFs.mkdir(distDir + '/assets', { recursive: true });
-                self.sqliteFs.writeFile(jsPath, jsContent);
+                kernelFs.mkdir(distDir + '/assets', { recursive: true });
+                kernelFs.writeFile(jsPath, jsContent);
                 ctx.stdout.write('  \x1b[2m' + outDir + '/assets/' + jsFilename + '\x1b[0m  ' + (jsContent.length / 1024).toFixed(2) + ' kB\n');
                 // Collect all CSS files from src/
                 let allCss = '';
                 const collectCss = (dir) => {
                     try {
-                        for (const e of self.sqliteFs.readdir(dir)) {
+                        for (const e of kernelFs.readdir(dir)) {
                             const fp = dir + '/' + e.name;
                             if (e.type === 'directory')
                                 collectCss(fp);
                             else if (e.name.endsWith('.css')) {
                                 try {
-                                    allCss += self.sqliteFs.readFileString(fp) + '\n';
+                                    allCss += kernelFs.readFileString(fp) + '\n';
                                 }
                                 catch { }
                             }
@@ -1114,7 +1124,7 @@ export function initSession(self, ws) {
                 collectCss(cwd + '/src');
                 const cssFilename = 'index-' + hash + '.css';
                 if (allCss.trim()) {
-                    self.sqliteFs.writeFile(distDir + '/assets/' + cssFilename, allCss);
+                    kernelFs.writeFile(distDir + '/assets/' + cssFilename, allCss);
                     ctx.stdout.write('  \x1b[2m' + outDir + '/assets/' + cssFilename + '\x1b[0m  ' + (allCss.length / 1024).toFixed(2) + ' kB\n');
                 }
                 // Generate dist/index.html
@@ -1124,7 +1134,7 @@ export function initSession(self, ws) {
                         cssFilename: allCss.trim() ? cssFilename : undefined,
                         removeImportMap: cdnPackages.length === 0,
                     });
-                    self.sqliteFs.writeFile(distDir + '/index.html', distHtml);
+                    kernelFs.writeFile(distDir + '/index.html', distHtml);
                     ctx.stdout.write('  \x1b[2m' + outDir + '/index.html\x1b[0m  ' + (distHtml.length / 1024).toFixed(2) + ' kB\n');
                     if (cdnPackages.length > 0) {
                         ctx.stdout.write('  \x1b[33mNote: ' + cdnPackages.join(', ') + ' loaded from CDN (not bundled)\x1b[0m\n');
@@ -1142,7 +1152,7 @@ export function initSession(self, ws) {
         if (args[0] === 'preview') {
             ctx.stdout.write('Serving dist/ — open ' + self.viteBasePath + '/\n');
             const distRoot = cwd + '/' + (viteConfig.outDir || 'dist');
-            if (!self.sqliteFs.exists(distRoot)) {
+            if (!kernelFs.exists(distRoot)) {
                 ctx.stderr.write('dist/ not found. Run vite build first.\n');
                 return 1;
             }
@@ -1252,7 +1262,7 @@ export function initSession(self, ws) {
         // confuse the user. --force / --no-install-check bypasses the check.
         const bypassInstallCheck = expandedArgs.includes('--force') || expandedArgs.includes('--no-install-check');
         if (!bypassInstallCheck) {
-            const guard = checkNodeModulesGuard(self.sqliteFs, vfsRoot);
+            const guard = checkNodeModulesGuard(kernelFs, vfsRoot);
             if (guard.missing) {
                 ctx.stderr.write('\x1b[31m\u2718\x1b[0m \x1b[1mnode_modules/ not found\x1b[0m' +
                     (guard.depCount > 0 ? ` (${guard.depCount} dependencies declared)` : '') + '\n' +
@@ -1311,7 +1321,7 @@ export function initSession(self, ws) {
             // transform time and expects to find that file on disk.
             const extraSyntheticFiles = {};
             const cfgPath = [cwd + '/vite.config.ts', cwd + '/vite.config.js', cwd + '/vite.config.mjs']
-                .find(p => self.sqliteFs.exists(p));
+                .find(p => kernelFs.exists(p));
             if (cfgPath) {
                 try {
                     if (!self.esbuildService)
@@ -1522,7 +1532,7 @@ export function initSession(self, ws) {
             ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Aliases:    ' + Object.keys(viteConfig.alias).join(', ') + '\n');
         if (viteDefine)
             ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Define:     ' + Object.keys(viteDefine).join(', ') + '\n');
-        const twCfg = [vfsRoot + '/tailwind.config.js', vfsRoot + '/tailwind.config.ts'].find(p => self.sqliteFs.exists(p));
+        const twCfg = [vfsRoot + '/tailwind.config.js', vfsRoot + '/tailwind.config.ts'].find(p => kernelFs.exists(p));
         if (twCfg)
             ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Tailwind:   edge-vendored Play CDN \x1b[2m(detected)\x1b[0m\n');
         ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mkill ' + viteProcEntry.pid + '\x1b[2m, to stop.\x1b[0m\n\n');
@@ -1605,7 +1615,7 @@ export function initSession(self, ws) {
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
         // still try to bundle + load, but user sees up-front why their
         // Worker may fail when it tries to access a missing binding.
-        const unsupportedFields = detectUnsupportedWranglerConfig(self.sqliteFs, vfsRoot);
+        const unsupportedFields = detectUnsupportedWranglerConfig(kernelFs, vfsRoot);
         ctx.stdout.write('\n');
         ctx.stdout.write('\x1b[1;35m  ' + (invokedAs === 'wrangler' ? 'Wrangler' : 'Nimbus Wrangler') + ' Dev\x1b[0m\n\n');
         if (unsupportedFields.length > 0) {
@@ -1619,7 +1629,8 @@ export function initSession(self, ws) {
                 '   \x1b[2mDeploy with real wrangler to get the real bindings.\x1b[0m\n\n');
         }
         self.nimbusWrangler = new NimbusWrangler({
-            vfs: self.sqliteFs,
+            vfs: kernelFs,
+            vfsEvents: sqliteFs.events,
             esbuild: self.esbuildService,
             env: self.env,
             // Supervisor DO ctx — required for ctx.facets.get() when
@@ -1686,8 +1697,8 @@ export function initSession(self, ws) {
         const cwd = normalizeVfsPath(ctx.cwd || '/home/user');
         // Ensure package.json exists
         const pkgJsonPath = cwd + '/package.json';
-        if (!self.sqliteFs.exists(pkgJsonPath)) {
-            self.sqliteFs.writeFile(pkgJsonPath, '{"name":"project","version":"1.0.0","dependencies":{}}\n');
+        if (!kernelFs.exists(pkgJsonPath)) {
+            kernelFs.writeFile(pkgJsonPath, '{"name":"project","version":"1.0.0","dependencies":{}}\n');
         }
         ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
         self.ensureNpmInstaller((msg) => {
@@ -1772,7 +1783,65 @@ export function initSession(self, ws) {
     };
     // ── Create shell ──
     const processRegistry = new ProcessRegistry();
-    self.shell = new Shell(self.terminal, self.kernel.vfs, registry, env, processRegistry);
+    if (self.shellProcessPid !== null) {
+        self.processes.exit(self.shellProcessPid, 0);
+    }
+    const shellProcess = self.processes.spawn('sh', ['sh'], persisted.cwd || '/home/user');
+    self.shellProcessPid = shellProcess.pid;
+    const runAsProcess = async (parent, cred, argv) => {
+        if (argv.length === 0)
+            return 0;
+        const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
+        const activeShell = self.shell;
+        if (!activeShell) {
+            self.processes.exit(child.pid, 1);
+            throw new Error('shell is not initialized');
+        }
+        const identity = commandIdentityFor(child.pid);
+        let exitCode = 1;
+        try {
+            const stdin = parent.stdin && parent.stdin !== parent.terminalStdin
+                ? await parent.stdin.readAll()
+                : undefined;
+            const result = await activeShell.execute(argv.map(quoteShellArgument).join(' '), {
+                cwd: parent.cwd,
+                env: parent.env,
+                stdin,
+                terminalStdin: parent.terminalStdin,
+                signal: parent.signal,
+                isolateShellState: true,
+                terminalFds: {
+                    stdin: parent.isFdTerminal?.(0) ?? false,
+                    stdout: parent.isFdTerminal?.(1) ?? false,
+                    stderr: parent.isFdTerminal?.(2) ?? false,
+                },
+                onStdout: (data) => parent.stdout.write(data),
+                onStderr: (data) => parent.stderr.write(data),
+                commandContext: {
+                    pid: identity.pid,
+                    cred: identity.cred,
+                    setUmask: identity.setUmask,
+                },
+                runAs: runAsProcess,
+            });
+            exitCode = result.exitCode;
+            return exitCode;
+        }
+        finally {
+            self.processes.exit(child.pid, exitCode);
+        }
+    };
+    const commandIdentityFor = (pid) => ({
+        pid,
+        get cred() {
+            return self.processes.cred(pid);
+        },
+        setUmask(mask) {
+            self.processes.setUmask(pid, mask);
+        },
+        runAs: runAsProcess,
+    });
+    self.shell = new Shell(self.terminal, self.kernel.vfs, registry, env, processRegistry, commandIdentityFor(shellProcess.pid));
     // Primitive #7: patch NIMBUS_SESSION_ID into the live shell env.
     // sessionBasePath is "/s/<sid>" set by the X-Nimbus-Base header on
     // the first /ws upgrade — by the time initSession runs (after the
@@ -1819,30 +1888,66 @@ export function initSession(self, ws) {
     // ── Wire npm/npx with shellExecute ──
     const shell = self.shell;
     const shellExecute = async (cmd, cmdCtx) => {
+        const stdin = cmdCtx.stdin && cmdCtx.stdin !== cmdCtx.terminalStdin
+            ? await cmdCtx.stdin.readAll()
+            : undefined;
         const result = await shell.execute(cmd, {
             cwd: cmdCtx.cwd,
             env: cmdCtx.env,
             onStdout: (d) => cmdCtx.stdout.write(d),
             onStderr: (d) => cmdCtx.stderr.write(d),
-            stdin: typeof cmdCtx.stdin === 'string' ? cmdCtx.stdin : undefined,
+            stdin,
+            terminalStdin: cmdCtx.terminalStdin,
+            commandContext: {
+                pid: cmdCtx.pid,
+                cred: cmdCtx.cred,
+                setUmask: cmdCtx.setUmask,
+            },
+            runAs: runAsProcess,
         });
         return result.exitCode;
     };
     const shellEntrypointExecutor = {
         execute: async (cmd, options) => {
-            const terminal = createHeadlessTerminal();
-            const childShell = new Shell(terminal, self.kernel.vfs, registry, { ...env, ...(options?.env || {}) }, processRegistry);
-            installShellExecutionFeatures(childShell, terminal);
-            if (options?.cwd)
-                childShell.setCwd(options.cwd);
-            return childShell.execute(cmd, options);
+            const parentPid = options?.commandContext?.['pid'];
+            if (typeof parentPid !== 'number') {
+                throw new Error('shell entrypoint requires a parent process');
+            }
+            const childProcess = self.processes.spawn('sh', ['sh'], options?.cwd || '/home/user', { parentPid });
+            let exitCode = 1;
+            try {
+                const identity = commandIdentityFor(childProcess.pid);
+                const kernel = self.kernel;
+                if (kernel === null)
+                    throw new Error('shell kernel is not initialized');
+                const terminal = createHeadlessTerminal();
+                const childShell = new Shell(terminal, kernel.vfs, registry, { ...env, ...(options?.env || {}) }, processRegistry, identity);
+                installShellExecutionFeatures(childShell, terminal);
+                if (options?.cwd)
+                    childShell.setCwd(options.cwd);
+                const result = await childShell.execute(cmd, {
+                    ...options,
+                    commandContext: {
+                        ...options?.commandContext,
+                        pid: identity.pid,
+                        cred: identity.cred,
+                        setUmask: identity.setUmask,
+                    },
+                    runAs: runAsProcess,
+                });
+                exitCode = result.exitCode;
+                return result;
+            }
+            finally {
+                self.processes.exit(childProcess.pid, exitCode);
+            }
         },
     };
-    registerShellEntrypointCommands(registry, shellEntrypointExecutor, sqliteFs);
+    registerShellEntrypointCommands(registry, shellEntrypointExecutor, kernelFs);
     // Shell scripts that execute through the local shell still need the same
     // process-table and log-store contract as facet-backed processes.
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
-        const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
+        const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user', { parentPid: cmdCtx.pid });
         const pid = entry.pid;
         if (opts.longRunning)
             self.processes.setLongRunning(pid);
@@ -1881,16 +1986,22 @@ export function initSession(self, ws) {
                 // (vite/wrangler/serve) ADOPTS this wrapper pid via the bin-spawn
                 // contract instead of allocating a second one, and suppresses its
                 // own `[started (long-running)]` notice.
-                commandContext: opts.longRunning
-                    ? {
-                        __nimbusBinSpawn: {
-                            skipSpawn: true,
-                            callerPid: pid,
-                            command: cmd,
-                            forceLongRunning: true,
-                        },
-                    }
-                    : undefined,
+                commandContext: {
+                    pid,
+                    cred: entry.cred,
+                    setUmask: (mask) => self.processes.setUmask(pid, mask),
+                    ...(opts.longRunning
+                        ? {
+                            __nimbusBinSpawn: {
+                                skipSpawn: true,
+                                callerPid: pid,
+                                command: cmd,
+                                forceLongRunning: true,
+                            },
+                        }
+                        : {}),
+                },
+                runAs: runAsProcess,
             });
             exitCode = result.exitCode;
         }
@@ -1935,7 +2046,7 @@ export function initSession(self, ws) {
     };
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     installNpmBinFallbackResolver(registry, {
-        vfs: sqliteFs,
+        vfs: kernelFs,
         getCwd: () => self.shell?.cwd || '/home/user',
         processes: self.processes,
         getFacetManager: () => {
@@ -1965,7 +2076,7 @@ export function initSession(self, ws) {
                 // npm run (no script) — list available scripts
                 const pkgPath = cwdKey + '/package.json';
                 try {
-                    const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
+                    const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
                     if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
                         ctx.stdout.write('Lifecycle scripts:\n');
                         for (const [name, cmd] of Object.entries(pkg.scripts)) {
@@ -1984,7 +2095,7 @@ export function initSession(self, ws) {
             }
             const pkgPath = cwdKey + '/package.json';
             try {
-                const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
+                const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
                 const script = pkg.scripts?.[scriptName];
                 if (!script) {
                     ctx.stderr.write(`npm ERR! Missing script: "${scriptName}"\n`);
@@ -2009,7 +2120,7 @@ export function initSession(self, ws) {
                     scriptArgs.includes('--no-install-check') ||
                     ctx.env?.NIMBUS_SKIP_INSTALL_CHECK === '1';
                 if (!bypassRunCheck) {
-                    const guard = checkNodeModulesGuard(sqliteFs, cwdKey);
+                    const guard = checkNodeModulesGuard(kernelFs, cwdKey);
                     if (guard.missing) {
                         const bundler = detectBundlerBin(script);
                         if (bundler) {
@@ -2077,7 +2188,7 @@ export function initSession(self, ws) {
             const pkgPath = cwdKey + '/package.json';
             const nmDir = cwdKey + '/node_modules';
             try {
-                const pkg = JSON.parse(sqliteFs.readFileString(pkgPath));
+                const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
                 ctx.stdout.write(`${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${ctx.cwd}\n`);
                 const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
                 const names = Object.keys(deps);
@@ -2088,7 +2199,7 @@ export function initSession(self, ws) {
                     let version = deps[name];
                     // Try to read actual installed version
                     try {
-                        const installed = JSON.parse(sqliteFs.readFileString(nmDir + '/' + name + '/package.json'));
+                        const installed = JSON.parse(kernelFs.readFileString(nmDir + '/' + name + '/package.json'));
                         version = installed.version;
                     }
                     catch { }
@@ -2105,7 +2216,7 @@ export function initSession(self, ws) {
         if (sub === 'init') {
             const cwd = cwdKey;
             const pkgPath = cwd + '/package.json';
-            if (sqliteFs.exists(pkgPath) && !args.includes('-y') && !args.includes('--yes')) {
+            if (kernelFs.exists(pkgPath) && !args.includes('-y') && !args.includes('--yes')) {
                 ctx.stderr.write('package.json already exists. Use -y to overwrite.\n');
                 return 1;
             }
@@ -2116,7 +2227,7 @@ export function initSession(self, ws) {
                 scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
                 keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
             };
-            sqliteFs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+            kernelFs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
             ctx.stdout.write('Wrote to ' + pkgPath + '\n');
             return 0;
         }
@@ -2133,18 +2244,18 @@ export function initSession(self, ws) {
                 // Recursively delete package directory
                 const deleteRecursive = (dir) => {
                     try {
-                        for (const e of sqliteFs.readdir(dir)) {
+                        for (const e of kernelFs.readdir(dir)) {
                             const fp = dir + '/' + e.name;
                             if (e.type === 'directory')
                                 deleteRecursive(fp);
                             else
                                 try {
-                                    sqliteFs.unlink(fp);
+                                    kernelFs.unlink(fp);
                                 }
                                 catch { }
                         }
                         try {
-                            sqliteFs.rmdir(dir);
+                            kernelFs.rmdir(dir);
                         }
                         catch { }
                     }
@@ -2156,12 +2267,12 @@ export function initSession(self, ws) {
             // Update package.json
             const pkgPath = cwdKey + '/package.json';
             try {
-                const pkgJson = JSON.parse(sqliteFs.readFileString(pkgPath));
+                const pkgJson = JSON.parse(kernelFs.readFileString(pkgPath));
                 for (const pkg of packages) {
                     delete pkgJson.dependencies?.[pkg];
                     delete pkgJson.devDependencies?.[pkg];
                 }
-                sqliteFs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
+                kernelFs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
             }
             catch { }
             return 0;
@@ -2178,7 +2289,7 @@ export function initSession(self, ws) {
             // Ensure package.json exists for bare `npm install`
             if (!globalPrefix && explicitPkgs.length === 0) {
                 const pkgJsonPath = installCwd + '/package.json';
-                if (!sqliteFs.exists(pkgJsonPath)) {
+                if (!kernelFs.exists(pkgJsonPath)) {
                     ctx.stderr.write('npm ERR! no package.json found\n');
                     return 1;
                 }
@@ -2211,7 +2322,7 @@ export function initSession(self, ws) {
                     ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
                 }
                 if (globalPrefix && (result.failed?.length || 0) === 0) {
-                    const linked = materializeNpmBinShims(sqliteFs, `${installCwd}/node_modules`, `${globalPrefix}/bin`);
+                    const linked = materializeNpmBinShims(kernelFs, `${installCwd}/node_modules`, `${globalPrefix}/bin`);
                     if (linked > 0) {
                         ctx.stdout.write(`\x1b[2m  linked ${linked} bin${linked === 1 ? '' : 's'} into /${globalPrefix}/bin\x1b[0m\n`);
                     }
@@ -2635,7 +2746,7 @@ export function initSession(self, ws) {
         setPhase(self, 'online', 'init-session');
         // ── Show MOTD ──
         try {
-            const motd = self.sqliteFs.readFileString('etc/motd');
+            const motd = kernelFs.readFileString('etc/motd');
             self.terminal.write(motd + '\r\n');
         }
         catch { }
@@ -2644,7 +2755,7 @@ export function initSession(self, ws) {
         // deletes ~/.nimbus-seeded (or ~/app) the hint stops appearing on
         // next login.
         try {
-            if (hasSeededProject(self.sqliteFs) && self.sqliteFs.exists(SEED_PROJECT_DIR)) {
+            if (hasSeededProject(self.sqliteFs) && kernelFs.exists(SEED_PROJECT_DIR)) {
                 self.terminal.write('\x1b[2mStarter app ready at \x1b[36m~/app\x1b[0m\x1b[2m — try:\x1b[0m\r\n' +
                     '  \x1b[36mcd app && npm install && npm run dev\x1b[0m\r\n\r\n');
             }
@@ -2658,12 +2769,12 @@ export function initSession(self, ws) {
             try {
                 const projDir = SEED_PROJECT_DIR;
                 const pkgPath = projDir + '/package.json';
-                if (!self.sqliteFs.exists(pkgPath))
+                if (!kernelFs.exists(pkgPath))
                     return;
-                const pkg = JSON.parse(self.sqliteFs.readFileString(pkgPath));
+                const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
                 const files = new Set();
                 try {
-                    for (const e of self.sqliteFs.readdir(projDir))
+                    for (const e of kernelFs.readdir(projDir))
                         files.add(e.name);
                 }
                 catch { }
@@ -2671,7 +2782,7 @@ export function initSession(self, ws) {
                 for (const c of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
                     if (files.has(c)) {
                         try {
-                            fileContents[c] = self.sqliteFs.readFileString(projDir + '/' + c);
+                            fileContents[c] = kernelFs.readFileString(projDir + '/' + c);
                         }
                         catch { }
                     }

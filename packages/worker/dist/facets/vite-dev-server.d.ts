@@ -105,6 +105,7 @@ interface HashImportCtx {
 export declare function rewriteAllImports(code: string, aliases?: Record<string, string>, basePath?: string, importerCtx?: HashImportCtx): string;
 export declare class ViteDevServer {
     private vfs;
+    private vfsEvents;
     private esbuild;
     private root;
     private onHmrMessage;

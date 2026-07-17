@@ -1,3 +1,4 @@
+import type { VfsCred } from './os-contracts.js';
 /**
  * ProcessTable — PID allocation and process lifecycle state.
  *
@@ -15,11 +16,16 @@ export interface ProcessEntry {
     exitCode: number | null;
     startTime: number;
     endTime: number | null;
+    cred: VfsCred;
     /** Explicit long-running flag set when a command is handed to a
      *  long-lived Worker Loader or shell execution path. */
     longRunning?: boolean;
     /** Output is owned by a process-terminal attachment, not the parent shell. */
     attachedTty?: boolean;
+}
+export interface ProcessTableSpawnOptions {
+    cred?: VfsCred;
+    parentPid?: number;
 }
 /**
  * Pid-space stride per DO instance generation. Pids are allocated as
@@ -44,7 +50,10 @@ export declare class ProcessTable {
     /** The current generation's pid floor: pids <= base are prior-generation. */
     get pidBase(): number;
     /** Allocate a PID and register a new process. */
-    spawn(command: string, argv: string[], cwd: string): ProcessEntry;
+    spawn(command: string, argv: string[], cwd: string, options?: ProcessTableSpawnOptions): ProcessEntry;
+    credOf(pid: number): VfsCred;
+    cred(pid: number): VfsCred;
+    setUmask(pid: number, umask: number): number;
     /** child-process isolation: mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid: number): void;
     /** Mark an existing entry as an attached terminal process. Idempotent. */

@@ -45,11 +45,12 @@ export class Shell {
     };
     traps = new Map();
     readonlyNames = new Set();
+    commandIdentity;
     // Tab completion state
     tabCount = 0;
     // Paste queue for multiline paste support
     pasteQueue = [];
-    constructor(terminal, vfs, registry, env, processRegistry) {
+    constructor(terminal, vfs, registry, env, processRegistry, commandIdentity) {
         this.terminal = terminal;
         this.vfs = vfs;
         this.registry = registry;
@@ -59,6 +60,14 @@ export class Shell {
             this.env['0'] = 'nimbus-sh';
         if (!this.env['$'])
             this.env['$'] = String(processRegistry.registerShell(this.cwd, this.env));
+        let defaultCred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+        this.commandIdentity = commandIdentity ?? {
+            pid: Number(this.env['$']),
+            get cred() { return defaultCred; },
+            setUmask: (mask) => {
+                defaultCred = { ...defaultCred, umask: mask };
+            },
+        };
         // Initialize builtins
         this.builtins = new Map();
         this.registerBuiltins();
@@ -114,8 +123,8 @@ export class Shell {
         this.builtins.set('.', (args, stdout, stderr, _stdin, context) => this.builtinSource(args, stdout, stderr, context));
         this.builtins.set('alias', (args, stdout) => this.builtinAlias(args, stdout));
         this.builtins.set('unalias', (args, _stdout, stderr) => this.builtinUnalias(args, stderr));
-        this.builtins.set('test', (args, _stdout, stderr, _stdin, context) => Promise.resolve(evaluateTest(args, this.vfs, stderr, context)));
-        this.builtins.set('[', (args, _stdout, stderr, _stdin, context) => Promise.resolve(evaluateTest(args, this.vfs, stderr, context)));
+        this.builtins.set('test', (args, _stdout, stderr, _stdin, context) => Promise.resolve(evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+        this.builtins.set('[', (args, _stdout, stderr, _stdin, context) => Promise.resolve(evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
     }
     getJobTable() {
         return this.jobTable;
@@ -217,6 +226,8 @@ export class Shell {
                 terminalFds: options?.terminalFds,
                 scriptMode: options?.scriptMode === true,
                 commandContext: options?.commandContext,
+                commandIdentity: this.resolveCommandIdentity(options?.commandContext),
+                runAs: options?.runAs ?? this.commandIdentity.runAs,
             });
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
         }
@@ -246,6 +257,19 @@ export class Shell {
                 this.cwd = prevCwd;
             }
         }
+    }
+    resolveCommandIdentity(overrides) {
+        const pid = overrides?.['pid'];
+        const cred = overrides?.['cred'];
+        const setUmask = overrides?.['setUmask'];
+        return {
+            pid: typeof pid === 'number' ? pid : this.commandIdentity.pid,
+            cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
+            setUmask: typeof setUmask === 'function'
+                ? (mask) => setUmask(mask)
+                : this.commandIdentity.setUmask,
+            runAs: this.commandIdentity.runAs,
+        };
     }
     start() {
         // Register this shell instance as a process
@@ -1685,4 +1709,16 @@ function replaceSet(target, source) {
     target.clear();
     for (const value of source.values())
         target.add(value);
+}
+function isVfsCred(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    if (!('uid' in value) || typeof value.uid !== 'number')
+        return false;
+    if (!('gid' in value) || typeof value.gid !== 'number')
+        return false;
+    if (!('umask' in value) || typeof value.umask !== 'number')
+        return false;
+    return 'groups' in value && Array.isArray(value.groups)
+        && value.groups.every((group) => typeof group === 'number');
 }

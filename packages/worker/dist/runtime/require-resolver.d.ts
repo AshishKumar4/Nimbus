@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
  * Result of a prefetch walk.
  *   - bundle:  path → content for every reachable file.
@@ -48,5 +48,5 @@ export interface PrefetchResult {
  * Returns Record<path, content> + the set of package directories
  * referenced (for greedy oversampling).
  */
-export declare function prefetchForRequire(vfs: SqliteVFS, entryCode: string, cwd: string, entryFile?: string): PrefetchResult;
+export declare function prefetchForRequire(vfs: CredentialedVfs, entryCode: string, cwd: string, entryFile?: string): PrefetchResult;
 //# sourceMappingURL=require-resolver.d.ts.map

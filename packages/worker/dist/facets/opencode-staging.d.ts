@@ -42,10 +42,17 @@ export declare const OpencodeStageSpecSchema: z.ZodObject<{
     }>;
     argv: z.ZodArray<z.ZodString>;
     env: z.ZodRecord<z.ZodString, z.ZodString>;
+    cred: z.ZodObject<{
+        uid: z.ZodNumber;
+        gid: z.ZodNumber;
+        groups: z.ZodArray<z.ZodNumber>;
+        umask: z.ZodNumber;
+    }, z.core.$strip>;
     cwd: z.ZodString;
     stdin: z.ZodString;
     vfsBundle: z.ZodString;
     vfsManifest: z.ZodString;
+    vfsMetadata: z.ZodString;
 }, z.core.$strip>;
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 /** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */

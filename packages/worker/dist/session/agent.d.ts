@@ -15,24 +15,11 @@ interface AgentStorage {
     deleteAll(): Promise<void>;
     deleteAlarm(): Promise<void>;
 }
-interface AgentVfs {
-    exists(path: string): boolean;
-    mkdir(path: string, options?: {
-        recursive?: boolean;
-    }): void;
-    readFileString(path: string): string;
-    readdir(path: string): Array<{
-        name: string;
-        type: string;
-    }>;
-    writeFile(path: string, content: string): void;
-}
 interface Host extends ProgrammaticHost {
     ctx: {
         storage: AgentStorage;
     };
     env: ProgrammaticHost['env'] & Record<string, unknown>;
-    sqliteFs: (ProgrammaticHost['sqliteFs'] & AgentVfs) | null;
 }
 interface OAuthStatePayload {
     v: 1;

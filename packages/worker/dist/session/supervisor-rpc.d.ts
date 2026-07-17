@@ -65,6 +65,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     private _getStub;
     private _call;
+    private _pid;
     readFile(path: string): Promise<string | null>;
     /**
      * Read a file as raw bytes. Used by the git network facet for binary
@@ -77,6 +78,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     hasLegacySymlinkUnder(path: string): Promise<boolean>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     chmod(path: string, mode: number): Promise<void>;
+    access(path: string, mode: number): Promise<void>;
+    chown(path: string, uid: number, gid: number, options?: {
+        followSymlinks?: boolean;
+    }): Promise<void>;
+    setUmask(mask: number): Promise<number>;
     readdir(path: string): Promise<{
         name: string;
         type: string;

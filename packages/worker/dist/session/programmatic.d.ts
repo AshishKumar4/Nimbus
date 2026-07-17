@@ -52,6 +52,7 @@ export interface ProgrammaticHost {
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
     shell: ProgrammaticShell | null;
+    shellProcessPid: number | null;
     sqliteFs: SqliteVFS | null;
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
@@ -74,7 +75,7 @@ export interface ProgrammaticHost {
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
     fetchProxyEntrypoint?: unknown;
-    runtimeFsBridge?: unknown;
+    runtimeFsBridges?: Map<number, unknown> | null;
     sessionBasePath?: string;
     sessionBasePathHydrated?: boolean;
     wranglerAliasBannerShown?: boolean;

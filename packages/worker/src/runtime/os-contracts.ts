@@ -109,6 +109,10 @@ export interface RuntimeFsBridge {
   utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
   /** Set permission bits (POSIX chmod — follows symlinks). */
   chmod(path: string, mode: number): Promise<void>;
+  /** Check access using the bridge's process credential. */
+  access(path: string, mode: number): Promise<void>;
+  /** Change stored ownership, optionally operating on a symlink itself. */
+  chown(path: string, uid: number, gid: number, options?: { followSymlinks?: boolean }): Promise<void>;
   open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;

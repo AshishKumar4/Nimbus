@@ -201,8 +201,14 @@ function evaluateFileTest(flag, path, vfs) {
         case 'r':
         case 'w':
         case 'x': {
-            // In VFS, all files are readable/writable/executable if they exist
-            return vfs.exists(path);
+            const mode = flag === 'r' ? 0o4 : flag === 'w' ? 0o2 : 0o1;
+            try {
+                vfs.access(path, mode);
+                return true;
+            }
+            catch {
+                return false;
+            }
         }
         default:
             return null;

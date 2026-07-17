@@ -1,12 +1,12 @@
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 export interface PyodideRuntimeAssetPaths {
     asmWasmVfs: string | null;
     asmJsVfs: string | null;
     stdlibVfs: string | null;
     lockfileVfs: string | null;
     manifest: RuntimeManifest;
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
 }
 export interface PyodideRuntimeFiles {
     asmWasmBytes: Uint8Array;

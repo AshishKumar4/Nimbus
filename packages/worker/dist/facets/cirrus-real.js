@@ -60,6 +60,7 @@ import { CF_COMPAT_DATE } from '../constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { stripLeadingSlashes } from '../vfs/path.js';
 /**
  * Compatibility flags for the real-vite facet.
@@ -596,7 +597,7 @@ export class CirrusReal {
         this.port = opts.port;
         this.root = opts.root;
         this.basePath = opts.basePath;
-        this.vfs = opts.vfs;
+        this.vfs = opts.vfs.as(CRED_KERNEL);
         this.vfsEvents = opts.vfsEvents || null;
         this.userConfigBundle = opts.userConfigBundle || null;
         this.extraSyntheticFiles = opts.extraSyntheticFiles || {};

@@ -50,7 +50,7 @@
  */
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import { type VfsLike } from './vfs-snapshot.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
 export declare function formatWasmRunnerWasiInfo(): string;
@@ -62,7 +62,7 @@ export declare function formatWasmRunnerWasiInfo(): string;
  * the runtime-registry's contract.
  */
 export declare function makeWasmRunner(deps: {
-    vfs: VfsLike;
+    vfs: SqliteVFS;
     env: any;
     ctx: DurableObjectState;
     processes: SessionProcessSupervisor;

@@ -1,3 +1,4 @@
+import type { VfsCred } from '../../../../runtime/os-contracts.js';
 export type FileType = 'file' | 'directory';
 export type VFSEventType = 'create' | 'modify' | 'delete' | 'rename';
 export interface VFSWatchEvent {
@@ -30,6 +31,8 @@ export interface Stat {
     ctime: number;
     mtime: number;
     mode: number;
+    uid?: number;
+    gid?: number;
     mime?: string;
 }
 export interface Dirent {
@@ -52,6 +55,8 @@ export interface VirtualProvider {
     exists(subpath: string): boolean;
     stat(subpath: string): Stat;
     readdir(subpath: string): Dirent[];
+    access?(subpath: string, mode: number): void;
+    as?(cred: VfsCred): VirtualProvider;
 }
 export interface MountProvider extends VirtualProvider {
     writeFile(subpath: string, content: string | Uint8Array): void;
@@ -64,6 +69,7 @@ export interface MountProvider extends VirtualProvider {
     copyFile(srcSubpath: string, destSubpath: string): void;
     /** Set permission bits. Providers without chmod reject it (read-only fs). */
     chmod?(subpath: string, mode: number): void;
+    chown?(subpath: string, uid: number | null, gid: number | null): void;
 }
 export declare class VFSError extends Error {
     code: ErrorCodeType;

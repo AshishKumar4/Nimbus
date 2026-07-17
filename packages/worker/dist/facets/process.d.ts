@@ -34,6 +34,7 @@
  *     idempotent guard).
  */
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this
@@ -170,11 +171,7 @@ export interface ShellExecutorLike {
 export interface FacetProcessManagerDeps {
     facetMgr: FacetManagerLike;
     processes: SessionProcessSupervisor;
-    vfs: {
-        exists(p: string): boolean;
-        readFileString(p: string): string;
-        isDirectory(p: string): boolean;
-    };
+    vfs: Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
     commandRegistry: CommandRegistryLike;
     shellExecutor?: ShellExecutorLike;
     /** Optional: ctx for facets.abort/delete in production. */

@@ -12,6 +12,7 @@ import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
@@ -196,8 +197,10 @@ The editor opens this file in Markdown preview mode by default. Use
 export class NimbusSession extends CloudflareDurableObject {
     // this.ctx and this.env are provided by the DurableObject base class
     sqliteFs = null;
+    runtimeFsBridges = null;
     kernel = null;
     shell = null;
+    shellProcessPid = null;
     terminal = null;
     facetManager = null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
@@ -517,49 +520,58 @@ export class NimbusSession extends CloudflareDurableObject {
     // 1-line delegators that pass `this as any` (per plan §IX rec 1 +
     // DEFECT-D1: ctx is protected and not on a public interface).
     // Supervisor RPC (file/log/HMR/batch)
-    async _rpcReadFile(path) { return _rpc._rpcReadFile(this, path); }
-    async _rpcReadFileBytes(path) { return _rpc._rpcReadFileBytes(this, path); }
+    async _rpcReadFile(path, pid) { return _rpc._rpcReadFile(this, path, pid); }
+    async _rpcReadFileBytes(path, pid) { return _rpc._rpcReadFileBytes(this, path, pid); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
-    async _rpcWriteFile(path, content) { return _rpc._rpcWriteFile(this, path, content); }
-    async _rpcStat(path) { return _rpc._rpcStat(this, path); }
-    async _rpcLstat(path) { return _rpc._rpcLstat(this, path); }
-    async _rpcHasLegacySymlinkUnder(path) {
-        return _rpc._rpcHasLegacySymlinkUnder(this, path);
+    async _rpcWriteFile(path, content, pid) { return _rpc._rpcWriteFile(this, path, content, pid); }
+    async _rpcStat(path, pid) { return _rpc._rpcStat(this, path, pid); }
+    async _rpcLstat(path, pid) { return _rpc._rpcLstat(this, path, pid); }
+    async _rpcHasLegacySymlinkUnder(path, pid) {
+        return _rpc._rpcHasLegacySymlinkUnder(this, path, pid);
     }
-    async _rpcUtimes(path, atimeMs, mtimeMs) {
-        return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs);
+    async _rpcUtimes(path, atimeMs, mtimeMs, pid) {
+        return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs, pid);
     }
-    async _rpcChmod(path, mode) {
-        return _rpc._rpcChmod(this, path, mode);
+    async _rpcChmod(path, mode, pid) {
+        return _rpc._rpcChmod(this, path, mode, pid);
     }
-    async _rpcReaddir(path) { return _rpc._rpcReaddir(this, path); }
-    async _rpcExists(path) { return _rpc._rpcExists(this, path); }
-    async _rpcMkdir(path) { return _rpc._rpcMkdir(this, path); }
-    async _rpcRmdir(path) { return _rpc._rpcRmdir(this, path); }
-    async _rpcRename(from, to) { return _rpc._rpcRename(this, from, to); }
-    async _rpcReadlink(path) { return _rpc._rpcReadlink(this, path); }
-    async _rpcSymlink(target, path) { return _rpc._rpcSymlink(this, target, path); }
-    async _rpcFsRevision(path) { return _rpc._rpcFsRevision(this, path); }
-    async _rpcFsOpen(path, flags) { return _rpc._rpcFsOpen(this, path, flags); }
-    async _rpcFsRead(handleId, offset, length) {
-        return _rpc._rpcFsRead(this, handleId, offset, length);
+    async _rpcAccess(path, mode, pid) {
+        return _rpc._rpcAccess(this, path, mode, pid);
     }
-    async _rpcFsWrite(handleId, offset, bytes) {
-        return _rpc._rpcFsWrite(this, handleId, offset, bytes);
+    async _rpcChown(path, uid, gid, pid, options) {
+        return _rpc._rpcChown(this, path, uid, gid, pid, options);
     }
-    async _rpcFsClose(handleId) { return _rpc._rpcFsClose(this, handleId); }
-    async _rpcFsReadRange(path, offset, length) {
-        return _rpc._rpcFsReadRange(this, path, offset, length);
+    async _rpcSetUmask(mask, pid) {
+        return _rpc._rpcSetUmask(this, mask, pid);
     }
-    async _rpcFsWriteRange(path, offset, bytes) {
-        return _rpc._rpcFsWriteRange(this, path, offset, bytes);
+    async _rpcReaddir(path, pid) { return _rpc._rpcReaddir(this, path, pid); }
+    async _rpcExists(path, pid) { return _rpc._rpcExists(this, path, pid); }
+    async _rpcMkdir(path, pid) { return _rpc._rpcMkdir(this, path, pid); }
+    async _rpcRmdir(path, pid) { return _rpc._rpcRmdir(this, path, pid); }
+    async _rpcRename(from, to, pid) { return _rpc._rpcRename(this, from, to, pid); }
+    async _rpcReadlink(path, pid) { return _rpc._rpcReadlink(this, path, pid); }
+    async _rpcSymlink(target, path, pid) { return _rpc._rpcSymlink(this, target, path, pid); }
+    async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
+    async _rpcFsOpen(path, flags, pid) { return _rpc._rpcFsOpen(this, path, flags, pid); }
+    async _rpcFsRead(handleId, offset, length, pid) {
+        return _rpc._rpcFsRead(this, handleId, offset, length, pid);
     }
-    async _rpcFsTruncate(path, size) { return _rpc._rpcFsTruncate(this, path, size); }
+    async _rpcFsWrite(handleId, offset, bytes, pid) {
+        return _rpc._rpcFsWrite(this, handleId, offset, bytes, pid);
+    }
+    async _rpcFsClose(handleId, pid) { return _rpc._rpcFsClose(this, handleId, pid); }
+    async _rpcFsReadRange(path, offset, length, pid) {
+        return _rpc._rpcFsReadRange(this, path, offset, length, pid);
+    }
+    async _rpcFsWriteRange(path, offset, bytes, pid) {
+        return _rpc._rpcFsWriteRange(this, path, offset, bytes, pid);
+    }
+    async _rpcFsTruncate(path, size, pid) { return _rpc._rpcFsTruncate(this, path, size, pid); }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
-    async _rpcUnlink(path) { return _rpc._rpcUnlink(this, path); }
-    async _rpcWriteBatch(payload) { return _rpc._rpcWriteBatch(this, payload); }
-    async _rpcWriteBatchStream(stream, mutationOwner) {
-        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner);
+    async _rpcUnlink(path, pid) { return _rpc._rpcUnlink(this, path, pid); }
+    async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
+    async _rpcWriteBatchStream(stream, mutationOwner, pid) {
+        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner, pid);
     }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
@@ -915,7 +927,7 @@ export class NimbusSession extends CloudflareDurableObject {
         this.facetProcessManager = new FacetProcessManager({
             facetMgr: facetMgrAdapter,
             processes: this.processes,
-            vfs: this.sqliteFs,
+            vfs: this.sqliteFs.as(CRED_KERNEL),
             commandRegistry: cmdRegistryAdapter,
             shellExecutor: {
                 execute: async (commandLine, env, cwd, stdin, hooks) => {
@@ -1121,7 +1133,13 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     // ── Filesystem seeding ────────────────────────────────────────────────
     seedFilesystem() {
-        const fs = this.sqliteFs;
+        const fs = this.sqliteFs.as({
+            uid: 1000,
+            gid: 1000,
+            groups: [1000],
+            umask: 0o022,
+        });
+        const rootFs = this.sqliteFs.as(CRED_KERNEL);
         const dirs = [
             'bin', 'etc', 'home', 'home/user', 'home/user/.config',
             'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
@@ -1139,6 +1157,14 @@ export class NimbusSession extends CloudflareDurableObject {
         if (!fs.exists('etc/os-release')) {
             fs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
                 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
+        }
+        if (!rootFs.exists('etc/passwd')) {
+            rootFs.writeFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\n' +
+                'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n', { mode: 0o644 });
+        }
+        if (!rootFs.exists('etc/group')) {
+            rootFs.writeFile('etc/group', 'root:x:0:\n' +
+                'user:x:1000:user\n', { mode: 0o644 });
         }
         const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
         if (!fs.exists('etc/profile')) {
@@ -1194,7 +1220,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // Idempotent: guarded by shouldSeedProject() which checks both a
         // sentinel file and the project dir. Safe to call on every boot.
         try {
-            seedProject(fs, { log: (msg) => console.log(msg) });
+            seedProject(this.sqliteFs, { log: (msg) => console.log(msg) });
         }
         catch (e) {
             console.error('[nimbus] seedProject failed:', e?.message || e);

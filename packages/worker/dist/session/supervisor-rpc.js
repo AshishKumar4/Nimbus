@@ -101,16 +101,23 @@ export class SupervisorRPC extends WorkerEntrypoint {
     _call(promise) {
         return useRpcResource(promise, (value) => value);
     }
+    _pid() {
+        const pid = this.ctx.props?.pid;
+        if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
+            throw new Error('SupervisorRPC: missing or invalid process pid in props');
+        }
+        return pid;
+    }
     // ── Filesystem RPC ────────────────────────────────────────────────────
     async readFile(path) {
-        return this._call(this._getStub()._rpcReadFile(path));
+        return this._call(this._getStub()._rpcReadFile(path, this._pid()));
     }
     /**
      * Read a file as raw bytes. Used by the git network facet for binary
      * object/pack files where the text readFile would corrupt content.
      */
     async readFileBytes(path) {
-        return this._call(this._getStub()._rpcReadFileBytes(path));
+        return this._call(this._getStub()._rpcReadFileBytes(path, this._pid()));
     }
     async writeFile(path, content) {
         // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
@@ -118,61 +125,70 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
         // and corrupting binary content. RPC structured-clone handles
         // Uint8Array transparently; downstream _rpcWriteFile also accepts
-        return this._call(this._getStub()._rpcWriteFile(path, content));
+        return this._call(this._getStub()._rpcWriteFile(path, content, this._pid()));
     }
     async stat(path) {
-        return this._call(this._getStub()._rpcStat(path));
+        return this._call(this._getStub()._rpcStat(path, this._pid()));
     }
     async lstat(path) {
-        return this._call(this._getStub()._rpcLstat(path));
+        return this._call(this._getStub()._rpcLstat(path, this._pid()));
     }
     async hasLegacySymlinkUnder(path) {
-        return this._call(this._getStub()._rpcHasLegacySymlinkUnder(path));
+        return this._call(this._getStub()._rpcHasLegacySymlinkUnder(path, this._pid()));
     }
     async utimes(path, atimeMs, mtimeMs) {
-        return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs));
+        return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs, this._pid()));
     }
     async chmod(path, mode) {
-        return this._call(this._getStub()._rpcChmod(path, mode));
+        return this._call(this._getStub()._rpcChmod(path, mode, this._pid()));
+    }
+    async access(path, mode) {
+        return this._call(this._getStub()._rpcAccess(path, mode, this._pid()));
+    }
+    async chown(path, uid, gid, options) {
+        return this._call(this._getStub()._rpcChown(path, uid, gid, this._pid(), options));
+    }
+    async setUmask(mask) {
+        return this._call(this._getStub()._rpcSetUmask(mask, this._pid()));
     }
     async readdir(path) {
-        return this._call(this._getStub()._rpcReaddir(path));
+        return this._call(this._getStub()._rpcReaddir(path, this._pid()));
     }
     async exists(path) {
-        return this._call(this._getStub()._rpcExists(path));
+        return this._call(this._getStub()._rpcExists(path, this._pid()));
     }
     async mkdir(path) {
-        return this._call(this._getStub()._rpcMkdir(path));
+        return this._call(this._getStub()._rpcMkdir(path, this._pid()));
     }
     async rmdir(path) {
-        return this._call(this._getStub()._rpcRmdir(path));
+        return this._call(this._getStub()._rpcRmdir(path, this._pid()));
     }
     async rename(from, to) {
-        return this._call(this._getStub()._rpcRename(from, to));
+        return this._call(this._getStub()._rpcRename(from, to, this._pid()));
     }
     async unlink(path) {
-        return this._call(this._getStub()._rpcUnlink(path));
+        return this._call(this._getStub()._rpcUnlink(path, this._pid()));
     }
     async readlink(path) {
-        return this._call(this._getStub()._rpcReadlink(path));
+        return this._call(this._getStub()._rpcReadlink(path, this._pid()));
     }
     async symlink(target, path) {
-        return this._call(this._getStub()._rpcSymlink(target, path));
+        return this._call(this._getStub()._rpcSymlink(target, path, this._pid()));
     }
     async fsRevision(path) {
-        return this._call(this._getStub()._rpcFsRevision(path));
+        return this._call(this._getStub()._rpcFsRevision(path, this._pid()));
     }
     async fsOpen(path, flags) {
-        return this._call(this._getStub()._rpcFsOpen(path, flags));
+        return this._call(this._getStub()._rpcFsOpen(path, flags, this._pid()));
     }
     async fsRead(handleId, offset, length) {
-        return this._call(this._getStub()._rpcFsRead(handleId, offset, length));
+        return this._call(this._getStub()._rpcFsRead(handleId, offset, length, this._pid()));
     }
     async fsWrite(handleId, offset, bytes) {
-        return this._call(this._getStub()._rpcFsWrite(handleId, offset, bytes));
+        return this._call(this._getStub()._rpcFsWrite(handleId, offset, bytes, this._pid()));
     }
     async fsClose(handleId) {
-        return this._call(this._getStub()._rpcFsClose(handleId));
+        return this._call(this._getStub()._rpcFsClose(handleId, this._pid()));
     }
     /**
      * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no
@@ -180,13 +196,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * hibernation and never rewrite whole files for partial updates.
      */
     async fsReadRange(path, offset, length) {
-        return this._call(this._getStub()._rpcFsReadRange(path, offset, length));
+        return this._call(this._getStub()._rpcFsReadRange(path, offset, length, this._pid()));
     }
     async fsWriteRange(path, offset, bytes) {
-        return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes));
+        return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes, this._pid()));
     }
     async fsTruncate(path, size) {
-        return this._call(this._getStub()._rpcFsTruncate(path, size));
+        return this._call(this._getStub()._rpcFsTruncate(path, size, this._pid()));
     }
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
@@ -209,7 +225,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         setLastRpcFrame('writeBatch', payloadBytes);
         rpcPayloadStart(payloadBytes);
         try {
-            return await this._call(this._getStub()._rpcWriteBatch(payload));
+            return await this._call(this._getStub()._rpcWriteBatch(payload, this._pid()));
         }
         finally {
             rpcPayloadEnd(payloadBytes);
@@ -240,7 +256,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         rpcPayloadStart(STREAM_RESIDENT_BYTES);
         try {
             const mutationOwner = this.ctx.props?.mutationOwner;
-            return await this._call(this._getStub()._rpcWriteBatchStream(stream, typeof mutationOwner === 'string' ? mutationOwner : undefined));
+            return await this._call(this._getStub()._rpcWriteBatchStream(stream, typeof mutationOwner === 'string' ? mutationOwner : undefined, this._pid()));
         }
         finally {
             rpcPayloadEnd(STREAM_RESIDENT_BYTES);

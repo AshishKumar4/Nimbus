@@ -1,7 +1,8 @@
 import type { ScriptNode } from './types.js';
 import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandRegistry } from '../commands/registry.js';
-import type { CommandOutputStream, CommandInputStream, TerminalInputStream } from '../commands/types.js';
+import type { CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
+import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 export declare class BreakSignal {
@@ -36,6 +37,7 @@ export interface TrapTable {
     entries(): IterableIterator<[string, string]>;
 }
 export interface BuiltinExecutionContext {
+    vfs: VFS;
     stdin?: CommandInputStream;
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
@@ -71,6 +73,13 @@ type ExecutionIo = {
     positionals?: PositionalFrame;
     /** Host-supplied fields merged into each command's CommandContext. */
     commandContext?: Record<string, unknown>;
+    commandIdentity?: {
+        pid: number;
+        cred: VfsCred;
+        setUmask(mask: number): void;
+    };
+    runAs?: CommandRunAsHost;
+    vfs?: VFS;
 };
 export type TerminalFdState = {
     stdin?: boolean;
@@ -120,6 +129,12 @@ export declare class Interpreter {
         terminalFds?: TerminalFdState;
         scriptMode?: boolean;
         commandContext?: Record<string, unknown>;
+        commandIdentity?: {
+            pid: number;
+            cred: VfsCred;
+            setUmask(mask: number): void;
+        };
+        runAs?: CommandRunAsHost;
     }): Promise<number>;
     private executeList;
     private getListCommandText;

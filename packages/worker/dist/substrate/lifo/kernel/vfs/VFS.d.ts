@@ -1,6 +1,7 @@
 import { INode, Stat, Dirent, VirtualProvider, MountProvider } from './types.js';
 import type { VFSWatchListener } from './types.js';
 import { ContentStore } from '../storage/ContentStore.js';
+import type { VfsCred } from '../../../../runtime/os-contracts.js';
 export declare class VFS {
     private root;
     /**
@@ -12,7 +13,9 @@ export declare class VFS {
     onChange?: () => void;
     /** Content store for chunked large files. Optional -- without it all data stays inline. */
     readonly contentStore: ContentStore;
+    private cred?;
     constructor(contentStore?: ContentStore);
+    as(cred: VfsCred): VFS;
     watch(listener: VFSWatchListener): () => void;
     watch(path: string, listener: VFSWatchListener): () => void;
     private notify;
@@ -46,11 +49,13 @@ export declare class VFS {
     private applyFileContent;
     appendFile(path: string, content: string | Uint8Array): void;
     exists(path: string): boolean;
+    access(path: string, mode: number): void;
     stat(path: string): Stat;
     unlink(path: string): void;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
     chmod(path: string, mode: number): void;
+    chown(path: string, uid: number | null, gid: number | null): void;
     touch(path: string): void;
     mkdir(path: string, options?: {
         recursive?: boolean;
