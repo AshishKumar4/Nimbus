@@ -1,10 +1,8 @@
-/* Nimbus docs theme — the brand navy #0a192f family with mint #64ffda accent,
-   dark by default, matching the landing page at nimbus.ashishkumarsingh.com.
-   Palette sources: packages/worker/src/session/helpers.ts and
-   packages/worker/public/index.html. Light mode keeps the mint identity,
-   darkened for contrast. Layout is left to stock Starlight. */
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+@import '@fontsource/ibm-plex-mono/latin-600.css';
 
-/* Dark (default) — the Nimbus navy. */
+/* Nimbus docs: quiet navy chrome, one mint accent, and a terminal-first type system. */
 :root {
 	--sl-color-white: #e6f1ff;
 	--sl-color-gray-1: #ccd6f6;
@@ -19,14 +17,23 @@
 	--sl-color-accent-low: #123b34;
 	--sl-color-accent: #64ffda;
 	--sl-color-accent-high: #aefff0;
-
 	--sl-color-bg-nav: #0c1d36;
 	--sl-color-bg-sidebar: #0b1b32;
 	--sl-color-hairline: #1e3a5f;
 	--sl-color-hairline-light: #16294a;
+	--sl-color-hairline-shade: #16294a;
 	--sl-color-bg-inline-code: #112240;
 	--sl-color-text-accent: #64ffda;
 
+	--sl-line-height: 1.8;
+	--sl-line-height-headings: 1.08;
+	--sl-content-gap-y: 1.2rem;
+	--sl-content-width: 46rem;
+	--sl-text-h1: clamp(2.45rem, 5vw, 3.45rem);
+	--sl-text-h2: clamp(1.75rem, 3vw, 2.2rem);
+	--sl-text-h3: clamp(1.3rem, 2vw, 1.55rem);
+
+	--nimbus-display: 'IBM Plex Mono', var(--sl-font-system-mono);
 	--nimbus-terminal-bg: #071527;
 	--nimbus-terminal-bar-bg: #0b1b32;
 	--nimbus-terminal-border: #1e3a5f;
@@ -34,11 +41,11 @@
 	--nimbus-terminal-muted: #8892b0;
 	--nimbus-terminal-accent: #64ffda;
 	--nimbus-panel-bg: color-mix(in srgb, var(--sl-color-gray-7) 72%, transparent);
-	--nimbus-panel-radius: 0.625rem;
-	--nimbus-control-radius: 0.4rem;
+	--nimbus-panel-radius: 0.7rem;
+	--nimbus-control-radius: 0.42rem;
+	--nimbus-transition: 140ms ease;
 }
 
-/* Light — mint darkened for accessible contrast on the white canvas. */
 :root[data-theme='light'] {
 	--sl-color-white: #0a192f;
 	--sl-color-gray-1: #16294a;
@@ -49,72 +56,84 @@
 	--sl-color-gray-6: #eef2fa;
 	--sl-color-gray-7: #f6f8fd;
 	--sl-color-black: #ffffff;
-
 	--sl-color-accent-low: #d8fff6;
 	--sl-color-accent: #0e7a63;
 	--sl-color-accent-high: #075e4e;
-
 	--sl-color-bg-nav: #ffffff;
 	--sl-color-bg-sidebar: #f6f8fd;
 	--sl-color-hairline: #dde4f0;
 	--sl-color-hairline-light: #e8edf6;
+	--sl-color-hairline-shade: #dde4f0;
 	--sl-color-bg-inline-code: #eef2fa;
 	--sl-color-text-accent: #0e7a63;
-}
-
-/* The wordmark is mono, like the terminal it documents. */
-.site-title {
-	font-family: var(--sl-font-system-mono);
-	font-weight: 600;
-	letter-spacing: 0.02em;
-}
-
-/* Sidebar group headings: quiet small caps. */
-#starlight__sidebar .top-level > li > details > summary .large,
-#starlight__sidebar .top-level > li > .large {
-	font-size: var(--sl-text-xs);
-	font-family: var(--sl-font-system-mono);
-	text-transform: uppercase;
-	letter-spacing: 0.07em;
-	color: var(--sl-color-gray-3);
-}
-
-/* Current page: a tinted marker, not a solid accent field. */
-.sidebar-content a[aria-current='page'],
-.sidebar-content a[aria-current='page']:hover,
-.sidebar-content a[aria-current='page']:focus {
-	background: color-mix(in srgb, var(--sl-color-accent) 9%, transparent);
-	color: var(--sl-color-text-accent);
-	font-weight: 600;
-	position: relative;
-}
-
-.sidebar-content a[aria-current='page']::before {
-	content: '';
-	position: absolute;
-	inset-block: 0.3em;
-	inset-inline-start: 0;
-	width: 2px;
-	border-radius: 1px;
-	background: var(--sl-color-accent);
+	--nimbus-panel-bg: color-mix(in srgb, #f6f8fd 82%, transparent);
 }
 
 ::selection {
 	background: color-mix(in srgb, var(--sl-color-accent) 22%, transparent);
 }
 
-/* Quiet heading rhythm with slightly tighter display tracking. */
+:where(a, button, summary, select, input, textarea):focus-visible {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 3px;
+}
+
+/* Typography */
+.site-title,
 main h1#_top,
-.sl-markdown-content :is(h1, h2, h3):not(:where(.not-content *)) {
-	letter-spacing: -0.02em;
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6):not(:where(.not-content *)) {
+	font-family: var(--nimbus-display);
+	font-weight: 500;
 	text-wrap: balance;
 }
 
-.sl-markdown-content :is(h4, h5, h6):not(:where(.not-content *)) {
-	letter-spacing: -0.01em;
+.site-title {
+	font-size: 1.08rem;
+	font-weight: 600;
+	letter-spacing: 0.035em;
 }
 
-/* Inline code reads as a compact chip without competing with links. */
+main h1#_top,
+.sl-markdown-content h1:not(:where(.not-content *)) {
+	letter-spacing: -0.045em;
+}
+
+.sl-markdown-content h2:not(:where(.not-content *)) {
+	position: relative;
+	letter-spacing: -0.035em;
+}
+
+.sl-markdown-content h2:not(:where(.not-content *))::before {
+	content: '//';
+	display: inline-block;
+	margin-inline-end: 0.62rem;
+	color: var(--sl-color-text-accent);
+	font-size: 0.48em;
+	font-weight: 500;
+	letter-spacing: 0;
+	vertical-align: 0.3em;
+}
+
+.sl-markdown-content h3:not(:where(.not-content *)) {
+	letter-spacing: -0.025em;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h2 {
+	margin-top: 4rem;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h3 {
+	margin-top: 3rem;
+}
+
+.sl-markdown-content :is(h4, h5, h6):not(:where(.not-content *)) {
+	letter-spacing: -0.015em;
+}
+
+.sl-markdown-content :is(p, li):not(:where(.not-content *)) {
+	line-height: 1.82;
+}
+
 .sl-markdown-content code:not(:where(pre code, .not-content *)) {
 	border: 1px solid var(--sl-color-hairline);
 	border-radius: 0.3rem;
@@ -122,9 +141,135 @@ main h1#_top,
 	color: var(--sl-color-gray-1);
 }
 
-/* Code blocks stay terminal-dark in both site themes. */
+/* Header and navigation chrome */
+header.header {
+	border-bottom-color: color-mix(in srgb, var(--sl-color-hairline) 76%, transparent);
+	background: color-mix(in srgb, var(--sl-color-bg-nav) 82%, transparent);
+	-webkit-backdrop-filter: blur(14px) saturate(125%);
+	backdrop-filter: blur(14px) saturate(125%);
+}
+
+site-search > button[data-open-modal] {
+	transition:
+		border-color var(--nimbus-transition),
+		color var(--nimbus-transition),
+		background-color var(--nimbus-transition);
+}
+
+@media (min-width: 50rem) {
+	site-search > button[data-open-modal] {
+		max-width: 18rem;
+		border-color: var(--sl-color-hairline);
+		border-radius: var(--nimbus-control-radius);
+		background: color-mix(in srgb, var(--sl-color-black) 52%, transparent);
+		color: var(--sl-color-gray-3);
+		box-shadow: none;
+	}
+
+	site-search > button[data-open-modal]:hover {
+		border-color: color-mix(in srgb, var(--sl-color-accent) 48%, var(--sl-color-hairline));
+		color: var(--sl-color-gray-1);
+	}
+
+	site-search > button[data-open-modal] > kbd {
+		border: 1px solid var(--sl-color-hairline-light);
+		background: transparent;
+		color: var(--sl-color-gray-3);
+		font-family: var(--sl-font-system-mono);
+	}
+}
+
+#starlight__sidebar.sidebar-pane {
+	border-inline-end-color: var(--sl-color-hairline-light);
+}
+
+#starlight__sidebar .sidebar-content {
+	padding-top: 1.6rem;
+	gap: 1.35rem;
+}
+
+#starlight__sidebar .top-level > li + li {
+	margin-top: 1.2rem;
+}
+
+#starlight__sidebar .top-level > li > details > summary {
+	padding-block: 0.3rem 0.55rem;
+}
+
+#starlight__sidebar .top-level > li > details > summary .large,
+#starlight__sidebar .top-level > li > .large {
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.68rem;
+	font-weight: 500;
+	letter-spacing: 0.11em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+}
+
+#starlight__sidebar a {
+	padding-block: 0.42rem;
+	transition:
+		color var(--nimbus-transition),
+		background-color var(--nimbus-transition);
+}
+
+#starlight__sidebar a:not([aria-current='page']):hover {
+	color: var(--sl-color-gray-1);
+}
+
+#starlight__sidebar a[aria-current='page'],
+#starlight__sidebar a[aria-current='page']:hover,
+#starlight__sidebar a[aria-current='page']:focus {
+	position: relative;
+	background: color-mix(in srgb, var(--sl-color-accent) 8%, transparent);
+	color: var(--sl-color-text-accent);
+	font-weight: 500;
+}
+
+#starlight__sidebar a[aria-current='page']::before {
+	content: '';
+	position: absolute;
+	inset-block: 0.38em;
+	inset-inline-start: 0;
+	width: 2px;
+	border-radius: 2px;
+	background: var(--sl-color-accent);
+}
+
+.right-sidebar {
+	border-inline-start-color: var(--sl-color-hairline-light);
+}
+
+.right-sidebar-panel {
+	padding-top: 1.6rem;
+}
+
+starlight-toc #starlight__on-this-page {
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.66rem;
+	font-weight: 500;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+}
+
+starlight-toc a {
+	padding-block: 0.34rem;
+	color: var(--sl-color-gray-3);
+	transition: color var(--nimbus-transition);
+}
+
+starlight-toc a:hover {
+	color: var(--sl-color-gray-2);
+}
+
+starlight-toc a[aria-current='true'] {
+	color: var(--sl-color-text-accent);
+}
+
+/* Expressive Code uses the same terminal object as the live sandbox. */
 .expressive-code {
-	--ec-brdRad: var(--nimbus-control-radius);
+	--ec-brdRad: var(--nimbus-panel-radius);
 	--ec-brdCol: var(--nimbus-terminal-border);
 	--ec-codeBg: var(--nimbus-terminal-bg);
 	--ec-codeFg: var(--nimbus-terminal-fg);
@@ -133,25 +278,43 @@ main h1#_top,
 	--ec-uiSelFg: var(--nimbus-terminal-fg);
 	--ec-focusBrd: var(--nimbus-terminal-accent);
 	--ec-frm-frameBoxShdCssVal: none;
-	--ec-frm-edActTabBg: var(--nimbus-terminal-bar-bg);
-	--ec-frm-edActTabFg: var(--nimbus-terminal-fg);
-	--ec-frm-edActTabBrdCol: var(--nimbus-terminal-border);
-	--ec-frm-edActTabIndTopCol: var(--nimbus-terminal-accent);
-	--ec-frm-edTabBarBg: var(--nimbus-terminal-bar-bg);
-	--ec-frm-edTabBarBrdCol: var(--nimbus-terminal-border);
-	--ec-frm-edTabBarBrdBtmCol: var(--nimbus-terminal-border);
-	--ec-frm-edBg: var(--nimbus-terminal-bg);
 	--ec-frm-trmTtbBg: var(--nimbus-terminal-bar-bg);
 	--ec-frm-trmTtbFg: var(--nimbus-terminal-muted);
 	--ec-frm-trmTtbBrdBtmCol: var(--nimbus-terminal-border);
-	--ec-frm-trmTtbDotsFg: var(--nimbus-terminal-muted);
 	--ec-frm-trmBg: var(--nimbus-terminal-bg);
 	--ec-frm-inlBtnFg: var(--nimbus-terminal-muted);
 	--ec-frm-inlBtnBg: var(--nimbus-terminal-muted);
 	--ec-frm-inlBtnBrd: var(--nimbus-terminal-muted);
 }
 
-/* Expressive Code otherwise selects its light syntax tokens in light mode. */
+.expressive-code .frame.is-terminal > .header {
+	min-height: 2.15rem;
+	justify-content: center;
+	padding: 0.45rem 0.75rem;
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.72rem;
+	font-weight: 400;
+	letter-spacing: 0;
+}
+
+.expressive-code .frame.is-terminal > .header::before {
+	left: 0.75rem;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--nimbus-terminal-border);
+	box-shadow:
+		13px 0 var(--nimbus-terminal-muted),
+		26px 0 var(--nimbus-terminal-accent);
+	opacity: 1;
+	-webkit-mask: none;
+	mask: none;
+}
+
+.expressive-code .frame.is-terminal > .header::after {
+	border-bottom-color: var(--nimbus-terminal-border);
+}
+
 :root[data-theme='light']
 	.expressive-code
 	.ec-line
@@ -163,7 +326,7 @@ main h1#_top,
 	text-decoration: var(--0td, inherit);
 }
 
-/* Tables use a single calm surface and hairline grid. */
+/* Calm content surfaces */
 .sl-markdown-content table:not(:where(.not-content *)) {
 	width: 100%;
 	border: 1px solid var(--sl-color-hairline);
@@ -172,14 +335,14 @@ main h1#_top,
 }
 
 .sl-markdown-content :is(th, td):not(:where(.not-content *)) {
-	padding: 0.65rem 0.8rem;
+	padding: 0.72rem 0.85rem;
 	border-bottom-color: var(--sl-color-hairline-light);
 }
 
 .sl-markdown-content th:not(:where(.not-content *)) {
 	font-family: var(--sl-font-system-mono);
 	font-size: 0.7rem;
-	font-weight: 600;
+	font-weight: 500;
 	letter-spacing: 0.07em;
 	text-transform: uppercase;
 	color: var(--sl-color-gray-2);
@@ -190,16 +353,15 @@ main h1#_top,
 	border-bottom: 0;
 }
 
-/* Landing cards mirror the navigation, with a restrained interactive edge. */
 .card-grid > .sl-link-card {
 	border-color: var(--sl-color-hairline);
 	border-radius: var(--nimbus-panel-radius);
 	background: var(--nimbus-panel-bg);
 	box-shadow: none;
 	transition:
-		transform 140ms ease,
-		border-color 140ms ease,
-		background-color 140ms ease;
+		transform var(--nimbus-transition),
+		border-color var(--nimbus-transition),
+		background-color var(--nimbus-transition);
 }
 
 .card-grid > .sl-link-card .title {
@@ -218,59 +380,398 @@ main h1#_top,
 	color: var(--sl-color-text-accent);
 }
 
-.card-grid > .sl-link-card:has(a:focus-visible) {
-	outline: 2px solid var(--sl-color-accent);
-	outline-offset: 2px;
+/* Landing */
+html[data-has-hero] main > .content-panel {
+	padding-block: 0 5rem;
+}
+
+html[data-has-hero] main > .content-panel > .sl-container {
+	max-width: 67.5rem;
+}
+
+.nx-hero {
+	display: flex;
+	min-height: min(47rem, calc(100vh - var(--sl-nav-height)));
+	padding-block: clamp(6.5rem, 13vh, 10rem) clamp(5rem, 10vh, 8rem);
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+}
+
+.nx-kicker {
+	margin: 0;
+	font-family: var(--sl-font-system-mono);
+	font-size: clamp(0.67rem, 1.4vw, 0.76rem);
+	font-weight: 500;
+	letter-spacing: 0.13em;
+	line-height: 1.5;
+	text-transform: uppercase;
+	color: var(--sl-color-text-accent);
+}
+
+.nx-title {
+	max-width: 15ch;
+	margin: 1.45rem 0 0;
+	font-family: var(--nimbus-display);
+	font-size: clamp(3.15rem, 8.2vw, 7.2rem);
+	font-weight: 600;
+	letter-spacing: -0.075em;
+	line-height: 0.92;
+	text-wrap: balance;
+	color: var(--sl-color-white);
+}
+
+.nx-lede {
+	max-width: 36rem;
+	margin: 2.1rem 0 0;
+	color: var(--sl-color-gray-2);
+	font-size: clamp(1.05rem, 1.8vw, 1.22rem);
+	line-height: 1.75;
+}
+
+.nx-lede code {
+	font-size: 0.82em;
+}
+
+.nx-actions {
+	display: flex;
+	margin-top: 2.1rem;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 0.7rem;
+}
+
+.sl-markdown-content .nx-btn {
+	display: inline-flex;
+	min-height: 2.8rem;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--nimbus-control-radius);
+	padding: 0.65rem 1.15rem;
+	background: transparent;
+	color: var(--sl-color-gray-1);
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.78rem;
+	font-weight: 500;
+	letter-spacing: 0.01em;
+	text-decoration: none;
+	transition:
+		border-color var(--nimbus-transition),
+		background-color var(--nimbus-transition),
+		color var(--nimbus-transition);
+}
+
+.sl-markdown-content .nx-btn:hover {
+	border-color: color-mix(in srgb, var(--sl-color-accent) 70%, var(--sl-color-hairline));
+	background: color-mix(in srgb, var(--sl-color-accent) 5%, transparent);
+	color: var(--sl-color-text-accent);
+}
+
+.sl-markdown-content .nx-btn-primary {
+	border-color: var(--sl-color-accent);
+	background: var(--sl-color-accent);
+	color: #0a192f;
+}
+
+.sl-markdown-content .nx-btn-primary:hover {
+	border-color: color-mix(in srgb, var(--sl-color-accent) 88%, white);
+	background: color-mix(in srgb, var(--sl-color-accent) 88%, white);
+	color: #0a192f;
+}
+
+:root[data-theme='light'] .sl-markdown-content .nx-btn-primary,
+:root[data-theme='light'] .sl-markdown-content .nx-btn-primary:hover {
+	color: #ffffff;
+}
+
+.nx-stats {
+	display: grid;
+	width: min(100%, 44rem);
+	margin: clamp(3.5rem, 8vh, 5.5rem) 0 0;
+	padding: 1.15rem 0;
+	grid-template-columns: repeat(4, 1fr);
+	border-block: 1px solid var(--sl-color-hairline);
+	list-style: none;
+}
+
+.nx-stats li {
+	display: flex;
+	min-width: 0;
+	padding-inline: 1rem;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.18rem;
+}
+
+.nx-stats li + li {
+	border-inline-start: 1px solid var(--sl-color-hairline);
+}
+
+.nx-stats strong {
+	font-family: var(--sl-font-system-mono);
+	font-size: clamp(1.45rem, 3vw, 2rem);
+	font-weight: 500;
+	letter-spacing: -0.045em;
+	line-height: 1.2;
+	color: var(--sl-color-white);
+}
+
+.nx-stats span {
+	color: var(--sl-color-gray-3);
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.66rem;
+	letter-spacing: 0.045em;
+	line-height: 1.35;
+	text-transform: uppercase;
+}
+
+.nx-anatomy {
+	margin-top: clamp(1rem, 4vw, 3rem);
+}
+
+.nx-anatomy .dg-frame {
+	margin-block: 0;
+}
+
+.nx-paths {
+	display: grid;
+	margin-top: 1.25rem;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.85rem;
+}
+
+.sl-markdown-content .nx-paths > a {
+	position: relative;
+	display: block;
+	min-height: 11rem;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--nimbus-panel-radius);
+	padding: 1.35rem 1.4rem;
+	background: var(--nimbus-panel-bg);
+	color: var(--sl-color-gray-2);
+	text-decoration: none;
+	transition:
+		transform var(--nimbus-transition),
+		border-color var(--nimbus-transition),
+		background-color var(--nimbus-transition);
+}
+
+.sl-markdown-content .nx-paths > a::after {
+	content: '→';
+	position: absolute;
+	inset-block-start: 1.25rem;
+	inset-inline-end: 1.3rem;
+	color: var(--sl-color-gray-4);
+	font-family: var(--sl-font-system-mono);
+	transition: color var(--nimbus-transition);
+}
+
+.nx-paths h3 {
+	margin: 0;
+	padding-inline-end: 1.7rem;
+	color: var(--sl-color-white);
+	font-family: var(--nimbus-display);
+	font-size: 1.02rem;
+	font-weight: 500;
+	letter-spacing: -0.025em;
+	line-height: 1.35;
+}
+
+.nx-paths p {
+	margin: 1rem 0 0;
+	color: var(--sl-color-gray-3);
+	font-size: 0.9rem;
+	line-height: 1.65;
+}
+
+.sl-markdown-content .nx-paths > a:hover,
+.sl-markdown-content .nx-paths > a:focus-visible {
+	border-color: color-mix(in srgb, var(--sl-color-accent) 72%, var(--sl-color-hairline));
+	background: color-mix(in srgb, var(--sl-color-accent) 4%, var(--nimbus-panel-bg));
+	color: var(--sl-color-gray-2);
+}
+
+.sl-markdown-content .nx-paths > a:hover::after,
+.sl-markdown-content .nx-paths > a:focus-visible::after {
+	color: var(--sl-color-text-accent);
+}
+
+.nx-footnote {
+	max-width: 38rem;
+	margin: 2rem auto 0;
+	color: var(--sl-color-gray-3);
+	font-size: 0.78rem;
+	line-height: 1.7;
+	text-align: center;
+}
+
+/* Footer and prev/next stay typographic, not card-like. */
+main footer .meta {
+	margin-top: 4.5rem;
+	padding-top: 1.25rem;
+	border-top: 1px solid var(--sl-color-hairline-light);
+}
+
+main footer .pagination-links {
+	gap: 2rem;
+}
+
+main footer .pagination-links > a {
+	border: 0;
+	border-top: 1px solid var(--sl-color-hairline);
+	border-radius: 0;
+	padding: 1.1rem 0;
+	background: transparent;
+	box-shadow: none;
+	color: var(--sl-color-gray-3);
+	transition:
+		border-color var(--nimbus-transition),
+		color var(--nimbus-transition);
+}
+
+main footer .pagination-links > a:hover {
+	border-color: var(--sl-color-accent);
+	color: var(--sl-color-text-accent);
+}
+
+main footer .link-title {
+	color: var(--sl-color-gray-1);
+	font-family: var(--nimbus-display);
+	font-size: 1rem;
+	font-weight: 500;
+	line-height: 1.45;
 }
 
 @media (hover: hover) {
-	.card-grid > .sl-link-card:hover {
+	.card-grid > .sl-link-card:hover,
+	.sl-markdown-content .nx-paths > a:hover {
 		transform: translateY(-2px);
 	}
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.card-grid > .sl-link-card {
-		transition: none;
+@media (max-width: 49.99rem) {
+	#starlight__sidebar .sidebar-content {
+		padding-top: 1.25rem;
 	}
-	.card-grid > .sl-link-card:hover {
+
+	.nx-hero {
+		min-height: auto;
+		padding-block: 5.5rem 4.5rem;
+	}
+
+	.nx-paths {
+		grid-template-columns: 1fr;
+	}
+
+	.sl-markdown-content .nx-paths > a {
+		min-height: auto;
+	}
+}
+
+@media (max-width: 36rem) {
+	html[data-has-hero] main > .content-panel {
+		padding-bottom: 3.5rem;
+	}
+
+	.nx-title {
+		font-size: clamp(2.15rem, 10vw, 4.4rem);
+	}
+
+	.nx-lede {
+		font-size: 1rem;
+	}
+
+	.nx-actions {
+		width: 100%;
+		flex-direction: column;
+	}
+
+	.sl-markdown-content .nx-btn {
+		width: 100%;
+	}
+
+	.nx-stats {
+		grid-template-columns: repeat(2, 1fr);
+		padding-block: 0;
+	}
+
+	.nx-stats li {
+		padding-block: 1rem;
+	}
+
+	.nx-stats li + li {
+		border-inline-start: 0;
+	}
+
+	.nx-stats li:nth-child(even) {
+		border-inline-start: 1px solid var(--sl-color-hairline);
+	}
+
+	.nx-stats li:nth-child(n + 3) {
+		border-top: 1px solid var(--sl-color-hairline);
+	}
+
+	main footer .pagination-links {
+		gap: 0.5rem;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		scroll-behavior: auto !important;
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+	}
+
+	.card-grid > .sl-link-card:hover,
+	.sl-markdown-content .nx-paths > a:hover {
 		transform: none;
 	}
 }
 
-/* Status chips used in capability tables. */
+/* Status chips used in the capability matrix. */
 .nimbus-chip {
 	display: inline-block;
+	border: 1px solid transparent;
+	border-radius: 999px;
+	padding: 0.05rem 0.5rem;
 	font-family: var(--sl-font-system-mono);
 	font-size: 0.72rem;
-	font-weight: 600;
-	padding: 0.05rem 0.5rem;
-	border-radius: 999px;
-	border: 1px solid transparent;
+	font-weight: 500;
 	white-space: nowrap;
 }
+
 .nimbus-chip[data-kind='works'] {
-	color: var(--sl-color-accent-high);
 	border-color: color-mix(in srgb, var(--sl-color-accent) 40%, transparent);
 	background: color-mix(in srgb, var(--sl-color-accent) 9%, transparent);
+	color: var(--sl-color-accent-high);
 }
+
 .nimbus-chip[data-kind='alpha'] {
-	color: #ffd479;
 	border-color: rgba(255, 212, 121, 0.4);
 	background: rgba(255, 212, 121, 0.08);
+	color: #ffd479;
 }
-:root[data-theme='light'] .nimbus-chip[data-kind='alpha'] {
-	color: #8a5a00;
-	border-color: rgba(138, 90, 0, 0.35);
-	background: rgba(216, 160, 44, 0.12);
-}
+
 .nimbus-chip[data-kind='no'] {
-	color: #ff8c8c;
 	border-color: rgba(255, 140, 140, 0.4);
 	background: rgba(255, 140, 140, 0.08);
+	color: #ff8c8c;
 }
+
+:root[data-theme='light'] .nimbus-chip[data-kind='alpha'] {
+	border-color: rgba(138, 90, 0, 0.35);
+	background: rgba(216, 160, 44, 0.12);
+	color: #8a5a00;
+}
+
 :root[data-theme='light'] .nimbus-chip[data-kind='no'] {
-	color: #a33030;
 	border-color: rgba(163, 48, 48, 0.3);
 	background: rgba(163, 48, 48, 0.08);
+	color: #a33030;
 }

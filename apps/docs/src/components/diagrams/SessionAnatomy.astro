@@ -186,5 +186,7 @@ const nodes = {
 				}
 			});
 		});
+		const first = el.querySelector<SVGGElement>('g[data-node="supervisor"]');
+		if (first) select(first);
 	});
 </script>

@@ -37,6 +37,7 @@ export default defineConfig({
 			},
 			plugins: [starlightLlmsTxt()],
 			components: {
+				Hero: './src/components/LandingHero.astro',
 				ThemeProvider: './src/components/ThemeProvider.astro',
 			},
 			editLink: {
