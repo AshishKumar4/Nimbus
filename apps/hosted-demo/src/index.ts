@@ -41,11 +41,13 @@ import {
   type DemoAuth,
 } from './demo-auth.js';
 import { createDemoAgentAuthCookie } from './demo-agent-auth.js';
+import { handleAnonSessionCreate } from './demo-anon.js';
 import { cleanupExpiredDemoSessions } from './demo-cleanup.js';
-import { issueDemoSandboxToken, withInternalNimbusAuth } from './demo-nimbus.js';
+import { demoSandboxPrincipal, issueDemoSandboxToken, withInternalNimbusAuth } from './demo-nimbus.js';
 import {
+  ANON_USER_ID,
   createDemoSession,
-  loadOwnedDemoSession,
+  loadDemoSession,
   markDemoSessionDestroyed,
   markDemoSessionDestroyFailed,
   renderExpiredSession,
@@ -116,6 +118,7 @@ async function handleHostedDemoRequest(
     return completeDemoLogin(request, env);
   }
   if (url.pathname === '/api/demo/auth/me') return handleDemoAuthMe(request, env);
+  if (url.pathname === '/api/demo/anon-session') return handleAnonSessionCreate(request, env);
   if (url.pathname === '/new') return handleNew(request, env);
   if (url.pathname === '/api/sdk-smoke') return handleSdkSmoke(request, env);
   if (url.pathname === '/api/sdk-remote-smoke') return handleSdkRemoteSmoke(request, env, ctx);
@@ -186,11 +189,22 @@ async function handleSessionRequest(
   ctx: ExecutionContext,
   sessionId: string,
 ): Promise<Response> {
+  const session = await loadDemoSession(env, sessionId);
+
+  // Anonymous docs-terminal sessions have no logged-in owner: the
+  // sid-pinned attach token in the request is the credential, and the
+  // core router verifies it in enforce mode. Fixed lifetime — no touch.
+  if (session?.userId === ANON_USER_ID) {
+    if (session.status !== 'active' || session.expiresAt <= Date.now()) {
+      return renderExpiredSession(sessionId);
+    }
+    return nimbus.fetch(request, env, ctx);
+  }
+
   const auth = await loadDemoAuth(request, env);
   if (!auth) return demoAuthRequiredResponse(request, `/s/${sessionId}/`);
 
-  const session = await loadOwnedDemoSession(env, sessionId, auth);
-  if (!session) return renderForbiddenSession();
+  if (!session || session.userId !== auth.userId) return renderForbiddenSession();
   if (request.method === 'DELETE') {
     return destroyOwnedDemoSession(request, env, auth, session);
   }
@@ -222,10 +236,8 @@ async function destroyOwnedDemoSession(
     });
   }
 
-  const box = Nimbus.fromEnv(env, sandboxConfig).sandbox(session.sessionId, {
-    tenant: 'demo',
-    subject: auth.userId,
-  });
+  const box = Nimbus.fromEnv(env, sandboxConfig)
+    .sandbox(session.sessionId, demoSandboxPrincipal(session.userId));
   try {
     const result = await box.destroy({ reason: 'demo-user-delete' });
     await markDemoSessionDestroyed(env, session.sessionId, 'demo-user-delete');
@@ -256,10 +268,7 @@ async function handleSdkSmoke(request: Request, env: any): Promise<Response> {
       ...sandboxConfig,
       endpoint: new URL(request.url).origin,
     },
-  ).sandbox(session.sessionId, {
-    tenant: 'demo',
-    subject: auth.userId,
-  });
+  ).sandbox(session.sessionId, demoSandboxPrincipal(auth.userId));
 
   try {
     const result = await box.exec('node -e "console.log(2 + 2)"');
@@ -300,10 +309,8 @@ async function handleSdkRemoteSmoke(
       endpoint: url.origin,
     },
   }).sandbox(session.sessionId);
-  const localBox = Nimbus.fromEnv(env, sandboxConfig).sandbox(session.sessionId, {
-    tenant: 'demo',
-    subject: auth.userId,
-  });
+  const localBox = Nimbus.fromEnv(env, sandboxConfig)
+    .sandbox(session.sessionId, demoSandboxPrincipal(auth.userId));
 
   try {
     await remoteBox.files.write('/home/user/remote-bytes.bin', new Uint8Array([0, 1, 2, 255]));

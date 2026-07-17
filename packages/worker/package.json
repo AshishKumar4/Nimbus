@@ -38,6 +38,11 @@
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
     },
+    "./session-id": {
+      "workspace": "./src/_shared/session-id.ts",
+      "types": "./dist/_shared/session-id.d.ts",
+      "import": "./dist/_shared/session-id.js"
+    },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
     "./public/*": "./public/*",
     "./package.json": "./package.json"
