@@ -3,12 +3,11 @@
   "private": true,
   "type": "module",
   "version": "0.0.1",
-  "description": "Nimbus documentation site (Astro + Starlight), deployed as a Cloudflare Worker with Static Assets.",
+  "description": "Nimbus documentation site (Astro + Starlight), served at /docs from the hosted-demo Worker's assets binding.",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && cp _redirects dist/_redirects",
+    "build": "astro build",
     "preview": "astro preview",
-    "deploy": "astro build && wrangler deploy",
     "astro": "astro"
   },
   "dependencies": {

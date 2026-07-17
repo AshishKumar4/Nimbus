@@ -121,11 +121,12 @@
     }
   ],
   "assets": {
-    // The static shell assets live in @nimbus-sh/worker even though
-    // application code imports the embedder API from @nimbus-sh/sdk/worker.
-    // Third-party embedders use the same asset path resolved through their
-    // npm install at project root.
-    "directory": "node_modules/@nimbus-sh/worker/public",
+    // dist/assets is assembled by scripts/build-assets.mjs (run by the
+    // predev/predeploy hooks): the @nimbus-sh/worker/public shell assets
+    // plus the apps/docs build mounted at /docs. A Worker gets exactly one
+    // assets binding, so both ship as one directory. /docs/* is not in
+    // run_worker_first, so docs pages serve direct-from-edge.
+    "directory": "dist/assets",
     "binding": "ASSETS",
     // Invoke the Worker for all session-scoped paths so it can forward to the
     // right Durable Object (or serve the xterm UI shell for `/s/<id>/`). The

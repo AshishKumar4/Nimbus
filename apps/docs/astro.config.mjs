@@ -3,8 +3,8 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightLlmsTxt from 'starlight-llms-txt';
 
-// The docs site serves under /docs so it can later be routed from
-// nimbus.ashishkumarsingh.com/docs in front of the main app.
+// The docs site serves under /docs from the hosted-demo Worker's assets
+// binding (apps/hosted-demo/scripts/build-assets.mjs mounts the build there).
 export default defineConfig({
 	site: 'https://nimbus.ashishkumarsingh.com',
 	base: '/docs',
