@@ -11,6 +11,18 @@ export function b64ToBytes(b64) {
         out[i] = bin.charCodeAt(i);
     return out;
 }
+function effectiveMode(mode, uid, gid, cred) {
+    if (cred.uid === 0)
+        return 0o6 | ((mode & 0o111) !== 0 ? 0o1 : 0);
+    if (cred.uid === uid)
+        return (mode >> 6) & 0o7;
+    if (cred.gid === gid || cred.groups.includes(gid))
+        return (mode >> 3) & 0o7;
+    return mode & 0o7;
+}
+function hasErrorCode(error, code) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
 /**
  * Snapshot a VFS subtree into a JSON-serializable WASI-shaped filesystem.
  *
@@ -28,6 +40,7 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
         ...Array.from(caps.extraRoots ?? []).map((r) => r.replace(/^\/+/, '').replace(/\/+$/, '')).filter(Boolean),
     ].filter(Boolean)));
     const files = {};
+    const modes = {};
     const dirsSet = new Set();
     let totalBytes = 0;
     let fileCount = 0;
@@ -44,8 +57,11 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
     };
     for (const start of roots) {
         addDirWithParents(start);
-        if (vfs.exists(start))
-            stack.push(start);
+        if (!vfs.exists(start))
+            continue;
+        const stat = vfs.stat(start);
+        modes[start] = effectiveMode(stat.mode, stat.uid, stat.gid, vfs.cred);
+        stack.push(start);
     }
     while (stack.length > 0) {
         const dir = stack.pop();
@@ -54,6 +70,8 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
             entries = vfs.readdir(dir);
         }
         catch (error) {
+            if (hasErrorCode(error, 'EACCES'))
+                continue;
             failures.push(`readdir ${dir}: ${error instanceof Error ? error.message : String(error)}`);
             continue;
         }
@@ -62,10 +80,31 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
             if (entry.type === 'directory') {
                 if (skipSubdirs.has(entry.name))
                     continue;
+                let stat;
+                try {
+                    stat = vfs.stat(childPath);
+                }
+                catch (error) {
+                    failures.push(`stat ${childPath}: ${error instanceof Error ? error.message : String(error)}`);
+                    continue;
+                }
+                modes[childPath] = effectiveMode(stat.mode, stat.uid, stat.gid, vfs.cred);
                 addDirWithParents(childPath);
                 stack.push(childPath);
                 continue;
             }
+            let stat;
+            try {
+                stat = vfs.stat(childPath);
+            }
+            catch (error) {
+                failures.push(`stat ${childPath}: ${error instanceof Error ? error.message : String(error)}`);
+                continue;
+            }
+            const mode = effectiveMode(stat.mode, stat.uid, stat.gid, vfs.cred);
+            modes[childPath] = mode;
+            if ((mode & 0o4) === 0)
+                continue;
             let bytes;
             try {
                 bytes = vfs.readFile(childPath);
@@ -89,7 +128,11 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
     if (failures.length > 0) {
         return { error: `runtime filesystem snapshot incomplete: ${failures.join('; ')}` };
     }
-    return { snapshot: { root, roots, preopens: [], files, dirs: Array.from(dirsSet).sort() }, bytes: totalBytes, files: fileCount };
+    return {
+        snapshot: { root, roots, preopens: [], files, dirs: Array.from(dirsSet).sort(), modes },
+        bytes: totalBytes,
+        files: fileCount,
+    };
 }
 /**
  * Apply a runtime-produced filesystem diff back into the supervisor VFS.

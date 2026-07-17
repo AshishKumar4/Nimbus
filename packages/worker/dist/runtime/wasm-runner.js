@@ -295,11 +295,12 @@ export function makeWasmRunner(deps) {
                         preopens: args.wasiFs.preopens,
                         files: args.wasiFs.files,
                         dirs: args.wasiFs.dirs,
+                        modes: args.wasiFs.modes,
                     });
                 }
                 else {
                     // Minimal FS so __wasiFS isn't null when WASI fns are called.
-                    initFS({ root: '', preopens: [], files: {}, dirs: [] });
+                    initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
                 }
                 const memRef = { mem: null };
                 const wasi = mk({
@@ -453,6 +454,7 @@ export function makeWasmRunner(deps) {
                 ],
                 files: snap.snapshot.files,
                 dirs: snap.snapshot.dirs,
+                modes: snap.snapshot.modes,
             };
             wasiFsBytes = snap.bytes;
             wasiFsFiles = snap.files;

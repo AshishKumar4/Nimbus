@@ -827,6 +827,7 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 function __nimbusInstallRubyFsSnapshot(snapshot) {
   const dirs = new Set(['tmp', 'home']);
   const files = {};
+  const modes = { '': 7, tmp: 7, home: 7, ...snapshot.modes };
   for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
   for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
     files[String(path).replace(/^\\/+/, '')] = b64;
@@ -840,6 +841,7 @@ function __nimbusInstallRubyFsSnapshot(snapshot) {
     ],
     files,
     dirs: Array.from(dirs).filter(Boolean),
+    modes,
   });
 }
 
@@ -886,6 +888,7 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     ],
     files: {},
     dirs: ['tmp', 'home'],
+    modes: { '': 7, tmp: 7, home: 7 },
   });
 
   // Initial argv/env (bootstrap defaults). Per-call __rubyRun re-

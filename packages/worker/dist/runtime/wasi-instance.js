@@ -115,6 +115,7 @@ export const WASI_INSTANCE_PREAMBLE_SRC = `
 // errno constants
 const __WASI_ESUCCESS       = 0;
 const __WASI_EAGAIN         = 6;
+const __WASI_EACCES         = 2;
 const __WASI_EBADF          = 8;
 const __WASI_ECONNREFUSED   = 14;
 const __WASI_EEXIST         = 20;
@@ -166,6 +167,8 @@ const __WASI_PREOPENTYPE_DIR = 0;
 const __WASI_SYMLOOP_MAX = 40;
 // Default per-fd rights mask (wide-open).
 const __WASI_RIGHTS_ALL = 0xFFFFFFFFFFFFFFFFn;
+const __WASI_RIGHT_FD_READ  = 1n << 1n;
+const __WASI_RIGHT_FD_WRITE = 1n << 6n;
 // WASI socket and polling support B7: sock_shutdown SD flags.
 const __WASI_SDFLAGS_RD = 1;
 const __WASI_SDFLAGS_WR = 2;
@@ -200,12 +203,14 @@ class __WasiExit { constructor(code) { this.code = code | 0; } }
 
 // ─── Virtual filesystem state ───────────────────────────────────────────
 //
-// __wasiInitFS({ root, preopens, files, dirs, times?, symlinks? }) —
+// __wasiInitFS({ root, preopens, files, dirs, modes, times?, symlinks? }) —
 // install a per-call FS:
 //   root      string  — canonical session root, e.g. 'home/user/wasi-files'.
 //   preopens  Array<{ wasiPath, vfsPath }> — fd>=3 preopens (in order).
 //   files     Record<vfsPath, base64 string> — initial file contents.
 //   dirs      Array<vfsPath> — initial directory list.
+//   modes     Record<vfsPath, effective rwx bits> — access already resolved
+//               for the invoking credential by the supervisor.
 //   times     Record<vfsPath, {mtime, atime, ctime}> | undefined
 //               — per-path nanosecond timestamps (WASI socket and polling support B1). Optional;
 //               paths without entries default to "now" at init time.
@@ -226,11 +231,6 @@ class __WasiExit { constructor(code) { this.code = code | 0; } }
 //     symlinksDeleted: string[]                          // B3 — removed symlinks
 //   }
 //
-// Backward-compat: all new fields are additive. Callers that don't pass
-// 'times'/'symlinks' to __wasiInitFS see identical behavior to pre-B1.
-// Supervisors that don't read 'timesChanged'/'symlinks*' from the
-// snapshot see identical behavior to pre-B1.
-
 let __wasiFS = null;       // populated by __wasiInitFS
 let __wasiPreopens = [];   // [{ wasiPath, vfsPath, fd }, ...]
 
@@ -263,6 +263,7 @@ function __wasiInitFS(opts) {
   // WASI socket and polling support B1: parallel timestamp + symlink maps.
   const times    = new Map();   // canonicalVfsPath → {mtime: BigInt, atime: BigInt, ctime: BigInt}
   const symlinks = new Map();   // canonicalVfsPath → targetPath (canonical)
+  const modes    = new Map();   // canonicalVfsPath → effective rwx bits
   // mirror originals for diff at flush time
   const origFiles    = new Map();
   const origDirs     = new Set();
@@ -291,6 +292,9 @@ function __wasiInitFS(opts) {
       origTimes.set(canon, { mtime: t.mtime, atime: t.atime, ctime: t.ctime });
     }
   }
+  for (const [path, mode] of Object.entries(opts.modes)) {
+    modes.set(__wasiCanonicalize(path), Number(mode) & 7);
+  }
   // WASI socket and polling support B1: load explicit per-path timestamps if supervisor provided them.
   // Values arrive as decimal strings (BigInt → JSON.stringify safe) or numbers.
   for (const [path, t] of Object.entries(opts.times || {})) {
@@ -311,7 +315,7 @@ function __wasiInitFS(opts) {
   }
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
-    files, dirs, times, symlinks,
+    files, dirs, times, symlinks, modes,
     origFiles, origDirs, origTimes, origSymlinks,
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
@@ -583,6 +587,48 @@ function __wasiResolvePathFull(baseFd, pathStr, followFlag) {
   return { path: p, isSymlink: false, err: __WASI_ESUCCESS };
 }
 
+function __wasiEffectiveMode(path) {
+  const mode = __wasiFS && __wasiFS.modes.get(path);
+  if (mode !== undefined) return mode;
+  return __wasiInodeExists(path) ? 0 : 7;
+}
+
+function __wasiInodeExists(path) {
+  return !!__wasiFS && (
+    __wasiFS.files.has(path) ||
+    __wasiFS.dirs.has(path) ||
+    __wasiFS.symlinks.has(path) ||
+    __wasiFS.modes.has(path)
+  );
+}
+
+function __wasiCheckTraversal(baseFd, resolved) {
+  const entry = fdTable.get(baseFd);
+  if (!entry || (entry.kind !== 'preopen' && entry.kind !== 'dir')) return __WASI_EBADF;
+  const base = entry.vfsPath;
+  if (resolved === base) return __WASI_ESUCCESS;
+
+  const prefix = base ? base + '/' : '';
+  const relative = resolved.startsWith(prefix) ? resolved.substring(prefix.length) : resolved;
+  const parts = relative.split('/').filter(Boolean);
+  let ancestor = base;
+  for (let i = 0; i < parts.length; i++) {
+    if (!__wasiFS.dirs.has(ancestor)) {
+      return __wasiInodeExists(ancestor) ? __WASI_ENOTDIR : __WASI_ENOENT;
+    }
+    if ((__wasiEffectiveMode(ancestor) & 1) === 0) return __WASI_EACCES;
+    if (i === parts.length - 1) break;
+    ancestor = ancestor ? ancestor + '/' + parts[i] : parts[i];
+  }
+  return __WASI_ESUCCESS;
+}
+
+function __wasiCheckMode(path, requested) {
+  return (__wasiEffectiveMode(path) & requested) === requested
+    ? __WASI_ESUCCESS
+    : __WASI_EACCES;
+}
+
 // ─── makeImports ────────────────────────────────────────────────────────
 
 function __wasiMakeImports(opts) {
@@ -639,6 +685,7 @@ function __wasiMakeImports(opts) {
   }
   function setFile(vfsPath, bytes) {
     __wasiFS.files.set(vfsPath, bytes);
+    if (!__wasiFS.modes.has(vfsPath)) __wasiFS.modes.set(vfsPath, 6);
     // WASI socket and polling support B1: bump mtime+ctime on every write. atime stays as-is
     // (read paths bump atime explicitly via touchAccess()).
     __wasiBumpMtime(vfsPath);
@@ -646,6 +693,7 @@ function __wasiMakeImports(opts) {
   function unsetFile(vfsPath) {
     __wasiFS.files.delete(vfsPath);
     __wasiFS.times.delete(vfsPath);
+    __wasiFS.modes.delete(vfsPath);
   }
   function touchAccess(vfsPath) {
     // WASI socket and polling support B1: bump atime on a read. mtime/ctime unchanged.
@@ -662,6 +710,7 @@ function __wasiMakeImports(opts) {
     for (let i = 0; i < parts.length - 1; i++) {
       p = p ? (p + '/' + parts[i]) : parts[i];
       __wasiFS.dirs.add(p);
+      if (!__wasiFS.modes.has(p)) __wasiFS.modes.set(p, 7);
       // WASI socket and polling support B1: ensure ancestor dirs have a times entry.
       if (!__wasiFS.times.has(p)) {
         const now = __wasiNowNs();
@@ -671,6 +720,7 @@ function __wasiMakeImports(opts) {
   }
   function readdirChildren(vfsPath) {
     const out = [];
+    const seen = new Set();
     const prefix = vfsPath === '' ? '' : vfsPath + '/';
     // Files
     for (const path of __wasiFS.files.keys()) {
@@ -678,6 +728,7 @@ function __wasiMakeImports(opts) {
         const rest = path.substring(prefix.length);
         if (rest && rest.indexOf('/') === -1) {
           out.push({ name: rest, type: __WASI_FT_REGULAR_FILE });
+          seen.add(rest);
         }
       }
     }
@@ -687,6 +738,15 @@ function __wasiMakeImports(opts) {
         const rest = path.substring(prefix.length);
         if (rest && rest.indexOf('/') === -1) {
           out.push({ name: rest, type: __WASI_FT_DIRECTORY });
+          seen.add(rest);
+        }
+      }
+    }
+    for (const path of __wasiFS.modes.keys()) {
+      if (path.startsWith(prefix)) {
+        const rest = path.substring(prefix.length);
+        if (rest && rest.indexOf('/') === -1 && !seen.has(rest)) {
+          out.push({ name: rest, type: __WASI_FT_REGULAR_FILE });
         }
       }
     }
@@ -948,7 +1008,7 @@ function __wasiMakeImports(opts) {
     },
 
     // ── path_open ──
-    path_open(baseFd, dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, fdflags, fdOutPtr) {
+    path_open(baseFd, dirflags, pathPtr, pathLen, oflags, rightsBase, _rightsInheriting, fdflags, fdOutPtr) {
       const pathArg = readPath(pathPtr, pathLen);
 
       // WASI socket and polling support B7: synthetic /dev/tcp/<host>/<port> path — open a TCP
@@ -967,6 +1027,8 @@ function __wasiMakeImports(opts) {
       if (rp.err === __WASI_EBADF) return __WASI_EBADF;
       if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
       const resolved = rp.path;
+      const traversal = __wasiCheckTraversal(baseFd, resolved);
+      if (traversal !== __WASI_ESUCCESS) return traversal;
       const isCreate    = (oflags & __WASI_O_CREAT) !== 0;
       const isDirectory = (oflags & __WASI_O_DIRECTORY) !== 0;
       const isExcl      = (oflags & __WASI_O_EXCL) !== 0;
@@ -978,11 +1040,17 @@ function __wasiMakeImports(opts) {
         return __WASI_ELOOP;
       }
 
-      const fileExists = __wasiFS.files.has(resolved);
+      const fileExists = __wasiFS.files.has(resolved) || (
+        __wasiFS.modes.has(resolved) &&
+        !__wasiFS.dirs.has(resolved) &&
+        !__wasiFS.symlinks.has(resolved)
+      );
       const dirExists  = __wasiFS.dirs.has(resolved);
 
       if (isDirectory) {
         if (!dirExists) return __WASI_ENOENT;
+        const access = __wasiCheckMode(resolved, 1);
+        if (access !== __WASI_ESUCCESS) return access;
         const fd = nextFd++;
         fdTable.set(fd, { kind: 'dir', vfsPath: resolved, readdirEntries: null, cookie: 0n, oflags, fdflags });
         writeU32LE(fdOutPtr, fd);
@@ -994,13 +1062,27 @@ function __wasiMakeImports(opts) {
       }
       if (!fileExists) {
         if (!isCreate) return __WASI_ENOENT;
+        const parentSlash = resolved.lastIndexOf('/');
+        const parent = parentSlash < 0 ? '' : resolved.substring(0, parentSlash);
+        const access = __wasiCheckMode(parent, 3);
+        if (access !== __WASI_ESUCCESS) return access;
         // create empty file
         ensureParentDirs(resolved);
         setFile(resolved, new Uint8Array(0));
       } else if (isExcl) {
         return __WASI_EEXIST;
       } else if (isTrunc) {
+        const access = __wasiCheckMode(resolved, 2);
+        if (access !== __WASI_ESUCCESS) return access;
         setFile(resolved, new Uint8Array(0));
+      }
+      const requested = typeof rightsBase === 'bigint' ? rightsBase : BigInt(rightsBase >>> 0);
+      let requiredMode = 0;
+      if ((requested & __WASI_RIGHT_FD_READ) !== 0n) requiredMode |= 4;
+      if ((requested & __WASI_RIGHT_FD_WRITE) !== 0n) requiredMode |= 2;
+      if (requiredMode !== 0) {
+        const access = __wasiCheckMode(resolved, requiredMode);
+        if (access !== __WASI_ESUCCESS) return access;
       }
       const fd = nextFd++;
       fdTable.set(fd, { kind: 'file', vfsPath: resolved, offset: 0, oflags, fdflags });
@@ -1017,6 +1099,7 @@ function __wasiMakeImports(opts) {
       if (__wasiFS.files.has(resolved)) return __WASI_EEXIST;
       ensureParentDirs(resolved);
       __wasiFS.dirs.add(resolved);
+      __wasiFS.modes.set(resolved, 7);
       // WASI socket and polling support B1: seed times for the new dir.
       const now = __wasiNowNs();
       __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
@@ -1032,6 +1115,7 @@ function __wasiMakeImports(opts) {
       const children = readdirChildren(resolved);
       if (children.length > 0) return __WASI_ENOTEMPTY;
       __wasiFS.dirs.delete(resolved);
+      __wasiFS.modes.delete(resolved);
       return __WASI_ESUCCESS;
     },
 
@@ -1046,6 +1130,7 @@ function __wasiMakeImports(opts) {
       if (__wasiFS.symlinks.has(resolved)) {
         __wasiFS.symlinks.delete(resolved);
         __wasiFS.times.delete(resolved);
+        __wasiFS.modes.delete(resolved);
         return __WASI_ESUCCESS;
       }
       if (!__wasiFS.files.has(resolved)) return __WASI_ENOENT;
@@ -1076,23 +1161,32 @@ function __wasiMakeImports(opts) {
           ? { mtime: t.mtime, atime: t.atime, ctime: now }
           : { mtime: now, atime: now, ctime: now });
       };
+      const moveMode = (from, to) => {
+        const mode = __wasiFS.modes.get(from);
+        __wasiFS.modes.delete(from);
+        if (mode !== undefined) __wasiFS.modes.set(to, mode);
+      };
       // Pre-remove the destination of any kind (atomic overwrite).
       __wasiFS.files.delete(dst);
       __wasiFS.dirs.delete(dst);
       __wasiFS.symlinks.delete(dst);
       __wasiFS.times.delete(dst);
+      __wasiFS.modes.delete(dst);
       if (srcIsSymlink) {
         __wasiFS.symlinks.set(dst, __wasiFS.symlinks.get(src));
         __wasiFS.symlinks.delete(src);
         moveTimes(src, dst);
+        moveMode(src, dst);
       } else if (srcFile !== undefined) {
         __wasiFS.files.set(dst, srcFile);
         __wasiFS.files.delete(src);
         moveTimes(src, dst);
+        moveMode(src, dst);
       } else {
         __wasiFS.dirs.delete(src);
         __wasiFS.dirs.add(dst);
         moveTimes(src, dst);
+        moveMode(src, dst);
         // Rebase every descendant key (files, dirs, symlinks) + its times.
         const srcPrefix = src + '/';
         const rebase = (key) => dst + '/' + key.substring(srcPrefix.length);
@@ -1102,6 +1196,7 @@ function __wasiMakeImports(opts) {
             __wasiFS.files.set(nk, __wasiFS.files.get(key));
             __wasiFS.files.delete(key);
             moveTimes(key, nk);
+            moveMode(key, nk);
           }
         }
         for (const key of [...__wasiFS.dirs]) {
@@ -1110,6 +1205,7 @@ function __wasiMakeImports(opts) {
             __wasiFS.dirs.add(nk);
             __wasiFS.dirs.delete(key);
             moveTimes(key, nk);
+            moveMode(key, nk);
           }
         }
         for (const key of [...__wasiFS.symlinks.keys()]) {
@@ -1118,6 +1214,7 @@ function __wasiMakeImports(opts) {
             __wasiFS.symlinks.set(nk, __wasiFS.symlinks.get(key));
             __wasiFS.symlinks.delete(key);
             moveTimes(key, nk);
+            moveMode(key, nk);
           }
         }
       }
@@ -1133,6 +1230,8 @@ function __wasiMakeImports(opts) {
       if (rp.err === __WASI_EBADF) return __WASI_EBADF;
       if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
       const resolved = rp.path;
+      const traversal = __wasiCheckTraversal(baseFd, resolved);
+      if (traversal !== __WASI_ESUCCESS) return traversal;
       let ftype, size;
       if (!follow && rp.isSymlink) {
         ftype = __WASI_FT_SYMBOLIC_LINK;
@@ -1142,6 +1241,9 @@ function __wasiMakeImports(opts) {
         size = BigInt(__wasiFS.files.get(resolved).length);
       } else if (__wasiFS.dirs.has(resolved)) {
         ftype = __WASI_FT_DIRECTORY;
+        size = 0n;
+      } else if (__wasiFS.modes.has(resolved)) {
+        ftype = __WASI_FT_REGULAR_FILE;
         size = 0n;
       } else {
         return __WASI_ENOENT;
@@ -1231,6 +1333,7 @@ function __wasiMakeImports(opts) {
       // Store the target verbatim — symlinks per POSIX are dumb strings;
       // resolution happens at lookup time.
       __wasiFS.symlinks.set(resolved, oldPath);
+      __wasiFS.modes.set(resolved, 7);
       ensureParentDirs(resolved);
       const now = __wasiNowNs();
       __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
@@ -1262,6 +1365,7 @@ function __wasiMakeImports(opts) {
         return __WASI_EEXIST;
       }
       __wasiFS.files.set(dst, __wasiFS.files.get(src));  // shared reference
+      __wasiFS.modes.set(dst, __wasiEffectiveMode(src));
       ensureParentDirs(dst);
       const now = __wasiNowNs();
       __wasiFS.times.set(dst, { mtime: now, atime: now, ctime: now });
@@ -1404,6 +1508,8 @@ function __wasiMakeImports(opts) {
     fd_readdir(fd, bufPtr, bufLen, cookieArg, bufusedPtr) {
       const entry = fdTable.get(fd);
       if (!entry || (entry.kind !== 'dir' && entry.kind !== 'preopen')) return __WASI_EBADF;
+      const access = __wasiCheckMode(entry.vfsPath, 4);
+      if (access !== __WASI_ESUCCESS) return access;
       if (!entry.readdirEntries) {
         const kids = readdirChildren(entry.vfsPath);
         entry.readdirEntries = [

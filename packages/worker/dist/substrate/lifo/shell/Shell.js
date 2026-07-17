@@ -797,7 +797,10 @@ export class Shell {
         this.abortController = new AbortController();
         this.terminalStdin = new TerminalStdin();
         try {
-            await this.interpreter.executeLine(actualLine, this.terminalStdin);
+            await this.interpreter.executeLine(actualLine, this.terminalStdin, {
+                commandIdentity: this.commandIdentity,
+                runAs: this.commandIdentity.runAs,
+            });
         }
         finally {
             this.terminalStdin?.close();

@@ -89,6 +89,7 @@ export interface WasiHost {
         }>;
         files: Record<string, string>;
         dirs: string[];
+        modes: Record<string, number>;
     }): void;
 }
 export interface OpenTUIWasmBackendOptions {
