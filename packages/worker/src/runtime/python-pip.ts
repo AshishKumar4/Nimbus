@@ -412,7 +412,9 @@ function addRequirementsFile(
 ): string | null {
   if (depth > 8) return 'requirements nesting exceeded 8 files';
   const abs = resolveVfsPath(reqPath, baseDir);
-  if (!vfs.exists(abs)) return `requirements file not found: ${reqPath}`;
+  const probe = probeVfsPath(vfs, abs);
+  if ('error' in probe) return `cannot read requirements file ${reqPath}: ${probe.error}`;
+  if (!probe.exists) return `requirements file not found: ${reqPath}`;
   const text = readVfsText(vfs, abs);
   if ('error' in text) return `cannot read requirements file ${reqPath}: ${text.error}`;
 
@@ -454,7 +456,9 @@ function addConstraintsFile(
 ): string | null {
   if (depth > 8) return 'constraints nesting exceeded 8 files';
   const abs = resolveVfsPath(reqPath, baseDir);
-  if (!vfs.exists(abs)) return `constraints file not found: ${reqPath}`;
+  const probe = probeVfsPath(vfs, abs);
+  if ('error' in probe) return `cannot read constraints file ${reqPath}: ${probe.error}`;
+  if (!probe.exists) return `constraints file not found: ${reqPath}`;
   const text = readVfsText(vfs, abs);
   if ('error' in text) return `cannot read constraints file ${reqPath}: ${text.error}`;
 
@@ -484,8 +488,20 @@ function readVfsText(vfs: PythonPipVfs, path: string): { text: string } | { erro
   try {
     return { text: new TextDecoder('utf-8').decode(vfs.readFile(path)) };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+    return { error: errorMessage(e) };
   }
+}
+
+function probeVfsPath(vfs: PythonPipVfs, path: string): { exists: boolean } | { error: string } {
+  try {
+    return { exists: vfs.exists(path) };
+  } catch (e) {
+    return { error: errorMessage(e) };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function resolveRequirements(
@@ -784,7 +800,9 @@ function localWheelArtifact(
   if (!looksLikePath) return { artifact: null };
 
   const abs = resolveVfsPath(spec, baseDir);
-  if (!vfs.exists(abs)) return { error: `local wheel not found: ${rawSpec}` };
+  const probe = probeVfsPath(vfs, abs);
+  if ('error' in probe) return { error: `cannot access local wheel ${rawSpec}: ${probe.error}` };
+  if (!probe.exists) return { error: `local wheel not found: ${rawSpec}` };
   const fileName = abs.slice(abs.lastIndexOf('/') + 1);
   if (!fileName.endsWith('.whl')) {
     return { error: `local installs currently require a .whl file: ${rawSpec}` };

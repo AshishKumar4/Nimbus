@@ -46,6 +46,21 @@ function text(bytes) {
   assert.equal(result.snapshot.modes.missing, undefined, 'a nonexistent path must remain ENOENT, not become a denial cell');
 }
 
+// A requested root below an untraversable ancestor is still a present snapshot cell. The
+// denial must cross the runtime boundary instead of aborting snapshot construction.
+{
+  const { root, user } = makeVfs();
+  root.mkdir('private', { mode: 0o700 });
+  root.mkdir('private/workspace', { mode: 0o755 });
+  root.writeFile('private/workspace/secret.txt', 'secret', { mode: 0o644 });
+
+  const result = snapshotVfs(user, 'private/workspace');
+  assert.ok('snapshot' in result, 'an inaccessible requested root must be represented, not abort the snapshot');
+  assert.equal(result.snapshot.modes['private/workspace'], 0o0);
+  assert.ok(result.snapshot.dirs.includes('private/workspace'));
+  assert.equal(result.snapshot.files['private/workspace/secret.txt'], undefined);
+}
+
 // Flushes execute through the same credentialed view used for the snapshot. Permission changes
 // between snapshot and write-back are re-checked, while independent permitted writes still land.
 {

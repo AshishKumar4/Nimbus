@@ -8,14 +8,16 @@ import {
 } from '../../packages/worker/src/runtime/runtime-catalog.ts';
 
 class FakeVfs {
-  constructor(files = {}) {
+  constructor(files = {}, deniedPaths = []) {
     this.files = new Map(Object.entries(files).map(([path, value]) => [
       path,
       typeof value === 'string' ? new TextEncoder().encode(value) : value,
     ]));
+    this.deniedPaths = new Set(deniedPaths);
   }
 
   exists(path) {
+    if (this.deniedPaths.has(path)) throw new Error(`EACCES: permission denied, access '/${path}'`);
     return this.files.has(path);
   }
 
@@ -148,6 +150,45 @@ try {
     assert.equal(invocation.mode, 'pip');
     assert.match(invocation.code, /"canonicalName":"packaging","version":"24\.2"/);
     assert.doesNotMatch(invocation.code, /"canonicalName":"packaging","version":"25\.0"/);
+  }
+
+  {
+    const requirementsPath = 'home/user/project/requirements.txt';
+    const invocation = await buildPipInvocation(
+      ['install', '-r', 'requirements.txt'],
+      'pip',
+      cwd,
+      new FakeVfs({}, [requirementsPath]),
+    );
+    assert.equal(invocation.mode, 'none');
+    assert.equal(invocation.exitCode, 1);
+    assert.match(invocation.error || '', /cannot read requirements file requirements\.txt: EACCES: permission denied/);
+  }
+
+  {
+    const constraintsPath = 'home/user/project/constraints.txt';
+    const invocation = await buildPipInvocation(
+      ['install', 'packaging', '-c', 'constraints.txt'],
+      'pip',
+      cwd,
+      new FakeVfs({}, [constraintsPath]),
+    );
+    assert.equal(invocation.mode, 'none');
+    assert.equal(invocation.exitCode, 1);
+    assert.match(invocation.error || '', /cannot read constraints file constraints\.txt: EACCES: permission denied/);
+  }
+
+  {
+    const wheelPath = 'home/user/project/local_pkg-0.1.0-py3-none-any.whl';
+    const invocation = await buildPipInvocation(
+      ['install', './local_pkg-0.1.0-py3-none-any.whl'],
+      'pip',
+      cwd,
+      new FakeVfs({}, [wheelPath]),
+    );
+    assert.equal(invocation.mode, 'none');
+    assert.equal(invocation.exitCode, 1);
+    assert.match(invocation.error || '', /cannot access local wheel \.\/local_pkg-0\.1\.0-py3-none-any\.whl: EACCES: permission denied/);
   }
 
   {
