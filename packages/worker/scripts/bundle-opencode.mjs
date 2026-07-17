@@ -341,6 +341,29 @@ async function main() {
     }
   }
 
+  // Derive the attach-mode entry (defect #20): index.js with the full TUI
+  // runtime closure inlined statically, so the attach facet performs no
+  // runtime chunk-graph imports (the production process-killer). Regenerated
+  // from the staged sources every run — it is derived output, never edited.
+  {
+    const packEntry = staged.find((f) => f.name === CHUNKS_PACK);
+    if (packEntry) {
+      const { buildOpencodeAttachEntryFromSources } = await import('./build-opencode-attach-entry.mjs');
+      const indexEntry = staged.find((f) => f.name === 'index.js');
+      const attachText = await buildOpencodeAttachEntryFromSources(
+        indexEntry.bytes.toString('utf8'),
+        JSON.parse(packEntry.bytes.toString('utf8')),
+      );
+      const attachFile = { name: 'index-attach.js', bytes: Buffer.from(attachText, 'utf8') };
+      const existing = staged.findIndex((f) => f.name === 'index-attach.js');
+      if (existing >= 0) staged[existing] = attachFile;
+      else staged.push(attachFile);
+      staged.sort((a, b) => a.name.localeCompare(b.name));
+      await fs.mkdir(assetDir, { recursive: true });
+      await fs.writeFile(path.join(assetDir, 'index-attach.js'), attachFile.bytes);
+    }
+  }
+
   const sidecars = [];
   let totalBytes = 0;
   const hash = createHash('sha256');

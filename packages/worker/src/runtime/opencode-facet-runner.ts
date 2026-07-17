@@ -713,15 +713,17 @@ globalThis.${TREE_SITTER_REGISTRY_GLOBAL} = new Map([
   [${JSON.stringify(treeSitter.powershell)}, __nimbusTsPowershell],
 ]);
 
-// ── OpenTUI wasm FFI backend module (module-init scope) ─────────────────────
+// ── OpenTUI wasm FFI backend module (module-init scope, attach only) ───────
 // The pre-compiled OpenTUI wasm32-wasi reactor Module rides in via the module
 // map; the WASI host preamble + the backend class are injected below, and the
 // backend is constructed + parked on globalThis right after env is seeded (the
 // boot block) so it is in place before the opencode bundle (which inlines the
-// Nimbus-patched @opentui/core) is imported in fetch().
-import __nimbusOpenTUIWasmModule from "${OPENTUI_WASM_MODULE_NAME}";
+// Nimbus-patched @opentui/core) is imported in fetch(). Only the attach facet
+// renders; serve/oneshot never link the TUI graph, and the ~17 MiB wasm
+// instance + backend would waste their tight facet memory budget.
+${attachedTty ? `import __nimbusOpenTUIWasmModule from "${OPENTUI_WASM_MODULE_NAME}";
 ${OPENTUI_BACKEND_FACET_SRC}
-${attachedTty ? yogaImportSrc() : ''}
+${yogaImportSrc()}` : ''}
 
 // ── VFS-backed node-compat shim scope (node-shims.ts) ──────────────────────
 // Declared at module-init so the node:fs / node:os bridge modules (which
@@ -783,16 +785,19 @@ const __realMemUsage = (() => {
   } catch {}
   return null;
 })();
-// Interactive TUI: make the Nimbus shim process authoritative for the bundle's
-// BARE \`process\` references (raw-mode stdin pump, live stdout/stderr,
-// SIGWINCH/columns/rows). The node:process bridge (module map) covers the
-// aliased \`import … from "node:process"\` refs; together they ensure OpenTUI
-// reads the attached-TTY process, not workerd's nodejs_compat one. The one-shot
-// path leaves workerd's proven process in place.
-if (${attachedTty ? 'true' : 'false'}) {
+// Resident modes: make the Nimbus shim process authoritative for the bundle's
+// BARE \`process\` references. The attach TUI needs it for the raw-mode stdin
+// pump, live stdout/stderr and SIGWINCH/columns/rows; the serve facet needs it
+// for a truthful process.cwd() — workerd's nodejs_compat process pins cwd to
+// "/bundle" and silently ignores chdir, which made the server's default app
+// directory (and every session it creates) point at a nonexistent path whose
+// instance bootstrap hangs. The node:process bridge (module map) covers the
+// aliased \`import … from "node:process"\` refs. The one-shot path leaves
+// workerd's proven process in place.
+if (${resident ? 'true' : 'false'}) {
   try { globalThis.process = __processMod; } catch {}
 }
-${generateOpenTUIBackendBootCode()}
+${attachedTty ? generateOpenTUIBackendBootCode() : ''}
 // Interactive TUI: install the in-isolate Worker polyfill so opencode's TUI
 // client can spawn its API server (cli/cmd/tui/worker.ts → ./worker.js) and
 // OpenTUI its syntax-highlight parser (./parser.worker.js) inside this facet.
