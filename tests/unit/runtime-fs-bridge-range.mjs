@@ -19,7 +19,7 @@ function makeBridge() {
     harness,
     rawVfs,
     vfs: rawVfs.as(CRED_KERNEL),
-    bridge: new SqliteRuntimeFsBridge(rawVfs),
+    bridge: new SqliteRuntimeFsBridge(rawVfs.as(CRED_KERNEL), rawVfs),
   };
 }
 
@@ -173,7 +173,7 @@ const dec = new TextDecoder();
 
   const reloadedRawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const reloadedVfs = reloadedRawVfs.as(CRED_KERNEL);
-  const reloadedBridge = new SqliteRuntimeFsBridge(reloadedRawVfs);
+  const reloadedBridge = new SqliteRuntimeFsBridge(reloadedVfs, reloadedRawVfs);
   assert.equal(reloadedVfs.isSymlink('links/alias.txt'), true, 'symlink kind must survive VFS reload');
   assert.equal(await reloadedBridge.readlink('/links/alias.txt'), '/real/target.txt');
   assert.equal(

@@ -22,7 +22,6 @@ import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { prefetchForRequire } from '../runtime/require-resolver.js';
@@ -2365,7 +2364,7 @@ export class FacetManager {
   private env: FacetManagerEnv;
   private processes: SessionProcessSupervisor;
   private portRegistry: PortRegistry;
-  private vfs: CredentialedVfs | null = null;
+  private vfs: SqliteVFS | null = null;
   private hooks: FacetManagerHooks;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   private timedOutProcessIds = new Set<number>();
@@ -2426,7 +2425,7 @@ export class FacetManager {
     this.hooks = hooks;
   }
 
-  setVfs(vfs: SqliteVFS) { this.vfs = vfs.as(CRED_KERNEL); }
+  setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
   /**
    * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
    * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -2450,10 +2449,11 @@ export class FacetManager {
     scriptPath: string | undefined,
     cwd: string,
     entryCode: string,
+    credKey: string,
     bundleProfile?: FacetBundleProfile,
   ): Promise<FacetVfsState> {
     const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
-    const key = `${profile}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
+    const key = `${profile}\x00${credKey}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
     const revision = vfs.revision();
     const cached = this.prefetchBundleCache.get(key);
     if (cached && cached.revision === revision) {
@@ -2599,16 +2599,19 @@ export class FacetManager {
     // CJS before they hit the facet's `new Function` pre-compile loop.
     // Lazy-create one if NimbusSession didn't share its own.
     if (this.vfs && !this.esbuild) {
-      try { this.esbuild = new EsbuildService(this.vfs as any); } catch { this.esbuild = null; }
+      try { this.esbuild = new EsbuildService(this.vfs); } catch { this.esbuild = null; }
     }
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
-    const vfsState: FacetVfsState = this.vfs
+    const processVfs = this.vfs?.as(entry.cred);
+    const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
+    const vfsState: FacetVfsState = processVfs
       ? await this._buildPrefetchBundleCached(
-          this.vfs,
+          processVfs,
           opts.filename,
           opts.cwd || '/home/user',
           code,
+          credKey,
           opts.bundleProfile,
         )
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
@@ -2643,7 +2646,7 @@ export class FacetManager {
           at: Date.now(),
         });
       }
-      this._flushVfsWrites(result);
+      this._flushVfsWrites(result, entry.pid);
       return result;
     } catch (err: unknown) {
       // If the timeout already fired, it already called onExternalExit
@@ -2843,7 +2846,7 @@ export class FacetManager {
       try {
         const result = await response.json() as FacetExecResult;
         this.processes.exit(staged.pid, result.exitCode);
-        this._flushVfsWrites(result);
+        this._flushVfsWrites(result, staged.pid);
         return { ...result, pid: staged.pid };
       } finally {
         disposeRpcResource(response);
@@ -2911,8 +2914,9 @@ export class FacetManager {
     // directory manifest so readdir/stat are coherent. opencode creates its
     // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
     // other writes flush live through the SUPERVISOR RPC bridge.
-    const vfsState: FacetVfsState = this.vfs
-      ? await buildPrefetchBundle(this.vfs, undefined, opts.cwd, '', this.esbuild || undefined)
+    const processVfs = this.vfs?.as(entry.cred);
+    const vfsState: FacetVfsState = processVfs
+      ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined)
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
 
     const stageSpec: OpencodeStageSpec = {
@@ -3220,14 +3224,15 @@ export class FacetManager {
   }
 
   /** Flush files written by the script back to the supervisor's VFS. */
-  private _flushVfsWrites(result: FacetExecResult) {
+  private _flushVfsWrites(result: FacetExecResult, pid: number) {
     if (!this.vfs || !result.vfsWrites) return;
+    const vfs = this.vfs.as(this.processes.cred(pid));
     for (const [path, content] of Object.entries(result.vfsWrites)) {
       try {
         const parts = path.split('/');
         for (let i = 1; i < parts.length; i++) {
           const dir = parts.slice(0, i).join('/');
-          if (dir && !this.vfs.exists(dir)) this.vfs.mkdir(dir, { recursive: true });
+          if (dir && !vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
         }
         // binary-fs wave: __vfsWrites cells carry string | Uint8Array.
         // The hot path here is the LIVE SUPERVISOR.writeFile RPC inside
@@ -3237,7 +3242,7 @@ export class FacetManager {
         // {"0":...,"1":...} object. Detect that shape and reconstitute
         // bytes; otherwise pass through (string for source code, etc.).
         const restored = _reviveVfsWriteCell(content);
-        this.vfs.writeFile(path, restored);
+        vfs.writeFile(path, restored);
       } catch (e: any) {
         console.error('[nimbus] VFS write-back failed:', path, e?.message);
       }
@@ -3317,10 +3322,11 @@ export class FacetManager {
     }
 
     if (this.vfs && !this.esbuild) {
-      try { this.esbuild = new EsbuildService(this.vfs as any); } catch { this.esbuild = null; }
+      try { this.esbuild = new EsbuildService(this.vfs); } catch { this.esbuild = null; }
     }
-    const vfsState: FacetVfsState = this.vfs
-      ? await buildPrefetchBundle(this.vfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
+    const processVfs = this.vfs?.as(entry.cred);
+    const vfsState: FacetVfsState = processVfs
+      ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
       : { bundle: {}, manifest: {}, reachableCount: 0, truncated: false };
     const processEnv = opts.attachedTty
       ? {

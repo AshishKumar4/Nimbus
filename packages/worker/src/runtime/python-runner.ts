@@ -51,7 +51,7 @@ import {
 } from './python-pip.js';
 import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
-import { CRED_KERNEL } from './os-contracts.js';
+import { requireVfsCred } from './os-contracts.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -67,7 +67,6 @@ export function makePythonRunnerFactory(deps: {
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     (ctx: any) => Promise<number> {
   const { facetMgr } = deps;
-  const vfs = deps.vfs.as(CRED_KERNEL);
 
   return function pythonRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -78,27 +77,24 @@ export function makePythonRunnerFactory(deps: {
     const asmJsVfs   = findFile('share/pyodide/pyodide.asm.js');
     const stdlibVfs  = findFile('share/pyodide/python_stdlib.zip');
     const lockfileVfs = findFile('share/pyodide/pyodide-lock.json');
-    let pipRuntimeContextCache: PythonPipRuntimeContext | null = null;
-    const pipRuntimeContext = (): PythonPipRuntimeContext => {
-      if (!pipRuntimeContextCache) {
-        pipRuntimeContextCache = {
-          pyodideLockfileText: lockfileVfs && vfs.exists(lockfileVfs)
-            ? new TextDecoder('utf-8').decode(vfs.readFile(lockfileVfs))
-            : null,
-          runtimeArtifacts: manifest.runtime_artifacts || [],
-        };
-      }
-      return pipRuntimeContextCache;
-    };
     let runtimePromise: { key: string; promise: Promise<PythonFacetRuntime> } | null = null;
-    let fsSnapshotCache: { cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
+    let fsSnapshotCache: { cred: string; cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
 
     return async function pythonBinHandler(ctx: any): Promise<number> {
+      const cred = requireVfsCred(ctx.cred, binName);
+      const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+      const vfs = deps.vfs.as(cred);
+      const pipRuntimeContext: PythonPipRuntimeContext = {
+        pyodideLockfileText: lockfileVfs && vfs.exists(lockfileVfs)
+          ? new TextDecoder('utf-8').decode(vfs.readFile(lockfileVfs))
+          : null,
+        runtimeArtifacts: manifest.runtime_artifacts || [],
+      };
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
       const pipInvocation = binKind === 'pip' || binName === 'pip' || binName === 'pip3'
-        ? await buildPipInvocation(argv, binName, cwd, vfs, pipRuntimeContext())
-        : await buildPythonModulePipInvocation(argv, cwd, vfs, pipRuntimeContext());
+        ? await buildPipInvocation(argv, binName, cwd, vfs, pipRuntimeContext)
+        : await buildPythonModulePipInvocation(argv, cwd, vfs, pipRuntimeContext);
       if (pipInvocation.error) {
         ctx.stderr.write(`${binName}: ${pipInvocation.error}\n`);
         return pipInvocation.exitCode;
@@ -207,12 +203,13 @@ export function makePythonRunnerFactory(deps: {
       // Per-subtree watermark over exactly what the snapshot covers (cwd +
       // site-packages), so unrelated VFS writes don't evict the cache.
       const revision = Math.max(vfs.revision(cwd), vfs.revision(PYTHON_SITE_PACKAGES_ROOT));
-      let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
+      let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
+        && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
         ? fsSnapshotCache.result
         : null;
       if (!fsSnapshot) {
         fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [PYTHON_SITE_PACKAGES_ROOT] });
-        fsSnapshotCache = { cwd, revision, result: fsSnapshot };
+        fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
       }
       if ('error' in fsSnapshot) {
         ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
@@ -246,7 +243,7 @@ export function makePythonRunnerFactory(deps: {
       // ── Dispatch the facet ───────────────────────────────────────
       let runtime: PythonFacetRuntime;
       try {
-        const runtimeKey = sideModules.modules.map((mod) => `${mod.moduleKey}:${mod.packageId}`).sort().join('|');
+        const runtimeKey = `${credKey}|${sideModules.modules.map((mod) => `${mod.moduleKey}:${mod.packageId}`).sort().join('|')}`;
         if (!runtimePromise || runtimePromise.key !== runtimeKey) {
           runtimePromise = {
             key: runtimeKey,

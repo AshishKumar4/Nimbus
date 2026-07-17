@@ -1,23 +1,35 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { _rpcLstat, _rpcUnlink } from '../../packages/worker/src/session/rpc.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 
 {
   let call;
+  const vfs = {
+    isSymlink: () => false,
+    exists: () => true,
+    stat(path) {
+      call = { path, options: { followSymlinks: false } };
+      return { type: 'symlink', size: 6, mode: 0o777, uid: 1000, gid: 1000 };
+    },
+    lstat(path) {
+      call = { path, options: { followSymlinks: false } };
+      return { type: 'symlink', size: 6, mode: 0o777, uid: 1000, gid: 1000 };
+    },
+  };
   const result = await _rpcLstat({
     ensureSqliteFs() {},
-    runtimeFsBridge: {
-      stat(path, options) {
-        call = { path, options };
-        return { type: 'symlink', size: 6, mode: 0o777 };
-      },
+    processes: { cred: () => CRED_KERNEL },
+    sqliteFs: {
+      as: () => vfs,
+      revision: () => 0,
     },
-  }, '/home/user/link');
+  }, '/home/user/link', 1);
   assert.equal(result.type, 'symlink');
   assert.deepEqual(call, {
-    path: '/home/user/link',
+    path: 'home/user/link',
     options: { followSymlinks: false },
   });
 }
@@ -26,12 +38,14 @@ import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
   await assert.rejects(
     _rpcUnlink({
       ensureSqliteFs() {},
-      runtimeFsBridge: {
-        unlink() {
+      processes: { cred: () => CRED_KERNEL },
+      sqliteFs: {
+        as: () => ({}),
+        assertMutationAllowed() {
           throw new Error('EBUSY: clone destination is exclusively locked');
         },
       },
-    }, '/home/user/repo/file'),
+    }, '/home/user/repo/file', 1),
     /EBUSY/,
     'unlink must not swallow the exclusive-mutation failure',
   );

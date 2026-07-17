@@ -36,7 +36,7 @@ import {
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { CRED_KERNEL, type RuntimeOpenFlags } from '../runtime/os-contracts.js';
-import type { BatchInodeEntry, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { z } from 'zod/v4';
 
@@ -71,16 +71,36 @@ const WriteBatchPayloadSchema = z.object({
   deletePaths: z.array(z.string()).optional(),
 }).passthrough();
 
-function runtimeFs(self: RpcHost): SqliteRuntimeFsBridge {
-  self.ensureSqliteFs();
-  if (!self.runtimeFsBridge) {
-    self.runtimeFsBridge = new SqliteRuntimeFsBridge(self.sqliteFs!);
+function processPid(pid: unknown): number {
+  if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
+    throw new Error('filesystem RPC requires a valid process pid');
   }
-  return self.runtimeFsBridge;
+  return pid;
 }
 
-export async function _rpcReadFile(self: RpcHost, path: string): Promise<string | null> {
-    const bytes = await runtimeFs(self).readFile(path);
+function processVfs(self: RpcHost, pid: unknown): CredentialedVfs {
+  const processId = processPid(pid);
+  self.ensureSqliteFs();
+  const cred = self.processes.cred(processId);
+  return self.sqliteFs!.as(cred);
+}
+
+function runtimeFs(self: RpcHost, pid: unknown): SqliteRuntimeFsBridge {
+  const processId = processPid(pid);
+  const vfs = processVfs(self, processId);
+  if (!self.runtimeFsBridges) self.runtimeFsBridges = new Map<number, SqliteRuntimeFsBridge>();
+  let bridge = self.runtimeFsBridges.get(processId);
+  if (!bridge) {
+    bridge = new SqliteRuntimeFsBridge(vfs, self.sqliteFs!);
+    self.runtimeFsBridges.set(processId, bridge);
+  } else {
+    bridge.updateCredential(vfs);
+  }
+  return bridge;
+}
+
+export async function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null> {
+    const bytes = await runtimeFs(self, pid).readFile(path);
     return bytes ? dec.decode(bytes) : null;
 }
 
@@ -89,8 +109,8 @@ export async function _rpcReadFile(self: RpcHost, path: string): Promise<string 
    * binary .git/objects/** and packfile reads, where TextDecoder/TextEncoder
    * round-tripping through readFile (string) would corrupt bytes.
    */
-export async function _rpcReadFileBytes(self: RpcHost, path: string): Promise<Uint8Array | null> {
-    return runtimeFs(self).readFile(path);
+export async function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number): Promise<Uint8Array | null> {
+    return runtimeFs(self, pid).readFile(path);
 }
 
   /**
@@ -170,63 +190,63 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
     }
 }
 
-export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void> {
+export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<void> {
     // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
     // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
     // structured-clone preserves Uint8Array across the boundary; structured-
     // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
-    await runtimeFs(self).writeFile(path, content);
+    await runtimeFs(self, pid).writeFile(path, content);
 }
 
-export async function _rpcStat(self: RpcHost, path: string): Promise<any> {
-    return runtimeFs(self).stat(path);
+export async function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any> {
+    return runtimeFs(self, pid).stat(path);
 }
 
-export async function _rpcLstat(self: RpcHost, path: string): Promise<any> {
-  return runtimeFs(self).stat(path, { followSymlinks: false });
+export async function _rpcLstat(self: RpcHost, path: string, pid?: number): Promise<any> {
+  return runtimeFs(self, pid).stat(path, { followSymlinks: false });
 }
 
-export async function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean> {
-  self.ensureSqliteFs();
+export async function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean> {
+  runtimeFs(self, pid);
   return getSymlinkRegistry(self.sqliteFs!).hasAtOrBelow(path);
 }
 
-export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void> {
-    await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
+export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).utimes(path, atimeMs, mtimeMs);
 }
 
-export async function _rpcChmod(self: RpcHost, path: string, mode: number): Promise<void> {
-    await runtimeFs(self).chmod(path, mode);
+export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).chmod(path, mode);
 }
 
-export async function _rpcReaddir(self: RpcHost, path: string): Promise<{ name: string; type: string }[]> {
-    return runtimeFs(self).readdir(path);
+export async function _rpcReaddir(self: RpcHost, path: string, pid?: number): Promise<{ name: string; type: string }[]> {
+    return runtimeFs(self, pid).readdir(path);
 }
 
-export async function _rpcExists(self: RpcHost, path: string): Promise<boolean> {
-    return (await runtimeFs(self).stat(path)) !== null;
+export async function _rpcExists(self: RpcHost, path: string, pid?: number): Promise<boolean> {
+    return (await runtimeFs(self, pid).stat(path)) !== null;
 }
 
-export async function _rpcMkdir(self: RpcHost, path: string): Promise<void> {
-    await runtimeFs(self).mkdir(path, { recursive: true });
+export async function _rpcMkdir(self: RpcHost, path: string, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).mkdir(path, { recursive: true });
 }
 
-export async function _rpcRmdir(self: RpcHost, path: string): Promise<void> {
-    await runtimeFs(self).rmdir(path);
+export async function _rpcRmdir(self: RpcHost, path: string, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).rmdir(path);
 }
 
-export async function _rpcRename(self: RpcHost, from: string, to: string): Promise<void> {
-    await runtimeFs(self).rename(from, to);
+export async function _rpcRename(self: RpcHost, from: string, to: string, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).rename(from, to);
 }
 
-export async function _rpcReadlink(self: RpcHost, path: string): Promise<string | null> {
-    return runtimeFs(self).readlink(path);
+export async function _rpcReadlink(self: RpcHost, path: string, pid?: number): Promise<string | null> {
+    return runtimeFs(self, pid).readlink(path);
 }
 
-export async function _rpcSymlink(self: RpcHost, target: string, path: string): Promise<void> {
-    await runtimeFs(self).symlink(target, path);
+export async function _rpcSymlink(self: RpcHost, target: string, path: string, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).symlink(target, path);
 }
 
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
@@ -247,8 +267,8 @@ const FsTruncateArgsSchema = z.object({
   size: FsRangeOffsetSchema,
 });
 
-export async function _rpcFsRevision(self: RpcHost, path?: string): Promise<number> {
-    return runtimeFs(self).revision(typeof path === 'string' ? path : undefined);
+export async function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number> {
+    return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
 }
 
 export async function _rpcFsReadRange(
@@ -256,9 +276,10 @@ export async function _rpcFsReadRange(
   path: string,
   offset: number,
   length: number,
+  pid?: number,
 ): Promise<Uint8Array | null> {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    return runtimeFs(self).readRange(args.path, args.offset, args.length);
+    return runtimeFs(self, pid).readRange(args.path, args.offset, args.length);
 }
 
 export async function _rpcFsWriteRange(
@@ -266,18 +287,19 @@ export async function _rpcFsWriteRange(
   path: string,
   offset: number,
   bytes: Uint8Array | ArrayBuffer | number[],
+  pid?: number,
 ): Promise<number> {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
-    return runtimeFs(self).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+    return runtimeFs(self, pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
 }
 
-export async function _rpcFsTruncate(self: RpcHost, path: string, size: number): Promise<void> {
+export async function _rpcFsTruncate(self: RpcHost, path: string, size: number, pid?: number): Promise<void> {
     const args = FsTruncateArgsSchema.parse({ path, size });
-    await runtimeFs(self).truncate(args.path, args.size);
+    await runtimeFs(self, pid).truncate(args.path, args.size);
 }
 
-export async function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags): Promise<any> {
-    return runtimeFs(self).open(path, flags || {});
+export async function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags, pid?: number): Promise<any> {
+    return runtimeFs(self, pid).open(path, flags || {});
 }
 
 export async function _rpcFsRead(
@@ -285,8 +307,9 @@ export async function _rpcFsRead(
   handleId: number,
   offset: number | null,
   length: number,
+  pid?: number,
 ): Promise<Uint8Array> {
-    return runtimeFs(self).read(handleId, offset, length);
+    return runtimeFs(self, pid).read(handleId, offset, length);
 }
 
 export async function _rpcFsWrite(
@@ -294,16 +317,17 @@ export async function _rpcFsWrite(
   handleId: number,
   offset: number | null,
   bytes: Uint8Array | ArrayBuffer | number[],
+  pid?: number,
 ): Promise<number> {
     let data: Uint8Array;
     if (bytes instanceof Uint8Array) data = bytes;
     else if (bytes instanceof ArrayBuffer) data = new Uint8Array(bytes);
     else data = new Uint8Array(bytes || []);
-    return runtimeFs(self).write(handleId, offset, data);
+    return runtimeFs(self, pid).write(handleId, offset, data);
 }
 
-export async function _rpcFsClose(self: RpcHost, handleId: number): Promise<void> {
-    await runtimeFs(self).close(handleId);
+export async function _rpcFsClose(self: RpcHost, handleId: number, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).close(handleId);
 }
 
   /**
@@ -316,8 +340,8 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 
-export async function _rpcUnlink(self: RpcHost, path: string): Promise<void> {
-    await runtimeFs(self).unlink(path);
+export async function _rpcUnlink(self: RpcHost, path: string, pid?: number): Promise<void> {
+    await runtimeFs(self, pid).unlink(path);
 }
 
   /**
@@ -331,8 +355,11 @@ export async function _rpcUnlink(self: RpcHost, path: string): Promise<void> {
    *   deletePaths?: string[]
    * }
    */
-export async function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise<{ inodes: number; chunks: number }> {
-    self.ensureSqliteFs();
+export async function _rpcWriteBatch(
+  self: RpcHost,
+  payload: unknown,
+  pid?: number,
+): Promise<{ inodes: number; chunks: number }> {
     const parsed = WriteBatchPayloadSchema.safeParse(payload);
     if (!parsed.success) throw new Error('writeBatch payload failed validation');
     const { inodes, chunks: rawChunks, deletePaths } = parsed.data;
@@ -344,7 +371,7 @@ export async function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise<{
       data: normalizeWriteBatchChunkData(c.data),
     }));
 
-    return self.sqliteFs!.as(CRED_KERNEL).writeBatch({
+    return processVfs(self, pid).writeBatch({
       inodes,
       chunks,
       deletePaths,
@@ -383,8 +410,8 @@ function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
 export async function _rpcWriteBatchStream(self: RpcHost, 
     stream: ReadableStream<Uint8Array>,
     mutationOwner?: string,
+    pid?: number,
   ): Promise<WriteBatchStreamResult> {
-    self.ensureSqliteFs();
     // [P0a — COORDINATOR-OVERLOAD]
     //
     // core WASI (semaphore here): rejected. Parking peer-side awaits in a
@@ -406,7 +433,7 @@ export async function _rpcWriteBatchStream(self: RpcHost,
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
     const decodeDrainStartedAt = performance.now();
-    return self.sqliteFs!.as(CRED_KERNEL).writeStream(stream, {
+    return processVfs(self, pid).writeStream(stream, {
       decodeDrainStartedAt,
       mutationOwner,
     });
@@ -515,6 +542,7 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
       return;
     }
     try { self.processes.closeInput(pid); } catch {}
+    self.runtimeFsBridges?.delete(pid);
     if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
     // (e.g. from an external kill path) don't dump twice.
@@ -669,6 +697,7 @@ export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
     if (self.processes.getExit(pid)) return;
     try { self.processes.closeInput(pid); } catch {}
+    self.runtimeFsBridges?.delete(pid);
     if (reason) {
       self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }

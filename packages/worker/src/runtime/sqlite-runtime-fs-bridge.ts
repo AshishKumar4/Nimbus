@@ -8,17 +8,20 @@ import type {
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
 } from './os-contracts.js';
-import { CRED_KERNEL } from './os-contracts.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private nextHandleId = 1;
   private handles = new Map<number, RuntimeFileHandle>();
   private legacySymlinks: SymlinkRegistry;
-  private readonly vfs: CredentialedVfs;
+  private vfs: CredentialedVfs;
 
-  constructor(private readonly rawVfs: SqliteVFS) {
-    this.vfs = rawVfs.as(CRED_KERNEL);
+  constructor(vfs: CredentialedVfs, private readonly rawVfs: SqliteVFS) {
+    this.vfs = vfs;
     this.legacySymlinks = getSymlinkRegistry(rawVfs);
+  }
+
+  updateCredential(vfs: CredentialedVfs): void {
+    this.vfs = vfs;
   }
 
   async stat(path: string, options: { followSymlinks?: boolean } = {}): Promise<RuntimeVfsStat | null> {

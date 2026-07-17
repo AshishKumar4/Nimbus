@@ -9,6 +9,7 @@ function outputContext(args) {
   let stderr = '';
   return {
     ctx: {
+      cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
       args,
       cwd: '/home/user',
       env: {},
@@ -21,6 +22,7 @@ function outputContext(args) {
 }
 
 const missingRuntimeVfs = {
+  as() { return this; },
   exists: () => false,
   readdir: () => [],
 };

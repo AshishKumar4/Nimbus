@@ -431,7 +431,7 @@ export const git = {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const vfs = rawVfs.as(CRED_KERNEL);
-  const bridge = new SqliteRuntimeFsBridge(rawVfs);
+  const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
   await bridge.writeFile('/outside/existing.txt', 'outside!!');
   const supervisor = {
     async stat(path) {
@@ -555,9 +555,9 @@ export const git = {
   );
   assert.equal(vfs.readFileString('repo/concurrent/file-179'), 'concurrent-179');
   assert.equal(vfs.stat('repo/executable.sh').mode, 0o755);
-  assert.equal(vfs.stat('repo/link.txt').type, 'symlink');
+  assert.equal(vfs.lstat('repo/link.txt').type, 'symlink');
   assert.equal(vfs.readlink('repo/link.txt'), 'target.txt');
-  assert.equal(vfs.stat('repo/dir-link').type, 'symlink');
+  assert.equal(vfs.lstat('repo/dir-link').type, 'symlink');
   assert.equal(vfs.readlink('repo/dir-link'), 'real-dir');
   assert.equal((await bridge.stat('repo/link.txt', { followSymlinks: false })).type, 'symlink');
   assert.equal(vfs.stat('repo/gitlink').type, 'directory');
@@ -914,6 +914,7 @@ export const git = {
       },
       {
         op: 'clone',
+        pid: 1,
         dir: `/${dir}`,
         url: 'https://example.invalid/repo.git',
         exclusiveDestination: true,
@@ -1354,6 +1355,7 @@ export const git = {
     },
     {
       op: 'clone',
+      pid: 1,
       dir: '/existing-repo',
       url: 'https://example.invalid/repo.git',
       exclusiveDestination: true,

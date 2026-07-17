@@ -15,6 +15,9 @@ function registerCloneHarness() {
   const acquisitionOptions = [];
   const releasedOwners = [];
   const vfs = {
+    as() {
+      return {};
+    },
     acquireExclusiveMutation(path, options) {
       const owner = `owner-${acquiredRoots.length + 1}`;
       acquiredRoots.push(path);
@@ -47,6 +50,8 @@ function registerCloneHarness() {
 
 function commandContext(args) {
   return {
+    pid: 1,
+    cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     args,
     cwd: '/home/user',
     env: {},

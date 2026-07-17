@@ -40,7 +40,7 @@ import type { FacetManager } from '../facets/manager.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
-import { CRED_KERNEL } from './os-contracts.js';
+import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -80,7 +80,6 @@ export function makeRubyRunnerFactory(deps: {
   };
 }): RubyRunnerFactory {
   const { facetMgr, registry } = deps;
-  const vfs = deps.vfs.as(CRED_KERNEL);
 
   return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -88,9 +87,9 @@ export function makeRubyRunnerFactory(deps: {
       return entry ? `${installRoot}/${entry.path}` : null;
     };
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
-    let fsSnapshotCache: { cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
+    let fsSnapshotCache: { cred: string; cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
 
-    const registerGemBins = (): void => {
+    const registerGemBins = (vfs: CredentialedVfs): void => {
       if (!registry) return;
       for (const bin of installedGemBins(vfs, defaultGemHome())) {
         if (RUBY_RUNTIME_BIN_NAMES.has(bin.name)) continue;
@@ -107,12 +106,15 @@ export function makeRubyRunnerFactory(deps: {
     };
 
     const rubyBinHandler = async function rubyBinHandler(ctx: CommandContext): Promise<number> {
+      const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
+      const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+      const vfs = deps.vfs.as(cred);
       const argv = ctx.args ?? [];
       const cwd = ctx.cwd || '/home/user';
 
       const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
       if (packageCommand.handled) {
-        if (packageCommand.exitCode === 0) registerGemBins();
+        if (packageCommand.exitCode === 0) registerGemBins(vfs);
         return packageCommand.exitCode;
       }
 
@@ -202,12 +204,13 @@ export function makeRubyRunnerFactory(deps: {
       // Per-subtree watermark over exactly what the snapshot covers (cwd +
       // gem home), so unrelated VFS writes don't evict the cache.
       const revision = Math.max(vfs.revision(cwd), vfs.revision(defaultGemHome()));
-      let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
+      let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
+        && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
         ? fsSnapshotCache.result
         : null;
       if (!fsSnapshot) {
         fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [defaultGemHome()] });
-        fsSnapshotCache = { cwd, revision, result: fsSnapshot };
+        fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
       }
       if ('error' in fsSnapshot) {
         ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
@@ -239,7 +242,7 @@ export function makeRubyRunnerFactory(deps: {
       return result.exitCode;
     };
 
-    registerGemBins();
+    registerGemBins(deps.vfs.as(CRED_KERNEL));
     return rubyBinHandler;
   };
 }

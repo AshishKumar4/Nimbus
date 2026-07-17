@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { _rpcWriteBatchStream } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -15,10 +15,13 @@ const malformed = new ReadableStream({
 });
 
 const harness = createSqliteVfsTestHarness();
+const processes = new SessionProcessSupervisor();
+const process = processes.spawn('git', ['clone'], '/home/user');
 const result = await _rpcWriteBatchStream({
   sqliteFs: new SqliteVFS(harness.sql, harness.ctx),
+  processes,
   ensureSqliteFs() {},
-}, malformed);
+}, malformed, undefined, process.pid);
 
 assert.deepEqual(result, {
   ok: false,
@@ -53,10 +56,11 @@ const ownerResult = await _rpcWriteBatchStream({
       };
     },
   },
+  processes,
   ensureSqliteFs() {},
-}, new ReadableStream(), 'clone-owner');
+}, new ReadableStream(), 'clone-owner', process.pid);
 
-assert.equal(forwardedCred, CRED_KERNEL);
+assert.deepEqual(forwardedCred, process.cred);
 assert.equal(forwardedOwner, 'clone-owner');
 assert.equal(ownerResult.ok, true);
 

@@ -16,7 +16,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = new SqliteRuntimeFsBridge(rawVfs);
+const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
 const supervisor = {

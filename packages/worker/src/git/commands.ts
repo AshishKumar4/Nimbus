@@ -10,7 +10,7 @@
  */
 
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { dec } from '../_shared/bytes.js';
@@ -153,6 +153,8 @@ function createGitFs(vfs: CredentialedVfs) {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 type Ctx = {
+  pid: number;
+  cred: VfsCred;
   args: string[];
   stdout: { write(s: string): void };
   stderr: { write(s: string): void };
@@ -219,10 +221,9 @@ export function registerGitCommands(
   doCtx?: DurableObjectState,
   doEnv?: any,
 ): void {
-  const credentialedVfs = vfs.as(CRED_KERNEL);
-  const fs = createGitFs(credentialedVfs);
-
   registry.register('git', async (ctx: Ctx) => {
+    const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
+    const fs = createGitFs(credentialedVfs);
     const args = ctx.args;
     const sub = args[0];
     const subArgs = args.slice(1);
@@ -309,6 +310,7 @@ export function registerGitCommands(
             try {
               const result = await execGitNetwork(doCtx, doEnv, {
                 op: 'clone',
+                pid: ctx.pid,
                 dir: dest as string,
                 url,
                 depth,
@@ -504,6 +506,7 @@ export function registerGitCommands(
           ctx.stdout.write(`Fetching from ${remote}...\n`);
           const result = await execGitNetwork(doCtx, doEnv, {
             op: 'fetch',
+            pid: ctx.pid,
             dir,
             remote,
             auth: {
@@ -530,6 +533,7 @@ export function registerGitCommands(
           ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
           const result = await execGitNetwork(doCtx, doEnv, {
             op: 'pull',
+            pid: ctx.pid,
             dir,
             remote,
             ref: branch,
@@ -558,6 +562,7 @@ export function registerGitCommands(
           ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
           const result = await execGitNetwork(doCtx, doEnv, {
             op: 'push',
+            pid: ctx.pid,
             dir,
             remote,
             ref: branch,

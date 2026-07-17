@@ -17,6 +17,7 @@ import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
@@ -274,6 +275,7 @@ The editor opens this file in Markdown preview mode by default. Use
 export class NimbusSession extends CloudflareDurableObject {
   // this.ctx and this.env are provided by the DurableObject base class
   sqliteFs: SqliteVFS | null = null;
+  runtimeFsBridges: Map<number, SqliteRuntimeFsBridge> | null = null;
   kernel: Kernel | null = null;
   shell: Shell | null = null;
   terminal: WebSocketTerminal | null = null;
@@ -609,49 +611,49 @@ export class NimbusSession extends CloudflareDurableObject {
   // DEFECT-D1: ctx is protected and not on a public interface).
 
   // Supervisor RPC (file/log/HMR/batch)
-  async _rpcReadFile(path: string): Promise<string | null> { return _rpc._rpcReadFile(this as any, path); }
-  async _rpcReadFileBytes(path: string): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path); }
+  async _rpcReadFile(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid); }
+  async _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
-  async _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content); }
-  async _rpcStat(path: string): Promise<any> { return _rpc._rpcStat(this as any, path); }
-  async _rpcLstat(path: string): Promise<any> { return _rpc._rpcLstat(this as any, path); }
-  async _rpcHasLegacySymlinkUnder(path: string): Promise<boolean> {
-    return _rpc._rpcHasLegacySymlinkUnder(this as any, path);
+  async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content, pid); }
+  async _rpcStat(path: string, pid?: number): Promise<any> { return _rpc._rpcStat(this as any, path, pid); }
+  async _rpcLstat(path: string, pid?: number): Promise<any> { return _rpc._rpcLstat(this as any, path, pid); }
+  async _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean> {
+    return _rpc._rpcHasLegacySymlinkUnder(this as any, path, pid);
   }
-  async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
-    return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs);
+  async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void> {
+    return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs, pid);
   }
-  async _rpcChmod(path: string, mode: number): Promise<void> {
-    return _rpc._rpcChmod(this as any, path, mode);
+  async _rpcChmod(path: string, mode: number, pid?: number): Promise<void> {
+    return _rpc._rpcChmod(this as any, path, mode, pid);
   }
-  async _rpcReaddir(path: string): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path); }
-  async _rpcExists(path: string): Promise<boolean> { return _rpc._rpcExists(this as any, path); }
-  async _rpcMkdir(path: string): Promise<void> { return _rpc._rpcMkdir(this as any, path); }
-  async _rpcRmdir(path: string): Promise<void> { return _rpc._rpcRmdir(this as any, path); }
-  async _rpcRename(from: string, to: string): Promise<void> { return _rpc._rpcRename(this as any, from, to); }
-  async _rpcReadlink(path: string): Promise<string | null> { return _rpc._rpcReadlink(this as any, path); }
-  async _rpcSymlink(target: string, path: string): Promise<void> { return _rpc._rpcSymlink(this as any, target, path); }
-  async _rpcFsRevision(path?: string): Promise<number> { return _rpc._rpcFsRevision(this as any, path); }
-  async _rpcFsOpen(path: string, flags: any): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags); }
-  async _rpcFsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
-    return _rpc._rpcFsRead(this as any, handleId, offset, length);
+  async _rpcReaddir(path: string, pid?: number): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path, pid); }
+  async _rpcExists(path: string, pid?: number): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid); }
+  async _rpcMkdir(path: string, pid?: number): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid); }
+  async _rpcRmdir(path: string, pid?: number): Promise<void> { return _rpc._rpcRmdir(this as any, path, pid); }
+  async _rpcRename(from: string, to: string, pid?: number): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid); }
+  async _rpcReadlink(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid); }
+  async _rpcSymlink(target: string, path: string, pid?: number): Promise<void> { return _rpc._rpcSymlink(this as any, target, path, pid); }
+  async _rpcFsRevision(path?: string, pid?: number): Promise<number> { return _rpc._rpcFsRevision(this as any, path, pid); }
+  async _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags, pid); }
+  async _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array> {
+    return _rpc._rpcFsRead(this as any, handleId, offset, length, pid);
   }
-  async _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-    return _rpc._rpcFsWrite(this as any, handleId, offset, bytes);
+  async _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
+    return _rpc._rpcFsWrite(this as any, handleId, offset, bytes, pid);
   }
-  async _rpcFsClose(handleId: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId); }
-  async _rpcFsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-    return _rpc._rpcFsReadRange(this as any, path, offset, length);
+  async _rpcFsClose(handleId: number, pid?: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId, pid); }
+  async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
+    return _rpc._rpcFsReadRange(this as any, path, offset, length, pid);
   }
-  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-    return _rpc._rpcFsWriteRange(this as any, path, offset, bytes);
+  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
+    return _rpc._rpcFsWriteRange(this as any, path, offset, bytes, pid);
   }
-  async _rpcFsTruncate(path: string, size: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size); }
+  async _rpcFsTruncate(path: string, size: number, pid?: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size, pid); }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
-  async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
-  async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
-  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult> {
-    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner);
+  async _rpcUnlink(path: string, pid?: number): Promise<void> { return _rpc._rpcUnlink(this as any, path, pid); }
+  async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
+  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult> {
+    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner, pid);
   }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }

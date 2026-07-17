@@ -91,7 +91,7 @@ export interface ProgrammaticHost {
   nimbusWrangler?: unknown;
   npmInstaller?: unknown;
   fetchProxyEntrypoint?: unknown;
-  runtimeFsBridge?: unknown;
+  runtimeFsBridges?: Map<number, unknown> | null;
   sessionBasePath?: string;
   sessionBasePathHydrated?: boolean;
   wranglerAliasBannerShown?: boolean;
@@ -668,7 +668,8 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.nimbusWrangler = null;
   self.npmInstaller = null;
   self.fetchProxyEntrypoint = null;
-  self.runtimeFsBridge = null;
+  self.runtimeFsBridges?.clear();
+  self.runtimeFsBridges = null;
   self._cpRegistry = null;
   self._viteShimPid = null;
   self._viteShimPort = null;

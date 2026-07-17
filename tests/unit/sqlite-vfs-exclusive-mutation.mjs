@@ -63,7 +63,7 @@ assert.equal(legacySymlinks.readlink('repo/injected'), null);
 vfs.writeFile('outside.txt', 'outside');
 assert.equal(vfs.readFileString('outside.txt'), 'outside');
 vfs.writeFile('outside-delete.txt', 'outside');
-const bridge = new SqliteRuntimeFsBridge(rawVfs);
+const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 await bridge.unlink('/outside-delete.txt');
 assert.equal(vfs.exists('outside-delete.txt'), false, 'outside unlink reported failure after commit');
 

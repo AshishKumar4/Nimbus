@@ -39,7 +39,7 @@
 
 import type { FacetManager } from '../facets/manager.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from './os-contracts.js';
+import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
@@ -75,6 +75,8 @@ export interface RuntimeRunOpts {
   forceLongRunning?: boolean;
   attachedTty?: boolean;
   bundleProfile?: FacetBundleProfile;
+  /** Invoking process credentials for credential-bound runtime snapshots. */
+  cred?: VfsCred;
 }
 
 export interface RuntimeSpec {
@@ -212,6 +214,7 @@ export function buildRuntimeHandler(
         return 1;
       }
       const result = await spec.run(facetMgr, code, {
+        cred: ctx.cred,
         argv: args.slice(evalIdx + 2),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -273,6 +276,7 @@ export function buildRuntimeHandler(
       // `args.slice(scriptIdx + 1)` are the runner's user args (e.g.
       // [exportName, intArg1, intArg2, ...] for wasm-runner).
       const result = await spec.run(facetMgr, '', {
+        cred: ctx.cred,
         argv: args.slice(scriptIdx + 1),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -421,6 +425,7 @@ export function buildRuntimeHandler(
 
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(facetMgr, code, {
+      cred: ctx.cred,
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       env: ctx.env,
       cwd: ctx.cwd,

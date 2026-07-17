@@ -52,7 +52,7 @@
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 
@@ -207,12 +207,12 @@ export function makeWasmRunner(deps: {
   ctx: DurableObjectState;
   processes: SessionProcessSupervisor;
 }) {
-  const vfs = deps.vfs.as(CRED_KERNEL);
   return async function runWasm(
     _facetMgr: unknown,
     _code: string,
     opts: RuntimeRunOpts,
   ): Promise<RuntimeRunResult> {
+    const vfs = deps.vfs.as(requireVfsCred(opts.cred, 'wasm-runner'));
     // opts.filename is the resolved .wasm path (absolute, /-prefixed
     // by the registry's bypassesScriptRead path).
     // opts.argv is:
