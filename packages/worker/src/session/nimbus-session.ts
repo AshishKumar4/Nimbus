@@ -19,7 +19,7 @@ import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, type VfsCred } from '../runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -1015,6 +1015,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return _classifyCommand(commandName);
       },
       runPureBuiltin: async (
+        pid: number,
         name: string,
         args: string[],
         env: Record<string, string>,
@@ -1027,18 +1028,45 @@ export class NimbusSession extends CloudflareDurableObject {
         const commandName = normalizeCpCommandName(name);
         const cmd = await registry.resolve(commandName);
         if (!cmd) { hooks.onStderr(`${name}: command not found\n`); return 127; }
+        const cred = this.processes.cred(pid);
         const ac = new AbortController();
         const ctx = {
+          pid,
+          cred,
           args, env, cwd,
-          vfs: this.sqliteFs!,
+          vfs: this.sqliteFs!.as(cred),
           stdout: { write: (d: string) => hooks.onStdout(String(d)) },
           stderr: { write: (d: string) => hooks.onStderr(String(d)) },
           signal: ac.signal,
           stdin: { read: async () => null, readAll: async () => stdin },
-          __nimbusCaptureOutput: true,
+          setUmask: (mask: number) => { this.processes.setUmask(pid, mask); },
+          runAs: async (targetCred: VfsCred, argv: string[]) => {
+            if (argv.length === 0) return 0;
+            const child = this.processes.spawn(
+              argv.join(' '),
+              argv,
+              cwd,
+              { parentPid: pid, cred: targetCred },
+            );
+            let exitCode = 1;
+            try {
+              exitCode = await cmdRegistryAdapter.runPureBuiltin(
+                child.pid,
+                argv[0],
+                argv.slice(1),
+                env,
+                cwd,
+                stdin,
+                hooks,
+              );
+              return exitCode;
+            } finally {
+              this.processes.exit(child.pid, exitCode);
+            }
+          },
         };
         try {
-          const code = await cmd(ctx as any);
+          const code = await cmd(ctx);
           return typeof code === 'number' ? code : 0;
         } catch (e: any) {
           hooks.onStderr(`${name}: ${e?.message || String(e)}\n`);

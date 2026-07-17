@@ -17,6 +17,7 @@ export interface SpawnInIsolateSpec {
     detached?: boolean;
     shell?: boolean | string;
     stdin?: string;
+    processPid: number;
   };
   /** Pre-resolved kind from FacetProcessManager._dispatch. */
   kind: 'pure-builtin' | 'facet-direct' | 'shell-direct';

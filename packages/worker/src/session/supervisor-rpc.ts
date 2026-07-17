@@ -569,7 +569,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   //
 
   async cpSpawn(req: any): Promise<{ childPid: number }> {
-    return this._call(this._getStub()._rpcCpSpawn(req));
+    return this._call(this._getStub()._rpcCpSpawn({ ...req, parentPid: this._pid() }));
   }
 
   async cpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {

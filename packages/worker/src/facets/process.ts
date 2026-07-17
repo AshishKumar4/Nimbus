@@ -105,8 +105,11 @@ export interface SpawnReq {
   stdio: ('pipe' | 'ignore' | 'inherit')[];
   detached?: boolean;
   shell?: boolean | string;
-  /** Optional explicit parent PID for log routing. */
-  parentPid?: number;
+  stdin?: string;
+  /** Supervisor-assigned invoking process PID. */
+  parentPid: number;
+  /** Broker-assigned child PID for isolated inline dispatch. */
+  processPid?: number;
 }
 
 export interface ReadOutputResult {
@@ -157,6 +160,7 @@ export interface FacetManagerLike {
 export interface CommandRegistryLike {
   resolve(name: string): { kind: CommandKind } | null;
   runPureBuiltin(
+    pid: number,
     name: string,
     args: string[],
     env: Record<string, string>,
@@ -322,8 +326,16 @@ export class FacetProcessManager {
       NIMBUS_CP_DEPTH: String(depthIn + 1),
     };
 
+    if (!Number.isInteger(req.parentPid) || req.parentPid <= 0) {
+      throw new Error('child_process spawn requires a supervisor-assigned parent pid');
+    }
     const commandLine = `${req.command} ${req.args.join(' ')}`.trim();
-    const processEntry = this.deps.processes.spawn(commandLine, req.args, req.cwd);
+    const processEntry = this.deps.processes.spawn(
+      commandLine,
+      req.args,
+      req.cwd,
+      { parentPid: req.parentPid },
+    );
     const pid = processEntry.pid;
     const facetName = `cp-proc-${pid}`;
     const child: ChildEntry = {
@@ -409,6 +421,7 @@ export class FacetProcessManager {
         detached: !!req.detached,
         shell: req.shell ?? false,
         stdin,
+        processPid: child.pid,
       };
       // Register the facet-slot so kill() can find the abort handle.
       child.facetSlot = { abort: undefined, killed: false };
@@ -435,7 +448,7 @@ export class FacetProcessManager {
       const stdin = await this._drainStdinForBuiltin(child);
       try {
         const code = await this.deps.commandRegistry.runPureBuiltin(
-          req.command, req.args, child.env, req.cwd, stdin, hooks,
+          child.pid, req.command, req.args, child.env, req.cwd, stdin, hooks,
         );
         this._stampExit(child, code, null);
       } catch (e: any) {
@@ -505,7 +518,7 @@ export class FacetProcessManager {
         if (!plan) {
           return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
         }
-        const stdin = typeof (req as any).stdin === 'string' ? (req as any).stdin : '';
+        const stdin = typeof req.stdin === 'string' ? req.stdin : '';
         const commandLine = this._shellCommandLineForPlan(
           plan,
           String(req.cwd || '/home/user'),
@@ -522,11 +535,18 @@ export class FacetProcessManager {
       }
     }
     if (kind === 'pure-builtin') {
+      if (typeof req.processPid !== 'number' || !Number.isInteger(req.processPid) || req.processPid <= 0) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'child_process: inline dispatch requires a broker-assigned process pid\n',
+        };
+      }
       try {
         const code = await this.deps.commandRegistry.runPureBuiltin(
-          req.command, req.args, childEnv,
+          req.processPid, req.command, req.args, childEnv,
           String(req.cwd || '/home/user'),
-          typeof (req as any).stdin === 'string' ? (req as any).stdin : '',
+          typeof req.stdin === 'string' ? req.stdin : '',
           hooks,
         );
         return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };

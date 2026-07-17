@@ -24,6 +24,7 @@ export interface SpawnPoolReq {
   detached?: boolean;
   shell?: boolean | string;
   stdin?: string;
+  processPid: number;
 }
 
 export class ChildProcessSpawnPool {
@@ -78,6 +79,7 @@ export class ChildProcessSpawnPool {
         detached: !!req.detached,
         shell: req.shell ?? false,
         stdin: typeof req.stdin === 'string' ? req.stdin : '',
+        processPid: req.processPid,
       },
       kind,
     };
