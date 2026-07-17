@@ -68,7 +68,7 @@ const config = buildNimbusWranglerConfig({
 | `nimbus setup cloudflare --name <worker>` | `CLOUDFLARE_ACCOUNT_ID` | Creates R2 buckets, seeds runtimes |
 | `nimbus token mint --tenant <t> [--scopes a,b --sid <id> --ttl <sec>]` | `JWT_SECRET` | Prints a JWT |
 | `nimbus token verify <token>` | `JWT_SECRET` | Prints the claims |
-| `nimbus session new` | `NIMBUS_ENDPOINT`, `NIMBUS_TOKEN` | POSTs `/new`, prints the session id |
+| `nimbus session new` | `--endpoint`/`--token`, or `NIMBUS_ENDPOINT`/`NIMBUS_TOKEN` as fallbacks | POSTs `/new`, prints the session id |
 | `nimbus runtime sync [--bucket <name>] <runtime[@ver]…>` | `CLOUDFLARE_ACCOUNT_ID` | Stages runtime blobs (BYOA) |
 | `nimbus runtime list` | — | Shows staged runtimes |
 

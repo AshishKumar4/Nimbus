@@ -32,6 +32,9 @@ export default defineConfig({
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/AshishKumar4/Nimbus' },
 			],
 			customCss: ['./src/styles/theme.css', './src/styles/diagrams.css'],
+			expressiveCode: {
+				defaultProps: { frame: 'terminal' },
+			},
 			plugins: [starlightLlmsTxt()],
 			components: {
 				ThemeProvider: './src/components/ThemeProvider.astro',

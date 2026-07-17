@@ -69,7 +69,7 @@ await box.processes.kill(pid);
 await box.processes.write(pid, 'input\n');      // stdin
 await box.processes.signal(pid, 'SIGINT');
 await box.processes.resize(pid, { columns: 120, rows: 32 });
-const logs = await box.processes.logs(pid, { afterSeq: 0 });
+const logs = await box.processes.logs(pid, { lines: 100 });
 ```
 
 `attach` returns an async iterable for live input and output.

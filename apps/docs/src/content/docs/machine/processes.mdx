@@ -5,7 +5,8 @@ description: One isolate per process, joined through loopback ports and previews
 
 ```bash
 $ cat > server.js <<'EOF'
-require('http').createServer((req, res) => res.end('ok from another isolate')).listen(3000);
+require('http').createServer((req, res) => res.end('ok from another isolate'))
+  .listen(3000, () => console.log('listening on 3000'));
 EOF
 $ node server.js
 listening on 3000

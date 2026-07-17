@@ -28,8 +28,10 @@ deterministically.
 Copying a 16 MiB image on the memory-reuse path takes ~0.5 ms. Full
 instantiate+copy is GC-dominated, so the design reuses instances. A
 facet-budget overrun is a catchable error, which maps to `fork()`
-returning `ENOMEM`. M0/M1 are done. M2+ is design-stage, including
-exec/wait integration and process-model plumbing.
+returning `ENOMEM`. M2 is proven live too: fork + exec of a different
+wasm image + a real `waitpid` exit status, vfork and posix_spawn fast
+paths, and cross-facet placement (fork+exec+wait ~1.9 ms at 16 MiB).
+Wiring all of it into the shipped process model is the remaining work.
 
 ## True Unix permissions (S2)
 

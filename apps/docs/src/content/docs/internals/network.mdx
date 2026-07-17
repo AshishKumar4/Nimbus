@@ -10,7 +10,7 @@ import PortRouting from '../../../components/diagrams/PortRouting.astro';
 I use one port registry and one route. Loopback `curl`, the port preview, and
 the default app preview all go through the supervisor.
 
-No registry entry returns `404`: no process is listening. A registered port
+No registry entry returns `502`: no process is listening. A registered port
 whose stub isn't attached returns `501`. That state exists during the boot
 window between registration and a serving isolate. A dead port and a booting
 port are different truths, so I don't hide either behind retries.

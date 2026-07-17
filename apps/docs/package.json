@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@astrojs/starlight": "^0.41.3",
+    "@fontsource/ibm-plex-mono": "5.2.5",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "astro": "^7.0.2",

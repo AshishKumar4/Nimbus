@@ -8,8 +8,9 @@ I measured and dated every number. The caveats stay with the comparisons.
 ## Session create → first command
 
 I ran the ComputeSDK method on 2026-07-16: wall-clock `sandbox.create()`
-plus the first successful `runCommand('node -v')`, 5% trimmed. Composite
-= (0.60·median + 0.25·P95 + 0.15·P99) × success rate.
+plus the first successful `runCommand('node -v')`, 5% trimmed. The
+composite weighs normalized scores of the median (0.60), P95 (0.25), and
+P99 (0.15) on a 10-second scale, times the success rate.
 
 | Mode | N | Success | Median | P95 | P99 | Composite |
 |---|---|---|---|---|---|---|
@@ -21,8 +22,8 @@ These are per-request Durable Object boots with no warm pool. All three
 runs had 100% success. In a phase run (N=15), `create()`+`ready()` took a
 545 ms median and first exec took 23 ms. Session boot is ~96% of TTI;
 after that, exec round-trips take ~20 ms. Across ~370 total sandboxes, I
-saw one failure: a DO storage timeout reset during a smoke iteration. I
-reported it.
+saw one failure: a DO storage timeout reset during a smoke iteration.
+I'm noting it here rather than hiding it.
 
 I ran from a residential Linux client, so network RTT to the edge is in
 these numbers. Nimbus is not on the official ComputeSDK leaderboard; I
