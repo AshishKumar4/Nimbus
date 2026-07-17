@@ -51,8 +51,11 @@ export default defineConfig({
 					label: 'Computers for your agents',
 					items: [
 						{ label: 'Embed Nimbus in a Worker', slug: 'sdk/embed' },
+						{ label: 'Configure the handler', slug: 'sdk/handler' },
 						{ label: 'The sandbox API', slug: 'sdk/sandbox-api' },
 						{ label: 'Tokens & auth', slug: 'sdk/tokens' },
+						{ label: 'React embed', slug: 'sdk/react' },
+						{ label: 'CLI & runtime ops', slug: 'sdk/cli' },
 					],
 				},
 				{

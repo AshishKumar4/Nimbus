@@ -54,7 +54,8 @@ Workers and Durable Object apps.
 The embedder surface is `@nimbus-sh/sdk/worker`: it exports the
 `NimbusSession` Durable Object class, `createNimbusHandler`, and the auth
 helpers, so your `wrangler.jsonc` binds the DO and your Worker script stays
-a few lines.
+a few lines. [Configure the handler](/docs/sdk/handler/) covers every
+option: auth modes, the remote SDK API, custom routes, and hooks.
 
 ## Use it programmatically
 
@@ -148,7 +149,13 @@ ships.
 
 ## Related
 
+- [Configure the handler](/docs/sdk/handler/): every `createNimbusHandler`
+  option.
 - [The sandbox API](/docs/sdk/sandbox-api/): the full method-by-method
   surface.
 - [Tokens & auth](/docs/sdk/tokens/): the JWT model, scopes, and the attach
   exchange.
+- [React embed](/docs/sdk/react/): `<NimbusTerminal />` and the headless
+  hook.
+- [CLI & runtime ops](/docs/sdk/cli/): command reference and runtime-cache
+  choices.

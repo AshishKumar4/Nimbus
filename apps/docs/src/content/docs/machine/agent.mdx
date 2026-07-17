@@ -77,6 +77,10 @@ For the owner-token fallback instead, set `NIMBUS_CLOUDFLARE_ACCOUNT_ID` in
 vars and `NIMBUS_CLOUDFLARE_API_TOKEN` as a secret. The token needs the
 Workers AI / AI Gateway permissions for your chosen model.
 
+Embedders who want to customize the login flow itself can build on the
+OAuth helpers exported from `@nimbus-sh/sdk/worker`
+([configure the handler](/docs/sdk/handler/#agent-oauth-for-embedders)).
+
 ## Related
 
 - [Security & isolation](/docs/internals/security/): the full cookie and
