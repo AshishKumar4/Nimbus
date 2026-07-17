@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';
@@ -55,7 +55,7 @@ const SHELL_ALIASES = {
 export function registerShellEntrypointCommands(
   registry: RegistryLike,
   shell: ShellEntrypointExecutor,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
 ): void {
   const sh = makeShellEntrypoint('sh', shell, vfs);
   const bash = makeShellEntrypoint('bash', shell, vfs);
@@ -66,7 +66,7 @@ export function registerShellEntrypointCommands(
 function makeShellEntrypoint(
   shellName: ShellName,
   shell: ShellEntrypointExecutor,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
 ): (ctx: ShellCommandContext) => Promise<number> {
   return async (ctx) => {
     const argv = normalizeArgs(ctx.args);
@@ -141,7 +141,7 @@ async function resolveInheritedStdin(
 async function parseShellProgram(
   shellName: ShellName,
   ctx: ShellCommandContext,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
 ): Promise<ParseResult> {
   const parsed = parseShellInvocation(shellName, ctx.args);
   if (!parsed.ok) {
@@ -192,7 +192,7 @@ function loadScript(
   args: string[],
   options: ShellInvocationOptions,
   cwd: string | undefined,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
 ): ParseResult {
   const path = resolveVfsPath(script, cwd || '/home/user');
   if (!vfs.exists(path)) return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };

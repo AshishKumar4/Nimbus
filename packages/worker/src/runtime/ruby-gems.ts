@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { extractTarball } from '../npm/tarball.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 
@@ -50,7 +50,7 @@ export function defaultGemHome(): string {
   return DEFAULT_GEM_HOME;
 }
 
-export function installedGemLibRoots(vfs: SqliteVFS, gemHome = DEFAULT_GEM_HOME): string[] {
+export function installedGemLibRoots(vfs: CredentialedVfs, gemHome = DEFAULT_GEM_HOME): string[] {
   const gemsRoot = `${gemHome}/gems`;
   if (!vfs.exists(gemsRoot)) return [];
   const out: string[] = [];
@@ -62,7 +62,7 @@ export function installedGemLibRoots(vfs: SqliteVFS, gemHome = DEFAULT_GEM_HOME)
   return out.sort();
 }
 
-export function installedGemBins(vfs: SqliteVFS, gemHome = DEFAULT_GEM_HOME): InstalledRubyGemBin[] {
+export function installedGemBins(vfs: CredentialedVfs, gemHome = DEFAULT_GEM_HOME): InstalledRubyGemBin[] {
   const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
   if (!vfs.exists(binRoot) || !vfs.isDirectory(binRoot)) return [];
   return vfs.readdir(binRoot)
@@ -72,7 +72,7 @@ export function installedGemBins(vfs: SqliteVFS, gemHome = DEFAULT_GEM_HOME): In
 }
 
 export async function installRubyGems(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   requests: RubyGemRequest[],
   opts: { gemHome?: string; includeDependencies?: boolean } = {},
 ): Promise<RubyGemInstallReport> {
@@ -99,7 +99,7 @@ export async function installRubyGems(
 }
 
 export async function installRubyBundle(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   opts: { gemHome?: string } = {},
 ): Promise<{ requests: RubyGemRequest[]; report: RubyGemInstallReport; lockfilePath: string }> {
@@ -353,7 +353,7 @@ function trimRubyComment(line: string): string {
 }
 
 async function installOneGem(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   req: RubyGemRequest,
   ctx: {
     gemHome: string;
@@ -516,7 +516,7 @@ function gemExecutableNames(files: Map<string, Uint8Array>): string[] {
 }
 
 function writeGemExecutableWrapper(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   gemHome: string,
   installedKey: string,
   executable: string,
@@ -531,7 +531,7 @@ function writeGemExecutableWrapper(
   ].join('\n'));
 }
 
-function writeInstalledGemRecord(vfs: SqliteVFS, gemHome: string, record: InstalledGemRecord): void {
+function writeInstalledGemRecord(vfs: CredentialedVfs, gemHome: string, record: InstalledGemRecord): void {
   const path = `${gemHome}/.nimbus-gems.json`;
   const records = readInstalledGemRecords(vfs, gemHome)
     .filter((r) => !(r.name === record.name && r.version === record.version));
@@ -539,7 +539,7 @@ function writeInstalledGemRecord(vfs: SqliteVFS, gemHome: string, record: Instal
   vfs.writeFile(path, JSON.stringify({ gems: records }, null, 2) + '\n');
 }
 
-function readInstalledGemRecords(vfs: SqliteVFS, gemHome: string): InstalledGemRecord[] {
+function readInstalledGemRecords(vfs: CredentialedVfs, gemHome: string): InstalledGemRecord[] {
   const path = `${gemHome}/.nimbus-gems.json`;
   if (!vfs.exists(path)) return [];
   try {
@@ -675,7 +675,7 @@ function isValidGemExecutableName(name: string): boolean {
   return true;
 }
 
-function ensureDir(vfs: SqliteVFS, path: string): void {
+function ensureDir(vfs: CredentialedVfs, path: string): void {
   const clean = normalizeVfsPath(path);
   if (!clean) return;
   if (!vfs.exists(clean)) vfs.mkdir(clean, { recursive: true });

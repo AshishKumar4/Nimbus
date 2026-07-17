@@ -35,11 +35,12 @@
  */
 
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { CRED_KERNEL } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -78,7 +79,8 @@ export function makeRubyRunnerFactory(deps: {
     resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
   };
 }): RubyRunnerFactory {
-  const { facetMgr, vfs, registry } = deps;
+  const { facetMgr, registry } = deps;
+  const vfs = deps.vfs.as(CRED_KERNEL);
 
   return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -254,7 +256,7 @@ async function maybeHandleRubyPackageCommand(
   binName: string,
   argv: string[],
   cwd: string,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   ctx: CommandContext,
 ): Promise<{ handled: boolean; exitCode: number }> {
   const isGem = binKind === 'gem' || binName === 'gem';

@@ -51,9 +51,10 @@
 
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
-import { flushVfsDiff, snapshotVfs, type VfsLike } from './vfs-snapshot.js';
+import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -201,11 +202,12 @@ function hasWasiImports(bytes: Uint8Array): boolean {
  * the runtime-registry's contract.
  */
 export function makeWasmRunner(deps: {
-  vfs: VfsLike;
+  vfs: SqliteVFS;
   env: any;
   ctx: DurableObjectState;
   processes: SessionProcessSupervisor;
 }) {
+  const vfs = deps.vfs.as(CRED_KERNEL);
   return async function runWasm(
     _facetMgr: unknown,
     _code: string,
@@ -219,7 +221,7 @@ export function makeWasmRunner(deps: {
     const wasmPath = (opts.filename || '').replace(/^\/+/, '');
     const argv = opts.argv || [];
 
-    if (!deps.vfs.exists(wasmPath)) {
+    if (!vfs.exists(wasmPath)) {
       return {
         exitCode: 1,
         stdout: '',
@@ -229,7 +231,7 @@ export function makeWasmRunner(deps: {
 
     let bytes: Uint8Array;
     try {
-      bytes = deps.vfs.readFile(wasmPath);
+      bytes = vfs.readFile(wasmPath);
     } catch (e: any) {
       return {
         exitCode: 1,
@@ -559,7 +561,7 @@ export function makeWasmRunner(deps: {
     if (isWasi) {
       // Session root = cwd of the shell invocation. Falls back to /home/user.
       const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-      const snap = snapshotVfs(deps.vfs, cwd);
+      const snap = snapshotVfs(vfs, cwd);
       if ('error' in snap) {
         return {
           exitCode: 1,
@@ -609,7 +611,7 @@ export function makeWasmRunner(deps: {
     // ── filesystem WASI: flush mutated FS state back into SqliteFS ──
     if (outcome.mode === 'wasi' && outcome.ok && outcome.fsDiff) {
       try {
-        flushVfsDiff(deps.vfs, outcome.fsDiff);
+        flushVfsDiff(vfs, outcome.fsDiff);
       } catch (e: any) {
         // Flush failure is non-fatal; the wasm ran, the user saw stdout.
         // But surface a diagnostic so they know the FS didn't persist.

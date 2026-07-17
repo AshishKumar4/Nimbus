@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
 import type {
@@ -8,14 +8,17 @@ import type {
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
 } from './os-contracts.js';
+import { CRED_KERNEL } from './os-contracts.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private nextHandleId = 1;
   private handles = new Map<number, RuntimeFileHandle>();
   private legacySymlinks: SymlinkRegistry;
+  private readonly vfs: CredentialedVfs;
 
-  constructor(private readonly vfs: SqliteVFS) {
-    this.legacySymlinks = getSymlinkRegistry(vfs);
+  constructor(private readonly rawVfs: SqliteVFS) {
+    this.vfs = rawVfs.as(CRED_KERNEL);
+    this.legacySymlinks = getSymlinkRegistry(rawVfs);
   }
 
   async stat(path: string, options: { followSymlinks?: boolean } = {}): Promise<RuntimeVfsStat | null> {
@@ -33,11 +36,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         atime: now,
         mtime: now,
         mode: 0o120777,
-        revision: this.vfs.revision(p),
+        uid: 1000,
+        gid: 1000,
+        revision: this.rawVfs.revision(p),
       };
     }
     try {
-      const st = this.vfs.stat(p);
+      const st = followSymlinks ? this.vfs.stat(p) : this.vfs.lstat(p);
       const type = st.type === 'directory'
         ? 'directory'
         : st.type === 'symlink'
@@ -50,7 +55,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         atime: st.atime,
         mtime: st.mtime,
         mode: type === 'symlink' ? 0o120000 | (st.mode & 0o777) : st.mode,
-        revision: this.vfs.revision(p),
+        uid: st.uid,
+        gid: st.gid,
+        revision: this.rawVfs.revision(p),
       };
     } catch {
       return null;
@@ -161,7 +168,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       path: p,
       flags: normalizedFlags,
       position: normalizedFlags.append ? stat.size : 0,
-      baseRevision: this.vfs.revision(p),
+      baseRevision: this.rawVfs.revision(p),
       closed: false,
     };
     this.handles.set(handle.id, handle);
@@ -180,7 +187,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   async write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number> {
     const handle = this.getHandle(handleId);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
-    if (handle.baseRevision < this.vfs.revision(handle.path)) {
+    if (handle.baseRevision < this.rawVfs.revision(handle.path)) {
       throw fsError('ESTALE', 'write', handle.path);
     }
     const start = handle.flags.append
@@ -189,7 +196,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     this.vfs.writeRange(handle.path, start, bytes);
     const end = start + bytes.byteLength;
     if (offset == null || handle.flags.append) handle.position = end;
-    handle.baseRevision = this.vfs.revision(handle.path);
+    handle.baseRevision = this.rawVfs.revision(handle.path);
     return bytes.byteLength;
   }
 
@@ -263,6 +270,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const staleDestination = this.legacySymlinks.isSymlink(newPath);
     this.legacySymlinks.assertMutable(oldPath, ...(staleDestination ? [newPath] : []));
     this.assertParentDirectory(newPath, 'rename');
+    if (this.vfs.exists(newPath)) {
+      if (this.vfs.isDirectory(newPath)) throw fsError('EISDIR', 'rename', to);
+      this.vfs.unlink(newPath);
+    }
     this.vfs.symlink(linkTarget, newPath);
     this.legacySymlinks.delete(oldPath);
     if (staleDestination) this.legacySymlinks.delete(newPath);
@@ -289,13 +300,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   async revision(path?: string): Promise<number> {
-    if (path === undefined) return this.vfs.revision();
+    if (path === undefined) return this.rawVfs.revision();
     const p = this.resolveDataPath(path, true) ?? normalizeVfsPath(path);
-    return this.vfs.revision(p);
+    return this.rawVfs.revision(p);
   }
 
   subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
-    return this.vfs.events.onPath(normalizeVfsPath(path), listener);
+    return this.rawVfs.events.onPath(normalizeVfsPath(path), listener);
   }
 
   private resolveDataPath(path: string, followSymlinks: boolean): string | null {
@@ -341,7 +352,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   private resolveMutationPath(path: string, followSymlinks: boolean, syscall: string): string {
-    this.vfs.assertMutationAllowed(normalizeVfsPath(path));
+    this.rawVfs.assertMutationAllowed(normalizeVfsPath(path));
     const resolved = this.resolveDataPath(path, followSymlinks);
     if (resolved === null) throw fsError('ELOOP', syscall, path);
     return resolved;
@@ -361,7 +372,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   private assertExpectedRevision(path: string, expectedRevision: number | undefined): void {
     if (expectedRevision === undefined) return;
-    if (expectedRevision !== this.vfs.revision(path)) {
+    if (expectedRevision !== this.rawVfs.revision(path)) {
       throw fsError('ESTALE', 'write', `revision ${expectedRevision}`);
     }
   }

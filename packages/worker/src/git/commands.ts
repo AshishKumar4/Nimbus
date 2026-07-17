@@ -9,7 +9,8 @@
  * to the SqliteVFS.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { dec } from '../_shared/bytes.js';
@@ -36,7 +37,7 @@ async function getGit() {
  * isomorphic-git requires: readFile, writeFile, unlink, readdir,
  * mkdir, rmdir, stat, lstat (all as promises).
  */
-function createGitFs(vfs: SqliteVFS) {
+function createGitFs(vfs: CredentialedVfs) {
   // Path normalization is shared with esbuild-service via ./vfs-path.ts.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
@@ -218,7 +219,8 @@ export function registerGitCommands(
   doCtx?: DurableObjectState,
   doEnv?: any,
 ): void {
-  const fs = createGitFs(vfs);
+  const credentialedVfs = vfs.as(CRED_KERNEL);
+  const fs = createGitFs(credentialedVfs);
 
   registry.register('git', async (ctx: Ctx) => {
     const args = ctx.args;
@@ -261,7 +263,7 @@ export function registerGitCommands(
             initDir = initPath.startsWith('/') ? initPath : dir + '/' + initPath;
             // Ensure the target directory exists in VFS
             const stripped = initDir.replace(/^\/+/, '');
-            if (!vfs.exists(stripped)) vfs.mkdir(stripped, { recursive: true });
+            if (!credentialedVfs.exists(stripped)) credentialedVfs.mkdir(stripped, { recursive: true });
           }
           await git.init({ fs, dir: initDir });
           ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);

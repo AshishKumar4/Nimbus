@@ -8,11 +8,13 @@ import {
   MAX_TX_SQL_EXECS,
 } from '../../packages/worker/src/constants.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
-  return { harness, vfs: new SqliteVFS(harness.sql, harness.ctx) };
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
 function reopenVfs(harness) {
@@ -146,11 +148,11 @@ function createStage1Fixture(entries) {
   return harness;
 }
 
-function captureTransactionMetrics(vfs, harness, afterTransaction) {
+function captureTransactionMetrics(rawVfs, harness, afterTransaction) {
   const captured = new Map();
   harness.setFaultInjector(({ transaction }) => {
     if (transaction !== null && transaction > afterTransaction && !captured.has(transaction)) {
-      const tx = vfs.getStats().sql.transactions;
+      const tx = rawVfs.getStats().sql.transactions;
       captured.set(transaction, {
         blobBytes: tx.blobBytes.current,
         logicalRows: tx.logicalRows.current,
@@ -312,12 +314,12 @@ function assertBounded(metrics, label) {
 // Unlink enqueues GC through writeBatch and runs exactly one effective
 // maintenance pass, which removes both the chunks and lifecycle row.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   vfs.writeFile('unlink-once.txt', 'gone');
   const oldId = contentId(harness, 'unlink-once.txt');
-  const runMaintenance = vfs.runContentMaintenanceSafely.bind(vfs);
+  const runMaintenance = rawVfs.runContentMaintenanceSafely.bind(rawVfs);
   let maintenanceInvocations = 0;
-  vfs.runContentMaintenanceSafely = (...args) => {
+  rawVfs.runContentMaintenanceSafely = (...args) => {
     maintenanceInvocations++;
     return runMaintenance(...args);
   };
@@ -492,13 +494,16 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
     /rename target subtree conflicts/,
   );
   assert.equal(reconstructed.exists('source/file.txt'), true);
-  assert.equal(reconstructed.exists('target/file.txt'), true);
+  assert.deepEqual(
+    harness.sql.exec("SELECT path FROM inodes WHERE path = 'target/file.txt'"),
+    [{ path: 'target/file.txt' }],
+  );
 }
 
 // Referenced lifecycle rows are never GC authority. Unreferenced staging is
 // reclaimed in bounded windows, independently of age.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const live = bytes(CHUNK_SIZE + 1, 101);
   vfs.writeFile('referenced.bin', live);
   const liveId = contentId(harness, 'referenced.bin');
@@ -507,7 +512,7 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
     liveId,
     -1,
   );
-  vfs.runContentMaintenance(8);
+  rawVfs.runContentMaintenance(8);
   assert.deepEqual(vfs.readFile('referenced.bin'), live);
   assert.deepEqual(contentChunkIds(harness, liveId), [0, 1]);
 
@@ -526,8 +531,8 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
     );
   }
   const transactionStart = harness.transactionCount;
-  const captured = captureTransactionMetrics(vfs, harness, transactionStart);
-  const result = vfs.runContentMaintenance(16);
+  const captured = captureTransactionMetrics(rawVfs, harness, transactionStart);
+  const result = rawVfs.runContentMaintenance(16);
   harness.clearFault();
   assert.ok(result.transactions >= 10, 'GC must use SQL-bind-safe bounded windows');
   assert.deepEqual(contentChunkIds(harness, abandoned), []);
@@ -546,7 +551,7 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
 // replaced by a directory.
 {
   const harness = createStage1Fixture([{ path: 'legacy-flip', data: bytes(7, 4) }]);
-  const { vfs } = openVfs(harness);
+  const { rawVfs, vfs } = openVfs(harness);
   vfs.writeBatch({
     inodes: [{
       path: 'legacy-flip', parentPath: '', isDir: true, size: 0,
@@ -554,7 +559,7 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
     }],
     chunks: [],
   });
-  vfs.runContentMaintenance(4);
+  rawVfs.runContentMaintenance(4);
   assert.equal(vfs.isDirectory('legacy-flip'), true);
   assert.deepEqual(contentChunkIds(harness, 'legacy-flip'), []);
 }
@@ -578,7 +583,7 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
 // generation and clear the dirty flag. Once the active rows finish, subsequent
 // hot-path maintenance converts and reclaims the abandoned generation.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   vfs.writeFile('maintenance-trigger.txt', 'old');
   const activeIds = Array.from(
     { length: 50 },
@@ -590,7 +595,7 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
       activeId,
       index,
     );
-    vfs.activeStagingContentIds.add(activeId);
+    rawVfs.activeStagingContentIds.add(activeId);
   }
   const abandonedId = '/test:abandoned-after-active-page';
   harness.sql.exec(
@@ -612,7 +617,7 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
   );
   for (const activeId of activeIds) {
     harness.sql.exec('DELETE FROM content_lifecycle WHERE content_id = ?', activeId);
-    vfs.activeStagingContentIds.delete(activeId);
+    rawVfs.activeStagingContentIds.delete(activeId);
   }
 
   const cleanupStart = harness.statements.length;
@@ -671,7 +676,7 @@ let replacementBaseline;
 {
   const fixture = createLargeReplacementFixture();
   const statementStart = fixture.harness.statements.length;
-  const captured = captureTransactionMetrics(fixture.vfs, fixture.harness, fixture.transactionStart);
+  const captured = captureTransactionMetrics(fixture.rawVfs, fixture.harness, fixture.transactionStart);
   fixture.vfs.writeFile('atomic-large.bin', fixture.newData);
   fixture.harness.clearFault();
   const classified = replacementTransactions(fixture.harness, statementStart);
@@ -769,7 +774,7 @@ let rangeBaseline;
   const classified = replacementTransactions(fixture.harness, statementStart);
   assert.ok(classified.stage.length >= 3);
   assert.ok(classified.publish);
-  assertBounded(fixture.vfs.getStats().sql.transactions.boundedPeak, 'large range transaction peak');
+  assertBounded(fixture.rawVfs.getStats().sql.transactions.boundedPeak, 'large range transaction peak');
   assert.notEqual(contentId(fixture.harness, 'atomic-range.bin'), oldContentId);
   assert.deepEqual(reopenVfs(fixture.harness).readFile('atomic-range.bin'), fixture.newData);
   rangeBaseline = {
@@ -831,12 +836,12 @@ for (let statement = 1; statement <= truncateStatementCount; statement++) {
   assert.deepEqual(reconstructed.readFile('truncate-atomic.bin'), original);
 }
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const original = bytes(MAX_TX_BLOB_BYTES * 2, 29);
   vfs.writeFile('truncate-cow.bin', original);
   const oldContentId = contentId(harness, 'truncate-cow.bin');
   vfs.truncate('truncate-cow.bin', 10);
-  assertBounded(vfs.getStats().sql.transactions.boundedPeak, 'large truncate transaction peak');
+  assertBounded(rawVfs.getStats().sql.transactions.boundedPeak, 'large truncate transaction peak');
   assert.notEqual(contentId(harness, 'truncate-cow.bin'), oldContentId);
   assert.deepEqual(reopenVfs(harness).readFile('truncate-cow.bin'), original.slice(0, 10));
 }
@@ -996,8 +1001,9 @@ function streamFromBytes(bytes) {
 // COALESCE(content_id, path) predicate degraded to a per-outer-row SCAN of
 // inodes and made the orphan scan O(chunks × inodes).
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const probeStart = harness.statements.length;
+  vfs.mkdir('plan');
   vfs.writeFile('plan/live.bin', bytes(8, 3));
   harness.sql.exec(
     `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
@@ -1021,8 +1027,8 @@ function streamFromBytes(bytes) {
   // maximum=2 consumes the orphan-insert and staging-convert transactions and
   // leaves a GC backlog, so the backlog probe executes; the follow-up drain
   // covers the GC pick, chunk-delete, and lifecycle-delete probes.
-  vfs.runContentMaintenance(2);
-  vfs.runContentMaintenance(16);
+  rawVfs.runContentMaintenance(2);
+  rawVfs.runContentMaintenance(16);
   const probeStatements = harness.statements.slice(probeStart).filter((statement) => (
     statement.sql.includes('inodes')
     && (/NOT\s+EXISTS/i.test(statement.sql) || statement.sql.includes('AS collision'))
@@ -1045,7 +1051,7 @@ function streamFromBytes(bytes) {
 // be proven referenced) complete within a strict bound, and the run is
 // visible in getStats().sql.phases.maintenanceMs.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs } = openVfs();
   const insertInode = harness.db.prepare(
     `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count, content_id)
      VALUES (?, 'perf', 0, 4, 1, 420, 1, ?)`,
@@ -1062,12 +1068,12 @@ function streamFromBytes(bytes) {
     }
   })();
   const scanStart = performance.now();
-  vfs.runContentMaintenance(4);
+  rawVfs.runContentMaintenance(4);
   const scanMs = performance.now() - scanStart;
   assert.ok(scanMs < 50, `orphan scan over 15k referenced generations took ${scanMs}ms`);
 
-  const reopened = reopenVfs(harness);
-  const maintenance = reopened.getStats().sql.phases.maintenanceMs;
+  const reopened = openVfs(createSqliteVfsTestHarness(harness.db));
+  const maintenance = reopened.rawVfs.getStats().sql.phases.maintenanceMs;
   assert.equal(maintenance.count, 1, 'constructor must run exactly one forced maintenance pass');
   assert.ok(maintenance.last < 50,
     `forced cold-start maintenance took ${maintenance.last}ms at 15k generations`);
@@ -1078,8 +1084,9 @@ function streamFromBytes(bytes) {
 // non-directory inode is never an orphan, lifecycle-owned content is never
 // scanned, and directory paths are not references.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const live = bytes(6, 31);
+  vfs.mkdir('equiv');
   vfs.writeFile('equiv/referenced.bin', live);
   const liveId = contentId(harness, 'equiv/referenced.bin');
   harness.sql.exec(
@@ -1129,13 +1136,13 @@ function streamFromBytes(bytes) {
      ORDER BY chunks.content_id`,
   ).all().map((row) => String(row.content_id));
   assert.deepEqual(referenceOrphans, ['equiv/dir-flip', 'orphan:equiv']);
-  vfs.runContentMaintenance(1);
+  rawVfs.runContentMaintenance(1);
   const scheduled = harness.sql
     .exec("SELECT content_id FROM content_lifecycle WHERE state = 'gc' ORDER BY content_id")
     .map((row) => String(row.content_id));
   assert.deepEqual(scheduled, referenceOrphans,
     'seekable orphan scan diverged from the reference COALESCE predicate');
-  vfs.runContentMaintenance(16);
+  rawVfs.runContentMaintenance(16);
   assert.deepEqual(vfs.readFile('equiv/referenced.bin'), live);
   assert.deepEqual(contentChunkIds(harness, liveId), [0]);
   assert.deepEqual(contentChunkIds(harness, 'equiv/legacy.bin'), [0]);

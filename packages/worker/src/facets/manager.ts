@@ -21,7 +21,8 @@ import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { prefetchForRequire } from '../runtime/require-resolver.js';
@@ -1131,7 +1132,7 @@ const MANIFEST_MAX_DEPTH = 12;
  * file CONTENT we ship.
  */
 function buildManifest(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   scriptPath?: string,
 ): Record<string, string[]> {
@@ -1205,7 +1206,7 @@ function buildManifest(
 // addition — no callers other than buildPrefetchBundle (same file) and
 // the new probe.
 export function greedyAddMainEntries(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
@@ -1397,7 +1398,7 @@ export function greedyAddMainEntries(
  * `budgetState` counter.
  */
 export function addStaticReadFileAssets(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
@@ -1542,7 +1543,7 @@ export function addStaticReadFileAssets(
  * non-string readFile inputs are silent skips — matches Z3 posture.
  */
 export function addStaticReadFileDotfilesAndCompiled(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
@@ -1695,7 +1696,7 @@ export function addStaticReadFileDotfilesAndCompiled(
  * a no-op.
  */
 function addBinTargetSiblings(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   scriptPath: string | undefined,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
@@ -1843,7 +1844,7 @@ function binPackageRelativePath(pkgRoot: string, path: string): string {
 }
 
 function addCwdProjectFiles(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
@@ -1911,7 +1912,7 @@ function addCwdProjectFiles(
  * scanned (it's the user's intent).
  */
 function addEntryAbsPathReads(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   entryCode: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
@@ -2164,7 +2165,7 @@ async function transformEsmInBundle(
  *
  */
 async function buildPrefetchBundle(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   scriptPath: string | undefined,
   cwd: string,
   entryCode: string,
@@ -2364,7 +2365,7 @@ export class FacetManager {
   private env: FacetManagerEnv;
   private processes: SessionProcessSupervisor;
   private portRegistry: PortRegistry;
-  private vfs: SqliteVFS | null = null;
+  private vfs: CredentialedVfs | null = null;
   private hooks: FacetManagerHooks;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   private timedOutProcessIds = new Set<number>();
@@ -2425,7 +2426,7 @@ export class FacetManager {
     this.hooks = hooks;
   }
 
-  setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
+  setVfs(vfs: SqliteVFS) { this.vfs = vfs.as(CRED_KERNEL); }
   /**
    * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
    * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -2445,7 +2446,7 @@ export class FacetManager {
    * subsequent hits skip re-serialization too.
    */
   private async _buildPrefetchBundleCached(
-    vfs: SqliteVFS,
+    vfs: CredentialedVfs,
     scriptPath: string | undefined,
     cwd: string,
     entryCode: string,

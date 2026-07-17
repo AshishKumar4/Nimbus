@@ -3,16 +3,18 @@
 import assert from 'node:assert/strict';
 import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
+const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+const vfs = rawVfs.as(CRED_KERNEL);
 vfs.mkdir('home/user/native-link', { recursive: true });
 vfs.writeFile('home/user/native-link/target.txt', 'target-ok\n');
 vfs.symlink('target.txt', 'home/user/native-link/link.txt');
 
 const commands = new Map();
-registerUnixCommands({ register: (name, handler) => commands.set(name, handler) }, vfs);
+registerUnixCommands({ register: (name, handler) => commands.set(name, handler) }, rawVfs);
 
 async function run(name, args) {
   let stdout = '';

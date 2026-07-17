@@ -28,7 +28,7 @@
  * helpers text() / arrayBuffer() / json() / blob().
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -78,7 +78,7 @@ export interface R2ListOptions {
 }
 
 export interface R2EmulatorOptions {
-  vfs: SqliteVFS | any;
+  vfs: CredentialedVfs;
   root: string;
   binding: string;
   onLog?: (msg: string) => void;
@@ -167,7 +167,7 @@ export class R2ObjectBody extends R2Object {
 // ── R2Emulator ────────────────────────────────────────────────────────────
 
 export class R2Emulator {
-  private vfs: any;
+  private vfs: CredentialedVfs;
   private dir: string;
   private onLog: (m: string) => void;
 
@@ -384,7 +384,7 @@ export class R2Emulator {
 
   private _readBody(key: string): Uint8Array {
     const path = this.dir + '/' + encKey(key);
-    return this.vfs.readFileBytes ? this.vfs.readFileBytes(path) : this.vfs.readFile(path);
+    return this.vfs.readFile(path);
   }
 
   private _evalConditional(side: R2Sidecar, c: R2Conditional): boolean {

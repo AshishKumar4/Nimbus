@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
@@ -48,7 +48,7 @@ type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
 export function installNpmBinFallbackResolver(
   registry: RegistryLike,
   deps: {
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
     getCwd(): string;
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
@@ -58,6 +58,7 @@ export function installNpmBinFallbackResolver(
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
   },
 ): void {
+  const vfs = deps.vfs;
   const upstreamResolve = registry.resolve.bind(registry);
 
   registry.resolve = async function resolveWithNpmBins(name: string): Promise<unknown> {
@@ -65,7 +66,7 @@ export function installNpmBinFallbackResolver(
     if (upstream) return upstream;
 
     const cwd = deps.getCwd() || '/home/user';
-    if (!resolveNpmBinForInvocation(deps.vfs, cwd, DEFAULT_PATH, name)) {
+    if (!resolveNpmBinForInvocation(vfs, cwd, DEFAULT_PATH, name)) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
       if (!hint) return undefined;
@@ -81,7 +82,7 @@ export function installNpmBinFallbackResolver(
     return async (ctx: CommandContext): Promise<number> => {
       const invocationCwd = ctx.cwd || '/home/user';
       const bin = resolveNpmBinForInvocation(
-        deps.vfs,
+        vfs,
         invocationCwd,
         ctx.env?.PATH || DEFAULT_PATH,
         name,
@@ -105,10 +106,10 @@ export function installNpmBinFallbackResolver(
       }
 
       const bundleProfile = bundleProfileForNpmBin(bin);
-      const metadata = readNpmBinPackageMetadata(deps.vfs, bin.packagePath);
+      const metadata = readNpmBinPackageMetadata(vfs, bin.packagePath);
       const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
       const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
-      const runtimeName = npmBinRuntimeForTarget(deps.vfs, bin.targetPath);
+      const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
       const runtimeCmd = await upstreamResolve(runtimeName);
       if (typeof runtimeCmd !== 'function') {
         ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -171,7 +172,7 @@ export function installNpmBinFallbackResolver(
 }
 
 function resolveNpmBinForInvocation(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   envPath: string,
   name: string,
@@ -286,12 +287,12 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-function npmBinRuntimeForTarget(vfs: SqliteVFS, targetPath: string): 'node' | 'bun' {
+function npmBinRuntimeForTarget(vfs: CredentialedVfs, targetPath: string): 'node' | 'bun' {
   const firstLine = readFirstLine(vfs, targetPath);
   return shebangRuntime(firstLine) ?? 'node';
 }
 
-function readFirstLine(vfs: SqliteVFS, path: string): string | null {
+function readFirstLine(vfs: CredentialedVfs, path: string): string | null {
   try {
     const text = vfs.readFileString(path);
     const nl = text.indexOf('\n');
@@ -400,7 +401,7 @@ function isNonInteractiveBinArg(arg: string): boolean {
   return NON_INTERACTIVE_BIN_FLAGS.has(arg.trim().toLowerCase());
 }
 
-function readNpmBinPackageMetadata(vfs: SqliteVFS, packagePath: string): NpmBinPackageMetadata | null {
+function readNpmBinPackageMetadata(vfs: CredentialedVfs, packagePath: string): NpmBinPackageMetadata | null {
   try {
     const manifestPath = normalizeVfsPath(`${packagePath}/package.json`);
     const parsed = NpmBinPackageMetadataSchema.safeParse(

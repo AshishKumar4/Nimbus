@@ -45,7 +45,7 @@
  * contract.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 
@@ -151,7 +151,7 @@ export interface BuildSliceOptions {
   maxBytes?: number;
 }
 export function buildSliceForSpecifier(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   specifier: string,
   nmDir: string,
 ): { slice: SliceEntry[]; totalBytes: number } | null {
@@ -159,7 +159,7 @@ export function buildSliceForSpecifier(
 }
 
 export function buildSliceForSpecifierWithCap(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   specifier: string,
   nmDir: string,
   capBytes: number,

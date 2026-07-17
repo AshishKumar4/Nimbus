@@ -22,10 +22,12 @@
 
 import type {
   SqliteVFS,
+  CredentialedVfs,
   BatchInodeEntry,
   BatchWritePayload,
   WriteBatchStreamResult,
 } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
@@ -128,7 +130,8 @@ export interface NpmInstallResult {
 // ── NpmInstaller ────────────────────────────────────────────────────────
 
 export class NpmInstaller {
-  private vfs: SqliteVFS;
+  private readonly store: SqliteVFS;
+  private readonly vfs: CredentialedVfs;
   private cache: NpmCache;
   private esbuild: EsbuildService | null;
   private ctx: DurableObjectState | undefined;
@@ -154,7 +157,8 @@ export class NpmInstaller {
       fetchFn?: FetchFn;
     },
   ) {
-    this.vfs = vfs;
+    this.store = vfs;
+    this.vfs = vfs.as(CRED_KERNEL);
     this.cache = new NpmCache(sql);
     this.esbuild = opts?.esbuild ?? null;
     this.ctx = opts?.ctx;
@@ -2089,7 +2093,7 @@ export class NpmInstaller {
   private _estimateSupervisorHeapMiB(): number {
     try {
       const counters = readDiagCounters();
-      const vfsStats = this.vfs.getStats() as any;
+      const vfsStats = this.store.getStats();
       const cacheStats = vfsStats.cache ?? {};
       const sqlStats = vfsStats.sql ?? {};
       const heap = estimateSupervisorHeap(counters, {

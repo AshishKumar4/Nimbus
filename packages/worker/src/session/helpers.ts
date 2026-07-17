@@ -5,7 +5,7 @@
  * import. NimbusSession re-exports the public helpers that callers need.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
@@ -284,7 +284,7 @@ export const WRANGLER_UNSUPPORTED_CONFIG_FIELDS = [
  * parse failure). The caller decides whether to warn or block — we only
  * report; nimbus-wrangler itself still runs.
  */
-export function detectUnsupportedWranglerConfig(vfs: SqliteVFS, root: string): string[] {
+export function detectUnsupportedWranglerConfig(vfs: CredentialedVfs, root: string): string[] {
   const candidates = [root + '/wrangler.jsonc', root + '/wrangler.json'];
   let text: string | null = null;
   for (const p of candidates) {
@@ -413,7 +413,7 @@ export function detectBundlerBin(script: string): string | null {
  *   - node_modules/ exists (even if stale — caught by runtime error overlay)
  */
 export function checkNodeModulesGuard(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   projectRoot: string,
 ): { missing: boolean; depCount: number } {
   try {

@@ -18,6 +18,7 @@ import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -1041,7 +1042,7 @@ export class NimbusSession extends CloudflareDurableObject {
     this.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processes: this.processes,
-      vfs: this.sqliteFs!,
+      vfs: this.sqliteFs!.as(CRED_KERNEL),
       commandRegistry: cmdRegistryAdapter,
       shellExecutor: {
         execute: async (
@@ -1265,7 +1266,7 @@ export class NimbusSession extends CloudflareDurableObject {
   // ── Filesystem seeding ────────────────────────────────────────────────
 
   seedFilesystem() {
-    const fs = this.sqliteFs!;
+    const fs = this.sqliteFs!.as(CRED_KERNEL);
     const dirs = [
       'bin', 'etc', 'home', 'home/user', 'home/user/.config',
       'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
@@ -1341,7 +1342,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // Idempotent: guarded by shouldSeedProject() which checks both a
     // sentinel file and the project dir. Safe to call on every boot.
     try {
-      seedProject(fs, { log: (msg) => console.log(msg) });
+      seedProject(this.sqliteFs!, { log: (msg) => console.log(msg) });
     } catch (e: any) {
       console.error('[nimbus] seedProject failed:', e?.message || e);
     }

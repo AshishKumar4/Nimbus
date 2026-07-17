@@ -35,6 +35,7 @@ import type { RuntimeManifest } from './runtime-catalog.js';
 import { ReplSession } from './repl-session.js';
 import { buildPyodidePreamble } from './python-runner.js';
 import { readPyodideRuntimeFiles } from './pyodide-runtime-assets.js';
+import { CRED_KERNEL } from './os-contracts.js';
 
 /** Inputs needed to bootstrap a Pyodide REPL session. */
 export interface PythonReplDeps {
@@ -149,7 +150,8 @@ class PythonReplAdapter implements ReplAdapter {
    *  Pyodide assets, builds the canonical preamble, creates the pool. */
   private async ensurePool(): Promise<void> {
     if (this.pool) return;
-    const { vfs, installRoot, facetMgr } = this.deps;
+    const { installRoot, facetMgr } = this.deps;
+    const vfs = this.deps.vfs.as(CRED_KERNEL);
     const wasmPath = `${installRoot}/share/pyodide/pyodide.asm.wasm`;
     const jsPath = `${installRoot}/share/pyodide/pyodide.asm.js`;
     const stdlibPath = `${installRoot}/share/pyodide/python_stdlib.zip`;

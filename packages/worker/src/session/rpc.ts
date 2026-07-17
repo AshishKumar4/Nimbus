@@ -35,7 +35,7 @@ import {
   recordFailure, getLastRpcFrame, getLastFacetId,
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
-import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, type RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { z } from 'zod/v4';
@@ -344,7 +344,7 @@ export async function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise<{
       data: normalizeWriteBatchChunkData(c.data),
     }));
 
-    return self.sqliteFs!.writeBatch({
+    return self.sqliteFs!.as(CRED_KERNEL).writeBatch({
       inodes,
       chunks,
       deletePaths,
@@ -406,7 +406,7 @@ export async function _rpcWriteBatchStream(self: RpcHost,
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
     const decodeDrainStartedAt = performance.now();
-    return self.sqliteFs!.writeStream(stream, {
+    return self.sqliteFs!.as(CRED_KERNEL).writeStream(stream, {
       decodeDrainStartedAt,
       mutationOwner,
     });
@@ -860,7 +860,7 @@ export function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null {
     self.ensureSqliteFs();
     try {
       const stripped = path.replace(/^\/+/, '');
-      const data = self.sqliteFs!.readFile(stripped);
+      const data = self.sqliteFs!.as(CRED_KERNEL).readFile(stripped);
       return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
     } catch {
       return null;
@@ -872,7 +872,7 @@ export function vfsReadFileString(self: RpcHost, path: string): string | null {
     self.ensureSqliteFs();
     try {
       const stripped = path.replace(/^\/+/, '');
-      return self.sqliteFs!.readFileString(stripped);
+      return self.sqliteFs!.as(CRED_KERNEL).readFileString(stripped);
     } catch {
       return null;
     }
@@ -883,7 +883,7 @@ export function vfsStat(self: RpcHost, path: string): { type: string; size: numb
     self.ensureSqliteFs();
     try {
       const stripped = path.replace(/^\/+/, '');
-      return self.sqliteFs!.stat(stripped);
+      return self.sqliteFs!.as(CRED_KERNEL).stat(stripped);
     } catch {
       return null;
     }
@@ -893,7 +893,7 @@ export function vfsStat(self: RpcHost, path: string): { type: string; size: numb
 export function vfsExists(self: RpcHost, path: string): boolean {
     self.ensureSqliteFs();
     const stripped = path.replace(/^\/+/, '');
-    return self.sqliteFs!.exists(stripped);
+    return self.sqliteFs!.as(CRED_KERNEL).exists(stripped);
 }
 
   /** RPC: List directory contents. Returns array of { name, type }. */
@@ -901,7 +901,7 @@ export function vfsReaddir(self: RpcHost, path: string): { name: string; type: s
     self.ensureSqliteFs();
     try {
       const stripped = path.replace(/^\/+/, '');
-      return self.sqliteFs!.readdir(stripped);
+      return self.sqliteFs!.as(CRED_KERNEL).readdir(stripped);
     } catch {
       return [];
     }
@@ -911,7 +911,7 @@ export function vfsReaddir(self: RpcHost, path: string): { name: string; type: s
 export function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): void {
     self.ensureSqliteFs();
     const stripped = path.replace(/^\/+/, '');
-    self.sqliteFs!.writeFile(stripped, new Uint8Array(data));
+    self.sqliteFs!.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
 }
 
 /**

@@ -2,11 +2,13 @@
 
 import assert from 'node:assert/strict';
 import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
-  return { harness, vfs: new SqliteVFS(harness.sql, harness.ctx) };
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
 function fileInode(path, size, mtime = Date.now()) {
@@ -98,7 +100,7 @@ function latestTransactionStatementCount(harness, transactionStart) {
   );
 
   const parentHarness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(parentHarness.sql, parentHarness.ctx);
+  const vfs = new SqliteVFS(parentHarness.sql, parentHarness.ctx).as(CRED_KERNEL);
   assert.throws(() => vfs.writeBatch({
     inodes: [{ ...fileInode('child', 0), parentPath: 'wrong-parent' }],
     chunks: [],
@@ -106,7 +108,7 @@ function latestTransactionStatementCount(harness, transactionStart) {
 }
 
 const strictCreateStatementCount = (() => {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const start = harness.transactionCount;
   const data = bytes(5, 1);
   vfs.writeBatch({
@@ -355,7 +357,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
 // #9: recursive deletePaths publication must keep live and reconstructed
 // metadata, counters, and directory visibility identical.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   vfs.mkdir('tree/nested', { recursive: true });
   vfs.writeFile('tree/a.txt', bytes(3, 1));
   vfs.writeFile('tree/nested/b.txt', bytes(5, 2));
@@ -364,20 +366,20 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   assert.equal(vfs.exists('tree/a.txt'), false);
   assert.equal(vfs.exists('tree/nested'), false);
   assert.equal(vfs.exists('tree/nested/b.txt'), false);
-  assert.equal(vfs._verifyCounters(), null);
-  const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
+  assert.equal(rawVfs._verifyCounters(), null);
+  const { rawVfs: reconstructedRawVfs, vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
   assert.deepEqual(
     {
-      inodes: vfs.getStats().inodes,
-      files: vfs.getStats().files,
-      directories: vfs.getStats().directories,
-      usedBytes: vfs.getStats().usedBytes,
+      inodes: rawVfs.getStats().inodes,
+      files: rawVfs.getStats().files,
+      directories: rawVfs.getStats().directories,
+      usedBytes: rawVfs.getStats().usedBytes,
     },
     {
-      inodes: reconstructed.getStats().inodes,
-      files: reconstructed.getStats().files,
-      directories: reconstructed.getStats().directories,
-      usedBytes: reconstructed.getStats().usedBytes,
+      inodes: reconstructedRawVfs.getStats().inodes,
+      files: reconstructedRawVfs.getStats().files,
+      directories: reconstructedRawVfs.getStats().directories,
+      usedBytes: reconstructedRawVfs.getStats().usedBytes,
     },
   );
   assert.equal(reconstructed.exists('tree/nested/b.txt'), false);
@@ -483,7 +485,7 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
 
 // #11: cache ownership is isolated from caller input and public output.
 {
-  const { vfs } = openVfs();
+  const { rawVfs, vfs } = openVfs();
   const backing = new Uint8Array(CHUNK_SIZE * 4);
   backing.set(bytes(11, 33), CHUNK_SIZE);
   const input = backing.subarray(CHUNK_SIZE, CHUNK_SIZE + 11);
@@ -494,9 +496,9 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   const output = vfs.readFile('owned.bin');
   output.fill(0);
   assert.deepEqual(vfs.readFile('owned.bin'), expected, 'public read results must be defensive copies');
-  const cached = [...vfs.cache.values()];
+  const cached = [...rawVfs.cache.values()];
   assert.ok(cached.every((entry) => entry.data.buffer.byteLength === entry.data.byteLength));
-  assert.equal(vfs.getStats().cache.hotBytes, cached.reduce((sum, entry) => sum + entry.data.byteLength, 0));
+  assert.equal(rawVfs.getStats().cache.hotBytes, cached.reduce((sum, entry) => sum + entry.data.byteLength, 0));
 }
 
 // #12: every chunk declared by an inode is required; corruption is EIO,
@@ -654,25 +656,25 @@ for (const faultCase of [
 
 // #14: overwrite-rename removes the overwritten file's bytes from counters.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const source = bytes(5, 1);
   vfs.writeFile('source.bin', source);
   vfs.writeFile('destination.bin', bytes(19, 2));
   vfs.rename('source.bin', 'destination.bin');
-  assert.equal(vfs.getStats().usedBytes, source.length);
-  assert.equal(vfs.getStats().files, 1);
-  assert.equal(vfs._verifyCounters(), null);
-  const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
-  assert.equal(reconstructed.getStats().usedBytes, source.length);
+  assert.equal(rawVfs.getStats().usedBytes, source.length);
+  assert.equal(rawVfs.getStats().files, 1);
+  assert.equal(rawVfs._verifyCounters(), null);
+  const { rawVfs: reconstructedRawVfs, vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
+  assert.equal(reconstructedRawVfs.getStats().usedBytes, source.length);
   assert.deepEqual(reconstructed.readFile('destination.bin'), source);
 }
 
 // #16: synchronous path watchers observe the new revision during an event.
 {
-  const { vfs } = openVfs();
+  const { rawVfs, vfs } = openVfs();
   const before = vfs.revision();
   let observedRevision = null;
-  vfs.events.onPath('watched.bin', () => {
+  rawVfs.events.onPath('watched.bin', () => {
     observedRevision = vfs.revision('watched.bin');
   });
   const data = bytes(3, 5);
@@ -687,31 +689,31 @@ for (const faultCase of [
 // #21: nested limit reductions take effect immediately and every cache
 // mutation leaves the cache within the current cap.
 {
-  const { vfs } = openVfs();
+  const { rawVfs, vfs } = openVfs();
   for (let i = 0; i < 4; i++) {
     vfs.writeFile(`cache-${i}.bin`, bytes(3, i));
     vfs.readFile(`cache-${i}.bin`);
   }
-  assert.equal(vfs.getStats().cache.entries, 4);
-  vfs.shrinkForInstall(4);
-  vfs.shrinkForInstall(1);
-  assert.equal(vfs.getStats().cache.maxEntries, 1);
-  assert.ok(vfs.getStats().cache.entries <= 1);
-  assert.ok(vfs.getStats().cache.hotBytes <= CHUNK_SIZE);
+  assert.equal(rawVfs.getStats().cache.entries, 4);
+  rawVfs.shrinkForInstall(4);
+  rawVfs.shrinkForInstall(1);
+  assert.equal(rawVfs.getStats().cache.maxEntries, 1);
+  assert.ok(rawVfs.getStats().cache.entries <= 1);
+  assert.ok(rawVfs.getStats().cache.hotBytes <= CHUNK_SIZE);
 }
 
 // Pin the existing-entry update branch independently: an update must repair
 // an already-over-cap cache instead of returning before eviction.
 {
-  const { vfs } = openVfs();
+  const { rawVfs, vfs } = openVfs();
   for (let i = 0; i < 3; i++) {
     vfs.writeFile(`cache-update-${i}.bin`, bytes(3, i));
     vfs.readFile(`cache-update-${i}.bin`);
   }
-  vfs._lruMaxEntries = 1;
+  rawVfs._lruMaxEntries = 1;
   vfs.writeFile('cache-update-2.bin', bytes(4, 9));
   vfs.readFile('cache-update-2.bin');
-  assert.ok(vfs.getStats().cache.entries <= 1);
+  assert.ok(rawVfs.getStats().cache.entries <= 1);
 }
 
 console.log('sqlite-vfs-stage1-integrity: all assertions passed');

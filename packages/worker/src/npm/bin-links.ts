@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import type { ResolvedPackage } from './resolver.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
@@ -37,8 +37,8 @@ export interface NpmBinResolution extends NpmBinEntry {
   shimPath: string;
 }
 
-type VfsLike = Pick<SqliteVFS, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
-type WritableVfsLike = VfsLike & Pick<SqliteVFS, 'mkdir' | 'writeFile'>;
+type VfsLike = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
+type WritableVfsLike = VfsLike & Pick<CredentialedVfs, 'mkdir' | 'writeFile'>;
 
 interface PackageJsonLike {
   name: string;

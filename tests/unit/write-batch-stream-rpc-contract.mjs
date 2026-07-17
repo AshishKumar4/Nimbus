@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { _rpcWriteBatchStream } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -33,22 +34,29 @@ assert.deepEqual(result, {
 });
 
 let forwardedOwner;
+let forwardedCred;
 const ownerResult = await _rpcWriteBatchStream({
   sqliteFs: {
-    async writeStream(_stream, options) {
-      forwardedOwner = options.mutationOwner;
+    as(cred) {
+      forwardedCred = cred;
       return {
-        ok: true,
-        committedGroupSequence: 0,
-        committedPathCount: 0,
-        inodes: 0,
-        chunks: 0,
+        async writeStream(_stream, options) {
+          forwardedOwner = options.mutationOwner;
+          return {
+            ok: true,
+            committedGroupSequence: 0,
+            committedPathCount: 0,
+            inodes: 0,
+            chunks: 0,
+          };
+        },
       };
     },
   },
   ensureSqliteFs() {},
 }, new ReadableStream(), 'clone-owner');
 
+assert.equal(forwardedCred, CRED_KERNEL);
 assert.equal(forwardedOwner, 'clone-owner');
 assert.equal(ownerResult.ok, true);
 

@@ -14,9 +14,9 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
-import type { VfsEvent } from '../vfs/events.js';
+import type { VfsEvent, VfsEventEmitter } from '../vfs/events.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { registerInnerDoClass, clearInnerDoClasses } from '../facets/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
@@ -69,7 +69,8 @@ interface WranglerConfig {
 }
 
 export interface NimbusWranglerOptions {
-  vfs: SqliteVFS;
+  vfs: CredentialedVfs;
+  vfsEvents: VfsEventEmitter;
   esbuild: EsbuildService;
   env: any; // Worker env with LOADER binding
   /**
@@ -198,7 +199,8 @@ function renderWorkerRunningHtml(opts: { workerName: string; outerWorkerBase: st
 // ── NimbusWrangler ────────────────────────────────────────────────────────
 
 export class NimbusWrangler {
-  private vfs: SqliteVFS;
+  private vfs: CredentialedVfs;
+  private vfsEvents: VfsEventEmitter;
   private esbuild: EsbuildService;
   private loaderEnv: any;
   private supervisorCtx: any; // ctx.facets for DO facets, ctx.exports for bindings
@@ -219,6 +221,7 @@ export class NimbusWrangler {
 
   constructor(opts: NimbusWranglerOptions) {
     this.vfs = opts.vfs;
+    this.vfsEvents = opts.vfsEvents;
     this.esbuild = opts.esbuild;
     this.loaderEnv = opts.env;
     this.supervisorCtx = opts.ctx || null;
@@ -242,7 +245,7 @@ export class NimbusWrangler {
 
     // 3. Watch for file changes
     this.running = true;
-    this.unsubVfs = this.vfs.events.on((events) => {
+    this.unsubVfs = this.vfsEvents.on((events) => {
       this.handleVfsEvents(events);
     });
 
@@ -974,7 +977,7 @@ export class NimbusWrangler {
    * full rebuild pipeline. */
   _installWatchersForTest(): void {
     this.running = true;
-    this.unsubVfs = this.vfs.events.on(async (events: VfsEvent[]) => {
+    this.unsubVfs = this.vfsEvents.on(async (events: VfsEvent[]) => {
       let needsRebuild = false;
       for (const event of events) {
         if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink') continue;

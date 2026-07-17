@@ -13,12 +13,16 @@
 
 import assert from 'node:assert/strict';
 import { SqliteVFS, SqliteVFSProvider } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { Database } from 'bun:sqlite';
 
 function makeVfs(db = new Database(':memory:')) {
   const harness = createSqliteVfsTestHarness(db);
-  return { harness, db, vfs: new SqliteVFS(harness.sql, harness.ctx) };
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
+  vfs.mkdir('home/user', { recursive: true });
+  return { harness, db, rawVfs, vfs };
 }
 
 // ── set + reflect (exec bits) ────────────────────────────────────────────
@@ -50,12 +54,13 @@ function makeVfs(db = new Database(':memory:')) {
   const db = new Database(':memory:');
   {
     const harness = createSqliteVfsTestHarness(db);
-    const vfs = new SqliteVFS(harness.sql, harness.ctx);
+    const vfs = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+    vfs.mkdir('home/user', { recursive: true });
     vfs.writeFile('home/user/bin', 'x');
     vfs.chmod('home/user/bin', 0o755);
   }
   const harness2 = createSqliteVfsTestHarness(db);
-  const vfs2 = new SqliteVFS(harness2.sql, harness2.ctx);
+  const vfs2 = new SqliteVFS(harness2.sql, harness2.ctx).as(CRED_KERNEL);
   assert.equal(vfs2.stat('home/user/bin').mode, 0o100755, 'mode rehydrates from the inode row');
 }
 
@@ -68,7 +73,7 @@ function makeVfs(db = new Database(':memory:')) {
   vfs.symlink('/home/user/real', 'home/user/link');
   vfs.chmod('home/user/link', 0o755);
   assert.equal(vfs.stat('home/user/real').mode, 0o100755, 'chmod follows symlinks');
-  assert.equal(vfs.stat('home/user/link').mode, 0o777, 'link inode untouched');
+  assert.equal(vfs.lstat('home/user/link').mode, 0o120777, 'link inode untouched');
 
   vfs.symlink('/home/user/loop-b', 'home/user/loop-a');
   vfs.symlink('/home/user/loop-a', 'home/user/loop-b');
@@ -95,22 +100,22 @@ function makeVfs(db = new Database(':memory:')) {
 
 // ── revision bump + fs event ─────────────────────────────────────────────
 {
-  const { vfs } = makeVfs();
+  const { rawVfs, vfs } = makeVfs();
   vfs.writeFile('home/user/x', 'x');
-  const before = vfs.revision('home/user/x');
+  const before = rawVfs.revision('home/user/x');
   const events = [];
-  vfs.events.onPath('home/user/x', (event) => events.push(event.type));
+  rawVfs.events.onPath('home/user/x', (event) => events.push(event.type));
   vfs.chmod('home/user/x', 0o711);
-  assert.ok(vfs.revision('home/user/x') > before, 'revision bumped');
+  assert.ok(rawVfs.revision('home/user/x') > before, 'revision bumped');
   assert.deepEqual(events, ['change'], 'change event emitted');
 }
 
 // ── provider delegation (kernel VFS mount surface) ───────────────────────
 {
-  const { vfs } = makeVfs();
+  const { rawVfs, vfs } = makeVfs();
   vfs.mkdir('home/user', { recursive: true });
   vfs.writeFile('home/user/p', 'x');
-  const provider = new SqliteVFSProvider(vfs, 'home');
+  const provider = new SqliteVFSProvider(rawVfs, 'home');
   provider.chmod('/user/p', 0o755);
   assert.equal(vfs.stat('home/user/p').mode, 0o100755);
 }

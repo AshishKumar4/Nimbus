@@ -32,7 +32,7 @@ import {
   type RuntimePythonExtensionModuleMetadata,
   type RuntimePythonPackageArtifactMetadata,
 } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
@@ -51,6 +51,7 @@ import {
 } from './python-pip.js';
 import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { CRED_KERNEL } from './os-contracts.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -65,7 +66,8 @@ export function makePythonRunnerFactory(deps: {
   vfs: SqliteVFS;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     (ctx: any) => Promise<number> {
-  const { facetMgr, vfs } = deps;
+  const { facetMgr } = deps;
+  const vfs = deps.vfs.as(CRED_KERNEL);
 
   return function pythonRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -290,7 +292,7 @@ export function makePythonRunnerFactory(deps: {
 async function buildPythonModulePipInvocation(
   argv: string[],
   cwd: string,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   runtimeContext: PythonPipRuntimeContext,
 ): Promise<PipInvocation> {
   if (argv[0] !== '-m' || argv[1] !== 'pip') {
@@ -441,7 +443,7 @@ const EMPTY_PYTHON_SIDE_MODULE_SET: PythonSideModuleSet = {
 };
 
 async function collectPythonSideModules(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   installRoot: string,
   manifest: RuntimeManifest,
   additionalArtifacts: RuntimePythonPackageArtifactMetadata[],
@@ -507,7 +509,7 @@ function runtimePythonPackageArtifacts(manifest: RuntimeManifest): RuntimePython
 }
 
 function readInstalledPyodideArtifacts(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   runtimeArtifactsById: Map<string, RuntimePythonPackageArtifactMetadata>,
 ): RuntimePythonPackageArtifactMetadata[] {
   if (!vfs.exists(PYTHON_PYODIDE_PACKAGE_MANIFEST)) return [];
@@ -863,7 +865,7 @@ async function createPythonFacetRuntime(
     stdlibVfs: string | null;
     lockfileVfs: string | null;
     manifest: RuntimeManifest;
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
   },
   sideModules: PythonSideModuleSet,
 ): Promise<PythonFacetRuntime> {

@@ -10,6 +10,7 @@ import {
 } from '../../packages/worker/src/npm/bin-links.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 class FakeVfs {
@@ -168,8 +169,11 @@ const manifestPath = npmBinManifestPath(nm);
 // so W7 receives one inode and one content chunk for that command path.
 {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  const installer = new NpmInstaller(vfs, harness.sql);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
+  const installer = new NpmInstaller(rawVfs, harness.sql);
+  vfs.mkdir(`${nm}/sass`, { recursive: true });
+  vfs.mkdir(`${nm}/sass-embedded/dist`, { recursive: true });
   vfs.writeFile(`${nm}/sass/sass.js`, '');
   vfs.writeFile(`${nm}/sass-embedded/dist/cli.js`, '');
   const resolved = new Map([

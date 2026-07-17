@@ -27,10 +27,10 @@
  */
 
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 
@@ -42,7 +42,8 @@ export function makeClangRunnerFactory(deps: {
   vfs: SqliteVFS;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     (ctx: any) => Promise<number> {
-  const { facetMgr, vfs } = deps;
+  const { facetMgr } = deps;
+  const vfs = deps.vfs.as(CRED_KERNEL);
 
   return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -629,7 +630,7 @@ async function createClangFacetRuntime(
     lldVfsPath: string | null;
     memfsVfsPath: string | null;
     sysrootVfsPath: string | null;
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
   },
 ): Promise<ClangFacetRuntime> {
   if (!args.clangVfsPath || !args.lldVfsPath || !args.memfsVfsPath || !args.sysrootVfsPath) {

@@ -1,5 +1,19 @@
 import type { VfsEvent } from '../vfs/events.js';
 
+export interface VfsCred {
+  readonly uid: number;
+  readonly gid: number;
+  readonly groups: readonly number[];
+  readonly umask: number;
+}
+
+export const CRED_KERNEL: VfsCred = Object.freeze({
+  uid: 0,
+  gid: 0,
+  groups: Object.freeze([0]),
+  umask: 0o022,
+});
+
 export type RuntimeFileType = 'file' | 'directory' | 'symlink';
 
 export interface RuntimeVfsStat {
@@ -9,6 +23,8 @@ export interface RuntimeVfsStat {
   atime: number;
   mtime: number;
   mode: number;
+  uid: number;
+  gid: number;
   /** Per-path revision: changes iff this path (or its subtree) mutated. */
   revision: number;
 }

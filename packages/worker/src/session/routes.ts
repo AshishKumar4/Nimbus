@@ -46,6 +46,7 @@ import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 // CLN-1 (2026-05-11): also import R2_CACHE_PREFIX + L2_KEY_HOST so the
 // cache-purge helpers below don't hardcode the synthetic key shape.
 // Bumping R2_CACHE_PREFIX 'v1' → 'v2' now invalidates the L2 cache key
@@ -747,15 +748,16 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     if (url.pathname === '/api/write-file' && request.method === 'POST') {
       self.ensureSqliteFs();
       try {
+        const vfs = self.sqliteFs!.as(CRED_KERNEL);
         const body = await parseJsonBody(request, WriteFileBodySchema);
         const path = body.path.replace(/^\/+/, '');
         // Ensure parent dirs
         const parts = path.split('/');
         for (let i = 1; i < parts.length; i++) {
           const dir = parts.slice(0, i).join('/');
-          if (dir && !self.sqliteFs!.exists(dir)) self.sqliteFs!.mkdir(dir, { recursive: true });
+          if (dir && !vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
         }
-        self.sqliteFs!.writeFile(path, body.content);
+        vfs.writeFile(path, body.content);
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
@@ -767,7 +769,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       try {
         const body = await parseJsonBody(request, MkdirBodySchema);
         const path = body.path.replace(/^\/+/, '');
-        self.sqliteFs!.mkdir(path, { recursive: true });
+        self.sqliteFs!.as(CRED_KERNEL).mkdir(path, { recursive: true });
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
@@ -991,8 +993,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // Checks the VFS for the starter app so we can offer a context-aware hint.
       const hasSeed = (() => {
         try {
-          return self.sqliteFs!.exists('home/user/app') &&
-                 self.sqliteFs!.exists('home/user/app/package.json');
+          const vfs = self.sqliteFs!.as(CRED_KERNEL);
+          return vfs.exists('home/user/app') &&
+                 vfs.exists('home/user/app/package.json');
         } catch { return false; }
       })();
       const hint = hasSeed
@@ -1033,9 +1036,10 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         const hasWranglerConfig = (() => {
           try {
             self.ensureSqliteFs();
-            return self.sqliteFs!.exists('home/user/wrangler.jsonc') ||
-                   self.sqliteFs!.exists('home/user/wrangler.json') ||
-                   self.sqliteFs!.exists('home/user/wrangler.toml');
+            const vfs = self.sqliteFs!.as(CRED_KERNEL);
+            return vfs.exists('home/user/wrangler.jsonc') ||
+                   vfs.exists('home/user/wrangler.json') ||
+                   vfs.exists('home/user/wrangler.toml');
           } catch { return false; }
         })();
         const hint = hasWranglerConfig
