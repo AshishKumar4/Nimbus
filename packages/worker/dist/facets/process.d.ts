@@ -107,8 +107,11 @@ export interface SpawnReq {
     stdio: ('pipe' | 'ignore' | 'inherit')[];
     detached?: boolean;
     shell?: boolean | string;
-    /** Optional explicit parent PID for log routing. */
-    parentPid?: number;
+    stdin?: string;
+    /** Supervisor-assigned invoking process PID. */
+    parentPid: number;
+    /** Broker-assigned child PID for isolated inline dispatch. */
+    processPid?: number;
 }
 export interface ReadOutputResult {
     chunks: {
@@ -158,10 +161,10 @@ export interface CommandRegistryLike {
     resolve(name: string): {
         kind: CommandKind;
     } | null;
-    runPureBuiltin(name: string, args: string[], env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
+    runPureBuiltin(pid: number, name: string, args: string[], env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
 }
 export interface ShellExecutorLike {
-    execute(commandLine: string, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
+    execute(pid: number, commandLine: string, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
 }
 /**
  * Constructor deps bundle. Keeping it as a single object simplifies
@@ -171,7 +174,7 @@ export interface ShellExecutorLike {
 export interface FacetProcessManagerDeps {
     facetMgr: FacetManagerLike;
     processes: SessionProcessSupervisor;
-    vfs: Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
+    vfsForProcess: (pid: number) => Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
     commandRegistry: CommandRegistryLike;
     shellExecutor?: ShellExecutorLike;
     /** Optional: ctx for facets.abort/delete in production. */

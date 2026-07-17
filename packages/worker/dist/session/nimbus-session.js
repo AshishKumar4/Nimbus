@@ -85,6 +85,7 @@ const CpFacetDirectPayloadSchema = z.object({
     }),
     cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
     stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+    processPid: z.number().int().positive(),
 }).passthrough();
 function normalizeCpCommandName(name) {
     const text = String(name || '').trim();
@@ -804,13 +805,19 @@ export class NimbusSession extends CloudflareDurableObject {
                 // path: {command, args, env, cwd, stdin}. We dispatch through the
                 // existing shell registry by resolving the command and invoking
                 // it with synthesized output streams that route to hooks.
-                let payload = CpFacetDirectPayloadSchema.parse({});
+                let payload;
                 try {
                     const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
-                    if (parsed.success)
-                        payload = parsed.data;
+                    if (!parsed.success) {
+                        hooks.onStderr('child_process: facet dispatch requires a broker-assigned process pid\n');
+                        return 1;
+                    }
+                    payload = parsed.data;
                 }
-                catch { }
+                catch {
+                    hooks.onStderr('child_process: invalid facet dispatch payload\n');
+                    return 1;
+                }
                 const registry = this._cpRegistry;
                 if (!registry) {
                     hooks.onStderr('child_process: command registry unavailable\n');
@@ -826,11 +833,14 @@ export class NimbusSession extends CloudflareDurableObject {
                 const stdoutStream = { write: (d) => hooks.onStdout(String(d)) };
                 const stderrStream = { write: (d) => hooks.onStderr(String(d)) };
                 const ac = new AbortController();
+                const cred = this.processes.cred(payload.processPid);
                 const ctx = {
+                    pid: payload.processPid,
+                    cred,
                     args: payload.args || [],
                     env: payload.env || {},
                     cwd: payload.cwd || '/home/user',
-                    vfs: this.sqliteFs,
+                    vfs: this.sqliteFs.as(cred),
                     stdout: stdoutStream,
                     stderr: stderrStream,
                     signal: ac.signal,
@@ -838,6 +848,20 @@ export class NimbusSession extends CloudflareDurableObject {
                     stdin: {
                         read: async () => null,
                         readAll: async () => payload.stdin || '',
+                    },
+                    setUmask: (mask) => { this.processes.setUmask(payload.processPid, mask); },
+                    runAs: async (targetCred, argv) => {
+                        if (argv.length === 0)
+                            return 0;
+                        const child = this.processes.spawn(argv.join(' '), argv, payload.cwd, { parentPid: payload.processPid, cred: targetCred });
+                        let exitCode = 1;
+                        try {
+                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, payload.cwd, payload.stdin, hooks);
+                            return exitCode;
+                        }
+                        finally {
+                            this.processes.exit(child.pid, exitCode);
+                        }
                     },
                     __nimbusCaptureOutput: true,
                 };
@@ -880,7 +904,7 @@ export class NimbusSession extends CloudflareDurableObject {
                 }
                 return _classifyCommand(commandName);
             },
-            runPureBuiltin: async (name, args, env, cwd, stdin, hooks) => {
+            runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
                 const registry = this._cpRegistry;
                 if (!registry) {
                     hooks.onStderr('cp: registry unavailable\n');
@@ -892,15 +916,31 @@ export class NimbusSession extends CloudflareDurableObject {
                     hooks.onStderr(`${name}: command not found\n`);
                     return 127;
                 }
+                const cred = this.processes.cred(pid);
                 const ac = new AbortController();
                 const ctx = {
+                    pid,
+                    cred,
                     args, env, cwd,
-                    vfs: this.sqliteFs,
+                    vfs: this.sqliteFs.as(cred),
                     stdout: { write: (d) => hooks.onStdout(String(d)) },
                     stderr: { write: (d) => hooks.onStderr(String(d)) },
                     signal: ac.signal,
                     stdin: { read: async () => null, readAll: async () => stdin },
-                    __nimbusCaptureOutput: true,
+                    setUmask: (mask) => { this.processes.setUmask(pid, mask); },
+                    runAs: async (targetCred, argv) => {
+                        if (argv.length === 0)
+                            return 0;
+                        const child = this.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
+                        let exitCode = 1;
+                        try {
+                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
+                            return exitCode;
+                        }
+                        finally {
+                            this.processes.exit(child.pid, exitCode);
+                        }
+                    },
                 };
                 try {
                     const code = await cmd(ctx);
@@ -927,20 +967,38 @@ export class NimbusSession extends CloudflareDurableObject {
         this.facetProcessManager = new FacetProcessManager({
             facetMgr: facetMgrAdapter,
             processes: this.processes,
-            vfs: this.sqliteFs.as(CRED_KERNEL),
+            vfsForProcess: (pid) => this.sqliteFs.as(this.processes.cred(pid)),
             commandRegistry: cmdRegistryAdapter,
             shellExecutor: {
-                execute: async (commandLine, env, cwd, stdin, hooks) => {
+                execute: async (pid, commandLine, env, cwd, stdin, hooks) => {
                     if (!this.shell) {
                         hooks.onStderr('sh: shell unavailable\n');
                         return 127;
                     }
+                    const cred = this.processes.cred(pid);
+                    const setUmask = (mask) => { this.processes.setUmask(pid, mask); };
+                    const runAs = async (_parent, targetCred, argv) => {
+                        if (argv.length === 0)
+                            return 0;
+                        const child = this.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
+                        let exitCode = 1;
+                        try {
+                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
+                            return exitCode;
+                        }
+                        finally {
+                            this.processes.exit(child.pid, exitCode);
+                        }
+                    };
                     const result = await this.shell.execute(String(commandLine), {
                         cwd: cwd || '/home/user',
                         env: { ...this.shell.env, ...(env || {}) },
                         onStdout: (d) => hooks.onStdout(String(d)),
                         onStderr: (d) => hooks.onStderr(String(d)),
                         stdin,
+                        isolateShellState: true,
+                        commandContext: { pid, cred, setUmask },
+                        runAs,
                     });
                     return typeof result?.exitCode === 'number' ? result.exitCode : 0;
                 },

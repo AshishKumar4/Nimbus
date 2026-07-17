@@ -54,6 +54,7 @@ export class ChildProcessSpawnPool {
                 detached: !!req.detached,
                 shell: req.shell ?? false,
                 stdin: typeof req.stdin === 'string' ? req.stdin : '',
+                processPid: req.processPid,
             },
             kind,
         };

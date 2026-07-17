@@ -11,6 +11,7 @@
  * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
  */
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { requireVfsCred } from '../runtime/os-contracts.js';
 import { enc } from '../_shared/bytes.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
@@ -22,7 +23,7 @@ function unixVfsFor(sqliteVfs, cred) {
     };
 }
 function withInvocationVfs(sqliteVfs, factory) {
-    return (ctx) => factory(unixVfsFor(sqliteVfs, ctx.cred))(ctx);
+    return (ctx) => factory(unixVfsFor(sqliteVfs, requireVfsCred(ctx.cred, 'unix command dispatch')))(ctx);
 }
 function fsErrorMessage(error) {
     if (error instanceof Error) {
@@ -2252,6 +2253,8 @@ function mkXargs(vfs, registry) {
         }
         // Run in batches.
         const newCtx = (newArgs) => ({
+            pid: ctx.pid,
+            cred: ctx.cred,
             args: newArgs,
             env: ctx.env,
             cwd: ctx.cwd,
@@ -2260,6 +2263,9 @@ function mkXargs(vfs, registry) {
             stderr: ctx.stderr,
             stdin: '', // xargs doesn't pipe its own stdin to children
             signal: ctx.signal,
+            setUmask: ctx.setUmask,
+            runAs: ctx.runAs,
+            execInterpreterDepth: ctx.execInterpreterDepth,
         });
         let exit = 0;
         if (replaceTok) {

@@ -472,7 +472,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // route through the shared FacetProcessManager.
     //
     async cpSpawn(req) {
-        return this._call(this._getStub()._rpcCpSpawn(req));
+        return this._call(this._getStub()._rpcCpSpawn({ ...req, parentPid: this._pid() }));
     }
     async cpStdinWrite(childPid, data) {
         return this._call(this._getStub()._rpcCpStdinWrite(childPid, data));

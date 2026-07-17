@@ -68,7 +68,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             const runRuntime = runtimeCmd;
             const shellLine = `${name} ${argv.join(' ')}`.trim();
-            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty });
+            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty, parentPid: ctx.pid });
             const pid = entry.pid;
             const startedAt = Date.now();
             if (longRunning)
