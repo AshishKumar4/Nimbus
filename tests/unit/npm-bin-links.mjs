@@ -15,6 +15,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 class FakeVfs {
   constructor(files = {}) {
     this.files = new Map(Object.entries(files));
+    this.modes = new Map();
     this.dirs = new Set(['home', 'home/user', 'home/user/project', 'home/user/project/node_modules']);
     for (const path of this.files.keys()) {
       const parts = path.split('/');
@@ -45,6 +46,12 @@ class FakeVfs {
     const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
     if (parent) this.mkdir(parent);
     this.files.set(path, String(content));
+    if (!this.modes.has(path)) this.modes.set(path, 0o644);
+  }
+
+  chmod(path, mode) {
+    if (!this.files.has(path)) throw new Error(`ENOENT: ${path}`);
+    this.modes.set(path, mode & 0o7777);
   }
 
   readdir(path) {
@@ -151,6 +158,10 @@ const manifestPath = npmBinManifestPath(nm);
   const linked = materializeNpmBinShims(vfs, prefixNm, 'home/user/.local/bin');
   assert.equal(linked, 1);
   assert.equal(vfs.exists('home/user/.local/bin/pi'), true);
+  // The on-PATH shim must be executable or the shell rejects it as
+  // "command not found" — this is what left `pi` unusable after a
+  // successful install.
+  assert.equal(vfs.modes.get('home/user/.local/bin/pi'), 0o755, 'materialized shim is executable');
 
   const resolved = resolveNpmBinFromPath(
     vfs,

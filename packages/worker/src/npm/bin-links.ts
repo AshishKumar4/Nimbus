@@ -38,7 +38,7 @@ export interface NpmBinResolution extends NpmBinEntry {
 }
 
 type VfsLike = Pick<SqliteVFS, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
-type WritableVfsLike = VfsLike & Pick<SqliteVFS, 'mkdir' | 'writeFile'>;
+type WritableVfsLike = VfsLike & Pick<SqliteVFS, 'mkdir' | 'writeFile' | 'chmod'>;
 
 interface PackageJsonLike {
   name: string;
@@ -153,7 +153,13 @@ export function materializeNpmBinShims(
   const targetBinDir = normalizeVfsPath(binDir);
   vfs.mkdir(targetBinDir, { recursive: true });
   for (const entry of entries) {
-    vfs.writeFile(`${targetBinDir}/${entry.name}`, createNpmBinShim(entry));
+    const shimPath = `${targetBinDir}/${entry.name}`;
+    vfs.writeFile(shimPath, createNpmBinShim(entry));
+    // writeFile creates files 0o644; a bin shim on PATH must be executable
+    // or the shell rejects it ("command not found"). Match the 0o755 the
+    // Phase-6 .bin linker uses. chmod (not a mode arg) so a re-install over
+    // an existing 0o644 shim is corrected too.
+    vfs.chmod(shimPath, 0o755);
   }
   vfs.writeFile(
     `${targetBinDir}/${NPM_BIN_MANIFEST_NAME}`,
