@@ -53,6 +53,7 @@ import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-arti
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
 
+
 /**
  * Module-map specifier for the yoga-layout WebAssembly.Module. OpenTUI lays
  * out every TUI frame with yoga; the runner parks the pre-compiled Module on
@@ -461,6 +462,58 @@ export const WORKER_POLYFILL_SRC: string = `
     });
   };
 
+  // In-polyfill replacement for worker.js's RPC surface (opencode's
+  // cli/cmd/tui/worker.ts, spoken over the Rpc JSON protocol). The attach
+  // facet's HTTP already flows to the remote serve facet, so the local
+  // worker's only load-bearing method here is the fetch proxy; server()
+  // must never be called (the serve facet owns the port), and the
+  // upgrade/reload/shutdown lifecycle belongs to the serve facet too.
+  async function __nimbusStubWorkerRpc(worker, event) {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (!msg || msg.type !== "rpc.request") return;
+    const reply = (payload) => {
+      queueMicrotask(() => worker.__nimbusDeliverToClient(JSON.stringify(payload)));
+    };
+    try {
+      let result;
+      switch (msg.method) {
+        case "fetch": {
+          const req = msg.input || {};
+          const res = await fetch(req.url, {
+            method: req.method,
+            headers: req.headers,
+            body: req.body,
+          });
+          result = {
+            status: res.status,
+            headers: Object.fromEntries(res.headers.entries()),
+            body: await res.text(),
+          };
+          break;
+        }
+        case "server":
+          throw new Error(
+            "Nimbus: the attach facet does not host the opencode server — " +
+            "it attaches to the dedicated 'opencode serve' facet"
+          );
+        case "snapshot":
+          result = null;
+          break;
+        case "checkUpgrade":
+        case "reload":
+        case "shutdown":
+          result = void 0;
+          break;
+        default:
+          throw new Error("Nimbus: unsupported TUI worker RPC: " + String(msg.method));
+      }
+      reply({ type: "rpc.result", result, id: msg.id });
+    } catch (e) {
+      reply({ type: "rpc.error", error: e instanceof Error ? e.message : String(e), id: msg.id });
+    }
+  }
+
   class NimbusWorker {
     constructor(spec, opts) {
       this.onmessage = null;
@@ -472,6 +525,24 @@ export const WORKER_POLYFILL_SRC: string = `
       this.__inbox = [];
       this.__ctx = __nimbusWorkerCtx(this);
       const specifier = __nimbusWorkerSpecifier(spec);
+      // worker.js is the TUI's LOCAL API server. A Nimbus attach facet
+      // always talks to a REMOTE opencode-serve facet instead (the dual
+      // split), and dynamically importing worker.js's split-build chunk
+      // graph into a live facet kills the production workerd process
+      // outright — supervisor DO included (defect #20; a workerd platform
+      // bug, see scratchpad/oc-attach-reset-rootcause.md). So the worker is
+      // answered by an in-polyfill RPC stub and its bundle is NEVER
+      // imported. parser.worker.js (flat, no chunk graph) loads for real.
+      if (specifier === "worker.js") {
+        this.__ctx.onmessage = (o) => { void __nimbusStubWorkerRpc(this, o); };
+        queueMicrotask(() => {
+          const pending = this.__inbox;
+          this.__inbox = null;
+          if (pending) for (const m of pending) this.__deliverToWorker(m);
+        });
+        this.__ready = Promise.resolve();
+        return;
+      }
       // The worker bundle's banner reads this synchronously at module-init.
       globalThis.__nimbusWorkerClaim = () => this.__ctx;
       this.__ready = (async () => {
