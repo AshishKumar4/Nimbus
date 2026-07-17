@@ -107,6 +107,32 @@ export function classifyMessage(msg: string): OomCause {
   return 'unknown';
 }
 
+/**
+ * Transient Durable Object reset — the object was reset by the platform
+ * mid-request for a reason unrelated to the request's own resource use:
+ * a code deploy rolling over, or a storage-subsystem cold-start hiccup.
+ * The in-flight request/RPC rejects, but the work itself never ran to a
+ * conclusion and is safe to re-attempt.
+ *
+ * Deliberately narrow: it must NOT match memory/CPU resets ("isolate
+ * exceeded its memory limit and was reset"), which classifyMessage()
+ * routes to 'oom' — those recur on retry and must surface, not loop.
+ * Observed verbatim signatures:
+ *   - "Durable Object reset because its code was updated."
+ *   - "Internal error while starting up Durable Object storage caused
+ *      object to be reset; reference = ..."
+ *   - "Durable Object storage operation exceeded timeout which caused
+ *      the object to be reset."
+ */
+export function isTransientDoReset(input: unknown): boolean {
+  const m = readMessage(input).toLowerCase();
+  if (m.length === 0) return false;
+  if (m.includes('reset because its code was updated')) return true;
+  if (m.includes('starting up durable object storage')) return true;
+  if (m.includes('storage operation') && m.includes('reset')) return true;
+  return false;
+}
+
 function readMessage(input: unknown): string {
   if (input == null) return '';
   if (typeof input === 'string') return input;
