@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightLlmsTxt from 'starlight-llms-txt';
 
 // The docs site serves under /docs so it can later be routed from
 // nimbus.ashishkumarsingh.com/docs in front of the main app.
@@ -18,6 +19,7 @@ export default defineConfig({
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/AshishKumar4/Nimbus' },
 			],
 			customCss: ['./src/styles/theme.css'],
+			plugins: [starlightLlmsTxt()],
 			components: {
 				ThemeProvider: './src/components/ThemeProvider.astro',
 			},
