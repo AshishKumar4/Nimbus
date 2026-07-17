@@ -14,6 +14,7 @@ import { z } from 'zod/v4';
 type Output = { write(data: string): void };
 
 type CommandContext = {
+  pid: number;
   args?: string[];
   stdout: Output;
   stderr: Output;
@@ -120,7 +121,7 @@ export function installNpmBinFallbackResolver(
       const shellLine = `${name} ${argv.join(' ')}`.trim();
       const entry = deps.processes.spawn(
         shellLine, [name, ...argv], invocationCwd,
-        { longRunning, attachedTty },
+        { longRunning, attachedTty, parentPid: ctx.pid },
       );
       const pid = entry.pid;
       const startedAt = Date.now();
