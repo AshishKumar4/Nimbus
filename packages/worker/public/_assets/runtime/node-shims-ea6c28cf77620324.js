@@ -59,9 +59,14 @@ async function __nimbusUseRpcResult(promise, use) {
     if (!__loopbackHosts.has(url.hostname)) return null;
     const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
     if (!Number.isFinite(port) || port <= 0) return null;
+    // Strip the caller's AbortSignal before the RPC hop: workerd JSRPC does
+    // not serialize Request.signal ("AbortSignal serialization is not
+    // enabled"), and the opencode SDK stamps timeout signals on its startup
+    // requests — which made 4/5 attach boot calls fail. Cancellation across
+    // the loopback is advisory; an aborted caller simply drops the response.
     const request = (typeof Request !== "undefined" && input instanceof Request)
-      ? new Request(input, init)
-      : new Request(url.href, init);
+      ? new Request(input, { ...(init || {}), signal: null })
+      : new Request(url.href, { ...(init || {}), signal: null });
     return Promise.resolve(__supervisor.routeLoopback(port, request));
   };
   globalThis.fetch = function fetch(input, init) {
