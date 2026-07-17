@@ -18,6 +18,9 @@ export default defineConfig({
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/AshishKumar4/Nimbus' },
 			],
 			customCss: ['./src/styles/theme.css'],
+			components: {
+				ThemeProvider: './src/components/ThemeProvider.astro',
+			},
 			editLink: {
 				baseUrl: 'https://github.com/AshishKumar4/Nimbus/edit/main/apps/docs/',
 			},
