@@ -183,6 +183,7 @@ export class NpmInstaller {
     opts?: {
       packages?: string[];       // explicit packages (npm install react)
       production?: boolean;      // skip devDependencies
+      pid?: number;              // invoking process pid — authorizes batch-facet writes
     },
   ): Promise<NpmInstallResult> {
     const start = Date.now();
@@ -201,7 +202,7 @@ export class NpmInstaller {
   private async _installInner(
     projDir: string,
     nmDir: string,
-    opts: { packages?: string[]; production?: boolean } | undefined,
+    opts: { packages?: string[]; production?: boolean; pid?: number } | undefined,
     log: (msg: string) => void,
     start: number,
   ): Promise<NpmInstallResult> {
@@ -345,7 +346,7 @@ export class NpmInstaller {
     // pressure the facet path eliminates.
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
-      const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
+      const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
       totalFiles += batchResult.filesWritten;
       for (const name of batchResult.installed) installed.push(name);
       for (const name of batchResult.failed) failed.push(name);
@@ -828,6 +829,7 @@ export class NpmInstaller {
     toFetch: ResolvedPackage[],
     hoistPlan: HoistPlan,
     nmDir: string,
+    pid?: number,
   ): Promise<{ installed: string[]; failed: string[]; filesWritten: number }> {
     const log = (msg: string) => this.onProgress?.(msg);
     const installed: string[] = [];
@@ -843,6 +845,7 @@ export class NpmInstaller {
         tarballUrl: p.tarballUrl,
         integrity: p.integrity || '',
         pkgDir: nmDir + '/' + p.name,
+        installRoot: nmDir,
         mtime,
         chunkSize: CHUNK_SIZE,
       }));
@@ -901,6 +904,10 @@ export class NpmInstaller {
       // to every facet (in-DO and per-peer) so each shard's facet
       // can encode its own write-batch stream.
       preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
+      // Authorize each facet's writeBatchStream under the invoking
+      // process credential; without a positive pid the supervisor
+      // rejects the write (S2a cred enforcement).
+      supervisorPid: pid,
     });
 
     const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({

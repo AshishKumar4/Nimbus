@@ -121,6 +121,7 @@ const packages = ['a', 'b'].map((name) => ({
   tarballUrl: `https://unused.invalid/${name}`,
   integrity: '',
   pkgDir: `node_modules/${name}`,
+  installRoot: 'node_modules',
   mtime: 1,
   chunkSize: 65_536,
 }));
@@ -161,6 +162,20 @@ for (const name of ['a', 'b']) {
     publicationOrder.indexOf(`${ownerPrefix}/index.js`)
       < publicationOrder.indexOf(`${ownerPrefix}/package.json`),
   );
+  // Regression: the install root and package dir inodes must be published
+  // in a wave at or before the wave carrying the package's files, so the
+  // credentialed writeBatch never authorizes a file ahead of its parent
+  // dir (which surfaced live as `ENOENT: .../node_modules`).
+  assert.ok(publicationOrder.includes('node_modules'), 'install root dir inode must be staged');
+  assert.ok(publicationOrder.includes(ownerPrefix), `${ownerPrefix} dir inode must be staged`);
+  assert.ok(
+    publicationOrder.indexOf('node_modules') <= publicationOrder.indexOf(`${ownerPrefix}/index.js`),
+    'install root dir must not follow the files it parents',
+  );
+  assert.ok(
+    publicationOrder.indexOf(ownerPrefix) <= publicationOrder.indexOf(`${ownerPrefix}/index.js`),
+    'package dir must not follow the files it parents',
+  );
 }
 
 // Producer preflushes before 128 paths and never overlaps W7 RPCs even when
@@ -172,6 +187,7 @@ for (const name of ['a', 'b']) {
     tarballUrl: `https://unused.invalid/pkg-${index}`,
     integrity: '',
     pkgDir: `node_modules/pkg-${index}`,
+    installRoot: 'node_modules',
     mtime: 1,
     chunkSize: 65_536,
   }));

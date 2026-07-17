@@ -1015,6 +1015,12 @@ export async function _rpcFanoutExecute(
      * a loader isolate land in the PEER's VFS, invisible to the user.
      */
     coordinatorDoId?: string;
+    /**
+     * Invoking process pid, forwarded into the peer-side SUPERVISOR
+     * binding so writeBatchStream is authorized under the caller's
+     * credential (see NimbusLoaderPoolOptions.supervisorPid).
+     */
+    supervisorPid?: number;
   } = {},
 ): Promise<{ results: unknown[] }> {
   if (!Array.isArray(args)) {
@@ -1042,6 +1048,7 @@ export async function _rpcFanoutExecute(
     // back to ctx.id.toString() — the legacy behavior, correct for
     // single-DO callers.
     supervisorDoIdOverride: poolOpts.coordinatorDoId,
+    supervisorPid: poolOpts.supervisorPid,
   });
   try {
     // mapSource accepts the pre-serialized fnSource forwarded by the

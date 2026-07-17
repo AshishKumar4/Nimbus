@@ -1698,7 +1698,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       self.ensureNpmInstaller((msg: string) => {
         ctx.stdout.write('[npm] ' + msg + '\n');
       });
-      const result = await self.npmInstaller!.install(cwd, { packages });
+      const result = await self.npmInstaller!.install(cwd, { packages, pid: ctx.pid });
 
       if (result.failed.length > 0) {
         ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
@@ -2340,6 +2340,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         try {
           const result = await self.npmInstaller!.install(installCwd, {
             packages: explicitPkgs.length > 0 ? explicitPkgs : undefined,
+            pid: ctx.pid,
           });
 
           if (result.failed?.length > 0) {
@@ -2503,6 +2504,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         ctx.cwd || '/home/user',
         npxArgs,
         (msg: string) => ctx.stdout.write(msg + '\n'),
+        ctx.pid,
       );
       if (resolveResult.ok && resolveResult.binPath) {
         const nodeCmd = await registry.resolve('node');

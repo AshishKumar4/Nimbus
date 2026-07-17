@@ -340,6 +340,7 @@ export async function resolveNpxBinary(
   cwd: string,
   rawArgs: string[],
   log: (msg: string) => void,
+  pid?: number,
 ): Promise<NpxResolveResult> {
   const parsed = parseNpxArgs(rawArgs);
   if ('error' in parsed) {
@@ -372,6 +373,7 @@ export async function resolveNpxBinary(
   try {
     const result = await installer.install(NPX_CACHE_DIR, {
       packages: [installSpec],
+      pid,
     });
     if ((result.failed?.length || 0) > 0) {
       // Partial install — some package failed to resolve. The fix is
