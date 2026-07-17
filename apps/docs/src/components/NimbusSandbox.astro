@@ -66,20 +66,20 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 
 <style>
 	.nsx {
-		border: 1px solid var(--sl-color-hairline);
-		border-radius: 0.6rem;
+		border: 1px solid var(--nimbus-terminal-border);
+		border-radius: var(--nimbus-panel-radius);
 		overflow: hidden;
 		margin: 1.25rem 0;
-		background: #0d1117;
+		background: var(--nimbus-terminal-bg);
 	}
 	.nsx-bar {
 		display: flex;
 		align-items: center;
 		gap: 0.6rem;
 		padding: 0.45rem 0.75rem;
-		background: #161b22;
-		border-bottom: 1px solid #21262d;
-		font-family: var(--sl-font-mono);
+		background: var(--nimbus-terminal-bar-bg);
+		border-bottom: 1px solid var(--nimbus-terminal-border);
+		font-family: var(--sl-font-system-mono);
 		font-size: 0.72rem;
 	}
 	.nsx-dots {
@@ -88,25 +88,27 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	}
 	.nsx-dots i {
 		display: inline-block;
-		width: 10px;
-		height: 10px;
+		width: 8px;
+		height: 8px;
 		border-radius: 50%;
 		margin-right: 5px;
 	}
-	.nsx-dots i:nth-child(1) { background: #ff5f57; }
-	.nsx-dots i:nth-child(2) { background: #febc2e; }
-	.nsx-dots i:nth-child(3) { background: #28c940; }
+	.nsx-dots i:nth-child(1) { background: var(--nimbus-terminal-border); }
+	.nsx-dots i:nth-child(2) { background: var(--nimbus-terminal-muted); }
+	.nsx-dots i:nth-child(3) { background: var(--nimbus-terminal-accent); }
 	.nsx-title {
 		flex: 1 1 auto;
 		min-width: 0;
-		color: #8b949e;
+		color: var(--nimbus-terminal-muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.nsx-badge {
-		color: #56d364;
-		border: 1px solid rgba(86, 211, 100, 0.4);
+		flex: 0 0 auto;
+		white-space: nowrap;
+		color: var(--nimbus-terminal-accent);
+		border: 1px solid color-mix(in srgb, var(--nimbus-terminal-accent) 42%, transparent);
 		border-radius: 999px;
 		padding: 0 0.5rem;
 		letter-spacing: 0.06em;
@@ -114,13 +116,14 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	}
 	.nsx-badge[data-state='connecting'],
 	.nsx-badge[data-state='ended'] {
-		color: #d29922;
-		border-color: rgba(210, 153, 34, 0.4);
+		color: var(--nimbus-terminal-muted);
+		border-color: color-mix(in srgb, var(--nimbus-terminal-muted) 42%, transparent);
 	}
 	.nsx-screen {
 		position: relative;
 		height: calc(var(--nsx-rows) * 1.35rem + 1.2rem);
 		padding: 0.6rem 0.4rem 0.6rem 0.75rem;
+		background: var(--nimbus-terminal-bg);
 	}
 	.nsx-screen :global(.xterm) {
 		height: 100%;
@@ -138,22 +141,26 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	}
 	.nsx-boot p {
 		margin: 0;
-		color: #8b949e;
+		color: var(--nimbus-terminal-muted);
 		font-size: var(--sl-text-sm);
 	}
 	.nsx-boot button {
 		font: inherit;
 		font-size: var(--sl-text-sm);
 		font-weight: 600;
-		color: #0d1117;
-		background: #64ffda;
-		border: 0;
-		border-radius: 0.45rem;
+		color: var(--nimbus-terminal-bg);
+		background: var(--nimbus-terminal-accent);
+		border: 1px solid var(--nimbus-terminal-accent);
+		border-radius: var(--nimbus-control-radius);
 		padding: 0.5rem 1.1rem;
 		cursor: pointer;
 	}
 	.nsx-boot button:hover {
-		background: #8cffe6;
+		background: color-mix(in srgb, var(--nimbus-terminal-accent) 84%, white);
+	}
+	.nsx-boot button:focus-visible {
+		outline: 2px solid var(--nimbus-terminal-accent);
+		outline-offset: 3px;
 	}
 	.nsx-boot button[disabled] {
 		opacity: 0.6;
@@ -162,10 +169,10 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 
 	.nsx-cta {
 		border: 1px solid var(--sl-color-hairline);
-		border-radius: 0.6rem;
+		border-radius: var(--nimbus-panel-radius);
 		padding: 1rem 1.25rem;
 		margin: 1.25rem 0;
-		background: var(--sl-color-gray-7);
+		background: var(--nimbus-panel-bg);
 	}
 	.nsx-cta p {
 		margin: 0 0 0.5rem;
@@ -173,6 +180,14 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	}
 	.nsx-cta a {
 		font-weight: 600;
+		overflow-wrap: anywhere;
+	}
+	@media (max-width: 480px) {
+		.nsx-bar {
+			gap: 0.45rem;
+			padding-inline: 0.6rem;
+		}
+		.nsx-cta { padding: 0.875rem 1rem; }
 	}
 </style>
 
@@ -202,13 +217,16 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				import('@xterm/xterm/css/xterm.css'),
 			]);
 
+			const terminalBackground = getComputedStyle(el)
+				.getPropertyValue('--nimbus-terminal-bg')
+				.trim();
 			const term = new Terminal({
 				cursorBlink: true,
 				cursorStyle: 'bar',
 				fontSize: 13,
 				fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
 				theme: {
-					background: '#0d1117',
+					background: terminalBackground,
 					foreground: '#c9d1d9',
 					cursor: '#58a6ff',
 					selectionBackground: '#264f78',

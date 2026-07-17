@@ -138,11 +138,11 @@ const nodes = {
 
 <style>
 	.fab {
-		border: 1px solid var(--sl-color-hairline-light);
-		border-radius: 0.65rem;
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: var(--nimbus-panel-radius);
 		padding: 1rem;
 		margin: 1.5rem 0;
-		background: color-mix(in srgb, var(--sl-color-gray-6) 40%, transparent);
+		background: var(--nimbus-panel-bg);
 	}
 	.fab-lanes {
 		display: flex;
@@ -158,15 +158,15 @@ const nodes = {
 	}
 	.fab-session {
 		flex: 2.6;
-		border: 1px dashed color-mix(in srgb, var(--sl-color-accent) 40%, transparent);
-		border-radius: 0.6rem;
+		border: 1px solid color-mix(in srgb, var(--sl-color-accent) 32%, var(--sl-color-hairline));
+		border-radius: var(--nimbus-control-radius);
 		padding: 0.6rem;
 	}
 	.fab-lane-label {
-		font-family: var(--sl-font-mono);
+		font-family: var(--sl-font-system-mono);
 		font-size: 0.62rem;
 		text-transform: uppercase;
-		letter-spacing: 0.1em;
+		letter-spacing: 0.08em;
 		color: var(--sl-color-gray-3);
 	}
 	.fab-arrow {
@@ -189,32 +189,39 @@ const nodes = {
 		width: 100%;
 		border: 1px solid var(--sl-color-hairline);
 		background: var(--sl-color-black);
-		border-radius: 0.5rem;
+		border-radius: var(--nimbus-control-radius);
 		padding: 0.55rem 0.7rem;
 		cursor: pointer;
-		transition: border-color 120ms, box-shadow 120ms;
+		transition: border-color 140ms ease, background-color 140ms ease;
 	}
 	.fab-node:hover {
 		border-color: color-mix(in srgb, var(--sl-color-accent) 60%, transparent);
 	}
+	.fab-node:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
 	.fab-node[aria-pressed='true'] {
 		border-color: var(--sl-color-accent);
-		box-shadow: 0 0 18px var(--nimbus-glow);
+		background: color-mix(in srgb, var(--sl-color-accent) 7%, var(--sl-color-black));
 	}
 	.fab-node-t {
 		font-weight: 650;
 		font-size: 0.8rem;
 		color: var(--sl-color-white);
 	}
+	.fab-node[aria-pressed='true'] .fab-node-t {
+		color: var(--sl-color-text-accent);
+	}
 	.fab-node-l {
-		font-family: var(--sl-font-mono);
+		font-family: var(--sl-font-system-mono);
 		font-size: 0.66rem;
 		color: var(--sl-color-gray-3);
 	}
 	.fab-super { border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--sl-color-hairline)); }
 	.fab-loop {
 		margin-top: 0.6rem;
-		font-family: var(--sl-font-mono);
+		font-family: var(--sl-font-system-mono);
 		font-size: 0.62rem;
 		color: var(--sl-color-accent);
 		text-align: center;
@@ -231,7 +238,7 @@ const nodes = {
 	.fab-detail :global(h4) {
 		margin: 0 0 0.4rem;
 		font-size: var(--sl-text-base);
-		color: var(--sl-color-accent-high);
+		color: var(--sl-color-text-accent);
 	}
 	.fab-detail :global(ul) {
 		margin: 0;
@@ -249,6 +256,14 @@ const nodes = {
 	@media (max-width: 640px) {
 		.fab-lanes { flex-direction: column; }
 		.fab-arrow { transform: rotate(90deg); align-self: center; }
+	}
+	@media (max-width: 480px) {
+		.fab { padding: 0.75rem; }
+		.fab-facets { grid-template-columns: 1fr; }
+		.fab-detail { min-height: 0; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.fab-node { transition: none; }
 	}
 </style>
 
