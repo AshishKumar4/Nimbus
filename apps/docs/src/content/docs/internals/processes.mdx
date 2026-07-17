@@ -30,12 +30,12 @@ supervisor never materializes them. It builds a small stage spec (argv,
 env, VFS snapshot); the full map is assembled outside the DO on the
 Worker-Loader cache-miss path. I learned that rule live: assembling the
 map inside the supervisor crossed the memory cap and reset the session.
-Two platform facts shape the rest: workerd blocks request-time WASM
-compilation, so WASM rides the module map pre-compiled; and server facets
-are health-gated — polled with a per-poll timeout and an overall budget —
-before anything attaches.
+Two more platform facts: workerd blocks request-time WASM compilation, so
+WASM rides the module map pre-compiled; and server facets are
+health-gated — bounded polls, an overall budget — before anything
+attaches.
 
-That gate is what makes multi-isolate apps workable. The opencode pair
+That gate makes multi-isolate apps workable. The opencode pair
 spawns serve, gates it over loopback, then attaches the TUI at
 `127.0.0.1:4096`, lifecycle-tied so exiting one reaps the other. The
 serve half is solid; the TUI half still trips a memory reset I'm

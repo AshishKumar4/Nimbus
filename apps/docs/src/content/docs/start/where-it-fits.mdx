@@ -19,8 +19,8 @@ than the container-based Sandbox SDK — 0.61 s vs 1.95 s sequential median
 ([methodology and caveats](/docs/fine-print/benchmarks/)).
 
 [agentOS](https://agentos-sdk.dev) by Rivet is the closest cousin —
-isolates plus WASM, SQLite persistence, Pyodide CPython — though we
-converged independently from opposite ends. Theirs is an npm package
+isolates plus WASM, SQLite persistence, Pyodide CPython — converged
+from opposite ends. Theirs is an npm package
 beside your backend that mounts a real container when WASM runs out.
 Mine *is* the deployment, a Worker plus Durable Objects with a URL per
 computer, and it stays purist; that's why the multi-isolate process work
