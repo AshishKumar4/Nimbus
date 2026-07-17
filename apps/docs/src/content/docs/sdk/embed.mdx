@@ -1,6 +1,6 @@
 ---
 title: Embed Nimbus in a Worker
-description: Deploy to your own Cloudflare account, then mint sandboxes programmatically or drop the terminal into React.
+description: Deploy Nimbus, create sandboxes in code, or add the terminal to React.
 ---
 
 ```bash
@@ -10,15 +10,15 @@ npx wrangler secret put JWT_SECRET
 npx wrangler deploy
 ```
 
-That's the whole deploy. `setup cloudflare` creates the R2 buckets Nimbus
-binds to and seeds the Python, Ruby, and clang runtimes. If Wrangler
-reports R2 error `10042`, enable R2 once in the dashboard for that
-account and rerun. The scaffolded Worker is a few lines around
-`createNimbusHandler` from `@nimbus-sh/sdk/worker` —
-[configure the handler](/docs/sdk/handler/) covers every option.
+The deploy takes three commands plus one secret. `setup cloudflare`
+creates the R2 buckets and seeds the Python, Ruby, and clang runtimes.
+If Wrangler reports R2 error `10042`, enable R2 once in that account's
+dashboard and rerun. The Worker wraps `createNimbusHandler` from
+`@nimbus-sh/sdk/worker`; [configure the handler](/docs/sdk/handler/)
+lists its options.
 
-The same SDK handle then works two ways — colocated through your own DO
-binding, or remote against any authenticated deployment:
+Use the SDK through your own DO binding, or connect to an authenticated
+deployment.
 
 ```ts
 import { Nimbus } from '@nimbus-sh/sdk';
@@ -38,16 +38,15 @@ const box = Nimbus.fromEnv(env, config).sandbox('job-123', { tenant: 'acme', sub
 const result = await box.exec('python -c "print(2 + 2)"');
 ```
 
-The profile is a real policy boundary — `runtimes.allow` and the
-preinstall/on-demand flags are enforced before any RPC. For agent
-harnesses, `box.tools({ namespace: 'sandbox' })` exposes the whole
-sandbox as a Proteus-style tool provider, and `@nimbus-sh/sdk/flue`
-adapts it to Flue's sandbox contract.
+The sandbox profile is a real policy boundary. Nimbus enforces
+`runtimes.allow` and the preinstall/on-demand flags before any RPC.
+`box.tools({ namespace: 'sandbox' })` is a Proteus-style tool provider;
+`@nimbus-sh/sdk/flue` adapts it to Flue's sandbox contract.
 
 ## From React
 
-`@nimbus-sh/react` renders the terminal as an iframe around the session
-shell — your page's JS never touches the WebSocket:
+`@nimbus-sh/react` puts the session shell in an iframe. This keeps your
+page's JavaScript away from the terminal's WebSocket.
 
 ```tsx
 import { NimbusTerminal } from '@nimbus-sh/react';
@@ -56,13 +55,11 @@ import { NimbusTerminal } from '@nimbus-sh/react';
   onReady={() => console.log('attached')} style={{ height: 500 }} />
 ```
 
-`useNimbusSession` is the same thing headless — it returns
-`{ sessionId, ready, error, attachUrl }`, driven by the shell's
-`nimbus:ready` / `nimbus:error` postMessages, so you can frame the iframe
-yourself.
+`useNimbusSession` gives you the same flow without the component. It
+returns `{ sessionId, ready, error, attachUrl }` from the shell's
+`nimbus:ready` / `nimbus:error` postMessages, so you can build the iframe.
 
-One scope note: Nimbus is a Worker/DO/WASM sandbox, not a Linux VM — the
-boundaries are in [the fine print](/docs/fine-print/capabilities/). The
-hosted demo runs from
+Nimbus is a Worker/DO/WASM sandbox, not a Linux VM. I list the boundaries
+in [the fine print](/docs/fine-print/capabilities/). The hosted demo uses
 [`apps/hosted-demo`](https://github.com/AshishKumar4/Nimbus/tree/main/apps/hosted-demo),
-the same embedder shape any external project ships.
+the same embedder shape an external project can ship.

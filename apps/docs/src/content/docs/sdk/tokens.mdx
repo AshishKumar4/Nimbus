@@ -1,6 +1,6 @@
 ---
 title: Tokens & auth
-description: HS256 JWTs, six scopes, a 90-second single-use attach exchange, and zero dependencies.
+description: Sign HS256 JWTs and attach browser sessions without putting long-lived tokens in URLs.
 ---
 
 ```ts
@@ -14,31 +14,30 @@ const token = await issueNimbusToken(env, {
 });
 ```
 
-Auth is deliberately simple: HS256 JWTs signed with `JWT_SECRET`, pure
-WebCrypto, no external IdP, no dependencies. The verifier never reads
-`alg` from the token header, which kills the `alg: "none"` confusion
-class outright (RFC 8725 §3.1). Scopes, tenant and session pins, and
-destroy permissions are enforced server-side; client checks are only a
+I use HS256 JWTs signed with `JWT_SECRET` and pure WebCrypto. There is no
+external IdP or dependency. The verifier ignores `alg` in the token
+header, as required by RFC 8725 §3.1. The server enforces scopes, tenant
+and session pins, and destroy permissions; client checks are only a
 convenience.
 
-v1 honors six scopes: `session:create`, `session:attach`,
+The six scopes are `session:create`, `session:attach`,
 `session:bootstrap`, `session:destroy`, `session:admin`, `sandbox:use`.
-Default TTL is 1 hour, the maximum is 30 days (larger throws
-`E_TOKEN_TTL_TOO_LARGE`). To rotate secrets, set `JWT_SECRET_PREVIOUS`
-next to the new `JWT_SECRET` — verification accepts either, issuing uses
-the primary — then drop the old one after the longest TTL passes.
+The default TTL is 1 hour and the maximum is 30 days; a larger value
+throws `E_TOKEN_TTL_TOO_LARGE`. For rotation, set `JWT_SECRET_PREVIOUS`
+next to the new `JWT_SECRET`. Verification accepts either secret, but
+issuing uses the primary. Drop the old one after the longest TTL passes.
 
 ## How a browser session gets authorized
 
-Long-lived tokens travel only in `Authorization: Bearer` headers, never
-in URLs. The one URL-carried credential is the attach exchange:
+Long-lived tokens only travel in `Authorization: Bearer` headers. The
+attach exchange uses one short-lived URL token:
 
-1. `POST /new` (with `session:create`) redirects to an attach URL
-   carrying a 90-second, single-use, `session:bootstrap` token. Its `jti`
-   is consumed set-if-absent in the session DO; a replay gets `401`.
-2. The session shell trades it for a sid-pinned `session:attach` cookie
-   (`HttpOnly`, `Secure`, `SameSite=None`, `Partitioned`) and redirects
-   to the clean URL, so the token never lingers in history.
+1. `POST /new` with `session:create` redirects to an attach URL carrying
+   a 90-second, single-use `session:bootstrap` token. The session DO
+   consumes its `jti` set-if-absent. Replays get `401`.
+2. The shell trades it for a sid-pinned `session:attach` cookie
+   (`HttpOnly`, `Secure`, `SameSite=None`, `Partitioned`), then redirects
+   to the clean URL. The token does not stay in history.
 3. HTML, WebSocket, and API requests all ride that cookie.
 
 ```ts
@@ -48,11 +47,9 @@ const url = sessionAttachUrl('https://my-nimbus.workers.dev', 'pretty-otter-1234
 // → https://my-nimbus.workers.dev/s/pretty-otter-1234/?nimbus_token=eyJ…
 ```
 
-One known limit: the exchange stores one sid-pinned cookie per browser
-partition, so two Nimbus iframes on the same page evict each other's
-cookie. Concurrent multi-session embeds need a per-session cookie design;
-that's a tracked follow-up.
+Known limit: each browser partition holds one sid-pinned cookie. Two
+Nimbus iframes on one page evict each other's cookie. Concurrent embeds
+need a per-session cookie design; that work is still open.
 
-Auth failures are typed — `NimbusTokenExpiredError`,
-`NimbusTokenSignatureError`, `NimbusAuthConfigError`, and friends — never
-stringly.
+Auth failures use typed errors such as `NimbusTokenExpiredError`,
+`NimbusTokenSignatureError`, and `NimbusAuthConfigError`.

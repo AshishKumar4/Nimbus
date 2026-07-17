@@ -1,6 +1,6 @@
 ---
 title: Configure the handler
-description: createNimbusHandler options, the generated wrangler config, and the CLI that provisions it all.
+description: Set handler options, generate wrangler config, and run the CLI.
 ---
 
 ```ts
@@ -14,21 +14,20 @@ export default createNimbusHandler({
 });
 ```
 
-All four keys are optional; `createNimbusHandler({})` serves the terminal
-UI with auto-detected auth. Your entry module must also re-export the
-runtime classes (`NimbusSession`, the RPC classes) because wrangler
-resolves them by name — `create-nimbus-app` writes that block; keep it.
+All four options are optional. `createNimbusHandler({})` serves the
+terminal UI with auto-detected auth. The entry module must re-export
+`NimbusSession` and the RPC classes because wrangler resolves them by
+name. `create-nimbus-app` writes that block; keep it.
 
-`auth.mode` decides how `/new` and `/s/<id>/` are protected. `auto`
-enforces when `JWT_SECRET` is set, `enforce` fails closed without it, and
-`legacy` never verifies — the URL is the auth. In enforce mode, `/new`
-needs a `session:create` Bearer token and redirects through the
+`auth.mode` protects `/new` and `/s/<id>/`. `auto` enforces auth when
+`JWT_SECRET` is set. `enforce` fails closed without it. `legacy` never
+verifies; the URL is the auth. In enforce mode, `/new` needs a
+`session:create` Bearer token and uses the
 [attach exchange](/docs/sdk/tokens/).
 
 `sdk.remote` mounts `/api/nimbus/v1/sandboxes/<id>/rpc`; it stays off
-unless you enable it. `routes` is where your own endpoints live — Nimbus
-ships no token-mint route on purpose, so mount one behind your own user
-auth:
+until you enable it. I don't ship a token-mint endpoint on purpose. Use
+`routes` to add yours behind your own user auth.
 
 ```ts
 routes: async (request, env) => {
@@ -45,10 +44,10 @@ routes: async (request, env) => {
 
 ## The wrangler config
 
-`buildNimbusWranglerConfig` from `@nimbus-sh/config` emits everything
-Nimbus needs — DO binding and migration, the `LOADER` binding, three R2
-buckets, static assets, `nodejs_compat`, and the required bundler
-aliases (`NIMBUS_REQUIRED_ALIASES` if you maintain config by hand):
+`buildNimbusWranglerConfig` emits the DO binding and migration, the
+`LOADER` binding, three R2 buckets, static assets, `nodejs_compat`, and
+the required bundler aliases. Use `NIMBUS_REQUIRED_ALIASES` if you keep
+the config by hand.
 
 ```ts
 import { buildNimbusWranglerConfig } from '@nimbus-sh/config';
@@ -62,8 +61,7 @@ const config = buildNimbusWranglerConfig({
 
 ## The CLI
 
-`@nimbus-sh/cli` provisions and operates all of this — long flags only,
-no prompts:
+`@nimbus-sh/cli` uses long flags and never prompts.
 
 | Command | Needs | Does |
 |---|---|---|
@@ -74,7 +72,7 @@ no prompts:
 | `nimbus runtime sync [--bucket <name>] <runtime[@ver]…>` | `CLOUDFLARE_ACCOUNT_ID` | Stages runtime blobs (BYOA) |
 | `nimbus runtime list` | — | Shows staged runtimes |
 
-With `runtimeCache: 'shared'` the standard bucket is created and seeded
-for you; `'byoa'` binds `${prefix}-runtime-cache` and you stage blobs
-with `runtime sync`. The CLI's logic is also exported programmatically:
-`mintToken`, `syncRuntimes`, `setupCloudflare`, `scaffold`.
+With `runtimeCache: 'shared'`, Nimbus creates and seeds the standard
+bucket. `'byoa'` binds `${prefix}-runtime-cache`; stage its blobs with
+`runtime sync`. You can also call `mintToken`, `syncRuntimes`,
+`setupCloudflare`, and `scaffold` from code.

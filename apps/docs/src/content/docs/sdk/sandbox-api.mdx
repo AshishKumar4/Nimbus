@@ -1,11 +1,10 @@
 ---
 title: The sandbox API
-description: The full typed surface of a NimbusSandbox — exec, files, runtimes, processes, ports, agent tools.
+description: Run commands and work with files, runtimes, processes, ports, and agent tools.
 ---
 
-Everything below is the real, typed surface of `@nimbus-sh/sdk`, and it
-works identically over both transports: a colocated DO binding
-(`Nimbus.fromEnv`) or the authenticated remote API (`Nimbus.connect`).
+`Nimbus.fromEnv` uses a colocated DO binding. `Nimbus.connect` uses the
+authenticated remote API; I keep the typed sandbox the same.
 
 ```ts
 const box = nimbus.sandbox('job-123', {
@@ -18,10 +17,11 @@ await box.ready();      // headless boot + profile preinstalls; memoized
 await box.destroy({ reason: 'job done' });
 ```
 
-Every call awaits `ready()` internally; call it yourself only to pay the
-boot cost up front.
+Every call awaits `ready()`; call it yourself to pay the boot cost first.
 
 ## Running things
+
+Run one command, run source code, or start a process.
 
 ```ts
 const result = await box.exec('npm test', {
@@ -37,6 +37,8 @@ const proc = await box.startProcess('node --watch server.js');
 
 ## Files
 
+Read and change files through the sandbox VFS.
+
 ```ts
 await box.files.write('/home/user/app/server.js', code);   // string | Uint8Array
 const text  = await box.files.read('/home/user/app/server.js');
@@ -48,15 +50,18 @@ await box.files.exists(path); await box.files.delete(path, { recursive: true });
 
 ## Runtimes
 
+Install allowed runtimes when a task needs them.
+
 ```ts
 await box.runtimes.ensure(['python', 'clang']);   // install if missing
 await box.runtimes.list();                        // { installed, available }
 ```
 
-Installs are checked against the profile's `runtimes.allow` before any
-RPC happens.
+Nimbus checks `runtimes.allow` before the install RPC.
 
 ## Processes
+
+List processes and control their input, signals, size, and logs.
 
 ```ts
 const procs = await box.processes.list();       // pid, command, state, exitCode…
@@ -67,7 +72,7 @@ await box.processes.resize(pid, { columns: 120, rows: 32 });
 const logs = await box.processes.logs(pid, { afterSeq: 0 });
 ```
 
-For streaming interaction, `attach` returns an async-iterable attachment:
+`attach` returns an async iterable for live input and output.
 
 ```ts
 const attachment = box.processes.attach(pid);
@@ -79,26 +84,28 @@ for await (const chunk of attachment) {
 
 ## Ports
 
+Expose an app through a path on the Nimbus deployment.
+
 ```ts
 const port = await box.ports.expose(3000);   // → { …, url: '/s/<id>/port/3000/' }
 await box.ports.list();
 await box.ports.unexpose(3000);
 ```
 
-The URL is a path on the deployment, usable directly when the caller
-already has browser or session auth.
+The caller can use the URL directly with browser or session auth.
 
 ## Agent tools
+
+Wrap the sandbox as a Proteus-style tool provider.
 
 ```ts
 const provider = box.tools({ namespace: 'sandbox' });
 ```
 
-A Proteus-style tool provider wrapping the whole sandbox — files, exec,
-processes, ports, runtimes — ready to hand to an agent loop.
+It includes files, exec, processes, ports, and runtimes.
 
 ## Errors
 
 Remote calls throw `NimbusRemoteError` with `status`, optional `code`,
-and the response body. Wire payloads are zod-validated on the client, so
-a drifted server fails loudly instead of returning malformed shapes.
+and the response body. The client validates wire payloads with zod, so a
+drifted server fails instead of returning malformed shapes.
