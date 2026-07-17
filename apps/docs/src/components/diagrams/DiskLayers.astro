@@ -1,0 +1,59 @@
+---
+/**
+ * DiskLayers — the VFS, top to bottom: what a process sees, the inode
+ * table, the chunk store, and the Durable Object's SQLite storage.
+ * Right side: what survives which failure.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<Diagram
+	label="Four disk layers from shell view down to Durable Object SQLite storage, with survival guarantees for each failure mode"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 372" xmlns="http://www.w3.org/2000/svg">
+		<defs>
+			<marker id="dl-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+		</defs>
+
+		<rect class="dgnode" x="30" y="24" width="490" height="64" rx="9" />
+		<text class="dgt" x="46" y="50">what a process sees</text>
+		<text class="dgs" x="46" y="70">cat notes.txt · fs.readFile · fopen("./data.txt")</text>
+
+		<line class="dgedge" x1="275" y1="88" x2="275" y2="106" marker-end="url(#dl-arr)" marker-start="url(#dl-arr)" />
+
+		<rect class="dgnode" x="30" y="110" width="490" height="64" rx="9" />
+		<text class="dgt" x="46" y="136">inode table</text>
+		<text class="dgs" x="46" y="156">paths · modes (real chmod) · per-path revision watermarks</text>
+
+		<line class="dgedge" x1="275" y1="174" x2="275" y2="192" marker-end="url(#dl-arr)" marker-start="url(#dl-arr)" />
+
+		<rect class="dgnode" x="30" y="196" width="490" height="64" rx="9" />
+		<text class="dgt" x="46" y="222">chunk store</text>
+		<text class="dgs" x="46" y="242">64 KiB pages · LRU cache · atomic content generations</text>
+
+		<line class="dgedge" x1="275" y1="260" x2="275" y2="278" marker-end="url(#dl-arr)" marker-start="url(#dl-arr)" />
+
+		<rect class="dghero" x="30" y="282" width="490" height="64" rx="10" />
+		<text class="dgt" x="46" y="308">durable object storage — SQLite</text>
+		<text class="dgs" x="46" y="328">10 GB per session · the single source of truth</text>
+
+		<text class="dgtag" x="580" y="40">what survives what</text>
+		<text class="dgs" x="580" y="72"><tspan class="dgaccent">✓</tspan> facet dies — nothing lost, facets never own files</text>
+		<text class="dgs" x="580" y="104"><tspan class="dgaccent">✓</tspan> websocket drops — disk intact, session resumes</text>
+		<text class="dgs" x="580" y="136"><tspan class="dgaccent">✓</tspan> DO evicted / hibernates — committed writes intact</text>
+		<text class="dgs" x="580" y="168"><tspan class="dgaccent">✓</tspan> crash mid-install — staged generation never published</text>
+		<text class="dgs" x="580" y="200"><tspan class="dgdanger">✗</tspan> session destroyed — the disk goes with it</text>
+
+		<text class="dgtag" x="580" y="252">write path</text>
+		<text class="dgs" x="580" y="284">facets stream writes to the supervisor</text>
+		<text class="dgs" x="580" y="306">through a credit pool — no credits, no send.</text>
+		<text class="dgs" x="580" y="328">84,000-file checkouts cannot flood 128 MiB.</text>
+	</svg>
+</Diagram>

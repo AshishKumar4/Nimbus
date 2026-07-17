@@ -1,0 +1,19 @@
+---
+/**
+ * Diagram — the frame every docs diagram sits in. One panel chrome, an
+ * optional caption, horizontal scroll on narrow screens. The SVG inside
+ * uses the shared vocabulary from src/styles/diagrams.css.
+ */
+interface Props {
+	caption?: string;
+	label: string;
+}
+const { caption, label } = Astro.props;
+---
+
+<figure class="dg-frame not-content" role="img" aria-label={label}>
+	<div class="dg-scroll">
+		<slot />
+	</div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>

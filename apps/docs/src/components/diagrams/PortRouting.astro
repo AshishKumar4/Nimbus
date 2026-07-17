@@ -1,0 +1,62 @@
+---
+/**
+ * PortRouting — three ingresses, one registry, one path: loopback curl,
+ * the port preview, and the default app preview all resolve through the
+ * supervisor's port registry to a route stub that never boots code.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<Diagram
+	label="Loopback requests, port previews, and the default preview all converge on the supervisor's port registry, which resolves a route stub to the serving facet"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 330" xmlns="http://www.w3.org/2000/svg">
+		<defs>
+			<marker id="pr-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+		</defs>
+
+		<rect class="dgnode" x="14" y="24" width="212" height="56" rx="9" />
+		<text class="dgt" x="28" y="47">curl 127.0.0.1:3000</text>
+		<text class="dgs" x="28" y="66">from any other process</text>
+
+		<rect class="dgnode" x="14" y="104" width="212" height="56" rx="9" />
+		<text class="dgt" x="28" y="127">/s/&lt;id&gt;/port/3000/</text>
+		<text class="dgs" x="28" y="146">browser port preview</text>
+
+		<rect class="dgnode" x="14" y="184" width="212" height="56" rx="9" />
+		<text class="dgt" x="28" y="207">/s/&lt;id&gt;/preview/</text>
+		<text class="dgs" x="28" y="226">default app preview</text>
+
+		<path class="dgedge" d="M 226,52 Q 268,52 288,104 L 296,122" marker-end="url(#pr-arr)" />
+		<line class="dgedge" x1="226" y1="132" x2="296" y2="132" marker-end="url(#pr-arr)" />
+		<path class="dgedge" d="M 226,212 Q 268,212 288,160 L 296,142" marker-end="url(#pr-arr)" />
+
+		<rect class="dghero" x="304" y="96" width="210" height="72" rx="10" />
+		<text class="dgt" x="318" y="124">port registry</text>
+		<text class="dgs" x="318" y="144">port → owning pid → stub</text>
+
+		<line class="dgedge" x1="514" y1="132" x2="572" y2="132" marker-end="url(#pr-arr)" />
+
+		<rect class="dgnode" x="580" y="96" width="170" height="72" rx="9" />
+		<text class="dgt" x="594" y="124">route stub</text>
+		<text class="dgs" x="594" y="144">resolves, never boots</text>
+
+		<line class="dgedge" x1="750" y1="132" x2="808" y2="132" marker-end="url(#pr-arr)" />
+
+		<rect class="dgnode" x="816" y="96" width="110" height="72" rx="9" />
+		<text class="dgt" x="830" y="124">your</text>
+		<text class="dgt" x="830" y="142">server</text>
+
+		<text class="dgtag" x="304" y="216">the registry's two honest errors</text>
+		<text class="dgs" x="304" y="244"><tspan class="dgdanger">404</tspan> no entry for the port — “No process listening”</text>
+		<text class="dgs" x="304" y="270"><tspan class="dgwarn">501</tspan> registered, stub not attached yet — the boot window</text>
+		<text class="dgs" x="304" y="296">a dead port and a booting port are different truths</text>
+	</svg>
+</Diagram>

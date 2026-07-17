@@ -1,0 +1,60 @@
+---
+/**
+ * RequestLifecycle — one preview request, end to end: browser → edge →
+ * supervisor DO (port registry) → resident facet → streamed response back.
+ * Loopback curl enters the same pipeline at the registry step.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<Diagram
+	label="A preview request travels browser to edge to supervisor to facet, and the response body streams back without buffering"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 300" xmlns="http://www.w3.org/2000/svg">
+		<defs>
+			<marker id="rl-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+			<marker id="rl-arr-a" class="dgm-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+		</defs>
+
+		<rect class="dgnode" x="14" y="92" width="150" height="72" rx="9" />
+		<text class="dgt" x="28" y="120">browser</text>
+		<text class="dgs" x="28" y="140">/s/&lt;id&gt;/port/3000/</text>
+
+		<line class="dgedge" x1="166" y1="128" x2="216" y2="128" marker-end="url(#rl-arr)" />
+
+		<rect class="dgnode" x="224" y="92" width="150" height="72" rx="9" />
+		<text class="dgt" x="238" y="120">edge worker</text>
+		<text class="dgs" x="238" y="140">session route</text>
+
+		<line class="dgedge" x1="376" y1="128" x2="426" y2="128" marker-end="url(#rl-arr)" />
+
+		<rect class="dghero" x="434" y="92" width="190" height="72" rx="10" />
+		<text class="dgt" x="448" y="120">supervisor DO</text>
+		<text class="dgs" x="448" y="140">registry: 3000 → stub</text>
+
+		<line class="dgedge" x1="626" y1="128" x2="676" y2="128" marker-end="url(#rl-arr)" />
+
+		<rect class="dgnode" x="684" y="92" width="180" height="72" rx="9" />
+		<text class="dgt" x="698" y="120">resident facet</text>
+		<text class="dgs" x="698" y="140">http shim → your app</text>
+
+		<path
+			class="dgedge-accent-dashed"
+			d="M 774,164 L 774,224 Q 774,236 762,236 L 101,236 Q 89,236 89,224 L 89,172"
+			marker-end="url(#rl-arr-a)"
+		/>
+		<text class="dgs dgaccent" x="431" y="226" text-anchor="middle">response streams live — SSE ticks, chunked bodies, HMR — never buffered</text>
+
+		<text class="dgs" x="431" y="46" text-anchor="middle">curl 127.0.0.1:3000 from another process enters here too</text>
+		<line class="dgedge-dashed" x1="431" y1="54" x2="500" y2="86" marker-end="url(#rl-arr)" />
+	</svg>
+</Diagram>

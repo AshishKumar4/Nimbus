@@ -1,0 +1,77 @@
+---
+/**
+ * GitPipeline — a clone in phases: fetch, index, chunked checkout in
+ * resumable slices, each slice flushing to the session disk through the
+ * credit-backpressured write pipeline.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<Diagram
+	label="git clone runs as phases — fetch, index, then chunked checkout slices — each with a fresh CPU budget, flushing to the session disk under credit backpressure"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 340" xmlns="http://www.w3.org/2000/svg">
+		<defs>
+			<marker id="gp-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+			<marker id="gp-arr-a" class="dgm-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+		</defs>
+
+		<rect class="dgnode" x="14" y="36" width="150" height="64" rx="9" />
+		<text class="dgt" x="28" y="62">remote</text>
+		<text class="dgs" x="28" y="82">packfile over https</text>
+
+		<line class="dgedge" x1="164" y1="68" x2="214" y2="68" marker-end="url(#gp-arr)" />
+
+		<rect class="dgnode" x="222" y="36" width="150" height="64" rx="9" />
+		<text class="dgt" x="236" y="62">fetch</text>
+		<text class="dgs" x="236" y="82">stream the pack</text>
+
+		<line class="dgedge" x1="372" y1="68" x2="422" y2="68" marker-end="url(#gp-arr)" />
+
+		<rect class="dgnode" x="430" y="36" width="150" height="64" rx="9" />
+		<text class="dgt" x="444" y="62">index</text>
+		<text class="dgs" x="444" y="82">address every object</text>
+
+		<path class="dgedge" d="M 505,100 L 505,132" marker-end="url(#gp-arr)" />
+
+		<rect class="dgzone" x="96" y="140" width="560" height="120" rx="12" />
+		<text class="dgtag" x="114" y="164">chunked checkout — bounded continuation</text>
+
+		<rect class="dgnode2" x="118" y="180" width="110" height="56" rx="9" />
+		<text class="dgt" x="132" y="204">slice 0</text>
+		<text class="dgs" x="132" y="222">fresh budget</text>
+		<line class="dgedge" x1="228" y1="208" x2="252" y2="208" marker-end="url(#gp-arr)" />
+		<rect class="dgnode2" x="256" y="180" width="110" height="56" rx="9" />
+		<text class="dgt" x="270" y="204">slice 1</text>
+		<text class="dgs" x="270" y="222">fresh budget</text>
+		<line class="dgedge" x1="366" y1="208" x2="390" y2="208" marker-end="url(#gp-arr)" />
+		<rect class="dgnode2" x="394" y="180" width="110" height="56" rx="9" />
+		<text class="dgt" x="408" y="204">slice 2</text>
+		<text class="dgs" x="408" y="222">fresh budget</text>
+		<line class="dgedge" x1="504" y1="208" x2="528" y2="208" marker-end="url(#gp-arr)" />
+		<rect class="dgghost" x="532" y="180" width="104" height="56" rx="9" />
+		<text class="dgt" x="546" y="204">slice n</text>
+		<text class="dgs" x="546" y="222">…resumes</text>
+
+		<path class="dgedge-accent" d="M 656,200 L 716,200" marker-end="url(#gp-arr-a)" />
+		<text class="dgs dgaccent" x="686" y="188" text-anchor="middle">flush</text>
+
+		<rect class="dghero" x="724" y="152" width="200" height="96" rx="10" />
+		<text class="dgt" x="738" y="180">session disk</text>
+		<text class="dgs" x="738" y="200">credit-backpressured writes</text>
+		<text class="dgs" x="738" y="218">84,000-file worktrees land</text>
+		<text class="dgs" x="738" y="236">react (7,300 files): ~28 s</text>
+
+		<text class="dgs" x="96" y="296">every phase and every slice gets its own invocation budget — repo size is bounded by the disk, not the CPU cap</text>
+		<text class="dgs dgwarn" x="96" y="322">known ceiling: index-pack CPU on 75,000+-object clones — continuation-slicing the indexer is in progress</text>
+	</svg>
+</Diagram>

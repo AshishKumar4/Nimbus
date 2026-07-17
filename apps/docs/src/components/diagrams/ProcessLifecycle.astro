@@ -1,0 +1,65 @@
+---
+/**
+ * ProcessLifecycle — spawn → process-table row → facet placement →
+ * exit or eviction → reap. The table lives in the DO; facets are
+ * evictable; a dead process is marked dead, never left a zombie.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<Diagram
+	label="Process lifecycle: spawn creates a process-table row in the supervisor, the process runs in a one-shot or resident facet, and exits or evictions are reaped honestly"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 348" xmlns="http://www.w3.org/2000/svg">
+		<defs>
+			<marker id="pl-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+		</defs>
+
+		<rect class="dgnode" x="14" y="122" width="140" height="64" rx="9" />
+		<text class="dgt" x="28" y="148">spawn</text>
+		<text class="dgs" x="28" y="168">shell · SDK · agent</text>
+
+		<line class="dgedge" x1="156" y1="154" x2="206" y2="154" marker-end="url(#pl-arr)" />
+
+		<rect class="dghero" x="214" y="122" width="206" height="64" rx="10" />
+		<text class="dgt" x="228" y="148">process table row</text>
+		<text class="dgs" x="228" y="168">pid · argv · state — in the DO</text>
+
+		<path class="dgedge" d="M 422,138 Q 458,138 470,110 L 480,88" marker-end="url(#pl-arr)" />
+		<path class="dgedge" d="M 422,170 Q 458,170 470,198 L 480,220" marker-end="url(#pl-arr)" />
+
+		<rect class="dgnode" x="488" y="34" width="188" height="64" rx="9" />
+		<text class="dgt" x="502" y="60">one-shot facet</text>
+		<text class="dgs" x="502" y="80">run → stream writes → exit</text>
+
+		<rect class="dgnode" x="488" y="214" width="188" height="64" rx="9" />
+		<text class="dgt" x="502" y="240">resident facet</text>
+		<text class="dgs" x="502" y="260">keyed · warm · owns ports</text>
+
+		<line class="dgedge" x1="678" y1="66" x2="736" y2="66" marker-end="url(#pl-arr)" />
+		<path class="dgedge" d="M 678,232 Q 716,220 736,110" marker-end="url(#pl-arr)" />
+
+		<rect class="dgnode2" x="744" y="34" width="180" height="64" rx="9" />
+		<text class="dgt" x="758" y="60">reaped</text>
+		<text class="dgs" x="758" y="80">exit code in the table</text>
+
+		<path class="dgedge-dashed" d="M 678,262 L 736,262" marker-end="url(#pl-arr)" />
+
+		<rect class="dgghost" x="744" y="214" width="180" height="92" rx="9" />
+		<text class="dgt" x="758" y="240">evicted</text>
+		<text class="dgs" x="758" y="260">resolve from loader cache,</text>
+		<text class="dgs" x="758" y="276">or marked dead with a reason</text>
+		<text class="dgs" x="758" y="292">— never a zombie</text>
+
+		<rect class="dgghost" x="94" y="266" width="326" height="52" rx="9" />
+		<text class="dgs dgwarn" x="110" y="288">fork() — mechanism proven live on production</text>
+		<text class="dgs" x="110" y="306">infrastructure; not yet a shipped syscall</text>
+	</svg>
+</Diagram>

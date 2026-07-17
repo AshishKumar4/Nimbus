@@ -1,0 +1,190 @@
+---
+/**
+ * SessionAnatomy — the hero diagram: one supervisor Durable Object plus a
+ * fabric of facet isolates, joined by a session-local loopback network.
+ * Interactive: each node is a button; the panel below shows what it owns.
+ *
+ * Facts source: README.md architecture section, the OS runtime spec, and
+ * scratchpad/nimbus-public-surface-inventory.md. 128 MiB is Cloudflare's
+ * published per-isolate figure.
+ */
+interface Props {
+	detail?: boolean;
+	caption?: string;
+}
+const { detail = true, caption } = Astro.props;
+
+const nodes = {
+	client: {
+		title: 'browser / SDK',
+		facts: [
+			'The web terminal speaks a WebSocket at /s/<id>/ws. The SDK speaks HTTPS RPC to the same session.',
+			'The URL is the session. A dropped socket reconnects with cwd, env, and files preserved.',
+		],
+	},
+	supervisor: {
+		title: 'supervisor — the session DO',
+		facts: [
+			'One session is one Durable Object. It owns everything durable: the SQLite disk, shell state, the process table, the port registry, and the session agent.',
+			'Idle sessions hibernate to $0. The 10 GB disk survives eviction and wake.',
+			'Every loopback request between processes routes through its port registry.',
+			'Facet writes stream in through a credit-backpressured pipeline, so a parallel npm install cannot flood it.',
+		],
+	},
+	oneshot: {
+		title: 'one-shot facets',
+		facts: [
+			'Each command gets a fresh Worker Loader isolate with its own memory and CPU budget (128 MiB per isolate, Cloudflare’s published figure).',
+			'Lifecycle: spawn, run, stream writes back to the supervisor, exit. Nothing durable lives here.',
+		],
+	},
+	resident: {
+		title: 'resident facets',
+		facts: [
+			'Servers keep a keyed isolate across requests, with their port registered in the supervisor.',
+			'node server.js auto-promotes when it starts listening. No flags, no special launch command.',
+			'One app can span several isolates: opencode runs as a serve facet plus a TUI facet over loopback (alpha).',
+		],
+	},
+	git: {
+		title: 'git engine',
+		facts: [
+			'git clone runs here: fetch, index, and checkout as separate phases, each with a fresh CPU budget.',
+			'Chunked checkout materializes 84,000-file worktrees; facebook/react (7,300 files) lands in ~28 s.',
+		],
+	},
+	peers: {
+		title: 'peer DOs',
+		facts: [
+			'Big npm installs shard across peer Durable Objects, so one isolate is never the bottleneck.',
+		],
+	},
+	cache: {
+		title: 'R2 + edge cache',
+		facts: [
+			'npm tarballs, runtime blobs, and staged app bundles live in R2, with hot reads cached per-colo.',
+			'Warm package installs run 9–16× faster than cold because of this layer.',
+		],
+	},
+} as const;
+---
+
+<figure class="dg-frame not-content" data-anatomy>
+	<div class="dg-scroll">
+		<svg viewBox="0 0 940 430" xmlns="http://www.w3.org/2000/svg" aria-label="One session: a supervisor Durable Object plus one-shot, resident, and git-engine facets over a loopback network, backed by peer DOs and R2">
+			<defs>
+				<marker id="sa-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+					<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+				</marker>
+			</defs>
+
+			<text class="dgtag" x="18" y="34">client</text>
+			<g data-node="client" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dgnode" x="14" y="170" width="130" height="76" rx="9" />
+				<text class="dgt" x="28" y="199">browser / SDK</text>
+				<text class="dgs" x="28" y="217">terminal · editor</text>
+				<text class="dgs" x="28" y="233">https · websocket</text>
+			</g>
+
+			<line class="dgedge" x1="152" y1="208" x2="188" y2="208" marker-end="url(#sa-arr)" marker-start="url(#sa-arr)" />
+
+			<rect class="dgzone" x="196" y="18" width="470" height="396" rx="12" />
+			<text class="dgtag" x="216" y="42">one session</text>
+
+			<g data-node="supervisor" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dghero" x="216" y="54" width="430" height="88" rx="10" />
+				<text class="dgt" x="232" y="82">supervisor — the session DO</text>
+				<text class="dgs" x="232" y="102">sqlite disk · shell · process table</text>
+				<text class="dgs" x="232" y="118">port registry · session agent</text>
+			</g>
+
+			<line class="dgedge" x1="286" y1="142" x2="286" y2="170" marker-end="url(#sa-arr)" marker-start="url(#sa-arr)" />
+			<line class="dgedge" x1="431" y1="142" x2="431" y2="170" marker-end="url(#sa-arr)" marker-start="url(#sa-arr)" />
+			<line class="dgedge" x1="576" y1="142" x2="576" y2="170" marker-end="url(#sa-arr)" marker-start="url(#sa-arr)" />
+
+			<g data-node="oneshot" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dgnode" x="222" y="176" width="128" height="78" rx="9" />
+				<text class="dgt" x="234" y="200">one-shot</text>
+				<text class="dgs" x="234" y="218">node · py · wasm</text>
+				<text class="dgs" x="234" y="234">spawn → exit</text>
+			</g>
+			<g data-node="resident" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dgnode" x="367" y="176" width="128" height="78" rx="9" />
+				<text class="dgt" x="379" y="200">resident</text>
+				<text class="dgs" x="379" y="218">vite · flask · serve</text>
+				<text class="dgs" x="379" y="234">keyed · has ports</text>
+			</g>
+			<g data-node="git" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dgnode" x="512" y="176" width="128" height="78" rx="9" />
+				<text class="dgt" x="524" y="200">git engine</text>
+				<text class="dgs" x="524" y="218">fetch · index</text>
+				<text class="dgs" x="524" y="234">chunked checkout</text>
+			</g>
+
+			<line class="dgedge-dashed" x1="286" y1="254" x2="286" y2="296" />
+			<line class="dgedge-dashed" x1="431" y1="254" x2="431" y2="296" />
+			<line class="dgedge-dashed" x1="576" y1="254" x2="576" y2="296" />
+			<line class="dgedge-accent-dashed" x1="222" y1="298" x2="640" y2="298" />
+			<text class="dgs dgaccent" x="431" y="322" text-anchor="middle">loopback 127.0.0.1:&lt;port&gt; — routed by the supervisor</text>
+
+			<text class="dgs" x="431" y="392" text-anchor="middle">every facet: its own isolate, its own 128 MiB, evictable</text>
+
+			<text class="dgtag" x="700" y="34">platform</text>
+			<g data-node="peers" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dgnode2" x="700" y="90" width="224" height="64" rx="9" />
+				<text class="dgt" x="714" y="116">peer DOs</text>
+				<text class="dgs" x="714" y="134">npm install shards</text>
+			</g>
+			<g data-node="cache" role="button" tabindex="0" aria-pressed="false">
+				<rect class="dgnode2" x="700" y="190" width="224" height="78" rx="9" />
+				<text class="dgt" x="714" y="216">R2 + edge cache</text>
+				<text class="dgs" x="714" y="234">tarballs · runtimes · bundles</text>
+				<text class="dgs" x="714" y="250">hot reads cached per-colo</text>
+			</g>
+
+			<line class="dgedge" x1="666" y1="122" x2="692" y2="122" marker-end="url(#sa-arr)" marker-start="url(#sa-arr)" />
+			<line class="dgedge" x1="666" y1="224" x2="692" y2="224" marker-end="url(#sa-arr)" marker-start="url(#sa-arr)" />
+		</svg>
+	</div>
+	{detail && (
+		<div class="dg-detail" data-role="detail">
+			<p class="dg-hint">Select any node — each one says what it owns and how it dies.</p>
+		</div>
+	)}
+	{caption && <figcaption>{caption}</figcaption>}
+	<script type="application/json" data-role="facts" set:html={JSON.stringify(nodes)} />
+</figure>
+
+<script>
+	document.querySelectorAll<HTMLElement>('[data-anatomy]').forEach((el) => {
+		const detail = el.querySelector<HTMLElement>('[data-role="detail"]');
+		if (!detail) return;
+		const facts = JSON.parse(
+			el.querySelector('[data-role="facts"]')?.textContent || '{}',
+		) as Record<string, { title: string; facts: string[] }>;
+		const nodes = el.querySelectorAll<SVGGElement>('g[data-node]');
+		const select = (g: SVGGElement) => {
+			nodes.forEach((n) => n.setAttribute('aria-pressed', String(n === g)));
+			const node = facts[g.dataset.node!];
+			if (!node) return;
+			const h = document.createElement('h4');
+			h.textContent = node.title;
+			const ul = document.createElement('ul');
+			for (const f of node.facts) {
+				const li = document.createElement('li');
+				li.textContent = f;
+				ul.append(li);
+			}
+			detail.replaceChildren(h, ul);
+		};
+		nodes.forEach((g) => {
+			g.addEventListener('click', () => select(g));
+			g.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter' || e.key === ' ') {
+					e.preventDefault();
+					select(g);
+				}
+			});
+		});
+	});
+</script>

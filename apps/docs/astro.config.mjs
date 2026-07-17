@@ -18,7 +18,7 @@ export default defineConfig({
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/AshishKumar4/Nimbus' },
 			],
-			customCss: ['./src/styles/theme.css'],
+			customCss: ['./src/styles/theme.css', './src/styles/diagrams.css'],
 			plugins: [starlightLlmsTxt()],
 			components: {
 				ThemeProvider: './src/components/ThemeProvider.astro',

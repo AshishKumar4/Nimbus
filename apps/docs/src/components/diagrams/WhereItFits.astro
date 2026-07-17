@@ -1,0 +1,69 @@
+---
+/**
+ * WhereItFits — four sandbox substrates side by side, drawn as stacks:
+ * microVMs, containers, in-process stubs, and Nimbus. Honest attributes
+ * under each column, wins and trades alike.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+
+const col = (x: number, layers: string[], y0 = 66) =>
+	layers.map((label, i) => ({ label, x, y: y0 + i * 54 }));
+---
+
+<Diagram
+	label="Four sandbox substrates compared as stacks: microVM, container, in-process stub, and Nimbus on Durable Objects plus isolates and WASM"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 404" xmlns="http://www.w3.org/2000/svg">
+		<text class="dgt" x="14" y="38">microVM sandboxes</text>
+		<text class="dgs" x="14" y="56">e2b · daytona</text>
+		{col(14, ['your code', 'linux kernel', 'firecracker VM', 'provider fleet'], 70).map((l) => (
+			<>
+				<rect class="dgnode" x={l.x} y={l.y} width="210" height="46" rx="9" />
+				<text class="dgs" x={l.x + 14} y={l.y + 28} style="fill: var(--dg-text-2)">{l.label}</text>
+			</>
+		))}
+		<text class="dgs" x="14" y="316">native ELF · docker · apt</text>
+		<text class="dgs" x="14" y="338">boots a VM; idle = pool economics</text>
+
+		<text class="dgt" x="244" y="38">container platforms</text>
+		<text class="dgs" x="244" y="56">cloudflare sandbox sdk</text>
+		{col(244, ['your code', 'container', 'shared kernel', 'provider fleet'], 70).map((l) => (
+			<>
+				<rect class="dgnode" x={l.x} y={l.y} width="210" height="46" rx="9" />
+				<text class="dgs" x={l.x + 14} y={l.y + 28} style="fill: var(--dg-text-2)">{l.label}</text>
+			</>
+		))}
+		<text class="dgs" x="244" y="316">native ELF · docker</text>
+		<text class="dgs" x="244" y="338">create: 1.95 s median (measured)</text>
+
+		<text class="dgt" x="474" y="38">in-process stubs</text>
+		<text class="dgs" x="474" y="56">js “fs + exec” emulators</text>
+		{col(474, ['agent code', 'stub fs + exec', 'your server process'], 70).map((l) => (
+			<>
+				<rect class="dgnode" x={l.x} y={l.y} width="210" height="46" rx="9" />
+				<text class="dgs" x={l.x + 14} y={l.y + 28} style="fill: var(--dg-text-2)">{l.label}</text>
+			</>
+		))}
+		<text class="dgs" x="474" y="316">no isolation boundary</text>
+		<text class="dgs" x="474" y="338">no real toolchains</text>
+
+		<text class="dgt dgaccent" x="704" y="38">nimbus</text>
+		<text class="dgs" x="704" y="56">this project</text>
+		{col(704, ['your processes', 'V8 isolates + WASM', 'durable object + sqlite', 'cloudflare edge'], 70).map((l) => (
+			<>
+				<rect class="dghero" x={l.x} y={l.y} width="220" height="46" rx="9" />
+				<text class="dgs" x={l.x + 14} y={l.y + 28} style="fill: var(--dg-text-2)">{l.label}</text>
+			</>
+		))}
+		<text class="dgs" x="704" y="316"><tspan class="dgaccent">boot ~0.6 s · idle $0 · 10 GB disk</tspan></text>
+		<text class="dgs" x="704" y="338">no native ELF, no docker — by design</text>
+
+		<line class="dgedge-dashed" x1="14" y1="360" x2="924" y2="360" />
+		<text class="dgs" x="14" y="388">numbers: our measured benchmarks, ComputeSDK methodology, 2026-07 — see the benchmarks page for caveats</text>
+	</svg>
+</Diagram>

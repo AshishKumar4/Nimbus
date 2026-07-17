@@ -1,0 +1,212 @@
+/* Shared visual language for every Nimbus docs diagram.
+   One palette, one node style, one arrow style — dark and light aware.
+   All diagram SVGs use these custom properties; nothing is hardcoded. */
+
+:root {
+	--dg-node: #0d1f3c;
+	--dg-node-2: #112240;
+	--dg-zone: color-mix(in srgb, #112240 55%, transparent);
+	--dg-stroke: #1e3a5f;
+	--dg-stroke-soft: #16294a;
+	--dg-accent: #64ffda;
+	--dg-accent-soft: color-mix(in srgb, #64ffda 32%, #1e3a5f);
+	--dg-accent-fill: color-mix(in srgb, #64ffda 8%, #0d1f3c);
+	--dg-text: #e6f1ff;
+	--dg-text-2: #a8b2d1;
+	--dg-muted: #8892b0;
+	--dg-warn: #ffd479;
+	--dg-danger: #ff8c8c;
+}
+
+:root[data-theme='light'] {
+	--dg-node: #f6f8fd;
+	--dg-node-2: #eef2fa;
+	--dg-zone: color-mix(in srgb, #eef2fa 60%, transparent);
+	--dg-stroke: #c5d0e4;
+	--dg-stroke-soft: #dde4f0;
+	--dg-accent: #0e7a63;
+	--dg-accent-soft: color-mix(in srgb, #0e7a63 40%, #c5d0e4);
+	--dg-accent-fill: color-mix(in srgb, #0e7a63 7%, #f6f8fd);
+	--dg-text: #0a192f;
+	--dg-text-2: #2e3f63;
+	--dg-muted: #52618a;
+	--dg-warn: #8a5a00;
+	--dg-danger: #a33030;
+}
+
+/* ---- The frame every diagram sits in ---- */
+.dg-frame {
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--nimbus-panel-radius);
+	background: var(--nimbus-panel-bg);
+	margin: 1.5rem 0;
+	overflow: hidden;
+}
+.dg-frame > .dg-scroll {
+	overflow-x: auto;
+	padding: 1.1rem 1.1rem 0.9rem;
+}
+.dg-frame svg {
+	display: block;
+	width: 100%;
+	height: auto;
+	min-width: 560px;
+	margin-inline: auto;
+}
+.dg-frame figcaption {
+	padding: 0.7rem 1.1rem 0.8rem;
+	border-top: 1px solid var(--sl-color-hairline-light);
+	color: var(--sl-color-gray-3);
+	font-size: var(--sl-text-sm);
+	line-height: 1.5;
+}
+.dg-frame figcaption code {
+	font-size: 0.85em;
+}
+
+/* ---- SVG vocabulary ---- */
+.dg-frame text {
+	font-family: var(--sl-font-system-mono);
+	fill: var(--dg-text);
+}
+.dg-frame .dgt {
+	font-size: 13px;
+	font-weight: 600;
+}
+.dg-frame .dgs {
+	font-size: 11px;
+	fill: var(--dg-muted);
+	font-weight: 400;
+}
+.dg-frame .dgtag {
+	font-size: 10px;
+	fill: var(--dg-muted);
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+}
+.dg-frame .dgaccent {
+	fill: var(--dg-accent);
+}
+.dg-frame .dgwarn {
+	fill: var(--dg-warn);
+}
+.dg-frame .dgdanger {
+	fill: var(--dg-danger);
+}
+
+.dg-frame .dgnode {
+	fill: var(--dg-node);
+	stroke: var(--dg-stroke);
+	stroke-width: 1;
+	rx: 9;
+}
+.dg-frame .dgnode2 {
+	fill: var(--dg-node-2);
+	stroke: var(--dg-stroke);
+	stroke-width: 1;
+	rx: 9;
+}
+.dg-frame .dghero {
+	fill: var(--dg-accent-fill);
+	stroke: var(--dg-accent-soft);
+	stroke-width: 1.2;
+	rx: 10;
+}
+.dg-frame .dgzone {
+	fill: var(--dg-zone);
+	stroke: var(--dg-stroke-soft);
+	stroke-width: 1;
+	stroke-dasharray: 5 4;
+	rx: 12;
+}
+.dg-frame .dgghost {
+	fill: none;
+	stroke: var(--dg-stroke);
+	stroke-width: 1;
+	stroke-dasharray: 4 4;
+	rx: 9;
+}
+
+.dg-frame .dgedge {
+	stroke: var(--dg-muted);
+	stroke-width: 1.3;
+	fill: none;
+}
+.dg-frame .dgedge-accent {
+	stroke: var(--dg-accent);
+	stroke-width: 1.4;
+	fill: none;
+}
+.dg-frame .dgedge-dashed {
+	stroke: var(--dg-muted);
+	stroke-width: 1.3;
+	stroke-dasharray: 5 4;
+	fill: none;
+}
+.dg-frame .dgedge-accent-dashed {
+	stroke: var(--dg-accent);
+	stroke-width: 1.4;
+	stroke-dasharray: 5 4;
+	fill: none;
+}
+.dg-frame marker path {
+	fill: var(--dg-muted);
+}
+.dg-frame marker.dgm-accent path {
+	fill: var(--dg-accent);
+}
+
+/* ---- Interactive diagrams (session anatomy) ---- */
+.dg-frame g[data-node] {
+	cursor: pointer;
+}
+.dg-frame g[data-node] .dgnode,
+.dg-frame g[data-node] .dgnode2,
+.dg-frame g[data-node] .dghero {
+	transition: stroke 140ms ease, fill 140ms ease;
+}
+.dg-frame g[data-node]:hover :is(.dgnode, .dgnode2, .dghero) {
+	stroke: var(--dg-accent);
+}
+.dg-frame g[data-node]:focus-visible {
+	outline: none;
+}
+.dg-frame g[data-node]:focus-visible :is(.dgnode, .dgnode2, .dghero) {
+	stroke: var(--dg-accent);
+	stroke-width: 2;
+}
+.dg-frame g[data-node][aria-pressed='true'] :is(.dgnode, .dgnode2, .dghero) {
+	stroke: var(--dg-accent);
+	fill: var(--dg-accent-fill);
+}
+.dg-detail {
+	padding: 0.85rem 1.1rem 1rem;
+	border-top: 1px solid var(--sl-color-hairline-light);
+	min-height: 5.4rem;
+	font-size: var(--sl-text-sm);
+}
+.dg-detail h4 {
+	margin: 0 0 0.4rem;
+	font-size: var(--sl-text-base);
+	color: var(--sl-color-text-accent);
+	font-family: var(--sl-font-system-mono);
+	letter-spacing: -0.01em;
+}
+.dg-detail ul {
+	margin: 0;
+	padding-left: 1.1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	color: var(--sl-color-gray-2);
+}
+.dg-detail .dg-hint {
+	margin: 0;
+	color: var(--sl-color-gray-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.dg-frame g[data-node] :is(.dgnode, .dgnode2, .dghero) {
+		transition: none;
+	}
+}
