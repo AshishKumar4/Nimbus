@@ -88,6 +88,11 @@ const hiddenExists = await run('test', ['-e', 'hidden/file'], USER);
 assert.equal(hiddenExists.exitCode, 1, 'test -e maps an untraversable path to false');
 assert.equal(hiddenExists.stderr, '');
 
+const missingIdentity = await runWithoutCred('cat', ['readable']);
+assert.equal(missingIdentity.exitCode, 1);
+assert.match(missingIdentity.stderr, /unix command dispatch requires process credentials/);
+assert.doesNotMatch(missingIdentity.stderr, /TypeError|undefined is not an object/);
+
 console.log('shell unix command permissions: ok');
 
 async function run(name, args, cred, invocationVfs = rawVfs.as(cred), stdin = '') {
@@ -115,5 +120,25 @@ async function run(name, args, cred, invocationVfs = rawVfs.as(cred), stdin = ''
     },
   };
   const exitCode = await command(context);
+  return { exitCode, stdout, stderr };
+}
+
+async function runWithoutCred(name, args) {
+  const command = await registry.resolve(name);
+  assert.ok(command, `${name} is registered`);
+  let stdout = '';
+  let stderr = '';
+  const exitCode = await command({
+    pid: 71,
+    args,
+    cwd: '/home/user',
+    env: {},
+    vfs: rawVfs.as(USER),
+    stdout: { write: (value) => { stdout += String(value); } },
+    stderr: { write: (value) => { stderr += String(value); } },
+    signal: new AbortController().signal,
+    setUmask: () => {},
+    runAs: async () => 126,
+  });
   return { exitCode, stdout, stderr };
 }

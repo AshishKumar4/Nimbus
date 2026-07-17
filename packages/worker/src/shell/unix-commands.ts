@@ -13,7 +13,7 @@
 
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import type { VfsCred } from '../runtime/os-contracts.js';
+import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { enc } from '../_shared/bytes.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import {
@@ -55,7 +55,10 @@ function withInvocationVfs(
   sqliteVfs: SqliteVFS,
   factory: (vfs: UnixVfs) => CmdFn,
 ): CmdFn {
-  return (ctx) => factory(unixVfsFor(sqliteVfs, ctx.cred))(ctx);
+  return (ctx) => factory(unixVfsFor(
+    sqliteVfs,
+    requireVfsCred(ctx.cred, 'unix command dispatch'),
+  ))(ctx);
 }
 
 function fsErrorMessage(error: unknown): string {
