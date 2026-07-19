@@ -52,7 +52,25 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
             return;
         const parts = clean.split('/').filter(Boolean);
         for (let i = 1; i <= parts.length; i++) {
-            dirsSet.add(parts.slice(0, i).join('/'));
+            const ancestor = parts.slice(0, i).join('/');
+            dirsSet.add(ancestor);
+            // Every ancestor directory needs an effective-mode entry: the WASI
+            // shim requires the search (x) bit on each path component to traverse
+            // into a leaf, and its default for an existing-but-unmapped inode is
+            // deny. An intermediate dir that is neither a root nor walked (e.g.
+            // the shared parent of the cwd and the gem home) would otherwise have
+            // no entry and block all traversal through it with EACCES. Statting
+            // it here grants exactly the caller's real access — no more, no less.
+            if (modes[ancestor] === undefined) {
+                try {
+                    const stat = vfs.stat(ancestor);
+                    modes[ancestor] = effectiveMode(stat.mode, stat.uid, stat.gid, vfs.cred);
+                }
+                catch {
+                    // Unreadable or absent ancestor: leave unmapped so the caller's
+                    // seeded preopen modes or the shim's deny-by-default apply.
+                }
+            }
         }
     };
     for (const start of roots) {
