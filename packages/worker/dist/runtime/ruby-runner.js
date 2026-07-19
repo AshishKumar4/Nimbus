@@ -1107,6 +1107,17 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     rubyInit,
     rubyInitLoadpath,
     rbEvalStringProtect,
+    // Ruby I/O routes through fd_read/fd_write, which are WebAssembly.
+    // Suspending imports (WASI socket support). V8 traps the first
+    // suspending-import call on a stack that is not under a
+    // WebAssembly.promising suspender, so the guest eval must run through
+    // the promising entrypoint — the same contract wasm-runner uses for
+    // its WASI mode. Null when promising is unavailable (older runtimes):
+    // callers fall back to the bare sync export.
+    rbEvalStringProtectPromising:
+      (typeof WebAssembly !== 'undefined' && typeof WebAssembly.promising === 'function')
+        ? WebAssembly.promising(rbEvalStringProtect)
+        : null,
     writeListString,
     writeString,
     rubyInitialized: false,  // mutated to true by __rubyRun on first call
@@ -1247,13 +1258,15 @@ globalThis.__rubyRun = async function __rubyRun(args) {
 
   const memory = boot.instance.exports.memory;
 
-  function callEvalStringProtect(rubyCode) {
+  async function callEvalStringProtect(rubyCode) {
     const enc = new TextEncoder();
     const bytes = enc.encode(rubyCode);
     const cabiRealloc = boot.instance.exports.cabi_realloc;
     const codePtr = cabiRealloc(0, 0, 1, bytes.length);
     new Uint8Array(memory.buffer).set(bytes, codePtr);
-    const retPtr = boot.rbEvalStringProtect(codePtr, bytes.length);
+    const retPtr = boot.rbEvalStringProtectPromising
+      ? await boot.rbEvalStringProtectPromising(codePtr, bytes.length)
+      : boot.rbEvalStringProtect(codePtr, bytes.length);
     // Return is a tuple: (rb-abi-value handle u32, status s32) — 8 bytes
     const dv = new DataView(memory.buffer);
     const handle = dv.getUint32(retPtr + 0, true);
@@ -1264,7 +1277,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   // Stage 1: run the prelude (sync flags, ARGV, ENV, $0/$PROGRAM_NAME).
   let preludeStatus;
   try {
-    preludeStatus = callEvalStringProtect(preludeRb);
+    preludeStatus = await callEvalStringProtect(preludeRb);
   } catch (e) {
     return {
       exitCode: 1,
@@ -1279,7 +1292,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
 
   if (args.rubyPrelude) {
     try {
-      const adapterStatus = callEvalStringProtect(String(args.rubyPrelude));
+      const adapterStatus = await callEvalStringProtect(String(args.rubyPrelude));
       if (adapterStatus && adapterStatus.status !== 0) {
         globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] adapter prelude returned non-zero status: ' + adapterStatus.status + '\\n');
       }
@@ -1296,7 +1309,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   // Stage 2: run user code wrapped for SystemExit/Exception capture.
   let evalStatus;
   try {
-    evalStatus = callEvalStringProtect(userWrapper);
+    evalStatus = await callEvalStringProtect(userWrapper);
   } catch (e) {
     return {
       exitCode: 1,
@@ -1316,7 +1329,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   try {
     // Print the marker + exit code to stderr (a side channel separate
     // from user-visible stdout). We strip it before returning.
-    callEvalStringProtect(
+    await callEvalStringProtect(
       '$stderr.write(' + JSON.stringify(NIMBUS_EXIT_MARKER) + ' + $__nimbus_exit.to_s + "\\\\n")'
     );
     // Scrape the marker from stderr buffer — using ONLY this call's
