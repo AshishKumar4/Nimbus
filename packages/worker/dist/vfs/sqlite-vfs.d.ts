@@ -269,6 +269,15 @@ export declare class SqliteVFS {
     private resolvePath;
     private checkAccess;
     private checkParentAccess;
+    /**
+     * Shared resolver for the boolean probes (exists/isDirectory/isFile/
+     * isSymlink). Resolution-structure failures — a missing or non-directory
+     * path component — answer `undefined` (fs.existsSync semantics: module
+     * resolvers probe paths through files, e.g. `entry.js/index.js`, and
+     * expect false, not a throw). Permission denials still propagate so
+     * traverse-x enforcement cannot be masked into a quiet false.
+     */
+    private probeInode;
     private exists;
     private isDirectory;
     private isFile;

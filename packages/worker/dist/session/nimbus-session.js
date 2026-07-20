@@ -1204,6 +1204,11 @@ export class NimbusSession extends CloudflareDurableObject {
             'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
             'usr/lib/node_modules', 'usr/share', 'usr/share/pkg',
             'usr/share/pkg/node_modules', 'opt',
+            // npm's global prefix (init.ts npm_config_prefix=/usr/local).
+            // S2a batch writes require existing parents; before S2a the VFS
+            // auto-created them on first global install.
+            'usr/local', 'usr/local/bin', 'usr/local/lib',
+            'usr/local/lib/node_modules',
             'home/user/projects',
         ];
         for (const dir of dirs) {
