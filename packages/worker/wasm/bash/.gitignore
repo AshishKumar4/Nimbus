@@ -1,0 +1,7 @@
+*.wasm
+*.wasmbin
+*.o
+*.raw.wasm
+nimbus-proc.o
+bash.fpc.wasm
+bash.async.wasm
