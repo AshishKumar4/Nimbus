@@ -41,7 +41,13 @@ if (!ACCOUNT) {
   console.error('ERROR: CLOUDFLARE_ACCOUNT_ID env var required');
   process.exit(1);
 }
-const WRANGLER = './node_modules/.bin/wrangler';
+// Resolve the wrangler bin from either the package-local or the
+// repo-root node_modules (this script runs from packages/worker but
+// the bin is hoisted to the workspace root).
+const WRANGLER = [
+  './node_modules/.bin/wrangler',
+  '../../node_modules/.bin/wrangler',
+].find((p) => existsSync(p)) || 'wrangler';
 const PYODIDE_WORKERD_ADAPTER = JSON.parse(
   readFileSync(new URL('../runtime-contracts/pyodide-workerd-adapter.json', import.meta.url), 'utf8'),
 );

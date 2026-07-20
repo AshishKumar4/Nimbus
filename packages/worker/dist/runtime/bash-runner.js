@@ -90,9 +90,14 @@ export function makeBashRunnerFactory(deps) {
                     ctx.stderr.write(`${binName}: ${argv[scriptIdx]}: No such file or directory\n`);
                     return 127;
                 }
-                argv[scriptIdx] = abs;
-                const dir = abs.replace(/\/[^/]*$/, '') || '/';
-                extraRoots.push(dir);
+                // Pass bash an ABSOLUTE path: the facet chdir's to the session
+                // cwd via BASH_ENV before opening the script, so a relative arg
+                // would resolve against cwd twice. resolveVfsPath returns a
+                // slash-less canonical key; re-anchor it at root.
+                argv[scriptIdx] = '/' + abs;
+                const dir = abs.replace(/\/[^/]*$/, '');
+                if (dir)
+                    extraRoots.push(dir);
             }
             // stdin plumbing. A terminal-backed fd 0 feeds incrementally
             // (interactive bash, `read` builtins); a piped stdin is drained
@@ -141,22 +146,23 @@ export function makeBashRunnerFactory(deps) {
                 preamble: BASH_RUNNER_PREAMBLE,
                 wasmModules,
             });
-            const bootFn = async function bashFacetBoot(a) {
-                const fn = Reflect.get(globalThis, '__bashBoot');
-                if (typeof fn !== 'function') {
-                    return { state: 'error', exitCode: 127, stdout: '', stderr: '', error: 'bash-runner preamble missing: __bashBoot not in scope' };
+            // ONE dispatch function for boot AND feed. The loader pool keys
+            // warm-slot reuse on the function source hash, so boot and feed
+            // MUST share a function to land on the SAME isolate — otherwise
+            // the feed runs in a fresh isolate where the boot's session state
+            // (globalThis __nimbusBashSession) does not exist. `op` selects
+            // boot vs feed inside the shared body.
+            const stepFn = async function bashFacetStep(a) {
+                const boot = Reflect.get(globalThis, '__bashBoot');
+                const feed = Reflect.get(globalThis, '__bashFeed');
+                if (typeof boot !== 'function' || typeof feed !== 'function') {
+                    return { state: 'error', exitCode: 127, stdout: '', stderr: '', error: 'bash-runner preamble missing (__bashBoot/__bashFeed not in scope)' };
                 }
-                return fn(a);
-            };
-            const feedFn = async function bashFacetFeed(a) {
-                const fn = Reflect.get(globalThis, '__bashFeed');
-                if (typeof fn !== 'function') {
-                    return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash facet was recycled mid-session (warm isolate evicted)' };
-                }
-                return fn(a);
+                return a.op === 'boot' ? boot(a) : feed(a);
             };
             try {
-                let slice = normalizeSlice(await pool.submit(bootFn, {
+                let slice = normalizeSlice(await pool.submit(stepFn, {
+                    op: 'boot',
                     argv: [binName, ...argv],
                     environ,
                     cwd,
@@ -184,19 +190,16 @@ export function makeBashRunnerFactory(deps) {
                         return slice.exitCode || 1;
                     }
                     // need-input: pull the next chunk from the terminal.
-                    if (ctx.signal.aborted || !feedStream) {
-                        slice = normalizeSlice(await pool.submit(feedFn, { data: '', eof: true }, { timeoutMs: 300_000 }));
-                        continue;
+                    let data = '';
+                    let eof = true;
+                    if (!ctx.signal.aborted && feedStream) {
+                        const chunk = await feedStream.read();
+                        if (!ctx.signal.aborted) {
+                            data = chunk === null ? '' : chunk.replace(/\r\n?/g, '\n');
+                            eof = chunk === null;
+                        }
                     }
-                    const chunk = await feedStream.read();
-                    if (ctx.signal.aborted) {
-                        slice = normalizeSlice(await pool.submit(feedFn, { data: '', eof: true }, { timeoutMs: 300_000 }));
-                        continue;
-                    }
-                    slice = normalizeSlice(await pool.submit(feedFn, {
-                        data: chunk === null ? '' : chunk.replace(/\r\n?/g, '\n'),
-                        eof: chunk === null,
-                    }, { timeoutMs: 300_000 }));
+                    slice = normalizeSlice(await pool.submit(stepFn, { op: 'feed', data, eof }, { timeoutMs: 300_000 }));
                 }
             }
             catch (e) {
