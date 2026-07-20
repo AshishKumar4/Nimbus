@@ -29,5 +29,5 @@ Before anything attaches, server facets pass health gates with bounded polls
 and an overall budget. The opencode pair starts the server, checks it over
 loopback, then attaches the TUI at `127.0.0.1:4096`. Their lifecycles are tied,
 so exiting one reaps the other. The serve half is solid. The TUI attach half
-still trips a memory reset and is [under
-investigation](/docs/fine-print/capabilities/).
+now renders frames on a [thin memory
+margin](/docs/fine-print/capabilities/) I'm still hardening.

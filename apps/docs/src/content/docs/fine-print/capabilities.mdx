@@ -38,7 +38,7 @@ you need one of these missing parts, use a microVM or container sandbox
 | `node`/`bun` REPL declarations don't persist | workerd CSP; scripts unaffected; Python/Ruby REPLs fully stateful |
 | 75,000+-object clones | index-pack CPU headroom in progress |
 | git transport | HTTPS only, no SSH |
-| opencode TUI | serve half boots and streams SSE; attach half trips a memory reset, under investigation |
+| opencode TUI | serve half boots and streams SSE; attach half renders frames on a thin memory margin, still hardening |
 | Hosted demo | evaluation only — no SLA, may be reset, not for secrets |
 
 I've verified Vite + React, the Cloudflare Vite Plugin,

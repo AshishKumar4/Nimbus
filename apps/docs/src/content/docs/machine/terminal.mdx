@@ -34,9 +34,10 @@ resizes propagate, and ANSI redraws render. Pipe the same bin and it sees
 paths.
 
 opencode is my stress test. Its serve half boots, passes its health gate,
-and streams SSE. The TUI half's boot still trips a supervisor memory reset.
-I'm investigating it, so I don't claim the full TUI. Full PTY parity,
-including raw and cooked modes, signals, and scrollback replay, is roadmap.
+and streams SSE. The TUI half now renders frames, but it sits on a thin
+memory margin that I'm still hardening, so I don't yet claim the full TUI.
+Full PTY parity, including raw and cooked modes, signals, and scrollback
+replay, is roadmap.
 
 ## Recovery
 

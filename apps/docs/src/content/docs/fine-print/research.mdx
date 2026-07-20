@@ -48,7 +48,7 @@ the VFS mutation seam, returning `EACCES` through every runtime.
 | One POSIX FD layer (FdTable → OpenFileDescription → backing object) | design — prerequisite for byte-true pipes, WASM stdin, fork's inherited fds |
 | WASI + long-running Python/Ruby on the live fs bridge | specced, in progress |
 | Inbound sockets for WASM (`sock_accept` + extension) | designed, not shipped |
-| opencode TUI first frame | serve half solid; attach-boot memory reset under investigation |
+| opencode TUI | serve half solid; attach renders frames on a thin memory margin, still hardening |
 | Index-pack CPU headroom (75k+ objects) | continuation-slicing the indexer |
 | Full POSIX PTY parity | raw/cooked modes, signals, replay — roadmap |
 | Broader Pyodide/gem artifact catalogs, fuller pip/Bundler parity | ongoing |
