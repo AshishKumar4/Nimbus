@@ -1,13 +1,13 @@
 /**
- * facet-pool.ts — Nimbus-specific wrapper over cloudflare-parallel.
+ * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
- * Adds on top of the vendored WorkerPool:
+ * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
  *      each job to `slot = cursor % concurrency` and use stable loader
- *      IDs `nfp:${fnHash}:slot-${i}`, so a pool of concurrency=4 keeps at
- *      most 4 warm isolates rather than N fresh ones.
+ *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
+ *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
@@ -19,9 +19,8 @@
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
- * This wrapper does NOT re-export the upstream surface. Users import
- * NimbusLoaderPool via src/parallel/index.ts; the vendored directory is
- * an implementation detail.
+ * The vendored directory contains only the upstream serialization, error,
+ * and binding types used by this implementation.
  */
 /** Options handed to NimbusLoaderPool's constructor. */
 export interface NimbusLoaderPoolOptions {
@@ -77,10 +76,9 @@ export interface NimbusLoaderPoolOptions {
     supervisorDoIdOverride?: string;
     /**
      * Raw JavaScript source prepended to every generated worker module.
-     * Lets callers inject helpers that cannot be captured via `context`
-     * (which is JSON-only) — typically a bundled dependency like a tar
-     * parser. The user function can reference top-level names declared in
-     * the preamble as if they were in lexical scope.
+     * Lets callers inject bundled helpers, such as a tar parser. The user
+     * function can reference top-level names declared in the preamble as if
+     * they were in lexical scope.
      *
      * Example: `preamble: 'export const parse = ...; const helper = ...;'`
      * — the preamble runs at module-load time; any side effects happen
@@ -126,11 +124,6 @@ export interface NimbusLoaderCallOptions {
     timeoutMs?: number;
     retries?: number;
     /**
-     * Extra module-level constants injected into the generated worker source
-     * BEFORE the user function is declared. JSON-serializable only.
-     */
-    context?: Record<string, unknown>;
-    /**
      * Per-call WebAssembly modules. Merged with the pool's
      * constructor-time `wasmModules` at dispatch time and shipped via
      * the LOADER's modules map (same `{ wasm: ArrayBuffer }` shape).
@@ -174,6 +167,17 @@ export interface NimbusLoaderMapOptions extends NimbusLoaderCallOptions {
      */
     onError?: 'throw' | 'null' | 'skip';
 }
+export interface LoaderWorkerModuleSourceOptions {
+    fnSource: string;
+    preamble?: string;
+    wasmEntries?: ReadonlyArray<{
+        name: string;
+        id: string;
+    }>;
+    hasBindings: boolean;
+}
+/** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
+export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerModuleSourceOptions): string;
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
@@ -197,6 +201,7 @@ export declare class NimbusLoaderPool {
     private readonly defaultTimeoutMs;
     private readonly defaultRetries;
     private readonly tag;
+    private readonly slotGenerations;
     private bindings;
     private readonly preamble;
     private readonly preambleHash;
@@ -274,6 +279,4 @@ export declare class NimbusLoaderPool {
      */
     dispose(): void;
 }
-/** Re-export the subset of error types callers need to catch. */
-export { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
 //# sourceMappingURL=loader-pool.d.ts.map

@@ -32,6 +32,11 @@ const seededMessages = [
       { type: 'text', text: 'Build green.' },
     ],
   },
+  { id: 'u2', role: 'user', content: 'Continue the interrupted work', createdAt: 3 },
+  {
+    id: 'a2', role: 'assistant', content: 'Partial result', createdAt: 4,
+    status: 'interrupted', parts: [{ type: 'text', text: 'Partial result' }],
+  },
 ];
 
 function ndjsonBody(events) {
@@ -53,7 +58,9 @@ try {
 
   // ── Phase 1: rendering fidelity with intercepted agent APIs ─────────
   let interceptAgentApis = true;
-  let postMode = 'stream'; // 'stream' | 'error'
+  let postMode = 'stream'; // 'stream' | 'error' | 'eof'
+  const postBodies = [];
+  let mockMessages = structuredClone(seededMessages);
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     const url = new URL(request.url());
@@ -78,28 +85,70 @@ try {
       request.respond({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ messages: seededMessages }),
+        body: JSON.stringify({ messages: mockMessages }),
       });
       return;
     }
     if (url.pathname.endsWith('/messages') && request.method() === 'POST') {
-      const user = { id: 'u-live', role: 'user', content: 'live question', createdAt: 3 };
+      const requestBody = JSON.parse(request.postData() || '{}');
+      postBodies.push(requestBody);
+      const history = structuredClone(mockMessages);
+      let user;
+      if (requestBody.retry === true) {
+        if (history.at(-1)?.role === 'assistant') history.pop();
+        user = history.at(-1);
+      } else {
+        user = {
+          id: `u-live-${postBodies.length}`,
+          role: 'user',
+          content: requestBody.message,
+          createdAt: Date.now(),
+        };
+        history.push(user);
+      }
+      const complete = {
+        id: `a-live-${postBodies.length}`,
+        role: 'assistant',
+        content: 'Streamed **answer**.',
+        createdAt: Date.now(),
+        status: 'complete',
+        parts: [{ type: 'text', text: 'Streamed **answer**.' }],
+      };
+      const interrupted = {
+        id: complete.id,
+        role: 'assistant',
+        content: 'Recovered partial text.',
+        createdAt: complete.createdAt,
+        status: 'interrupted',
+        parts: [{ type: 'text', text: 'Recovered partial text.' }],
+      };
       const base = [
-        { type: 'start', messages: [...seededMessages, user] },
+        { type: 'start', messages: history },
         { type: 'message', message: user },
-        { type: 'assistant-start', messageId: 'a-live', createdAt: 4 },
+        { type: 'assistant-start', messageId: complete.id, createdAt: complete.createdAt },
       ];
-      const events = postMode === 'error'
-        ? [...base, { type: 'error', error: 'provider exploded', code: 'E_AGENT_TURN_FAILED', messages: [...seededMessages, user] }]
-        : [...base,
+      let events;
+      if (postMode === 'error') {
+        const failed = { ...interrupted, content: '', parts: [], error: 'provider exploded' };
+        mockMessages = [...history, failed];
+        events = [...base, {
+          type: 'error', error: 'provider exploded', code: 'E_AGENT_TURN_FAILED', messages: mockMessages,
+        }];
+      } else if (postMode === 'eof') {
+        mockMessages = [...history, interrupted];
+        events = [...base, { type: 'text-delta', delta: 'Recovered partial text.' }];
+      } else {
+        mockMessages = [...history, complete];
+        events = [...base,
             { type: 'text-delta', delta: 'Streamed **answer**.' },
             { type: 'finish-step', finishReason: 'stop', usage: { inputTokens: 11000, outputTokens: 1300, totalTokens: 12_300 } },
             {
               type: 'done',
-              message: { id: 'a-live', role: 'assistant', content: 'Streamed **answer**.', createdAt: 5, parts: [{ type: 'text', text: 'Streamed **answer**.' }] },
-              messages: [...seededMessages, user, { id: 'a-live', role: 'assistant', content: 'Streamed **answer**.', createdAt: 5, parts: [{ type: 'text', text: 'Streamed **answer**.' }] }],
+              message: complete,
+              messages: mockMessages,
             },
           ];
+      }
       request.respond({
         status: 200,
         contentType: 'application/x-ndjson',
@@ -149,17 +198,41 @@ try {
     && history.toolClasses[0].includes('done') && history.toolClasses[1].includes('error'),
     JSON.stringify(history));
   a.check('stored tool duration is shown', history.duration.includes('1.4s'), history.duration);
+  a.check('persisted interrupted turn renders its badge and Retry affordance',
+    await page.$eval('.agent-msg.assistant:last-child', (el) => (
+      el.querySelector('.agent-interrupted')?.textContent === 'interrupted'
+      && el.querySelector('.agent-message-retry')?.textContent === 'Retry'
+  )));
+  await page.click('.agent-msg.assistant:last-child .agent-message-retry');
+  await page.waitForFunction(() => {
+    const last = document.querySelector('.agent-msg.assistant:last-child');
+    return document.getElementById('agentSend')?.textContent === 'Send'
+      && last?.querySelector('.agent-text')?.textContent.includes('Streamed answer.')
+      && !last?.querySelector('.agent-interrupted');
+  }, { timeout: 15_000 });
+  a.check('persisted interruption Retry uses the existing server retry path',
+    postBodies.length === 1 && postBodies[0].retry === true, JSON.stringify(postBodies));
+  a.check('retry reuses the existing user turn without duplication',
+    await page.$$eval('.agent-msg.user .agent-bubble', (rows) => (
+      rows.filter((row) => row.textContent === 'Continue the interrupted work').length === 1
+    )));
+  a.check('retry replaces the interrupted assistant instead of retaining it',
+    await page.$$eval('.agent-msg.assistant .agent-text', (rows) => (
+      rows.every((row) => !row.textContent.includes('Partial result'))
+    )));
 
   // Streaming send round-trip against the intercepted NDJSON endpoint.
   await page.type('#agentInput', 'live question');
   await page.click('#agentSend');
   await page.waitForFunction(() => {
-    const texts = Array.from(document.querySelectorAll('.agent-msg.assistant .agent-text'));
-    return texts.some((el) => el.textContent.includes('Streamed answer.'));
+    const last = document.querySelector('.agent-thread')?.lastElementChild;
+    return document.getElementById('agentSend')?.textContent === 'Send'
+      && last?.matches('.agent-msg.assistant')
+      && last.querySelector('.agent-text')?.textContent.includes('Streamed answer.');
   }, { timeout: 15_000 });
   const streamed = await page.evaluate(() => ({
-    bold: !!Array.from(document.querySelectorAll('.agent-msg.assistant .agent-text strong')).find((el) => el.textContent === 'answer'),
-    usage: document.querySelector('.agent-usage')?.textContent || '',
+    bold: document.querySelector('.agent-thread')?.lastElementChild?.querySelector('.agent-text strong')?.textContent === 'answer',
+    usage: document.querySelector('.agent-thread')?.lastElementChild?.querySelector('.agent-usage')?.textContent || '',
     sendLabel: document.getElementById('agentSend')?.textContent || '',
   }));
   a.check('streamed turn renders markdown and settles', streamed.bold && streamed.sendLabel === 'Send', JSON.stringify(streamed));
@@ -185,8 +258,46 @@ try {
     await page.$eval('.error-body', (el) => el.textContent.includes('provider exploded')));
   postMode = 'stream';
   await page.click('.error-retry');
-  await page.waitForFunction(() => !document.querySelector('.agent-error-card'), { timeout: 15_000 });
+  await page.waitForFunction(() => {
+    const last = document.querySelector('.agent-thread')?.lastElementChild;
+    return !document.querySelector('.agent-error-card')
+      && document.getElementById('agentSend')?.textContent === 'Send'
+      && last?.matches('.agent-msg.assistant')
+      && last.querySelector('.agent-text')?.textContent.includes('Streamed answer.')
+      && !last.querySelector('.agent-interrupted');
+  }, { timeout: 15_000 });
   a.check('retry clears the error card and completes', !(await page.$('.agent-error-card')));
+
+  // Clean EOF after live parts is an interrupted turn, never a silent drop.
+  postMode = 'eof';
+  await page.type('#agentInput', 'trigger clean eof');
+  await page.click('#agentSend');
+  await page.waitForFunction(() => {
+    const last = document.querySelector('.agent-msg.assistant:last-child');
+    return last?.querySelector('.agent-text')?.textContent.includes('Recovered partial text.')
+      && last?.querySelector('.agent-interrupted')?.textContent === 'interrupted'
+      && last?.querySelector('.agent-message-retry')?.textContent === 'Retry';
+  }, { timeout: 15_000 });
+  a.check('clean EOF commits the live partial with interrupted badge and Retry', true);
+  postMode = 'stream';
+  const postsBeforeEofRetry = postBodies.length;
+  await page.click('.agent-msg.assistant:last-child .agent-message-retry');
+  await page.waitForFunction(() => {
+    const last = document.querySelector('.agent-msg.assistant:last-child');
+    return document.getElementById('agentSend')?.textContent === 'Send'
+      && last?.querySelector('.agent-text')?.textContent.includes('Streamed answer.')
+      && !last?.querySelector('.agent-interrupted');
+  }, { timeout: 15_000 });
+  a.check('clean EOF Retry uses one retry request and settles the same user turn',
+    postBodies.length === postsBeforeEofRetry + 1 && postBodies.at(-1)?.retry === true,
+    JSON.stringify(postBodies));
+  a.check('clean EOF retry replaces the partial without duplicating its user turn',
+    await page.evaluate(() => {
+      const users = Array.from(document.querySelectorAll('.agent-msg.user .agent-bubble'));
+      const assistants = Array.from(document.querySelectorAll('.agent-msg.assistant .agent-text'));
+      return users.filter((row) => row.textContent === 'trigger clean eof').length === 1
+        && assistants.every((row) => !row.textContent.includes('Recovered partial text.'));
+    }));
 
   // Unified markdown pipeline serves the preview pane too (the shell uses
   // the same module export; no window global).

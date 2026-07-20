@@ -1,54 +1,146 @@
 #!/usr/bin/env bun
-// install-performance/install-parallel-memory-bounded — peakInFlightWriteBytes
-// stays bounded during a parallel clang install.
-//
-// Risk being guarded: with concurrency=3, three large blobs could
-// concurrently allocate ArrayBuffers (worst case clang.wasm 31 MB +
-// wasm-ld 19 MB + memfs.wasm 345 KB ≈ 50 MB held). Plus pendingWrites
-// cumulative chunks until auto-flush at ~32 MiB (sqlite-vfs.ts:606).
-//
-// Threshold: 64 MiB. The N2 baseline probe asserts ≤ 32 MiB for the
-// install path, but that measures `peakInFlightWriteBytes` which
-// reflects pendingWrites (the post-writeFile state). Caller-side
-// ArrayBuffers during fetch are not in that counter. We assert the
-// counter stays under 64 MiB as a defense-in-depth measure: the
-// auto-flush at 500-entries / 32 MiB should keep this well under
-// our threshold even with concurrency=3.
+// The Stage 4 W7 credit pool is the supervisor-side memory bound for every
+// concurrent git/npm write stream targeting one session Durable Object.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, BASE } from '../../_driver.mjs';
-import { diagMemory } from '../../heap-correctness/_diag.mjs';
+import {
+  BASE,
+  deleteSession,
+  makeAsserter,
+  mintSession,
+  sleep,
+  stripAnsi,
+  Terminal,
+} from '../../_driver.mjs';
+import { diagMemory, fmtBytes } from '../../heap-correctness/_diag.mjs';
+import { W7_MAX_RECORD_BYTES } from '../../../../packages/worker/src/_shared/w7-frame.ts';
 
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
+if (!process.env.BASE) {
+  console.error('FATAL: BASE env required');
+  process.exit(2);
+}
+
+const CREDIT_LIMIT = 8 * 1024 * 1024;
+const MAX_ACTIVE_STREAMS = 8;
+const RETAINED_LIMIT = CREDIT_LIMIT + (MAX_ACTIVE_STREAMS * W7_MAX_RECORD_BYTES);
 const a = makeAsserter('install-performance/install-parallel-memory-bounded');
-console.log(`install-performance/install-parallel-memory-bounded — ${BASE}`);
-
-const PEAK_LIMIT_BYTES = 64 * 1024 * 1024; // 64 MiB
-
 const sid = await mintSession();
-const t = new Terminal(sid);
-await t.connect();
-await t.waitForPrompt(60_000);
+const terminal = new Terminal(sid);
+const samples = [];
+let sampling = false;
+let sampler = null;
+let cloneOutput = '';
+let installOutput = '';
+let finalMemory = null;
 
-const { output } = await t.run('nimbus install clang', 180_000);
-const installedOk = /installed at/.test(stripAnsi(output));
-a.check('clang install completed', installedOk,
-  `tail=${JSON.stringify(stripAnsi(output).slice(-200))}`);
+console.log(`install-performance/install-parallel-memory-bounded — ${BASE} sid=${sid}`);
 
-// Snapshot heap stats immediately after install. The peak counters
-// are cumulative since isolate boot; they'll reflect what happened
-// during the (just-completed) install.
-const mem = await diagMemory(sid);
-const peakInFlight = mem?.heap?.breakdown?.peakInFlightWriteBytes
-  ?? mem?.heap?.breakdown?.vfsInFlightBytes
-  ?? 0;
-console.log(`[install-parallel-memory-bounded] peakInFlightWriteBytes=${(peakInFlight / 1024 / 1024).toFixed(2)} MiB threshold=${(PEAK_LIMIT_BYTES / 1024 / 1024).toFixed(0)} MiB`);
+try {
+  await terminal.connect();
+  await terminal.waitForPrompt(60_000);
+  const baseline = await diagMemory(sid);
+  for (const field of [
+    'creditRetainedBytes',
+    'decoderRetainedBytes',
+    'retainedWriteBytes',
+    'stagedBytes',
+  ]) {
+    const value = baseline.vfsDetail?.[field];
+    a.check(
+      `${field} exposes finite current/peak telemetry`,
+      Number.isFinite(value?.current) && Number.isFinite(value?.peak),
+      JSON.stringify(value),
+    );
+  }
 
+  sampling = true;
+  sampler = (async () => {
+    while (sampling) {
+      try {
+        const memory = await diagMemory(sid);
+        samples.push(memory.vfsDetail);
+      } catch (error) {
+        console.warn(`[install-parallel-memory-bounded] sampler: ${error.message}`);
+      }
+      await sleep(100);
+    }
+  })();
+
+  ({ output: cloneOutput } = await terminal.run(
+    'git clone https://github.com/AshishKumar4/Markflow /home/user/Markflow',
+    180_000,
+  ));
+  await terminal.run('cd /home/user/Markflow', 5_000);
+  ({ output: installOutput } = await terminal.run('npm install', 300_000));
+  await sleep(500);
+  finalMemory = await diagMemory(sid);
+} finally {
+  sampling = false;
+  if (sampler) await sampler.catch(() => {});
+  try { await terminal.close(); } catch { /* cleanup continues */ }
+  await deleteSession(sid).catch(() => {});
+}
+
+const cloneText = stripAnsi(cloneOutput);
+const installText = stripAnsi(installOutput);
 a.check(
-  `peakInFlightWriteBytes ≤ ${(PEAK_LIMIT_BYTES / 1024 / 1024).toFixed(0)} MiB`,
-  peakInFlight <= PEAK_LIMIT_BYTES,
-  `peakInFlight=${(peakInFlight / 1024 / 1024).toFixed(2)} MiB limit=${(PEAK_LIMIT_BYTES / 1024 / 1024).toFixed(0)} MiB rawBytes=${peakInFlight}`,
+  'clone completed without reset/timeout errors',
+  !/reset|storage operation timed out|executionerror|error 1101|cancelled/i.test(cloneText),
+  cloneText.slice(-500),
+);
+a.check(
+  'parallel install completed successfully',
+  /added\s+\d+\s+packages|up to date/i.test(installText)
+    && !/npm install failed|batch-fanout.*aborted|storage operation timed out/i.test(installText),
+  installText.slice(-800),
 );
 
-await t.close();
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+const peak = (field) => samples.reduce(
+  (maximum, sample) => Math.max(maximum, sample?.[field]?.peak ?? 0),
+  finalMemory?.vfsDetail?.[field]?.peak ?? 0,
+);
+const peakCredit = peak('creditRetainedBytes');
+const peakRetained = peak('retainedWriteBytes');
+const peakDecoder = peak('decoderRetainedBytes');
+
+a.check(
+  'credit telemetry observed real streamed payload',
+  peakCredit > 0,
+  `samples=${samples.length} peak=${fmtBytes(peakCredit)}`,
+);
+a.check(
+  'aggregate credited payload stayed within 8 MiB',
+  peakCredit <= CREDIT_LIMIT,
+  `peak=${fmtBytes(peakCredit)} limit=${fmtBytes(CREDIT_LIMIT)}`,
+);
+a.check(
+  'retained payload stayed within credit plus eight record envelopes',
+  peakRetained > 0 && peakRetained <= RETAINED_LIMIT,
+  `peak=${fmtBytes(peakRetained)} limit=${fmtBytes(RETAINED_LIMIT)}`,
+);
+a.check(
+  'decoder-retained payload stayed within the same bounded envelope',
+  peakDecoder <= RETAINED_LIMIT,
+  `peak=${fmtBytes(peakDecoder)} limit=${fmtBytes(RETAINED_LIMIT)}`,
+);
+
+const idle = finalMemory?.vfsDetail ?? {};
+for (const [label, value] of [
+  ['creditRetainedBytes.current', idle.creditRetainedBytes?.current],
+  ['retainedWriteBytes.current', idle.retainedWriteBytes?.current],
+  ['decoderRetainedBytes.current', idle.decoderRetainedBytes?.current],
+  ['stagedBytes.current', idle.stagedBytes?.current],
+  ['writeStreamSpoolBytes', idle.writeStreamSpoolBytes],
+]) {
+  a.check(`${label} returned to zero`, value === 0, `actual=${value}`);
+}
+
+console.log(JSON.stringify({
+  sid,
+  samples: samples.length,
+  peakCreditBytes: peakCredit,
+  peakRetainedBytes: peakRetained,
+  peakDecoderBytes: peakDecoder,
+}, null, 2));
+
+const summary = a.summary();
+process.exit(summary.fail > 0 ? 1 : 0);

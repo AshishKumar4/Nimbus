@@ -36,7 +36,7 @@
 //   verdict; the first crash is logged but not counted as FAIL.
 //
 //   Rationale: the bun runtime occasionally crashes when running our
-//   probes (e.g. heap-correctness/diag-reports-pending-writes is ~40%
+//   probes (e.g. heap-correctness/diag-reports-stream-retention is ~40%
 //   flaky with this banner). The crash is OUTSIDE the probe's control
 //   — it's a hazard at the runtime layer, exactly the class of failure
 //   where runner-level retry is correct. The retry happens in the

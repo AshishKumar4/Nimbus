@@ -8,6 +8,7 @@ import { signalAbortReason } from './signals.js';
 import { complete } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
+import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
 export class Shell {
     terminal;
     vfs;
@@ -1358,9 +1359,7 @@ export class Shell {
         return 0;
     }
     writeToTerminal(text) {
-        // Convert \n to \r\n for xterm.js
-        const converted = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-        this.terminal.write(converted);
+        this.terminal.write(normalizeTerminalNewlines(text));
     }
 }
 function isEchoFlagCluster(arg) {

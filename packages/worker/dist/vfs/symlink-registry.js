@@ -2,66 +2,58 @@
  * symlink-registry.ts — virtual symlink table backed by a special
  * JSON file in the SqliteVFS.
  *
- * SHELL-FOLLOWUPS-4 (2026-05-11): Real symlink support for `ln -s`
- * + `readlink`. Pre-fix `ln -s` copied the file content into a new
- * regular file; `readlink` returned empty.
- *
- * Why a registry (not VFS-schema change):
- *   - SqliteVFS schema is anti-touch for surrounding waves.
- *   - Symlinks have minimal storage requirement (path → target string).
- *   - Persistence across reconnect/eviction is automatic because the
- *     registry file lives in the same SqliteVFS that gets snapshotted.
+ * Native symlinks now live in SqliteVFS. This registry remains the durable
+ * compatibility path for symlinks created by older sessions.
  *
  * Storage: `/.nimbus-symlinks.json` with shape `{ [linkPath]: target }`.
- * The registry is in-memory cached on first read; writes flush back
- * to the file synchronously.
+ * The registry cache tracks the backing inode revision so direct durable
+ * writes cannot leave clone destination proofs on a stale view.
  *
- * Resolution: callers (`ls -la`, `cat`, `readlink`, `rm`) check the
- * registry FIRST before treating a path as a regular file. This
- * means symlinks transparently dereference for read but appear in
- * `ls -la` with proper `lrwxrwxrwx` mode and `-> target` suffix.
+ * Native inodes take precedence when both representations exist.
  *
  * Loop guard: `resolveSymlinkChain` follows at most 40 hops (matches
  * POSIX SYMLOOP_MAX).
  */
 import { normalizeVfsPath } from './path.js';
-const REGISTRY_PATH = '.nimbus-symlinks.json';
+export const LEGACY_SYMLINK_REGISTRY_PATH = '.nimbus-symlinks.json';
 export class SymlinkRegistry {
     vfs;
     cache = null;
+    cacheRevision = -1;
     constructor(vfs) {
         this.vfs = vfs;
     }
-    /** Lazy-load + memoize the registry. */
+    /** Lazy-load the registry and refresh it after direct backing-file writes. */
     load() {
-        if (this.cache)
+        const revision = this.vfs.revision(LEGACY_SYMLINK_REGISTRY_PATH);
+        if (this.cache && this.cacheRevision === revision)
             return this.cache;
-        try {
-            if (this.vfs.exists(REGISTRY_PATH)) {
-                const raw = this.vfs.readFileString(REGISTRY_PATH);
-                const obj = JSON.parse(raw);
-                this.cache = new Map(Object.entries(obj));
+        const next = new Map();
+        if (this.vfs.exists(LEGACY_SYMLINK_REGISTRY_PATH)) {
+            const raw = this.vfs.readFileString(LEGACY_SYMLINK_REGISTRY_PATH);
+            const parsed = JSON.parse(raw);
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+                throw new Error(`[symlink-registry] invalid ${LEGACY_SYMLINK_REGISTRY_PATH}`);
             }
-            else {
-                this.cache = new Map();
+            for (const [link, target] of Object.entries(parsed)) {
+                if (typeof target !== 'string') {
+                    throw new Error(`[symlink-registry] invalid target for ${link}`);
+                }
+                next.set(link, target);
             }
         }
-        catch {
-            this.cache = new Map();
-        }
-        return this.cache;
+        this.cache = next;
+        this.cacheRevision = revision;
+        return next;
     }
-    /** Write the cache back to the registry file. */
-    flush() {
-        if (!this.cache)
-            return;
+    /** Persist a complete registry snapshot before publishing it to readers. */
+    persist(next) {
         const obj = {};
-        for (const [k, v] of this.cache)
+        for (const [k, v] of next)
             obj[k] = v;
-        try {
-            this.vfs.writeFile(REGISTRY_PATH, JSON.stringify(obj));
-        }
-        catch { /* fail-soft */ }
+        this.vfs.writeFile(LEGACY_SYMLINK_REGISTRY_PATH, JSON.stringify(obj));
+        this.cache = next;
+        this.cacheRevision = this.vfs.revision(LEGACY_SYMLINK_REGISTRY_PATH);
     }
     /** Normalize a path to the VFS internal key convention. */
     norm(p) {
@@ -70,17 +62,29 @@ export class SymlinkRegistry {
     /** Create or replace a symlink. Target is stored verbatim (can be
      *  absolute or relative — interpretation happens at resolve time). */
     set(linkPath, target) {
-        const cache = this.load();
-        cache.set(this.norm(linkPath), target);
-        this.flush();
+        this.vfs.assertMutationAllowed(linkPath);
+        this.vfs.assertMutationAllowed(LEGACY_SYMLINK_REGISTRY_PATH);
+        const next = new Map(this.load());
+        next.set(this.norm(linkPath), target);
+        this.persist(next);
     }
     /** Remove a symlink. Returns true if it existed. */
     delete(linkPath) {
         const cache = this.load();
-        const ok = cache.delete(this.norm(linkPath));
-        if (ok)
-            this.flush();
-        return ok;
+        const normalized = this.norm(linkPath);
+        if (!cache.has(normalized))
+            return false;
+        this.vfs.assertMutationAllowed(normalized);
+        this.vfs.assertMutationAllowed(LEGACY_SYMLINK_REGISTRY_PATH);
+        const next = new Map(cache);
+        next.delete(normalized);
+        this.persist(next);
+        return true;
+    }
+    assertMutable(...paths) {
+        for (const path of paths)
+            this.vfs.assertMutationAllowed(path);
+        this.vfs.assertMutationAllowed(LEGACY_SYMLINK_REGISTRY_PATH);
     }
     /** Check if `path` is registered as a symlink (no chain resolution). */
     isSymlink(path) {
@@ -126,6 +130,14 @@ export class SymlinkRegistry {
             out.push({ link: k, target: v });
         }
         return out;
+    }
+    hasAtOrBelow(path) {
+        const root = this.norm(path);
+        for (const link of this.load().keys()) {
+            if (link === root || link.startsWith(`${root}/`))
+                return true;
+        }
+        return false;
     }
 }
 /**

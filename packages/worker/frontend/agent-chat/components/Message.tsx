@@ -1,6 +1,12 @@
 import { memo } from 'preact/compat';
 import { useState } from 'preact/hooks';
-import type { AgentTurnUsage, StoredMessage, StoredToolPart, StoredTurnPart } from '../../../src/session/agent-contract.js';
+import {
+  isInterruptedMessage,
+  type AgentTurnUsage,
+  type StoredMessage,
+  type StoredToolPart,
+  type StoredTurnPart,
+} from '../../../src/session/agent-contract.js';
 import { Markdown } from './Markdown.js';
 import { ToolCard } from './ToolCard.js';
 
@@ -15,6 +21,7 @@ export interface MessageProps {
    */
   tick?: number;
   usage?: AgentTurnUsage | null;
+  onRetry?: () => void;
 }
 
 function formatTime(ts: number): string {
@@ -72,7 +79,7 @@ function lastTextIndex(parts: StoredTurnPart[]): number {
   return -1;
 }
 
-export const Message = memo(function Message({ message, live, usage }: MessageProps) {
+export const Message = memo(function Message({ message, live, usage, onRetry }: MessageProps) {
   if (message.role === 'user') {
     return (
       <div class="agent-msg user">
@@ -100,6 +107,8 @@ export const Message = memo(function Message({ message, live, usage }: MessagePr
   const lastPart = parts[parts.length - 1];
   const trailingThinking = live && lastPart?.type === 'tool' && lastPart.status !== 'running';
   const tokens = usageLabel(usage);
+  const interrupted = isInterruptedMessage(message);
+  const interruptionTitle = message.error || (message.aborted ? 'Stopped by user' : 'Interrupted before completion');
 
   return (
     <div class="agent-msg assistant">
@@ -123,9 +132,15 @@ export const Message = memo(function Message({ message, live, usage }: MessagePr
         {!live && (
           <div class="agent-meta">
             {formatTime(message.createdAt)}
-            {message.aborted && <span class="agent-stopped">stopped</span>}
-            {message.error && <span class="agent-failed" title={message.error}>failed</span>}
+            {interrupted && (
+              <span class={`agent-interrupted${message.error ? ' failed' : ''}`} title={interruptionTitle}>
+                interrupted
+              </span>
+            )}
             {tokens && <span class="agent-usage">{tokens}</span>}
+            {interrupted && onRetry && (
+              <button type="button" class="agent-message-retry" onClick={onRetry}>Retry</button>
+            )}
           </div>
         )}
       </div>

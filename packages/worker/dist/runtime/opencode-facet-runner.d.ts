@@ -80,18 +80,24 @@ export interface OpencodeRunnerOptions {
     /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
     vfsManifest: string;
     /**
-     * Interactive TUI mode. When set, the runner drives opencode's real
-     * createCliRenderer path: stdout/stderr stream LIVE to the SUPERVISOR
-     * (→ xterm) instead of being buffered, the live stdin pump
-     * (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/resize/signal)
-     * feeds keystrokes, and the facet stays alive on workerCtx.waitUntil until
-     * opencode exits — the same attached-TTY substrate the long-running node
-     * path (manager.ts) uses, but over the ESM bundle. The env must carry
-     * NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY (node-shims.ts)
-     * activates its raw-mode stdin and columns/rows.
+     * Runtime disposition of this opencode invocation:
+     *   - 'oneshot'  buffer stdout/stderr into the JSON response and return
+     *                (opencode run / models / --version).
+     *   - 'attached' drive opencode's real createCliRenderer path: stdout/stderr
+     *                stream LIVE to the SUPERVISOR (→ xterm), the live stdin pump
+     *                (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/
+     *                resize/signal) feeds keystrokes, and the facet stays alive on
+     *                workerCtx.waitUntil until opencode exits. The env must carry
+     *                NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY
+     *                activates its raw-mode stdin and columns/rows.
+     *   - 'server'   run a headless `opencode serve` HTTP server: no renderer, no
+     *                stdin pump, logs stream live, the facet stays resident, and
+     *                routed HTTP (the in-session loopback + external /port/<n>)
+     *                is dispatched to the in-facet server via handleHttpRequest.
      */
-    attachedTty?: boolean;
+    mode: OpencodeRunnerMode;
 }
+export type OpencodeRunnerMode = 'oneshot' | 'attached' | 'server';
 /**
  * In-isolate Web Worker polyfill for the opencode TUI client/server split.
  *

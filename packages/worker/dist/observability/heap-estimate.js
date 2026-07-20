@@ -23,8 +23,7 @@
  *
  * Eviction-label taxonomy
  * ───────────────────────
- * Workerd (per docs/research/cf-internal-dossier.md §9.2 metrics.h:300)
- * distinguishes five labelled eviction reasons:
+ * Workerd distinguishes five labelled eviction reasons:
  *   - lru                       → memory pressure on the runtime process
  *   - condemned                 → kill (operator / abuse pipeline)
  *   - inactive                  → idle eviction (70-140 s of no traffic)
@@ -36,14 +35,12 @@
  * The actual count of evictions Nimbus has observed lives in the C'.2
  * recovery_event ring, separate from this module.
  */
-import { CHUNK_SIZE, LRU_MAX_ENTRIES, SUPERVISOR_HEAP_CEILING_BYTES } from '../constants.js';
+import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_HEAP_CEILING_BYTES, } from '../constants.js';
 /**
  * Five labelled workerd eviction reasons. Surfaced as a constant
  * taxonomy in /api/_diag/memory so any consumer can count observed
  * events against the well-known set.
  *
- * Source: cloudflare/ew/edgeworker metrics.c++:1778-1790 + metrics.h:300.
- * Cross-cited in docs/research/cf-internal-dossier.md §9.2.
  */
 export const WORKERD_EVICTION_LABELS = [
     'lru',
@@ -74,63 +71,6 @@ export const WORKERD_EVICTION_LABELS = [
  */
 const SUPERVISOR_BASELINE_BYTES = 9 * 1024 * 1024;
 /**
- * esbuild-wasm bytes resident in supervisor heap.
- *
- * Pre-A'.5: 16 MiB module-scope cache in src/esbuild-wasm-bytes.ts —
- * the decoded ArrayBuffer was held for the lifetime of the supervisor
- * isolate so multiple pool constructions amortised the base64 decode.
- *
- * Post-A'.5: 0. The bytes live in env.ASSETS; src/esbuild-wasm-bytes.ts
- * fetches on demand and the supervisor releases its reference after
- * the LOADER hand-off. There IS a transient ~12 MiB pulse during pool
- * construction, but it's not resident — by the time anyone polls the
- * estimator we're back to zero. The constant captures the resident
- * floor; transient bytes don't show up here.
- */
-const ESBUILD_RESIDENT_BYTES = 0;
-/**
- * Maximum SqliteVFS LRU footprint (architectural cap). Used as the
- * upper bound for the LRU contribution when the SqliteVFS hasn't been
- * instantiated yet (cacheHotBytes = 0 from the inputs).
- *
- * Defensive — the live cacheHotBytes is the source of truth once the
- * VFS exists. This value is NOT used in production; the estimator
- * receives the live count via VfsHeapInputs.
- */
-export const VFS_LRU_MAX_BYTES = LRU_MAX_ENTRIES * CHUNK_SIZE;
-/**
- * Estimate resolver in-flight bytes from diag-counters.
- *
- * The resolver in-supervisor path (pre-A'.1) holds packument JSON in
- * memory while parsing. We don't have a "current in-flight bytes"
- * counter directly, but we DO have:
- *   - inFlightPackumentFetches (live count of awaited fetches)
- *   - lastPackumentBytes (size of the most recent packument)
- *
- * Average packument size on real registries is dominated by the largest
- * outliers (lucide-react, framer-motion at ~5 MiB each) so using
- * lastPackumentBytes as a per-fetch upper bound is a reasonable proxy.
- *
- * Caller can also pass an explicit `cumulativeBytesDecoded` snapshot
- * (resolverPath = 'in-supervisor') for a different estimation strategy
- * — but right now the most useful signal is "is the resolver currently
- * holding bytes in supervisor heap or has it moved to a facet?".
- *
- * After A'.1 lands and resolverPath becomes hard-pinned to 'in-facet',
- * this contribution drops to 0 by construction.
- */
-export function estimateResolverInFlightBytes(c) {
-    if (c.resolverPath === 'in-facet')
-        return 0;
-    if (c.inFlightPackumentFetches === 0)
-        return 0;
-    // Conservative: each in-flight fetch counted at the size of the
-    // most recent packument. This OVER-estimates when the in-flight
-    // packuments are smaller than lastPackumentBytes (which they
-    // probably are — lastPackumentBytes is a worst-of-recent value).
-    return c.inFlightPackumentFetches * c.lastPackumentBytes;
-}
-/**
  * Estimate pre-bundle slice bytes resident in the supervisor heap.
  *
  * Pre A'.2: the supervisor builds the slice in heap (up to
@@ -149,15 +89,12 @@ export function estimateResolverInFlightBytes(c) {
 export function estimatePreBundleSliceBytes(c) {
     // Conservative: if the most recent batch attempted >0 specs and the
     // batch hasn't fully completed, assume one slice's worth of bytes
-    // are in flight. The 28 MiB constant must stay in lockstep with
-    // PRE_BUNDLE_CONCURRENCY × SLICE_CAP_BYTES in npm-installer.ts.
-    const SLICE_CAP_BYTES = 28 * 1024 * 1024;
-    const PRE_BUNDLE_CONCURRENCY = 1;
+    // are in flight.
     const f = c.preBundleFacet;
     const inFlight = f.attempted - f.bundlesCompleted - f.errors - f.skipped;
     if (inFlight <= 0)
         return 0;
-    return Math.min(inFlight, PRE_BUNDLE_CONCURRENCY) * SLICE_CAP_BYTES;
+    return Math.min(inFlight, PRE_BUNDLE_CONCURRENCY) * PRE_BUNDLE_SLICE_CAP_BYTES;
 }
 /**
  * Build a heap estimate from runtime counters + VFS inputs.
@@ -170,17 +107,13 @@ export function estimateSupervisorHeap(c, vfs) {
         supervisorBaselineBytes: SUPERVISOR_BASELINE_BYTES,
         vfsLruBytes: vfs.cacheHotBytes,
         vfsInFlightBytes: vfs.inFlightWriteBytes,
-        resolverInFlightBytes: estimateResolverInFlightBytes(c),
         preBundleSliceBytes: estimatePreBundleSliceBytes(c),
-        esbuildResidentBytes: ESBUILD_RESIDENT_BYTES,
         streamingBuffersBytes: c.inFlightRpcPayloadBytes,
     };
     const estimatedBytes = breakdown.supervisorBaselineBytes +
         breakdown.vfsLruBytes +
         breakdown.vfsInFlightBytes +
-        breakdown.resolverInFlightBytes +
         breakdown.preBundleSliceBytes +
-        breakdown.esbuildResidentBytes +
         breakdown.streamingBuffersBytes;
     const percentOfCeiling = Math.round((estimatedBytes / SUPERVISOR_HEAP_CEILING_BYTES) * 1000) / 10;
     return {

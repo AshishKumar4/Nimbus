@@ -6,13 +6,14 @@
 // live VFS content stays authoritative.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-const db = new Database(':memory:');
-const vfs = new SqliteVFS({ exec(q, ...p) { return db.query(q).all(...p); } });
+const harness = createSqliteVfsTestHarness();
+const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const bridge = new SqliteRuntimeFsBridge(vfs);
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
@@ -21,6 +22,7 @@ const supervisor = {
   readFileBytes: (p) => bridge.readFile(p),
   writeFile: (p, c) => bridge.writeFile(p, c),
   stat: (p) => bridge.stat(p),
+  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
   readdir: (p) => bridge.readdir(p),
   exists: async (p) => (await bridge.stat(p)) !== null,
   mkdir: (p) => bridge.mkdir(p, { recursive: true }),
@@ -37,17 +39,30 @@ const supervisor = {
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__vfsBaseUrl', '__supervisor',
+  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
-const sandbox = factory({}, {}, {}, null, '', supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+const sandbox = factory({}, {}, {}, null, supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
 const fsp = sandbox.fs.promises;
 const enc = new TextEncoder();
 
 // Seed a live-only file (outside the bundle).
 vfs.mkdir('home/user', { recursive: true });
 vfs.writeFile('home/user/live.bin', enc.encode('0123456789abcdef'));
+
+await bridge.symlink('live.bin', '/home/user/live-link');
+assert.equal((await fsp.stat('/home/user/live-link')).isFile(), true);
+const liveLink = await fsp.lstat('/home/user/live-link');
+assert.equal(liveLink.isSymbolicLink(), true);
+assert.equal(liveLink.mode, 0o120777);
+await assert.rejects(bridge.symlink('live.bin', '/home/user/live.bin'), /EEXIST/);
+assert.equal(new TextDecoder().decode(vfs.readFile('home/user/live.bin')), '0123456789abcdef');
+
+vfs.mkdir('home/user/legacy-over-directory');
+getSymlinkRegistry(vfs).set('home/user/legacy-over-directory', 'live.bin');
+const legacyLstat = await bridge.stat('/home/user/legacy-over-directory', { followSymlinks: false });
+assert.equal(legacyLstat.type, 'directory');
 
 // open 'r' + positional FileHandle.read over live ranges
 {
@@ -135,14 +150,14 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
   const CHUNK = 65536;
   const big = new Uint8Array(CHUNK * 2).fill(7);
   vfs.writeFile('home/user/huge.bin', big);
-  vfs.flushAll();
-  const before = vfs.getStats().sql.writes;
+  const statementStart = harness.statementCount;
   const fh = await fsp.open('/home/user/huge.bin', 'r+');
   await fh.write(enc.encode('!!'), 0, 2, CHUNK + 1); // inside chunk 1 only
   await fh.close();
-  vfs.flushAll();
-  assert.equal(vfs.getStats().sql.writes - before, 1,
-    'a small FileHandle positional write must flush exactly one chunk');
+  const chunkWrites = harness.statements.slice(statementStart)
+    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
+    .reduce((count, statement) => count + (statement.params.length / 3), 0);
+  assert.equal(chunkWrites, 1, 'a small FileHandle positional write must rewrite one chunk');
 }
 
 console.log('node-shims-live-fs-range: all assertions passed');

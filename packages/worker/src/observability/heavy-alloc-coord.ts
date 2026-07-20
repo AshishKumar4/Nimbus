@@ -27,22 +27,15 @@
  * `release()` is a one-shot (returned by acquire) so callers can't
  * accidentally double-decrement.
  *
- * Why globalThis vs. dependency injection
- * ───────────────────────────────────────
+ * Lifetime
+ * ────────
  * Pre-bundle runs in the supervisor isolate, called from npm-installer
  * which is constructed by NimbusSession's command handler. cirrus-real
  * is constructed by a different command handler in the same session.
- * Both share the supervisor's globalThis. Threading an explicit handle
- * from the session through every command path would touch ~10 sites
- * for a one-bit signal. globalThis-keyed singletons are already the
- * pattern for `__NIMBUS_*` symbols in the codebase.
- *
- * Lifetime: the coordinator is process-local, lasts as long as the
- * supervisor isolate. After a DO restart it's re-created — that's
- * acceptable since pre-bundle would also re-dispatch from scratch.
+ * Module scope gives both paths one process-local coordinator for the
+ * lifetime of the supervisor isolate. After a DO restart it is
+ * re-created, along with the pre-bundle work it coordinates.
  */
-
-const KEY = '__NIMBUS_HEAVY_ALLOC_COORD__';
 
 /**
  * W5 Lever 8: a registered observer (typically a SqliteVFS) that
@@ -66,15 +59,14 @@ interface Coord {
   observers: Set<AllocObserver>;
 }
 
+const coord: Coord = { count: 0, observers: new Set() };
+
 function getCoord(): Coord {
-  const g = globalThis as any;
-  if (!g[KEY]) {
-    g[KEY] = { count: 0, observers: new Set<AllocObserver>() } as Coord;
-  }
-  // Defensive: older entries (pre-W5) lack observers — add it.
-  const c = g[KEY] as Coord;
-  if (!c.observers) c.observers = new Set<AllocObserver>();
-  return c;
+  return coord;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -97,11 +89,11 @@ export function registerAllocObserver(o: AllocObserver): () => void {
 function fireOnAcquire(): void {
   const c = getCoord();
   for (const o of c.observers) {
-    try { o.onAcquire?.(); } catch (e) {
+    try { o.onAcquire?.(); } catch (error) {
       // Observer errors must NOT break the heavy-alloc protocol.
       // Log and continue.
       // eslint-disable-next-line no-console
-      console.error('[heavy-alloc-coord] observer.onAcquire threw:', (e as any)?.message);
+      console.error('[heavy-alloc-coord] observer.onAcquire threw:', errorMessage(error));
     }
   }
 }
@@ -109,15 +101,15 @@ function fireOnAcquire(): void {
 function fireOnRelease(): void {
   const c = getCoord();
   for (const o of c.observers) {
-    try { o.onRelease?.(); } catch (e) {
+    try { o.onRelease?.(); } catch (error) {
       // eslint-disable-next-line no-console
-      console.error('[heavy-alloc-coord] observer.onRelease threw:', (e as any)?.message);
+      console.error('[heavy-alloc-coord] observer.onRelease threw:', errorMessage(error));
     }
   }
 }
 
 /** True if any heavy-alloc owner has the gate open. */
-export function isHeavyAllocActive(): boolean {
+function isHeavyAllocActive(): boolean {
   return getCoord().count > 0;
 }
 

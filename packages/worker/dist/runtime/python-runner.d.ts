@@ -16,9 +16,8 @@
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
  * runner. The Pyodide wasm bytes ship via the LOADER `modules` map
  * (CSP allows wasm code-gen at module-load time, not at request
- * time). The workerd-adapted Pyodide.asm.js artifact and stdlib zip ride via
- * the loader-pool `context` field (JSON-stringified into the inner worker.js
- * at module-load).
+ * time). The workerd-adapted Pyodide.asm.js artifact and stdlib zip are
+ * embedded in the generated facet preamble.
  *
  * Per wasm-csp/findings.md §4b: Pyodide.asm.wasm (10.1 MB on disk)
  * compiles in 314 ms via LOADER on PROD. With our v1 deployment of

@@ -50,6 +50,7 @@ export declare class VFS {
     unlink(path: string): void;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
+    chmod(path: string, mode: number): void;
     touch(path: string): void;
     mkdir(path: string, options?: {
         recursive?: boolean;

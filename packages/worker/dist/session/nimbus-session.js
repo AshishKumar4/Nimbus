@@ -522,8 +522,15 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcWriteFile(path, content) { return _rpc._rpcWriteFile(this, path, content); }
     async _rpcStat(path) { return _rpc._rpcStat(this, path); }
+    async _rpcLstat(path) { return _rpc._rpcLstat(this, path); }
+    async _rpcHasLegacySymlinkUnder(path) {
+        return _rpc._rpcHasLegacySymlinkUnder(this, path);
+    }
     async _rpcUtimes(path, atimeMs, mtimeMs) {
         return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs);
+    }
+    async _rpcChmod(path, mode) {
+        return _rpc._rpcChmod(this, path, mode);
     }
     async _rpcReaddir(path) { return _rpc._rpcReaddir(this, path); }
     async _rpcExists(path) { return _rpc._rpcExists(this, path); }
@@ -551,7 +558,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcUnlink(path) { return _rpc._rpcUnlink(this, path); }
     async _rpcWriteBatch(payload) { return _rpc._rpcWriteBatch(this, payload); }
-    async _rpcWriteBatchStream(stream) { return _rpc._rpcWriteBatchStream(this, stream); }
+    async _rpcWriteBatchStream(stream, mutationOwner) {
+        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner);
+    }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
     async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
@@ -565,6 +574,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcPrefetch(cwd, entryCode) { return _rpc._rpcPrefetch(this, cwd, entryCode); }
     async _rpcRegisterPort(pid, port) { return _rpc._rpcRegisterPort(this, pid, port); }
     async _rpcUnregisterPort(port) { return _rpc._rpcUnregisterPort(this, port); }
+    async _rpcRouteLoopback(port, request) { return _rpc._rpcRouteLoopback(this, port, request); }
     async _rpcTransform(code, loader) { return _rpc._rpcTransform(this, code, loader); }
     // two-tier-fanout: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
     async _rpcFanoutExecute(fnSource, args, poolOpts) {
@@ -583,6 +593,12 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpDispatchInline(req, kind) { return _rpc._rpcCpDispatchInline(this, req, kind); }
     // Programmatic sandbox SDK RPC
     async _rpcReady(options) { return _programmatic.ensureProgrammaticReady(this, options); }
+    /** perf(boot): cold placement + constructor probe. First access runs the
+     *  DO constructor (placement + blockConcurrencyWhile storage I/O) but this
+     *  method does NOT run initSession, so measuring its `rpcMs` against a
+     *  full `ready` isolates the platform DO-placement floor from the
+     *  initSession build cost. */
+    async _rpcBootProbe() { return { ok: true }; }
     async _rpcExec(command, options) { return _programmatic.rpcExec(this, command, options); }
     async _rpcStartProcess(command, options) { return _programmatic.rpcStartProcess(this, command, options); }
     async _rpcRunCode(code, options) {
@@ -656,22 +672,6 @@ export class NimbusSession extends CloudflareDurableObject {
     ensureSqliteFs() {
         if (!this.sqliteFs) {
             this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-            // Audit C1: surface deferred-flush failures. SqliteVFS.writeFile()
-            // is synchronous (fire-and-forget by design — see LIFO MountProvider
-            // contract) so it can't return an error to the caller. Instead the
-            // VFS retries once and then calls these handlers for chunks that
-            // failed twice. We log to the user's terminal (non-spammy — the
-            // VFS also logs to the Worker console for operator triage) and
-            // make the error visible in /api/stats via getStats().
-            this.sqliteFs.onWriteError((err) => {
-                try {
-                    if (this.terminal) {
-                        this.terminal.write(`\x1b[31m[vfs] write failed: ${err.path} chunk ${err.chunkId} ` +
-                            `(attempts=${err.attempts}): ${err.error}\x1b[0m\r\n`);
-                    }
-                }
-                catch { /* handler must not throw back into the flush path */ }
-            });
             // W5 Lever 8: shrinkForInstall() during heavy-alloc windows.
             // The observer fires only on 0→1 / ≥1→0 edges (registerAllocObserver
             // in heavy-alloc-coord.ts handles the refcount). Default shrink
@@ -732,6 +732,7 @@ export class NimbusSession extends CloudflareDurableObject {
             this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
                 onSpawn: (pid, command, longRunning) => {
+                    const attachedTty = this.processes.get(pid)?.attachedTty === true;
                     if (longRunning) {
                         try {
                             this.processes.openInput(pid);
@@ -747,7 +748,9 @@ export class NimbusSession extends CloudflareDurableObject {
                     this.terminal.write(`\x1b[2m[facet ${label}: pid=${pid} cmd="${command}"]\x1b[0m\r\n`);
                     // Structured event so the tabs UI can auto-open a log tab
                     // for long-running processes (vite, wrangler dev, etc.).
-                    notifyTerminalEvent(this.terminal, { type: 'spawn', pid, command, longRunning });
+                    notifyTerminalEvent(this.terminal, {
+                        type: 'spawn', pid, command, longRunning, attachedTty,
+                    });
                 },
             });
         }
@@ -897,12 +900,8 @@ export class NimbusSession extends CloudflareDurableObject {
                 }
             },
         };
-        // child-process isolation gap #1: per-spawn fresh-isolate envelope. The pool wraps
-        // NimbusFanoutPool — auto-routes <5 → in-DO fanout in-DO, ≥5 → peer-DO fanout
-        // peer-DO. Hard-fails at construction if env.LOADER missing (no
-        // fallback). The pool is constructed lazily on the same path that
-        // builds FacetProcessManager so unit tests that don't supply
-        // env.LOADER still work via the legacy in-supervisor dispatch.
+        // Construct the child-process Loader pool when the binding is available.
+        // Unit-test hosts without LOADER continue through direct dispatch.
         let spawnPool;
         try {
             const envAny = this.env;

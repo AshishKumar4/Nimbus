@@ -162,7 +162,34 @@ function getDir(ctx) {
 }
 function getFlag(args, flag) {
     const idx = args.indexOf(flag);
-    return idx >= 0 && args[idx + 1] ? args[idx + 1] : undefined;
+    if (idx >= 0)
+        return args[idx + 1] || undefined;
+    const prefix = `${flag}=`;
+    return args.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || undefined;
+}
+export function parseCloneArgs(args) {
+    const depthFlag = getFlag(args, '--depth');
+    const noShallow = args.includes('--no-shallow');
+    const positionals = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--depth') {
+            i++;
+        }
+        else if (arg === '&' || arg.startsWith('-')) {
+            continue;
+        }
+        else {
+            positionals.push(arg);
+        }
+    }
+    return {
+        url: positionals[0],
+        dest: positionals[1],
+        depth: depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1),
+        noShallow,
+        isBg: args.includes('&') || args.includes('--bg'),
+    };
 }
 function getAuthor(ctx) {
     return {
@@ -219,7 +246,7 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     return 0;
                 }
                 case 'clone': {
-                    const url = subArgs[0];
+                    const { url, dest: destArg, depth, isBg } = parseCloneArgs(subArgs);
                     if (!url) {
                         ctx.stderr.write('usage: git clone <url> [dir]\n');
                         return 1;
@@ -230,56 +257,71 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     // <cwd>//tmp/x (note double slash) and the user's later `cd /tmp/x`
                     // hit ENOENT. Real-world git treats absolute targets as absolute.
                     let dest;
-                    if (subArgs[1]) {
-                        dest = subArgs[1].startsWith('/')
-                            ? subArgs[1]
-                            : getDir(ctx) + '/' + subArgs[1];
+                    if (destArg) {
+                        dest = destArg.startsWith('/')
+                            ? destArg
+                            : getDir(ctx) + '/' + destArg;
                     }
                     else {
                         dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
                     }
-                    const depthFlag = getFlag(subArgs, '--depth');
-                    const noShallow = subArgs.includes('--no-shallow');
-                    const depth = depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1);
-                    const isBg = subArgs.includes('&') || subArgs.includes('--bg');
                     if (!doCtx || !doEnv) {
                         ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
                         return 1;
                     }
                     ctx.stdout.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
+                    // A clone's closed-world filesystem view is correct only while no
+                    // other session surface can mutate its destination subtree. Acquire
+                    // the lease before the facet performs its lstat/readdir emptiness
+                    // proof; the clone's W7 stream carries the opaque owner capability
+                    // through the trusted SupervisorRPC binding.
+                    const mutationLease = vfs.acquireExclusiveMutation(dest, {
+                        includeMissingAncestors: true,
+                    });
                     // Delegate to git-network-facet: heavy packfile processing runs in
                     // a dynamic worker with its own CPU budget, not the supervisor DO.
                     const doClone = async () => {
-                        const result = await execGitNetwork(doCtx, doEnv, {
-                            op: 'clone',
-                            dir: dest,
-                            url,
-                            depth,
-                            auth: {
-                                username: ctx.env.GIT_USERNAME || '',
-                                password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                            },
-                        });
                         try {
-                            vfs.flushAll();
+                            const result = await execGitNetwork(doCtx, doEnv, {
+                                op: 'clone',
+                                dir: dest,
+                                url,
+                                depth,
+                                exclusiveDestination: true,
+                                exclusiveMutationRoot: mutationLease.root,
+                                mutationOwner: mutationLease.owner,
+                                // Verification/tuning knob: force a small per-chunk entry bound
+                                // so ordinary repos exercise the multi-invocation chunked
+                                // checkout path. Unset in production → the 10k default applies.
+                                checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
+                                    ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
+                                    : undefined,
+                                auth: {
+                                    username: ctx.env.GIT_USERNAME || '',
+                                    password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
+                                },
+                            });
+                            if (result.success) {
+                                ctx.stdout.write(`\n[git] clone complete (${result.filesWritten} files, ` +
+                                    `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+                            }
+                            else {
+                                ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+                            }
+                            return result.success;
                         }
-                        catch { }
-                        if (result.success) {
-                            ctx.stdout.write(`\n[git] clone complete (${result.filesWritten} files, ` +
-                                `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
-                        }
-                        else {
-                            ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+                        finally {
+                            vfs.releaseExclusiveMutation(mutationLease.owner);
                         }
                     };
                     if (isBg) {
+                        const task = doClone();
+                        doCtx.waitUntil(task);
                         ctx.stdout.write('[git] clone running in background...\n');
-                        doClone(); // intentionally not awaited
                         return 0;
                     }
                     else {
-                        await doClone();
-                        return 0;
+                        return (await doClone()) ? 0 : 1;
                     }
                 }
                 case 'status': {
@@ -465,10 +507,6 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
                         },
                     });
-                    try {
-                        vfs.flushAll();
-                    }
-                    catch { }
                     if (result.success) {
                         ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                         return 0;
@@ -497,10 +535,6 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
                         },
                     });
-                    try {
-                        vfs.flushAll();
-                    }
-                    catch { }
                     if (result.success) {
                         ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                         return 0;

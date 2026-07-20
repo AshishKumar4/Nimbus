@@ -534,9 +534,7 @@ async function runInstall(
   // dominating wall-clock at ~31 MB + ~19 MB), overlap of network/L2
   // reads cuts cold-install wall-clock by 30-50%. Concurrency capped
   // at 3 to bound memory peak: worst-case clang holds 3 in-flight
-  // blobs ≈ ~50-60 MB; well under the DO's 128 MB cap. Memory peak
-  // is further bounded by sqlite-vfs.ts pendingWrites auto-flush at
-  // 500 chunks / ~32 MiB (`src/vfs/sqlite-vfs.ts:606`).
+  // blobs ≈ ~50-60 MB; well under the DO's 128 MB cap.
   //
   // mkdir-parent is hoisted OUT of the worker body so concurrent
   // workers don't race against vfs.mkdir for the same parent. Each

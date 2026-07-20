@@ -7,7 +7,7 @@
  */
 import { Kernel, Shell } from '../substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, type WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -224,7 +224,10 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string): Promise<any>;
+    _rpcLstat(path: string): Promise<any>;
+    _rpcHasLegacySymlinkUnder(path: string): Promise<boolean>;
     _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+    _rpcChmod(path: string, mode: number): Promise<void>;
     _rpcReaddir(path: string): Promise<{
         name: string;
         type: string;
@@ -249,10 +252,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         inodes: number;
         chunks: number;
     }>;
-    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{
-        inodes: number;
-        chunks: number;
-    }>;
+    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult>;
     _rpcPutRegistryEntries(entries: any[]): Promise<{
         written: number;
         failed: number;
@@ -267,6 +267,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     _rpcRegisterPort(pid: number, port: number): Promise<void>;
     _rpcUnregisterPort(port: number): Promise<void>;
+    _rpcRouteLoopback(port: number, request: Request): Promise<Response>;
     _rpcTransform(code: string, loader: string): Promise<{
         code: string;
         map: string;
@@ -301,6 +302,14 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcReady(options?: _programmatic.ProgrammaticReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];
+    }>;
+    /** perf(boot): cold placement + constructor probe. First access runs the
+     *  DO constructor (placement + blockConcurrencyWhile storage I/O) but this
+     *  method does NOT run initSession, so measuring its `rpcMs` against a
+     *  full `ready` isolates the platform DO-placement floor from the
+     *  initSession build cost. */
+    _rpcBootProbe(): Promise<{
+        ok: true;
     }>;
     _rpcExec(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticExecResult>;
     _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticStartResult>;

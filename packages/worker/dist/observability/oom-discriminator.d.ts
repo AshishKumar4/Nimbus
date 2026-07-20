@@ -9,20 +9,17 @@
  *
  * Why singleton-per-isolate
  * ─────────────────────────
- * Same pattern as src/diag-counters.ts (q.v.). The supervisor bundle
+ * Same pattern as src/observability/diag-counters.ts. The supervisor bundle
  * is the consumer; all writers (sqlite-vfs, facet-pool, facet-manager,
  * supervisor-rpc, npm-installer, nimbus-session) live in the same
- * isolate. globalThis-keyed storage avoids threading a handle through
- * ~10 sites for what is essentially a process-local diagnostic.
+ * isolate. Module scope provides one process-local diagnostic without
+ * threading a handle through each writer.
  *
  * Two distinct rings
  * ──────────────────
  * - failures: things that failed (the original W5 ring).
- * - recoveryEvents: lifecycle transitions of the session (C'.2). Cold
- *   isolate boot → 'cold' → 'hydrated' → 'active' → 'drained'. Plan §3
- *   Track B' makes the transitions explicit; this ring records each
- *   one so probes can assert "session reached 'hydrated' from SQL with
- *   N keys, no data loss".
+ * - recoveryEvents: lifecycle transitions of the session. Cold isolate
+ *   boot → 'cold' → 'hydrated' → 'active' → 'drained'.
  *
  * Bounded-size guarantees
  * ───────────────────────
@@ -32,9 +29,9 @@
  *   - per-RPC-frame: single slot, one object.
  *   - per-facet-id: single slot, one object.
  *
- * Snapshot ≤40 KB even with both rings full. Verified by
+ * Snapshot size stays bounded even with both rings full.
  */
-import type { OomCause } from './oom-classify.js';
+import { type OomCause } from './oom-classify.js';
 export interface RpcFrame {
     method: string;
     payloadBytes: number;
@@ -74,8 +71,7 @@ export interface DiagFailure {
 /**
  * Session lifecycle states for the C'.2 recovery_event ring.
  *
- * The state machine is owned by Track B' (plan §3.3). This module
- * records transitions; it does not enforce them.
+ * This module records state-machine transitions; it does not enforce them.
  *
  * State semantics:
  * - 'cold'      : fresh DO instance, no in-memory session state yet.
@@ -125,9 +121,7 @@ export interface DiagRecoveryEvent {
      *  (the latter implies workerd recycled the DO). */
     isolateGen: number;
     /** True when the transition could not preserve state that should
-     *  have survived (e.g. SQL persist threw, snapshot was missing on
-     *  hydrate, etc.). Probes assert this stays false under non-OOM
-     *  scenarios. */
+     *  have survived (e.g. SQL persist threw or a snapshot was missing). */
     dataLoss: boolean;
     /** Number of SQL keys/rows rehydrated on a hydrated transition.
      *  Zero when the transition is one that doesn't read SQL. */
@@ -140,9 +134,6 @@ export declare function recordFailure(f: DiagFailure): void;
 /** Read a snapshot of the ring. Newest first. Caller-side mutations
  *  do not affect the singleton. */
 export declare function getFailures(): DiagFailure[];
-/** Reset everything. Used by tests; safe in production but typically
- *  unnecessary. */
-export declare function resetFailures(): void;
 /** Record the current RPC frame (called at every RPC entry). Bounded
  *  to a single slot — the LATEST frame wins. */
 export declare function setLastRpcFrame(method: string, payloadBytes: number): void;
@@ -163,15 +154,11 @@ export declare function resetRecoveryEvents(): void;
  * messages. Schema version embedded so a future shape change can
  * cleanly reject old snapshots.
  *
- * Schema versions:
- *   v = 1  →  {failures, lastRpcFrame, lastFacetId} (pre-C'.2)
- *   v = 2  →  v1 + {recoveryEvents}                   (C'.2)
- *
- * Rehydrate accepts v=1 (treats recoveryEvents as empty) and v=2.
+ * Schema version 2 includes both failure and recovery-event rings.
  */
 export interface DiagSnapshot {
     /** Schema version. Bump when shape changes. */
-    v: number;
+    v: 2;
     failures: DiagFailure[];
     recoveryEvents: DiagRecoveryEvent[];
     lastRpcFrame: RpcFrame | null;
@@ -183,8 +170,7 @@ export declare function snapshotForStorage(): DiagSnapshot;
  * silently ignored. Does NOT throw — constructor-time rehydration must
  * never block DO startup.
  *
- * Accepts v=1 (pre-C'.2, no recoveryEvents field) and v=2. v=1
- * snapshots rehydrate failures only; recoveryEvents starts empty.
+ * Only the current v2 schema is accepted.
  */
 export declare function rehydrateFromStorage(blob: unknown): void;
 //# sourceMappingURL=oom-discriminator.d.ts.map

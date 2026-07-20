@@ -13,6 +13,7 @@ import {
   nimbusPatchOpenTUI,
   nimbusPatchParserWorker,
   nimbusPatchRpcWorkerScope,
+  nimbusPatchRpcFailLoud,
   nimbusPatchTuiWorkerEntry,
   OPENTUI_FFI_CHUNK_MARKER,
 } from "./bundle-patches"
@@ -87,7 +88,12 @@ const nimbusWorkerScopeRegistry = {
   setup(build: any) {
     build.onLoad({ filter: /src[\\/]util[\\/]rpc\.ts$/ }, async (args: any) => {
       const source = await Bun.file(args.path).text()
-      return { contents: nimbusPatchRpcWorkerScope(source, args.path), loader: "ts" }
+      // fail-loud runs AFTER worker-scope so its server anchor matches the
+      // `target.postMessage` form that patch produces.
+      return {
+        contents: nimbusPatchRpcFailLoud(nimbusPatchRpcWorkerScope(source, args.path), args.path),
+        loader: "ts",
+      }
     })
     build.onLoad({ filter: /src[\\/]cli[\\/]cmd[\\/]tui[\\/]worker\.ts$/ }, async (args: any) => {
       const source = await Bun.file(args.path).text()

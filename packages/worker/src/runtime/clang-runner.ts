@@ -32,6 +32,9 @@ import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { hasLeadingCliFlag } from './cli-flags.js';
+
+const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps: {
@@ -58,7 +61,7 @@ export function makeClangRunnerFactory(deps: {
       const cwd: string = ctx.cwd || '/home/user';
 
       // Fast paths — no wasm boot.
-      if (argv.includes('--version') || argv.includes('-v')) {
+      if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
         ctx.stdout.write(`Nimbus wasm-clang (binji-2020, LLVM 8.0.1)\n`);
         ctx.stdout.write(`Target: ${WASM32_WASI_NIMBUS_ABI.id} (via wasm-ld linker)\n`);
         return 0;
@@ -332,6 +335,9 @@ export function makeClangRunnerFactory(deps: {
         vfs.mkdir(parent, { recursive: true });
       }
       vfs.writeFile(outVfsPath, wasmBytes);
+      // Real linkers chmod their output executable (+x even after a
+      // prior chmod -x) — so `./a.out` runs with no manual chmod.
+      vfs.chmod(outVfsPath, 0o755);
 
       return 0;
     };
@@ -343,10 +349,6 @@ export function makeClangRunnerFactory(deps: {
 interface ParsedArgv {
   /** All input source files (.c/.cpp/.cc/.cxx) in user-supplied order. */
   inputPaths: string[];
-  /** Backward-compat alias for the FIRST input. Several existing code
-   *  paths still reference `inputPath`; we keep this name pointing at
-   *  inputPaths[0] for those callers. */
-  inputPath: string;
   /** -I include directories (cwd-relative or absolute) passed by user. */
   includePaths: string[];
   /** -L library search directories (cwd-relative or absolute). */
@@ -408,12 +410,12 @@ function parseUserArgv(argv: string[]): ParsedArgv {
   }
   if (inputPaths.length === 0) {
     return {
-      inputPaths: [], inputPath: '', includePaths, libraryPaths, libraries,
+      inputPaths: [], includePaths, libraryPaths, libraries,
       outputPath: '', compileOnly, exitCode: 2, error: 'no input files',
     };
   }
   return {
-    inputPaths, inputPath: inputPaths[0], includePaths, libraryPaths, libraries,
+    inputPaths, includePaths, libraryPaths, libraries,
     outputPath, compileOnly, exitCode: 0,
   };
 }
@@ -676,7 +678,7 @@ async function dispatchClangFacet(
   target: ClangFacetTarget,
   args: ClangFacetArgs,
 ): Promise<ClangFacetResult> {
-  // Encode sysroot files as base64 for context ferrying. We do this on
+  // Encode sysroot files as base64 for facet transport. We do this on
   // the supervisor to keep the facet preamble small and CPU-light.
   const filesB64: Record<string, string> = {};
   for (const [path, bytes] of Object.entries(args.sysrootFiles)) {
@@ -782,7 +784,6 @@ export const CLANG_RUNNER_PREAMBLE = `
 
 const __ESUCCESS = 0;
 const __EBADF    = 8;
-const __EINVAL   = 28;
 const __ENOSYS   = 52;
 
 class __ProcExit {
@@ -1032,10 +1033,8 @@ globalThis.__clangRun = async function __clangRun(args) {
 
   // env namespace for the primary — stub canvas_*, etc.
   const primaryEnv = new Proxy({}, {
-    get(_t, prop) {
+    get(_t, _prop) {
       return function envStub() {
-        // Only log first occurrence per name to avoid log floods on
-        // wasm-ld which may probe many env imports.
         return 0;
       };
     },

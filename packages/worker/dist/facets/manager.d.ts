@@ -54,6 +54,8 @@ export interface FacetExecResult {
  */
 export interface StagedArtifactExecResult extends FacetExecResult {
     pid: number;
+    /** For the resident server path: the loopback port the facet is bound to. */
+    port?: number;
 }
 export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPromiseTracker() {\n  const __tracked = new Set();\n  const __origThen = Promise.prototype.then;\n  const __origCatch = Promise.prototype.catch;\n  const __origFinally = Promise.prototype.finally;\n  let __active = false;\n  const __track = (p) => {\n    if (!p || typeof p.then !== \"function\") return p;\n    __tracked.add(p);\n    try {\n      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });\n    } catch {\n      __tracked.delete(p);\n    }\n    return p;\n  };\n  return {\n    start() {\n      __active = true;\n      try {\n        Promise.prototype.then = function(...args) {\n          const __next = __origThen.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.catch = function(...args) {\n          const __next = __origCatch.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.finally = function(...args) {\n          const __next = __origFinally.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n      } catch {\n        __active = false;\n      }\n    },\n    stop() {\n      __active = false;\n      try {\n        Promise.prototype.then = __origThen;\n        Promise.prototype.catch = __origCatch;\n        Promise.prototype.finally = __origFinally;\n      } catch {}\n    },\n    track: __track,\n    // Drain floating entry work until it settles, the process exits, or a\n    // bound is hit. Two distinct kinds of pending work need different\n    // treatment to match Node's event-loop semantics:\n    //\n    //   - Unsettled tracked PROMISES are microtask chains. Per Node a pending\n    //     promise does NOT keep the process alive \u2014 only handles/timers do.\n    //     A settling chain (create-vite's clack scaffold, c3 / create-astro\n    //     streaming their project to the live VFS) must be allowed to finish,\n    //     but a NEVER-settling chain\n    //     (`Promise.resolve().then(() => new Promise(() => {}))`) must not\n    //     pin the facet. So tracked promises are drained only up to a finite\n    //     `maxPromisePasses` budget \u2014 generous enough for the multi-tick\n    //     scaffolders, finite enough that a stuck chain still exits.\n    //\n    //   - Pending macrotask TIMERS/intervals (`__timersPending`) DO keep the\n    //     loop alive (nuxi settles through setTimeout-driven steps).\n    //\n    // BOTH branches are bounded by the wall-clock deadline AND the pass\n    // budget, because each bound covers the other's blind spot: workerd does\n    // not advance `Date.now()` while an isolate spins without I/O (measured\n    // `elapsed=0` across the whole drain), so a no-I/O drain loops forever\n    // against a deadline that never trips \u2014 the pass budget is the frozen-\n    // clock backstop. Under a live clock (host tests, drains interleaved with\n    // real I/O) a setTimeout(0) pass costs ~1ms of clamped timer, so the 50k\n    // budget alone would spin for tens of seconds \u2014 the deadline is the\n    // live-clock bound, tripping long before the budget. Scaffolders settle\n    // their multi-tick chains well inside both bounds, so a stuck chain, an\n    // idle long-running server's keep-alive, a TTL timeout, or a `--watch`\n    // poller ends the drain promptly instead of pinning the facet and the\n    // shell prompt.\n    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {\n      const __start = Date.now();\n      const __maxPromisePasses = 50000;\n      const __timersPending = () => (typeof globalThis.__nimbusPendingTimers === \"number\" ? globalThis.__nimbusPendingTimers : 0);\n      let __exited = false;\n      if (exitPromise && typeof exitPromise.then === \"function\") {\n        exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n      }\n      const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n        ? globalThis.__nimbusRawSetTimeout\n        : globalThis.setTimeout;\n      let __pass = 0;\n      for (\n        ;\n        !__exited\n          && (__pass < minPasses\n            || (__timersPending() > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses)\n            || (__tracked.size > 0 && Date.now() - __start < deadlineMs && __pass < __maxPromisePasses));\n        __pass++\n      ) {\n        await new Promise((resolve) => __rawSetTimeout(resolve, 0));\n      }\n      return __pass;\n    },\n  };\n}\n";
 /**
@@ -198,6 +200,7 @@ export declare class FacetManager {
     private hooks;
     private processRpcResources;
     private timedOutProcessIds;
+    private _pairedServeFacet;
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
      * over the prefetch bundle. Created on first exec where vfs is set;
@@ -206,15 +209,6 @@ export declare class FacetManager {
      * to avoid double-init.
      */
     private esbuild;
-    /**
-     * Memoized sql.js wasm bytes for the node:sqlite facet path. Fetched
-     * once from env.ASSETS (sqlite-wasm-bytes.ts) on the first facet that
-     * imports node:sqlite, then reused for every subsequent sqlite facet in
-     * this isolate. Held as an ArrayBuffer because the Worker Loader module
-     * map needs a fresh `{ wasm }` entry per facet config.
-     */
-    private sqliteWasmBytes;
-    private sqliteWasmBytesPromise;
     /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
@@ -233,24 +227,6 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
-    /**
-     * Staged OpenTUI wasm32-wasi reactor bytes for the opencode facet's FFI
-     * render backend. Fetched once per isolate from env.ASSETS (integrity-checked
-     * against OPENTUI_WASM_SHA256 in fetchOpenTUIWasmBytes); each facet config
-     * gets a fresh `{ wasm }` entry over the shared buffer.
-     */
-    private openTuiWasmBytes;
-    private openTuiWasmBytesPromise;
-    /** In-flight (never resident) opencode chunk-pack fetch+parse dedupe. */
-    private opencodeChunkEntriesInflight;
-    /**
-     * Staged yoga-layout wasm bytes for the opencode TUI's OpenTUI layout engine.
-     * Fetched once per isolate from env.ASSETS; the interactive-TUI facet config
-     * carries them as a pre-compiled `{ wasm }` module so the patched yoga loader
-     * instantiates a Module instead of doing the blocked request-time compile.
-     */
-    private opencodeYogaWasmBytes;
-    private opencodeYogaWasmBytesPromise;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -275,62 +251,18 @@ export declare class FacetManager {
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
      * Returns `{}` for the common case (no sqlite) so the spread is free.
-     *
-     * The bytes are fetched once per isolate and reused (a fresh ArrayBuffer
-     * view per facet config). workerd compiles the `wasm` module ahead of
-     * dispatch, so the facet's static `import "sqlite.wasm"` resolves to a
-     * ready WebAssembly.Module — no request-time compile(bytes).
-     *
-     * Throws if env.ASSETS is unavailable: the facet code already imports
-     * `sqlite.wasm` (usesSqlite is true), so a missing module entry would
-     * fail facet load with an opaque resolver error; surfacing the cause
-     * here is clearer.
+     * Delegates to the shared per-isolate memoizer in opencode-staging.ts.
      */
     private sqliteModuleEntry;
-    /**
-     * Build the Worker Loader module-map fragment that carries the opencode
-     * tree-sitter wasm sidecars (core + bash + powershell grammars) into the
-     * opencode facet as pre-compiled WebAssembly.Modules, keyed by staged
-     * filename. The runner registers them on the facet's tree-sitter registry
-     * global so the bash tool's command parser instantiates them instead of
-     * hitting the blocked request-time WebAssembly.compile path.
-     */
-    private treeSitterModuleEntries;
-    /**
-     * Build the Worker Loader module-map fragment carrying the split-build
-     * shared chunks (chunk-<hash>.js) both opencode entry bundles import. One
-     * pack asset fetch (L2-cached), expanded into per-chunk ESM module entries.
-     */
-    private opencodeChunkModuleEntries;
-    /**
-     * Build the Worker Loader module-map fragment carrying the staged OpenTUI
-     * wasm32-wasi reactor into the opencode facet as a pre-compiled
-     * WebAssembly.Module under OPENTUI_WASM_MODULE_NAME. The runner instantiates
-     * it via OpenTUIWasmBackend (the patched @opentui/core seams resolve their
-     * render library from the parked backend) — request-time
-     * WebAssembly.compile(bytes) is blocked in facets.
-     */
-    private openTuiModuleEntry;
-    /**
-     * Build the Worker Loader module-map fragment carrying the opencode TUI
-     * worker bundles (the API server worker.js + the OpenTUI parser.worker.js)
-     * into the interactive-TUI facet as ESM modules. The in-isolate Worker
-     * polyfill (opencode-facet-runner.ts) dynamically imports them by specifier
-     * when the TUI client calls `new Worker(...)`. Only needed for the attached
-     * TUI; the one-shot `opencode run` path never spawns these.
-     */
-    private opencodeWorkerModuleEntries;
-    /**
-     * Build the Worker Loader module-map fragment carrying the yoga-layout wasm
-     * into the interactive-TUI facet as a pre-compiled WebAssembly.Module. The
-     * runner parks it on globalThis.__nimbusYogaModule and the patched OpenTUI
-     * yoga loader instantiates it (request-time WebAssembly.instantiate of bytes
-     * is blocked in facets). Attached-TTY only — `opencode run` never renders.
-     */
-    private opencodeYogaModuleEntry;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     noteProcessReportedExit(pid: number, exitCode: number): void;
+    /**
+     * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
+     * Called when the attach TUI exits (reported / killed) so the OS-child serve
+     * facet never outlives its foreground process.
+     */
+    private _teardownPairedServeFacet;
     /** Execute one-shot JS code in an isolated dynamic Worker. */
     exec(code: string, opts: {
         argv?: string[];
@@ -385,9 +317,20 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode'> & {
+    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode' | 'mode'> & {
         command?: string;
+        attachedTty?: boolean;
     }): Promise<StagedArtifactExecResult>;
+    /**
+     * Prepare a staged-opencode spawn: spawn the process-table entry, snapshot
+     * the VFS, and build the small OpencodeStageSpec. The artifact sources
+     * (entry bundle, chunk pack, wasm sidecars — ~23 MB of module map) are NOT
+     * materialized here: NimbusLoadedEntrypoint assembles them from the spec in
+     * a stateless worker isolate on the Worker-Loader cache-miss path, so the
+     * supervisor DO never carries them (it OOM-reset at the 128 MiB isolate cap
+     * when it did — live-diagnosed 2026-07-16).
+     */
+    private _stageOpencodeFacet;
     /**
      * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
      * the runner's startProcess() — which holds the facet open via ctx.waitUntil
@@ -397,7 +340,61 @@ export declare class FacetManager {
      * release on report-exit, the same contract the long-running node path uses.
      */
     private _execStagedArtifactAttached;
-    private opencodeBundleSource;
+    /**
+     * Run a headless `opencode serve` as a resident, routeable server facet. The
+     * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,
+     * else an allocated free port injected into argv) so the in-session loopback
+     * router and external `/port/<n>` both reach it. Returns immediately with the
+     * pid once the facet is spawned + its route stub bound; readiness is gated by
+     * the caller (dual path health-gates on `/doc`).
+     */
+    execStagedArtifactServer(artifact: string, opts: {
+        argv: string[];
+        env: Record<string, string>;
+        cwd: string;
+        command?: string;
+        port?: number;
+    }): Promise<StagedArtifactExecResult>;
+    /**
+     * Bare `opencode` (the interactive TUI) as a MULTI-ISOLATE process pair: a
+     * headless `opencode serve` facet + an `opencode attach <url>` attached-TTY
+     * facet, each in its own 128 MiB isolate, joined by the session loopback port
+     * registry. The serve facet is an OS-child of the attach facet: it is health-
+     * gated before attach launches, and torn down when the attach TUI exits.
+     * Returns the ATTACH pid — the user-facing foreground process.
+     */
+    execStagedArtifactDual(artifact: string, opts: {
+        argv: string[];
+        env: Record<string, string>;
+        cwd: string;
+        command?: string;
+    }): Promise<StagedArtifactExecResult>;
+    private _runOpencodeServerFacet;
+    /** Allocate a free loopback port for a resident server facet (from 4096 up). */
+    private _allocateLoopbackPort;
+    /**
+     * Poll `http://127.0.0.1:<port>/doc` through the loopback port router until it
+     * answers 200, bounded by `timeoutMs`. Fails loud (with the server's log tail
+     * and the last poll outcome) if the serve facet exits early or never becomes
+     * ready. Each poll is individually capped at `pollTimeoutMs` so a request
+     * wedged in the booting facet cannot starve the loop; the 30s default budget
+     * covers the live-measured ~14s cold boot-to-serving time with margin.
+     */
+    private _awaitOpencodeServerReady;
+    /**
+     * Warm the serve facet's cold once-flight services before the attach TUI
+     * fires its startup barrage. The TUI issues its five startup requests
+     * concurrently; a COLD provider/agent init under that concurrency deadlocks
+     * on its once-flight lock (facet timers only advance across I/O), and the
+     * requests die at the dispatcher's 30s header timeout ("3 of 5 requests
+     * failed"). A single sequential request per service completes the init
+     * reliably (live-measured), so readiness for a TUI includes it. A warmup
+     * failure is not fatal here — the TUI surfaces its own precise startup
+     * error — but each leg is bounded so a wedged warmup cannot eat the boot.
+     */
+    private _warmOpencodeServer;
+    /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
+    private _processLogTail;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
     /** Execution timeout. */
@@ -423,22 +420,6 @@ export declare class FacetManager {
         facetStub: any;
     }>;
     /**
-     * Spawn a long-running facet process.
-     * Returns immediately with the process entry.
-     * The facet stays alive and can handle HTTP requests via its fetch() method.
-     * Used for: vite dev server, node HTTP servers, etc.
-     *
-     * @param workerCode The dynamic worker code (must export a default fetch handler)
-     * @param command Display name for process listing
-     * @returns Process entry with pid and facet stub
-     */
-    spawn(workerCode: string, command: string, cwd: string, opts?: {
-        port?: number;
-    }): Promise<{
-        pid: number;
-        facetStub: any;
-    }>;
-    /**
      * Spawn a long-running dynamic Worker and register its routeable port.
      *
      * This is the shared primitive for any runtime that exposes
@@ -450,9 +431,8 @@ export declare class FacetManager {
         pid: number;
         facetStub: any;
     }>;
-    registerPort(pid: number, port: number, facetStub: any): void;
-    attachReservedPorts(pid: number, facetStub: any): number[];
-    waitForRouteablePorts(pid: number, facetStub: any, timeoutMs?: number): Promise<number[]>;
+    registerPort(pid: number, port: number, facetStub: unknown): void;
+    waitForRouteablePorts(pid: number, facetStub: unknown, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
     kill(pid: number): boolean;

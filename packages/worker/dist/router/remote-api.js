@@ -62,7 +62,16 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
         verified: remoteAuth.verified,
     };
     try {
-        return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson({ ok: true, result }));
+        // perf(boot): the awaited stub call is a cross-isolate RPC = real I/O,
+        // so Date.now() advances across it (workerd otherwise clamps observable
+        // time inside an isolate). This yields authoritative DO-side wall time
+        // for the operation — the only way to attribute the session
+        // create→ready budget, since intra-DO clocks are frozen. Surfaced as
+        // `rpcMs` only when the caller sets `diag`, so the normal SDK envelope
+        // is unchanged.
+        const wantDiag = body.diag === true;
+        const t0 = Date.now();
+        return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson(wantDiag ? { ok: true, result, rpcMs: Date.now() - t0 } : { ok: true, result }));
     }
     catch (e) {
         const err = remoteError(e);
@@ -138,6 +147,12 @@ async function dispatchRemoteRpc(ctx) {
                 assertRuntimeAllowed(ctx, spec, 'preinstall');
             return ctx.stub._rpcReady({ preinstall });
         }
+        // perf(boot): cold DO-placement + constructor probe. First access to a
+        // fresh sandbox id runs the DO constructor but this op does NOT run
+        // initSession — combined with `rpcMs` it isolates the platform DO
+        // placement floor from the initSession build cost.
+        case 'bootProbe':
+            return ctx.stub._rpcBootProbe();
         case 'exec':
             return ctx.stub._rpcExec(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
         case 'startProcess':

@@ -19,9 +19,7 @@ export interface SpawnInIsolateSpec {
     stdin?: string;
   };
   /** Pre-resolved kind from FacetProcessManager._dispatch. */
-  kind: 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown';
-  /** Stable id the parent captured for the spawn (for hooks-routing). */
-  parentChildId: number | string;
+  kind: 'pure-builtin' | 'facet-direct' | 'shell-direct';
 }
 
 export interface SpawnInIsolateResult {
@@ -51,14 +49,6 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(
 ): Promise<SpawnInIsolateResult> {
   if (!spec || !spec.req) {
     return { exitCode: 1, stdout: '', stderr: 'spawn-facet: missing spec.req\n' };
-  }
-
-  if (spec.kind === 'unknown') {
-    return {
-      exitCode: 127,
-      stdout: '',
-      stderr: spec.req.command + ': command not found\n',
-    };
   }
 
   // env.SUPERVISOR is auto-injected by NimbusLoaderPool and pinned to

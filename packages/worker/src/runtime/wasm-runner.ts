@@ -548,7 +548,7 @@ export function makeWasmRunner(deps: {
     //
     // The user's cwd at invocation time is our session-root preopen
     // anchor. WASI programs see this as fd 3 mapped to '/'. We
-    // snapshot the subtree, ship via the loader-pool `context`, and
+    // snapshot the subtree, ship it as the facet argument, and
     // flush mutations back after _start returns.
     //
     // For direct mode there's no FS exposure — wasm runs in pure

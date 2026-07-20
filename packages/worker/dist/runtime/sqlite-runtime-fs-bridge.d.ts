@@ -4,7 +4,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly vfs;
     private nextHandleId;
     private handles;
-    private symlinks;
+    private legacySymlinks;
     constructor(vfs: SqliteVFS);
     stat(path: string, options?: {
         followSymlinks?: boolean;
@@ -29,6 +29,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     utimes(path: string, atimeMs: number, mtimeMs: number, options?: {
         followSymlinks?: boolean;
     }): Promise<void>;
+    chmod(path: string, mode: number): Promise<void>;
     open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;
@@ -49,7 +50,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     revision(path?: string): Promise<number>;
     subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void;
     private resolveDataPath;
+    private resolveMutationPath;
     private ensureParent;
+    private assertParentDirectory;
     private assertExpectedRevision;
     private getHandle;
 }

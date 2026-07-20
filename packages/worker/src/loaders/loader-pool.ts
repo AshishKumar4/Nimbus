@@ -1,13 +1,13 @@
 /**
- * facet-pool.ts — Nimbus-specific wrapper over cloudflare-parallel.
+ * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
- * Adds on top of the vendored WorkerPool:
+ * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
  *      dispatch a fresh isolate — fine for one-off AI calls, terrible for
  *      running 67 npm tarball extractions (cold-start dominates). We pin
  *      each job to `slot = cursor % concurrency` and use stable loader
- *      IDs `nfp:${fnHash}:slot-${i}`, so a pool of concurrency=4 keeps at
- *      most 4 warm isolates rather than N fresh ones.
+ *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
+ *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
@@ -19,9 +19,8 @@
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
- * This wrapper does NOT re-export the upstream surface. Users import
- * NimbusLoaderPool via src/parallel/index.ts; the vendored directory is
- * an implementation detail.
+ * The vendored directory contains only the upstream serialization, error,
+ * and binding types used by this implementation.
  */
 
 import { CF_COMPAT_DATE } from '../constants.js';
@@ -92,10 +91,9 @@ export interface NimbusLoaderPoolOptions {
   supervisorDoIdOverride?: string;
   /**
    * Raw JavaScript source prepended to every generated worker module.
-   * Lets callers inject helpers that cannot be captured via `context`
-   * (which is JSON-only) — typically a bundled dependency like a tar
-   * parser. The user function can reference top-level names declared in
-   * the preamble as if they were in lexical scope.
+   * Lets callers inject bundled helpers, such as a tar parser. The user
+   * function can reference top-level names declared in the preamble as if
+   * they were in lexical scope.
    *
    * Example: `preamble: 'export const parse = ...; const helper = ...;'`
    * — the preamble runs at module-load time; any side effects happen
@@ -141,11 +139,6 @@ export interface NimbusLoaderPoolOptions {
 export interface NimbusLoaderCallOptions {
   timeoutMs?: number;
   retries?: number;
-  /**
-   * Extra module-level constants injected into the generated worker source
-   * BEFORE the user function is declared. JSON-serializable only.
-   */
-  context?: Record<string, unknown>;
   /**
    * Per-call WebAssembly modules. Merged with the pool's
    * constructor-time `wasmModules` at dispatch time and shipped via
@@ -224,6 +217,75 @@ const ESBUILD_RUNTIME_SHIM = [
   '};',
 ].join('\n');
 
+export interface LoaderWorkerModuleSourceOptions {
+  fnSource: string;
+  preamble?: string;
+  wasmEntries?: ReadonlyArray<{ name: string; id: string }>;
+  hasBindings: boolean;
+}
+
+/** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
+export function assembleLoaderWorkerModuleSource(
+  options: LoaderWorkerModuleSourceOptions,
+): string {
+  const lines: string[] = [
+    'import { WorkerEntrypoint } from "cloudflare:workers";',
+  ];
+  const wasmEntries = options.wasmEntries ?? [];
+
+  if (wasmEntries.length > 0) {
+    lines.push('');
+    lines.push('// ── Pool-injected WebAssembly modules ─────────────────────');
+    for (const entry of wasmEntries) {
+      lines.push(`import __NIMBUS_WASM_${entry.id} from './${entry.name}';`);
+    }
+    lines.push('globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};');
+    for (const entry of wasmEntries) {
+      lines.push(
+        `globalThis.__NIMBUS_WASM[${JSON.stringify(entry.name)}] = __NIMBUS_WASM_${entry.id};`,
+      );
+    }
+    lines.push('// ── End pool-injected WebAssembly modules ─────────────────');
+  }
+
+  lines.push(
+    '',
+    '// ── esbuild runtime shim ──────────────────────────────────',
+    '// When Nimbus is bundled by wrangler/esbuild, our facet function',
+    '// is transformed into `__name(async function …, "…")` at emit',
+    '// time. `fn.toString()` then yields the wrapped function body,',
+    '// but `__name` and its helpers are module-local in the SUPERVISOR',
+    '// bundle and do NOT cross into the facet isolate. Redeclare them',
+    '// here so facet bodies survive the toString() round-trip.',
+    ESBUILD_RUNTIME_SHIM,
+    '// ── End esbuild runtime shim ──────────────────────────────',
+    '',
+  );
+  if (options.preamble) {
+    lines.push(
+      '// ── Preamble (pool-level helpers) ─────────────────────────',
+      options.preamble,
+      '// ── End preamble ──────────────────────────────────────────',
+      '',
+    );
+  }
+  lines.push(`const __fn__ = ${options.fnSource};`);
+  lines.push('');
+  const callExpr = options.hasBindings
+    ? '__fn__(...args, this.env)'
+    : '__fn__(...args)';
+  lines.push(
+    'export default class extends WorkerEntrypoint {',
+    '  execute(...args) {',
+    `    const result = ${callExpr};`,
+    '    if (result instanceof Promise) return result;',
+    '    return result;',
+    '  }',
+    '}',
+  );
+  return lines.join('\n');
+}
+
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
@@ -246,6 +308,7 @@ export class NimbusLoaderPool {
   private readonly defaultTimeoutMs: number;
   private readonly defaultRetries: number;
   private readonly tag: string;
+  private readonly slotGenerations = new Map<number, number>();
   private bindings: Record<string, unknown> | undefined;
 
   private readonly preamble: string | undefined;
@@ -483,8 +546,8 @@ export class NimbusLoaderPool {
 
   /**
    * Build the WorkerCode blob that the loader callback will return.
-   * Same bytes every time for a given (fnHash, slot, context) → lets
-   * workerd treat it as a cache hit and reuse the isolate.
+   * Same bytes every time for a given function and slot, allowing workerd
+   * to reuse the isolate.
    *
    * Always prepends the ESBUILD_RUNTIME_SHIM so stringified functions that
    * reference esbuild-emitted helpers (__name, __defProp, etc.) don't
@@ -493,7 +556,6 @@ export class NimbusLoaderPool {
    */
   #buildCode(
     fnSource: string,
-    context?: Record<string, unknown>,
     perCallWasmEntries?: Array<{ name: string; id: string; bytes: ArrayBuffer }>,
   ) {
     const workerOpts = {
@@ -503,14 +565,6 @@ export class NimbusLoaderPool {
       globalOutbound: undefined as any,
       env: this.bindings,
     };
-
-    // Build module source manually (always — even without a user preamble
-    // — because we always want the esbuild-helper shim). The vendored
-    // buildWorkerCode is no longer used on this path; we keep the same
-    // module shape (default-export WorkerEntrypoint with execute()).
-    const lines: string[] = [
-      'import { WorkerEntrypoint } from "cloudflare:workers";',
-    ];
 
     // ── WASM module imports ───────────────────────────────────────────
     // Each entry in `wasmModules` (constructor-time + per-call) is
@@ -532,65 +586,12 @@ export class NimbusLoaderPool {
       ...this.wasmModules,
       ...(perCallWasmEntries ?? []),
     ];
-    if (allWasmEntries.length > 0) {
-      lines.push('');
-      lines.push('// ── Pool-injected WebAssembly modules ─────────────────────');
-      for (const w of allWasmEntries) {
-        lines.push(`import __NIMBUS_WASM_${w.id} from './${w.name}';`);
-      }
-      lines.push('globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};');
-      for (const w of allWasmEntries) {
-        // Bind by ORIGINAL name (the spec the caller used) so the user
-        // fn looks up via the same key it passed to wasmModules.
-        lines.push(
-          `globalThis.__NIMBUS_WASM[${JSON.stringify(w.name)}] = __NIMBUS_WASM_${w.id};`,
-        );
-      }
-      lines.push('// ── End pool-injected WebAssembly modules ─────────────────');
-    }
-
-    lines.push(
-      '',
-      '// ── esbuild runtime shim ──────────────────────────────────',
-      '// When Nimbus is bundled by wrangler/esbuild, our facet function',
-      '// is transformed into `__name(async function …, "…")` at emit',
-      '// time. `fn.toString()` then yields the wrapped function body,',
-      '// but `__name` and its helpers are module-local in the SUPERVISOR',
-      '// bundle and do NOT cross into the facet isolate. Redeclare them',
-      '// here so facet bodies survive the toString() round-trip.',
-      ESBUILD_RUNTIME_SHIM,
-      '// ── End esbuild runtime shim ──────────────────────────────',
-      '',
-    );
-    if (this.preamble) {
-      lines.push(
-        '// ── Preamble (pool-level helpers) ─────────────────────────',
-        this.preamble,
-        '// ── End preamble ──────────────────────────────────────────',
-        '',
-      );
-    }
-    if (context) {
-      for (const [key, value] of Object.entries(context)) {
-        lines.push(`const ${key} = ${JSON.stringify(value)};`);
-      }
-      lines.push('');
-    }
-    lines.push(`const __fn__ = ${fnSource};`);
-    lines.push('');
-    const callExpr = this.bindings
-      ? '__fn__(...args, this.env)'
-      : '__fn__(...args)';
-    lines.push(
-      'export default class extends WorkerEntrypoint {',
-      '  execute(...args) {',
-      `    const result = ${callExpr};`,
-      '    if (result instanceof Promise) return result;',
-      '    return result;',
-      '  }',
-      '}',
-    );
-    const moduleSource = lines.join('\n');
+    const moduleSource = assembleLoaderWorkerModuleSource({
+      fnSource,
+      preamble: this.preamble,
+      wasmEntries: allWasmEntries,
+      hasBindings: this.bindings !== undefined,
+    });
 
     // Modules map: the entry worker.js source plus any wasm modules the
     // pool was constructed with. Workerd parses the modules map at
@@ -630,7 +631,6 @@ export class NimbusLoaderPool {
     fnHash: string,
     slotIndex: number,
     args: unknown[],
-    context: Record<string, unknown> | undefined,
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, ArrayBuffer>,
   ): Promise<unknown> {
@@ -646,8 +646,10 @@ export class NimbusLoaderPool {
     // a later session's pool reuses the warm worker from a previous
     // session (which still carries the old session's env.SUPERVISOR
     // binding), and writeBatch RPCs land in the wrong DO's VFS.
-    const id = `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}`;
-    const code = this.#buildCode(fnSource, context, perCallWasmEntries);
+    const buildId = (generation: number): string =>
+      `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}:g${generation}`;
+    let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
+    const code = this.#buildCode(fnSource, perCallWasmEntries);
 
     // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
     // last-facet-id even on a hang or silent kill. Bounded — single
@@ -694,7 +696,9 @@ export class NimbusLoaderPool {
 
     const maxAttempts = 1 + resilience.retries;
     let lastError: Error | undefined;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let retriedCloneRefusal = false;
+    let attempt = 0;
+    while (attempt < maxAttempts) {
       try {
         if (resilience.timeoutMs > 0) {
           // Race runOnce() against a settable timer. CRITICAL: clear
@@ -729,6 +733,7 @@ export class NimbusLoaderPool {
         return await runOnce();
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        const cause = classifyError(lastError);
         // W5 Lever 5: classify + record. We push on EVERY failed
         // attempt (not just the final retry-exhausted throw) so the
         // ring captures transient SQLITE_NOMEM / clone-refused
@@ -738,7 +743,7 @@ export class NimbusLoaderPool {
           recordFailure({
             at: Date.now(),
             phase: 'rpc',
-            cause: classifyError(lastError),
+            cause,
             rssEstimateBytes: 0, heapUsedBytes: 0,
             lruBytes: 0, inFlightBytes: 0,
             lastRpcFrame: getLastRpcFrame(),
@@ -746,11 +751,23 @@ export class NimbusLoaderPool {
             message: lastError.message,
           });
         } catch { /* fail-soft */ }
+        if (cause === 'clone_refused' && !retriedCloneRefusal) {
+          retriedCloneRefusal = true;
+          const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
+          this.slotGenerations.set(slotIndex, generation);
+          id = buildId(generation);
+          try { setLastFacetId(id, slotIndex); } catch { /* best-effort */ }
+          // If the supervisor DO is stale, a newer loader still cannot
+          // deserialize back into it; only recycling that DO heals the
+          // reverse direction. This refresh targets the stale-loader case.
+          continue;
+        }
         if (attempt < maxAttempts - 1) {
           // 100 * 2^attempt, capped at 2s so retries don't compound waiting.
           const delay = Math.min(2000, 100 * Math.pow(2, attempt));
           await new Promise((r) => setTimeout(r, delay));
         }
+        attempt++;
       }
     }
     if (maxAttempts > 1) {
@@ -781,7 +798,6 @@ export class NimbusLoaderPool {
       fnHash,
       0,
       [arg],
-      opts?.context,
       resilience,
       opts?.wasmModules,
     )) as Awaited<R>;
@@ -860,7 +876,6 @@ export class NimbusLoaderPool {
             fnHash,
             slotIndex,
             [items[idx]],
-            opts?.context,
             resilience,
             opts?.wasmModules,
           )) as Awaited<R>;
@@ -913,11 +928,3 @@ export class NimbusLoaderPool {
     this.bindings = undefined;
   }
 }
-
-/** Re-export the subset of error types callers need to catch. */
-export {
-  BindingError,
-  ExecutionError,
-  RetryExhaustedError,
-  TimeoutError,
-} from './vendor/errors.js';

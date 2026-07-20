@@ -41,8 +41,8 @@ export function createModuleMap(ctx) {
         },
         buffer: () => ({ Buffer }),
         util: () => utilModule,
-        http: () => createHttp(ctx.portRegistry, 'http:'),
-        https: () => createHttp(ctx.portRegistry, 'https:'),
+        http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
+        https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
         child_process: () => createChildProcess(ctx.executeCapture),
         stream: () => {
             // Node.js CJS: require('stream') returns the Stream base class with

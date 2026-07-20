@@ -13,9 +13,8 @@
  * shim object that maps the most common Bun APIs onto Workers /
  * Cloudflare-native equivalents:
  *
- *   Bun.serve(opts)          — wraps via the long-running fork; opts.fetch
- *                               is the only required field. Returns
- *                               {port, hostname, stop, url}.
+ *   Bun.serve(opts)          — stub that throws "not implemented"; use
+ *                               node:http or a Worker fetch handler.
  *   Bun.file(path)           — VFS-backed BunFile {text, json, exists,
  *                               arrayBuffer, size, type}.
  *   Bun.write(dst, data)     — VFS write, accepts string|Uint8Array|

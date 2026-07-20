@@ -25,6 +25,7 @@ export type StoredTurnPart = {
 export type StoredToolPart = Extract<StoredTurnPart, {
     type: 'tool';
 }>;
+export type StoredMessageStatus = 'streaming' | 'complete' | 'interrupted';
 export interface StoredMessage {
     id: string;
     role: 'user' | 'assistant' | 'tool';
@@ -32,9 +33,15 @@ export interface StoredMessage {
     createdAt: number;
     name?: string;
     parts?: StoredTurnPart[];
-    /** Present when the turn was stopped by the client before it finished. */
+    /**
+     * Turn lifecycle. `aborted` and `error` refine an `interrupted` status
+     * with the known reason; an orphaned reset has neither reason marker.
+     * Missing status is valid for history written before lifecycle tracking.
+     */
+    status?: StoredMessageStatus;
+    /** Present only when an interrupted turn was stopped by the client. */
     aborted?: true;
-    /** Present when the turn ended in a terminal provider/stream error. */
+    /** Present only when an interrupted turn ended in a provider/stream error. */
     error?: string;
 }
 /** Per-step token usage as reported by the model provider. */
@@ -102,6 +109,11 @@ export declare function appendTextPart(parts: StoredTurnPart[], type: 'text' | '
  * whose start was observed, the duration is derived once from startedAt.
  */
 export declare function upsertToolPart(parts: StoredTurnPart[], patch: StoredToolPartPatch): StoredToolPart;
+/** Replace a stored message by id, or append it when first checkpointed. */
+export declare function upsertStoredMessage(messages: StoredMessage[], message: StoredMessage): void;
+/** Settle tools that cannot still be running once their turn is interrupted. */
+export declare function interruptRunningTools(parts: StoredTurnPart[], reason: string): void;
+export declare function isInterruptedMessage(message: StoredMessage): boolean;
 export declare function textFromParts(parts: StoredTurnPart[]): string;
 export interface AgentAccount {
     id: string;

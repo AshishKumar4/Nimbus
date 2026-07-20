@@ -2,37 +2,29 @@
  * symlink-registry.ts — virtual symlink table backed by a special
  * JSON file in the SqliteVFS.
  *
- * SHELL-FOLLOWUPS-4 (2026-05-11): Real symlink support for `ln -s`
- * + `readlink`. Pre-fix `ln -s` copied the file content into a new
- * regular file; `readlink` returned empty.
- *
- * Why a registry (not VFS-schema change):
- *   - SqliteVFS schema is anti-touch for surrounding waves.
- *   - Symlinks have minimal storage requirement (path → target string).
- *   - Persistence across reconnect/eviction is automatic because the
- *     registry file lives in the same SqliteVFS that gets snapshotted.
+ * Native symlinks now live in SqliteVFS. This registry remains the durable
+ * compatibility path for symlinks created by older sessions.
  *
  * Storage: `/.nimbus-symlinks.json` with shape `{ [linkPath]: target }`.
- * The registry is in-memory cached on first read; writes flush back
- * to the file synchronously.
+ * The registry cache tracks the backing inode revision so direct durable
+ * writes cannot leave clone destination proofs on a stale view.
  *
- * Resolution: callers (`ls -la`, `cat`, `readlink`, `rm`) check the
- * registry FIRST before treating a path as a regular file. This
- * means symlinks transparently dereference for read but appear in
- * `ls -la` with proper `lrwxrwxrwx` mode and `-> target` suffix.
+ * Native inodes take precedence when both representations exist.
  *
  * Loop guard: `resolveSymlinkChain` follows at most 40 hops (matches
  * POSIX SYMLOOP_MAX).
  */
 import type { SqliteVFS } from './sqlite-vfs.js';
+export declare const LEGACY_SYMLINK_REGISTRY_PATH = ".nimbus-symlinks.json";
 export declare class SymlinkRegistry {
     private vfs;
     private cache;
+    private cacheRevision;
     constructor(vfs: SqliteVFS);
-    /** Lazy-load + memoize the registry. */
+    /** Lazy-load the registry and refresh it after direct backing-file writes. */
     private load;
-    /** Write the cache back to the registry file. */
-    private flush;
+    /** Persist a complete registry snapshot before publishing it to readers. */
+    private persist;
     /** Normalize a path to the VFS internal key convention. */
     private norm;
     /** Create or replace a symlink. Target is stored verbatim (can be
@@ -40,6 +32,7 @@ export declare class SymlinkRegistry {
     set(linkPath: string, target: string): void;
     /** Remove a symlink. Returns true if it existed. */
     delete(linkPath: string): boolean;
+    assertMutable(...paths: string[]): void;
     /** Check if `path` is registered as a symlink (no chain resolution). */
     isSymlink(path: string): boolean;
     /** Get the immediate target of a symlink. Returns null if not a symlink. */
@@ -60,6 +53,7 @@ export declare class SymlinkRegistry {
         link: string;
         target: string;
     }[];
+    hasAtOrBelow(path: string): boolean;
 }
 /**
  * Return the session-wide registry for a VFS instance. The registry has an

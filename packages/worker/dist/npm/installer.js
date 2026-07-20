@@ -9,12 +9,12 @@
  *   Phase 2: Hoist          — compute flat node_modules layout
  *   Phase 3: Diff           — skip packages already cached
  *   Phase 4: Fetch+Extract  — wave-based, 15 pkgs/wave, cache results
- *   Phase 5: Write          — ONE transactionSync() per wave via writeBatch()
+ *   Phase 5: Write          — bulk waves via writeBatchStream()
  *   Phase 6: Link bins      — create node_modules/.bin/ entries
  *   Phase 7: Pre-bundle     — scan source, esbuild used packages (background)
  *
  * Key invariants:
- *   - All VFS writes go through writeBatch() (never individual writeFile)
+ *   - Bulk VFS writes use the explicit stream path (never individual writeFile)
  *   - Tarball cache is per-package (name, version) — no cross-package dedup
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
@@ -24,19 +24,20 @@ import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
+import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
-import { setInstallPhase, setResolverPath, setInstallFacetPath, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '../observability/diag-counters.js';
+import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '../observability/diag-counters.js';
 import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
 import { resolveOnePackumentInFacet, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { prebundleOne, buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
 import { PRE_BUNDLE_PREAMBLE } from '../loaders/pre-bundle-preamble.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
-import { CHUNK_SIZE } from '../constants.js';
+import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '../constants.js';
 import { waitForLowAllocPressure } from '../observability/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
@@ -139,7 +140,6 @@ export class NpmInstaller {
             // wide-layer submitMany.
             phaseStart = Date.now();
             setInstallPhase('resolve');
-            setResolverPath('in-facet');
             log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
             resolved = await this.resolveTreeViaFanout(specs, log, { frameworkAware });
             phases['resolve'] = Date.now() - phaseStart;
@@ -201,7 +201,7 @@ export class NpmInstaller {
             for (let i = 0; i < toRestore.length; i += RESTORE_WAVE) {
                 const wave = toRestore.slice(i, i + RESTORE_WAVE);
                 const payload = buildCacheRestorePayload(wave, hoistPlan, nmDir, this.cache);
-                const result = this.vfs.writeBatch(payload);
+                const result = await this.writeStreamPayload(payload);
                 totalFiles += result.inodes;
                 for (const pkg of wave) {
                     installed.push(`${pkg.name}@${pkg.version}`);
@@ -211,9 +211,9 @@ export class NpmInstaller {
         // Then, fetch + extract + write new packages.
         //
         // Single fetch path: one NimbusLoaderPool isolate (the batch facet)
-        // runs the entire install. The facet streams each tarball through
-        // gunzip+tar and emits one writeBatch RPC per package; supervisor
-        // heap only sees one inbound RPC payload at a time.
+        // runs the entire install. The facet streams tarballs through gunzip+tar
+        // and coalesces package-owned paths into shared writeBatchStream waves;
+        // every owner awaits each wave it contributed to.
         //
         // No fallback paths: env.LOADER + ctx are platform requirements
         // (their absence is a deploy bug, not a runtime branch). Per-package
@@ -221,7 +221,6 @@ export class NpmInstaller {
         // removed in Phase 2 A'.1 — they re-introduced the supervisor-heap
         // pressure the facet path eliminates.
         if (toFetch.length > 0) {
-            setInstallFacetPath('batch-facet');
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
             const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
             totalFiles += batchResult.filesWritten;
@@ -234,7 +233,7 @@ export class NpmInstaller {
         // ── Phase 6: Link bins ──────────────────────────────────────────
         phaseStart = Date.now();
         setInstallPhase('link-bins');
-        this.linkBins(resolved, nmDir);
+        await this.linkBins(resolved, nmDir);
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         if (!usedLockfile || opts?.packages) {
@@ -244,7 +243,6 @@ export class NpmInstaller {
         if (opts?.packages && opts.packages.length > 0) {
             this.updatePackageJson(projDir, opts.packages, resolved);
         }
-        this.vfs.flushAll();
         // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
         // The install command resolves IMMEDIATELY. Pre-bundle dispatches
         // its facet work in the background.
@@ -523,10 +521,8 @@ export class NpmInstaller {
                 for (const cw of res.cacheWrites)
                     cacheWritesPending.push(cw);
                 // cache-obs-2: harvest per-task cache events for end-of-walk fold.
-                if (Array.isArray(res.cacheStatEvents)) {
-                    for (const e of res.cacheStatEvents)
-                        fanoutCacheStatEvents.push(e);
-                }
+                if (res.cacheStatEvents)
+                    fanoutCacheStatEvents.push(...res.cacheStatEvents);
                 totalPackumentBytes += res.packumentBytesDecoded;
                 if (res.packumentSource === 'r2-cache')
                     r2Wins++;
@@ -789,7 +785,7 @@ export class NpmInstaller {
                 facetCounters: mergeFacetCounters(shardResults.map((r) => r.facetCounters)),
                 // cache-obs-2: merge per-shard cacheStatEvents (flat
                 // concatenation). Each shard's events are independent.
-                cacheStatEvents: shardResults.flatMap((r) => r.cacheStatEvents ?? []),
+                cacheStatEvents: shardResults.flatMap((r) => r.cacheStatEvents),
             };
             let okCount = 0;
             let failCount = 0;
@@ -809,11 +805,7 @@ export class NpmInstaller {
                 }
                 okCount++;
             }
-            // Fold facet counters into the supervisor's diag state so
-            // /api/_diag/memory shows the install ran in the facet (the
-            // smoking gun: cumulativeBytesDecoded grows on the FACET side
-            // while the supervisor's cumulativePackumentBytesDecoded stays
-            // flat).
+            // Fold facet counters into the supervisor's diagnostic state.
             recordInstallFacetCounters(result.facetCounters);
             // [W4] Fold tarball R2 race outcomes into supervisor diag.r2.
             const fc = result.facetCounters;
@@ -1062,36 +1054,36 @@ export class NpmInstaller {
     /**
      * Create node_modules/.bin/ entries for packages with "bin" fields.
      */
-    linkBins(resolved, nmDir) {
+    async linkBins(resolved, nmDir) {
         const binDir = nmDir + '/.bin';
-        const binEntries = [];
-        const binChunks = [];
-        const mtime = Date.now();
-        const dirs = new Set();
         const manifestEntries = [];
-        dirs.add(binDir);
         for (const [, pkg] of resolved) {
             for (const binEntry of packageBinEntries(pkg, nmDir)) {
                 manifestEntries.push(binEntry);
-                const script = createNpmBinShim(binEntry);
-                const data = enc.encode(script);
-                const linkPath = binDir + '/' + binEntry.name;
-                binEntries.push({
-                    path: linkPath,
-                    parentPath: binDir,
-                    isDir: false,
-                    size: data.length,
-                    mtime,
-                    mode: 0o755,
-                    chunkCount: 1,
-                });
-                binChunks.push({ path: linkPath, chunkId: 0, data });
             }
         }
-        if (binEntries.length === 0)
+        if (manifestEntries.length === 0)
             return;
+        const manifest = createNpmBinManifest(manifestEntries);
+        const binEntries = [];
+        const binChunks = [];
+        const mtime = Date.now();
+        for (const binEntry of Object.values(manifest.bins)) {
+            const data = enc.encode(createNpmBinShim(binEntry));
+            const linkPath = binDir + '/' + binEntry.name;
+            binEntries.push({
+                path: linkPath,
+                parentPath: binDir,
+                isDir: false,
+                size: data.length,
+                mtime,
+                mode: 0o755,
+                chunkCount: 1,
+            });
+            binChunks.push({ path: linkPath, chunkId: 0, data });
+        }
         const manifestPath = npmBinManifestPath(nmDir);
-        const manifestData = enc.encode(JSON.stringify(createNpmBinManifest(manifestEntries), null, 2) + '\n');
+        const manifestData = enc.encode(JSON.stringify(manifest, null, 2) + '\n');
         binEntries.push({
             path: manifestPath,
             parentPath: binDir,
@@ -1102,19 +1094,24 @@ export class NpmInstaller {
             chunkCount: 1,
         });
         binChunks.push({ path: manifestPath, chunkId: 0, data: manifestData });
-        // Add directory inodes
-        for (const dir of dirs) {
-            binEntries.push({
-                path: dir,
-                parentPath: parentOf(dir),
-                isDir: true,
-                size: 0,
-                mtime,
-                mode: 0o755,
-                chunkCount: 0,
-            });
+        binEntries.push({
+            path: binDir,
+            parentPath: parentOf(binDir),
+            isDir: true,
+            size: 0,
+            mtime,
+            mode: 0o755,
+            chunkCount: 0,
+        });
+        await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
+    }
+    async writeStreamPayload(payload) {
+        const result = await this.vfs.writeStream(encodeWriteBatchStream(payload));
+        if (!result.ok) {
+            throw new Error(`writeBatchStream failed after group ${result.committedGroupSequence} ` +
+                `(${result.committedPathCount} committed paths): ${result.error.message}`);
         }
-        this.vfs.writeBatch({ inodes: binEntries, chunks: binChunks });
+        return result;
     }
     // ── Package.json update ───────────────────────────────────────────────
     updatePackageJson(projDir, explicitPackages, resolved) {
@@ -1366,8 +1363,6 @@ export class NpmInstaller {
         // esbuild's WASM linear memory is per-FACET (~30–80 MiB) and lives
         // outside the supervisor. Per-slot try/catch handles failures —
         // /preview/@modules/ on-demand bundling recovers.
-        const PRE_BUNDLE_CONCURRENCY = 1;
-        const SLICE_CAP_BYTES = 28 * 1024 * 1024;
         // Fetch the esbuild-wasm bytes from the static-assets layer.
         // The supervisor briefly holds the 12 MiB ArrayBuffer between this
         // line and the LOADER hand-off below; after pool construction
@@ -1442,7 +1437,6 @@ export class NpmInstaller {
         let attempted = 0;
         let errorCount = 0;
         let skippedCount = 0;
-        let lastError = '';
         // Per-module error map for THIS batch. Replaces (not aggregates)
         // diag-counters.preBundleFacet.errorsByModule on phase end so
         // /api/_diag/memory surfaces "which modules failed THIS time" —
@@ -1507,19 +1501,18 @@ export class NpmInstaller {
                         slice = built;
                     }
                     else {
-                        slice = buildSliceForSpecifierWithCap(this.vfs, next.specifier, nmDir, SLICE_CAP_BYTES);
+                        slice = buildSliceForSpecifierWithCap(this.vfs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
                     }
                 }
                 catch (e) {
                     const msg = e?.message || String(e);
                     safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
                     errorCount++;
-                    lastError = msg;
                     errorsByModule[next.specifier] = msg;
                     continue;
                 }
                 if (!slice) {
-                    safeProgress(`  skipped pre-bundle for ${next.specifier}: slice exceeded ${(SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`);
+                    safeProgress(`  skipped pre-bundle for ${next.specifier}: slice exceeded ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`);
                     skippedCount++;
                     continue;
                 }
@@ -1534,7 +1527,6 @@ export class NpmInstaller {
                     const msg = e?.message || String(e);
                     safeProgress(`  pre-bundle externals threw for ${next.specifier}: ${msg}`);
                     errorCount++;
-                    lastError = msg;
                     errorsByModule[next.specifier] = msg;
                     continue;
                 }
@@ -1562,7 +1554,6 @@ export class NpmInstaller {
                     const msg = e?.remoteMessage || e?.message || String(e);
                     safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
                     errorCount++;
-                    lastError = msg;
                     errorsByModule[next.specifier] = msg;
                 }
                 finally {
@@ -1580,7 +1571,6 @@ export class NpmInstaller {
                     if (result) {
                         safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
                         errorCount++;
-                        lastError = why;
                         errorsByModule[next.specifier] = why;
                     }
                     result = null;
@@ -1613,7 +1603,6 @@ export class NpmInstaller {
                     const msg = e?.message || String(e);
                     safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
                     errorCount++;
-                    lastError = msg;
                     errorsByModule[next.specifier] = msg;
                 }
                 // result.esmCode is now durably in SQLite; drop our heap copy
@@ -1636,7 +1625,6 @@ export class NpmInstaller {
         catch (e) {
             const msg = e?.message || String(e);
             safeProgress(`Pre-bundle aborted: ${msg}`);
-            lastError = msg;
         }
         finally {
             // Fold pre-bundle outcomes into the diag counter singleton so
@@ -1650,7 +1638,6 @@ export class NpmInstaller {
                     bundlesCompleted: okCount,
                     errors: errorCount,
                     skipped: skippedCount,
-                    lastError,
                     errorsByModule,
                 });
             }
@@ -1866,13 +1853,10 @@ export class NpmInstaller {
             const counters = readDiagCounters();
             const vfsStats = this.vfs.getStats();
             const cacheStats = vfsStats.cache ?? {};
+            const sqlStats = vfsStats.sql ?? {};
             const heap = estimateSupervisorHeap(counters, {
                 cacheHotBytes: cacheStats.hotBytes ?? 0,
-                // Steady-state in-flight write bytes are 0 by the time we
-                // reach the pre-bundle phase boundary (writeBatch has
-                // already flushed before bundle dispatches). Same value
-                // routes.ts uses for its read.
-                inFlightWriteBytes: 0,
+                inFlightWriteBytes: sqlStats.retainedWriteBytes?.current ?? 0,
             });
             return heap.estimatedBytes / (1024 * 1024);
         }

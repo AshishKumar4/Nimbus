@@ -29,8 +29,8 @@
  * frees the `ptr()` allocations made before it, so a 60fps `rgbaPtr(color)`
  * render loop does not leak linear memory.
  *
- * Stage B: this module is standalone and unwired. Nothing in the running worker
- * imports it; Stage C patches it into the @opentui/core bundle.
+ * The opencode facet backend embeds this implementation into the patched
+ * @opentui/core bundle.
  */
 // ── FFI type tags (the @opentui/core `FFIType` surface zig.ts emits) ─────────
 //

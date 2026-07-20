@@ -95,6 +95,30 @@ try {
         && !/Disallowed operation|CompileError|not pre-registered|NativeSpanFeed error|Aborted\(/.test(tui.output),
       JSON.stringify(tui.rawOutput.slice(-900)));
 
+    // ── RUNG 2b: idle residency — the span-feed consumption-ack OOM killed the
+    // facet at ~15s of resident rendering (chunks never freed → wasm linear
+    // memory climbs to the isolate cap). Dwell ≥25s idle after the first frame
+    // and assert the facet is NOT OOM-killed, then that a keystroke still
+    // redraws (the renderer/loop is live, not wedged on stale refcounts). ──
+    const DWELL_MS = 25_000;
+    const dwellStart = Date.now();
+    let dwellKilled = false;
+    while (Date.now() - dwellStart < DWELL_MS) {
+      if (/\[process killed:/.test(tui.output) || tui.exit || tui.closed) { dwellKilled = true; break; }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    a.check('[rung2b] opencode TUI survives a ≥25s idle dwell with no OOM kill (span-feed ack leak closed)',
+      !dwellKilled && !/\[process killed:/.test(tui.output) && !tui.exit && !tui.closed,
+      JSON.stringify({ dwellMs: Date.now() - dwellStart, exit: tui.exit, closed: tui.closed, tail: tui.output.slice(-300) }));
+
+    const afterDwellLen = tui.rawOutput.length;
+    tui.input(' '); // benign keystroke; any redraw proves the renderer is live
+    const redrew = await tui.waitFor(() => tui.rawOutput.length > afterDwellLen, 15_000, 'redraw after idle dwell')
+      .then(() => true).catch(() => false);
+    a.check('[rung2b] a keystroke after the idle dwell still redraws (renderer not wedged)',
+      redrew && tui.rawOutput.length > afterDwellLen && !/\[process killed:/.test(tui.output),
+      JSON.stringify({ afterDwellLen, now: tui.rawOutput.length, redrew }));
+
     const beforeLen = tui.rawOutput.length;
 
     // ── RUNG 3a: a keystroke changes the frame ──
@@ -124,9 +148,13 @@ try {
     tui.signal('SIGINT');
     const exited = await tui.waitFor(() => !!tui.exit, 30_000, 'TUI exit')
       .then(() => true).catch(() => false);
-    a.check('[rung2] opencode TUI tears down and reports an exit (resident facet lifecycle)',
-      exited && !!tui.exit,
-      JSON.stringify(tui.exit));
+    // A CLEAN teardown, not an OOM kill: code 137 (SIGKILL) or a
+    // `[process killed: …]` stderr line is the facet death the ack leak caused —
+    // the old `exited && !!tui.exit` assertion passed on exactly that. Ctrl-C /
+    // SIGINT teardown exits gracefully (code 0 or 130).
+    a.check('[rung2] opencode TUI tears down with a CLEAN exit — not an OOM kill (resident facet lifecycle)',
+      exited && !!tui.exit && tui.exit.code !== 137 && !/\[process killed:/.test(tui.output),
+      JSON.stringify({ exit: tui.exit, tail: tui.output.slice(-300) }));
     try { tui.ws.close(); } catch {}
   }
 } finally {

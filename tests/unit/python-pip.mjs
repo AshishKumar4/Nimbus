@@ -284,7 +284,6 @@ try {
       version: '0.29.4',
       license: 'MPL-2.0',
       wasi_namespace: null,
-      memfs_companion: null,
       files: [],
       entrypoints: [],
       runtime_artifacts: [{

@@ -11,7 +11,7 @@ import {
   Shell,
 } from '../substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, type WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
@@ -613,8 +613,15 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content); }
   async _rpcStat(path: string): Promise<any> { return _rpc._rpcStat(this as any, path); }
+  async _rpcLstat(path: string): Promise<any> { return _rpc._rpcLstat(this as any, path); }
+  async _rpcHasLegacySymlinkUnder(path: string): Promise<boolean> {
+    return _rpc._rpcHasLegacySymlinkUnder(this as any, path);
+  }
   async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs);
+  }
+  async _rpcChmod(path: string, mode: number): Promise<void> {
+    return _rpc._rpcChmod(this as any, path, mode);
   }
   async _rpcReaddir(path: string): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path); }
   async _rpcExists(path: string): Promise<boolean> { return _rpc._rpcExists(this as any, path); }
@@ -642,7 +649,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
   async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
-  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatchStream(this as any, stream); }
+  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult> {
+    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner);
+  }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: string): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
@@ -658,6 +667,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return _rpc._rpcPrefetch(this as any, cwd, entryCode); }
   async _rpcRegisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcRegisterPort(this as any, pid, port); }
   async _rpcUnregisterPort(port: number): Promise<void> { return _rpc._rpcUnregisterPort(this as any, port); }
+  async _rpcRouteLoopback(port: number, request: Request): Promise<Response> { return _rpc._rpcRouteLoopback(this as any, port, request); }
   async _rpcTransform(code: string, loader: string): Promise<{ code: string; map: string } | null> { return _rpc._rpcTransform(this as any, code, loader); }
 
   // two-tier-fanout: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
@@ -690,6 +700,12 @@ export class NimbusSession extends CloudflareDurableObject {
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: _programmatic.ProgrammaticReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }
+  /** perf(boot): cold placement + constructor probe. First access runs the
+   *  DO constructor (placement + blockConcurrencyWhile storage I/O) but this
+   *  method does NOT run initSession, so measuring its `rpcMs` against a
+   *  full `ready` isolates the platform DO-placement floor from the
+   *  initSession build cost. */
+  async _rpcBootProbe(): Promise<{ ok: true }> { return { ok: true }; }
   async _rpcExec(command: string, options?: _programmatic.ProgrammaticExecOptions) { return _programmatic.rpcExec(this as any, command, options); }
   async _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions) { return _programmatic.rpcStartProcess(this as any, command, options); }
   async _rpcRunCode(code: string, options?: _programmatic.ProgrammaticExecOptions & { language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell'; install?: 'never' | 'ifMissing' }) {
@@ -781,23 +797,6 @@ export class NimbusSession extends CloudflareDurableObject {
   ensureSqliteFs() {
     if (!this.sqliteFs) {
       this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-      // Audit C1: surface deferred-flush failures. SqliteVFS.writeFile()
-      // is synchronous (fire-and-forget by design — see LIFO MountProvider
-      // contract) so it can't return an error to the caller. Instead the
-      // VFS retries once and then calls these handlers for chunks that
-      // failed twice. We log to the user's terminal (non-spammy — the
-      // VFS also logs to the Worker console for operator triage) and
-      // make the error visible in /api/stats via getStats().
-      this.sqliteFs.onWriteError((err) => {
-        try {
-          if (this.terminal) {
-            this.terminal.write(
-              `\x1b[31m[vfs] write failed: ${err.path} chunk ${err.chunkId} ` +
-              `(attempts=${err.attempts}): ${err.error}\x1b[0m\r\n`,
-            );
-          }
-        } catch { /* handler must not throw back into the flush path */ }
-      });
       // W5 Lever 8: shrinkForInstall() during heavy-alloc windows.
       // The observer fires only on 0→1 / ≥1→0 edges (registerAllocObserver
       // in heavy-alloc-coord.ts handles the refcount). Default shrink
@@ -863,6 +862,7 @@ export class NimbusSession extends CloudflareDurableObject {
         {
           onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
           onSpawn: (pid, command, longRunning) => {
+            const attachedTty = this.processes.get(pid)?.attachedTty === true;
             if (longRunning) {
               try { this.processes.openInput(pid); } catch {}
             }
@@ -876,7 +876,9 @@ export class NimbusSession extends CloudflareDurableObject {
             );
             // Structured event so the tabs UI can auto-open a log tab
             // for long-running processes (vite, wrangler dev, etc.).
-            notifyTerminalEvent(this.terminal, { type: 'spawn', pid, command, longRunning });
+            notifyTerminalEvent(this.terminal, {
+              type: 'spawn', pid, command, longRunning, attachedTty,
+            });
           },
         },
       );
@@ -1025,12 +1027,8 @@ export class NimbusSession extends CloudflareDurableObject {
         }
       },
     };
-    // child-process isolation gap #1: per-spawn fresh-isolate envelope. The pool wraps
-    // NimbusFanoutPool — auto-routes <5 → in-DO fanout in-DO, ≥5 → peer-DO fanout
-    // peer-DO. Hard-fails at construction if env.LOADER missing (no
-    // fallback). The pool is constructed lazily on the same path that
-    // builds FacetProcessManager so unit tests that don't supply
-    // env.LOADER still work via the legacy in-supervisor dispatch.
+    // Construct the child-process Loader pool when the binding is available.
+    // Unit-test hosts without LOADER continue through direct dispatch.
     let spawnPool: ChildProcessSpawnPool | undefined;
     try {
       const envAny = this.env as any;

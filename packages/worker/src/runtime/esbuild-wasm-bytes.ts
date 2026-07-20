@@ -18,10 +18,8 @@
  * Pre-rebuild this module decoded a 16 MiB base64 string from
  * src/esbuild-wasm-bundle.generated.ts into an ArrayBuffer and cached
  * the result in module scope for the lifetime of the supervisor
- * isolate. The cache contributed 16 MiB resident to the supervisor
- * heap (`esbuildResidentBytes` in src/observability/heap-estimate.ts)
- * AND the base64 string contributed ~21 MiB to the worker bundle
- * baseline.
+ * isolate. The cache contributed 16 MiB to the supervisor heap, and the
+ * base64 string contributed ~21 MiB to the worker bundle baseline.
  *
  * The architecturally correct path is to keep the bytes in the static-
  * assets layer (public/_assets/esbuild-<version>.wasm), fetch on

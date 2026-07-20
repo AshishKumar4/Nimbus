@@ -60,6 +60,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
         doId: z.ZodString;
         pid: z.ZodNumber;
     }, z.core.$strip>>;
+    stage: z.ZodOptional<z.ZodUnknown>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
@@ -121,6 +122,15 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint {
         includeSupervisor: boolean;
     }): Promise<any>;
     startProcess(args: any): Promise<any>;
+    /**
+     * Relay the inner entrypoint's Response to the caller with a LIVE body.
+     * The body streams through an identity pipe and the entrypoint stub is
+     * disposed only once the body finishes — materializing (arrayBuffer) here
+     * buffered every routed response to stream-end, which froze SSE/chunked
+     * bodies (opencode's /event live-sync, `curl -N` loopback, external
+     * preview) until the facet closed the stream.
+     */
+    private _relayNestedRpcResponse;
     handleHttpRequest(request: Request): Promise<Response>;
     /**
      * Forward fetch() to the outer worker's entrypoint. All three outer

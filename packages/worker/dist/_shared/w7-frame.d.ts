@@ -1,93 +1,79 @@
 /**
- * w7-frame.ts — Wire protocol for streaming bulk-write payloads
- * from facet to supervisor over RPC, bypassing the 32 MiB
- * structured-clone cap.
- *
- * Frame format (W7 wire protocol v1):
- *
- *   ┌─────────────────────────────────────────────────────────┐
- *   │ MAGIC: 4 bytes — 'NW7\x01'  (Nimbus W7 v1)             │
- *   │ HDR_LEN: 4 bytes uint32-LE — length of header JSON      │
- *   │ HDR_JSON: HDR_LEN bytes UTF-8 JSON                      │
- *   │   { inodes: BatchInodeEntry[], deletePaths?: string[],  │
- *   │     chunkCount: number }                                │
- *   │ For each chunk (chunkCount times):                       │
- *   │   PATH_LEN: 4 bytes uint32-LE                            │
- *   │   PATH_BYTES: PATH_LEN bytes UTF-8                       │
- *   │   CHUNK_ID:  4 bytes uint32-LE                           │
- *   │   DATA_LEN:  4 bytes uint32-LE                            │
- *   │   DATA:      DATA_LEN bytes raw                            │
- *   │ TRAILER: 4 bytes — 'NEND'                                │
- *   └─────────────────────────────────────────────────────────┘
- *
- * Why a custom frame and not CBOR / protobuf:
- *   - We control both ends; no schema-evolution constraint.
- *   - The whole point is byte-counted streaming with type: 'bytes'.
- *   - Adding a transport dep would bloat the facet preamble.
- *
- * Contract per Cloudflare Workers RPC docs
- * (https://developers.cloudflare.com/workers/runtime-apis/rpc/):
- *
- *   - Only byte-oriented streams (`type: 'bytes'`) traverse RPC.
- *   - Ownership transfers — sender cannot read after sending.
- *   - Flow control is automatic on the byte-stream.
- *
- * The encoder uses `type: 'bytes'` so the resulting stream is
- * byob-readable, which is the precise requirement for RPC transit.
+ * W7 v3 — incremental typed records for streamed bulk filesystem writes.
+ * The format is internal: every producer and consumer deploys together.
  */
-import type { BatchInodeEntry, BatchChunkEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
-/** Magic bytes 'NW7\x01' — start of every W7 frame.
- *  Not Object.freeze'd: typed-array storage isn't a configurable property,
- *  so freezing throws on any later byte-write. We rely on internal
- *  discipline + .slice() at every emission point. */
+import type { BatchInodeEntry, BatchWritePayload } from '../vfs/sqlite-vfs.js';
 export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
-/** Trailer 'NEND' — sanity terminator. Same freeze caveat applies. */
-export declare const W7_TRAILER: Uint8Array<ArrayBuffer>;
-/** Diagnostics — peak in-flight bytes resident inside any active encoder
- *  queue since last reset. Used by the heap-peak probe to verify the
- *  ≤ 30 MiB acceptance gate. */
-export declare function _peakInFlightBytes(): number;
-/** Diagnostics — reset both peak and current counters. Intended for
- *  test isolation between scenarios. */
-export declare function _resetPeakInFlightBytes(): void;
-/**
- * Encode a BatchWritePayload as a byte-oriented ReadableStream.
- *
- * Returns a `ReadableStream<Uint8Array>` with `type: 'bytes'` (BYOB
- * readable, RPC-transferable). The stream:
- *   1. Emits MAGIC.
- *   2. Emits HDR_LEN + HDR_JSON encoding inode metadata, deletePaths,
- *      and chunkCount.
- *   3. Emits each chunk record (PATH_LEN, PATH, CHUNK_ID, DATA_LEN, DATA).
- *   4. Emits TRAILER.
- *   5. Closes.
- *
- * Backpressure: the source uses `pull()` — the encoder produces the
- * NEXT chunk only when the consumer has drained the queue below the
- * HWM. Module-level `_currentInFlight` tracks queue residency for the
- * heap-peak probe.
- */
+export declare const W7_MAX_PATHS_PER_BATCH = 128;
+export declare const W7_MAX_OWNED_PATH_BYTES: number;
+export declare const W7_MAX_RECORD_BYTES: number;
+declare const MODE: "path-atomic-committed-prefix";
+export interface W7BatchSummary {
+    recordCount: number;
+    pathCount: number;
+    deleteCount: number;
+    directoryCount: number;
+    fileCount: number;
+    chunkCount: number;
+    byteCount: number;
+    check: number;
+}
+export interface W7ChunkRetention {
+    readonly bytes: number;
+    release(): void;
+}
+export interface W7DecodeOptions {
+    signal?: AbortSignal;
+    retainChunk?: (byteLength: number, signal?: AbortSignal) => Promise<W7ChunkRetention>;
+}
+type W7DirectoryInode = BatchInodeEntry & {
+    kind: 'directory';
+    isDir: true;
+};
+type W7ContentInode = BatchInodeEntry & {
+    kind: 'file' | 'symlink';
+    isDir: false;
+};
+export type W7DecodedRecord = {
+    type: 'delete';
+    path: string;
+} | {
+    type: 'directory';
+    inode: W7DirectoryInode;
+} | {
+    type: 'file-begin';
+    streamContentId: string;
+    inode: W7ContentInode;
+} | {
+    type: 'file-chunk';
+    streamContentId: string;
+    path: string;
+    chunkId: number;
+    data: Uint8Array;
+    retention: W7ChunkRetention;
+} | {
+    type: 'file-end';
+    streamContentId: string;
+    path: string;
+    size: number;
+    chunkCount: number;
+    check: number;
+} | {
+    type: 'batch-end';
+    summary: W7BatchSummary;
+};
+export interface W7DecodedStream {
+    readonly batchId: string;
+    readonly mode: typeof MODE;
+    readonly records: AsyncIterable<W7DecodedRecord>;
+}
+/** Encode one bounded record per pull; no batch-sized metadata header exists. */
 export declare function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array>;
 /**
- * Decode a W7 stream into a structured handle:
- *   - `inodes` and `deletePaths` are read eagerly (the header arrives
- *     in the first frame; metadata is small).
- *   - `chunkIter` is an AsyncIterable that yields `BatchChunkEntry`
- *     items one at a time, lazily, as bytes arrive.
- *
- * The chunk iterator is resumable but NOT seekable. The caller must
- * iterate it linearly. Closing the iterator early is permitted (the
- * underlying reader is released).
- *
- * Errors propagate:
- *   - Magic mismatch → rejects on the returned promise.
- *   - Truncated header → rejects on the returned promise.
- *   - Truncated chunk record → the iterator throws the error.
- *   - Source error mid-stream → the iterator throws the error.
+ * Parse the v3 preamble eagerly, then expose validated operation records
+ * incrementally. Chunk credit is acquired after its bounded header validates
+ * and before its payload bytes are read or copied.
  */
-export declare function decodeWriteBatchStream(stream: ReadableStream<Uint8Array>): Promise<{
-    inodes: BatchInodeEntry[];
-    chunkIter: AsyncIterable<BatchChunkEntry>;
-    deletePaths?: string[];
-}>;
+export declare function decodeWriteBatchStream(stream: ReadableStream<Uint8Array>, options?: W7DecodeOptions): Promise<W7DecodedStream>;
+export {};
 //# sourceMappingURL=w7-frame.d.ts.map

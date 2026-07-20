@@ -41,6 +41,28 @@ export function upsertToolPart(parts, patch) {
     }
     return part;
 }
+/** Replace a stored message by id, or append it when first checkpointed. */
+export function upsertStoredMessage(messages, message) {
+    const index = messages.findIndex((item) => item.id === message.id);
+    if (index >= 0)
+        messages[index] = message;
+    else
+        messages.push(message);
+}
+/** Settle tools that cannot still be running once their turn is interrupted. */
+export function interruptRunningTools(parts, reason) {
+    for (const part of parts) {
+        if (part.type !== 'tool' || part.status !== 'running')
+            continue;
+        part.status = 'error';
+        part.error = reason;
+        if (part.output === undefined)
+            part.output = { error: reason };
+    }
+}
+export function isInterruptedMessage(message) {
+    return message.status === 'interrupted' || message.aborted === true || typeof message.error === 'string';
+}
 export function textFromParts(parts) {
     return parts
         .filter((part) => part.type === 'text')

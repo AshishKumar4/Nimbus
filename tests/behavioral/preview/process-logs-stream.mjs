@@ -47,6 +47,7 @@ console.log(`behavioral/preview/process-logs-stream — BASE=${BASE} sid=${sid}`
 
 const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
 let buf = '';
+const spawnEvents = [];
 let tConn = false, tClosed = false;
 ws.on('open', () => { tConn = true; });
 ws.on('close', () => { tClosed = true; });
@@ -55,6 +56,7 @@ ws.on('message', (data) => {
   try {
     const m = JSON.parse(data.toString('utf8'));
     if (m.type === 'output' && typeof m.data === 'string') buf += m.data;
+    else if (m.type === 'spawn') spawnEvents.push(m);
   } catch {}
 });
 {
@@ -111,6 +113,10 @@ const pidMatch = stripAnsi(buf).match(/pid=(\d+)/);
 if (!pidMatch) { console.error('FATAL: could not extract vite pid from banner'); process.exit(2); }
 const vitePid = parseInt(pidMatch[1], 10);
 console.log(`  detected vite pid=${vitePid}`);
+const viteSpawn = spawnEvents.find((event) => event.pid === vitePid);
+check('plain dev-server spawn is explicitly non-attached-TTY',
+  viteSpawn?.attachedTty === false,
+  `spawn=${JSON.stringify(viteSpawn)}`);
 
 // ── connect the Process-tab WS for this pid ──
 //
@@ -121,6 +127,7 @@ console.log(`  detected vite pid=${vitePid}`);
 // trigger HMR) and assert that NEW chunks arrive within 8 s.
 const logsWs = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${vitePid}`, wsHeaders());
 let backlogSeen = false;
+let backlogFrame = null;
 let chunksSeen = 0;
 let postBacklogChunks = [];
 let logsClosed = false;
@@ -129,7 +136,10 @@ logsWs.on('close', () => { logsClosed = true; });
 logsWs.on('error', (e) => { console.log('  logs WS error:', e?.message); });
 logsWs.on('message', (data) => {
   let m; try { m = JSON.parse(data.toString('utf8')); } catch { return; }
-  if (m.type === 'backlog') backlogSeen = true;
+  if (m.type === 'backlog') {
+    backlogSeen = true;
+    backlogFrame = m;
+  }
   else if (m.type === 'chunk') {
     chunksSeen++;
     if (backlogSeen) postBacklogChunks.push(m);
@@ -142,6 +152,11 @@ logsWs.on('message', (data) => {
   while (!backlogSeen && Date.now() - t0 < 10_000 && !logsClosed) await sleep(50);
 }
 check('Process-tab WS receives backlog frame', backlogSeen, `closed=${logsClosed}`);
+const backlogLfChunks = (backlogFrame?.chunks || []).filter((chunk) =>
+  typeof chunk.data === 'string' && chunk.data.includes('\n'));
+check('backlog preserves raw LF bytes without terminal conversion',
+  backlogLfChunks.length > 0 && backlogLfChunks.every((chunk) => !chunk.data.includes('\r')),
+  `chunksWithLf=${backlogLfChunks.length}`);
 
 // Quiesce — no more chunks expected without activity.
 const chunksBefore = chunksSeen;
@@ -171,6 +186,10 @@ await sleep(800);
 check('post-banner chunk arrives within 8 s of dev-server activity',
   postBacklogChunks.length > 0,
   `postBacklogChunks=${postBacklogChunks.length}; chunksBefore=${chunksBefore}; chunksSeen=${chunksSeen}`);
+check('live chunks preserve raw LF bytes without terminal conversion',
+  postBacklogChunks.some((chunk) =>
+    typeof chunk.data === 'string' && chunk.data.endsWith('\n') && !chunk.data.includes('\r')),
+  `postBacklogChunks=${postBacklogChunks.length}`);
 
 if (postBacklogChunks.length > 0) {
   const sample = postBacklogChunks.slice(0, 3).map(c =>

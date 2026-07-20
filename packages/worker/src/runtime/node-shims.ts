@@ -31,7 +31,6 @@
  *   - __vfsBundle: Record<string, string>  (path→utf8 content)
  *   - __vfsWrites: Record<string, string | Uint8Array> (sync writes / failed async writes)
  *   - __vfsDirs:   Record<string, boolean> (dirs created)
- *   - __vfsBaseUrl: string                 (supervisor URL for lazy VFS reads)
  *   - cwd: string
  *   - argv, env, filename, dirname: from args
  *   - stdout, stderr, exitCode: capture variables
@@ -94,7 +93,39 @@ async function __nimbusUseRpcResult(promise, use) {
     if (Array.isArray(h)) return h.some((p) => String(p?.[0]).toLowerCase() === "user-agent");
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
+  const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
+  // to the facet that owns <port> through the supervisor's port registry (the
+  // same routing the shell curl/node loopback uses), so a facet can reach another
+  // facet's server in-session (opencode attach reaching opencode serve). Returns
+  // the target's Response (streamed over RPC, so SSE flows). Anything non-
+  // loopback, or when no supervisor is bound, falls through to real fetch.
+  const __maybeRouteLoopback = (input, init) => {
+    if (!__supervisor || typeof __supervisor.routeLoopback !== "function") return null;
+    let url;
+    try {
+      const href = typeof input === "string" ? input
+        : (input && typeof input === "object" && input.url) ? input.url : String(input);
+      url = new URL(href);
+    } catch { return null; }
+    if (!__loopbackHosts.has(url.hostname)) return null;
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    if (!Number.isFinite(port) || port <= 0) return null;
+    // Strip the caller's AbortSignal before the RPC hop: workerd JSRPC does
+    // not serialize Request.signal ("AbortSignal serialization is not
+    // enabled"), and the opencode SDK stamps timeout signals on its startup
+    // requests — which made 4/5 attach boot calls fail. Cancellation across
+    // the loopback is advisory; an aborted caller simply drops the response.
+    const request = (typeof Request !== "undefined" && input instanceof Request)
+      ? new Request(input, { ...(init || {}), signal: null })
+      : new Request(url.href, { ...(init || {}), signal: null });
+    return Promise.resolve(__supervisor.routeLoopback(port, request));
+  };
   globalThis.fetch = function fetch(input, init) {
+    try {
+      const routed = __maybeRouteLoopback(input, init);
+      if (routed) return routed;
+    } catch { /* fall through to real fetch */ }
     const reqHasUa = typeof Request !== "undefined" && input instanceof Request && __hasUa(input.headers);
     if (reqHasUa || __hasUa(init && init.headers)) return __origFetch(input, init);
     const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
@@ -351,6 +382,13 @@ const __fsMod = (() => {
   }
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
+  const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+
+  function _coerceMode(value, syscall, p) {
+    const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
+    if (!Number.isInteger(n) || n < 0) throw _fsErr("EINVAL", syscall, p);
+    return n & 0o7777;
+  }
 
   function _coerceTimeMs(value, syscall, p) {
     if (value instanceof Date) {
@@ -379,6 +417,7 @@ const __fsMod = (() => {
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
+    const localMode = _localModes[k];
     return {
       isFile: () => !isDir && !isSymlink,
       isDirectory: () => isDir,
@@ -388,7 +427,7 @@ const __fsMod = (() => {
       mtime,
       ctime: mtime,
       birthtime: mtime,
-      mode,
+      mode: localMode === undefined ? mode : (isDir ? 0o040000 : 0o100000) | localMode,
     };
   }
 
@@ -421,10 +460,14 @@ const __fsMod = (() => {
       await supervisor.writeFile(absPath, __vfsWrites[k]);
       delete __vfsWrites[k];
       _markVfsStale();
-      return;
-    }
-    if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
+    } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
       await supervisor.mkdir(absPath);
+      _markVfsStale();
+    }
+    // Pending sync chmod rides along with any flush of the same path
+    // (idempotent — the entry stays so local statSync remains coherent).
+    if (k in _localModes && typeof supervisor.chmod === "function") {
+      await supervisor.chmod(absPath, _localModes[k]);
       _markVfsStale();
     }
   }
@@ -548,6 +591,16 @@ const __fsMod = (() => {
       if (meta) return _statObject(meta);
     }
     return statSync(p);
+  }
+
+  async function _lstatAsync(p) {
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.lstat === "function") {
+      const meta = await __nimbusUseRpcResult(supervisor.lstat(absPath), (result) => result);
+      if (meta) return _statObject(meta);
+    }
+    return lstatSync(p);
   }
 
   async function _readdirAsync(p, opts) {
@@ -757,6 +810,31 @@ const __fsMod = (() => {
       return;
     }
     if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", syscall, p);
+  }
+
+  function chmodSync(p, mode) {
+    if (!existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
+    // Local-visible immediately (statSync overlay); the live write-through
+    // rides the next flush of the same path — same fidelity as utimesSync.
+    _localModes[_strip(_resolve(p))] = _coerceMode(mode, "chmod", p);
+  }
+
+  async function _chmodAsync(p, mode) {
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    let localExists = false;
+    try { localExists = existsSync(p); } catch {}
+    if (!localExists && (!supervisor || typeof supervisor.chmod !== "function")) {
+      throw _fsErr("ENOENT", "chmod", p);
+    }
+    const m = _coerceMode(mode, "chmod", p);
+    _localModes[_strip(absPath)] = m;
+    if (supervisor && typeof supervisor.chmod === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      _markVfsStale();
+      return;
+    }
+    if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
   }
 
   // ── readFileSync ──
@@ -1040,6 +1118,7 @@ const __fsMod = (() => {
     _writeFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
   function stat(p, cb) { _statAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
+  function lstat(p, cb) { _lstatAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
   function readdir(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
     _readdirAsync(p, opts).then((d) => cb(null, d)).catch((e) => cb(e));
@@ -1053,6 +1132,7 @@ const __fsMod = (() => {
   function rename(oldP, newP, cb) { _renameAsync(oldP, newP).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function utimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function lutimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function chmod(p, mode, cb) { _chmodAsync(p, mode).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function access(p, mode, cb) {
     if (typeof mode === "function") { cb = mode; mode = undefined; }
     _existsAsync(p).then((ok) => {
@@ -1192,7 +1272,7 @@ const __fsMod = (() => {
       await _truncateAsync(this._path, size);
       this._size = size;
     }
-    async chmod() {} async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
+    async chmod(mode) { await _chmodAsync(this._path, mode); } async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
     async close() { this._closed = true; }
     [Symbol.asyncDispose]() { return this.close(); }
   }
@@ -1241,7 +1321,7 @@ const __fsMod = (() => {
 
     // W3 additions:
     appendFile: async (p, d, o) => { await _appendFileAsync(p, d, o); },
-    lstat: (p) => new Promise((res, rej) => stat(p, (e, s) => e ? rej(e) : res(s))),
+    lstat: (p) => new Promise((res, rej) => lstat(p, (e, s) => e ? rej(e) : res(s))),
     rm: async (p, opts) => {
       const o = opts || {};
       const k = _strip(_resolve(p));
@@ -1294,7 +1374,7 @@ const __fsMod = (() => {
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
     truncate: async (p, len) => { await _truncateAsync(p, len || 0); },
-    chmod: async () => {}, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
+    chmod: async (p, mode) => { await _chmodAsync(p, mode); }, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
     utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
     lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
@@ -1407,8 +1487,8 @@ const __fsMod = (() => {
   const __fsExports = {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
-    realpathSync, utimesSync, lutimesSync,
-    readFile, writeFile, stat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, access,
+    realpathSync, utimesSync, lutimesSync, chmodSync,
+    readFile, writeFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({
@@ -3001,7 +3081,7 @@ const __consoleMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __nimbusAttachedTty = !!(env && (env.NIMBUS_ATTACHED_TTY === "1" || env.FORCE_TTY === "1"));
+const __nimbusAttachedTty = env?.NIMBUS_ATTACHED_TTY === "1";
 let __nimbusTtyColumns = Number(env && env.COLUMNS) || 80;
 let __nimbusTtyRows = Number(env && env.LINES) || 24;
 const __nimbusTerminalOutputStreams = [];
@@ -3428,22 +3508,175 @@ builtins.process = __processMod;
 builtins.console = __consoleMod;
 builtins.http = (() => {
   if (!globalThis.__portRegistry) globalThis.__portRegistry = new Map();
+  // Capture the host Response/encoder at shim-init (before any user code can
+  // shadow globalThis.Response) — the dispatch layer wraps the response stream
+  // in a host Response and streams it across the RPC boundary.
+  const __httpEnc = new TextEncoder();
+  const __hostResponse = globalThis.Response;
+  // Streaming ServerResponse: writes flow into a ReadableStream that the
+  // dispatch layer (__nimbusServeHttp) returns the moment response headers are
+  // known — nothing is buffered to "finish". A live SSE / chunked body that
+  // never ends streams indefinitely; a slow-but-finite response streams as it
+  // is produced. res.write() enqueues bytes (binary-safe), res.end() closes the
+  // stream, and a downstream cancel (client disconnect) releases the handler.
   class ServerResponse extends __eventsMod {
-    constructor() { super(); this.statusCode = 200; this.headers = {}; this._body = []; this._ended = false; }
-    writeHead(code, hdrs) { this.statusCode = code; if (hdrs) Object.assign(this.headers, hdrs); return this; }
-    setHeader(k, v) { this.headers[k.toLowerCase()] = v; return this; }
-    getHeader(k) { return this.headers[k.toLowerCase()]; }
-    write(chunk) { this._body.push(typeof chunk === "string" ? chunk : String(chunk)); return true; }
-    end(data) { if (data) this.write(data); this._ended = true; this.emit("finish"); }
-    get headersSent() { return this._ended; }
+    constructor() {
+      super();
+      this.statusCode = 200;
+      this.statusMessage = undefined;
+      this.headers = {};
+      this._headersSent = false;
+      this._ended = false;
+      this._destroyed = false;
+      this._closed = false;
+      this._controller = null;
+      this._needDrain = false;
+      const self = this;
+      // Bounded backpressure: up to 16 queued chunks before write() reports
+      // backpressure (returns false) and a 'drain' fires on the next pull.
+      this._stream = new ReadableStream({
+        start(c) { self._controller = c; },
+        pull() { if (self._needDrain) { self._needDrain = false; self.emit("drain"); } },
+        cancel() {
+          // Downstream (client / attach facet) went away — release the handler
+          // so a dead SSE does not keep the producer writing into a void.
+          self._destroyed = true;
+          self._ended = true;
+          self.emit("aborted");
+          self._emitClose();
+        },
+      }, new CountQueuingStrategy({ highWaterMark: 16 }));
+      // Resolves as soon as headers are flushed (writeHead / first write / end).
+      this._headersReady = new Promise((resolve) => { self._resolveHeaders = resolve; });
+    }
+    _emitClose() { if (!this._closed) { this._closed = true; this.emit("close"); } }
+    _flushHeaders() { if (this._headersSent) return; this._headersSent = true; this._resolveHeaders(); }
+    _toBytes(chunk) {
+      if (typeof chunk === "string") return __httpEnc.encode(chunk);
+      if (chunk instanceof Uint8Array) return chunk;
+      if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+      if (chunk && chunk.buffer instanceof ArrayBuffer && typeof chunk.byteLength === "number") {
+        return new Uint8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength);
+      }
+      return __httpEnc.encode(String(chunk));
+    }
+    writeHead(code, reasonOrHeaders, maybeHeaders) {
+      this.statusCode = code;
+      let hdrs = maybeHeaders;
+      if (reasonOrHeaders && typeof reasonOrHeaders === "object") hdrs = reasonOrHeaders;
+      else if (typeof reasonOrHeaders === "string") this.statusMessage = reasonOrHeaders;
+      if (hdrs) {
+        if (Array.isArray(hdrs)) { for (let i = 0; i + 1 < hdrs.length; i += 2) this.headers[String(hdrs[i]).toLowerCase()] = hdrs[i + 1]; }
+        else for (const k of Object.keys(hdrs)) this.headers[k.toLowerCase()] = hdrs[k];
+      }
+      this._flushHeaders();
+      return this;
+    }
+    flushHeaders() { this._flushHeaders(); return this; }
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; return this; }
+    getHeader(k) { return this.headers[String(k).toLowerCase()]; }
+    getHeaders() { return { ...this.headers }; }
+    hasHeader(k) { return Object.prototype.hasOwnProperty.call(this.headers, String(k).toLowerCase()); }
+    removeHeader(k) { delete this.headers[String(k).toLowerCase()]; }
+    write(chunk, enc, cb) {
+      if (typeof enc === "function") { cb = enc; }
+      this._flushHeaders();
+      if (this._ended || this._destroyed) { if (cb) queueMicrotask(cb); return false; }
+      if (chunk != null && !(typeof chunk === "string" && chunk.length === 0)) {
+        try { this._controller.enqueue(this._toBytes(chunk)); }
+        catch { this._destroyed = true; if (cb) queueMicrotask(cb); return false; }
+      }
+      if (cb) queueMicrotask(cb);
+      const ds = this._controller ? this._controller.desiredSize : null;
+      const ok = ds === null || ds > 0;
+      if (!ok) this._needDrain = true;
+      return ok;
+    }
+    end(data, enc, cb) {
+      if (typeof data === "function") { cb = data; data = undefined; }
+      else if (typeof enc === "function") { cb = enc; }
+      if (data != null) this.write(data);
+      this._flushHeaders();
+      if (!this._ended) {
+        this._ended = true;
+        if (!this._destroyed) { try { this._controller.close(); } catch {} }
+        this.emit("finish");
+        this._emitClose();
+      }
+      if (cb) queueMicrotask(cb);
+      return this;
+    }
+    destroy(err) {
+      if (this._destroyed) return this;
+      this._destroyed = true;
+      if (!this._ended) { this._ended = true; try { this._controller.error(err || new Error("aborted")); } catch {} }
+      if (err) this.emit("error", err);
+      this._emitClose();
+      return this;
+    }
+    get headersSent() { return this._headersSent; }
+    get writableEnded() { return this._ended; }
+    get writableFinished() { return this._ended; }
+    get destroyed() { return this._destroyed; }
   }
   class IncomingMessage extends __eventsMod {
     constructor(u, m, h) { super(); this.url = u || "/"; this.method = m || "GET"; this.headers = h || {}; this.httpVersion = "1.1"; }
   }
   class Server extends __eventsMod {
-    constructor(handler) { super(); if (handler) this.on("request", handler); this._port = 0; this._listening = false; }
-    listen(port, host, cb) { if (typeof host === "function") { cb = host; } this._port = port || 0; this._listening = true; globalThis.__portRegistry.set(this._port, this); if (cb) queueMicrotask(cb); this.emit("listening"); return this; }
-    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); if (cb) cb(); this.emit("close"); }
+    constructor(handler) { super(); this._parkedRequests = []; if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
+    // effect-platform (opencode serve) binds via listen() FIRST and attaches
+    // its "request" handler only after the HTTP-app layer is built. A request
+    // emitted into zero listeners is silently lost — the ServerResponse never
+    // gets headers and the dispatcher's header timeout fires. Park requests
+    // that arrive in that window and flush them when the handler attaches.
+    on(n, fn) {
+      super.on(n, fn);
+      if (n === "request") this._flushParkedRequests();
+      return this;
+    }
+    prependListener(n, fn) {
+      super.prependListener(n, fn);
+      if (n === "request") this._flushParkedRequests();
+      return this;
+    }
+    _flushParkedRequests() {
+      if (!this._parkedRequests || this._parkedRequests.length === 0) return;
+      const parked = this._parkedRequests.splice(0);
+      for (const dispatch of parked) queueMicrotask(dispatch);
+    }
+    // Node's listen has several overloads; the two we honour are
+    // listen(options[, cb]) — options = { port, host, path, backlog, ... } —
+    // and listen([port[, host[, backlog]]][, cb]). opencode's server adaptor
+    // binds via the OPTIONS-OBJECT form (server.listen({ host, port }, cb)), so
+    // we read port/host off the object; a bare positional port is the classic
+    // form. The port is normalized to a number (number|string) so the ACTUAL
+    // listened port is what lands in the registry + SUPERVISOR.registerPort.
+    listen(...args) {
+      let portArg, host, cb;
+      const first = args[0];
+      if (first !== null && typeof first === "object") {
+        portArg = first.port;
+        host = first.host;
+        if (typeof args[1] === "function") cb = args[1];
+      } else {
+        portArg = first;
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i];
+          if (typeof a === "function") { cb = a; break; }
+          if (typeof a === "string") host = a;
+        }
+      }
+      const numPort = typeof portArg === "string" ? parseInt(portArg, 10) : portArg;
+      this._port = Number.isFinite(numPort) ? numPort : 0;
+      this._host = host;
+      this._listening = true;
+      globalThis.__portRegistry.set(this._port, this);
+      try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {}
+      if (cb) queueMicrotask(cb);
+      this.emit("listening");
+      return this;
+    }
+    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); try { if (__supervisor && typeof __supervisor.unregisterPort === "function") { Promise.resolve(__supervisor.unregisterPort(this._port)).catch(() => {}); } } catch {} if (cb) cb(); this.emit("close"); }
     get listening() { return this._listening; }
     // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
     // fastify's lib/server.js calls server.setTimeout(connectionTimeout)
@@ -3455,10 +3688,58 @@ builtins.http = (() => {
     // 1-arg callback form so listeners that emit on 'timeout' still run.
     setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
     setKeepAlive() { return this; }
-    address() { return { address: "0.0.0.0", port: this._port, family: "IPv4" }; }
-    _handleRequest(u, m, h, b) { const req = new IncomingMessage(u, m, h); const res = new ServerResponse(); this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } return res; }
+    address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
+    _handleRequest(u, m, h, b) {
+      const req = new IncomingMessage(u, m, h);
+      const res = new ServerResponse();
+      const dispatch = () => { this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } };
+      if (this.listenerCount("request") === 0) this._parkedRequests.push(dispatch);
+      else dispatch();
+      return res;
+    }
   }
   function createServer(o, h) { if (typeof o === "function") { h = o; } return new Server(h); }
+  // Shared streaming HTTP dispatch for every facet server (generic node
+  // long-running, opencode serve, …). A request forwarded by the port registry
+  // (loopback OR external /port/<n>, stamped X-Nimbus-Port) is replayed through
+  // the in-facet server's _handleRequest, and the response is returned as a
+  // streaming host Response the moment its headers are known — never buffered.
+  // This is what lets an SSE / chunked body flow live across the RPC boundary
+  // (the registry + loopback both return this Response as-is). The single
+  // source of truth for facet HTTP dispatch: manager.ts (__nimbusDispatchHttp)
+  // and the opencode runner (__ocDispatchHttp) both delegate here.
+  globalThis.__nimbusServeHttp = async function __nimbusServeHttp(request) {
+    const ports = globalThis.__portRegistry;
+    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);
+    const server = ports && (ports.get(hinted) || ports.values().next().value);
+    if (!server || typeof server._handleRequest !== "function") {
+      return new __hostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
+    }
+    const url = new URL(request.url);
+    const headers = {};
+    request.headers.forEach((v, k) => { headers[k] = v; });
+    let body = "";
+    if (request.method !== "GET" && request.method !== "HEAD") body = await request.text();
+    const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
+    // Return once headers are known. A handler that never sends headers is
+    // bounded by a header timeout (NOT a body-finish cap) so a hung handler
+    // can't wedge the request, while a live stream that never "finishes" flows.
+    // The timeout defaults to 30s; tests pin it low via __nimbusHttpHeaderTimeoutMs.
+    if (!res._headersSent) {
+      const headerTimeoutMs = Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000;
+      let timer;
+      const timedOut = await Promise.race([
+        res._headersReady.then(() => false),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(true), headerTimeoutMs); }),
+      ]);
+      clearTimeout(timer);
+      if (timedOut && !res._headersSent) {
+        try { res.destroy(); } catch {}
+        return new __hostResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 });
+      }
+    }
+    return new __hostResponse(res._stream, { status: res.statusCode || 200, headers: res.headers || {} });
+  };
   return { createServer, Server, IncomingMessage, ServerResponse, Agent: class {}, STATUS_CODES: {}, METHODS: ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"], request: () => { throw new Error("Use fetch()"); }, get: () => { throw new Error("Use fetch()"); } };
 })();
 builtins.https = (() => {

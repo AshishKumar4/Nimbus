@@ -14,7 +14,7 @@ import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Ur
 import { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CLOUDFLARE_API, readNimbusCookie, readNimbusAgentCookieSecret, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { appendTextPart, textFromParts, upsertToolPart, } from './agent-contract.js';
+import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, } from './agent-contract.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
@@ -23,6 +23,9 @@ const MAX_STORED_MESSAGES = 80;
 const MAX_TOOL_RESULT_CHARS = 8000;
 const DEFAULT_MODEL = '@cf/zai-org/glm-5.2';
 const DEFAULT_GATEWAY_ID = 'default';
+const STREAMING_TEXT_FLUSH_MS = 500;
+const STREAMING_TEXT_FLUSH_BYTES = 1024;
+const activeAssistantMessages = new WeakMap();
 const SYSTEM_PROMPT = [
     'You are Nimbus Agent, an autonomous software builder inside a persistent Nimbus cloud dev sandbox.',
     'Your job is to help the user build, change, debug, run, and preview software end-to-end in this workspace.',
@@ -286,6 +289,7 @@ async function agentChatJson(self, config, credentialResult, messages) {
         const result = await runAiSdkTurn(self, config, credentialResult.credentials, messages);
         const assistantMessage = makeMessage('assistant', result.text || 'Done.');
         assistantMessage.parts = result.parts;
+        assistantMessage.status = 'complete';
         const nextMessages = [...messages, assistantMessage];
         await saveMessages(self, nextMessages);
         const headers = new Headers();
@@ -334,6 +338,55 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
             const parts = [];
             const assistantMessageId = crypto.randomUUID();
             const assistantCreatedAt = Date.now();
+            const activeMessages = activeAssistantMessages.get(self) ?? new Set();
+            activeAssistantMessages.set(self, activeMessages);
+            activeMessages.add(assistantMessageId);
+            let textBytesSinceFlush = 0;
+            let textFlushTimer = null;
+            let persistenceQueue = Promise.resolve();
+            let persistenceError = null;
+            const assistantSnapshot = (status, reason) => ({
+                id: assistantMessageId,
+                role: 'assistant',
+                content: textFromParts(parts),
+                createdAt: assistantCreatedAt,
+                parts: structuredClone(parts),
+                status,
+                ...reason,
+            });
+            const enqueueStreamingPersistence = () => {
+                const message = assistantSnapshot('streaming');
+                upsertStoredMessage(messages, message);
+                const snapshot = structuredClone(messages);
+                const write = persistenceQueue.then(() => saveMessages(self, snapshot));
+                persistenceQueue = write.catch((error) => {
+                    persistenceError ??= error;
+                });
+                return write;
+            };
+            const clearTextFlush = () => {
+                if (textFlushTimer !== null)
+                    clearTimeout(textFlushTimer);
+                textFlushTimer = null;
+                textBytesSinceFlush = 0;
+            };
+            const flushStreamingTurn = () => {
+                clearTextFlush();
+                return parts.length > 0 ? enqueueStreamingPersistence() : persistenceQueue;
+            };
+            const scheduleTextFlush = (delta) => {
+                textBytesSinceFlush += encoder.encode(delta).byteLength;
+                if (textBytesSinceFlush >= STREAMING_TEXT_FLUSH_BYTES)
+                    return flushStreamingTurn();
+                if (textFlushTimer === null) {
+                    textFlushTimer = setTimeout(() => {
+                        textFlushTimer = null;
+                        textBytesSinceFlush = 0;
+                        void enqueueStreamingPersistence().catch(() => { });
+                    }, STREAMING_TEXT_FLUSH_MS);
+                }
+                return null;
+            };
             // Persist whatever the turn produced before terminating abnormally
             // (client Stop or terminal stream error) so history stays truthful:
             // executed tools and streamed text are recorded and the message
@@ -343,25 +396,13 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                 if (parts.length === 0)
                     return null;
                 const reason = terminalError ?? 'Stopped by user';
-                for (const part of parts) {
-                    if (part.type === 'tool' && part.status === 'running') {
-                        part.status = 'error';
-                        part.error = reason;
-                        if (part.output === undefined)
-                            part.output = { error: reason };
-                    }
-                }
-                const assistantMessage = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: textFromParts(parts),
-                    createdAt: assistantCreatedAt,
-                    parts,
-                    ...(terminalError === undefined ? { aborted: true } : { error: terminalError }),
-                };
-                const nextMessages = [...messages, assistantMessage];
-                await saveMessages(self, nextMessages);
-                return nextMessages;
+                interruptRunningTools(parts, reason);
+                clearTextFlush();
+                await persistenceQueue;
+                const assistantMessage = assistantSnapshot('interrupted', terminalError === undefined ? { aborted: true } : { error: terminalError });
+                upsertStoredMessage(messages, assistantMessage);
+                await saveMessages(self, messages);
+                return messages;
             };
             emit({ type: 'start', messages: trimMessagesForClient(messages) });
             emit({ type: 'message', message: userMessage });
@@ -387,10 +428,12 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                     if (chunk.type === 'text-delta') {
                         appendTextPart(parts, 'text', chunk.text);
                         emit({ type: 'text-delta', delta: chunk.text });
+                        await scheduleTextFlush(chunk.text);
                     }
                     else if (chunk.type === 'reasoning-delta') {
                         appendTextPart(parts, 'reasoning', chunk.text);
                         emit({ type: 'reasoning-delta', delta: chunk.text });
+                        await scheduleTextFlush(chunk.text);
                     }
                     else if (chunk.type === 'tool-call') {
                         upsertToolPart(parts, {
@@ -406,6 +449,7 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                             toolName: chunk.toolName,
                             input: chunk.input,
                         });
+                        await flushStreamingTurn();
                     }
                     else if (chunk.type === 'tool-result') {
                         const output = compactStreamValue(chunk.output);
@@ -425,6 +469,7 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                             output,
                             status,
                         });
+                        await flushStreamingTurn();
                     }
                     else if (chunk.type === 'tool-error') {
                         const error = stringifyError(chunk.error);
@@ -443,6 +488,7 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                             input: chunk.input,
                             error,
                         });
+                        await flushStreamingTurn();
                     }
                     else if (chunk.type === 'finish-step') {
                         emit({
@@ -456,19 +502,24 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                     await persistPartialTurn();
                     return;
                 }
+                clearTextFlush();
+                await persistenceQueue;
+                if (persistenceError)
+                    throw persistenceError;
                 const assistantMessage = {
                     id: assistantMessageId,
                     role: 'assistant',
                     content: textFromParts(parts) || 'Done.',
                     createdAt: assistantCreatedAt,
-                    parts,
+                    parts: structuredClone(parts),
+                    status: 'complete',
                 };
-                const nextMessages = [...messages, assistantMessage];
-                await saveMessages(self, nextMessages);
+                upsertStoredMessage(messages, assistantMessage);
+                await saveMessages(self, messages);
                 emit({
                     type: 'done',
                     message: assistantMessage,
-                    messages: trimMessagesForClient(nextMessages),
+                    messages: trimMessagesForClient(messages),
                 });
             }
             catch (e) {
@@ -487,6 +538,10 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
                 });
             }
             finally {
+                clearTextFlush();
+                activeMessages.delete(assistantMessageId);
+                if (activeMessages.size === 0)
+                    activeAssistantMessages.delete(self);
                 if (!cancelled) {
                     try {
                         controller.close();
@@ -985,7 +1040,25 @@ function cookieSecret(self) {
 }
 async function loadMessages(self) {
     const messages = await self.ctx.storage.get(MESSAGES_KEY);
-    return Array.isArray(messages) ? messages : [];
+    if (!Array.isArray(messages))
+        return [];
+    const activeMessages = activeAssistantMessages.get(self);
+    let recovered = false;
+    for (const message of messages) {
+        if (message.role !== 'assistant' || message.status !== 'streaming' || activeMessages?.has(message.id))
+            continue;
+        message.status = 'interrupted';
+        if (message.parts)
+            interruptRunningTools(message.parts, 'Interrupted before completion');
+        recovered = true;
+    }
+    if (recovered) {
+        await saveMessages(self, messages);
+        // TODO(agent-turn-forensics): immediately persist an agent-turn-orphaned
+        // recovery record (cause reset/interrupted, dataLoss true) once the
+        // observability API supports recovery-only writes beyond its failure gate.
+    }
+    return messages;
 }
 async function saveMessages(self, messages) {
     await self.ctx.storage.put(MESSAGES_KEY, trimMessagesForClient(messages));

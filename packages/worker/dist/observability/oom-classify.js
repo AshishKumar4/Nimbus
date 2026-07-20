@@ -1,7 +1,6 @@
 /**
  * oom-classify.ts — discriminator for OOM-like errors at Nimbus
- * boundaries. Tagged W5 (Lever 5 / J.1.1 in CF-INTERNAL-OPTIMIZATION-
- * RESEARCH.md).
+ * boundaries.
  *
  * Why this exists
  * ───────────────
@@ -39,6 +38,19 @@
  * the union narrow and additive — adding a new value is fine, but
  * never re-purpose an existing one.
  */
+const OOM_CAUSES = [
+    'sqlite_nomem',
+    'oom',
+    'clone_refused',
+    'rpc_timeout',
+    'subrequest_cap',
+    'condemnation',
+    'hard_evict',
+    'unknown',
+];
+export function isOomCause(input) {
+    return OOM_CAUSES.some((cause) => cause === input);
+}
 /**
  * Classify an error or message string into an OomCause. Returns
  * 'unknown' when no signature matches — callers should still record
@@ -68,7 +80,7 @@ export function classifyMessage(msg) {
     if (m.includes('database or disk is full'))
         return 'sqlite_nomem';
     // Structured-clone refusal — a 32 MiB-cap cousin
-    if (m.includes('cannot deserialize cloned data'))
+    if (m.includes('deserialize cloned data'))
         return 'clone_refused';
     if (m.includes('could not be cloned'))
         return 'clone_refused';

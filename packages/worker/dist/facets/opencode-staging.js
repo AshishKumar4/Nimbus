@@ -1,0 +1,189 @@
+/**
+ * opencode-staging.ts — staged-artifact (opencode) facet config assembly.
+ *
+ * Owns fetching the opencode artifact sources (entry bundle, split-build
+ * chunk pack, wasm sidecars, node-shims) and assembling the Worker Loader
+ * module map for a facet spawn.
+ *
+ * WHY THIS IS NOT PART OF FacetManager: the assembled module map is ~23 MB
+ * of source text (the chunk pack alone is 22.6 MB) plus a 22.6 MB fetch +
+ * JSON.parse transient. Materializing that inside the supervisor Durable
+ * Object pushed its isolate over the 128 MiB cap and workerd reset it —
+ * wiping the port registry and process table mid-spawn (live-diagnosed
+ * 2026-07-16, `exceededMemory` in the tail during the dual serve+attach
+ * boot). The supervisor therefore only builds a small OpencodeStageSpec
+ * (argv/env/VFS snapshot); NimbusLoadedEntrypoint (a STATELESS worker
+ * entrypoint, its own isolate) calls `assembleOpencodeFacetConfig` inside
+ * the Worker-Loader cache-miss callback, so the artifact sources are
+ * materialized outside the DO heap, only when the facet actually loads.
+ *
+ * Wasm bytes are memoized per isolate; the chunk-pack fetch+parse is
+ * deduped while in flight but never stays resident (permanent residency of
+ * the artifact sources is what crowded the memory envelope in the first
+ * place; the L2 asset cache makes refetches cheap).
+ */
+import { z } from 'zod/v4';
+import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
+import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
+import { fetchOpencodeBundle, fetchOpencodeChunkSources, fetchOpencodeWasmBytes, fetchOpencodeWorkerSource, } from '../runtime/opencode-artifact.js';
+import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
+import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
+import { OPENCODE_CHUNKS_PACK, OPENCODE_TREE_SITTER_WASMS, OPENCODE_TUI_WORKERS, OPENCODE_YOGA_WASM, } from '../opencode-artifact.generated.js';
+import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, YOGA_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
+import { CF_COMPAT_DATE } from '../constants.js';
+/**
+ * Everything a facet spawn needs beyond the artifact sources themselves.
+ * Small enough to ride in NimbusLoadedEntrypoint props (the VFS snapshot is
+ * the only variable-size member; it is bounded by the prefetch-bundle caps).
+ */
+export const OpencodeStageSpecSchema = z.object({
+    mode: z.enum(['oneshot', 'attached', 'server']),
+    argv: z.array(z.string()),
+    env: z.record(z.string(), z.string()),
+    cwd: z.string(),
+    stdin: z.string(),
+    /** Serialized VFS snapshot bundle (`_serializeBundleForFacet` output). */
+    vfsBundle: z.string(),
+    /** Serialized VFS directory manifest (JSON). */
+    vfsManifest: z.string(),
+});
+function requireAssets(env, what) {
+    if (!env.ASSETS) {
+        throw new Error(`${what} requires an env.ASSETS binding; this Nimbus deployment is ` +
+            'missing the static-assets binding');
+    }
+    return env;
+}
+// ── Per-isolate wasm byte memoization ────────────────────────────────────────
+// Each cache holds one ArrayBuffer (integrity-checked at fetch); facet configs
+// share the buffer, workerd compiles the `wasm` module entries ahead of
+// dispatch.
+let sqliteWasmBytes = null;
+let openTuiWasmBytes = null;
+let yogaWasmBytes = null;
+let treeSitterWasmBytes = null;
+function memoized(slot, set, create) {
+    if (!slot) {
+        const p = create();
+        set(p);
+        p.catch(() => set(null));
+        return p;
+    }
+    return slot;
+}
+/** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */
+export async function sqliteWasmModuleEntry(env, usesSqlite) {
+    if (!usesSqlite)
+        return {};
+    const assets = requireAssets(env, 'node:sqlite (sql.js wasm)');
+    const bytes = await memoized(sqliteWasmBytes, (p) => { sqliteWasmBytes = p; }, () => fetchSqliteWasmBytes(assets));
+    return { [SQLITE_WASM_MODULE_NAME]: { wasm: bytes } };
+}
+async function treeSitterModuleEntries(env) {
+    const wasms = OPENCODE_TREE_SITTER_WASMS;
+    if (!wasms) {
+        throw new Error('opencode tree-sitter wasm sidecars are not staged — rerun ' +
+            'scripts/bundle-opencode.mjs with the opencode dist present');
+    }
+    const entries = await memoized(treeSitterWasmBytes, (p) => { treeSitterWasmBytes = p; }, async () => Promise.all([wasms.core, wasms.bash, wasms.powershell].map(async (file) => [file, await fetchOpencodeWasmBytes(env, file)])));
+    return Object.fromEntries(entries.map(([file, bytes]) => [file, { wasm: bytes }]));
+}
+async function openTuiModuleEntry(env) {
+    const bytes = await memoized(openTuiWasmBytes, (p) => { openTuiWasmBytes = p; }, () => fetchOpenTUIWasmBytes(env));
+    return { [OPENTUI_WASM_MODULE_NAME]: { wasm: bytes } };
+}
+async function yogaModuleEntry(env) {
+    const yoga = OPENCODE_YOGA_WASM;
+    if (!yoga) {
+        throw new Error('opencode yoga-layout wasm is not staged — rerun scripts/bundle-opencode.mjs ' +
+            'with an opencode dist that extracted yoga.wasm (build-node.ts)');
+    }
+    const bytes = await memoized(yogaWasmBytes, (p) => { yogaWasmBytes = p; }, () => fetchOpencodeWasmBytes(env, yoga));
+    return { [YOGA_WASM_MODULE_NAME]: { wasm: bytes } };
+}
+async function tuiWorkerModuleEntries(env) {
+    const workers = OPENCODE_TUI_WORKERS;
+    if (!workers) {
+        throw new Error('opencode TUI worker bundles are not staged — rerun ' +
+            'scripts/bundle-opencode.mjs with an opencode dist that built ' +
+            'worker.js + parser.worker.js (build-node.ts entrypoints)');
+    }
+    // Parser only: the TUI's API-server worker (worker.js) is answered by the
+    // in-polyfill RPC stub and NEVER imported (defect #20 — its chunk graph is a
+    // process-killer), and the attach map carries no chunk modules, so the real
+    // worker.js's import graph could not even link.
+    const entries = await Promise.all([workers.parser].map(async (file) => [file, await fetchOpencodeWorkerSource(env, file)]));
+    return Object.fromEntries(entries);
+}
+// In-flight (never resident) chunk-pack fetch+parse dedupe: concurrent
+// assemblies in the same isolate share one fetch + ~22 MB JSON parse.
+let chunkEntriesInflight = null;
+function chunkModuleEntries(env) {
+    // Flat staging: the entry bundle inlines every chunk (no runtime chunk-graph
+    // imports — the #20 process-kill trigger family); there is no pack and no
+    // chunk module-map entries.
+    if (!OPENCODE_CHUNKS_PACK)
+        return Promise.resolve({});
+    if (!chunkEntriesInflight) {
+        chunkEntriesInflight = fetchOpencodeChunkSources(env, OPENCODE_CHUNKS_PACK).finally(() => {
+            chunkEntriesInflight = null;
+        });
+    }
+    return chunkEntriesInflight;
+}
+/**
+ * Assemble the full Worker Loader config for an opencode facet from a stage
+ * spec. Returns the config WITHOUT the SUPERVISOR env binding — the caller
+ * injects it from a request context that outlives the facet.
+ */
+export async function assembleOpencodeFacetConfig(env, specInput) {
+    const spec = OpencodeStageSpecSchema.parse(specInput);
+    const assets = requireAssets(env, 'staged opencode artifact');
+    const attached = spec.mode === 'attached';
+    const [bundle, shimsCode, sqliteModules, treeSitterModules, openTuiModules, chunkModules, workerModules, yogaModules] = await Promise.all([
+        fetchOpencodeBundle(assets, attached ? 'attach' : 'default'),
+        fetchNodeShimsCode(assets),
+        sqliteWasmModuleEntry(assets, true),
+        treeSitterModuleEntries(assets),
+        // Rendering stack is attach-only: serve/oneshot never link the TUI
+        // graph, and the opentui wasm instance alone costs ~17 MiB of facet
+        // memory at module-init.
+        attached ? openTuiModuleEntry(assets) : Promise.resolve({}),
+        // The attach entry inlines the FULL TUI runtime closure (index-attach.js)
+        // and its map carries NO chunk modules: a runtime chunk-graph import —
+        // the #20 process-killer — is structurally impossible in the attach
+        // facet. Serve/oneshot keep the split build and expand the pack.
+        attached ? Promise.resolve({}) : chunkModuleEntries(assets),
+        // The TUI client spawns its API server + OpenTUI parser as in-isolate
+        // Workers, and OpenTUI lays out frames with yoga-layout. Only the
+        // attached renderer reaches those; serve + one-shot skip them.
+        attached ? tuiWorkerModuleEntries(assets) : Promise.resolve({}),
+        attached ? yogaModuleEntry(assets) : Promise.resolve({}),
+    ]);
+    const runnerCode = generateOpencodeRunnerCode({
+        argv: spec.argv,
+        env: spec.env,
+        cwd: spec.cwd,
+        stdin: spec.stdin,
+        shimsCode,
+        vfsBundle: spec.vfsBundle,
+        vfsManifest: spec.vfsManifest,
+        mode: spec.mode,
+    });
+    return {
+        compatibilityDate: CF_COMPAT_DATE,
+        compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+        mainModule: 'runner.js',
+        modules: {
+            'runner.js': runnerCode,
+            [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
+            ...sqliteModules,
+            ...treeSitterModules,
+            ...openTuiModules,
+            ...chunkModules,
+            ...workerModules,
+            ...yogaModules,
+            ...opencodeBuiltinBridgeModules(attached),
+        },
+    };
+}

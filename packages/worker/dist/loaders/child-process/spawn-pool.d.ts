@@ -21,32 +21,10 @@ export interface SpawnPoolReq {
     stdin?: string;
 }
 export declare class ChildProcessSpawnPool {
-    private readonly env;
-    private readonly ctx;
     /**
-     * Shared NimbusLoaderPool with concurrency=4 (the workerd
-     * dynamic-worker cap). `submit` lands on slot 0 — 8 concurrent
-     * submits all share slot 0 sequentially via the slot's ownership
-     * (one in-flight LOADER.get per slot). Re-using the same pool
-     * across runOne calls avoids the 4-cap entirely: only ONE
-     * LOADER.get ref is held at a time per slot, and there are at
-     * most 4 slots = 4 concurrent LOADER.get refs from this pool.
-     *
-     * The map() variant distributes items across slots (concurrency=4
-     * items at a time). For per-spawn isolation we use submit() so
-     * each spawn runs serially through one slot; that gives the
-     * architectural win (spawn dispatch runs in a Worker Loader
-     * isolate, NOT in the supervisor's V8 context) without tripping
-     * the workerd cap.
-     *
-     * Trade-off: 8 concurrent cp.spawn calls become serial through
-     * slot 0. Wall-clock cost: ~50ms per spawn dispatch (warm-isolate
-     * RPC round-trip). For typical interactive shell usage (1-3
-     * spawns) this is invisible. Heavy parallel patterns (npm test
-     * launching N jest workers) sequentialise — accepted trade-off
-     * vs the prod-failure-mode of "Too many concurrent dynamic
-     * workers." Future improvement: distribute via map() when batch
-     * shape is known.
+     * Shared single-slot pool. Serial dispatch keeps one dynamic-worker
+     * allocation in flight while moving child execution out of the
+     * supervisor isolate.
      */
     private readonly pool;
     /**
@@ -66,6 +44,6 @@ export declare class ChildProcessSpawnPool {
      *
      * Returns the exit code.
      */
-    runOne(req: SpawnPoolReq, kind: 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown', hooks: SpawnPoolHooks, childId: number | string): Promise<number>;
+    runOne(req: SpawnPoolReq, kind: 'pure-builtin' | 'facet-direct' | 'shell-direct', hooks: SpawnPoolHooks): Promise<number>;
 }
 //# sourceMappingURL=spawn-pool.d.ts.map

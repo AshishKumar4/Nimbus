@@ -16,7 +16,7 @@ function makePump(cpReadStdin, reportExit) {
   };
   const code = generateShimsCode();
   const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__vfsBaseUrl', '__supervisor',
+    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
     'cwd', 'argv', 'env', 'filename', 'dirname', '__ProcessExit',
     '"use strict";let stdout = ""; let stderr = "";' + code + '\n;return { process: __processMod };'
   );
@@ -24,7 +24,7 @@ function makePump(cpReadStdin, reportExit) {
     constructor(codeArg) { super(`process.exit(${codeArg})`); this.code = codeArg; }
   }
   const sandbox = factory(
-    {}, {}, {}, null, '', supervisor,
+    {}, {}, {}, null, supervisor,
     '/home/user', [], { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: '42' },
     '/home/user/main.mjs', '/home/user', ProcessExit,
   );

@@ -33,11 +33,9 @@ import { setLastRpcFrame } from '../observability/oom-discriminator.js';
 import { rpcPayloadStart, rpcPayloadEnd } from '../observability/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
-import {
-  r2TarballHit, r2TarballMiss, r2PackumentHit, r2PackumentMiss,
-  r2TarballPutOk, r2TarballPutFail, r2PackumentPutOk, r2PackumentPutFail,
-} from '../observability/diag-counters.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
+import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { W7_MAX_RECORD_BYTES } from '../_shared/w7-frame.js';
 // cache metrics support: per-tier hit/miss counters.
 //
 // CRITICAL — SupervisorRPC is a WorkerEntrypoint (loopback service
@@ -154,8 +152,20 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._getStub()._rpcStat(path));
   }
 
+  async lstat(path: string): Promise<any> {
+    return this._call(this._getStub()._rpcLstat(path));
+  }
+
+  async hasLegacySymlinkUnder(path: string): Promise<boolean> {
+    return this._call(this._getStub()._rpcHasLegacySymlinkUnder(path));
+  }
+
   async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs));
+  }
+
+  async chmod(path: string, mode: number): Promise<void> {
+    return this._call(this._getStub()._rpcChmod(path, mode));
   }
 
   async readdir(path: string): Promise<{ name: string; type: string }[]> {
@@ -255,8 +265,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /**
-   * W7 — Streaming bulk-write. Same semantics as writeBatch() but the
-   * argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
+   * W7 — Streaming bulk-write with path-atomic, committed-prefix semantics.
+   * The argument is a ReadableStream<Uint8Array> in the W7 wire-protocol
    * (see src/_shared/w7-frame.ts). Bypasses the 32 MiB structured-clone
    * cap entirely; the byte stream traverses the RPC boundary with
    * automatic flow control per Cloudflare RPC docs.
@@ -272,17 +282,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
-  ): Promise<{ inodes: number; chunks: number }> {
-    // The streaming bytes flow with backpressure (W7_HIGHWATER_BYTES =
-    // 256 KiB per active encoder per src/_shared/w7-frame.ts:53). The
-    // supervisor-resident bound is the queue highwater, NOT the total
-    // payload — the LastRpcFrame surfaces -1 to mark "stream"; the
-    // RPC payload counter sees the bounded chunk-size estimate.
-    const STREAM_RESIDENT_BYTES = 256 * 1024;
+  ): Promise<WriteBatchStreamResult> {
+    // The encoder emits one bounded v2 record per pull. This wrapper-isolate
+    // estimate covers that record; the receiving VFS separately reports and
+    // enforces its shared 8 MiB retained-payload credit.
+    const STREAM_RESIDENT_BYTES = W7_MAX_RECORD_BYTES;
     setLastRpcFrame('writeBatchStream', -1);
     rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {
-      return await this._call(this._getStub()._rpcWriteBatchStream(stream));
+      const mutationOwner = (this.ctx as any).props?.mutationOwner;
+      return await this._call(this._getStub()._rpcWriteBatchStream(
+        stream,
+        typeof mutationOwner === 'string' ? mutationOwner : undefined,
+      ));
     } finally {
       rpcPayloadEnd(STREAM_RESIDENT_BYTES);
     }
@@ -368,10 +380,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
     const bytes = await r2.getTarball(name, version);
     const events = _drainCacheEvents(r2);
     if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
-      r2TarballHit();
       return { bytes, events };
     }
-    r2TarballMiss();
     return { bytes: null, events };
   }
 
@@ -392,10 +402,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // This RPC remains a one-way write (returns bool); the L4 event
     // does NOT flow through this return path.
     const r2 = this._r2();
-    const ok = await r2.putTarball(name, version, bytes);
-    if (ok) r2TarballPutOk();
-    else r2TarballPutFail();
-    return ok;
+    return r2.putTarball(name, version, bytes);
   }
 
   /**
@@ -431,16 +438,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     const cached = await r2.getPackument(name);
     const events = _drainCacheEvents(r2);
     if (cached && !cached.expired) {
-      r2PackumentHit();
       return { cached, events };
     }
     if (cached && cached.expired) {
-      // Treat expired as a miss for hit-rate accounting; still return
-      // the data so callers can use it for stale-while-error.
-      r2PackumentMiss();
       return { cached, events };
     }
-    r2PackumentMiss();
     return { cached: null, events };
   }
 
@@ -452,10 +454,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // L4 hit captured facet-side (the facet did the registry fetch).
     // This RPC is one-way write.
     const r2 = this._r2();
-    const ok = await r2.putPackument(name, json);
-    if (ok) r2PackumentPutOk();
-    else r2PackumentPutFail();
-    return ok;
+    return r2.putPackument(name, json);
   }
 
   /**
@@ -512,6 +511,22 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async unregisterPort(port: number): Promise<void> {
     return this._call(this._getStub()._rpcUnregisterPort(port));
+  }
+
+  /**
+   * Route an in-session loopback HTTP request (a facet's fetch to
+   * 127.0.0.1/localhost:<port>) to the facet that owns <port> via the session
+   * port registry — the same routing the shell curl/node loopback uses. Lets a
+   * facet reach another facet's server in-session (e.g. `opencode attach` →
+   * `opencode serve`). Returns the target's Response, streamed over RPC.
+   *
+   * NOT routed through `_call`: that disposes the RPC resource after mapping,
+   * which would close a streaming Response body (SSE). We return the RPC promise
+   * directly so the body streams to the caller for the response's lifetime —
+   * exactly how PortRegistry.routeRequest returns the facet's Response as-is.
+   */
+  async routeLoopback(port: number, request: Request): Promise<Response> {
+    return this._getStub()._rpcRouteLoopback(port, request);
   }
 
   // ── Esbuild transform ─────────────────────────────────────────────────

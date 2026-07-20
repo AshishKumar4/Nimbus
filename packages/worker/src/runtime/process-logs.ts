@@ -26,8 +26,7 @@
  *   - Routing raw Uint8Array. RPC boundary already strings the data
  *     (SupervisorRPC.stdout(data: string)), so we store strings.
  *
- * W9 — hibernation persistence (CF-INTERNAL-OPTIMIZATION-RESEARCH §C.2,
- * Lever 11):
+ * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
  *   `setPersist`). When set:
  *     - `append` / `markExit` mark the pid dirty in memory; the actual
@@ -160,7 +159,7 @@ export interface ProcessLogStoreOptions {
    *      subscribed; the new entry is still inserted and the cap is
    *      briefly exceeded.
    * Default 500. Protects against a 1000-pid fork-bomb pinning
-   * ~50 MB of ring buffers for 10 minutes (STABILITY-AUDIT.md M-S5).
+   * ~50 MB of ring buffers for 10 minutes.
    */
   maxPids?: number;
 }
@@ -200,7 +199,7 @@ export class ProcessLogStore {
   private readonly retainAfterExitMs: number;
   private readonly maxPids: number;
   private pids = new Map<number, PidState>();
-  /** Cumulative count of PIDs evicted by the cap (STABILITY-AUDIT.md M-S5). */
+  /** Cumulative count of PIDs evicted by the cap. */
   private _droppedPids = 0;
 
   // ── W9 persistence state ────────────────────────────────────────────
@@ -651,8 +650,8 @@ export class ProcessLogStore {
   private _getOrCreate(pid: number): PidState {
     let s = this.pids.get(pid);
     if (!s) {
-      // Enforce the global cap BEFORE inserting (STABILITY-AUDIT.md
-      // M-S5). A 1000-pid fork-bomb would otherwise pin ~50 MB of
+      // Enforce the global cap before inserting. A 1000-pid fork-bomb
+      // would otherwise pin ~50 MB of
       // buffers for the full 10-min retention window, crowding the
       // 128 MB DO isolate cap alongside npm install / git clone peaks.
       if (this.pids.size >= this.maxPids) {

@@ -16,7 +16,7 @@
  *   { version: 1, runtimes: { <name>: { default, versions: { <ver>: { manifest, size_bytes, license } } } } }
  *
  * Manifest schema (RuntimeManifest):
- *   { name, version, license, wasi_namespace, memfs_companion,
+ *   { name, version, license, wasi_namespace,
  *     files: [{ path, content, sha256, size, mode? }],
  *     entrypoints: [{ binName, runner, args[], kind? }],
  *     runtime_artifacts?: [
@@ -131,9 +131,6 @@ export interface RuntimeManifest {
   /** Which WASI namespace the binaries import — `wasi_unstable` for
    *  binji clang. `null` for non-WASI runtimes (e.g. Pyodide). */
   wasi_namespace: string | null;
-  /** Optional sibling-blob VFS path that the runner needs to load
-   *  as a 2nd `modules:` entry (binji's memfs.wasm helper). */
-  memfs_companion: string | null;
   files: ManifestFile[];
   entrypoints: ManifestEntrypoint[];
   runtime_artifacts?: RuntimeArtifactMetadata[];
@@ -204,7 +201,6 @@ const RuntimeManifestSchema: z.ZodType<RuntimeManifest> = z.object({
   version: z.string().min(1),
   license: z.string(),
   wasi_namespace: z.string().nullable(),
-  memfs_companion: z.string().nullable(),
   files: z.array(ManifestFileSchema),
   entrypoints: z.array(ManifestEntrypointSchema),
   runtime_artifacts: z.array(RuntimeArtifactMetadataSchema).optional(),
@@ -230,8 +226,7 @@ export function isRuntimePythonPackageArtifactMetadata(
  *  collide with real user requests. */
 const L2_NS = 'https://nimbus-runtime-cache.invalid';
 const catalogL2Key = () => `${L2_NS}/catalog/v1.json`;
-const manifestL2Key = (key: string) => `${L2_NS}/${key}`;
-const blobL2Key = (key: string) => `${L2_NS}/${key}`;
+const l2Key = (key: string) => `${L2_NS}/${key}`;
 
 // ── Fetchers ─────────────────────────────────────────────────────────
 
@@ -264,7 +259,7 @@ export async function fetchManifest(
   manifestKey: string,
 ): Promise<RuntimeManifest> {
   // L2 hot path.
-  const text = await l2GetText(manifestL2Key(manifestKey));
+  const text = await l2GetText(l2Key(manifestKey));
   if (text) return parseRuntimeManifest(JSON.parse(text));
 
   // R2 path.
@@ -280,7 +275,7 @@ export async function fetchManifest(
   // 5-min TTL — manifests are content-addressed by version so we
   // could go eternal, but a short TTL lets us correct a bad upload
   // by re-running bundle-runtime.mjs without manual cache invalidation.
-  await l2PutText(manifestL2Key(manifestKey), manifestText, 300);
+  await l2PutText(l2Key(manifestKey), manifestText, 300);
   return parseRuntimeManifest(JSON.parse(manifestText));
 }
 
@@ -298,7 +293,7 @@ export async function fetchBlob(
   expectedSha256?: string,
 ): Promise<Uint8Array> {
   // L2 hot path.
-  const cached = await l2GetBytes(blobL2Key(blobKey));
+  const cached = await l2GetBytes(l2Key(blobKey));
   if (cached) {
     if (!expectedSha256 || await bytesMatchSha256(cached, expectedSha256)) {
       return cached;
@@ -320,7 +315,7 @@ export async function fetchBlob(
 
   // Eternal-immutable write-back. Integrity has already been verified
   // against the manifest before writing to L2.
-  await l2PutBytes(blobL2Key(blobKey), bytes);
+  await l2PutBytes(l2Key(blobKey), bytes);
   return bytes;
 }
 

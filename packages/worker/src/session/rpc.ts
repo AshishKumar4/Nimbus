@@ -23,6 +23,7 @@
  */
 
 import { enc, dec } from '../_shared/bytes.js';
+import { normalizeTerminalNewlines } from '../_shared/terminal.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
@@ -35,7 +36,8 @@ import {
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
-import type { BatchInodeEntry } from '../vfs/sqlite-vfs.js';
+import type { BatchInodeEntry, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { z } from 'zod/v4';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
@@ -48,6 +50,7 @@ type RpcHost = any;
 const WriteBatchInodeSchema: z.ZodType<BatchInodeEntry> = z.object({
   path: z.string(),
   parentPath: z.string(),
+  kind: z.enum(['file', 'directory', 'symlink']).optional(),
   isDir: z.boolean(),
   size: z.number(),
   atime: z.number().optional(),
@@ -181,8 +184,21 @@ export async function _rpcStat(self: RpcHost, path: string): Promise<any> {
     return runtimeFs(self).stat(path);
 }
 
+export async function _rpcLstat(self: RpcHost, path: string): Promise<any> {
+  return runtimeFs(self).stat(path, { followSymlinks: false });
+}
+
+export async function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean> {
+  self.ensureSqliteFs();
+  return getSymlinkRegistry(self.sqliteFs!).hasAtOrBelow(path);
+}
+
 export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void> {
     await runtimeFs(self).utimes(path, atimeMs, mtimeMs);
+}
+
+export async function _rpcChmod(self: RpcHost, path: string, mode: number): Promise<void> {
+    await runtimeFs(self).chmod(path, mode);
 }
 
 export async function _rpcReaddir(self: RpcHost, path: string): Promise<{ name: string; type: string }[]> {
@@ -301,7 +317,7 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
 }
 
 export async function _rpcUnlink(self: RpcHost, path: string): Promise<void> {
-    try { await runtimeFs(self).unlink(path); } catch {}
+    await runtimeFs(self).unlink(path);
 }
 
   /**
@@ -351,23 +367,23 @@ function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
 
   /**
    * W7 — Streaming bulk-write entry point. Receives a
-   * ReadableStream<Uint8Array> in the W7 wire format (see
-   * src/_shared/w7-frame.ts), decodes inode metadata + chunks lazily,
-   * and feeds them into SqliteVFS.writeStream().
+   * ReadableStream<Uint8Array> in the W7 v3 wire format (see
+   * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
+   * SqliteVFS.writeStream().
    *
    * Bypasses the 32 MiB structured-clone cap that constrained the
    * legacy writeBatch path — workerd flow-controls the byte stream
    * end-to-end.
    *
-   * Atomicity guarantee mirrors writeBatch: either ALL inodes +
-   * chunks land in SQLite or NONE do. SqliteVFS.writeStream defers
-   * the actual transactionSync until the chunk iterator is fully
-   * drained (v1 spool-then-commit), so a stream error mid-transit
-   * aborts before any SQL state mutates.
+   * Unlike strict writeBatch, the stream contract is path-atomic with a
+   * committed prefix: every reported path is complete, but earlier publish
+   * groups remain durable when a later group fails. The typed result carries
+   * the exact durable progress.
    */
 export async function _rpcWriteBatchStream(self: RpcHost, 
     stream: ReadableStream<Uint8Array>,
-  ): Promise<{ inodes: number; chunks: number }> {
+    mutationOwner?: string,
+  ): Promise<WriteBatchStreamResult> {
     self.ensureSqliteFs();
     // [P0a — COORDINATOR-OVERLOAD]
     //
@@ -389,12 +405,10 @@ export async function _rpcWriteBatchStream(self: RpcHost,
     // total writeBatchStream RPCs at the coordinator (vs 620+ pre-fix).
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
-    const { decodeWriteBatchStream } = await import('../_shared/w7-frame.js');
-    const decoded = await decodeWriteBatchStream(stream);
-    return self.sqliteFs!.writeStream({
-      inodes: decoded.inodes,
-      chunkIter: decoded.chunkIter,
-      deletePaths: decoded.deletePaths,
+    const decodeDrainStartedAt = performance.now();
+    return self.sqliteFs!.writeStream(stream, {
+      decodeDrainStartedAt,
+      mutationOwner,
     });
 }
 
@@ -440,7 +454,9 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
     // un-traceable facets.
     try {
       if (pid > 0) self.processes.appendOutput(pid, 'stdout', data);
-      if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) self.terminal.write(data);
+      if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
+        self.terminal.write(normalizeTerminalNewlines(data));
+      }
     } catch (e: any) {
       // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
       // drops here are exactly what hides bugs; default-off so we don't
@@ -458,7 +474,9 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: string): Prom
       if (pid > 0) self.processes.appendOutput(pid, 'stderr', data);
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
-      if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) self.terminal.write(`\x1b[31m${data}\x1b[0m`);
+      if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
+        self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(data)}\x1b[0m`);
+      }
     } catch (e: any) {
       if (self.nimbusDebug && self.terminal) {
         try { self.terminal.write(`\x1b[33m[rpc-error] _rpcStderr(pid=${pid}) threw: ${e?.message || e}\x1b[0m\r\n`); } catch {}
@@ -574,7 +592,8 @@ export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
       `${sep}\x1b[0m\r\n`,
     );
     for (const c of chunks) {
-      const painted = c.stream === 'stderr' ? `\x1b[31m${c.data}\x1b[0m` : c.data;
+      const terminalData = normalizeTerminalNewlines(c.data);
+      const painted = c.stream === 'stderr' ? `\x1b[31m${terminalData}\x1b[0m` : terminalData;
       self.terminal.write(painted);
     }
     self.terminal.write(`${color}${sep}\x1b[0m\r\n`);
@@ -715,6 +734,19 @@ export async function _rpcRegisterPort(self: RpcHost, pid: number, port: number)
 
 export async function _rpcUnregisterPort(self: RpcHost, port: number): Promise<void> {
     self.portRegistry.unregister(port);
+}
+
+export async function _rpcRouteLoopback(self: RpcHost, port: number, request: Request): Promise<Response> {
+    // In-session loopback routing for a facet's outbound fetch — the same policy
+    // as kernel.routeLoopback (session/init.ts) used by the shell curl/node path.
+    if (!self.portRegistry.has(port)) {
+      return new Response(
+        JSON.stringify({ error: 'connection refused (no server listening)', port }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    const res = await self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
+    return res ?? new Response(null, { status: 502 });
 }
 
 export async function _rpcTransform(self: RpcHost, code: string, loader: string): Promise<{ code: string; map: string } | null> {

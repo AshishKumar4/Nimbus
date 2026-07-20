@@ -36,7 +36,7 @@
  * DB at ~/.local/share/opencode/*.db.
  */
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
-import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
+import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_BACKEND_GLOBAL, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
 // The ~230 KiB node-compat shim source is staged as a static asset
 // (scripts/bundle-node-shims.mjs) — promoted out of the worker bundle for the
@@ -108,12 +108,27 @@ const OS_NAMES = [
     'platform', 'release', 'setPriority', 'tmpdir', 'totalmem', 'type', 'uptime',
     'userInfo', 'version', 'availableParallelism',
 ];
+// The shim http surface (node-shims.ts builtins.http). request/get throw
+// "Use fetch()" — honest failure; nodejs_compat's fetch-backed client is NOT
+// preserved by this bridge, so a chunk that does http.request() fails loud.
+const HTTP_NAMES = [
+    'createServer', 'Server', 'IncomingMessage', 'ServerResponse',
+    'Agent', 'STATUS_CODES', 'METHODS', 'request', 'get',
+];
 const BUILTIN_BRIDGES = [
     { specifier: 'node:fs', builtin: 'fs', names: FS_NAMES },
     { specifier: 'node:fs/promises', builtin: 'fs/promises', names: FS_PROMISES_NAMES },
     { specifier: 'node:os', builtin: 'os', names: OS_NAMES },
     // node:sqlite is not in nodejs_compat; bridge to the VFS-backed sql.js shim.
     { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
+    // node:http MUST land on the shim server, not nodejs_compat: the serve
+    // facet's HTTP server is only routeable (loopback + external preview +
+    // the /doc readiness gate) if listen() registers on globalThis.__portRegistry
+    // and SUPERVISOR.registerPort. nodejs_compat's http.Server binds invisibly —
+    // "listening" is printed but no request can ever be routed to it (the
+    // empty-registry 502). CJS require("http") already resolves to this shim;
+    // this bridge gives the ESM `import "node:http"` chunks the same server.
+    { specifier: 'node:http', builtin: 'http', names: HTTP_NAMES },
 ];
 // node:process public surface opencode/OpenTUI consume by name. The bundle uses
 // bare global `process`, `import … from "node:process"`, AND runtime
@@ -372,6 +387,58 @@ export const WORKER_POLYFILL_SRC = `
     });
   };
 
+  // In-polyfill replacement for worker.js's RPC surface (opencode's
+  // cli/cmd/tui/worker.ts, spoken over the Rpc JSON protocol). The attach
+  // facet's HTTP already flows to the remote serve facet, so the local
+  // worker's only load-bearing method here is the fetch proxy; server()
+  // must never be called (the serve facet owns the port), and the
+  // upgrade/reload/shutdown lifecycle belongs to the serve facet too.
+  async function __nimbusStubWorkerRpc(worker, event) {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (!msg || msg.type !== "rpc.request") return;
+    const reply = (payload) => {
+      queueMicrotask(() => worker.__nimbusDeliverToClient(JSON.stringify(payload)));
+    };
+    try {
+      let result;
+      switch (msg.method) {
+        case "fetch": {
+          const req = msg.input || {};
+          const res = await fetch(req.url, {
+            method: req.method,
+            headers: req.headers,
+            body: req.body,
+          });
+          result = {
+            status: res.status,
+            headers: Object.fromEntries(res.headers.entries()),
+            body: await res.text(),
+          };
+          break;
+        }
+        case "server":
+          throw new Error(
+            "Nimbus: the attach facet does not host the opencode server — " +
+            "it attaches to the dedicated 'opencode serve' facet"
+          );
+        case "snapshot":
+          result = null;
+          break;
+        case "checkUpgrade":
+        case "reload":
+        case "shutdown":
+          result = void 0;
+          break;
+        default:
+          throw new Error("Nimbus: unsupported TUI worker RPC: " + String(msg.method));
+      }
+      reply({ type: "rpc.result", result, id: msg.id });
+    } catch (e) {
+      reply({ type: "rpc.error", error: e instanceof Error ? e.message : String(e), id: msg.id });
+    }
+  }
+
   class NimbusWorker {
     constructor(spec, opts) {
       this.onmessage = null;
@@ -383,6 +450,24 @@ export const WORKER_POLYFILL_SRC = `
       this.__inbox = [];
       this.__ctx = __nimbusWorkerCtx(this);
       const specifier = __nimbusWorkerSpecifier(spec);
+      // worker.js is the TUI's LOCAL API server. A Nimbus attach facet
+      // always talks to a REMOTE opencode-serve facet instead (the dual
+      // split), and dynamically importing worker.js's split-build chunk
+      // graph into a live facet kills the production workerd process
+      // outright — supervisor DO included (defect #20; a workerd platform
+      // bug, see scratchpad/oc-attach-reset-rootcause.md). So the worker is
+      // answered by an in-polyfill RPC stub and its bundle is NEVER
+      // imported. parser.worker.js (flat, no chunk graph) loads for real.
+      if (specifier === "worker.js") {
+        this.__ctx.onmessage = (o) => { void __nimbusStubWorkerRpc(this, o); };
+        queueMicrotask(() => {
+          const pending = this.__inbox;
+          this.__inbox = null;
+          if (pending) for (const m of pending) this.__deliverToWorker(m);
+        });
+        this.__ready = Promise.resolve();
+        return;
+      }
       // The worker bundle's banner reads this synchronously at module-init.
       globalThis.__nimbusWorkerClaim = () => this.__ctx;
       this.__ready = (async () => {
@@ -510,6 +595,13 @@ export function generateOpencodeRunnerCode(opts) {
         cwd: JSON.stringify(opts.cwd),
         stdin: JSON.stringify(opts.stdin),
     };
+    // 'attached' drives the interactive TUI (worker polyfill, yoga, OpenTUI span
+    // feed, raw-mode stdin pump). 'server' is a headless resident HTTP server
+    // (opencode serve): it streams logs live and stays resident like the attached
+    // path, but never renders and never grabs the TTY. 'oneshot' buffers.
+    const mode = opts.mode;
+    const attachedTty = mode === 'attached';
+    const resident = mode === 'attached' || mode === 'server';
     return `
 // WorkerEntrypoint base: the attached-TTY TUI runs as a resident process whose
 // startProcess() holds the facet open via this.ctx.waitUntil — the same
@@ -540,15 +632,17 @@ globalThis.${TREE_SITTER_REGISTRY_GLOBAL} = new Map([
   [${JSON.stringify(treeSitter.powershell)}, __nimbusTsPowershell],
 ]);
 
-// ── OpenTUI wasm FFI backend module (module-init scope) ─────────────────────
+// ── OpenTUI wasm FFI backend module (module-init scope, attach only) ───────
 // The pre-compiled OpenTUI wasm32-wasi reactor Module rides in via the module
 // map; the WASI host preamble + the backend class are injected below, and the
 // backend is constructed + parked on globalThis right after env is seeded (the
 // boot block) so it is in place before the opencode bundle (which inlines the
-// Nimbus-patched @opentui/core) is imported in fetch().
-import __nimbusOpenTUIWasmModule from "${OPENTUI_WASM_MODULE_NAME}";
+// Nimbus-patched @opentui/core) is imported in fetch(). Only the attach facet
+// renders; serve/oneshot never link the TUI graph, and the ~17 MiB wasm
+// instance + backend would waste their tight facet memory budget.
+${attachedTty ? `import __nimbusOpenTUIWasmModule from "${OPENTUI_WASM_MODULE_NAME}";
 ${OPENTUI_BACKEND_FACET_SRC}
-${opts.attachedTty ? yogaImportSrc() : ''}
+${yogaImportSrc()}` : ''}
 
 // ── VFS-backed node-compat shim scope (node-shims.ts) ──────────────────────
 // Declared at module-init so the node:fs / node:os bridge modules (which
@@ -569,8 +663,22 @@ const __vfsBundle = ${opts.vfsBundle};
 const __vfsManifest = ${opts.vfsManifest};
 const __vfsWrites = {};
 const __vfsDirs = {};
-const __vfsBaseUrl = "";
+// Ledger of in-flight facet I/O the teardown drain must await. The shims push
+// here on every fs/sqlite/child-process op, so over a resident TUI's lifetime a
+// plain append-only array would grow without bound. Keep it a real Array (a
+// shim guard checks Array.isArray) but self-prune: each pushed promise removes
+// itself once settled, so length tracks only outstanding I/O.
 const __pendingIO = [];
+const __pendingIOAppend = __pendingIO.push.bind(__pendingIO);
+__pendingIO.push = (p) => {
+  const __wrapped = Promise.resolve(p);
+  __pendingIOAppend(__wrapped);
+  __wrapped.finally(() => {
+    const __i = __pendingIO.indexOf(__wrapped);
+    if (__i >= 0) __pendingIO.splice(__i, 1);
+  });
+  return __pendingIO.length;
+};
 
 // The shim (node-shims.ts) throws/catches this sentinel for process.exit and
 // the SIGINT stdin-pump teardown; the host runner must provide the class (same
@@ -584,23 +692,38 @@ class __ProcessExit extends Error {
 ${opts.shimsCode}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
-// Interactive TUI: make the Nimbus shim process authoritative for the bundle's
-// BARE \`process\` references (raw-mode stdin pump, live stdout/stderr,
-// SIGWINCH/columns/rows). The node:process bridge (module map) covers the
-// aliased \`import … from "node:process"\` refs; together they ensure OpenTUI
-// reads the attached-TTY process, not workerd's nodejs_compat one. The one-shot
-// path leaves workerd's proven process in place.
-if (${opts.attachedTty ? 'true' : 'false'}) {
+// Capture workerd's real process.memoryUsage BEFORE the shim process takes over
+// (the shim's memoryUsage is a stub returning zeros). workerd exposes a working
+// memoryUsage inside dynamic isolates; the [oc-mem] diagnostic reads it to watch
+// the OpenTUI wasm heap. Bound to the current process so the globalThis.process
+// swap below cannot detach it.
+const __realMemUsage = (() => {
+  try {
+    const __p = globalThis.process;
+    if (__p && typeof __p.memoryUsage === "function") return __p.memoryUsage.bind(__p);
+  } catch {}
+  return null;
+})();
+// Resident modes: make the Nimbus shim process authoritative for the bundle's
+// BARE \`process\` references. The attach TUI needs it for the raw-mode stdin
+// pump, live stdout/stderr and SIGWINCH/columns/rows; the serve facet needs it
+// for a truthful process.cwd() — workerd's nodejs_compat process pins cwd to
+// "/bundle" and silently ignores chdir, which made the server's default app
+// directory (and every session it creates) point at a nonexistent path whose
+// instance bootstrap hangs. The node:process bridge (module map) covers the
+// aliased \`import … from "node:process"\` refs. The one-shot path leaves
+// workerd's proven process in place.
+if (${resident ? 'true' : 'false'}) {
   try { globalThis.process = __processMod; } catch {}
 }
-${generateOpenTUIBackendBootCode()}
+${attachedTty ? generateOpenTUIBackendBootCode() : ''}
 // Interactive TUI: install the in-isolate Worker polyfill so opencode's TUI
 // client can spawn its API server (cli/cmd/tui/worker.ts → ./worker.js) and
 // OpenTUI its syntax-highlight parser (./parser.worker.js) inside this facet.
 // Without it \`new Worker(...)\` is a no-op and the client's first RPC hangs
 // before the renderer mounts. One-shot \`opencode run\` never reaches the TUI
 // command, so the polyfill is attachedTty-only.
-if (${opts.attachedTty ? 'true' : 'false'}) {
+if (${attachedTty ? 'true' : 'false'}) {
 ${WORKER_POLYFILL_SRC}
 }
 // Defer opencode's CLI so it runs inside fetch() (handler I/O context), not at
@@ -614,7 +737,11 @@ ${BUN_GLOBAL_POLYFILL}
 const __ocHostResponse = globalThis.Response;
 let __ocExited = false;
 let __ocLoadError = null;
-const __ocAttachedTty = ${opts.attachedTty ? 'true' : 'false'};
+const __ocMode = ${JSON.stringify(mode)};
+const __ocAttachedTty = __ocMode === "attached";
+// Resident modes (attached TUI + headless serve) stream stdout/stderr LIVE to
+// the supervisor and stay alive on ctx.waitUntil; one-shot buffers and returns.
+const __ocResident = __ocMode === "attached" || __ocMode === "server";
 
 // Live-stream RPC chain for the attached-TTY TUI: serialize SUPERVISOR.stdout/
 // stderr writes so the ANSI frames reach xterm in order (same ordering the
@@ -646,21 +773,23 @@ try { process.argv = argv; } catch {}
 try { Object.assign(process.env, env); } catch {}
 try { process.chdir(cwd); } catch {}
 
-// One-shot: capture process.exit as a throw the fetch handler unwinds. Attached
-// TUI: keep the shim's native exit (it emits "exit", reports to the supervisor,
-// and throws __ProcessExit) so the resident-facet lifecycle and the shim's own
-// SIGINT/stdin-pump exit path stay coherent.
-if (!__ocAttachedTty) {
+// One-shot: capture process.exit as a throw the fetch handler unwinds. Resident
+// modes (attached TUI + headless serve): keep the shim's native exit (it emits
+// "exit", reports to the supervisor, and throws __ProcessExit) so the
+// resident-facet lifecycle and the shim's own SIGINT/stdin-pump exit path stay
+// coherent.
+if (__ocMode === "oneshot") {
   process.exit = (code) => {
     exitCode = typeof code === "number" ? code : 0;
     __ocExited = true;
     throw { __ocProcessExit: true, code: exitCode };
   };
 }
-if (__ocAttachedTty) {
-  // Live TUI: span-feed ANSI flows process.stdout.write → SUPERVISOR.stdout →
-  // xterm. Keep a BOUNDED tail mirror so a teardown error tail can still
-  // surface — the full stream would grow without bound over a TUI session.
+if (__ocResident) {
+  // Resident: stdout/stderr flow process.*.write → SUPERVISOR.* → the terminal
+  // (attached TUI span-feed) or the process log store (serve). Keep a BOUNDED
+  // tail mirror so a teardown/health error tail can still surface — the full
+  // stream would grow without bound over a resident process's lifetime.
   process.stdout.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
     const s = String(d);
@@ -695,7 +824,7 @@ const __ocFmt = (...a) => a.map((x) => {
   if (typeof x === "string") return x;
   try { return JSON.stringify(x); } catch { return String(x); }
 }).join(" ");
-if (__ocAttachedTty) {
+if (__ocResident) {
   console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout = __ocTail(stdout, s); __queueRpcWrite("stdout", s); };
   console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr = __ocTail(stderr, s); __queueRpcWrite("stderr", s); };
 } else {
@@ -714,17 +843,40 @@ ${OPENTUI_CLOCK_SRC}
 }
 
 async function __drainPendingIO(maxPasses = 12) {
-  let __settledIO = 0;
   for (let __pass = 0; __pass < maxPasses; __pass++) {
     await new Promise((r) => setTimeout(r, 0));
-    // In-flight live writes (attached path) drain alongside the one-shot
-    // pendingIO ledger; settled writes have already removed themselves.
+    // Both ledgers self-prune settled entries, so a snapshot holds only what is
+    // still outstanding; await it and loop until both drain (or the pass cap).
     const __live = [...__pendingWrites];
-    if (__pendingIO.length <= __settledIO && __live.length === 0) break;
-    const __slice = __pendingIO.slice(__settledIO).concat(__live);
-    __settledIO = __pendingIO.length;
-    await Promise.allSettled(__slice);
+    if (__pendingIO.length === 0 && __live.length === 0) break;
+    await Promise.allSettled([...__pendingIO, ...__live]);
   }
+}
+
+// Bounded 1Hz memory diagnostic for the resident TUI, gated on the existing
+// NIMBUS_DIAG_EXEC surface. Emits one line/second through the facet's bounded
+// stderr chain so the OpenTUI wasm heap (\`wasm=\`) and the I/O ledgers can be
+// watched for a flat slope while live-gating the span-feed OOM fix. Off by
+// default: returns null (no interval) so the resident path stays silent.
+function __startOcMemDiag() {
+  if (!(env && env.NIMBUS_DIAG_EXEC === "1")) return null;
+  let __t = 0;
+  return setInterval(() => {
+    __t += 1;
+    let __m = null;
+    try { __m = __realMemUsage ? __realMemUsage() : null; } catch {}
+    let __wasm = -1;
+    try { __wasm = globalThis.${OPENTUI_BACKEND_GLOBAL}.memory.buffer.byteLength; } catch {}
+    const __line =
+      "[oc-mem] t=" + __t +
+      " heap=" + (__m ? __m.heapUsed : -1) +
+      " ab=" + (__m ? (__m.arrayBuffers || 0) : -1) +
+      " ext=" + (__m ? (__m.external || 0) : -1) +
+      " wasm=" + __wasm +
+      " pend=" + __pendingWrites.size +
+      " pio=" + __pendingIO.length + "\\n";
+    try { process.stderr.write(__line); } catch {}
+  }, 1000);
 }
 
 // Interactive TUI lifecycle: stream live, run opencode's createCliRenderer path,
@@ -735,63 +887,139 @@ async function __ocRunAttachedTui() {
   // Activate the shim's raw-mode stdin pump (SUPERVISOR.cpReadStdin →
   // process.stdin, with setRawMode/resize→SIGWINCH/signal handling).
   try { process.stdin.__nimbusStartLivePump?.(); } catch {}
+  const __memDiag = __startOcMemDiag();
   try {
-    if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
-    const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
-    if (typeof __ocBundle.nimbusMain !== "function") {
-      throw new Error(
-        "opencode bundle does not export nimbusMain() — the staged build is " +
-        "missing the Nimbus deferred-entry patch (see build-node.ts)"
-      );
+    try {
+      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
+      const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
+      if (typeof __ocBundle.nimbusMain !== "function") {
+        throw new Error(
+          "opencode bundle does not export nimbusMain() — the staged build is " +
+          "missing the Nimbus deferred-entry patch (see build-node.ts)"
+        );
+      }
+      await __ocBundle.nimbusMain();
+    } catch (e) {
+      if (e instanceof __ProcessExit) { exitCode = e.code; }
+      else if (e && e.__ocProcessExit) { exitCode = e.code; }
+      else {
+        __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
+        stderr += __ocLoadError + "\\n";
+        if (exitCode === 0) exitCode = 1;
+      }
     }
-    await __ocBundle.nimbusMain();
-  } catch (e) {
-    if (e instanceof __ProcessExit) { exitCode = e.code; }
-    else if (e && e.__ocProcessExit) { exitCode = e.code; }
-    else {
-      __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
-      stderr += __ocLoadError + "\\n";
-      if (exitCode === 0) exitCode = 1;
+    // Apply the shim's recorded exit code (the native process.exit path sets it).
+    if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
+    await __drainPendingIO();
+    const __failedWrites = {};
+    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
+      for (const [path, content] of Object.entries(__vfsWrites)) {
+        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      }
     }
-  }
-  // Apply the shim's recorded exit code (the native process.exit path sets it).
-  if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
-  await __drainPendingIO();
-  const __failedWrites = {};
-  if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-    for (const [path, content] of Object.entries(__vfsWrites)) {
-      __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+    await __drainPendingIO();
+    // The shim's native exit already reported via __nimbusReportProcessExit;
+    // report here only if it did not (load error / external teardown).
+    if (__supervisor && !__nimbusProcessExitReported) {
+      try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
     }
+  } finally {
+    if (__memDiag) clearInterval(__memDiag);
   }
-  await __drainPendingIO();
-  // The shim's native exit already reported via __nimbusReportProcessExit;
-  // report here only if it did not (load error / external teardown).
-  if (__supervisor && !__nimbusProcessExitReported) {
-    try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
-  }
+}
+
+// Routed-HTTP dispatch for the resident serve facet. A request forwarded by the
+// port registry (in-session loopback OR external /port/<n>, both stamped with
+// X-Nimbus-Port) is served by the in-facet opencode HTTP server registered on
+// globalThis.__portRegistry by the http shim's listen(). Mirrors the long-running
+// node path's __nimbusDispatchHttp: pick the server for the hinted port, replay
+// the request through its _handleRequest, and return the buffered Response.
+async function __ocDispatchHttp(request) {
+  // Streaming dispatch lives in the node-shims http shim (globalThis.__nimbusServeHttp),
+  // built at module-init over the shared builtins: it replays the request
+  // through the in-facet opencode server's _handleRequest and returns a
+  // streaming host Response the moment headers are known. This is what lets
+  // opencode's TUI live-sync SSE (GET /event, a response that never ends) flow
+  // live over the loopback → RPC boundary instead of being buffered to a dead
+  // finish-capped response (the frozen-TUI defect).
+  return globalThis.__nimbusServeHttp(request);
 }
 
 class NimbusOpencodeProcess extends __NimbusWorkerEntrypoint {
   async startProcess() {
     __supervisor = (this.env && this.env.SUPERVISOR) || null;
-    // Run the TUI and hold THIS RPC open until it exits — the same
-    // lifecycle contract the long-running node path uses (its
-    // startProcess awaits the attached lifecycle). The open call keeps
-    // the caller's stubs live for the resident process's lifetime, and a
-    // facet death (e.g. an OOM kill) rejects it so the supervisor can
-    // report the real reason; resolving immediately instead released the
-    // stubs ~3s after spawn and turned any facet death into a silent,
-    // unattributed stall (zero frames, nothing in any log).
-    const __lifecycle = __ocRunAttachedTui();
+    // Run the resident lifecycle and hold THIS RPC open until it exits — the
+    // same contract the long-running node path uses (its startProcess awaits
+    // the resident lifecycle). The open call keeps the caller's stubs live for
+    // the process's lifetime, and a facet death (e.g. an OOM kill) rejects it so
+    // the supervisor can report the real reason; resolving immediately instead
+    // released the stubs ~3s after spawn and turned any facet death into a
+    // silent, unattributed stall.
+    const __lifecycle = __ocMode === "server" ? __ocRunServe() : __ocRunAttachedTui();
     this.ctx.waitUntil(__lifecycle);
     await __lifecycle;
     return { ok: true };
   }
   async fetch(request) {
+    // Routed HTTP (X-Nimbus-Port) → serve it from the in-facet opencode server;
+    // otherwise this is the one-shot run entrypoint.
+    if (request.headers.has("X-Nimbus-Port")) return __ocDispatchHttp(request);
     return __ocOneShotFetch(request, this.env);
   }
+  async handleHttpRequest(request) { return __ocDispatchHttp(request); }
 }
 export default NimbusOpencodeProcess;
+
+// Headless resident lifecycle for the opencode serve command. Boots the
+// bundle's serve command (nimbusMain), whose http server binds via listen() → it
+// registers the port with the supervisor and lands on globalThis.__portRegistry
+// for __ocDispatchHttp. A real server keeps its event loop alive, so after boot
+// we hold the process resident until it is killed (isolate teardown rejects the
+// keep-alive). On a boot error we report the exit so the supervisor surfaces it.
+async function __ocRunServe() {
+  const __memDiag = __startOcMemDiag();
+  try {
+    try {
+      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
+      const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
+      if (typeof __ocBundle.nimbusMain !== "function") {
+        throw new Error(
+          "opencode bundle does not export nimbusMain() — the staged build is " +
+          "missing the Nimbus deferred-entry patch (see build-node.ts)"
+        );
+      }
+      await __ocBundle.nimbusMain();
+    } catch (e) {
+      if (e instanceof __ProcessExit) { exitCode = e.code; }
+      else if (e && e.__ocProcessExit) { exitCode = e.code; }
+      else {
+        __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
+        stderr += __ocLoadError + "\\n";
+        if (exitCode === 0) exitCode = 1;
+      }
+    }
+    if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
+    await __drainPendingIO();
+    const __failedWrites = {};
+    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
+      for (const [path, content] of Object.entries(__vfsWrites)) {
+        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      }
+    }
+    await __drainPendingIO();
+    // Booted cleanly and still serving: hold the process resident. The keep-alive
+    // never resolves; it is released when the facet isolate is torn down (kill /
+    // session teardown), matching a real server whose event loop stays alive.
+    if (exitCode === 0 && !__ocExited) {
+      await new Promise(() => {});
+    }
+    if (__supervisor && !__nimbusProcessExitReported) {
+      try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
+    }
+  } finally {
+    if (__memDiag) clearInterval(__memDiag);
+  }
+}
 
 async function __ocOneShotFetch(request, workerEnv) {
     __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;

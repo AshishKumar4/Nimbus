@@ -6,7 +6,7 @@
  *
  * Commands: which, env, export, unset, history, clear, alias, date,
  * uptime, tree, find, grep -r, head, tail, wc, diff, sort, uniq,
- * sed (s///), awk (field extract), xargs, tee, chmod, chown, ln -s,
+ * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
  * du, man/help, basename, dirname, printf, true, false, seq, sleep,
  * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
  */
@@ -30,6 +30,23 @@ function resolvePath(cwd, p) {
             out.push(s);
     }
     return out.join('/');
+}
+function readSymlinkTarget(vfs, path) {
+    if (vfs.isSymlink(path))
+        return vfs.readlink(path);
+    return getSymlinkRegistry(vfs).readlink(path);
+}
+function resolveSymlinkPath(vfs, startPath) {
+    let current = resolvePath('/', startPath);
+    for (let hops = 0; hops < 40; hops++) {
+        const target = readSymlinkTarget(vfs, current);
+        if (target === null)
+            return current;
+        current = target.startsWith('/')
+            ? resolvePath('/', target)
+            : resolvePath('/' + (current.includes('/') ? current.slice(0, current.lastIndexOf('/')) : ''), target);
+    }
+    return null;
 }
 function globMatch(pattern, name) {
     const re = pattern
@@ -2541,12 +2558,21 @@ function mkLs(vfs) {
                 return [];
             }
             for (const r of real) {
+                const type = r.type === 'directory'
+                    ? 'directory'
+                    : r.type === 'symlink'
+                        ? 'symlink'
+                        : 'file';
+                const childPath = fp ? `${fp}/${r.name}` : r.name;
                 out.push({
                     name: r.name,
-                    type: r.type === 'directory' ? 'directory' : 'file',
+                    type,
                     size: r.size ?? 0,
                     mtime: r.mtime ?? Date.now(),
                     mode: r.mode ?? 0o644,
+                    ...(type === 'symlink'
+                        ? { linkTarget: readSymlinkTarget(vfs, childPath) ?? undefined }
+                        : {}),
                 });
             }
             // Inject symlink entries whose link path is in this directory.
@@ -2557,6 +2583,8 @@ function mkLs(vfs) {
                 const linkDir = lastSlash >= 0 ? linkNorm.substring(0, lastSlash) : '';
                 if (linkDir === normDir) {
                     const linkName = lastSlash >= 0 ? linkNorm.substring(lastSlash + 1) : linkNorm;
+                    if (out.some(entry => entry.name === linkName))
+                        continue;
                     // Filter dotfiles unless -a (consistent with real entries).
                     if (!flagAll && linkName.startsWith('.'))
                         continue;
@@ -2595,8 +2623,8 @@ function mkLs(vfs) {
             const fp = resolvePath(ctx.cwd, arg);
             // Symlink check: a symlink-arg is displayed as the link itself
             // (without -L which we don't implement).
-            if (reg.isSymlink(fp)) {
-                const target = reg.readlink(fp) || '';
+            const target = readSymlinkTarget(vfs, fp);
+            if (target !== null) {
                 fileEntries.push({
                     name: arg,
                     type: 'symlink',
@@ -2684,14 +2712,12 @@ function mkCat(vfs) {
         // about the /dev provider mounted on Kernel.VFS. The shell
         // executeCommand passes Kernel.VFS as ctx.vfs.
         const kvfs = ctx.vfs;
-        // SHELL-FOLLOWUPS-4: dereference symlinks via SymlinkRegistry
-        // before any read. Real cat reads through symlinks transparently.
-        const reg = getSymlinkRegistry(vfs);
+        // Resolve both native VFS symlinks and the legacy registry before reads.
         let exit = 0;
         for (const fOrig of files) {
             const f = (() => {
                 const fp = resolvePath(ctx.cwd, fOrig);
-                const resolved = reg.resolveChain(fp);
+                const resolved = resolveSymlinkPath(vfs, fp);
                 if (resolved === null) {
                     // ELOOP: too many hops
                     ctx.stderr.write(`cat: ${fOrig}: Too many levels of symbolic links\n`);
@@ -3243,14 +3269,13 @@ function mkReadlink(vfs) {
             ctx.stderr.write('readlink: missing operand\n');
             return 1;
         }
-        const reg = getSymlinkRegistry(vfs);
         let exit = 0;
         for (const t of targets) {
             const fp = resolvePath(ctx.cwd, t);
             if (canonicalize) {
                 // -f: follow chain; succeed even if target doesn't exist YET
                 // (matches `readlink -f` which canonicalizes anyway).
-                const resolved = reg.resolveChain(fp);
+                const resolved = resolveSymlinkPath(vfs, fp);
                 if (resolved !== null) {
                     ctx.stdout.write('/' + resolved + '\n');
                     continue;
@@ -3260,7 +3285,7 @@ function mkReadlink(vfs) {
                 continue;
             }
             // Default: one-hop. Print target verbatim (preserves relative/absolute).
-            const direct = reg.readlink(fp);
+            const direct = readSymlinkTarget(vfs, fp);
             if (direct !== null) {
                 ctx.stdout.write(direct + '\n');
                 continue;
@@ -3554,8 +3579,8 @@ export function registerUnixCommands(registry, vfs) {
     registry.register('sha256sum', wrap(mkSha256sum(vfs)));
     registry.register('file', wrap(mkFile(vfs)));
     registry.register('xxd', wrap(mkXxd(vfs)));
-    // chmod/chown — no-ops (succeed silently, many npm scripts call these)
-    registry.register('chmod', wrap(() => 0));
+    // chmod is real (substrate/lifo/commands/fs/chmod.ts → vfs.chmod);
+    // chown stays a no-op (single-user VFS, but many npm scripts call it).
     registry.register('chown', wrap(() => 0));
     // ln — symlink stub (no-ops on VFS but doesn't error)
     /**

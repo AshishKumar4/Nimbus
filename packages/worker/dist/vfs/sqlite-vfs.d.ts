@@ -9,34 +9,30 @@
  * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
  * │  ─────────────────────────────────────── │
  * │  On cache miss → SQLite read             │
- * │  On eviction → SQLite write (if dirty)   │
+ * │  Writes commit synchronously to SQLite   │
  * │  On npm install → batch SQLite writes    │
  * └─────────────────────────────────────────┘
  *          │                    │
  *          ▼                    ▼
  * ┌─────────────────┐  ┌─────────────────────┐
  * │  file_chunks     │  │  inodes              │
- * │  (path, chunk_id,│  │  (path, type, mode,  │
- * │   data BLOB)     │  │   size, mtime, ...)  │
+ * │  (content_id,    │  │  (path, type, mode,  │
+ * │   chunk_id, data)│  │   size, content_id)  │
  * │  64KB chunks     │  │                      │
  * └─────────────────┘  └─────────────────────┘
  *            DO SQLite (10 GB)
  *
  * Key design from do86's SqlPageStore:
- * - LRU eviction with dirty-write-back
- * - Microtask-deferred batch writes (64 rows per INSERT)
+ * - Disposable read cache; SQLite owns every accepted write durably
+ * - Bounded batch writes (33 chunk rows per INSERT)
  * - All operations SYNCHRONOUS (DO sql.exec() is sync)
  *
- * Durability (audit C1):
+ * Durability:
  * - writeFile() returns void (sync) — preserved to match LIFO's
  *   MountProvider.writeFile(subpath, content): void contract.
- * - Deferred-flush failures (from transactionSync or individual row
- *   inserts) are retried ONCE without a transaction wrapper. Entries
- *   that fail both attempts land in failedWrites and are surfaced to
- *   subscribers via onWriteError(). flushAll() throws if any failed
- *   writes accumulated since last clearWriteFailures().
- * - Callers that need a hard guarantee can use flushAndWait() (async)
- *   at explicit persistence boundaries.
+ * - Every write returns only after its SQLite transaction commits. Large
+ *   replacements stage bounded chunk groups and atomically publish the new
+ *   content generation before returning.
  *
  * Key design decisions:
  * - 64KB chunks (not 4KB): file access is sequential, fewer rows
@@ -44,10 +40,20 @@
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
+export type VfsInodeKind = 'file' | 'directory' | 'symlink';
+export interface ExclusiveMutationLease {
+    readonly root: string;
+    readonly owner: string;
+}
+export interface ExclusiveMutationOptions {
+    readonly includeMissingAncestors?: boolean;
+}
 /** Entry for bulk inode creation via writeBatch(). */
 export interface BatchInodeEntry {
     path: string;
     parentPath: string;
+    /** Defaults to isDir ? directory : file for legacy/non-symlink producers. */
+    kind?: VfsInodeKind;
     isDir: boolean;
     size: number;
     atime?: number;
@@ -68,6 +74,41 @@ export interface BatchWritePayload {
     /** Paths to delete before writing (for clean reinstall). */
     deletePaths?: string[];
 }
+export interface WriteBatchStreamProgress {
+    /** 1-based sequence of the last durable publish group; zero means none. */
+    committedGroupSequence: number;
+    committedPathCount: number;
+    inodes: number;
+    chunks: number;
+}
+export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
+export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
+    ok: true;
+}) | (WriteBatchStreamProgress & {
+    ok: false;
+    error: {
+        code: 'ERR_WRITE_BATCH_STREAM';
+        phase: WriteBatchStreamFailurePhase;
+        message: string;
+    };
+});
+type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
+type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
+type TransactionLimitMode = 'bounded';
+interface TransactionPlanMetrics {
+    blobBytes: number;
+    logicalRows: number;
+    sqlExecs: number;
+    affectedPaths: number;
+}
+export declare class SqliteVfsTransactionTooLargeError extends Error {
+    readonly limit: TransactionLimit;
+    readonly actual: number;
+    readonly maximum: number;
+    readonly metrics: Readonly<TransactionPlanMetrics>;
+    readonly code: "E2BIG";
+    constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
+}
 export declare class SqliteVFS {
     private sql;
     private ctx;
@@ -85,33 +126,39 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
-    private pendingWrites;
-    /**
-     * Sum of `data.length` across pendingWrites entries. Maintained
-     * in lockstep with the Map by every code path that mutates it
-     * (deferWrite/clearPendingWritesForPath/flushPendingWrites/
-     * cleanupAfterDelete). Read by getStats() so /api/_diag/memory's
-     * `heap.breakdown.vfsInFlightBytes` is no longer a hardcoded 0.
-     * (N3, memory accounting cleanup.)
-     */
-    private _pendingWriteBytes;
-    /**
-     * N2 (memory accounting cleanup). Sum of bytes currently held in the
-     * `chunks: []` spool inside writeStream(). Maintained per-chunk so
-     * a long-running drain shows live, not the steady-state 0.
-     * Reset (or decremented to the drained amount) inside writeStream's
-     * finally block, after transactionSync has either consumed the
-     * bytes or thrown.
-     *
-     * Sums into `heap.breakdown.vfsInFlightBytes` alongside
-     * _pendingWriteBytes so a single value reflects ALL transient
-     * write-bytes the supervisor is holding.
-     */
-    private _writeStreamSpoolBytes;
-    private writeFlushScheduled;
-    private failedWrites;
-    private writeErrorHandlers;
-    private _writeFailures;
+    private readonly exclusiveMutationLeases;
+    private activeMutationOwner;
+    /** Shared by every concurrent stream targeting this session's VFS. */
+    private readonly writeStreamCredits;
+    private _stagedStreamBytes;
+    private _peakStagedStreamBytes;
+    /** In-memory liveness only; content_lifecycle remains durable ownership. */
+    private readonly activeStagingContentIds;
+    /** True only while durable GC work or a known abandoned staging row exists. */
+    private maintenancePending;
+    private _activeTransaction;
+    private _transactionDuration;
+    private _postCommitDuration;
+    private _decodeDrainDuration;
+    private _creditWaitDuration;
+    /** Whole content-maintenance runs, including the raw scans that execute
+     * outside executeMeasuredTransaction; count doubles as the run counter. */
+    private _maintenanceDuration;
+    private readonly _transactionDurationSamples;
+    private _transactionDurationSampleCount;
+    private _transactionDurationSampleIndex;
+    private readonly _decodeDrainStarts;
+    private readonly _creditWaitStarts;
+    private _transactionPeakBlobBytes;
+    private _transactionPeakLogicalRows;
+    private _transactionPeakSqlExecs;
+    private _transactionPeakAffectedPaths;
+    private _boundedTransactionPeakBlobBytes;
+    private _boundedTransactionPeakLogicalRows;
+    private _boundedTransactionPeakSqlExecs;
+    private _lastTransaction;
+    private _overLimitFileCount;
+    private _lastOverLimitFile;
     private _cacheHits;
     private _cacheMisses;
     private _evictions;
@@ -121,6 +168,7 @@ export declare class SqliteVFS {
     private _batchWriteRows;
     constructor(sql: SqlStorage, ctx?: DurableObjectState);
     private initSchema;
+    private tableColumns;
     private migrateFromLegacy;
     private loadInodes;
     private _addToChildrenIndex;
@@ -128,119 +176,35 @@ export declare class SqliteVFS {
     private cacheKey;
     private cacheGet;
     private cacheSet;
+    private enforceCacheLimit;
     private evictOne;
     shrinkForInstall(targetEntries?: number): void;
     /** Decrement the heavy-alloc refcount. When the count returns to
      *  zero, restore the cap to LRU_MAX_ENTRIES. No re-population —
      *  the cache warms naturally on next reads. */
     restoreAfterInstall(): void;
-    /**
-     * Drop EVERY cache entry, flushing dirty ones via deferWrite. Used
-     * by the W5 Lever 9 SQLITE_NOMEM retry path to free pages owned by
-     * us before retrying a smaller batch. Sync; safe inside the input
-     * gate.
-     */
+    /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll(): void;
-    /**
-     * Invalidate all cache entries for a path.
-     * @param discard If true, dirty entries are discarded (not flushed).
-     *   Use discard=true when the file is about to be overwritten or deleted.
-     */
-    private cacheInvalidate;
-    /** Remove all pending writes for a path (prevents orphan chunks). */
-    private clearPendingWritesForPath;
     /**
      * Batch version of cacheInvalidate — invalidate every cache entry
      * whose path is in `paths`. One pass over the cache instead of one
      * pass per path (audit R2: writeBatch was O(P × C) before this).
      *
-     * `discard` semantics match cacheInvalidate(path, discard): when
-     * false, dirty entries are re-queued for persistence before being
-     * dropped from the cache; when true (the writeBatch case — the row
-     * is about to be overwritten), dirty data is abandoned.
      */
     private cacheInvalidateBatch;
-    /** Batch version of clearPendingWritesForPath — one pass for N paths. */
-    private clearPendingWritesForPaths;
-    private deferWrite;
-    private flushPendingWrites;
-    /**
-     * Move an un-writable chunk into failedWrites and notify subscribers.
-     * Called from the retry path of flushPendingWrites(). Entries recorded
-     * here are the ones that failed BOTH the original attempt and the
-     * one-shot retry; they are considered lost (we do not re-queue a
-     * third time — the audit recommendation was a single retry). The
-     * chunk bytes are NOT retained — see failedWrites comment above.
-     */
-    private _recordFailedWrite;
-    /**
-     * Subscribe to write failures. Fires once per chunk that failed both
-     * its first attempt AND the one-shot retry. Returns an unsubscribe
-     * function. Multiple subscribers are permitted.
-     *
-     * Handlers run synchronously inside the flush microtask. Keep them
-     * cheap and non-throwing; errors thrown by a handler are caught and
-     * discarded so one bad subscriber can't break the flush path.
-     */
-    onWriteError(handler: (err: {
-        path: string;
-        chunkId: number;
-        error: string;
-        attempts: number;
-    }) => void): () => void;
-    /**
-     * Snapshot of currently-recorded write failures. Intended for
-     * diagnostics (e.g. /api/stats). The underlying Map is not exposed
-     * so external code can't accidentally mutate it.
-     */
-    getWriteFailures(): Array<{
-        path: string;
-        chunkId: number;
-        error: string;
-        attempts: number;
-    }>;
-    /**
-     * Clear recorded failures. Callers that have recovered (e.g. retried
-     * the user-facing operation, or logged the error and decided to move
-     * on) can call this to reset the counter so flushAll() stops
-     * throwing. Without this, a single poisoned chunk would make every
-     * subsequent flushAll() throw forever.
-     */
-    clearWriteFailures(): number;
-    /**
-     * Force flush all dirty cache entries and pending writes to SQLite.
-     *
-     * Throws if any chunk failed both its first attempt AND the one-shot
-     * retry during this or any previous flush in this DO's lifetime.
-     * Callers that invoke flushAll() on a critical boundary (e.g.
-     * webSocketClose) get a synchronous error signal; callers that don't
-     * want to assert cleanliness should use flushAndWait() instead.
-     *
-     * Staying synchronous preserves the sqlite-vfs invariant that all
-     * file ops are sync (documented at the top of this file) — required
-     * by the vendored MountProvider interface.
-     */
-    flushAll(): void;
-    /**
-     * Force-flush and resolve only after the flush completes with no
-     * recorded failures. Rejects with the same error shape as flushAll()
-     * when one or more chunks are un-writable after retry.
-     *
-     * Use this at explicit persistence boundaries (e.g. end of
-     * `npm install`, end of `git clone`, seed-filesystem completion) to
-     * guarantee data landed. Synchronous `writeFile()` callers that
-     * don't opt in continue to get best-effort semantics — the audit's
-     * alternative fix path (keep void API, surface errors through
-     * onWriteError + throwing flushAll).
-     */
-    flushAndWait(): Promise<void>;
     private now;
     private parentPath;
+    /** The single content resolver for both legacy-null and generated inodes. */
+    private contentIdForInode;
+    private legacyContentId;
+    private createContentId;
     private blobToUint8Array;
+    private copyBytes;
     private readChunkFromSql;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
+    isSymlink(path: string): boolean;
     /**
      * Without a path: the global mutation clock. With a path: the clock
      * value at the last mutation inside that path's subtree (0 if nothing
@@ -250,18 +214,30 @@ export declare class SqliteVFS {
     revision(path?: string): number;
     /** Advance the clock once and stamp every path + its ancestors. */
     private bumpRevision;
+    acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
+    acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
+    releaseExclusiveMutation(owner: string): void;
+    hasExclusiveMutation(): boolean;
+    private withMutationOwner;
+    assertMutationAllowed(path: string): void;
+    private assertMutationsAllowed;
     mkdir(path: string, options?: {
         recursive?: boolean;
     }): void;
     private _mkdirSingle;
     writeFile(path: string, content: string | Uint8Array): void;
-    /** Read one chunk via cache → pending writes → SQL, caching on miss. */
+    symlink(target: string, path: string): void;
+    readlink(path: string): string;
+    resolveSymlink(path: string): string | null;
+    /** Read one chunk via cache → SQL, caching on miss. */
     private readChunk;
     readFile(path: string): Uint8Array;
+    private readInodeBytes;
+    private requireChunk;
     /**
      * Read `length` bytes at `offset` without assembling the whole file —
      * only the chunks overlapping the range are touched. Reads past EOF
-     * are clamped; chunks missing their SQL row read as zeroes.
+     * are clamped; missing spans retain the existing zero-fill range semantics.
      */
     readRange(path: string, offset: number, length: number): Uint8Array;
     /**
@@ -276,13 +252,13 @@ export declare class SqliteVFS {
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
-     * Shrinking drops trailing chunk rows (and any cache/pending entries
-     * for them, so a deferred flush cannot resurrect deleted rows) and
-     * trims the new last chunk; growing zero-fills like writeRange.
+     * Shrinking drops trailing chunk rows and trims the new last chunk;
+     * growing zero-fills like writeRange. Every mutation commits before return.
      */
     truncate(path: string, size: number): void;
-    /** Drop cache + pending-write entries for chunks >= fromChunkId. */
-    private dropChunksFrom;
+    private updatedFileInode;
+    private commitCurrentContentMutation;
+    private generatedMutationChunk;
     readFileString(path: string): string;
     stat(path: string): {
         type: string;
@@ -293,6 +269,18 @@ export declare class SqliteVFS {
         mode: number;
     };
     utimes(path: string, atimeMs: number, mtimeMs: number): void;
+    /**
+     * Set the permission bits durably. Follows symlinks (POSIX chmod).
+     *
+     * The stored value is a full POSIX st_mode: S_IF* filetype bits ORed
+     * with the permission bits. Filetype bits double as the "mode was
+     * explicitly set" marker: rows written before chmod existed carry
+     * bare permission values (0o644/0o755), and the exec-dispatch
+     * grandfather rule (see shell/exec-dispatch.ts) keeps wasm-magic
+     * files with such untouched modes executable. No migration — legacy
+     * rows upgrade the first time they are chmod'ed.
+     */
+    chmod(path: string, mode: number): void;
     readdir(path: string): {
         name: string;
         type: string;
@@ -304,62 +292,35 @@ export declare class SqliteVFS {
     /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
-     * Why this exists:
-     *   writeFile() does 1 DELETE + 1 INSERT per inode (each auto-committed)
-     *   plus deferWrite() which flushes at 500-threshold.
-     *   For 30K files: ~60K sync SQL ops → 30-60s, often crashes DO.
-     *
-     * writeBatch() does:
-     *   1 transactionSync() containing:
-     *     - N DELETE for old paths (if any)
-     *     - Multi-row INSERT for inodes (up to 4000/statement)
-     *     - Multi-row INSERT for chunks (up to 200/statement, blob-heavy)
-     *   Total: 1 transactionSync() per wave of ~300-500 files.
-     *
-     * Speedup: 60K ops → ~60 ops (1000x fewer transaction commits).
+     * The complete mutation is preflighted against the Stage 2 transaction
+     * limits, then executed in one transaction with 11-inode / 33-chunk SQL
+     * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
         chunks: number;
     };
+    private replaceFileWithStagedContent;
     /**
-     * W7 — streaming bulk-write. Same semantics as writeBatch() but
-     * accepts the chunks list as an `AsyncIterable<BatchChunkEntry>`
-     * rather than a fully-realised array.
-     *
-     * v1 (this wave) is "spool-then-commit": we drain the iterator into
-     * an in-memory Array<BatchChunkEntry>, then delegate to writeBatch.
-     * The HEAP-savings claim of W7 lives on the FACET side — by the
-     * time chunks reach this method (post-RPC), they've already
-     * traversed the byte-stream boundary without hitting the 32 MiB
-     * structured-clone cap.
-     *
-     * Heap-correctness wave (N2): the spool is bounded by the peer's
-     * SHARED_RPC_FLUSH_THRESHOLD (4 MiB; see install-batch-facet.ts:196)
-     * — a peer never sends more than ~4 MiB of chunk-bytes per
-     * writeBatchStream RPC, AND workerd's input gate serialises
-     * concurrent RPCs on the same DO. So the supervisor's `chunks: []`
-     * spool peak is ≤ 4 MiB + path-overhead per call.
-     *
-     * What this method DID lack: the spool bytes were invisible to the
-     * heap estimator. We now maintain `_writeStreamSpoolBytes` that
-     * tracks the live spool contents during the drain; the diag's
-     * vfsInFlightBytes contributor now sums pendingWriteBytes +
-     * writeStreamSpoolBytes. The N2 failing probe asserts on this sum.
-     *
-     * Throws on SQLITE_NOMEM (with halve-retry per writeBatch); any
-     * iterator-source error propagates unchanged. Atomicity guarantee
-     * matches writeBatch: either ALL inodes + chunks land in SQLite or
-     * NONE do.
+     * Copy-on-write replacement for an over-limit range/truncate mutation.
+     * Chunks are produced and staged one at a time, so the operation never
+     * assembles the file as one BLOB or exceeds a Stage 2 transaction bound.
      */
-    writeStream(payload: {
-        inodes: BatchInodeEntry[];
-        chunkIter: AsyncIterable<BatchChunkEntry>;
-        deletePaths?: string[];
-    }): Promise<{
-        inodes: number;
-        chunks: number;
-    }>;
+    private replaceFileWithGeneratedContent;
+    private beginStagedContent;
+    private executeStagedChunkPlan;
+    private publishStagedFile;
+    /**
+     * Incremental W7 v3 consumer. Publication is path-atomic with a committed
+     * prefix. Chunk payload is admitted through one per-VFS weighted credit
+     * pool, staged in bounded synchronous transactions, then released before
+     * the decoder pulls another record.
+     */
+    writeStream(stream: ReadableStream<Uint8Array>, options?: {
+        decodeDrainStartedAt?: number;
+        signal?: AbortSignal;
+        mutationOwner?: string;
+    }): Promise<WriteBatchStreamResult>;
     private _writeBatchWithRetry;
     /**
      * Estimate the byte cost of a writeBatch payload. Used by the W5
@@ -367,16 +328,31 @@ export declare class SqliteVFS {
      * at the moment of the SQLITE_NOMEM. Fast (no copy).
      */
     private _estimateBatchBytes;
+    private errorMessage;
+    private isSqliteNoMem;
+    private transactionSync;
+    private executeTransactionPlan;
+    private executeMeasuredTransaction;
+    /**
+     * Bounded, idempotent content maintenance. Age only orders work; durable
+     * reference checks in each mutation transaction are the deletion authority.
+     */
+    runContentMaintenance(maxTransactions?: number): {
+        transactions: number;
+    };
+    private runContentMaintenanceSafely;
+    private metricsOnlyPlan;
+    private recordOverLimitFile;
+    private recordDuration;
+    private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     private _safeHeapUsed;
-    /**
-     * Partition a writeBatch payload into two halves with disjoint
-     * path-sets. Preserves the W2.5 invariant: deletePaths and chunks
-     * follow their owning inode into the same half. Used by the
-     * SQLITE_NOMEM retry path.
-     */
-    private _halveBatchPayload;
+    private prepareBatchTransaction;
+    private validateFileChunks;
+    private validateInodeContentShape;
+    private assertTransactionFits;
     private _writeBatchOnce;
+    private collectBatchDeletions;
     /**
      * Bulk mkdir: create all directories in a single transactionSync.
      * Pre-creates the full directory tree before file writes to avoid
@@ -424,11 +400,115 @@ export declare class SqliteVFS {
             writes: number;
             batchWrites: number;
             batchWriteRows: number;
-            pendingWrites: number;
-            pendingWriteBytes: number;
             writeStreamSpoolBytes: number;
-            failedWrites: number;
-            totalWriteFailures: number;
+            retainedWriteBytes: {
+                current: number;
+                peak: number;
+            };
+            decoderRetainedBytes: {
+                current: number;
+                peak: number;
+            };
+            creditRetainedBytes: {
+                current: number;
+                peak: number;
+                limit: number;
+                queued: number;
+            };
+            stagedBytes: {
+                current: number;
+                peak: number;
+            };
+            gcBytes: {
+                current: number;
+                peak: number;
+            };
+            phases: {
+                decodeDrainWaitMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                creditWaitMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                maintenanceMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+            };
+            transactions: {
+                limits: {
+                    blobBytes: number;
+                    logicalRows: number;
+                    sqlExecs: number;
+                };
+                active: boolean;
+                durationMs: {
+                    p95: number;
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                postCommitDurationMs: {
+                    current: number;
+                    count: number;
+                    total: number;
+                    last: number;
+                    max: number;
+                };
+                blobBytes: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                logicalRows: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                sqlExecs: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                affectedPaths: {
+                    current: number;
+                    last: number;
+                    peak: number;
+                };
+                boundedPeak: {
+                    blobBytes: number;
+                    logicalRows: number;
+                    sqlExecs: number;
+                };
+                last: {
+                    source: TransactionSource;
+                    limitMode: TransactionLimitMode;
+                    blobBytes: number;
+                    logicalRows: number;
+                    sqlExecs: number;
+                    affectedPaths: number;
+                } | null;
+                overLimitFiles: {
+                    count: number;
+                    last: (TransactionPlanMetrics & {
+                        path: string;
+                        limit: TransactionLimit;
+                    }) | null;
+                };
+            };
         };
         events: {
             totalEmitted: number;
@@ -473,5 +553,7 @@ export declare class SqliteVFSProvider {
     rmdir(sub: string): void;
     rename(o: string, n: string): void;
     copyFile(s: string, d: string): void;
+    chmod(sub: string, mode: number): void;
 }
+export {};
 //# sourceMappingURL=sqlite-vfs.d.ts.map

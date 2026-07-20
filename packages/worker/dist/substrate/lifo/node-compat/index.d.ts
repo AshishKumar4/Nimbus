@@ -1,6 +1,6 @@
 import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandOutputStream } from '../commands/types.js';
-import type { VirtualRequestHandler } from '../kernel/index.js';
+import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 export interface NodeContext {
     vfs: VFS;
     cwd: string;
@@ -13,6 +13,7 @@ export interface NodeContext {
     signal: AbortSignal;
     executeCapture?: (input: string) => Promise<string>;
     portRegistry?: Map<number, VirtualRequestHandler>;
+    routeLoopback?: LoopbackRouter;
 }
 export declare function createModuleMap(ctx: NodeContext): Record<string, () => unknown>;
 export { ProcessExitError } from './process.js';

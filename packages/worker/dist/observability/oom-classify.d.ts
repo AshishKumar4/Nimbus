@@ -1,7 +1,6 @@
 /**
  * oom-classify.ts — discriminator for OOM-like errors at Nimbus
- * boundaries. Tagged W5 (Lever 5 / J.1.1 in CF-INTERNAL-OPTIMIZATION-
- * RESEARCH.md).
+ * boundaries.
  *
  * Why this exists
  * ───────────────
@@ -39,7 +38,9 @@
  * the union narrow and additive — adding a new value is fine, but
  * never re-purpose an existing one.
  */
-export type OomCause = 'sqlite_nomem' | 'oom' | 'clone_refused' | 'rpc_timeout' | 'subrequest_cap' | 'condemnation' | 'hard_evict' | 'unknown';
+declare const OOM_CAUSES: readonly ["sqlite_nomem", "oom", "clone_refused", "rpc_timeout", "subrequest_cap", "condemnation", "hard_evict", "unknown"];
+export type OomCause = typeof OOM_CAUSES[number];
+export declare function isOomCause(input: unknown): input is OomCause;
 /**
  * Classify an error or message string into an OomCause. Returns
  * 'unknown' when no signature matches — callers should still record
@@ -53,4 +54,5 @@ export declare function classifyError(input: unknown): OomCause;
  * message has already been extracted (e.g. truncated / sanitised).
  */
 export declare function classifyMessage(msg: string): OomCause;
+export {};
 //# sourceMappingURL=oom-classify.d.ts.map

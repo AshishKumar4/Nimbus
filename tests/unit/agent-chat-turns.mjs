@@ -10,14 +10,19 @@ import { handleAgentRequest } from '../../packages/worker/src/session/agent.ts';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const CHAT_URL = 'http://session.test/api/agent/messages';
 
-function makeHost() {
-  const store = new Map();
+function makeHost(initialStore = new Map()) {
+  const store = initialStore;
+  const writes = [];
   return {
     host: {
       ctx: {
         storage: {
           async get(key) { return store.get(key); },
-          async put(key, value) { store.set(key, value); },
+          async put(key, value) {
+            const snapshot = structuredClone(value);
+            writes.push({ key, value: snapshot });
+            store.set(key, snapshot);
+          },
           async delete(key) { store.delete(key); },
           async deleteAll() { store.clear(); },
         },
@@ -27,9 +32,15 @@ function makeHost() {
         NIMBUS_CLOUDFLARE_API_TOKEN: 'test-token',
         NIMBUS_AGENT_COOKIE_SECRET: 'unit-test-cookie-secret-0123456789abcdef',
       },
+      shell: {},
+      processes: { getAll() { return []; } },
+      ensureSqliteFs() {},
+      ensureFacetManager() {},
+      initSession() {},
       sqliteFs: null,
     },
     store,
+    writes,
   };
 }
 
@@ -87,6 +98,94 @@ function mockProviderFetch(mode = 'complete') {
   };
 }
 
+function controlledProviderFetch() {
+  const encoder = new TextEncoder();
+  let bodyController;
+  let readyResolve;
+  const ready = new Promise((resolve) => { readyResolve = resolve; });
+  const fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    assert.ok(url.includes('/accounts/test-account/ai/v1/'), `unexpected fetch: ${url}`);
+    const signal = init?.signal;
+    const body = new ReadableStream({
+      start(controller) {
+        bodyController = controller;
+        const onAbort = () => {
+          try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch {}
+        };
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
+        readyResolve();
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  };
+  return {
+    fetch,
+    ready,
+    emitText(text) { bodyController.enqueue(encoder.encode(sseChunk(text))); },
+    finish() {
+      bodyController.enqueue(encoder.encode(sseChunk(null, 'stop')));
+      bodyController.enqueue(encoder.encode('data: [DONE]\n\n'));
+      bodyController.close();
+    },
+  };
+}
+
+function toolProviderFetch() {
+  const encoder = new TextEncoder();
+  let requestCount = 0;
+  return async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    assert.ok(url.includes('/accounts/test-account/ai/v1/'), `unexpected fetch: ${url}`);
+    requestCount += 1;
+    if (requestCount === 1) {
+      const chunks = [
+        {
+          id: 'chatcmpl-tool', object: 'chat.completion.chunk', created: 1, model: 'test-model',
+          choices: [{
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [{
+                index: 0,
+                id: 'call-list',
+                type: 'function',
+                function: { name: 'list_processes', arguments: '{}' },
+              }],
+            },
+            finish_reason: null,
+          }],
+        },
+        {
+          id: 'chatcmpl-tool', object: 'chat.completion.chunk', created: 1, model: 'test-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        },
+      ];
+      const body = new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    }
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseChunk('Processes checked.')));
+        controller.enqueue(encoder.encode(sseChunk(null, 'stop')));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+}
+
 async function postChat(host, body) {
   const request = new Request(CHAT_URL, {
     method: 'POST',
@@ -128,7 +227,36 @@ async function waitFor(check, label, timeoutMs = 3000) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
+function collectEvents(response) {
+  const reader = response.body.getReader();
+  const events = [];
+  const done = (async () => {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let lineEnd = buffer.indexOf('\n');
+      while (lineEnd >= 0) {
+        const line = buffer.slice(0, lineEnd).trim();
+        buffer = buffer.slice(lineEnd + 1);
+        if (line) events.push(JSON.parse(line));
+        lineEnd = buffer.indexOf('\n');
+      }
+    }
+  })();
+  return { reader, events, done };
+}
+
 const realFetch = globalThis.fetch;
+
+function assistantWrites(writes) {
+  return writes
+    .filter((write) => write.key === MESSAGES_KEY)
+    .map((write) => write.value.find((message) => message.role === 'assistant'))
+    .filter(Boolean);
+}
 
 // ── Abort: cancelling the stream persists the partial turn ──────────
 {
@@ -156,7 +284,9 @@ const realFetch = globalThis.fetch;
     assert.equal(persisted[0].content, 'hi there');
     const partial = persisted[1];
     assert.equal(partial.role, 'assistant');
+    assert.equal(partial.status, 'interrupted');
     assert.equal(partial.aborted, true, 'partial turn carries the aborted marker');
+    assert.equal(partial.error, undefined, 'a client stop is not a provider error');
     assert.equal(partial.content, 'Hello world');
     assert.deepEqual(partial.parts, [{ type: 'text', text: 'Hello world' }]);
   } finally {
@@ -241,6 +371,9 @@ const realFetch = globalThis.fetch;
     assert.ok(done, 'retry stream completes');
     assert.equal(done.message.role, 'assistant');
     assert.equal(done.message.content, 'Hello world');
+    assert.equal(done.message.status, 'complete');
+    assert.equal(done.message.aborted, undefined);
+    assert.equal(done.message.error, undefined);
 
     const persisted = store.get(MESSAGES_KEY);
     assert.deepEqual(persisted.map((m) => m.role), ['user', 'assistant'], 'exactly one user + one assistant');
@@ -290,6 +423,7 @@ const realFetch = globalThis.fetch;
     const persisted = store.get(MESSAGES_KEY);
     assert.deepEqual(persisted.map((m) => m.role), ['user', 'assistant'], 'partial turn persisted on error');
     const partial = persisted[1];
+    assert.equal(partial.status, 'interrupted');
     assert.equal(partial.content, 'Hello world');
     assert.deepEqual(partial.parts, [{ type: 'text', text: 'Hello world' }]);
     assert.equal(typeof partial.error, 'string', 'terminal error marker stored');
@@ -312,6 +446,93 @@ const realFetch = globalThis.fetch;
     globalThis.fetch = realFetch;
   }
   console.log('ok - terminal stream error persists the partial turn and retry replaces it');
+}
+
+// ── Incremental persistence: bounded text writes + reset recovery ────
+{
+  const { host, store, writes } = makeHost();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'survive a reset', stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    provider.emitText('Hello');
+    provider.emitText(' world');
+    await waitFor(
+      () => stream.events.filter((event) => event.type === 'text-delta').length >= 2,
+      'two text deltas',
+    );
+    assert.equal(assistantWrites(writes).length, 0, 'small deltas are not persisted per token');
+
+    const incremental = await waitFor(() => {
+      const messages = store.get(MESSAGES_KEY);
+      return messages?.[1]?.status === 'streaming' ? messages : null;
+    }, 'debounced streaming persistence');
+    assert.equal(incremental.length, 2);
+    assert.equal(incremental[1].content, 'Hello world');
+
+    const persistedTurns = assistantWrites(writes);
+    assert.equal(persistedTurns.length, 1, 'coalesced text deltas produce one incremental write');
+
+    provider.emitText('x'.repeat(1024));
+    await waitFor(() => assistantWrites(writes).length === 2, 'size-threshold streaming persistence');
+    const growingTurns = assistantWrites(writes);
+    assert.equal(new Set(growingTurns.map((message) => message.id)).size, 1, 'incremental writes retain one assistant id');
+    assert.ok(growingTurns[1].content.length > growingTurns[0].content.length, 'same assistant message grows in place');
+    for (const write of writes) {
+      assert.ok(write.value.filter((message) => message.role === 'assistant').length <= 1, 'no write duplicates the assistant row');
+    }
+
+    const activeResponse = await handleAgentRequest(host, new Request(CHAT_URL), new URL(CHAT_URL));
+    const active = (await activeResponse.json()).messages;
+    assert.equal(active[1].status, 'streaming', 'same-isolate GET preserves the active producer');
+
+    // A new Host models the post-reset isolate: its active-producer registry
+    // is empty, while the same durable message array survives.
+    const recoveredStore = new Map([[MESSAGES_KEY, structuredClone(incremental)]]);
+    const { host: recoveredHost } = makeHost(recoveredStore);
+    const getResponse = await handleAgentRequest(
+      recoveredHost,
+      new Request(CHAT_URL),
+      new URL(CHAT_URL),
+    );
+    const recovered = (await getResponse.json()).messages;
+    assert.equal(recovered.length, 2);
+    assert.equal(recovered[1].id, incremental[1].id);
+    assert.equal(recovered[1].status, 'interrupted');
+    assert.equal(recovered[1].aborted, undefined);
+    assert.equal(recovered[1].error, undefined);
+
+    provider.finish();
+    await stream.done;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - incremental turn survives reset and orphan sweep marks it interrupted');
+}
+
+// ── Tool boundaries persist immediately ─────────────────────────────
+{
+  const { host, writes } = makeHost();
+  globalThis.fetch = toolProviderFetch();
+  try {
+    const response = await postChat(host, { message: 'list processes', stream: true });
+    const [events] = await readEventsUntil(
+      response,
+      (list) => list.some((event) => event.type === 'done'),
+    );
+    assert.ok(events.some((event) => event.type === 'tool-call'));
+    assert.ok(events.some((event) => event.type === 'tool-result'));
+    const checkpoints = assistantWrites(writes).filter((message) => message.status === 'streaming');
+    assert.ok(checkpoints.some((message) => message.parts?.some((part) => part.type === 'tool' && part.status === 'running')),
+      'tool-call boundary persisted');
+    assert.ok(checkpoints.some((message) => message.parts?.some((part) => part.type === 'tool' && part.status !== 'running')),
+      'tool-result boundary persisted');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - tool call and result boundaries persist immediately');
 }
 
 console.log('agent-chat-turns: all assertions passed');

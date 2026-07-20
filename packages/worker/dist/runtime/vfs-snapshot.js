@@ -32,6 +32,7 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
     let totalBytes = 0;
     let fileCount = 0;
     const stack = [];
+    const failures = [];
     const addDirWithParents = (path) => {
         const clean = path.replace(/^\/+/, '').replace(/\/+$/, '');
         if (!clean)
@@ -52,7 +53,8 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
         try {
             entries = vfs.readdir(dir);
         }
-        catch {
+        catch (error) {
+            failures.push(`readdir ${dir}: ${error instanceof Error ? error.message : String(error)}`);
             continue;
         }
         for (const entry of entries) {
@@ -68,7 +70,8 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
             try {
                 bytes = vfs.readFile(childPath);
             }
-            catch {
+            catch (error) {
+                failures.push(`readFile ${childPath}: ${error instanceof Error ? error.message : String(error)}`);
                 continue;
             }
             totalBytes += bytes.length;
@@ -82,6 +85,9 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
             addDirWithParents(dir);
             files[childPath] = bytesToB64(bytes);
         }
+    }
+    if (failures.length > 0) {
+        return { error: `runtime filesystem snapshot incomplete: ${failures.join('; ')}` };
     }
     return { snapshot: { root, roots, preopens: [], files, dirs: Array.from(dirsSet).sort() }, bytes: totalBytes, files: fileCount };
 }

@@ -22,6 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 type RpcHost = any;
 export declare function _rpcReadFile(self: RpcHost, path: string): Promise<string | null>;
 /**
@@ -56,7 +57,10 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
 }>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void>;
 export declare function _rpcStat(self: RpcHost, path: string): Promise<any>;
+export declare function _rpcLstat(self: RpcHost, path: string): Promise<any>;
+export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean>;
 export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+export declare function _rpcChmod(self: RpcHost, path: string, mode: number): Promise<void>;
 export declare function _rpcReaddir(self: RpcHost, path: string): Promise<{
     name: string;
     type: string;
@@ -99,24 +103,20 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
 }>;
 /**
  * W7 — Streaming bulk-write entry point. Receives a
- * ReadableStream<Uint8Array> in the W7 wire format (see
- * src/_shared/w7-frame.ts), decodes inode metadata + chunks lazily,
- * and feeds them into SqliteVFS.writeStream().
+ * ReadableStream<Uint8Array> in the W7 v3 wire format (see
+ * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
+ * SqliteVFS.writeStream().
  *
  * Bypasses the 32 MiB structured-clone cap that constrained the
  * legacy writeBatch path — workerd flow-controls the byte stream
  * end-to-end.
  *
- * Atomicity guarantee mirrors writeBatch: either ALL inodes +
- * chunks land in SQLite or NONE do. SqliteVFS.writeStream defers
- * the actual transactionSync until the chunk iterator is fully
- * drained (v1 spool-then-commit), so a stream error mid-transit
- * aborts before any SQL state mutates.
+ * Unlike strict writeBatch, the stream contract is path-atomic with a
+ * committed prefix: every reported path is complete, but earlier publish
+ * groups remain durable when a later group fails. The typed result carries
+ * the exact durable progress.
  */
-export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>): Promise<{
-    inodes: number;
-    chunks: number;
-}>;
+export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult>;
 /**
  * Bulk-write npm registry cache entries in ONE RPC. Used by the
  * resolver-facet to flush a wave of resolved packages back to the
@@ -196,6 +196,7 @@ export declare function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => 
 export declare function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>>;
 export declare function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
 export declare function _rpcUnregisterPort(self: RpcHost, port: number): Promise<void>;
+export declare function _rpcRouteLoopback(self: RpcHost, port: number, request: Request): Promise<Response>;
 export declare function _rpcTransform(self: RpcHost, code: string, loader: string): Promise<{
     code: string;
     map: string;

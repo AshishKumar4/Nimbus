@@ -23,7 +23,7 @@
  *     globalThis.__NIMBUS_WASM['esbuild.wasm']. The pre-bundle facet
  *     reads it at request time and passes to esb.initialize().
  *
- * resolvePackageEntry is a pure-JS function from src/npm-resolver.ts;
+ * resolvePackageEntry is a pure-JS function from src/_shared/exports-resolver.ts;
  * we inline its source here so the facet doesn't need to fault back
  * to the supervisor for it.
  *
@@ -63,9 +63,7 @@ import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 // in env.ASSETS at rest.
 /**
  * Resolver helpers, sourced from src/_shared/exports-resolver.ts via
- * getExportsResolverJS(). Single source of truth — see
- * consolidates. The pre-bundle facet uses `resolvePackageEntry` (line 492
- * of src/pre-bundle-facet.ts).
+ * getExportsResolverJS(). The pre-bundle facet uses `resolvePackageEntry`.
  */
 const RESOLVER_HELPERS_SRC = getExportsResolverJS();
 /**
@@ -78,7 +76,7 @@ export const PRE_BUNDLE_PREAMBLE = `
 // Esbuild JS helpers (small ~117 KiB). The wasm BYTES are NOT here —
 // they're fetched at facet boot via env.SUPERVISOR.getEsbuildWasm() to
 // keep the per-dispatch worker module source under ~120 KiB instead of
-// ~16 MiB. See src/parallel/pre-bundle-preamble.ts header for why.
+// ~16 MiB. See this file's header for why.
 const ESBUILD_WASM_VERSION = ${JSON.stringify(ESBUILD_WASM_VERSION)};
 const ESBUILD_WASM_JS_FN_BODY = ${JSON.stringify(ESBUILD_WASM_JS_FN_BODY)};
 
@@ -88,13 +86,13 @@ const ESBUILD_WASM_JS_FN_BODY = ${JSON.stringify(ESBUILD_WASM_JS_FN_BODY)};
 // fn body called \`new Function(jsBody)()\` and got
 // \"Code generation from strings disallowed for this context\" for every
 // spec). The codebase already documents this constraint at
-// src/node-shims.ts:1006-1015.
+// src/runtime/node-shims.ts.
 //
 // Workaround: run \`new Function(...)()\` here in the preamble — preambles
 // execute at module-load time (the worker's startup phase) where eval IS
 // permitted. We capture the resulting esbuild namespace in a module-scope
 // const that the user fn references at request time. Same pattern as
-// src/facet-manager.ts:176 (USER_CODE is compiled in the generated module
+// src/facets/manager.ts (USER_CODE is compiled in the generated module
 // scope, not inside the request handler).
 //
 // Fail-safe: if even startup-time eval is blocked, set the cache to a

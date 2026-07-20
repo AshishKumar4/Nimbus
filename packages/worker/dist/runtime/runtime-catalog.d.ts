@@ -16,7 +16,7 @@
  *   { version: 1, runtimes: { <name>: { default, versions: { <ver>: { manifest, size_bytes, license } } } } }
  *
  * Manifest schema (RuntimeManifest):
- *   { name, version, license, wasi_namespace, memfs_companion,
+ *   { name, version, license, wasi_namespace,
  *     files: [{ path, content, sha256, size, mode? }],
  *     entrypoints: [{ binName, runner, args[], kind? }],
  *     runtime_artifacts?: [
@@ -116,9 +116,6 @@ export interface RuntimeManifest {
     /** Which WASI namespace the binaries import — `wasi_unstable` for
      *  binji clang. `null` for non-WASI runtimes (e.g. Pyodide). */
     wasi_namespace: string | null;
-    /** Optional sibling-blob VFS path that the runner needs to load
-     *  as a 2nd `modules:` entry (binji's memfs.wasm helper). */
-    memfs_companion: string | null;
     files: ManifestFile[];
     entrypoints: ManifestEntrypoint[];
     runtime_artifacts?: RuntimeArtifactMetadata[];

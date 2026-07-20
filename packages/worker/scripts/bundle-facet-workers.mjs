@@ -6,10 +6,9 @@
  * WHY this exists:
  *   Dynamic workers (NimbusFacetPool / NimbusLoaderPool) receive their
  *   module source as strings — they cannot import supervisor modules,
- *   and user functions can reference closure-variables only through the
- *   JSON-only `context` option. Any TypeScript the injected code needs
- *   must therefore be esbuild-bundled into a self-contained source
- *   string at build time.
+ *   and user functions cannot capture supervisor closure variables. Any
+ *   TypeScript the injected code needs must therefore be esbuild-bundled
+ *   into a self-contained source string at build time.
  *
  *   For the npm install facet we need the streaming tar parser
  *   (src/npm/tarball-stream.ts) available as a top-level named export
@@ -26,9 +25,7 @@
  * Output:
  *   src/loaders/generated-workers.ts — exports
  *       TAR_STREAM_PREAMBLE: string
- *       TAR_STREAM_PREAMBLE_SIZE: number
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
- *       W7_FRAME_PREAMBLE_SIZE: number
  *   src/runtime/virtual-socket-kernel.generated.ts — exports
  *       VIRTUAL_SOCKET_KERNEL_SRC: string
  *
@@ -147,7 +144,7 @@ async function main() {
     ' * Tar-stream symbols: parseTarHeader, streamTarEntries,',
     ' *   readableStreamToAsyncIterable, MAX_FILE_BYTES.',
     ' * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,',
-    ' *   W7_MAGIC, W7_TRAILER.',
+    ' *   W7_MAGIC, W7_MAX_RECORD_BYTES.',
     ' *',
     ` * Tar size: ${(tarStripped.length / 1024).toFixed(2)} KiB`,
     ` * W7 size:  ${(w7Stripped.length / 1024).toFixed(2)} KiB`,
@@ -155,11 +152,7 @@ async function main() {
     '',
     `export const TAR_STREAM_PREAMBLE: string = ${tarEncoded};`,
     '',
-    `export const TAR_STREAM_PREAMBLE_SIZE: number = ${tarStripped.length};`,
-    '',
     `export const W7_FRAME_PREAMBLE: string = ${w7Encoded};`,
-    '',
-    `export const W7_FRAME_PREAMBLE_SIZE: number = ${w7Stripped.length};`,
     '',
   ].join('\n');
 

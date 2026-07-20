@@ -16,8 +16,8 @@
  * The fix is to dispatch each per-specifier `esbuild.build` to a
  * NimbusLoaderPool isolate. Each facet has its own 128 MB budget and
  * stable-slot reuse keeps the warm-up cost amortized across the 8
- * concurrent specs of a typical install. Same pattern as
- * src/npm-install-facet.ts (tarball extraction).
+ * concurrent specs of a typical install. The install-batch facet uses
+ * the same isolate boundary for tarball extraction.
  *
  * File-slice strategy (zero per-read RPC)
  * ──────────────────────────────────────
@@ -37,7 +37,7 @@
  *   - No `this` references (arrow / anonymous async).
  *   - No free variables other than preamble names + explicit args.
  *   - Module-level constants the function references must come from
- *     the preamble (src/parallel/pre-bundle-preamble.ts) — see
+ *     the preamble (src/loaders/pre-bundle-preamble.ts) — see
  *     `ESBUILD_PRELOAD_PREAMBLE`.
  *
  * The supervisor RPC surface (env.SUPERVISOR) is available for emergency

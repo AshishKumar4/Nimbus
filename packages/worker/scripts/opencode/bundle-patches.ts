@@ -309,6 +309,162 @@ if (!globalThis.__nimbusOpenTUIBackend && !existsSync2(targetLibPath)) {
     file,
   )
 
+  // Seam 9 — span-feed consumption acks through LIVE wasm memory. The Zig core
+  // (NativeSpanFeed) tracks chunk refcounts in a state_buffer it hands the host
+  // by pointer; the ONLY way a chunk is ever freed for reuse is the host writing
+  // a decrement directly into that shared memory (there is no markChunkFree FFI
+  // export). On native FFI `toArrayBuffer(statePtr,…)` is a LIVE window, so
+  // `decrementRefcount` writing into `this.stateBuffer` IS the ack. The Nimbus
+  // `toArrayBuffer` is a detach-safe SNAPSHOT (correct for read-then-decode
+  // callers), so the upstream event-8 snapshot + write-back would decrement a
+  // DEAD copy — Zig's real state_buffer only ever increments, no chunk is ever
+  // reused, and `addChunkLocked` mallocs a fresh 64KiB chunk every frame until
+  // the isolate OOMs (and `hasPinnedChunks()`/`idle()` wedge on stale counts).
+  //
+  // When the registry backend is active: event-8 stores {backend,ptr,len} (the
+  // backend ref captured so the refcount path never depends on the mutable
+  // registry global, which a teardown may clear mid-flight), and
+  // `decrementRefcount`/`hasPinnedChunks` re-derive a live view over linear
+  // memory PER ACCESS. Per-access re-derivation is mandatory (the codebase's
+  // grow-safe discipline): a cached live view silently detaches on `memory.grow`
+  // and its writes no-op, reintroducing the leak. Backend-mode is detected by the
+  // stored object's own `__nimbusBackend` marker; absent it (a normal Bun run,
+  // where stateBuffer is a Uint8Array) every branch behaves exactly as upstream.
+
+  // Seam 9a — event 8 (StateBuffer): store {backend,ptr,len}, don't snapshot.
+  source = replaceOnce(
+    source,
+    `        case 8 /* StateBuffer */: {
+          const len = toNumber2(arg1);
+          if (len > 0 && arg0) {
+            const buffer = toArrayBuffer(arg0, 0, len);
+            this.stateBuffer = new Uint8Array(buffer);
+          }
+          break;
+        }`,
+    `        case 8 /* StateBuffer */: {
+          const len = toNumber2(arg1);
+          if (len > 0 && arg0) {
+            this.stateBuffer = globalThis.__nimbusOpenTUIBackend
+              ? { __nimbusBackend: globalThis.__nimbusOpenTUIBackend, __nimbusStatePtr: arg0, __nimbusStateLen: len }
+              : new Uint8Array(toArrayBuffer(arg0, 0, len));
+          }
+          break;
+        }`,
+    label,
+    file,
+  )
+
+  // Seam 9b — hasPinnedChunks: read refcounts through a per-access live view.
+  source = replaceOnce(
+    source,
+    `  hasPinnedChunks() {
+    if (!this.stateBuffer)
+      return false;
+    for (const refcount of this.stateBuffer) {
+      if (refcount > 0)
+        return true;
+    }
+    return false;
+  }`,
+    `  hasPinnedChunks() {
+    if (!this.stateBuffer)
+      return false;
+    const stateView = this.stateBuffer.__nimbusBackend
+      ? this.stateBuffer.__nimbusBackend.liveView(Uint8Array, this.stateBuffer.__nimbusStatePtr, this.stateBuffer.__nimbusStateLen)
+      : this.stateBuffer;
+    for (const refcount of stateView) {
+      if (refcount > 0)
+        return true;
+    }
+    return false;
+  }`,
+    label,
+    file,
+  )
+
+  // Seam 9c — decrementRefcount: write the ack into a per-access live view so it
+  // lands in Zig's real state_buffer (the chunk becomes reusable).
+  source = replaceOnce(
+    source,
+    `  decrementRefcount(chunkIndex) {
+    if (this.stateBuffer && chunkIndex < this.stateBuffer.length) {
+      const prev = this.stateBuffer[chunkIndex];
+      this.stateBuffer[chunkIndex] = prev > 0 ? prev - 1 : 0;
+    }
+  }`,
+    `  decrementRefcount(chunkIndex) {
+    if (!this.stateBuffer)
+      return;
+    const stateView = this.stateBuffer.__nimbusBackend
+      ? this.stateBuffer.__nimbusBackend.liveView(Uint8Array, this.stateBuffer.__nimbusStatePtr, this.stateBuffer.__nimbusStateLen)
+      : this.stateBuffer;
+    if (chunkIndex < stateView.length) {
+      const prev = stateView[chunkIndex];
+      stateView[chunkIndex] = prev > 0 ? prev - 1 : 0;
+    }
+  }`,
+    label,
+    file,
+  )
+
+  // Seam 9d — event 2 (ChunkAdded): skip the chunkMap ArrayBuffer snapshot when
+  // the backend is active. In facet mode the drain reads chunk bytes live (seam
+  // 6), so the snapshot is pure dead weight (a 64KiB copy per chunk). chunkSizes
+  // is still recorded for the non-backend fallback shape.
+  source = replaceOnce(
+    source,
+    `        case 2 /* ChunkAdded */: {
+          const chunkLen = toNumber2(arg1);
+          if (chunkLen > 0 && arg0) {
+            if (!this.chunkMap.has(arg0)) {
+              const buffer = toArrayBuffer(arg0, 0, chunkLen);
+              this.chunkMap.set(arg0, buffer);
+            }
+            this.chunkSizes.set(arg0, chunkLen);
+          }
+          break;
+        }`,
+    `        case 2 /* ChunkAdded */: {
+          const chunkLen = toNumber2(arg1);
+          if (chunkLen > 0 && arg0) {
+            if (!globalThis.__nimbusOpenTUIBackend && !this.chunkMap.has(arg0)) {
+              const buffer = toArrayBuffer(arg0, 0, chunkLen);
+              this.chunkMap.set(arg0, buffer);
+            }
+            this.chunkSizes.set(arg0, chunkLen);
+          }
+          break;
+        }`,
+    label,
+    file,
+  )
+
+  // Seam 9e — drainOnce fallback: skip the same chunkMap snapshot at drain time
+  // when the backend is active (seam 9d moves the miss here otherwise). The live
+  // read (seam 6) needs neither `buffer` nor the byteLength bounds check.
+  source = replaceOnce(
+    source,
+    `        let buffer = this.chunkMap.get(span.chunkPtr);
+        if (!buffer) {
+          const size = this.chunkSizes.get(span.chunkPtr);
+          if (!size)
+            continue;
+          buffer = toArrayBuffer(span.chunkPtr, 0, size);
+          this.chunkMap.set(span.chunkPtr, buffer);
+        }`,
+    `        let buffer = this.chunkMap.get(span.chunkPtr);
+        if (!buffer && !globalThis.__nimbusOpenTUIBackend) {
+          const size = this.chunkSizes.get(span.chunkPtr);
+          if (!size)
+            continue;
+          buffer = toArrayBuffer(span.chunkPtr, 0, size);
+          this.chunkMap.set(span.chunkPtr, buffer);
+        }`,
+    label,
+    file,
+  )
+
   return source
 }
 
@@ -376,6 +532,97 @@ export function nimbusPatchRpcWorkerScope(source: string, file: string): string 
   postMessage(JSON.stringify({ type: "rpc.event", event, data }))`,
     `export function emit(event: string, data: unknown, scope?: { postMessage: (data: string) => void }) {
   ;((scope ?? globalThis) as any).postMessage(JSON.stringify({ type: "rpc.event", event, data }))`,
+    label,
+    file,
+  )
+  return source
+}
+
+// opencode's birpc transport (src/util/rpc.ts) is fire-and-forget on the error
+// path: the server `listen` dispatch does `const result = await rpc[method](input)`
+// with NO try/catch, and the client `client()` only ever settles a pending call
+// on a `rpc.result` frame. So when a server method REJECTS — far more common on
+// Nimbus's VFS/DO substrate than on native Bun — the server posts NOTHING back,
+// the client's `pending.set(id, resolve)` entry is never deleted, and its Promise
+// never settles. Each leaked entry retains the resolver plus the caller's entire
+// awaiting continuation; the TUI fans out RPC per keystroke, so the leak is
+// activity-scaled and OOMs the 128 MiB facet in ~10-15 s.
+//
+// This seam closes the transport contract so a rejected method still settles the
+// caller and frees the pending entry (the right, proper fix — a strict superset
+// of upstream that also cures a latent upstream HANG on any throwing method, on
+// every host). It is NOT registry-gated: the happy path is byte-for-byte
+// identical (results still resolve through the same `rpc.result` frame), and the
+// error path is pure fail-loud added behaviour, correct under Bun and workerd
+// alike. It runs AFTER nimbusPatchRpcWorkerScope (chained in build-node.ts's
+// rpc.ts onLoad) so the server anchor matches the `target.postMessage` form that
+// patch produces; the client anchors are untouched by the scope patch.
+export function nimbusPatchRpcFailLoud(source: string, file: string): string {
+  const label = 'nimbus rpc fail-loud patch'
+
+  // SERVER — wrap the dispatch in try/catch and post a mirrored `rpc.error`
+  // frame (same id field) on rejection, so the client can settle+free the call.
+  source = replaceOnce(
+    source,
+    `      const result = await rpc[parsed.method](parsed.input)
+      target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
+    `      try {
+        const result = await rpc[parsed.method](parsed.input)
+        target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))
+      } catch (error) {
+        target.postMessage(JSON.stringify({ type: "rpc.error", error: error instanceof Error ? error.message : String(error), id: parsed.id }))
+      }`,
+    label,
+    file,
+  )
+
+  // CLIENT — the pending map now stores { resolve, reject } instead of the bare
+  // resolver. Settle on `rpc.result` via `entry.resolve`, and add the `rpc.error`
+  // branch that REJECTS and deletes the entry (releasing the resolver + the
+  // caller's continuation). Both frames delete the entry — no path leaks.
+  source = replaceOnce(
+    source,
+    `  const pending = new Map<number, (result: any) => void>()`,
+    `  const pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void }>()`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `    if (parsed.type === "rpc.result") {
+      const resolve = pending.get(parsed.id)
+      if (resolve) {
+        resolve(parsed.result)
+        pending.delete(parsed.id)
+      }
+    }`,
+    `    if (parsed.type === "rpc.result") {
+      const entry = pending.get(parsed.id)
+      if (entry) {
+        entry.resolve(parsed.result)
+        pending.delete(parsed.id)
+      }
+    }
+    if (parsed.type === "rpc.error") {
+      const entry = pending.get(parsed.id)
+      if (entry) {
+        entry.reject(new Error(parsed.error))
+        pending.delete(parsed.id)
+      }
+    }`,
+    label,
+    file,
+  )
+  source = replaceOnce(
+    source,
+    `      return new Promise((resolve) => {
+        pending.set(requestId, resolve)
+        target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
+      })`,
+    `      return new Promise((resolve, reject) => {
+        pending.set(requestId, { resolve, reject })
+        target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
+      })`,
     label,
     file,
   )

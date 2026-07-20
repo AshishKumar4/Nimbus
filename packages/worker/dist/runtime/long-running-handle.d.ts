@@ -116,18 +116,4 @@ export declare function expandShellDefaults(token: string, env: Record<string, a
  * fully resolved.
  */
 export declare function expandArgvShellDefaults(argv: ReadonlyArray<string>, env: Record<string, any> | undefined): string[];
-/**
- * Pick the default `/preview/` target when no `?port=N` is supplied
- * AND no in-process `viteDevServer` is currently running. The strategy
- * is "first PortRegistry entry, ordered by registration time" — so if
- * a session has only one long-running thing (Markflow's vite on :3000),
- * `/preview/` lands on it without the user supplying a port.
- *
- * Returns null if the registry is empty, in which case the caller
- * surfaces the existing "no dev server running" placeholder.
- */
-export declare function pickDefaultPreviewPort(ports: ReadonlyArray<{
-    port: number;
-    registeredAt: number;
-}>): number | null;
 //# sourceMappingURL=long-running-handle.d.ts.map

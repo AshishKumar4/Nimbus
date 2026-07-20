@@ -20,7 +20,7 @@
 import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 /** Base asset path of the staged opencode bundle directory. */
-export const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
+const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
 // The build id (content hash of the staged dist) is part of the L2 key so a
 // same-version rebuild with different bytes never serves stale content from a
 // warm colo cache.
@@ -64,8 +64,19 @@ async function fetchAsset(env, file) {
     return ab;
 }
 /** Fetch the opencode CLI bundle source as text. */
-export async function fetchOpencodeBundle(env) {
-    const ab = await fetchAsset(env, 'index.js');
+/**
+ * The attach-mode entry variant: index.js rebuilt with the interactive-mode
+ * chunk graph inlined STATICALLY. The TUI command's lazy
+ * `import("./chunk-…")` of that graph triggers a prod-only workerd
+ * process-wide kill (defect #20, dossier F13/F14); the attach facet therefore
+ * boots an entry with that graph pre-linked in the boot pass — the one shape
+ * never observed to kill. Serve/oneshot keep the original chunked entry (their
+ * runtime chunk imports are boot-proven and the smaller static compile keeps
+ * each mode inside the facet memory budget).
+ */
+export const OPENCODE_ATTACH_BUNDLE_FILE = 'index-attach.js';
+export async function fetchOpencodeBundle(env, mode = 'default') {
+    const ab = await fetchAsset(env, mode === 'attach' ? OPENCODE_ATTACH_BUNDLE_FILE : 'index.js');
     return new TextDecoder().decode(ab);
 }
 /**

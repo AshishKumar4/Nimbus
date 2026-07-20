@@ -35,6 +35,8 @@ export interface StreamCallbacks {
   onDone(message: StoredMessage): void;
 }
 
+export type AgentStreamOutcome = 'done' | 'error' | 'eof';
+
 export function createLiveTurn(): LiveTurn {
   return {
     message: {
@@ -43,6 +45,7 @@ export function createLiveTurn(): LiveTurn {
       content: '',
       createdAt: Date.now(),
       parts: [],
+      status: 'streaming',
     },
     usage: {},
   };
@@ -52,13 +55,16 @@ export async function readAgentStream(
   body: ReadableStream<Uint8Array>,
   live: LiveTurn,
   callbacks: StreamCallbacks,
-): Promise<void> {
+): Promise<AgentStreamOutcome> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let outcome: AgentStreamOutcome = 'eof';
   const consume = (line: string) => {
     if (!line) return;
-    applyStreamEvent(JSON.parse(line) as AgentStreamEvent, live, callbacks);
+    const event = JSON.parse(line) as AgentStreamEvent;
+    applyStreamEvent(event, live, callbacks);
+    if (event.type === 'done' || event.type === 'error') outcome = event.type;
   };
   while (true) {
     const { value, done } = await reader.read();
@@ -72,6 +78,7 @@ export async function readAgentStream(
     }
   }
   consume(buffer.trim());
+  return outcome;
 }
 
 export function applyStreamEvent(event: AgentStreamEvent, live: LiveTurn, callbacks: StreamCallbacks): void {

@@ -52,7 +52,7 @@ import { handleAgentRequest } from './agent.js';
 // shape used here automatically.
 import { R2CacheClient, R2_CACHE_PREFIX, L2_KEY_HOST } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT, hashKeyToShard } from '../loaders/fanout-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
 import { z } from 'zod/v4';
 
 type RoutesHost = any;
@@ -418,7 +418,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       const DO_HEAP_LIMIT_BYTES = 128 * 1024 * 1024;
       const heapUsed = nodeMem?.heapUsed ?? 0;
       const counters = readDiagCounters();
-      const cacheStats = (vfs as any).cache ?? {};
+      const cacheStats = vfs.cache;
       const lastFailures = getFailures();
 
       // ── C'.1 deterministic heap estimate ─────────────────────────────
@@ -426,23 +426,11 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // calls process.memoryUsage(). Ceiling is the architectural soft
       // budget (SUPERVISOR_HEAP_CEILING_BYTES = 64 MiB), half the
       // workerd hard cap of 128 MiB.
-      // N3 (memory accounting cleanup). Pre-fix, this was hardcoded 0 with
-      // the comment "matches reality (writes are flushed in
-      // microseconds)" — which was wrong: pendingWrites can hold up to
-      // 500 chunks × 64 KiB = 32 MiB at peak, AND writeStream's spool
-      // can buffer the full incoming batch. Both were invisible to the
-      // estimator because there was no counter to read.
-      //
-      // Post-fix, SqliteVFS maintains TWO running byte sums:
-      //   - _pendingWriteBytes        : the post-deferWrite queue
-      //   - _writeStreamSpoolBytes    : N2 spool inside writeStream
-      // Both contribute to "in-flight write bytes the supervisor is
-      // currently holding"; the estimator sees their sum.
-      // (vfs.sql is the sub-object in getStats() that surfaces these.)
-      const sqlStats = (vfs as any).sql ?? {};
-      const inFlightWriteBytes =
-        (sqlStats.pendingWriteBytes ?? 0) +
-        (sqlStats.writeStreamSpoolBytes ?? 0);
+      // Stage 3 retains logical write bytes only for incomplete writeStream
+      // files. SQL binding copies and object overhead are deliberately not
+      // presented as measured heap.
+      const sqlStats = vfs.sql;
+      const inFlightWriteBytes = sqlStats.retainedWriteBytes.current;
       const heap = estimateSupervisorHeap(counters, {
         cacheHotBytes: cacheStats.hotBytes ?? 0,
         inFlightWriteBytes,
@@ -475,16 +463,16 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           lruShrunk: cacheStats.lruShrunk ?? false,
           evictions: cacheStats.evictions ?? 0,
           hitRate: cacheStats.hitRate ?? 0,
-          // N3 (memory accounting cleanup): pending-writes observability.
-          // `pendingWrites` is the entry count (unchanged); the new
-          // `pendingWriteBytes` is the live byte total maintained by
-          // SqliteVFS._pendingWriteBytes. Probes use the pair to
-          // distinguish "many small chunks" from "few large chunks".
-          pendingWrites: sqlStats.pendingWrites ?? 0,
-          pendingWriteBytes: sqlStats.pendingWriteBytes ?? 0,
-          // N2: live byte count inside the writeStream() drain spool.
+          // N2: live bytes retained for incomplete writeStream() files.
           // Visible during a real npm install; ~0 at rest.
           writeStreamSpoolBytes: sqlStats.writeStreamSpoolBytes ?? 0,
+          retainedWriteBytes: sqlStats.retainedWriteBytes,
+          decoderRetainedBytes: sqlStats.decoderRetainedBytes,
+          creditRetainedBytes: sqlStats.creditRetainedBytes,
+          stagedBytes: sqlStats.stagedBytes,
+          gcBytes: sqlStats.gcBytes,
+          phases: sqlStats.phases,
+          transactions: sqlStats.transactions,
         },
 
         // H7 (memory accounting cleanup): _NIMBUS_LOADED_CODES Map state.
@@ -886,13 +874,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // vites on different ports, …) reach each one without changing
       // the user-facing URL shape.
       //
-      // Behaviour:
-      //   /preview/         → first port in PortRegistry by registration
-      //                       time, OR if a non-port-registered cirrus
-      //                       shim / cirrusReal is live (legacy path),
-      //                       use it directly. The legacy path is the
-      //                       fast path because it avoids stub-rebuild.
-      //   /preview/?port=N  → routeRequest(N, …) regardless of legacy.
+      // `/preview/?port=N` routes to an explicitly registered process;
+      // bare `/preview/` continues through the Vite/Cirrus paths below.
       const queryPort = (() => {
         const raw = url.searchParams.get('port');
         if (!raw) return null;
@@ -1099,13 +1082,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
 
     // ── Port route: routes to facet HTTP servers ──
-    // Audit F3 (STABILITY-AUDIT.md C-S3): routeRequest now always
-    // returns a Response — 501 when no facet has a stub registered
-    // (the normal case today, since the facet-side producer was
-    // never wired), or a real proxied response once wiring lands.
-    // The post-routeRequest null-branch + 502 fallback below is kept
-    // defensively for any future refactor that returns null for a
-    // different error condition.
+    // PortRegistry returns a proxied response when the facet handler is
+    // attached and an explicit 501 for a reserved port without a handler.
     const portMatch = url.pathname.match(/^\/port\/(\d+)(\/.*)?$/);
     if (portMatch) {
       const port = parseInt(portMatch[1]);
@@ -1325,9 +1303,13 @@ async function handleFanoutTestEndpoint(
 
   if (path === '/api/_test/fanout/topology' && request.method === 'GET') {
     const n = Math.max(0, parseInt(url.searchParams.get('n') || '0', 10));
+    const pool = new NimbusFanoutPool(env, self.ctx, {
+      tag: 'fanout-bench',
+      timeoutMs: 60_000,
+    });
     return Response.json({
       n,
-      topology: n === 0 ? 'empty' : (n < IN_DO_THRESHOLD ? 'in-do' : 'peer-do'),
+      topology: pool.topologyFor(n),
       inDoThreshold: IN_DO_THRESHOLD,
       maxPeerFanout: MAX_PEER_FANOUT,
     });
@@ -1337,9 +1319,13 @@ async function handleFanoutTestEndpoint(
     const keysRaw = url.searchParams.get('keys') || '';
     const keys = keysRaw.split(',').map((k) => k.trim()).filter(Boolean);
     const peerCount = Math.max(1, Math.min(parseInt(url.searchParams.get('n') || String(keys.length), 10), MAX_PEER_FANOUT));
+    const pool = new NimbusFanoutPool(env, self.ctx, {
+      tag: 'fanout-bench',
+      timeoutMs: 60_000,
+    });
     const placement = keys.map((k) => ({
       key: k,
-      shard: hashKeyToShard(k, peerCount),
+      siblingId: pool.peerSiblingId(k, peerCount),
     }));
     return Response.json({ peerCount, placement });
   }
@@ -1385,7 +1371,7 @@ async function handleFanoutTestEndpoint(
     // doId is observable to confirm peer routing (if peer-DO topology
     // is in use, each task's SUPERVISOR.doId differs from the
     // coordinator's). We don't expose doId here directly — we rely
-    // on hashKeyToShard predicting placement and inspecting the
+    // on peerSiblingId predicting placement and inspecting the
     // overlap in start/end timestamps to infer parallelism.
     const startTimes = results.map((r) => r.startMs);
     const endTimes = results.map((r) => r.endMs);
@@ -1402,7 +1388,7 @@ async function handleFanoutTestEndpoint(
         maxEnd,
         spanMs: maxEnd - minStart,
         sumDurations: totalDurations.reduce((a, b) => a + b, 0),
-        topology: n < IN_DO_THRESHOLD ? 'in-do' : 'peer-do',
+        topology: pool.topologyFor(n),
       },
     });
   }

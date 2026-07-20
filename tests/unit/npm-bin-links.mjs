@@ -8,6 +8,9 @@ import {
   resolveNpmBin,
   resolveNpmBinFromPath,
 } from '../../packages/worker/src/npm/bin-links.ts';
+import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 class FakeVfs {
   constructor(files = {}) {
@@ -158,6 +161,32 @@ const manifestPath = npmBinManifestPath(nm);
   assert.equal(resolved?.shimPath, 'home/user/.local/bin/pi');
   assert.equal(resolved?.targetPath, `${prefixNm}/@earendil-works/pi-coding-agent/dist/cli.js`);
   assert.equal(resolved?.packageName, '@earendil-works/pi-coding-agent');
+}
+
+// Multiple installed packages may publish the same command name. The bin
+// manifest's last-writer-wins policy must also govern the streamed shim wave,
+// so W7 receives one inode and one content chunk for that command path.
+{
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const installer = new NpmInstaller(vfs, harness.sql);
+  vfs.writeFile(`${nm}/sass/sass.js`, '');
+  vfs.writeFile(`${nm}/sass-embedded/dist/cli.js`, '');
+  const resolved = new Map([
+    ['sass', {
+      name: 'sass', version: '1.0.0', bin: { sass: 'sass.js' },
+    }],
+    ['sass-embedded', {
+      name: 'sass-embedded', version: '2.0.0', bin: { sass: 'dist/cli.js' },
+    }],
+  ]);
+
+  await installer.linkBins(resolved, nm);
+
+  const bin = resolveNpmBin(vfs, '/home/user/project', 'sass');
+  assert.equal(bin?.packageName, 'sass-embedded');
+  assert.equal(bin?.targetPath, `${nm}/sass-embedded/dist/cli.js`);
+  assert.match(vfs.readFileString(`${nm}/.bin/sass`), /sass-embedded\/dist\/cli\.js/);
 }
 
 console.log('npm-bin-links: ok');

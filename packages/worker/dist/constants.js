@@ -56,6 +56,14 @@ export const CHUNK_SIZE = 65_536; // 64KB per content chunk
 export const LRU_MAX_ENTRIES = 512; // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64; // rows per batch INSERT
 export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
+export const MAX_TX_BLOB_BYTES = 1 * 1024 * 1024;
+export const MAX_TX_LOGICAL_ROWS = 256;
+export const MAX_TX_SQL_EXECS = 64;
+export const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
+// Largest byte payload Nimbus sends through an ordinary Workers RPC value.
+// The platform limit is 32 MiB; 28 MiB leaves room for structured-clone
+// metadata and matches the proven on-demand facet transfer envelope.
+export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and
 // /@modules/ bundles are also persisted (SQLite) — this LRU is just the
@@ -68,7 +76,7 @@ export const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 // on-demand byte-budget gate, caps peak supervisor slice memory at one
 // slice — the same envelope the install-time pre-bundler proved safe on
 // shared DO isolates (concurrency=2 of max slices crashed Mossaic-scale).
-export const ON_DEMAND_SLICE_CAP_BYTES = 28 * 1024 * 1024;
+export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 // ── Facet Constants ─────────────────────────────────────────────────────
 export const FACET_TIMEOUT_MS = 30_000; // 30s execution timeout
 //
@@ -102,6 +110,8 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024; // 22 MiB JSON-encoded
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_CONCURRENCY = 12;
 export const NPM_DECOMPRESS_TIMEOUT = 15_000;
+export const PRE_BUNDLE_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
+export const PRE_BUNDLE_CONCURRENCY = 1;
 // ── Dev Server Constants ────────────────────────────────────────────────
 export const DEFAULT_VITE_PORT = 5173;
 export const DEFAULT_PREVIEW_BASE = '/preview';
@@ -120,20 +130,8 @@ export const CF_COMPAT_DATE = '2026-04-01';
 //
 // 64 MiB is a budget, not a measurement. Every supervisor allocation
 // site is accounted for in src/observability/heap-estimate.ts which sums
-// known contributors (VFS LRU, in-flight writes, resolver, pre-bundle
-// slice, esbuild residency, supervisor baseline). When the estimator
-// surpasses this ceiling, plan §3 Track A' has a target to chase down.
-//
-// Components that contribute (current architecture, before A'):
-//   supervisorBaselineBytes  ~30 MiB  ← static module bundle + runtime
-//   esbuildResidentBytes     ~16 MiB  ← addressed by A'.5 (move to R2)
-//   vfsLruBytes (max)        ~32 MiB  ← LRU_MAX_ENTRIES × CHUNK_SIZE
-//   vfsInFlightBytes (peak)  ~few MiB ← bounded by SqliteVFS batch size
-//   resolverInFlightBytes    ~few MiB ← addressed by A'.1 (facet-only)
-//   preBundleSliceBytes (max) 28 MiB  ← addressed by A'.2 (streaming)
-//
-// Pre-A' worst-case: 30 + 16 + 32 + 28 ≈ 106 MiB → over budget. Phase 2
-// A' brings it under 64 MiB by removing supervisor-resident components.
+// known contributors: the supervisor baseline, VFS LRU and in-flight
+// writes, pre-bundle slices, and streaming RPC buffers.
 export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';

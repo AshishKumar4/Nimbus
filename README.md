@@ -1,8 +1,8 @@
 # Nimbus
 
-> This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rought edges, and I only work on it in my spare time
+> This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rough edges, and I only work on it in my spare time. This README is edited and maintained with Claude (AI) and presented as-is.
 
-A free and open-source Linux-like development environment that runs entirely on Cloudflare's edge. Open a URL, get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands. No Docker. No containers. No image pull.
+**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network — instant, effectively unlimited, isolate-native sandboxes. Open a URL (or call the SDK) and get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands. No Docker. No containers. No VMs. No image pull.
 
 🌐 **Try it now:** https://nimbus.ashishkumarsingh.com
 
@@ -23,20 +23,55 @@ Nimbus to your own Cloudflare account with `npx create-nimbus-app`.
 Cloud dev environments today are either heavy VMs (slow to start, expensive to idle) or browser sandboxes that can't run real toolchains. Nimbus is different:
 
 - **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on — not a JS interpreter stub, but also not the upstream Node/Bun binaries: it's the workerd-compatibility surface). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
-- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. No VM boot. No image pull.
+- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.6 s median (measured with the ComputeSDK TTI methodology, N=100, 100% success). No VM boot. No image pull.
+- **Built for agents.** Every agent can mint its own sandbox through the SDK — sandboxes are cheap enough to create per-task, and 100 simultaneous creates succeed without a warm pool.
+- **128 MiB is a segment, not a ceiling.** Every isolate on Workers is capped at 128 MiB — so Nimbus treats processes the way an OS treats them: heavy apps span *multiple* isolates. Each process gets its own isolate (its own memory and CPU budget), wired together over the session's loopback network. opencode runs this way: its server and TUI are two cooperating processes in two isolates.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
 - **The URL is the session.** Bookmark it, share it, hand it to a teammate — they join the same filesystem.
 - **10 GB of persistent storage per session**, SQLite-backed, durable across reconnects and DO eviction.
 
 ## Architecture (high level)
 
-![System topology](docs/architecture/topology.svg)
+One session = one Cloudflare Durable Object (the **supervisor**) plus a fabric of Worker Loader isolates (**facets**). The supervisor owns the durable state: the SQLite-backed filesystem, the shell, the process table, and the port registry. Every process runs in its own facet isolate with its own 128 MiB memory and CPU budget — one-shot facets for commands, resident keyed facets for servers, and a dedicated git engine. Facets write back through a streamed, credit-backpressured RPC pipeline so a parallel `npm install` or an 84,000-file checkout can't overwhelm the supervisor.
 
-One session = one Cloudflare Durable Object with SQLite storage. The Durable Object is your shell, your filesystem, your port registry, and your process table. CPU-heavy work (npm resolution, esbuild bundling, git clone, WASM execution, REPL eval) fans out to ephemeral Worker Loader isolates that run, return results, and die. Hot reads are cached at the per-colo edge; cross-session assets (npm tarballs, esbuild-wasm, runtime blobs) live in R2.
+```mermaid
+flowchart LR
+  C[Browser terminal · SDK client] -- "WebSocket + HTTPS" --> DO
 
-![Layered architecture](docs/architecture/layers.svg)
+  subgraph session ["One session — supervisor DO + its facet fabric"]
+    DO["Session DO (supervisor)<br/>SQLite VFS · shell · process table<br/>port registry · agent"]
+    DO -- spawn --> F1["one-shot facets<br/>node · bun · python · wasm<br/>own 128 MiB + CPU each"]
+    DO -- "keyed resident facets" --> F2["server processes<br/>vite · flask · opencode serve<br/>routeable ports"]
+    DO -- "git engine facet" --> F3["clone-prepare · chunked checkout<br/>fresh CPU budget per phase"]
+    F1 & F2 & F3 -- "streamed writes (backpressured)" --> DO
+    F1 & F2 & F3 <-. "loopback 127.0.0.1:port<br/>routed by the supervisor" .-> F2
+  end
 
-Four layers, each owning a single concern: the browser terminal talks to the supervisor DO over WebSocket; the supervisor routes RPC; isolates do compute; R2 + `caches.default` hold cross-session state.
+  DO -- "peer-DO fanout<br/>(npm install shards)" --> P[("peer DOs")]
+  DO -- "L2/L3 cache" --> R2[("R2 + edge cache<br/>npm tarballs · runtime blobs · staged apps")]
+```
+
+Loopback networking is real: a process can `curl http://127.0.0.1:5000/` and reach a server running in a *different* isolate — the supervisor's port registry routes it, the same path the browser preview uses. That's what lets one app span multiple isolates. Here is opencode running as a two-process app:
+
+```mermaid
+sequenceDiagram
+  participant T as Terminal
+  participant S as Session DO (supervisor)
+  participant A as facet A — opencode serve
+  participant B as facet B — opencode TUI
+
+  T->>S: opencode
+  S->>A: spawn resident facet: opencode serve --port 4096
+  A->>S: registerPort(4096) + route stub
+  S->>A: health-gate GET /doc (loopback)
+  S->>B: spawn TTY facet: opencode attach http://127.0.0.1:4096
+  B->>S: fetch 127.0.0.1:4096/…
+  S->>A: route → handleHttpRequest
+  A-->>B: responses stream back
+  Note over A,B: one app, two processes, two isolates —<br/>each with its own 128 MiB
+  T->>B: exit TUI
+  S->>A: lifecycle tie — serve is killed too
+```
 
 ## What works today
 
@@ -52,7 +87,11 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | Interactive REPLs — `python`, `ruby`, `node`, `bun` (see [REPL](#repl) for state semantics) | ✅ |
 | `npm install` against the live registry, with cross-session L2 cache | ✅ |
 | npm alias dependencies such as `alias: "npm:<pkg>@<version>"` | ✅ |
-| `git clone` over HTTPS (small repos + 1 600-file repos in 12–17 s) | ✅ |
+| `git clone` over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation | ✅ |
+| In-session loopback networking — `curl http://127.0.0.1:<port>` reaches servers in other isolates; `node server.js` auto-promotes to a routeable resident process | ✅ |
+| Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike | ✅ |
+| Unix permissions groundwork — durable `st_mode`, real `chmod` (octal + symbolic), exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
+| Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate) | Alpha |
 | Vite SPA dev server — full HMR to the preview iframe | ✅ |
 | `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
 | Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools | ✅ |
@@ -74,7 +113,8 @@ Nimbus is under active development. Current framework support is:
 
 - **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers, Workers with Static Assets, npm + git workflows, Python and Ruby scripts, clang C compilation (single-file and multi-file).
 - **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use the Vite path. Nuxt has Vite/Nitro caveats.
-- **Unfinished OS work:** broader Pyodide/Nimbus extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, opencode/Proteus live probes, full POSIX PTY parity, and live filesystem bridges for every long-running runtime.
+- **Unfinished OS work:** broader Pyodide/Nimbus extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, opencode TUI first-frame rendering (the serve half boots, answers readiness, and streams SSE; the attach half's boot still trips a supervisor memory reset under investigation), index-pack CPU headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU budget on repos like microsoft/TypeScript), full POSIX PTY parity, live filesystem bridges for every long-running runtime, and permission *enforcement* beyond the exec bit (uid/gid ownership, `EACCES` on read/write, real `umask`/`chown` — designed, not yet implemented).
+- **Active research, mechanism proven live:** real `fork()`/`exec()` for compiled binaries over the isolate fabric via Binaryen Asyncify — execution-state capture, parent/child divergence, and grandchild forks all validated inside a production facet (fork of a 16 MiB image in under 1 ms). Target: unmodified GNU bash as the acid test of the process model.
 - **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, native Linux Python wheels, native Ruby extensions without Nimbus-compatible artifacts, and raw public TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
 
 ## Quickstart
@@ -270,6 +310,7 @@ What's wired today (v12 sysroot, currently deployed):
 - User headers in cwd or under `-I<dir>`.
 - `fopen("...", "r" | "w" | "a")` against VFS paths (relative + absolute).
 - 128-bit math intrinsics (`__muloti4`, `__divti3`) provided via linked `libclang_rt.builtins-wasm32.a`.
+- OS-grade binary dispatch: `clang` marks linked executables `0o755`, so `clang hello.c -o hello && ./hello` runs directly — no wrapper, no manual step. `chmod -x hello && ./hello` honestly fails with `Permission denied` (exit 126); non-wasm files with the exec bit dispatch via `#!` shebang or fall back to `sh`.
 
 The stdio/atexit behavior is covered by the v13 probes in `tests/behavioral/clang-stdio/`. Sysroot selection is catalog-driven in R2, so after a catalog flip, verify the live deploy with those probes.
 
@@ -279,16 +320,19 @@ Probes: `tests/behavioral/clang/`, `tests/behavioral/clang-includes/`, `tests/be
 
 ## Performance
 
-Measured against the live deploy.
+Measured against a live deployment (2026-07).
 
 | Operation | Wall time |
 |---|---|
-| `git clone` 1 600-file repo | 12–17 s |
+| Session create → first command (TTI, ComputeSDK methodology, N=100) | 0.61 s median · 0.82 s P95 |
+| 100 sandboxes created simultaneously (burst, all succeed) | 1.15 s median |
+| `git clone` facebook/react (7,300 files) | ~28 s |
+| `npm install` 611-package app (52,500 files, cold session) | ~165 s |
 | `npm install zod` (cold session) | ~6 s |
 | `node -e 'console.log(...)'` (warm) | 102–152 ms |
 | Vite hot reload | 302 ms median |
 
-Cross-session caching gives 9–16× speedups for warm package installs vs cold. Perf-regression probes in `tests/behavioral/perf-regression/` assert these thresholds on every deploy.
+Cross-session caching gives 9–16× speedups for warm package installs vs cold. Perf-regression probes in `tests/behavioral/perf-regression/` assert thresholds on every deploy.
 
 ## Session Agent
 

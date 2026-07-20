@@ -18,10 +18,9 @@
  *     fully-degraded path. Tighter than npm's ~5×60s because dev iteration
  *     speed matters more than absolute resilience here.
  *
- * Intentionally NOT exported to the facet isolate: the facet serializes
- * its task function via fn.toString() and can't cross a module boundary,
- * so `src/npm-install-facet.ts` duplicates this retry loop inline inside
- * `fetchAndStagePackage`. Keep the two in sync if behaviour changes.
+ * Facet tasks are serialized via fn.toString() and cannot import this
+ * helper. resolve-one-facet.ts and install-batch-facet.ts therefore keep
+ * equivalent retry loops inside their isolated function bodies.
  */
 import { disposeRpcResource } from './rpc-dispose.js';
 /** Default retry count AFTER the first attempt (3 = up to 4 total attempts). */

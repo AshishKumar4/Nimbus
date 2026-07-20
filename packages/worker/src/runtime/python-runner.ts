@@ -16,9 +16,8 @@
  * Architecture: SAME LOADER-modules transport as clang-runner/wasm-
  * runner. The Pyodide wasm bytes ship via the LOADER `modules` map
  * (CSP allows wasm code-gen at module-load time, not at request
- * time). The workerd-adapted Pyodide.asm.js artifact and stdlib zip ride via
- * the loader-pool `context` field (JSON-stringified into the inner worker.js
- * at module-load).
+ * time). The workerd-adapted Pyodide.asm.js artifact and stdlib zip are
+ * embedded in the generated facet preamble.
  *
  * Per wasm-csp/findings.md §4b: Pyodide.asm.wasm (10.1 MB on disk)
  * compiles in 314 ms via LOADER on PROD. With our v1 deployment of
@@ -51,6 +50,7 @@ import {
   type PythonPipRuntimeContext,
 } from './python-pip.js';
 import { z } from 'zod/v4';
+import { hasLeadingCliFlag } from './cli-flags.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -199,9 +199,8 @@ export function makePythonRunnerFactory(deps: {
       // env passed to Python's os.environ. We forward NIMBUS_*,
       // PATH-ish, and a default HOME if not set.
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      if (!userEnv.HOME) userEnv.HOME = '/home/pyodide';
+      if (!userEnv.HOME) userEnv.HOME = '/home/user';
       if (!userEnv.PYTHONUNBUFFERED) userEnv.PYTHONUNBUFFERED = '1';
-      if (userEnv.HOME === '/home/pyodide') userEnv.HOME = '/home/user';
 
       // Per-subtree watermark over exactly what the snapshot covers (cwd +
       // site-packages), so unrelated VFS writes don't evict the cache.
@@ -234,7 +233,6 @@ export function makePythonRunnerFactory(deps: {
           cwd,
           fsSnapshot: fsSnapshot.snapshot,
           asyncRun: true,
-          pyodidePackages: [],
         }, formatPythonCommand(binName, argv));
 
         if (result.stdout) ctx.stdout.write(result.stdout);
@@ -275,7 +273,6 @@ export function makePythonRunnerFactory(deps: {
         cwd,
         fsSnapshot: fsSnapshot.snapshot,
         asyncRun: pipInvocation.mode === 'pip',
-        pyodidePackages: [],
       });
 
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -300,17 +297,6 @@ async function buildPythonModulePipInvocation(
     return { mode: 'none', code: '', exitCode: 0 };
   }
   return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
-}
-
-function hasLeadingCliFlag(argv: string[], flags: Set<string>): boolean {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (flags.has(arg)) return true;
-    if (arg === '--') return false;
-    if (arg === '-c' || arg === '-m' || arg === '-') return false;
-    if (!arg.startsWith('-')) return false;
-  }
-  return false;
 }
 
 // ── argv parser ──────────────────────────────────────────────────────
@@ -396,7 +382,6 @@ interface PythonFacetArgs {
   cwd: string;
   fsSnapshot: WasiFsSnapshot;
   asyncRun?: boolean;
-  pyodidePackages?: string[];
 }
 
 interface PythonSideModule {
@@ -572,7 +557,6 @@ async function dispatchPythonFacet(
       cwd: string;
       fsSnapshot: WasiFsSnapshot;
       asyncRun?: boolean;
-      pyodidePackages?: string[];
     },
   ): Promise<{
     exitCode: number;
@@ -594,7 +578,6 @@ async function dispatchPythonFacet(
       cwd: inArgs.cwd,
       fsSnapshot: inArgs.fsSnapshot,
       asyncRun: !!inArgs.asyncRun,
-      pyodidePackages: inArgs.pyodidePackages || [],
     });
   };
 
@@ -607,7 +590,6 @@ async function dispatchPythonFacet(
       cwd: args.cwd,
       fsSnapshot: args.fsSnapshot,
       asyncRun: !!args.asyncRun,
-      pyodidePackages: args.pyodidePackages || [],
     }, {
       timeoutMs: 300_000,
     });
@@ -834,7 +816,6 @@ function buildPythonSocketProcessWorker(preamble: string, sideModules: PythonSid
     '        cwd: args.cwd || "/home/user",',
     '        fsSnapshot: args.fsSnapshot,',
     '        asyncRun: true,',
-    '        pyodidePackages: [],',
     '      });',
     '      globalThis.__nimbusPythonProcessResult = result;',
     '      return result;',
@@ -926,45 +907,13 @@ export function buildPyodidePreamble(
 ): string {
   return [
     '// ── Pre-asm.js environment shims ───────────────────────────────',
-    '// Pyodide.asm.js detects its environment via heuristics. In',
-    '// workerd, several detections fire wrong:',
-    '//   - ENVIRONMENT_IS_NODE: workerd defines process + process.versions.node',
-    '//     under nodejs_compat → Pyodide tries require("fs"), require("path"),',
-    '//     require("crypto"), require("ws"), require("child_process"). We',
-    '//     don\'t want any of those code paths because instantiateWasm is',
-    '//     overridden anyway.',
-    '//   - ENVIRONMENT_IS_WORKER (typeof WorkerGlobalScope !== "undefined"):',
-    '//     true in workerd. Pyodide reads `self.location.href`. workerd has',
-    '//     `self` (== globalThis) but `self.location` is undefined. Stub it.',
-    '//   - document.currentScript?.src: workerd has no document; the',
-    '//     optional-chain on undefined is fine, but we shim it explicitly',
-    '//     to remove any drift across pyodide versions.',
-    '//',
-    '// CRITICAL: ENVIRONMENT_IS_NODE is computed inside the async-factory',
-    '// returned by the asm.js IIFE — i.e., it\'s evaluated WHEN',
-    '// _createPyodideModule(settings) is CALLED, not when the asm.js',
-    '// module-init runs. We therefore need to keep globalThis.process =',
-    '// undefined across that call, not just the asm.js inline above. The',
-    '// __pyodideRun helper below does the save+restore around the call.',
-    '// IMPORTANT: env-detection in asm.js happens at the IIFE OUTER scope',
-    '// (runs at module-load time, during the asm.js inline below), via',
-    '//   var f = oe();',
-    '// `oe()` reads globalThis.process / typeof WorkerGlobalScope / typeof',
-    '// self instanceof WorkerGlobalScope and stores derived flags in `f`',
-    '// (captured into closure scope as `d`). Later inside the async factory',
-    '// (at request time), loadScript selects on `d.IN_BROWSER_WEB_WORKER`.',
-    '//',
-    '// So the shims MUST be in place BEFORE the asm.js inline runs.',
-    '// __pyodideRun\'s save+restore around _createPyodideModule covers the',
-    '// inner async factory call BUT NOT this outer IIFE evaluation. We',
-    '// therefore stub at module-load too, save the originals, and restore',
-    '// AT THE END OF THE PREAMBLE (after the asm.js inline returns).',
+    '// Pyodide captures environment flags in its outer asm.js IIFE. Hide',
+    '// workerd\'s Node globals before inlining it, then restore them after',
+    '// the factory has captured the browser-compatible environment.',
     'const __nimbusOrigProcess = globalThis.process;',
     'const __nimbusOrigWGS = globalThis.WorkerGlobalScope;',
     'try { globalThis.process = undefined; } catch (e) { /* non-writable; fall through */ }',
-    '// Defense in depth: if globalThis.process survived the = undefined',
-    '// (workerd treats it as non-configurable in some setups), mark it',
-    '// browser-like so Pyodide\'s `!process.browser` check fails → IN_NODE = false.',
+    '// Handle runtimes where process is non-writable.',
     'try {',
     '  if (globalThis.process && typeof globalThis.process === "object") globalThis.process.browser = true;',
     '} catch (e) { /* fail-soft */ }',
@@ -975,16 +924,7 @@ export function buildPyodidePreamble(
     'if (typeof globalThis.document === "undefined") globalThis.document = undefined;',
     'if (typeof globalThis.self === "undefined") globalThis.self = globalThis;',
     '',
-    '// pyodide_js_init() inside the asm.js IIFE constructs a FinalizationRegistry',
-    '// to bridge JS-side GC to Python ref-cleanup. workerd does not expose',
-    '// FinalizationRegistry by default (it is gated behind the `enable_weak_ref`',
-    '// compat flag, on by default after 2025-05-05). For older compat dates',
-    '// the constructor is undefined and pyodide_js_init throws ReferenceError.',
-    '// Provide a no-op class shim — registered callbacks are simply never',
-    '// invoked. This is memory-leaky for long-lived workers (Python objects',
-    '// holding JS proxies will be retained beyond their natural lifetime),',
-    '// but acceptable for v1 (per-request bootstrap; workerd reaps on isolate',
-    '// reuse anyway). Future v3: switch to compat_date >= 2025-05-05 and drop.',
+    '// Pyodide requires FinalizationRegistry during initialization.',
     'if (typeof globalThis.FinalizationRegistry === "undefined") {',
     '  globalThis.FinalizationRegistry = class FinalizationRegistry {',
     '    constructor(_cleanup) {}',
@@ -1584,11 +1524,7 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   // overwrite sys.argv at request time via a tiny runPython prelude.
   // pyArgv is the user-visible argv (script name first, then args);
   // progName is the executable that prefixes errors.
-  const argv = [args.progName].concat((args.pyArgv || []).slice(0));
-  // If pyArgv already includes the script as [0], use it directly.
-  // Convention from the python-runner caller: pyArgv = [progName,
-  // ...args]. We set sys.argv = pyArgv with [0] = progName.
-  const effectiveArgv = (args.pyArgv && args.pyArgv.length > 0) ? args.pyArgv : argv;
+  const effectiveArgv = args.pyArgv;
 
   let userGlobals = null;
   try {
@@ -1637,11 +1573,6 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   let exitCode = 0;
   if (args.userCode) {
     try {
-      if (Array.isArray(args.pyodidePackages) && args.pyodidePackages.length > 0) {
-        for (const pkg of args.pyodidePackages) {
-          await pyodide.loadPackage(pkg);
-        }
-      }
       if (args.asyncRun && typeof pyodide.runPythonAsync === 'function') {
         await pyodide.runPythonAsync(
           args.userCode,

@@ -173,8 +173,8 @@ export function createFs(vfs, cwd) {
         const abs2 = resolvePath(cwd, dest);
         vfs.copyFile(abs1, abs2);
     }
-    function chmodSync(_path, _mode) {
-        // No-op in VFS
+    function chmodSync(path, mode) {
+        vfs.chmod(resolvePath(cwd, path), mode);
     }
     function chownSync(_path, _uid, _gid) {
         // No-op in VFS
@@ -508,7 +508,7 @@ export function createFs(vfs, cwd) {
         access: async (path, mode) => accessSync(path, mode),
         realpath: async (path) => realpathSync(path),
         truncate: async (path, len) => truncateSync(path, len),
-        chmod: async (_path, _mode) => { },
+        chmod: async (path, mode) => chmodSync(path, mode),
         chown: async (_path, _uid, _gid) => { },
         open: async (path, flags, mode) => {
             const fd = openSync(path, flags, mode);

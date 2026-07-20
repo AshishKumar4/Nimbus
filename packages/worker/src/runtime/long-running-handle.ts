@@ -183,26 +183,3 @@ export function expandArgvShellDefaults(
 ): string[] {
   return argv.map((t) => expandShellDefaults(t, env));
 }
-
-/**
- * Pick the default `/preview/` target when no `?port=N` is supplied
- * AND no in-process `viteDevServer` is currently running. The strategy
- * is "first PortRegistry entry, ordered by registration time" — so if
- * a session has only one long-running thing (Markflow's vite on :3000),
- * `/preview/` lands on it without the user supplying a port.
- *
- * Returns null if the registry is empty, in which case the caller
- * surfaces the existing "no dev server running" placeholder.
- */
-export function pickDefaultPreviewPort(
-  ports: ReadonlyArray<{ port: number; registeredAt: number }>,
-): number | null {
-  if (ports.length === 0) return null;
-  // Stable order: oldest registration first. A session that legitimately
-  // runs two servers (e.g. vite + express API) should put the FRONTEND
-  // (registered first) on the default `/preview/` route; the API is
-  // accessed via `/preview/?port=8000`.
-  let oldest = ports[0];
-  for (const p of ports) if (p.registeredAt < oldest.registeredAt) oldest = p;
-  return oldest.port;
-}

@@ -607,6 +607,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			dirname: dir,
 			signal: ctx.signal,
 			portRegistry,
+			routeLoopback: kernelOrPortRegistry instanceof Map
+				? undefined
+				: kernelOrPortRegistry?.routeLoopback,
 		};
 
 		const moduleMap = createModuleMap(nodeCtx);

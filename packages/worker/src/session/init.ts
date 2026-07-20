@@ -37,7 +37,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
-import { runNodeScript } from '../runtime/node-runner.js';
+import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, type RuntimeSpec } from '../runtime/runtime-registry.js';
 import { parseViteConfigSource, type ParsedViteConfig } from '../runtime/vite-config-parser.js';
@@ -50,13 +50,17 @@ import {
   WASM_RUNNER_HELP,
   formatWasmRunnerWasiInfo,
 } from '../runtime/wasm-runner.js';
+import {
+  decideExecDispatch,
+  EXEC_HEAD_BYTES,
+  basename as shebangBasename,
+} from '../shell/exec-dispatch.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
 import {
   makeLongRunningPortStub,
   resolveLongRunningPort,
   expandArgvShellDefaults,
-  pickDefaultPreviewPort,
 } from '../runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
@@ -361,77 +365,106 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
     });
 
-    // ── runtime package manager v1.1: ./<wasm-binary> shell-side dispatch ──
-    // When the user invokes `./hello` (or any `./X` / `/abs/X`)
-    // shell-form path and the file:
-    //   (a) exists in SqliteFS at that relative-to-cwd path, AND
-    //   (b) starts with the wasm magic bytes `\0asm\1\0\0\0`
-    // we route the invocation to the wasm-runner command with the
-    // user's args. This is how `clang t.c -o hello && ./hello`
-    // closes the runtime substrate demo: the linker emits a wasm executable,
-    // and the shell knows to run it via the WASI shim.
+    // ── WASI Stage 1: exec dispatch for path-shaped invocations ──
+    // `./x`, `/abs/x`, `../x` go through POSIX execve semantics
+    // (shell/exec-dispatch.ts): exec-bit check (with the wasm-magic
+    // grandfather rule for pre-chmod modes), then format dispatch —
+    // `\0asm` → wasm-runner, `#!` → the named interpreter, binary
+    // junk → honest ENOEXEC, plain text → sh (the POSIX ENOEXEC
+    // fallback). Bare-word "X" still must come from the registered set.
     //
-    // Implementation: monkey-patch registry.resolve. If the standard
-    // name lookup misses AND the name has a `/` (path-shaped), we
-    // attempt the wasm-magic check; on hit, return a synthetic
-    // Command that invokes wasm-runner.
+    // Implementation: monkey-patch registry.resolve. cwd and file
+    // state are read at every resolve call (not cached) so `cd` and
+    // recompiles between invocations are honoured.
     const __origResolve = registry.resolve.bind(registry);
     (registry as any).resolve = async (name: string): Promise<any> => {
       const found = await __origResolve(name);
       if (found) return found;
-      // Only `./X`, `/abs/X`, `../X` are path-shaped invocations.
-      // Bare-word "X" must come from the registered set.
       if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
         return undefined;
       }
-      // Resolve the path-shape against cwd. cwd is read at every
-      // resolve call (not cached) so `cd` between invocations is
-      // honoured. The wasm-bytes existence check is also live —
-      // recompile produces fresh bytes; we always re-check the
-      // magic on the latest VFS state.
       const cwdN = normalizeVfsPath((self.shell && (self.shell as any).getCwd?.()) || '/home/user');
       const resolved = resolveVfsPath(name, cwdN);
-      if (!sqliteFs.exists(resolved) || sqliteFs.isDirectory(resolved)) {
+      // Missing paths fall through (undefined) so the npm-bin fallback
+      // and install-hint resolvers further out in the chain still see
+      // them; only real files produce a dispatch here.
+      if (!sqliteFs.exists(resolved)) return undefined;
+      if (sqliteFs.isDirectory(resolved)) {
+        return async (ctx: any): Promise<number> => {
+          ctx.stderr.write(`${name}: Is a directory\n`);
+          return 126;
+        };
+      }
+      // execve follows symlinks to the real executable.
+      const target = sqliteFs.isSymlink(resolved) ? sqliteFs.resolveSymlink(resolved) : resolved;
+      if (!target || !sqliteFs.exists(target) || sqliteFs.isDirectory(target)) return undefined;
+      let mode: number;
+      let head: Uint8Array;
+      try {
+        mode = sqliteFs.stat(target).mode;
+        head = sqliteFs.readRange(target, 0, EXEC_HEAD_BYTES);
+      } catch {
         return undefined;
       }
-      // Read first 4 bytes; check for the wasm magic `\0asm`.
-      let bytes: Uint8Array;
-      try { bytes = sqliteFs.readFile(resolved); } catch { return undefined; }
-      const isWasm = bytes.length >= 4
-        && bytes[0] === 0x00 && bytes[1] === 0x61
-        && bytes[2] === 0x73 && bytes[3] === 0x6d;
-      if (!isWasm) return undefined;
-      // Build a synthetic command that delegates to wasm-runner with
-      // the user's args. wasm-runner's contract: args[0] is the .wasm
-      // path (resolved against ctx.cwd by the runtime-handler),
-      // args[1..] are forwarded as WASI argv.
-      //
-      // We pass the BASENAME (not "./hello") because:
-      //   1. The runtime-handler joins ctx.cwd + args[0] without
-      //      normalising "./" segments, producing "/home/user/./hello"
-      //      which the supervisor's SqliteFS doesn't recognise.
-      //   2. The basename keeps the resolved path canonical
-      //      (cwd + "hello" → "home/user/hello").
-      const wasmRunnerCmd: any = await __origResolve('wasm-runner');
-      if (!wasmRunnerCmd) return undefined;
-      // Compute basename from the original name. For "./hello"
-      // → "hello"; for "/abs/path/X" → "X"; for "../foo/X" → "X".
-      const nameBasename = name.split('/').pop() || name;
-      return async (ctx: any): Promise<number> => {
-        const userArgs: string[] = ctx.args || [];
-        // The wasm-runner resolves against ctx.cwd. To preserve the
-        // original invocation directory (which may differ from cwd
-        // at resolve-time if cd happened during dispatch), pass an
-        // absolute path computed at resolve-time.
-        const absPath = '/' + resolved;
-        const newCtx = { ...ctx, args: [absPath, ...userArgs] };
-        // Discard nameBasename — kept here only because tooling may
-        // log argv[0]; the wasm-runner shell-handler decides the
-        // WASI argv[0] based on the resolved filename. See
-        // src/runtime/wasm-runner.ts:363 (progName).
-        void nameBasename;
-        return await wasmRunnerCmd(newCtx);
-      };
+      // Absolute path computed at resolve-time so the dispatch stays
+      // correct even if cd happens before the command body runs.
+      const absPath = '/' + target;
+      const decision = decideExecDispatch(mode, head);
+      switch (decision.kind) {
+        case 'denied':
+          return async (ctx: any): Promise<number> => {
+            ctx.stderr.write(`${name}: Permission denied\n`);
+            return 126;
+          };
+        case 'exec-format-error':
+          return async (ctx: any): Promise<number> => {
+            ctx.stderr.write(`${name}: cannot execute binary file: exec format not supported on Nimbus (wasm32-wasi only)\n`);
+            return 126;
+          };
+        case 'wasm': {
+          // wasm-runner's contract: args[0] is the .wasm path, args[1..]
+          // are forwarded as WASI argv. The wasm-runner shell-handler
+          // decides WASI argv[0] from the resolved filename
+          // (src/runtime/wasm-runner.ts progName).
+          const wasmRunnerCmd: any = await __origResolve('wasm-runner');
+          if (!wasmRunnerCmd) return undefined;
+          return async (ctx: any): Promise<number> => {
+            return await wasmRunnerCmd({ ...ctx, args: [absPath, ...(ctx.args || [])] });
+          };
+        }
+        case 'shebang':
+        case 'shell-script': {
+          const interp = decision.kind === 'shebang' ? decision.shebang.interpreter : 'sh';
+          const interpArgs = decision.kind === 'shebang' ? decision.shebang.args : [];
+          return async (ctx: any): Promise<number> => {
+            // Linux caps nested interpreters (BINPRM_MAX_RECURSION);
+            // guard `#!./self`-style loops the same way.
+            const depth = Number(ctx.__nimbusInterpDepth || 0);
+            if (depth >= 4) {
+              ctx.stderr.write(`${name}: too many levels of interpreters\n`);
+              return 126;
+            }
+            // Resolve through the FULL registry chain (registry.resolve
+            // gains the npm-bin fallback after this hook installs), so
+            // `#!/usr/bin/env node`, installed runtimes, and registered
+            // path aliases like /bin/sh all resolve. Path interpreters
+            // fall back to their basename (registry keys are bare names).
+            let interpCmd: any = await (registry as any).resolve(interp);
+            if (!interpCmd && interp.includes('/')) {
+              interpCmd = await (registry as any).resolve(shebangBasename(interp));
+            }
+            if (typeof interpCmd !== 'function') {
+              ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`);
+              return 127;
+            }
+            return await interpCmd({
+              ...ctx,
+              args: [...interpArgs, absPath, ...(ctx.args || [])],
+              __nimbusInterpDepth: depth + 1,
+            });
+          };
+        }
+      }
     };
     // W8: hand the registry to the cp broker so child_process.spawn from
     // a parent facet can resolve and dispatch commands the same way the
@@ -606,7 +639,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     //   - G4 binSpawn ctx propagation (when the .bin handler set
     //     ctx.__nimbusBinSpawn, runFresh reuses the caller's PID
     //     instead of double-spawning)
-    //   - --watch/--inspect/--inspect-brk routing via runNodeScript →
+    //   - --watch/--inspect/--inspect-brk routing via runFresh →
     //     isLongRunningInvocation
     //
     // The registry encodes the shared shape; per-runtime overrides
@@ -624,7 +657,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         '  -v, --version       Print version\n' +
         '  -h, --help          Print help\n' +
         '\nExecution via DO Facets (isolated V8 isolate)',
-      run: async (fm, code, opts) => runNodeScript(fm, code, opts as any),
+      run: runFresh,
       supportsBinSpawn: true,
     };
     {
@@ -673,11 +706,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         '       bun -e "code"\n' +
         '       bun install [pkg ...]\n' +
         '       bun run <script>\n\n' +
-        'Bun-runtime shim provides Bun.serve/Bun.file/Bun.write/\n' +
+        'Bun-runtime shim provides Bun.file/Bun.write/\n' +
         'Bun.spawn/Bun.password/Bun.gunzip backed by Workers-native\n' +
-        'primitives. Bun.sql / Bun.S3 throw (use D1/Hyperdrive/R2).\n' +
+        'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
         'Execution via DO Facets (isolated V8 isolate per call).',
-      run: async (fm, code, opts) => runBunScript(fm, code, opts as any),
+      run: runBunScript,
       subcommands: {
         // bun install / i / add → npm install (same VFS, same R2 caches).
         install: async (ctx: any, reg) => {
@@ -822,6 +855,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         registry,
       }),
     );
+
+    kernel.routeLoopback = (port, request) => {
+      if (!self.portRegistry.has(port)) return Promise.resolve(null);
+      return self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
+    };
 
     try {
       registry.register('curl', createCurlCommand(kernel));
@@ -1516,6 +1554,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           pid: viteProcEntry.pid,
           command: 'vite ' + expandedArgs.join(' '),
           longRunning: true,
+          attachedTty: false,
         });
       }
 
@@ -1899,6 +1938,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     ): Promise<number> => {
       const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user');
       const pid = entry.pid;
+      if (opts.longRunning) self.processes.setLongRunning(pid);
       const startedAt = Date.now();
 
       // Spawn banner — matches facet-manager.ts onSpawn format.
@@ -1912,7 +1952,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // onSpawn hook). Long-running shell commands like `vite` and
       // `wrangler dev` trigger auto-open of a log tab.
       notifyTerminalEvent(self.terminal, {
-        type: 'spawn', pid, command: cmd, longRunning: !!opts.longRunning,
+        type: 'spawn', pid, command: cmd, longRunning: !!opts.longRunning, attachedTty: false,
       });
 
       // Wrap the caller-supplied streams so every chunk is both displayed

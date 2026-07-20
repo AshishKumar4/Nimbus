@@ -5,17 +5,13 @@
 // isolation between paths.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-function makeSql(db = new Database(':memory:')) {
-  return {
-    db,
-    exec(query, ...params) {
-      return this.db.query(query).all(...params);
-    },
-  };
+function makeVfs(db) {
+  const harness = createSqliteVfsTestHarness(db);
+  return { harness, vfs: new SqliteVFS(harness.sql, harness.ctx) };
 }
 
 function pattern(length, seed = 0) {
@@ -28,7 +24,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── readRange ────────────────────────────────────────────────────────────
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { harness, vfs } = makeVfs();
   const data = pattern(CHUNK_SIZE * 2 + 1000);
   vfs.writeFile('home/user/big.bin', data);
 
@@ -53,19 +49,18 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
   assert.throws(() => vfs.readRange('home/user/dir', 0, 1), /EISDIR/);
 }
 
-// ── writeRange: in-place, spanning chunks, only affected chunks flushed ──
+// ── writeRange: in-place, spanning chunks, only affected chunks committed ──
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { harness, vfs } = makeVfs();
   const data = pattern(CHUNK_SIZE * 3);
   vfs.writeFile('f.bin', data);
-  vfs.flushAll();
-
-  const before = vfs.getStats().sql.writes;
+  const statementStart = harness.statementCount;
   const patch = pattern(10, 7);
   vfs.writeRange('f.bin', CHUNK_SIZE - 5, patch); // spans chunks 0 and 1
-  vfs.flushAll();
-  const flushedChunks = vfs.getStats().sql.writes - before;
-  assert.equal(flushedChunks, 2, `range write spanning one boundary must flush exactly 2 chunks, flushed ${flushedChunks}`);
+  const chunkWrites = harness.statements.slice(statementStart)
+    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
+    .reduce((count, statement) => count + (statement.params.length / 3), 0);
+  assert.equal(chunkWrites, 2, 'range write spanning one boundary must rewrite exactly 2 chunks');
 
   const expected = new Uint8Array(data);
   expected.set(patch, CHUNK_SIZE - 5);
@@ -75,7 +70,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── writeRange: extension past EOF zero-fills the gap ──
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { vfs } = makeVfs();
   vfs.writeFile('gap.bin', pattern(10));
   const tail = pattern(5, 3);
   vfs.writeRange('gap.bin', CHUNK_SIZE + 100, tail);
@@ -93,7 +88,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── writeRange: creates missing files; zero-length writes don't dirty ──
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { vfs } = makeVfs();
   vfs.mkdir('made/by', { recursive: true });
   vfs.writeRange('made/by/range.bin', 0, pattern(20));
   assert.ok(vfs.isFile('made/by/range.bin'));
@@ -109,8 +104,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── truncate: shrink mid-chunk, shrink across chunks, grow, persistence ──
 {
-  const sql = makeSql();
-  const vfs = new SqliteVFS(sql);
+  const { harness, vfs } = makeVfs();
   const data = pattern(CHUNK_SIZE * 2 + 500);
   vfs.writeFile('t.bin', data);
 
@@ -140,8 +134,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
   // Persistence: a fresh VFS over the same SQLite sees the same bytes.
   vfs.writeRange('t.bin', 3, pattern(8, 1));
-  await vfs.flushAndWait();
-  const vfs2 = new SqliteVFS(makeSql(sql.db));
+  const { vfs: vfs2 } = makeVfs(harness.db);
   const reread = vfs2.readFile('t.bin');
   assert.equal(reread.length, 11);
   assert.deepEqual(reread.slice(3), pattern(8, 1));
@@ -150,7 +143,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── per-path revisions: subtree watermarks + isolation between paths ──
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { vfs } = makeVfs();
   vfs.mkdir('home/user/app', { recursive: true });
   vfs.mkdir('home/other', { recursive: true });
 
@@ -187,7 +180,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── per-path revisions: rename bumps both subtrees including children ──
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { vfs } = makeVfs();
   vfs.mkdir('proj/src', { recursive: true });
   vfs.writeFile('proj/src/index.js', 'x');
   vfs.mkdir('dest', { recursive: true });
@@ -204,7 +197,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── per-path revisions: writeBatch stamps every touched path, one tick ──
 {
-  const vfs = new SqliteVFS(makeSql());
+  const { vfs } = makeVfs();
   vfs.mkdir('keep', { recursive: true });
   vfs.writeFile('keep/k.txt', 'k');
   const keepRev = vfs.revision('keep');

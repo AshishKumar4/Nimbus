@@ -9,5 +9,13 @@
  * to the SqliteVFS.
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+export interface ParsedCloneArgs {
+    url: string | undefined;
+    dest: string | undefined;
+    depth: number | undefined;
+    noShallow: boolean;
+    isBg: boolean;
+}
+export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 export declare function registerGitCommands(registry: any, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any): void;
 //# sourceMappingURL=commands.d.ts.map

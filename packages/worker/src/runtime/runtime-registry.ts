@@ -19,7 +19,7 @@
  * via the `RuntimeSpec` parameter:
  *
  *   - name + version + helpText
- *   - run(): runner fn (runNodeScript / runBunScript / wasm-runner)
+ *   - run(): runner fn (runFresh / runBunScript / wasm-runner)
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
@@ -90,13 +90,6 @@ export interface RuntimeSpec {
    * function-call helper.
    */
   run(facetMgr: FacetManager, code: string, opts: RuntimeRunOpts): Promise<RuntimeRunResult>;
-  /**
-   * Optional pre-execution code transform. Used by Bun to prepend
-   * BUN_SHIM_PREAMBLE; native-WASM runtimes typically skip
-   * this entirely and route around the read-script-from-VFS path
-   * (see `bypassesScriptRead`).
-   */
-  transformCode?(code: string, scriptPath: string): string;
   /**
    * Subcommand router. When the first positional arg is a key in
    * this map, the handler is invoked instead of the standard
@@ -216,8 +209,7 @@ export function buildRuntimeHandler(
         ctx.stderr.write(`${name}: -e requires an argument\n`);
         return 1;
       }
-      const transformed = spec.transformCode ? spec.transformCode(code, '<eval>') : code;
-      const result = await spec.run(facetMgr, transformed, {
+      const result = await spec.run(facetMgr, code, {
         argv: args.slice(evalIdx + 2),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -237,7 +229,7 @@ export function buildRuntimeHandler(
     const scriptPath = args[scriptIdx];
     if (!scriptPath) {
       ctx.stderr.write(
-        `${name}: REPL not supported. Use ${name} -e "code" or ${name} script.${name === 'bun' ? 'js' : 'js'}\n`,
+        `${name}: REPL not supported. Use ${name} -e "code" or ${name} script.js\n`,
       );
       return 1;
     }
@@ -415,9 +407,6 @@ export function buildRuntimeHandler(
         return 1;
       }
     }
-
-    // Runtime-specific code transform (bun prepends BUN_SHIM_PREAMBLE).
-    if (spec.transformCode) code = spec.transformCode(code, resolvedPath);
 
     const filename = '/' + resolvedPath;
     const dirname = filename.includes('/')

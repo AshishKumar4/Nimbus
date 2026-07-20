@@ -10,7 +10,9 @@ const command = async (ctx) => {
         const path = resolve(ctx.cwd, arg);
         try {
             const st = ctx.vfs.stat(path);
-            const mode = '0' + st.mode.toString(8);
+            // Stored modes may carry POSIX S_IF* filetype bits; display the
+            // permission bits like stat(1) does.
+            const mode = '0' + (st.mode & 0o7777).toString(8);
             const type = st.type === 'directory' ? 'directory' : 'regular file';
             ctx.stdout.write(`  File: ${arg}\n`);
             ctx.stdout.write(`  Size: ${st.size}\tType: ${type}\n`);

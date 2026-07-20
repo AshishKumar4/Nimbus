@@ -53,7 +53,6 @@ const manifests = {
     version: '0.29.4',
     license: 'PSF',
     wasi_namespace: null,
-    memfs_companion: null,
     files: [{ path: 'bin/python', content: 'blobs/python-0.29.4/bin', sha256: blobSha, size: blobBytes.length, mode: 'exec' }],
     entrypoints: [
       { binName: 'python', runner: 'python-runner', args: [] },
@@ -65,7 +64,6 @@ const manifests = {
     version: 'binji-2020',
     license: 'Apache-2.0',
     wasi_namespace: 'wasi_unstable',
-    memfs_companion: null,
     files: [{ path: 'bin/clang', content: 'blobs/clang-binji-2020/bin', sha256: blobSha, size: blobBytes.length, mode: 'exec' }],
     entrypoints: [
       { binName: 'clang', runner: 'clang-runner', args: [] },

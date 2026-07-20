@@ -9,6 +9,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
   "preview_urls": false,
   "vars": {
     // Same public OAuth client as the hosted demo so the session agent

@@ -7,7 +7,15 @@
  * and links the nested dependencies that cf-git expects.
  */
 
-import { writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,6 +23,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // The script lives at packages/worker/scripts/. Walk up to the repo
 // root so we can patch every node_modules tree below it.
 const repoRoot = resolve(__dirname, '..', '..', '..');
+const cfGitPatch = resolve(
+  __dirname,
+  '..',
+  'patches',
+  '@ashishkumar472+cf-git+1.0.5.patch',
+);
 
 // Walk every node_modules tree and patch cf-git copies.
 function walkForNodeModules(base, depth = 0) {
@@ -41,6 +55,30 @@ function walkForNodeModules(base, depth = 0) {
 }
 
 const nmDirs = walkForNodeModules(repoRoot);
+const cfGitDirs = new Set();
+
+for (const nm of nmDirs) {
+  for (const packagePath of [
+    join(nm, 'isomorphic-git', 'package.json'),
+    join(nm, '@ashishkumar472', 'cf-git', 'package.json'),
+    join(
+      nm,
+      '.bun',
+      '@ashishkumar472+cf-git@1.0.5',
+      'node_modules',
+      '@ashishkumar472',
+      'cf-git',
+      'package.json',
+    ),
+  ]) {
+    if (!existsSync(packagePath)) continue;
+    const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
+    if (pkg.name === '@ashishkumar472/cf-git' && pkg.version === '1.0.5') {
+      cfGitDirs.add(realpathSync(dirname(packagePath)));
+    }
+  }
+}
+
 for (const nm of nmDirs) {
   const igPkgPath = join(nm, 'isomorphic-git', 'package.json');
   if (!existsSync(igPkgPath)) continue;
@@ -106,4 +144,58 @@ for (const nm of nmDirs) {
   } catch (e) {
     console.warn(`[patch] cf-git patch skipped at ${igPkgPath}:`, e?.message);
   }
+}
+
+if (!existsSync(cfGitPatch)) {
+  throw new Error(`Missing tracked cf-git patch: ${cfGitPatch}`);
+}
+if (cfGitDirs.size === 0) {
+  throw new Error('No @ashishkumar472/cf-git@1.0.5 installation found to patch');
+}
+
+function runGitApply(cwd, args) {
+  return spawnSync(
+    'git',
+    ['apply', '--no-index', '--unidiff-zero', ...args, cfGitPatch],
+    {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_CEILING_DIRECTORIES: dirname(cwd),
+      },
+    },
+  );
+}
+
+function gitApplyFailure(result) {
+  return (
+    result.error?.message ||
+    result.stderr?.trim() ||
+    result.stdout?.trim() ||
+    'unknown error'
+  );
+}
+
+for (const cfGitDir of cfGitDirs) {
+  const reverseCheck = runGitApply(cfGitDir, ['--reverse', '--check']);
+  if (reverseCheck.status === 0) {
+    console.log(`[patch] cf-git checkout repairs already applied: ${cfGitDir}`);
+    continue;
+  }
+
+  const forwardCheck = runGitApply(cfGitDir, ['--check']);
+  if (forwardCheck.status !== 0) {
+    throw new Error(
+      `Cannot apply cf-git checkout repairs at ${cfGitDir}: ${gitApplyFailure(forwardCheck)}`,
+    );
+  }
+
+  const apply = runGitApply(cfGitDir, []);
+  if (apply.status !== 0) {
+    throw new Error(
+      `Failed to apply cf-git checkout repairs at ${cfGitDir}: ${gitApplyFailure(apply)}`,
+    );
+  }
+  console.log(`[patch] cf-git checkout repairs applied: ${cfGitDir}`);
 }

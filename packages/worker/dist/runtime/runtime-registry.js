@@ -19,7 +19,7 @@
  * via the `RuntimeSpec` parameter:
  *
  *   - name + version + helpText
- *   - run(): runner fn (runNodeScript / runBunScript / wasm-runner)
+ *   - run(): runner fn (runFresh / runBunScript / wasm-runner)
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
@@ -100,8 +100,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(`${name}: -e requires an argument\n`);
                 return 1;
             }
-            const transformed = spec.transformCode ? spec.transformCode(code, '<eval>') : code;
-            const result = await spec.run(facetMgr, transformed, {
+            const result = await spec.run(facetMgr, code, {
                 argv: args.slice(evalIdx + 2),
                 env: ctx.env,
                 cwd: ctx.cwd,
@@ -121,7 +120,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         const scriptIdx = flagSpan;
         const scriptPath = args[scriptIdx];
         if (!scriptPath) {
-            ctx.stderr.write(`${name}: REPL not supported. Use ${name} -e "code" or ${name} script.${name === 'bun' ? 'js' : 'js'}\n`);
+            ctx.stderr.write(`${name}: REPL not supported. Use ${name} -e "code" or ${name} script.js\n`);
             return 1;
         }
         // Resolve script path against cwd (unless absolute).
@@ -296,9 +295,6 @@ export function buildRuntimeHandler(spec, ctx0) {
                 return 1;
             }
         }
-        // Runtime-specific code transform (bun prepends BUN_SHIM_PREAMBLE).
-        if (spec.transformCode)
-            code = spec.transformCode(code, resolvedPath);
         const filename = '/' + resolvedPath;
         const dirname = filename.includes('/')
             ? filename.substring(0, filename.lastIndexOf('/'))

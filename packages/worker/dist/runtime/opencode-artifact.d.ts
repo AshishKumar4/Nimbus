@@ -17,8 +17,6 @@
  * pre-compiled WebAssembly.Modules for opencode's bash-tool command parser
  * (see OPENCODE_TREE_SITTER_WASMS and FacetManager.treeSitterModuleEntries).
  */
-/** Base asset path of the staged opencode bundle directory. */
-export declare const OPENCODE_ASSET_BASE: string;
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface OpencodeAssetEnv {
     ASSETS: {
@@ -26,7 +24,18 @@ export interface OpencodeAssetEnv {
     };
 }
 /** Fetch the opencode CLI bundle source as text. */
-export declare function fetchOpencodeBundle(env: OpencodeAssetEnv): Promise<string>;
+/**
+ * The attach-mode entry variant: index.js rebuilt with the interactive-mode
+ * chunk graph inlined STATICALLY. The TUI command's lazy
+ * `import("./chunk-…")` of that graph triggers a prod-only workerd
+ * process-wide kill (defect #20, dossier F13/F14); the attach facet therefore
+ * boots an entry with that graph pre-linked in the boot pass — the one shape
+ * never observed to kill. Serve/oneshot keep the original chunked entry (their
+ * runtime chunk imports are boot-proven and the smaller static compile keeps
+ * each mode inside the facet memory budget).
+ */
+export declare const OPENCODE_ATTACH_BUNDLE_FILE = "index-attach.js";
+export declare function fetchOpencodeBundle(env: OpencodeAssetEnv, mode?: 'default' | 'attach'): Promise<string>;
 /**
  * Fetch a staged opencode wasm sidecar (raw bytes for a `{ wasm }` module) —
  * the tree-sitter grammars and the yoga-layout engine.

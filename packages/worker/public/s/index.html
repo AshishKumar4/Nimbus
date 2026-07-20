@@ -2305,7 +2305,10 @@
             // panel invisible for the most common user actions (node
             // script.js, npm run <non-dev-script>), which defeats the
             // whole point of the panel.
-            LogTabs.openTab(msg.pid, msg.command, { attach: msg.longRunning === true });
+            LogTabs.openTab(msg.pid, msg.command, {
+              attach: msg.longRunning === true,
+              attachedTty: msg.attachedTty === true,
+            });
           } else if (msg.type === 'exit') {
             // An exit can arrive for a pid we never saw a spawn for
             // (e.g. `node -e`, which the supervisor intentionally
@@ -2592,9 +2595,12 @@
 
       function openTab(pid, command, options) {
         const shouldAttach = !!(options && options.attach);
+        const attachedTty = !!(options && options.attachedTty);
         if (tabs.has(pid)) {
           const existing = tabs.get(pid);
-          if (existing && shouldAttach) existing.attachedTty = true;
+          if (existing && options && Object.hasOwn(options, 'attachedTty')) {
+            existing.attachedTty = attachedTty;
+          }
           if (shouldAttach && existing) ensureLogWs(existing);
           setActive(pid);
           userWantsVisible = true;
@@ -2681,7 +2687,7 @@
         tabBar.appendChild(tabEl);
         body.appendChild(viewEl);
 
-        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label, term: null, fit: null, attachedTty: shouldAttach };
+        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label, term: null, fit: null, attachedTty };
         tabs.set(pid, tab);
         // Placeholder until the user clicks — so the active tab doesn't
         // look broken on auto-activate. renderBanner uses the existing
@@ -2778,7 +2784,10 @@
             if (!data?.processes) return;
             for (const p of data.processes) {
               if (p.state === 'running' && !tabs.has(p.pid)) {
-                openTab(p.pid, p.command, { attach: p.longRunning === true });
+                openTab(p.pid, p.command, {
+                  attach: p.longRunning === true,
+                  attachedTty: p.attachedTty === true,
+                });
               } else if (p.state !== 'running' && tabs.has(p.pid)) {
                 // Server says exited; reconcile in case our main-WS
                 // exit event got dropped during reconnect.
