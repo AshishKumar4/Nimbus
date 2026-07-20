@@ -43,16 +43,30 @@
    `__wasm_setjmp/__wasm_longjmp` (from compiler-rt when linked with the EH-enabled
    runtime, or provide our own EH-based helpers). Verify the final import list is
    exactly preview1 (for file/clock/env I/O) + `nimbus_proc.*`.
-3. **Asyncify.** `wasm-opt --asyncify --pass-arg=asyncify-imports@nimbus_proc.fork,
-   nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid` (+ pipe read/write are
-   handled by the WASI fd shim, not asyncify imports). **RISK (the real research
-   item):** asyncify instrumentation must coexist with the wasm-EH-based SjLj
-   lowering. Whether asyncify correctly serializes/rewinds across EH-lowered
-   setjmp frames under workerd's V8 is UNPROVEN and is the single biggest M4
-   unknown (the plan §5.1/§5.8 flags the asyncify tax on bash's interpreter loop;
-   the EH interaction is on top of that). This needs a focused probe BEFORE the
-   full build is worth linking: a tiny C program with setjmp + a nimbus_proc.fork
-   import, asyncified, driven in local node V8 (the M0 method).
+3. **Asyncify — the decisive M4 blocker, now ROOT-CAUSED (2026-07-20).**
+   `wasm-opt --asyncify` **cannot process a module built with clang's
+   `-mllvm -wasm-enable-sjlj`.** Verified with the probe `probe-sjlj-asyncify.c`
+   (setjmp + a `nimbus_proc.fork` import): asyncify aborts with
+   `unexpected expression type / UNREACHABLE at Asyncify.cpp` on **both Binaryen
+   112 and Binaryen 123** (latest) — so it is NOT a version bug that got fixed;
+   Binaryen's asyncify pass fundamentally does not support the constructs clang's
+   SjLj lowering emits. The collision is architectural: **bash requires
+   setjmp/longjmp (→ EH-based SjLj), and fork requires asyncify, and the two meet
+   at the asyncify pass.** The naive `-wasm-enable-sjlj` + `wasm-opt --asyncify`
+   pipeline is a dead end.
+
+   **Resolution (the real M4 work):** do NOT use clang's EH-based SjLj. Provide
+   our own `__wasm_setjmp` / `__wasm_longjmp` / `__wasm_setjmp_test` implemented
+   **on top of asyncify itself** — longjmp is semantically "unwind to an earlier
+   saved point," which is exactly an asyncify rewind to a `setjmp`-captured
+   buffer/label. This keeps the whole binary in the single stack-capture mechanism
+   asyncify already provides (no wasm-EH in the module at all), so asyncify
+   instruments cleanly. It co-designs with the fork unwind/rewind machinery
+   already proven in M1/M2. This is a focused, well-scoped implementation task —
+   the next concrete step for M4, provable in local node V8 (the M0 method) before
+   any full bash link.
+   (Alternative, rejected: patch bash to remove setjmp — violates "unmodified GNU
+   bash" and is far more invasive than an asyncify-native setjmp shim.)
 4. **Real-worker integration (the big one).** Add the `nimbus_proc.*` layer to the
    facet preamble (`wasi-instance.ts` — the per-instance-context refactor from
    WASI-S2 §5.2 is a prerequisite so two instances can share one facet), a
