@@ -57,6 +57,7 @@ import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, rehydrateInsta
 import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
 import { makePythonRunnerFactory } from '../runtime/python-runner.js';
 import { makeRubyRunnerFactory } from '../runtime/ruby-runner.js';
+import { makeBashRunnerFactory } from '../runtime/bash-runner.js';
 import { hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '../runtime/process-logs.js';
@@ -442,6 +443,20 @@ export function initSession(self, ws) {
     }
     catch (e) {
         console.error('[init] ruby-runner registration FAILED:', e?.message || e, e?.stack || '');
+    }
+    // GNU bash 5.2.37 (wasm32-wasi, asyncified) — dedicated facet
+    // runner driving the fork/pipe/exec/setjmp scheduler (fork M1-M3
+    // mechanisms). One handler covers -c/script/stdin AND interactive
+    // mode: the handler itself parks on terminal stdin between pump
+    // slices, so no REPL wrap is needed.
+    try {
+        registerRunnerFactory('bash-runner', makeBashRunnerFactory({
+            facetMgr,
+            vfs: sqliteFs,
+        }));
+    }
+    catch (e) {
+        console.error('[init] bash-runner registration FAILED:', e?.message || e, e?.stack || '');
     }
     {
         // Cast registry to the minimal package-manager shape. CommandRegistry
@@ -2228,7 +2243,16 @@ export function initSession(self, ws) {
                 if (result.cachedHits > 0) {
                     ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
                 }
-                if (globalPrefix && (result.failed?.length || 0) === 0) {
+                if (globalPrefix) {
+                    // Materialize on-PATH bin shims even for partial installs. The
+                    // only writer of shims into ${globalPrefix}/bin used to be gated
+                    // behind zero failures across the whole dependency tree — but a
+                    // global install of a 100+-dep package almost always has at least
+                    // one transitive failure, so /usr/local/bin was ~never created
+                    // and the installed package's bin was unreachable. materialize →
+                    // validateEntry → resolveExistingTarget already skips bins whose
+                    // target file didn't land, so a partial install safely exposes
+                    // exactly the bins that actually installed.
                     const linked = materializeNpmBinShims(kernelFs, `${installCwd}/node_modules`, `${globalPrefix}/bin`);
                     if (linked > 0) {
                         ctx.stdout.write(`\x1b[2m  linked ${linked} bin${linked === 1 ? '' : 's'} into /${globalPrefix}/bin\x1b[0m\n`);

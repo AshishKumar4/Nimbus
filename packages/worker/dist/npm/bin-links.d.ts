@@ -24,7 +24,7 @@ export interface NpmBinResolution extends NpmBinEntry {
     shimPath: string;
 }
 type VfsLike = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
-type WritableVfsLike = VfsLike & Pick<CredentialedVfs, 'mkdir' | 'writeFile'>;
+type WritableVfsLike = VfsLike & Pick<CredentialedVfs, 'mkdir' | 'writeFile' | 'chmod'>;
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;
 export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest;
