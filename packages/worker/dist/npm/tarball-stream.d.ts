@@ -25,6 +25,14 @@ export declare const MAX_FILE_BYTES = 20000000;
  * Read one tar header (USTAR) out of `block`. Returns parsed fields or
  * `null` for an end-of-archive block (all zeros).
  */
+/**
+ * Collapse "."/".." segments in a tar entry's package-relative path.
+ * Returns the canonical relative path, or '' when the entry escapes its
+ * package root (a leading ".." that pops above the root) — the caller
+ * treats '' as a no-name entry and skips it. Mirrors the segment logic in
+ * w7-frame's canonicalPath so joined write paths are always accepted.
+ */
+export declare function canonicalTarName(name: string): string;
 export declare function parseTarHeader(block: Uint8Array): {
     name: string;
     size: number;

@@ -351,13 +351,17 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   ): Promise<void> => withSharedMutation(async () => {
     const size = data.length;
     const chunkCount = size === 0 ? 0 : Math.ceil(size / chunkSize);
-    // Re-enqueue of the same path (two owners writing the same shared file in
-    // a parallel install) is last-write-wins. sharedInodes.set() below already
-    // replaces the inode, but sharedChunks is append-only — without dropping
-    // the prior chunks here, the path would carry the previous enqueue's chunks
-    // PLUS the new ones while its inode declares only the new chunkCount, and
-    // the W7 encoder rejects the wave ("expected N chunks, got M"). Mirror the
-    // dedup enqueueSharedDirectory already performs.
+    // Re-enqueue of the same path is last-write-wins. This happens both when
+    // two owners write the same shared file in a parallel install, and when a
+    // single package tarball carries the same canonical path twice — e.g.
+    // agent-base ships both "package/./dist/index.js" and
+    // "package/dist/index.js", which collapse to one path. npm's own semantics
+    // are last-entry-wins, so we replace rather than fail. Fully undo the prior
+    // enqueue: drop its chunks (sharedChunks is append-only, else the inode's
+    // chunkCount would disagree with the buffered chunks and the W7 encoder
+    // rejects the wave "expected N chunks, got M") AND delete its inode, so the
+    // preflushSharedMutation duplicate-path guard below doesn't trip on our own
+    // intentional replacement. Mirror the dedup enqueueSharedDirectory performs.
     const existing = sharedInodes.get(filePath);
     if (existing) {
       if (existing.isDir) throw new Error(`file/directory collision in npm write wave: ${filePath}`);
@@ -367,6 +371,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         sharedBufferedBytes -= CHUNK_OVERHEAD + filePath.length + sharedChunks[i].data.length;
         sharedChunks.splice(i, 1);
       }
+      sharedInodes.delete(filePath);
     }
     const additionalBytes = INODE_OVERHEAD + filePath.length * 2
       + size + (chunkCount * (CHUNK_OVERHEAD + filePath.length));
@@ -737,6 +742,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       };
       // @ts-ignore — preamble symbol.
       for await (const entry of streamTarEntries(asyncIter, onSkip)) {
+        // entry.name is already canonicalized (no "."/".." segments) by
+        // the tar parser, so joining under the canonical pkgDir yields a
+        // canonical path the w7-frame writer accepts.
         const filePath = pkgDir + '/' + entry.name;
         const parts = filePath.split('/');
         for (let i = 1; i < parts.length; i++) {

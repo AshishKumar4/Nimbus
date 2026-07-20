@@ -1855,6 +1855,15 @@ const __utilMod = {
       return String(v);
     }) + (i < a.length ? " " + a.slice(i).map(__fmt).join(" ") : "");
   },
+  // util.formatWithOptions(inspectOptions, format[, ...args]) — identical
+  // to format() but takes inspect options as the first argument. consola's
+  // FancyReporter calls this directly (FancyReporter.formatArgs); its
+  // absence crashed every consola-based CLI under Nimbus with
+  // "(0 , import_node_util.formatWithOptions) is not a function" (nuxi init,
+  // at its first consola.error after "Welcome to Nuxt!"). This shim's
+  // inspect() ignores color/depth options, so dropping them and delegating
+  // to format() is behaviourally exact for what the shim can render.
+  formatWithOptions: (_inspectOptions, ...a) => __utilMod.format(...a),
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
   // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape

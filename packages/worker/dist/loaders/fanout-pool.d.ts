@@ -26,6 +26,18 @@ export declare const IN_DO_THRESHOLD = 5;
  * flat through this width while keeping per-request scheduler pressure bounded.
  */
 export declare const MAX_PEER_FANOUT = 32;
+/**
+ * Bounded retries for a peer-DO shard dispatch that rejects with a
+ * transient platform reset (code roll-over, storage cold-start hiccup).
+ * Sibling DOs are addressed by stable name, so the retry re-dispatches
+ * the SAME shard to the re-provisioning object; the fanned-out work
+ * (packument resolution, tarball materialisation) is idempotent, so
+ * re-running a shard is safe. Budget mirrors the resolve-facet's own
+ * per-fetch retry policy so a single flaky cold start no longer fails a
+ * whole install. Non-transient rejections (OOM, count mismatch, genuine
+ * task throw) are NOT retried — they propagate on the first hit.
+ */
+export declare const PEER_TRANSIENT_RESET_RETRIES = 3;
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {
     /**

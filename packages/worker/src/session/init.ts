@@ -2297,7 +2297,16 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           if (result.cachedHits > 0) {
             ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
           }
-          if (globalPrefix && (result.failed?.length || 0) === 0) {
+          if (globalPrefix) {
+            // Materialize on-PATH bin shims even for partial installs. The
+            // only writer of shims into ${globalPrefix}/bin used to be gated
+            // behind zero failures across the whole dependency tree — but a
+            // global install of a 100+-dep package almost always has at least
+            // one transitive failure, so /usr/local/bin was ~never created
+            // and the installed package's bin was unreachable. materialize →
+            // validateEntry → resolveExistingTarget already skips bins whose
+            // target file didn't land, so a partial install safely exposes
+            // exactly the bins that actually installed.
             const linked = materializeNpmBinShims(
               sqliteFs,
               `${installCwd}/node_modules`,
