@@ -83,6 +83,20 @@ try {
     { uid: 1000, gid: 1000 },
     'only /etc is special-cased',
   );
+  // npm's global prefix chain must exist and be user-writable: batch
+  // installs authorize each write group against existing parents, so a
+  // missing /usr/local/lib made every `npm install -g` fail with ENOENT.
+  for (const prefixDir of ['usr/local', 'usr/local/bin', 'usr/local/lib', 'usr/local/lib/node_modules']) {
+    const stat = rootVfs.stat(prefixDir);
+    assert.deepEqual(
+      { uid: stat.uid, gid: stat.gid },
+      { uid: 1000, gid: 1000 },
+      `${prefixDir} is seeded user-owned for global installs`,
+    );
+  }
+  userVfs.writeFile('usr/local/lib/node_modules/.write-probe', 'ok');
+  assert.equal(userVfs.readFileString('usr/local/lib/node_modules/.write-probe'), 'ok');
+  userVfs.unlink('usr/local/lib/node_modules/.write-probe');
 
   const registry = createDefaultRegistry();
   registerUnixCommands(registry, rawVfs);
