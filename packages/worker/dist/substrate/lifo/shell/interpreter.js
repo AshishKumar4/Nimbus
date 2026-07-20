@@ -720,9 +720,15 @@ export class Interpreter {
                                     resolvePromise?.(code);
                                     return code;
                                 }, (err) => {
-                                    const code = (err instanceof Error && err.name === 'AbortError') ? 130 : 1;
                                     rejectPromise?.(err);
-                                    return code;
+                                    if (err instanceof Error && err.name === 'AbortError')
+                                        return 130;
+                                    // Surface the failure: this rejection handler resolves
+                                    // commandPromise to an exit code, so the catch below
+                                    // never sees the error — without this write a throwing
+                                    // registered command dies silently at the prompt.
+                                    stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`);
+                                    return 1;
                                 });
                             }
                             else {

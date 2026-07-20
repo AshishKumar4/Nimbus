@@ -2361,7 +2361,7 @@ export function initSession(self, ws) {
         self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
-        const resolveResult = await resolveNpxBinary(installer, self.sqliteFs, ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid);
+        const resolveResult = await resolveNpxBinary(installer, self.sqliteFs.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'npx')), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid);
         if (resolveResult.ok && resolveResult.binPath) {
             const nodeCmd = await registry.resolve('node');
             if (nodeCmd) {
