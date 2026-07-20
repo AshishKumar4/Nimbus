@@ -67,11 +67,15 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
   trap.o input.o unwind_prot.o pathexp.o sig.o test.o version.o alias.o array.o arrayfunc.o \
   assoc.o braces.o bracecomp.o bashhist.o bashline.o list.o stringlib.o locale.o findcmd.o \
   redir.o pcomplete.o pcomplib.o syntax.o xmalloc.o signames.o"
+# --wrap=dup,dup2,fcntl routes bash's fd-duplication onto the nimbus_proc fd
+# table (where pipe ends live) instead of wasi-libc's separate fd namespace —
+# one FdTable (the M3 layer), so pipe redirections (dup2 pipefd->1) work.
 "$CC" -O2 -o bash $OBJS \
   -L./builtins -L./lib/readline -L./lib/glob -L./lib/tilde -L./lib/sh \
   -lbuiltins -lglob -lsh -lreadline -lhistory ./lib/termcap/libtermcap.a -ltilde \
   "$HERE/nimbus-proc.o" $TARGET_LDFLAGS \
-  -Wl,--export=__stack_pointer -Wl,--allow-undefined -Wl,--no-gc-sections
+  -Wl,--export=__stack_pointer -Wl,--allow-undefined -Wl,--no-gc-sections \
+  -Wl,--wrap=dup2 -Wl,--wrap=dup -Wl,--wrap=fcntl
 
 # fpcast-emu: bash's unwind_protect casts function pointers, which wasm's
 # type-checked call_indirect rejects at runtime (traps after the command runs).
@@ -79,11 +83,12 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
 # Emscripten's EMULATE_FUNCTION_POINTER_CASTS) — REQUIRED for bash to exit clean.
 wasm-opt --fpcast-emu bash -o bash.fpc.wasm
 
-# Asyncify: setjmp/longjmp ride the allowlist alongside the process calls — they
-# unwind (capture) / rewind (longjmp) exactly like fork/exec/wait. The binary is
-# EH-free (asyncify-native setjmp, NOT clang -wasm-enable-sjlj) so this succeeds.
+# Asyncify allowlist: the process calls + setjmp/longjmp (capture/replay) + the
+# pipe byte ops fd_read/fd_write (they suspend when a pipe would block, so their
+# callers must be instrumented to unwind — without this, a blocked capture read
+# in $(...) corrupts the stack). EH-free (asyncify-native setjmp) so this works.
 wasm-opt --asyncify \
-  --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid,nimbus_proc.setjmp,nimbus_proc.longjmp \
+  --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid,nimbus_proc.setjmp,nimbus_proc.longjmp,wasi_snapshot_preview1.fd_read,wasi_snapshot_preview1.fd_write \
   bash.fpc.wasm -o bash.async.wasm
 
 echo "Built: $BASH_SRC/bash (linked) + $BASH_SRC/bash.async.wasm (asyncified)"

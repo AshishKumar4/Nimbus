@@ -99,7 +99,18 @@ pid_t wait3(int *status, int options, void *rusage) { (void)rusage; return waitp
 pid_t wait4(pid_t pid, int *status, int options, void *rusage) { (void)rusage; return waitpid(pid, status, options); }
 
 int pipe(int fds[2]) { int r = __np_pipe(fds); if (r < 0) { errno = -r; return -1; } return 0; }
-int dup(int o)         { int r = __np_dup(o);     if (r < 0) { errno = -r; return -1; } return r; }
+
+/* dup/dup2 must operate on the nimbus_proc fd table (where pipe ends live), not
+ * wasi-libc's fd_renumber (a separate namespace that EBADFs on pipe fds). Linked
+ * with -Wl,--wrap=dup,--wrap=dup2 so every bash dup/dup2 routes here; wasi-libc's
+ * originals become __real_* (unused). One fd namespace — the M3 FdTable. */
+int __wrap_dup2(int o, int n) { int r = __np_dup2(o, n); if (r < 0) { errno = -r; return -1; } return r; }
+int __wrap_dup(int o)         { int r = __np_dup(o);     if (r < 0) { errno = -r; return -1; } return r; }
+int __wrap_fcntl(int fd, int cmd, ...) {
+  /* F_DUPFD (0) — bash saves/restores fds via fcntl; route to the fd table. */
+  if (cmd == F_DUPFD) { int r = __np_dup(fd); if (r < 0) { errno = -r; return -1; } return r; }
+  return 0; /* F_GETFD/F_SETFD/F_GETFL/F_SETFL: no-op (flags tracked host-side) */
+}
 
 int   kill(pid_t pid, int sig)    { int r = __np_kill(pid, sig); if (r < 0) { errno = -r; return -1; } return 0; }
 pid_t getppid(void)               { return __np_getppid(); }
