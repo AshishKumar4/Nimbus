@@ -2500,7 +2500,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       const installer = self.npmInstaller!;
       const resolveResult = await resolveNpxBinary(
         installer,
-        self.sqliteFs! as any,
+        self.sqliteFs!.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'npx')),
         ctx.cwd || '/home/user',
         npxArgs,
         (msg: string) => ctx.stdout.write(msg + '\n'),
