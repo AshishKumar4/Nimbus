@@ -7,8 +7,8 @@ import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
 
 <DiskLayers caption="Four layers, one owner. The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
 
-I store inodes and file data in 64 KiB chunks. An LRU keeps hot chunks in
-memory without making memory the source of truth. I also give every path a
+I keep inodes in a SQLite table and file contents in 64 KiB chunks. An
+LRU keeps hot chunks in memory without making memory the source of truth. I also give every path a
 revision watermark for its subtree. It changes when that path or anything
 under it changes, so an unrelated write doesn't invalidate the cache.
 
