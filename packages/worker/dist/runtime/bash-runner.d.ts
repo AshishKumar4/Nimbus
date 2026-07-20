@@ -1,0 +1,48 @@
+/**
+ * bash-runner — real GNU bash 5.2.37 (wasm32-wasi, asyncified) in a
+ * dedicated facet.
+ *
+ * bash CANNOT run through the stock JSPI wasm-runner: the binary is
+ * asyncify-instrumented (fork/setjmp/blocking-pipe unwinds) and needs
+ * 15 `nimbus_proc` imports plus MULTIPLE instances per facet (fork).
+ * This runner embeds the proven multi-instance fork/pipe/exec/setjmp
+ * scheduler (packages/worker/wasm/bash/run-bash-fork.mjs — the local
+ * acid-test driver, itself a port of the PROVEN-LIVE fork M1/M2/M3
+ * mechanisms) as a facet preamble.
+ *
+ * Architecture (mirrors ruby-runner's facet dispatch):
+ *  - bash.async.wasm + the coreutil exec targets ride the LOADER
+ *    modules map (compiled by workerd at module-load; exposed on
+ *    globalThis.__NIMBUS_WASM).
+ *  - The preamble defines __bashBoot / __bashFeed. Boot instantiates
+ *    bash, pumps the scheduler until the process tree exits or the
+ *    root parks on a terminal stdin read; each feed delivers stdin
+ *    bytes and pumps again. Facet state persists across submits on
+ *    the warm isolate (same mechanism as __rubyInstance caching).
+ *  - stdout/stderr accumulate per pump slice and stream back to the
+ *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
+ */
+import type { RuntimeManifest } from './runtime-catalog.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { FacetManager } from '../facets/manager.js';
+import type { Command } from '../substrate/lifo/commands/types.js';
+type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+export declare function makeBashRunnerFactory(deps: {
+    facetMgr: FacetManager;
+    vfs: SqliteVFS;
+}): BashRunnerFactory;
+/**
+ * The facet-side scheduler. Direct port of the PROVEN local acid-test
+ * driver (packages/worker/wasm/bash/run-bash-fork.mjs) with the
+ * production additions: a VFS-snapshot file layer, terminal stdin
+ * park/feed, jmp_buf→slot reuse (bounded slots for long interactive
+ * sessions), fsDiff capture, and memory stats.
+ *
+ * Arena sizing: MAIN_SIZE bounds one asyncify stack capture (bash's
+ * measured captures are <64 KiB; 8 MiB is generous headroom), SLOT_*
+ * bound setjmp snapshots. sbrk growth lands AFTER the arena (wasm
+ * memory only grows at the end), so no inter-arena headroom is needed.
+ */
+export declare const BASH_RUNNER_PREAMBLE: string;
+export {};
+//# sourceMappingURL=bash-runner.d.ts.map

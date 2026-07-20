@@ -143,6 +143,39 @@ const SPECS = {
     },
     license_text: RUBY_LICENSE_TEXT(),
   },
+  // ── GNU bash (fork runtime, 2026-07-20) ──────────────────────────
+  // bash 5.2.37 cross-compiled to wasm32-wasi with the Nimbus process
+  // overlay (nimbus-proc.{h,c}: fork/exec/wait/pipe over nimbus_proc.*
+  // imports + asyncify-native setjmp) and asyncify-instrumented.
+  // There is NO upstream binary channel — the artifacts are built from
+  // source by packages/worker/wasm/bash/build-bash.sh (bash) and
+  // build-coreutils.sh (the plain-WASI exec targets), then staged from
+  // the local build tree via `local_base`.
+  'bash/5.2.37': {
+    license: 'GPL-3.0-or-later',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/bash',
+    files: [
+      { src: 'bash.async.wasm',      vfs: 'share/bash/bash.async.wasm' },
+      { src: 'coreutils/echo.wasm',  vfs: 'share/bash/coreutils/echo.wasm' },
+      { src: 'coreutils/tr.wasm',    vfs: 'share/bash/coreutils/tr.wasm' },
+      { src: 'coreutils/cat.wasm',   vfs: 'share/bash/coreutils/cat.wasm' },
+      { src: 'coreutils/head.wasm',  vfs: 'share/bash/coreutils/head.wasm' },
+      { src: 'coreutils/sort.wasm',  vfs: 'share/bash/coreutils/sort.wasm' },
+      { src: 'BIN_MARKER', vfs: 'bin/bash', mode: 'exec', runner: 'bash-runner', binName: 'bash' },
+    ],
+    synthetic_files: {
+      'BIN_MARKER': Buffer.from(
+        '# Nimbus bash-runner launcher marker. The real GNU bash wasm\n' +
+        '# lives in share/bash/. The shell registry dispatches `bash`\n' +
+        '# (and #!/bin/bash shebangs) to the bash-runner factory; this\n' +
+        '# file exists so `which bash` and `ls bin/` find a regular,\n' +
+        '# executable file at the expected path.\n',
+        'utf8',
+      ),
+    },
+    license_text: GPL_3_LICENSE_NOTICE(),
+  },
   'python/0.29.4': {
     license: 'MPL-2.0',
     wasi_namespace: null,        // Pyodide is Emscripten, not WASI
@@ -305,6 +338,18 @@ for (const f of spec.files) {
         `tar -xzf "${tarballLocal}" -C "${workDir}" --strip-components=2 "${spec.tarball_extract}/${f.src}"`,
         { stdio: 'inherit' },
       );
+    } else if (spec.local_base) {
+      // Locally-built runtime (no upstream binary channel): stage the
+      // artifact from the repo build tree, resolved against this script.
+      const from = new URL(`${spec.local_base}/${f.src}`, import.meta.url);
+      if (!existsSync(from)) {
+        console.error(`[bundle-runtime] missing local artifact: ${from.pathname}`);
+        console.error(`[bundle-runtime] build it first (see ${spec.local_base}/BRINGUP.md)`);
+        process.exit(1);
+      }
+      mkdirSync(dirname(local), { recursive: true });
+      writeFileSync(local, readFileSync(from));
+      console.log(`[bundle-runtime] local ${f.src} ← ${from.pathname}`);
     } else if (!existsSync(local)) {
       const url = `${spec.upstream_base}/${f.src}`;
       console.log(`[bundle-runtime] fetch ${url}`);
@@ -716,6 +761,18 @@ function runRepackage(rep, workDir) {
 }
 
 // ── Bundled LICENSE text generator ────────────────────────────────
+function GPL_3_LICENSE_NOTICE() {
+  return `GNU bash 5.2.37 — GPL-3.0-or-later
+Copyright (C) Free Software Foundation, Inc.
+
+This runtime bundles GNU bash cross-compiled to wasm32-wasi. Full
+license text: https://www.gnu.org/licenses/gpl-3.0.txt
+Corresponding source: https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz
+plus the Nimbus build overlay (packages/worker/wasm/bash/ in the
+Nimbus repository: nimbus-proc.{h,c}, build-bash.sh, coreutils/).
+`;
+}
+
 function MPL_2_LICENSE_TEXT() {
   // Mozilla Public License 2.0 — Pyodide is MPL-2.0-licensed. We
   // ship an abbreviated header pointing at the canonical text; the

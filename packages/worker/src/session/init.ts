@@ -84,6 +84,7 @@ import {
 import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
 import { makePythonRunnerFactory } from '../runtime/python-runner.js';
 import { makeRubyRunnerFactory } from '../runtime/ruby-runner.js';
+import { makeBashRunnerFactory } from '../runtime/bash-runner.js';
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '../runtime/process-logs.js';
@@ -561,6 +562,19 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       registerRunnerFactory('ruby-runner', wrappedRuby);
     } catch (e: any) {
       console.error('[init] ruby-runner registration FAILED:', e?.message || e, e?.stack || '');
+    }
+    // GNU bash 5.2.37 (wasm32-wasi, asyncified) — dedicated facet
+    // runner driving the fork/pipe/exec/setjmp scheduler (fork M1-M3
+    // mechanisms). One handler covers -c/script/stdin AND interactive
+    // mode: the handler itself parks on terminal stdin between pump
+    // slices, so no REPL wrap is needed.
+    try {
+      registerRunnerFactory('bash-runner', makeBashRunnerFactory({
+        facetMgr,
+        vfs: sqliteFs,
+      }));
+    } catch (e: any) {
+      console.error('[init] bash-runner registration FAILED:', e?.message || e, e?.stack || '');
     }
     {
       // Cast registry to the minimal package-manager shape. CommandRegistry

@@ -758,7 +758,7 @@ async function dispatchRubyFacet(facetMgr, args) {
         };
     }
 }
-function getFacetManagerLoaderHost(facetMgr) {
+export function getFacetManagerLoaderHost(facetMgr) {
     const env = Reflect.get(facetMgr, 'env');
     const ctx = Reflect.get(facetMgr, 'ctx');
     if (!isDurableObjectState(ctx)) {

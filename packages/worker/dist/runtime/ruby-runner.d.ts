@@ -51,6 +51,10 @@ export declare function makeRubyRunnerFactory(deps: {
         resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
     };
 }): RubyRunnerFactory;
+export declare function getFacetManagerLoaderHost(facetMgr: FacetManager): {
+    env: unknown;
+    ctx: DurableObjectState;
+};
 /**
  * The Ruby-specific portion of the preamble. Wires the wasm imports
  * (wasi_snapshot_preview1 from __wasiMakeImports, canonical_abi from a
