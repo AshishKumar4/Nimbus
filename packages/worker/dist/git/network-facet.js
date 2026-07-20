@@ -386,6 +386,9 @@ export async function execGitNetwork(ctx, env, opts) {
         : DEFAULT_OPERATION_TIMEOUT_MS);
     const outerDeadline = start + timeoutMs;
     try {
+        if (!Number.isInteger(opts.pid) || opts.pid <= 0) {
+            throw new Error('git network operation requires a positive process pid');
+        }
         if (!env?.LOADER?.load) {
             return {
                 success: false,
@@ -401,7 +404,7 @@ export async function execGitNetwork(ctx, env, opts) {
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({
-                props: { doId: ctx.id.toString(), pid: 0, mutationOwner },
+                props: { doId: ctx.id.toString(), pid: opts.pid, mutationOwner },
             })
             : undefined;
         if (!supervisorBinding) {
@@ -1114,7 +1117,11 @@ function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritative
     collectDirectoryPaths(dirs, d, authoritativeRoot);
   }
 
-  for (const dir of dirs) {
+  const orderedDirs = [...dirs].sort((left, right) => {
+    const depth = left.split('/').length - right.split('/').length;
+    return depth || left.localeCompare(right);
+  });
+  for (const dir of orderedDirs) {
     const entry = metadata.get(dir);
     if (entry && entry.kind === 'dir') {
       entry.atimeMs = mtime;

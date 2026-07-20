@@ -1,6 +1,6 @@
 import pyodideWorkerdAdapter from '../../runtime-contracts/pyodide-workerd-adapter.json';
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 interface PyodideAdapterContract {
   id: string;
@@ -17,7 +17,7 @@ export interface PyodideRuntimeAssetPaths {
   stdlibVfs: string | null;
   lockfileVfs: string | null;
   manifest: RuntimeManifest;
-  vfs: SqliteVFS;
+  vfs: CredentialedVfs;
 }
 
 export interface PyodideRuntimeFiles {

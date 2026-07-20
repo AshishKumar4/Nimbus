@@ -1,5 +1,50 @@
 import type { VfsEvent } from '../vfs/events.js';
 
+export interface VfsCred {
+  readonly uid: number;
+  readonly gid: number;
+  readonly groups: readonly number[];
+  readonly umask: number;
+}
+
+export const CRED_KERNEL: VfsCred = Object.freeze({
+  uid: 0,
+  gid: 0,
+  groups: Object.freeze([0]),
+  umask: 0o022,
+});
+
+export function requireVfsCred(value: unknown, source: string): VfsCred {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error(`${source} requires process credentials`);
+  }
+  const uid = 'uid' in value ? value.uid : undefined;
+  const gid = 'gid' in value ? value.gid : undefined;
+  const groups = 'groups' in value ? value.groups : undefined;
+  const umask = 'umask' in value ? value.umask : undefined;
+  if (
+    typeof uid !== 'number' || !Number.isInteger(uid)
+    || typeof gid !== 'number' || !Number.isInteger(gid)
+    || !Array.isArray(groups)
+    || typeof umask !== 'number' || !Number.isInteger(umask)
+  ) {
+    throw new Error(`${source} requires process credentials`);
+  }
+  const normalizedGroups: number[] = [];
+  for (const group of groups) {
+    if (typeof group !== 'number' || !Number.isInteger(group)) {
+      throw new Error(`${source} requires process credentials`);
+    }
+    normalizedGroups.push(group);
+  }
+  return {
+    uid,
+    gid,
+    groups: normalizedGroups,
+    umask,
+  };
+}
+
 export type RuntimeFileType = 'file' | 'directory' | 'symlink';
 
 export interface RuntimeVfsStat {
@@ -9,6 +54,8 @@ export interface RuntimeVfsStat {
   atime: number;
   mtime: number;
   mode: number;
+  uid: number;
+  gid: number;
   /** Per-path revision: changes iff this path (or its subtree) mutated. */
   revision: number;
 }
@@ -62,6 +109,10 @@ export interface RuntimeFsBridge {
   utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Promise<void>;
   /** Set permission bits (POSIX chmod — follows symlinks). */
   chmod(path: string, mode: number): Promise<void>;
+  /** Check access using the bridge's process credential. */
+  access(path: string, mode: number): Promise<void>;
+  /** Change stored ownership, optionally operating on a symlink itself. */
+  chown(path: string, uid: number, gid: number, options?: { followSymlinks?: boolean }): Promise<void>;
   open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;

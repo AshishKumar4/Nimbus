@@ -11,13 +11,19 @@ import {
   SqliteVFS,
   SqliteVfsTransactionTooLargeError,
 } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs() {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  return { harness, vfs, baselineTransactions: harness.transactionCount };
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  return {
+    harness,
+    rawVfs,
+    vfs: rawVfs.as(CRED_KERNEL),
+    baselineTransactions: harness.transactionCount,
+  };
 }
 
 function fileInode(path, size) {
@@ -74,7 +80,7 @@ function assertBounded(stats) {
 
 // Strict byte boundary remains one data transaction and one revision tick.
 {
-  const { harness, vfs, baselineTransactions } = openVfs();
+  const { harness, rawVfs, vfs, baselineTransactions } = openVfs();
   const exact = new Uint8Array(MAX_TX_BLOB_BYTES);
   const revision = vfs.revision();
   assert.deepEqual(vfs.writeBatch({
@@ -83,7 +89,7 @@ function assertBounded(stats) {
   }), { inodes: 1, chunks: exact.length / CHUNK_SIZE });
   assert.equal(harness.transactionCount, baselineTransactions + 1);
   assert.equal(vfs.revision(), revision + 1);
-  assert.equal(vfs.getStats().sql.transactions.blobBytes.last, MAX_TX_BLOB_BYTES);
+  assert.equal(rawVfs.getStats().sql.transactions.blobBytes.last, MAX_TX_BLOB_BYTES);
 
   const over = new Uint8Array(MAX_TX_BLOB_BYTES + 1);
   const before = {
@@ -108,35 +114,35 @@ function assertBounded(stats) {
 
 // Metadata-only logical-row boundary is exact and fail-before-side-effect.
 {
-  const { harness, vfs, baselineTransactions } = openVfs();
+  const { harness, rawVfs, vfs, baselineTransactions } = openVfs();
   const exact = Array.from({ length: MAX_TX_LOGICAL_ROWS }, (_, index) => dirInode(`row-${index}`));
   assert.deepEqual(vfs.writeBatch({ inodes: exact, chunks: [] }), {
     inodes: MAX_TX_LOGICAL_ROWS,
     chunks: 0,
   });
   assert.equal(harness.transactionCount, baselineTransactions + 1);
-  assert.equal(vfs.getStats().sql.transactions.logicalRows.last, MAX_TX_LOGICAL_ROWS);
+  assert.equal(rawVfs.getStats().sql.transactions.logicalRows.last, MAX_TX_LOGICAL_ROWS);
 }
 {
-  const { harness, vfs, baselineTransactions } = openVfs();
+  const { harness, rawVfs, vfs, baselineTransactions } = openVfs();
   const over = Array.from({ length: MAX_TX_LOGICAL_ROWS + 1 }, (_, index) => dirInode(`row-over-${index}`));
   assertE2Big(() => vfs.writeBatch({ inodes: over, chunks: [] }), 'logicalRows');
   assert.equal(harness.transactionCount, baselineTransactions);
-  assert.equal(vfs.getStats().directories, 0);
+  assert.equal(rawVfs.getStats().directories, 0);
 }
 
-// SQL-exec boundary accounts for exact-path deletes plus 11-row inode groups.
+// SQL-exec boundary accounts for exact-path deletes plus 9-row inode groups.
 {
-  const { harness, vfs, baselineTransactions } = openVfs();
-  const inodes = Array.from({ length: 55 }, (_, index) => dirInode(`sql-${index}`));
+  const { harness, rawVfs, vfs, baselineTransactions } = openVfs();
+  const inodes = Array.from({ length: 45 }, (_, index) => dirInode(`sql-${index}`));
   const deletePaths = Array.from({ length: 59 }, (_, index) => `absent-${index}`);
   vfs.writeBatch({ inodes, chunks: [], deletePaths });
   assert.equal(harness.transactionCount, baselineTransactions + 1);
-  assert.equal(vfs.getStats().sql.transactions.sqlExecs.last, MAX_TX_SQL_EXECS);
+  assert.equal(rawVfs.getStats().sql.transactions.sqlExecs.last, MAX_TX_SQL_EXECS);
 }
 {
   const { harness, vfs, baselineTransactions } = openVfs();
-  const inodes = Array.from({ length: 55 }, (_, index) => dirInode(`sql-over-${index}`));
+  const inodes = Array.from({ length: 45 }, (_, index) => dirInode(`sql-over-${index}`));
   const deletePaths = Array.from({ length: 60 }, (_, index) => `absent-over-${index}`);
   assertE2Big(() => vfs.writeBatch({ inodes, chunks: [], deletePaths }), 'sqlExecs');
   assert.equal(harness.transactionCount, baselineTransactions);
@@ -153,7 +159,7 @@ function assertBounded(stats) {
 // An over-limit range edit uses bounded generation staging plus one pointer
 // publish; the Stage 2 oversized-file exception is gone.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const data = new Uint8Array(MAX_TX_BLOB_BYTES * 2);
   vfs.writeFile('range.bin', data);
   const priorContentId = harness.sql.exec(
@@ -171,14 +177,14 @@ function assertBounded(stats) {
     harness.sql.exec("SELECT content_id FROM inodes WHERE path = 'range.bin'")[0].content_id,
     priorContentId,
   );
-  assertBounded(vfs.getStats());
-  assert.equal(vfs.getStats().sql.transactions.overLimitFiles.count, 0);
+  assertBounded(rawVfs.getStats());
+  assert.equal(rawVfs.getStats().sql.transactions.overLimitFiles.count, 0);
 }
 
 // Streamed oversized files are staged across bounded transactions and exposed
 // by one pointer publication, with typed committed progress.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const data = new Uint8Array(MAX_TX_BLOB_BYTES * 2 + 1).fill(19);
   const entries = chunks('stream.bin', data);
   const firstTransaction = harness.transactionCount + 1;
@@ -195,29 +201,29 @@ function assertBounded(stats) {
   });
   assert.ok(harness.transactionCount - firstTransaction + 1 >= 4);
   assert.deepEqual(vfs.readFile('stream.bin'), data);
-  assert.equal(vfs.getStats().sql.decoderRetainedBytes.current, 0);
-  assert.equal(vfs.getStats().sql.phases.decodeDrainWaitMs.count, 1);
-  assertBounded(vfs.getStats());
+  assert.equal(rawVfs.getStats().sql.decoderRetainedBytes.current, 0);
+  assert.equal(rawVfs.getStats().sql.phases.decodeDrainWaitMs.count, 1);
+  assertBounded(rawVfs.getStats());
 }
 
 // A bounded existing-generation range edit commits its chunks and inode in
 // one measured transaction; no deferred ownership survives the call.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   const data = new Uint8Array(CHUNK_SIZE * 2);
   vfs.writeFile('telemetry.bin', data);
   let during = null;
   harness.setFaultInjector(({ transaction }) => {
-    if (transaction !== null && during === null) during = vfs.getStats().sql;
+    if (transaction !== null && during === null) during = rawVfs.getStats().sql;
     return null;
   });
   vfs.writeRange('telemetry.bin', 0, new Uint8Array(data.length).fill(4));
   harness.clearFault();
   assert.ok(during);
   assert.equal(during.transactions.active, true);
-  const after = vfs.getStats().sql;
+  const after = rawVfs.getStats().sql;
   assert.equal(after.retainedWriteBytes.current, 0);
-  assertBounded(vfs.getStats());
+  assertBounded(rawVfs.getStats());
 }
 
 console.log('sqlite-vfs-stage2-transactions: all assertions passed');

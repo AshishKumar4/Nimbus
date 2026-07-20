@@ -2,6 +2,8 @@ import type { ITerminal } from '../terminal/ITerminal.js';
 import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
+import type { CommandContext, CommandRunAsHost } from '../commands/types.js';
+import type { VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
@@ -45,6 +47,14 @@ export interface ExecuteOptions {
    * caller already allocated instead of letting it spawn a second one.
    */
   commandContext?: Record<string, unknown>;
+  runAs?: CommandRunAsHost;
+}
+
+export interface ShellCommandIdentity {
+  pid: number;
+  cred: VfsCred;
+  setUmask(mask: number): void;
+  runAs?: CommandRunAsHost;
 }
 
 export class Shell {
@@ -88,6 +98,7 @@ export class Shell {
   };
   private traps = new Map<string, string>();
   private readonlyNames = new Set<string>();
+  private commandIdentity: ShellCommandIdentity;
 
   // Tab completion state
   private tabCount: number = 0;
@@ -101,6 +112,7 @@ export class Shell {
     registry: CommandRegistry,
     env: Record<string, string>,
     processRegistry: ProcessRegistry,
+    commandIdentity?: ShellCommandIdentity,
   ) {
     this.terminal = terminal;
     this.vfs = vfs;
@@ -109,6 +121,14 @@ export class Shell {
     this.env = { ...env };
     if (!this.env['0']) this.env['0'] = 'nimbus-sh';
     if (!this.env['$']) this.env['$'] = String(processRegistry.registerShell(this.cwd, this.env));
+    let defaultCred: VfsCred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+    this.commandIdentity = commandIdentity ?? {
+      pid: Number(this.env['$']),
+      get cred() { return defaultCred; },
+      setUmask: (mask) => {
+        defaultCred = { ...defaultCred, umask: mask };
+      },
+    };
 
     // Initialize builtins
     this.builtins = new Map<string, BuiltinFn>();
@@ -171,9 +191,9 @@ export class Shell {
     this.builtins.set('alias', (args, stdout) => this.builtinAlias(args, stdout));
     this.builtins.set('unalias', (args, _stdout, stderr) => this.builtinUnalias(args, stderr));
     this.builtins.set('test', (args, _stdout, stderr, _stdin, context) =>
-      Promise.resolve(evaluateTest(args, this.vfs, stderr, context)));
+      Promise.resolve(evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
     this.builtins.set('[', (args, _stdout, stderr, _stdin, context) =>
-      Promise.resolve(evaluateTest(args, this.vfs, stderr, context)));
+      Promise.resolve(evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
   }
 
   getJobTable(): JobTable {
@@ -294,6 +314,8 @@ export class Shell {
           terminalFds: options?.terminalFds,
           scriptMode: options?.scriptMode === true,
           commandContext: options?.commandContext,
+          commandIdentity: this.resolveCommandIdentity(options?.commandContext),
+          runAs: options?.runAs ?? this.commandIdentity.runAs,
         },
       );
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
@@ -319,6 +341,20 @@ export class Shell {
         this.cwd = prevCwd;
       }
     }
+  }
+
+  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity {
+    const pid = overrides?.['pid'];
+    const cred = overrides?.['cred'];
+    const setUmask = overrides?.['setUmask'];
+    return {
+      pid: typeof pid === 'number' ? pid : this.commandIdentity.pid,
+      cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
+      setUmask: typeof setUmask === 'function'
+        ? (mask) => setUmask(mask)
+        : this.commandIdentity.setUmask,
+      runAs: this.commandIdentity.runAs,
+    };
   }
 
   start(): void {
@@ -872,7 +908,10 @@ export class Shell {
     this.terminalStdin = new TerminalStdin();
 
     try {
-      await this.interpreter.executeLine(actualLine, this.terminalStdin);
+      await this.interpreter.executeLine(actualLine, this.terminalStdin, {
+        commandIdentity: this.commandIdentity,
+        runAs: this.commandIdentity.runAs,
+      });
     } finally {
       this.terminalStdin?.close();
       this.terminalStdin = null;
@@ -1842,4 +1881,13 @@ function replaceMap<K, V>(target: Map<K, V>, source: Map<K, V>): void {
 function replaceSet<T>(target: Set<T>, source: Set<T>): void {
   target.clear();
   for (const value of source.values()) target.add(value);
+}
+
+function isVfsCred(value: unknown): value is VfsCred {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!('uid' in value) || typeof value.uid !== 'number') return false;
+  if (!('gid' in value) || typeof value.gid !== 'number') return false;
+  if (!('umask' in value) || typeof value.umask !== 'number') return false;
+  return 'groups' in value && Array.isArray(value.groups)
+    && value.groups.every((group) => typeof group === 'number');
 }

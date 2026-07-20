@@ -21,6 +21,7 @@
  * metadata was never set", and wasm-magic files with such modes stay
  * executable until touched. No migration.
  */
+import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 /** Bytes of head to inspect: covers magic + the longest useful `#!` line. */
 export const EXEC_HEAD_BYTES = 512;
 export function isWasmMagic(head) {
@@ -75,4 +76,106 @@ export function decideExecDispatch(mode, head) {
     if (head.includes(0))
         return { kind: 'exec-format-error' };
     return { kind: 'shell-script' };
+}
+export function installPathExecResolver(registry, kernelFs, getCwd) {
+    const originalResolve = registry.resolve.bind(registry);
+    registry.resolve = async (name) => {
+        const found = await originalResolve(name);
+        if (found)
+            return found;
+        if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
+            return undefined;
+        }
+        const resolved = resolveVfsPath(name, normalizeVfsPath(getCwd()));
+        if (!kernelFs.exists(resolved))
+            return undefined;
+        if (kernelFs.isDirectory(resolved)) {
+            return async (ctx) => {
+                ctx.stderr.write(`${name}: Is a directory\n`);
+                return 126;
+            };
+        }
+        const target = kernelFs.isSymlink(resolved) ? kernelFs.resolveSymlink(resolved) : resolved;
+        if (!target || !kernelFs.exists(target) || kernelFs.isDirectory(target))
+            return undefined;
+        let mode;
+        let head;
+        try {
+            mode = kernelFs.stat(target).mode;
+            head = kernelFs.readRange(target, 0, EXEC_HEAD_BYTES);
+        }
+        catch {
+            return undefined;
+        }
+        const accessPath = '/' + resolved;
+        const absPath = '/' + target;
+        const authorize = (command) => async (ctx) => {
+            try {
+                ctx.vfs.access(accessPath, 0o1);
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (message.startsWith('ENOENT:')) {
+                    ctx.stderr.write(`${name}: No such file or directory\n`);
+                    return 127;
+                }
+                if (message.startsWith('EACCES:') || message.startsWith('EPERM:')) {
+                    ctx.stderr.write(`${name}: Permission denied\n`);
+                    return 126;
+                }
+                ctx.stderr.write(`${name}: ${message}\n`);
+                return 126;
+            }
+            return command(ctx);
+        };
+        const decision = decideExecDispatch(mode, head);
+        switch (decision.kind) {
+            case 'denied':
+                return authorize(async (ctx) => {
+                    ctx.stderr.write(`${name}: Permission denied\n`);
+                    return 126;
+                });
+            case 'exec-format-error':
+                return authorize(async (ctx) => {
+                    ctx.stderr.write(`${name}: cannot execute binary file: exec format not supported on Nimbus (wasm32-wasi only)\n`);
+                    return 126;
+                });
+            case 'wasm': {
+                const wasmRunnerCmd = await originalResolve('wasm-runner');
+                if (!wasmRunnerCmd)
+                    return undefined;
+                return authorize(async (ctx) => {
+                    return await wasmRunnerCmd({ ...ctx, args: [absPath, ...ctx.args] });
+                });
+            }
+            case 'shebang':
+            case 'shell-script': {
+                const interp = decision.kind === 'shebang' ? decision.shebang.interpreter : 'sh';
+                const interpArgs = decision.kind === 'shebang' ? decision.shebang.args : [];
+                return authorize(async (ctx) => {
+                    const depth = interpreterDepth(ctx);
+                    if (depth >= 4) {
+                        ctx.stderr.write(`${name}: too many levels of interpreters\n`);
+                        return 126;
+                    }
+                    let interpCmd = await registry.resolve(interp);
+                    if (!interpCmd && interp.includes('/')) {
+                        interpCmd = await registry.resolve(basename(interp));
+                    }
+                    if (!interpCmd) {
+                        ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`);
+                        return 127;
+                    }
+                    return await interpCmd({
+                        ...ctx,
+                        args: [...interpArgs, absPath, ...ctx.args],
+                        execInterpreterDepth: depth + 1,
+                    });
+                });
+            }
+        }
+    };
+}
+function interpreterDepth(ctx) {
+    return ctx.execInterpreterDepth ?? 0;
 }

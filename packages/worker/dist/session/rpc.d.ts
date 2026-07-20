@@ -21,16 +21,16 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import type { RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import { type RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 type RpcHost = any;
-export declare function _rpcReadFile(self: RpcHost, path: string): Promise<string | null>;
+export declare function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null>;
 /**
  * Read a file as raw bytes (Uint8Array). Used by git network facet for
  * binary .git/objects/** and packfile reads, where TextDecoder/TextEncoder
  * round-tripping through readFile (string) would corrupt bytes.
  */
-export declare function _rpcReadFileBytes(self: RpcHost, path: string): Promise<Uint8Array | null>;
+export declare function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number): Promise<Uint8Array | null>;
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
  * from the inner Worker via the env.NIMBUS_SESSION loopback. We
@@ -55,37 +55,42 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     headers: [string, string][];
     body: ArrayBuffer | null;
 }>;
-export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array): Promise<void>;
-export declare function _rpcStat(self: RpcHost, path: string): Promise<any>;
-export declare function _rpcLstat(self: RpcHost, path: string): Promise<any>;
-export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string): Promise<boolean>;
-export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number): Promise<void>;
-export declare function _rpcChmod(self: RpcHost, path: string, mode: number): Promise<void>;
-export declare function _rpcReaddir(self: RpcHost, path: string): Promise<{
+export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<void>;
+export declare function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any>;
+export declare function _rpcLstat(self: RpcHost, path: string, pid?: number): Promise<any>;
+export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean>;
+export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void>;
+export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number): Promise<void>;
+export declare function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void>;
+export declare function _rpcChown(self: RpcHost, path: string, uid: number, gid: number, pid?: number, options?: {
+    followSymlinks?: boolean;
+}): Promise<void>;
+export declare function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number>;
+export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number): Promise<{
     name: string;
     type: string;
 }[]>;
-export declare function _rpcExists(self: RpcHost, path: string): Promise<boolean>;
-export declare function _rpcMkdir(self: RpcHost, path: string): Promise<void>;
-export declare function _rpcRmdir(self: RpcHost, path: string): Promise<void>;
-export declare function _rpcRename(self: RpcHost, from: string, to: string): Promise<void>;
-export declare function _rpcReadlink(self: RpcHost, path: string): Promise<string | null>;
-export declare function _rpcSymlink(self: RpcHost, target: string, path: string): Promise<void>;
-export declare function _rpcFsRevision(self: RpcHost, path?: string): Promise<number>;
-export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number): Promise<Uint8Array | null>;
-export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
-export declare function _rpcFsTruncate(self: RpcHost, path: string, size: number): Promise<void>;
-export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags): Promise<any>;
-export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
-export declare function _rpcFsWrite(self: RpcHost, handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
-export declare function _rpcFsClose(self: RpcHost, handleId: number): Promise<void>;
+export declare function _rpcExists(self: RpcHost, path: string, pid?: number): Promise<boolean>;
+export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number): Promise<void>;
+export declare function _rpcRmdir(self: RpcHost, path: string, pid?: number): Promise<void>;
+export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number): Promise<void>;
+export declare function _rpcReadlink(self: RpcHost, path: string, pid?: number): Promise<string | null>;
+export declare function _rpcSymlink(self: RpcHost, target: string, path: string, pid?: number): Promise<void>;
+export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
+export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
+export declare function _rpcFsTruncate(self: RpcHost, path: string, size: number, pid?: number): Promise<void>;
+export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags, pid?: number): Promise<any>;
+export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
+export declare function _rpcFsWrite(self: RpcHost, handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
+export declare function _rpcFsClose(self: RpcHost, handleId: number, pid?: number): Promise<void>;
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
  * we can legally write to hibernatable WS sockets owned by this
  * DO. The HmrBridge holds the client→WS map; we delegate to it.
  */
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
-export declare function _rpcUnlink(self: RpcHost, path: string): Promise<void>;
+export declare function _rpcUnlink(self: RpcHost, path: string, pid?: number): Promise<void>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -97,7 +102,7 @@ export declare function _rpcUnlink(self: RpcHost, path: string): Promise<void>;
  *   deletePaths?: string[]
  * }
  */
-export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise<{
+export declare function _rpcWriteBatch(self: RpcHost, payload: unknown, pid?: number): Promise<{
     inodes: number;
     chunks: number;
 }>;
@@ -116,7 +121,7 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown): Promise
  * groups remain durable when a later group fails. The typed result carries
  * the exact durable progress.
  */
-export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult>;
+export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult>;
 /**
  * Bulk-write npm registry cache entries in ONE RPC. Used by the
  * resolver-facet to flush a wave of resolved packages back to the
@@ -301,6 +306,12 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
      * a loader isolate land in the PEER's VFS, invisible to the user.
      */
     coordinatorDoId?: string;
+    /**
+     * Invoking process pid, forwarded into the peer-side SUPERVISOR
+     * binding so writeBatchStream is authorized under the caller's
+     * credential (see NimbusLoaderPoolOptions.supervisorPid).
+     */
+    supervisorPid?: number;
 }): Promise<{
     results: unknown[];
 }>;

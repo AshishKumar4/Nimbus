@@ -1,3 +1,37 @@
+export const CRED_KERNEL = Object.freeze({
+    uid: 0,
+    gid: 0,
+    groups: Object.freeze([0]),
+    umask: 0o022,
+});
+export function requireVfsCred(value, source) {
+    if (typeof value !== 'object' || value === null) {
+        throw new Error(`${source} requires process credentials`);
+    }
+    const uid = 'uid' in value ? value.uid : undefined;
+    const gid = 'gid' in value ? value.gid : undefined;
+    const groups = 'groups' in value ? value.groups : undefined;
+    const umask = 'umask' in value ? value.umask : undefined;
+    if (typeof uid !== 'number' || !Number.isInteger(uid)
+        || typeof gid !== 'number' || !Number.isInteger(gid)
+        || !Array.isArray(groups)
+        || typeof umask !== 'number' || !Number.isInteger(umask)) {
+        throw new Error(`${source} requires process credentials`);
+    }
+    const normalizedGroups = [];
+    for (const group of groups) {
+        if (typeof group !== 'number' || !Number.isInteger(group)) {
+            throw new Error(`${source} requires process credentials`);
+        }
+        normalizedGroups.push(group);
+    }
+    return {
+        uid,
+        gid,
+        groups: normalizedGroups,
+        umask,
+    };
+}
 export const NIMBUS_OS_NAME = 'nimbus';
 export const NIMBUS_ABI_TARGET = 'wasm32-wasi-nimbus';
 export const NIMBUS_ABI_ID = NIMBUS_ABI_TARGET;

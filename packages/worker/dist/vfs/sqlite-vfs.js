@@ -48,8 +48,9 @@ import { enc, dec } from '../_shared/bytes.js';
 import { decodeWriteBatchStream, } from '../_shared/w7-frame.js';
 import { WeightedCreditPool, } from './write-stream-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
-const INODE_ROWS_PER_SQL_EXEC = 11;
+const INODE_ROWS_PER_SQL_EXEC = 9;
 const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
@@ -361,6 +362,8 @@ export class SqliteVFS {
         atime INTEGER NOT NULL DEFAULT 0,
         mtime INTEGER NOT NULL DEFAULT 0,
         mode INTEGER NOT NULL DEFAULT 0,
+        uid INTEGER NOT NULL DEFAULT 1000,
+        gid INTEGER NOT NULL DEFAULT 1000,
         chunk_count INTEGER NOT NULL DEFAULT 0,
         content_id TEXT NULL
       )`);
@@ -373,6 +376,12 @@ export class SqliteVFS {
             }
             if (!inodeColumns.has('content_id')) {
                 this.sql.exec("ALTER TABLE inodes ADD COLUMN content_id TEXT NULL");
+            }
+            if (!inodeColumns.has('uid')) {
+                this.sql.exec("ALTER TABLE inodes ADD COLUMN uid INTEGER NOT NULL DEFAULT 1000");
+            }
+            if (!inodeColumns.has('gid')) {
+                this.sql.exec("ALTER TABLE inodes ADD COLUMN gid INTEGER NOT NULL DEFAULT 1000");
             }
             const invalidKinds = [...this.sql.exec('SELECT path, kind FROM inodes WHERE kind NOT IN (0, 1, 2) LIMIT 1')];
             if (invalidKinds.length > 0) {
@@ -534,6 +543,8 @@ export class SqliteVFS {
                 atime: mtime,
                 mtime,
                 mode,
+                uid: 1000,
+                gid: 1000,
                 chunkCount,
                 contentId: null,
             });
@@ -561,7 +572,7 @@ export class SqliteVFS {
         this._totalFiles = 0;
         this._totalDirs = 0;
         this._usedBytes = 0;
-        const rows = [...this.sql.exec("SELECT path, parent_path, kind, size, atime, mtime, mode, chunk_count, content_id FROM inodes")];
+        const rows = [...this.sql.exec("SELECT path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_count, content_id FROM inodes")];
         for (const row of rows) {
             const mtime = Number(row.mtime);
             const atime = Number(row.atime) || mtime;
@@ -575,6 +586,8 @@ export class SqliteVFS {
                 atime,
                 mtime,
                 mode: Number(row.mode),
+                uid: Number(row.uid),
+                gid: Number(row.gid),
                 chunkCount: Number(row.chunk_count),
                 contentId: row.content_id === null ? null : String(row.content_id),
             };
@@ -790,19 +803,157 @@ export class SqliteVFS {
         return this.blobToUint8Array(rows[0].data);
     }
     // ── Filesystem operations ─────────────────────────────────────────────
-    exists(path) {
-        return this.inodes.has(path);
+    as(cred) {
+        const bound = Object.freeze({
+            uid: cred.uid,
+            gid: cred.gid,
+            groups: Object.freeze([...cred.groups]),
+            umask: cred.umask & 0o777,
+        });
+        return {
+            cred: bound,
+            exists: (path) => this.exists(path, bound),
+            isDirectory: (path) => this.isDirectory(path, bound),
+            isFile: (path) => this.isFile(path, bound),
+            isSymlink: (path) => this.isSymlink(path, bound),
+            access: (path, mode) => { this.checkAccess(path, mode, bound); },
+            mkdir: (path, options) => this.mkdir(path, options, bound),
+            writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
+            symlink: (target, path) => this.symlink(target, path, bound),
+            readlink: (path) => this.readlink(path, bound),
+            resolveSymlink: (path) => this.resolveSymlink(path, bound),
+            readFile: (path) => this.readFile(path, bound),
+            readRange: (path, offset, length) => this.readRange(path, offset, length, bound),
+            writeRange: (path, offset, bytes) => this.writeRange(path, offset, bytes, bound),
+            truncate: (path, size) => this.truncate(path, size, bound),
+            readFileString: (path) => this.readFileString(path, bound),
+            stat: (path) => this.stat(path, bound, true),
+            lstat: (path) => this.stat(path, bound, false),
+            utimes: (path, atimeMs, mtimeMs) => this.utimes(path, atimeMs, mtimeMs, bound),
+            chmod: (path, mode) => this.chmod(path, mode, bound),
+            chown: (path, uid, gid, options) => this.chown(path, uid, gid, bound, options?.followSymlinks !== false),
+            readdir: (path) => this.readdir(path, bound),
+            unlink: (path) => this.unlink(path, bound),
+            rmdir: (path) => this.rmdir(path, bound),
+            rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
+            copyFile: (src, dest) => this.copyFile(src, dest, bound),
+            writeBatch: (payload) => this.writeBatch(payload, bound),
+            writeStream: (stream, options) => this.writeStream(stream, options, bound),
+            mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
+            revision: (path) => this.revision(path),
+        };
     }
-    isDirectory(path) {
-        const inode = this.inodes.get(path);
-        return inode?.kind === 'directory';
+    accessInode(inode, want, cred) {
+        return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred);
     }
-    isFile(path) {
-        const inode = this.inodes.get(path);
-        return inode?.kind === 'file';
+    accessMode(mode, uid, gid, want, cred) {
+        const requested = want & 0o7;
+        if (requested === 0)
+            return true;
+        const permissions = mode & 0o777;
+        if (cred.uid === 0) {
+            return (requested & 0o1) === 0 || (permissions & 0o111) !== 0;
+        }
+        const shift = cred.uid === uid
+            ? 6
+            : cred.gid === gid || cred.groups.includes(gid)
+                ? 3
+                : 0;
+        const granted = (permissions >> shift) & 0o7;
+        return (granted & requested) === requested;
     }
-    isSymlink(path) {
-        return this.inodes.get(path)?.kind === 'symlink';
+    resolvePath(path, cred, followLeaf, allowMissing) {
+        let current = normalizeVfsPath(path);
+        const seen = new Set();
+        for (let hops = 0; hops <= 40; hops++) {
+            const parts = current.split('/').filter(Boolean);
+            let prefix = '';
+            let restarted = false;
+            for (let index = 0; index < parts.length; index++) {
+                prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
+                const inode = this.inodes.get(prefix);
+                const leaf = index === parts.length - 1;
+                if (!inode) {
+                    if (leaf || allowMissing)
+                        return { path: current, inode: undefined };
+                    throw vfsError('ENOENT', prefix);
+                }
+                if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
+                    if (seen.has(prefix) || hops === 40)
+                        throw vfsError('ELOOP', path);
+                    seen.add(prefix);
+                    const target = dec.decode(this.readInodeBytes(prefix, inode));
+                    const suffix = parts.slice(index + 1).join('/');
+                    const resolvedTarget = target.startsWith('/')
+                        ? normalizeVfsPath(target)
+                        : normalizeVfsPath(`${this.parentPath(prefix)}/${target}`);
+                    current = suffix ? normalizeVfsPath(`${resolvedTarget}/${suffix}`) : resolvedTarget;
+                    restarted = true;
+                    break;
+                }
+                if (!leaf) {
+                    if (inode.kind !== 'directory')
+                        throw vfsError('ENOTDIR', prefix);
+                    if (!this.accessInode(inode, 0o1, cred))
+                        throw vfsError('EACCES', prefix);
+                }
+            }
+            if (restarted)
+                continue;
+            return { path: current, inode: this.inodes.get(current) };
+        }
+        throw vfsError('ELOOP', path);
+    }
+    checkAccess(path, want, cred, options = {}) {
+        const resolved = this.resolvePath(path, cred, options.followLeaf ?? true, options.allowMissingLeaf ?? false);
+        if (!resolved.inode) {
+            if (options.allowMissingLeaf)
+                return resolved;
+            throw vfsError('ENOENT', normalizeVfsPath(path));
+        }
+        if (!this.accessInode(resolved.inode, want, cred)) {
+            throw vfsError('EACCES', resolved.path);
+        }
+        return resolved;
+    }
+    checkParentAccess(path, cred) {
+        const parent = this.parentPath(normalizeVfsPath(path));
+        if (parent === '')
+            return;
+        const resolved = this.checkAccess(parent, 0o3, cred);
+        if (resolved.inode?.kind !== 'directory')
+            throw vfsError('ENOTDIR', parent);
+    }
+    /**
+     * Shared resolver for the boolean probes (exists/isDirectory/isFile/
+     * isSymlink). Resolution-structure failures — a missing or non-directory
+     * path component — answer `undefined` (fs.existsSync semantics: module
+     * resolvers probe paths through files, e.g. `entry.js/index.js`, and
+     * expect false, not a throw). Permission denials still propagate so
+     * traverse-x enforcement cannot be masked into a quiet false.
+     */
+    probeInode(path, cred) {
+        try {
+            return this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+        }
+        catch (error) {
+            const code = error.code;
+            if (code === 'ENOENT' || code === 'ENOTDIR')
+                return undefined;
+            throw error;
+        }
+    }
+    exists(path, cred) {
+        return this.probeInode(path, cred) !== undefined;
+    }
+    isDirectory(path, cred) {
+        return this.probeInode(path, cred)?.kind === 'directory';
+    }
+    isFile(path, cred) {
+        return this.probeInode(path, cred)?.kind === 'file';
+    }
+    isSymlink(path, cred) {
+        return this.probeInode(path, cred)?.kind === 'symlink';
     }
     /**
      * Without a path: the global mutation clock. With a path: the clock
@@ -910,29 +1061,32 @@ export class SqliteVFS {
             }
         }
     }
-    mkdir(path, options) {
+    mkdir(path, options, cred) {
         const normalized = normalizeVfsPath(path);
         this.assertMutationsAllowed([normalized]);
-        if (this.exists(normalized))
+        if (this.exists(normalized, cred))
             return;
         if (options?.recursive) {
             const parts = normalized.split('/').filter(Boolean);
             let current = '';
             for (const part of parts) {
                 current = current ? current + '/' + part : part;
-                if (!this.exists(current)) {
-                    this._mkdirSingle(current);
+                if (!this.exists(current, cred)) {
+                    this.checkParentAccess(current, cred);
+                    this._mkdirSingle(current, options.mode, cred);
                 }
             }
         }
         else {
-            this._mkdirSingle(normalized);
+            this.checkParentAccess(normalized, cred);
+            this._mkdirSingle(normalized, options?.mode, cred);
         }
     }
-    _mkdirSingle(path) {
+    _mkdirSingle(path, requestedMode, cred) {
         const pp = this.parentPath(path);
         const now = this.now();
-        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, chunk_count, content_id) VALUES (?, ?, 1, 0, ?, ?, ?, 0, NULL)", path, pp, now, now, 0o755);
+        const mode = (requestedMode ?? 0o777) & ~cred.umask & 0o7777;
+        this.sql.exec("INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_count, content_id) VALUES (?, ?, 1, 0, ?, ?, ?, ?, ?, 0, NULL)", path, pp, now, now, mode, cred.uid, cred.gid);
         const inode = {
             path,
             parentPath: pp,
@@ -941,7 +1095,9 @@ export class SqliteVFS {
             size: 0,
             atime: now,
             mtime: now,
-            mode: 0o755,
+            mode,
+            uid: cred.uid,
+            gid: cred.gid,
             chunkCount: 0,
             contentId: null,
         };
@@ -951,36 +1107,53 @@ export class SqliteVFS {
         this.bumpRevision([path]);
         this.events.emit('addDir', path);
     }
-    writeFile(path, content) {
+    writeFile(path, content, options, cred) {
         this.assertMutationsAllowed([path]);
+        const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
+        const effectivePath = resolved.path;
+        if (resolved.inode) {
+            if (resolved.inode.kind === 'directory')
+                throw vfsError('EISDIR', effectivePath);
+            if (resolved.inode.kind !== 'file')
+                throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+            if (!this.accessInode(resolved.inode, 0o2, cred))
+                throw vfsError('EACCES', effectivePath);
+        }
+        else {
+            this.checkParentAccess(effectivePath, cred);
+        }
         const data = typeof content === 'string' ? enc.encode(content) : content;
-        const pp = this.parentPath(path);
+        const pp = this.parentPath(effectivePath);
         const now = this.now();
         const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
         const chunks = [];
         for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
             chunks.push({
-                path,
+                path: effectivePath,
                 chunkId,
                 data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
             });
         }
         // POSIX: rewriting an existing file never changes its mode; the mode
         // is chosen only at creation (open(2) O_CREAT).
-        const prior = this.inodes.get(path);
+        const prior = this.inodes.get(effectivePath);
         const inode = {
-            path,
+            path: effectivePath,
             parentPath: pp,
             kind: 'file',
             isDir: false,
             size: data.length,
             atime: now,
             mtime: now,
-            mode: prior?.kind === 'file' ? prior.mode : 0o644,
+            mode: prior?.kind === 'file'
+                ? prior.mode
+                : (options?.mode ?? 0o666) & ~cred.umask & 0o7777,
+            uid: prior?.uid ?? cred.uid,
+            gid: prior?.gid ?? cred.gid,
             chunkCount,
         };
         try {
-            this.writeBatch({ inodes: [inode], chunks });
+            this.writeBatch({ inodes: [inode], chunks }, cred);
         }
         catch (error) {
             if (!(error instanceof SqliteVfsTransactionTooLargeError))
@@ -988,53 +1161,52 @@ export class SqliteVFS {
             this.replaceFileWithStagedContent(inode, chunks);
         }
     }
-    symlink(target, path) {
+    symlink(target, path, cred) {
         this.assertMutationsAllowed([path]);
+        const normalized = normalizeVfsPath(path);
+        const prior = this.checkAccess(normalized, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+        if (prior.inode)
+            throw vfsError('EEXIST', normalized);
+        this.checkParentAccess(normalized, cred);
         const data = enc.encode(target);
         const now = this.now();
         const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
         const inode = {
-            path,
-            parentPath: this.parentPath(path),
+            path: normalized,
+            parentPath: this.parentPath(normalized),
             kind: 'symlink',
             isDir: false,
             size: data.length,
             atime: now,
             mtime: now,
-            mode: 0o777,
+            mode: inodeTypeBits('symlink') | 0o777,
+            uid: cred.uid,
+            gid: cred.gid,
             chunkCount,
         };
         const chunks = Array.from({ length: chunkCount }, (_, chunkId) => ({
-            path,
+            path: normalized,
             chunkId,
             data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
         }));
-        this.writeBatch({ inodes: [inode], chunks });
+        this.writeBatch({ inodes: [inode], chunks }, cred);
     }
-    readlink(path) {
-        const inode = this.inodes.get(path);
-        if (!inode)
-            throw new Error('ENOENT: ' + path);
-        if (inode.kind !== 'symlink')
-            throw new Error('EINVAL: ' + path + ' is not a symlink');
-        return dec.decode(this.readInodeBytes(path, inode));
+    readlink(path, cred) {
+        const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
+        if (resolved.inode?.kind !== 'symlink')
+            throw vfsError('EINVAL', `${path} is not a symlink`);
+        return dec.decode(this.readInodeBytes(resolved.path, resolved.inode));
     }
-    resolveSymlink(path) {
-        let current = normalizeVfsPath(path);
-        const seen = new Set();
-        for (let hops = 0; hops < 40; hops++) {
-            const inode = this.inodes.get(current);
-            if (!inode || inode.kind !== 'symlink')
-                return current;
-            if (seen.has(current))
-                return null;
-            seen.add(current);
-            const target = this.readlink(current);
-            current = target.startsWith('/')
-                ? normalizeVfsPath(target)
-                : normalizeVfsPath(`${this.parentPath(current)}/${target}`);
+    resolveSymlink(path, cred) {
+        try {
+            return this.resolvePath(path, cred, true, false).path;
         }
-        return null;
+        catch (error) {
+            if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ELOOP') {
+                return null;
+            }
+            throw error;
+        }
     }
     /** Read one chunk via cache → SQL, caching on miss. */
     readChunk(inode, chunkId) {
@@ -1047,15 +1219,16 @@ export class SqliteVFS {
             this.cacheSet(path, chunkId, data);
         return data;
     }
-    readFile(path) {
-        const inode = this.inodes.get(path);
+    readFile(path, cred) {
+        const resolved = this.checkAccess(path, 0o4, cred);
+        const inode = resolved.inode;
         if (!inode)
-            throw new Error("ENOENT: " + path);
+            throw vfsError('ENOENT', path);
         if (inode.kind === 'directory')
-            throw new Error("EISDIR: " + path);
-        if (inode.kind === 'symlink')
-            throw new Error("EINVAL: " + path + ' is a symlink');
-        return this.readInodeBytes(path, inode);
+            throw vfsError('EISDIR', resolved.path);
+        if (inode.kind !== 'file')
+            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+        return this.readInodeBytes(resolved.path, inode);
     }
     readInodeBytes(path, inode) {
         if (inode.size === 0 || inode.chunkCount === 0)
@@ -1096,14 +1269,15 @@ export class SqliteVFS {
      * only the chunks overlapping the range are touched. Reads past EOF
      * are clamped; missing spans retain the existing zero-fill range semantics.
      */
-    readRange(path, offset, length) {
-        const inode = this.inodes.get(path);
+    readRange(path, offset, length, cred) {
+        const resolved = this.checkAccess(path, 0o4, cred);
+        const inode = resolved.inode;
         if (!inode)
-            throw new Error("ENOENT: " + path);
+            throw vfsError('ENOENT', path);
         if (inode.kind === 'directory')
-            throw new Error("EISDIR: " + path);
+            throw vfsError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
-            throw new Error("EINVAL: " + path + ' is not a regular file');
+            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
         const start = clampNonNegativeInt(offset);
         const end = Math.min(inode.size, start + clampNonNegativeInt(length));
         if (start >= end)
@@ -1133,20 +1307,26 @@ export class SqliteVFS {
      * Creates the file when missing; callers own parent-dir creation
      * (same contract as writeFile).
      */
-    writeRange(path, offset, bytes) {
+    writeRange(path, offset, bytes, cred) {
         this.assertMutationsAllowed([path]);
-        const prior = this.inodes.get(path);
+        const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
+        const effectivePath = resolved.path;
+        const prior = resolved.inode;
         if (prior?.kind === 'directory')
-            throw new Error("EISDIR: " + path);
+            throw vfsError('EISDIR', effectivePath);
         if (prior && prior.kind !== 'file')
-            throw new Error("EINVAL: " + path + ' is not a regular file');
+            throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+        if (prior && !this.accessInode(prior, 0o2, cred))
+            throw vfsError('EACCES', effectivePath);
+        if (!prior)
+            this.checkParentAccess(effectivePath, cred);
         const isNew = prior === undefined;
         const start = clampNonNegativeInt(offset);
         const end = start + bytes.length;
         if (isNew) {
             const initial = new Uint8Array(end);
             initial.set(bytes, start);
-            this.writeFile(path, initial);
+            this.writeFile(effectivePath, initial, undefined, cred);
             return;
         }
         // POSIX pwrite of zero bytes never extends or dirties an existing file.
@@ -1172,7 +1352,7 @@ export class SqliteVFS {
                 const chunk = new Uint8Array(chunkLen);
                 const fullyCovered = overlayFrom <= chunkStart && overlayTo >= chunkStart + chunkLen;
                 if (!fullyCovered && i < oldChunkCount) {
-                    const existing = this.requireChunk(path, prior, i);
+                    const existing = this.requireChunk(effectivePath, prior, i);
                     chunk.set(existing.subarray(0, Math.min(existing.length, chunkLen)), 0);
                 }
                 if (overlayFrom < overlayTo) {
@@ -1192,15 +1372,16 @@ export class SqliteVFS {
      * Shrinking drops trailing chunk rows and trims the new last chunk;
      * growing zero-fills like writeRange. Every mutation commits before return.
      */
-    truncate(path, size) {
+    truncate(path, size, cred) {
         this.assertMutationsAllowed([path]);
-        const inode = this.inodes.get(path);
+        const resolved = this.checkAccess(path, 0o2, cred);
+        const inode = resolved.inode;
         if (!inode)
-            throw new Error("ENOENT: " + path);
+            throw vfsError('ENOENT', path);
         if (inode.kind === 'directory')
-            throw new Error("EISDIR: " + path);
+            throw vfsError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
-            throw new Error("EINVAL: " + path + ' is not a regular file');
+            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
         const newSize = clampNonNegativeInt(size);
         const oldSize = inode.size;
         if (newSize === oldSize)
@@ -1268,13 +1449,21 @@ export class SqliteVFS {
             atime: inode.atime,
             mtime,
             mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
             chunkCount,
         };
     }
     commitCurrentContentMutation(prior, inode, changedChunks, deletedChunks) {
         const contentId = this.contentIdForInode(prior);
         const builder = new TransactionPlanBuilder();
-        builder.addInode({ ...inode, kind: inodeKind(inode), contentId });
+        builder.addInode({
+            ...inode,
+            kind: inodeKind(inode),
+            uid: inode.uid ?? prior.uid,
+            gid: inode.gid ?? prior.gid,
+            contentId,
+        });
         for (const [chunkId, data] of changedChunks) {
             builder.addChunk({ path: inode.path, contentId, chunkId, data });
         }
@@ -1301,13 +1490,14 @@ export class SqliteVFS {
         }
         return existing;
     }
-    readFileString(path) {
-        return dec.decode(this.readFile(path));
+    readFileString(path, cred) {
+        return dec.decode(this.readFile(path, cred));
     }
-    stat(path) {
-        const inode = this.inodes.get(path);
+    stat(path, cred, followLeaf) {
+        const resolved = this.checkAccess(path, 0, cred, { followLeaf });
+        const inode = resolved.inode;
         if (!inode)
-            throw new Error("ENOENT: " + path);
+            throw vfsError('ENOENT', path);
         return {
             type: inode.kind,
             size: inode.size,
@@ -1315,20 +1505,31 @@ export class SqliteVFS {
             ctime: inode.mtime,
             mtime: inode.mtime,
             mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
         };
     }
-    utimes(path, atimeMs, mtimeMs) {
-        this.assertMutationsAllowed([path]);
-        const inode = this.inodes.get(path);
+    utimes(path, atimeMs, mtimeMs, cred) {
+        const resolved = this.checkAccess(path, 0, cred);
+        const inode = resolved.inode;
         if (!inode)
-            throw new Error("ENOENT: " + path);
-        const atime = Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
-        const mtime = Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
+            throw vfsError('ENOENT', path);
+        this.assertMutationsAllowed([inode.path]);
+        const useNow = atimeMs === null && mtimeMs === null;
+        if (useNow) {
+            if (!this.accessInode(inode, 0o2, cred))
+                throw vfsError('EACCES', resolved.path);
+        }
+        else if (cred.uid !== 0 && cred.uid !== inode.uid) {
+            throw vfsError('EPERM', resolved.path);
+        }
+        const atime = atimeMs !== null && Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
+        const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
         inode.atime = atime;
         inode.mtime = mtime;
-        this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, path);
-        this.bumpRevision([path]);
-        this.events.emit('change', path);
+        this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, inode.path);
+        this.bumpRevision([inode.path]);
+        this.events.emit('change', inode.path);
     }
     /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
@@ -1341,16 +1542,13 @@ export class SqliteVFS {
      * files with such untouched modes executable. No migration — legacy
      * rows upgrade the first time they are chmod'ed.
      */
-    chmod(path, mode) {
-        let inode = this.inodes.get(path);
-        if (inode?.kind === 'symlink') {
-            const target = this.resolveSymlink(path);
-            if (target === null)
-                throw new Error('ELOOP: ' + path);
-            inode = this.inodes.get(target);
-        }
+    chmod(path, mode, cred) {
+        const resolved = this.checkAccess(path, 0, cred);
+        const inode = resolved.inode;
         if (!inode)
-            throw new Error('ENOENT: ' + path);
+            throw vfsError('ENOENT', path);
+        if (cred.uid !== 0 && cred.uid !== inode.uid)
+            throw vfsError('EPERM', resolved.path);
         this.assertMutationsAllowed([inode.path]);
         const full = inodeTypeBits(inode.kind) | (mode & 0o7777);
         inode.mode = full;
@@ -1358,13 +1556,40 @@ export class SqliteVFS {
         this.bumpRevision([inode.path]);
         this.events.emit('change', inode.path);
     }
-    readdir(path) {
+    chown(path, uid, gid, cred, followLeaf) {
+        const resolved = this.checkAccess(path, 0, cred, { followLeaf });
+        const inode = resolved.inode;
+        if (!inode)
+            throw vfsError('ENOENT', path);
+        if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0))
+            throw vfsError('EINVAL', `invalid uid ${uid}`);
+        if (gid !== null && (!Number.isSafeInteger(gid) || gid < 0))
+            throw vfsError('EINVAL', `invalid gid ${gid}`);
+        const owner = cred.uid === inode.uid;
+        if (uid !== null && uid !== inode.uid && cred.uid !== 0)
+            throw vfsError('EPERM', resolved.path);
+        if (uid !== null && uid === inode.uid && cred.uid !== 0 && !owner)
+            throw vfsError('EPERM', resolved.path);
+        if (gid !== null && gid !== inode.gid && cred.uid !== 0 && (!owner || !cred.groups.includes(gid))) {
+            throw vfsError('EPERM', resolved.path);
+        }
+        if (gid !== null && gid === inode.gid && cred.uid !== 0 && !owner)
+            throw vfsError('EPERM', resolved.path);
+        this.assertMutationsAllowed([inode.path]);
+        inode.uid = uid ?? inode.uid;
+        inode.gid = gid ?? inode.gid;
+        if (cred.uid !== 0)
+            inode.mode &= ~0o6000;
+        this.sql.exec('UPDATE inodes SET uid = ?, gid = ?, mode = ? WHERE path = ?', inode.uid, inode.gid, inode.mode, inode.path);
+        this.bumpRevision([inode.path]);
+        this.events.emit('change', inode.path);
+    }
+    readdir(path, cred) {
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
-        const inode = this.inodes.get(np);
-        if (np && !inode)
-            throw new Error('ENOENT: ' + path);
+        const resolved = np ? this.checkAccess(np, 0o4, cred) : { path: '', inode: undefined };
+        const inode = resolved.inode;
         if (inode && inode.kind !== 'directory')
-            throw new Error('ENOTDIR: ' + path);
+            throw vfsError('ENOTDIR', path);
         const kids = this.children.get(np);
         if (!kids) {
             // W2.5b diagnostic: empty children-set for a directory we expected
@@ -1406,32 +1631,39 @@ export class SqliteVFS {
         results.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
         return results;
     }
-    unlink(path) {
+    unlink(path, cred) {
         this.assertMutationsAllowed([path]);
-        const inode = this.inodes.get(path);
+        const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
+        const inode = resolved.inode;
         if (!inode)
-            return;
+            throw vfsError('ENOENT', path);
+        this.checkParentAccess(resolved.path, cred);
         if (inode.isDir)
-            throw new Error('EISDIR: ' + path);
-        this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] });
+            throw vfsError('EISDIR', resolved.path);
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [resolved.path] }, cred);
     }
-    rmdir(path) {
+    rmdir(path, cred) {
         this.assertMutationsAllowed([path]);
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
+        const resolved = this.checkAccess(np, 0, cred, { followLeaf: false });
+        this.checkParentAccess(resolved.path, cred);
         // Check if empty using children index (O(1) instead of O(N))
         const kids = this.children.get(np);
         if (kids && kids.size > 0) {
-            throw new Error("ENOTEMPTY: " + path);
+            throw vfsError('ENOTEMPTY', path);
         }
         const inode = this.inodes.get(np);
         if (!inode)
-            return;
+            throw vfsError('ENOENT', path);
         if (!inode.isDir)
-            throw new Error('ENOTDIR: ' + path);
-        this.writeBatch({ inodes: [], chunks: [], deletePaths: [np] });
+            throw vfsError('ENOTDIR', path);
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [np] }, cred);
     }
-    rename(oldPath, newPath) {
+    rename(oldPath, newPath, cred) {
         this.assertMutationsAllowed([oldPath, newPath]);
+        this.checkAccess(oldPath, 0, cred, { followLeaf: false });
+        this.checkParentAccess(oldPath, cred);
+        this.checkParentAccess(newPath, cred);
         if (oldPath === newPath)
             return;
         if (newPath.startsWith(`${oldPath}/`)) {
@@ -1490,6 +1722,8 @@ export class SqliteVFS {
                 atime: entry.atime,
                 mtime: entry.mtime,
                 mode: entry.mode,
+                uid: entry.uid,
+                gid: entry.gid,
                 chunkCount: entry.chunkCount,
                 // Materialize the old legacy key before changing the logical path.
                 contentId: entry.isDir ? null : this.contentIdForInode(entry),
@@ -1527,20 +1761,90 @@ export class SqliteVFS {
         this.events.emit('rename', newPath, oldPath);
         this.runContentMaintenanceSafely(1);
     }
-    copyFile(src, dest) {
-        this.writeFile(dest, this.readFile(src));
+    copyFile(src, dest, cred) {
+        this.writeFile(dest, this.readFile(src, cred), undefined, cred);
     }
     // ── Batch write (npm install fast path) ───────────────────────────────
+    normalizeBatchInode(entry, cred) {
+        const path = normalizeVfsPath(entry.path);
+        const prior = this.inodes.get(path);
+        const newUid = cred.uid === 0 ? (entry.uid ?? 1000) : cred.uid;
+        const newGid = cred.uid === 0 ? (entry.gid ?? 1000) : cred.gid;
+        return {
+            ...entry,
+            path,
+            parentPath: normalizeVfsPath(entry.parentPath),
+            mode: prior
+                ? prior.mode
+                : inodeKind(entry) === 'symlink'
+                    ? inodeTypeBits('symlink') | 0o777
+                    : entry.mode & ~cred.umask & 0o7777,
+            uid: prior?.uid ?? newUid,
+            gid: prior?.gid ?? newGid,
+        };
+    }
+    authorizeBatch(payload, cred) {
+        const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred));
+        const pending = new Map(inodes.map((entry) => [entry.path, entry]));
+        const checkedParents = new Set();
+        const checkParent = (path) => {
+            const parent = this.parentPath(path);
+            if (parent === '')
+                return;
+            if (checkedParents.has(parent))
+                return;
+            checkedParents.add(parent);
+            const existing = this.inodes.get(parent);
+            if (existing) {
+                this.checkAccess(parent, 0o3, cred);
+                return;
+            }
+            const staged = pending.get(parent);
+            if (!staged || !staged.isDir)
+                throw vfsError('ENOENT', parent);
+            checkParent(parent);
+            if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 0o3, cred)) {
+                throw vfsError('EACCES', parent);
+            }
+        };
+        for (const path of payload.deletePaths ?? []) {
+            const normalized = normalizeVfsPath(path);
+            const existing = this.checkAccess(normalized, 0, cred, {
+                followLeaf: false,
+                allowMissingLeaf: true,
+            }).inode;
+            if (existing)
+                checkParent(normalized);
+        }
+        for (const entry of inodes) {
+            const prior = this.inodes.get(entry.path);
+            if (prior)
+                this.checkAccess(entry.path, 0o2, cred, { followLeaf: false });
+            else
+                checkParent(entry.path);
+        }
+        for (const chunk of payload.chunks) {
+            const path = normalizeVfsPath(chunk.path);
+            if (!pending.has(path))
+                this.checkAccess(path, 0o2, cred, { followLeaf: false });
+        }
+        return {
+            ...payload,
+            inodes,
+            deletePaths: payload.deletePaths?.map(normalizeVfsPath),
+        };
+    }
     /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
      * The complete mutation is preflighted against the Stage 2 transaction
-     * limits, then executed in one transaction with 11-inode / 33-chunk SQL
+     * limits, then executed in one transaction with 9-inode / 33-chunk SQL
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
-    writeBatch(payload) {
-        this.assertMutationsAllowed(batchMutationPaths(payload));
-        const result = this._writeBatchWithRetry(payload, { source: 'strict-batch', limitMode: 'bounded' }, true);
+    writeBatch(payload, cred) {
+        const normalized = this.authorizeBatch(payload, cred);
+        this.assertMutationsAllowed(batchMutationPaths(normalized));
+        const result = this._writeBatchWithRetry(normalized, { source: 'strict-batch', limitMode: 'bounded' }, true);
         this.runContentMaintenanceSafely(1);
         return result;
     }
@@ -1634,7 +1938,13 @@ export class SqliteVFS {
         this.assertMutationsAllowed([inode.path]);
         const prior = this.inodes.get(inode.path);
         const builder = new TransactionPlanBuilder();
-        builder.addInode({ ...inode, kind: inodeKind(inode), contentId });
+        builder.addInode({
+            ...inode,
+            kind: inodeKind(inode),
+            uid: inode.uid ?? prior?.uid ?? 1000,
+            gid: inode.gid ?? prior?.gid ?? 1000,
+            contentId,
+        });
         builder.addPublishedContent(contentId);
         if (prior && !prior.isDir)
             builder.addGcContent(this.contentIdForInode(prior));
@@ -1650,7 +1960,7 @@ export class SqliteVFS {
      * pool, staged in bounded synchronous transactions, then released before
      * the decoder pulls another record.
      */
-    async writeStream(stream, options = {}) {
+    async writeStream(stream, options = {}, cred) {
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
         const decodeDrainToken = {};
         this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
@@ -1736,7 +2046,7 @@ export class SqliteVFS {
                         phase = 'publish';
                         const affected = Math.max(1, this.collectBatchDeletions([record.path]).length);
                         this.withMutationOwner(options.mutationOwner, () => {
-                            this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] });
+                            this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
                         });
                         progress.committedGroupSequence++;
                         progress.committedPathCount += affected;
@@ -1746,7 +2056,7 @@ export class SqliteVFS {
                         phase = 'validation';
                         this.validateFileChunks(record.inode, []);
                         phase = 'publish';
-                        const result = this.withMutationOwner(options.mutationOwner, () => (this.writeBatch({ inodes: [record.inode], chunks: [] })));
+                        const result = this.withMutationOwner(options.mutationOwner, () => (this.writeBatch({ inodes: [record.inode], chunks: [] }, cred)));
                         progress.committedGroupSequence++;
                         progress.committedPathCount++;
                         progress.inodes += result.inodes;
@@ -1758,6 +2068,7 @@ export class SqliteVFS {
                         phase = 'validation';
                         this.validateInodeContentShape(record.inode);
                         this.withMutationOwner(options.mutationOwner, () => {
+                            this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred);
                             this.assertMutationsAllowed([record.inode.path]);
                         });
                         phase = 'stage';
@@ -1798,7 +2109,7 @@ export class SqliteVFS {
                         flushStagedChunks();
                         phase = 'publish';
                         const completed = activeFile;
-                        const result = this.withMutationOwner(options.mutationOwner, () => (this.publishStagedFile(completed.inode, completed.durableContentId, record.chunkCount)));
+                        const result = this.withMutationOwner(options.mutationOwner, () => (this.publishStagedFile(this.normalizeBatchInode(completed.inode, cred), completed.durableContentId, record.chunkCount)));
                         ownedStagingContentIds.delete(completed.durableContentId);
                         this._stagedStreamBytes -= completed.stagedBytes;
                         activeFile = null;
@@ -1946,15 +2257,15 @@ export class SqliteVFS {
             }
             for (let i = 0; i < plan.inodes.length; i += INODE_ROWS_PER_SQL_EXEC) {
                 const batch = plan.inodes.slice(i, i + INODE_ROWS_PER_SQL_EXEC);
-                const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?,?)').join(',');
+                const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?,?,?,?)').join(',');
                 const values = [];
                 for (const inode of batch) {
                     const atime = inode.atime !== undefined && Number.isFinite(inode.atime)
                         ? inode.atime
                         : inode.mtime;
-                    values.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, atime, inode.mtime, inode.mode, inode.chunkCount, inode.contentId);
+                    values.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, atime, inode.mtime, inode.mode, inode.uid, inode.gid, inode.chunkCount, inode.contentId);
                 }
-                this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, chunk_count, content_id) VALUES ${placeholders}`, ...values);
+                this.sql.exec(`INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_count, content_id) VALUES ${placeholders}`, ...values);
             }
             for (let i = 0; i < plan.chunks.length; i += CHUNK_ROWS_PER_SQL_EXEC) {
                 const batch = plan.chunks.slice(i, i + CHUNK_ROWS_PER_SQL_EXEC);
@@ -2237,6 +2548,8 @@ export class SqliteVFS {
                 ...entry,
                 kind,
                 isDir: kind === 'directory',
+                uid: entry.uid ?? 1000,
+                gid: entry.gid ?? 1000,
             });
         }
         const chunksByPath = new Map();
@@ -2401,6 +2714,8 @@ export class SqliteVFS {
                 atime,
                 mtime: entry.mtime,
                 mode: entry.mode,
+                uid: entry.uid,
+                gid: entry.gid,
                 chunkCount: entry.chunkCount,
                 contentId: entry.contentId,
             };
@@ -2495,7 +2810,7 @@ export class SqliteVFS {
      * Pre-creates the full directory tree before file writes to avoid
      * per-file mkdir overhead.
      */
-    mkdirBatch(paths) {
+    mkdirBatch(paths, cred) {
         this.assertMutationsAllowed(paths);
         const mtime = Date.now();
         const toCreate = [];
@@ -2505,7 +2820,7 @@ export class SqliteVFS {
             let current = '';
             for (const part of parts) {
                 current = current ? current + '/' + part : part;
-                if (!seen.has(current) && !this.exists(current)) {
+                if (!seen.has(current) && !this.exists(current, cred)) {
                     seen.add(current);
                     toCreate.push({
                         path: current,
@@ -2513,7 +2828,9 @@ export class SqliteVFS {
                         isDir: true,
                         size: 0,
                         mtime,
-                        mode: 0o755,
+                        mode: 0o777,
+                        uid: cred.uid,
+                        gid: cred.gid,
                         chunkCount: 0,
                     });
                 }
@@ -2521,7 +2838,7 @@ export class SqliteVFS {
         }
         if (toCreate.length === 0)
             return 0;
-        this.writeBatch({ inodes: toCreate, chunks: [] });
+        this.writeBatch({ inodes: toCreate, chunks: [] }, cred);
         return toCreate.length;
     }
     // ── Stats ─────────────────────────────────────────────────────────────
@@ -2784,12 +3101,15 @@ function clampNonNegativeInt(value) {
 }
 // ── SqliteVFSProvider (MountProvider for Nimbus Kernel VFS) ────────────────────
 export class SqliteVFSProvider {
+    raw;
     vfs;
     prefix;
-    constructor(vfs, prefix) {
-        this.vfs = vfs;
+    constructor(vfs, prefix, cred = CRED_KERNEL) {
+        this.raw = vfs;
+        this.vfs = vfs.as(cred);
         this.prefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
     }
+    as(cred) { return new SqliteVFSProvider(this.raw, this.prefix, cred); }
     resolve(sub) {
         const c = sub.replace(/^\/+/, '').replace(/\/+$/, '');
         return c ? this.prefix + '/' + c : this.prefix;
@@ -2804,6 +3124,7 @@ export class SqliteVFSProvider {
         this.vfs.writeFile(fp, content);
     }
     exists(sub) { return this.vfs.exists(this.resolve(sub)); }
+    access(sub, mode) { this.vfs.access(this.resolve(sub), mode); }
     stat(sub) { return this.vfs.stat(this.resolve(sub)); }
     readdir(sub) { return this.vfs.readdir(this.resolve(sub)); }
     unlink(sub) { this.vfs.unlink(this.resolve(sub)); }
@@ -2814,4 +3135,7 @@ export class SqliteVFSProvider {
     rename(o, n) { this.vfs.rename(this.resolve(o), this.resolve(n)); }
     copyFile(s, d) { this.vfs.copyFile(this.resolve(s), this.resolve(d)); }
     chmod(sub, mode) { this.vfs.chmod(this.resolve(sub), mode); }
+    chown(sub, uid, gid) {
+        this.vfs.chown(this.resolve(sub), uid, gid);
+    }
 }

@@ -5,32 +5,36 @@ import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-fra
 import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-const legacySymlinks = getSymlinkRegistry(vfs);
+const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+const vfs = rawVfs.as(CRED_KERNEL);
+const legacySymlinks = getSymlinkRegistry(rawVfs);
 vfs.mkdir('workspace');
-const leadingParentLease = vfs.acquireExclusiveMutation('/workspace/new/nested/repo', {
+const leadingParentLease = rawVfs.acquireExclusiveMutation('/workspace/new/nested/repo', {
   includeMissingAncestors: true,
 });
 assert.equal(leadingParentLease.root, 'workspace/new');
-vfs.releaseExclusiveMutation(leadingParentLease.owner);
+rawVfs.releaseExclusiveMutation(leadingParentLease.owner);
 assert.equal(legacySymlinks.hasAtOrBelow('preexisting'), false);
 vfs.writeFile('.nimbus-symlinks.json', '{"preexisting/link":"target.txt"}');
-const proofLease = vfs.acquireExclusiveMutation('/preexisting');
+const proofLease = rawVfs.acquireExclusiveMutation('/preexisting');
 assert.equal(
   legacySymlinks.hasAtOrBelow('preexisting'),
   true,
   'clone destination proof used a stale legacy-registry cache',
 );
-vfs.releaseExclusiveMutation(proofLease.owner);
+rawVfs.releaseExclusiveMutation(proofLease.owner);
 assert.equal(legacySymlinks.delete('preexisting/link'), true);
+vfs.mkdir('repo');
 legacySymlinks.set('repo/legacy-link', 'target.txt');
-const lease = vfs.acquireExclusiveMutation('/repo');
+vfs.mkdir('repo');
+const lease = rawVfs.acquireExclusiveMutation('/repo');
 
 assert.throws(
-  () => vfs.acquireExclusiveMutation('/repo/nested'),
+  () => rawVfs.acquireExclusiveMutation('/repo/nested'),
   /EBUSY: repo\/nested overlaps exclusive mutation at repo/,
 );
 assert.throws(
@@ -59,7 +63,7 @@ assert.equal(legacySymlinks.readlink('repo/injected'), null);
 vfs.writeFile('outside.txt', 'outside');
 assert.equal(vfs.readFileString('outside.txt'), 'outside');
 vfs.writeFile('outside-delete.txt', 'outside');
-const bridge = new SqliteRuntimeFsBridge(vfs);
+const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 await bridge.unlink('/outside-delete.txt');
 assert.equal(vfs.exists('outside-delete.txt'), false, 'outside unlink reported failure after commit');
 
@@ -97,7 +101,7 @@ assert.equal(escaped.ok, false);
 assert.match(escaped.error.message, /EPERM: escape\.txt is outside exclusive mutation root repo/);
 assert.equal(vfs.exists('escape.txt'), false);
 
-vfs.releaseExclusiveMutation(lease.owner);
+rawVfs.releaseExclusiveMutation(lease.owner);
 assert.equal(legacySymlinks.delete('repo/legacy-link'), true);
 vfs.writeFile('repo/concurrent.txt', 'after-release');
 assert.equal(vfs.readFileString('repo/concurrent.txt'), 'after-release');
@@ -105,7 +109,7 @@ assert.equal(vfs.readFileString('repo/concurrent.txt'), 'after-release');
 vfs.mkdir('outside-dir');
 vfs.symlink('../outside-dir', 'repo/out-link');
 vfs.symlink('repo', 'outside-link');
-const symlinkEscapeLease = vfs.acquireExclusiveMutation('/repo');
+const symlinkEscapeLease = rawVfs.acquireExclusiveMutation('/repo');
 await assert.rejects(
   bridge.writeFile('/repo/out-link/injected.txt', 'blocked'),
   /EBUSY: repo\/out-link\/injected\.txt is locked by exclusive mutation at repo/,
@@ -116,18 +120,18 @@ await assert.rejects(
   /EBUSY: repo\/new-dir is locked by exclusive mutation at repo/,
 );
 assert.equal(vfs.exists('repo/new-dir'), false);
-vfs.releaseExclusiveMutation(symlinkEscapeLease.owner);
+rawVfs.releaseExclusiveMutation(symlinkEscapeLease.owner);
 
-const destroyLease = vfs.acquireGlobalExclusiveMutation();
+const destroyLease = rawVfs.acquireGlobalExclusiveMutation();
 assert.throws(
-  () => vfs.acquireExclusiveMutation('/repo'),
+  () => rawVfs.acquireExclusiveMutation('/repo'),
   /EBUSY: repo overlaps exclusive mutation at /,
 );
 assert.throws(
   () => vfs.writeFile('anywhere.txt', 'blocked'),
   /EBUSY: anywhere\.txt is locked by exclusive mutation at /,
 );
-vfs.releaseExclusiveMutation(destroyLease.owner);
+rawVfs.releaseExclusiveMutation(destroyLease.owner);
 
 vfs.symlink('target', 'chunk-link');
 assert.throws(
@@ -139,6 +143,7 @@ assert.throws(
 );
 assert.equal(vfs.readlink('chunk-link'), 'target');
 
+vfs.mkdir('late');
 const lateData = new TextEncoder().encode('late');
 const lateEncoded = await collect(encodeWriteBatchStream({
   inodes: [{
@@ -179,13 +184,13 @@ const gatedStream = new ReadableStream({
 }, { highWaterMark: 0 });
 const lateWrite = vfs.writeStream(gatedStream);
 await suffixRequested;
-const lateLease = vfs.acquireExclusiveMutation('/late');
+const lateLease = rawVfs.acquireExclusiveMutation('/late');
 releaseSuffix();
 const lateResult = await lateWrite;
 assert.equal(lateResult.ok, false);
 assert.match(lateResult.error.message, /EBUSY: late\/file\.txt is locked by exclusive mutation at late/);
 assert.equal(vfs.exists('late/file.txt'), false);
-vfs.releaseExclusiveMutation(lateLease.owner);
+rawVfs.releaseExclusiveMutation(lateLease.owner);
 
 async function collect(stream) {
   const reader = stream.getReader();

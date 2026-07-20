@@ -19,6 +19,7 @@
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
  */
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
@@ -45,6 +46,7 @@ import { enc } from '../_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
+    store;
     vfs;
     cache;
     esbuild;
@@ -60,7 +62,8 @@ export class NpmInstaller {
      */
     fetchFn;
     constructor(vfs, sql, opts) {
-        this.vfs = vfs;
+        this.store = vfs;
+        this.vfs = vfs.as(CRED_KERNEL);
         this.cache = new NpmCache(sql);
         this.esbuild = opts?.esbuild ?? null;
         this.ctx = opts?.ctx;
@@ -222,7 +225,7 @@ export class NpmInstaller {
         // pressure the facet path eliminates.
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
-            const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir);
+            const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
             totalFiles += batchResult.filesWritten;
             for (const name of batchResult.installed)
                 installed.push(name);
@@ -689,7 +692,7 @@ export class NpmInstaller {
      *   Two-tier topology re-expands the fan-out without re-introducing
      *   the V8 cap risk.
      */
-    async fetchViaBatchFacet(toFetch, hoistPlan, nmDir) {
+    async fetchViaBatchFacet(toFetch, hoistPlan, nmDir, pid) {
         const log = (msg) => this.onProgress?.(msg);
         const installed = [];
         const failed = [];
@@ -703,6 +706,7 @@ export class NpmInstaller {
             tarballUrl: p.tarballUrl,
             integrity: p.integrity || '',
             pkgDir: nmDir + '/' + p.name,
+            installRoot: nmDir,
             mtime,
             chunkSize: CHUNK_SIZE,
         }));
@@ -752,6 +756,10 @@ export class NpmInstaller {
             // to every facet (in-DO and per-peer) so each shard's facet
             // can encode its own write-batch stream.
             preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
+            // Authorize each facet's writeBatchStream under the invoking
+            // process credential; without a positive pid the supervisor
+            // rejects the write (S2a cred enforcement).
+            supervisorPid: pid,
         });
         const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
             // Stable-id router key. Same shardIdx → same peer DO across
@@ -1851,7 +1859,7 @@ export class NpmInstaller {
     _estimateSupervisorHeapMiB() {
         try {
             const counters = readDiagCounters();
-            const vfsStats = this.vfs.getStats();
+            const vfsStats = this.store.getStats();
             const cacheStats = vfsStats.cache ?? {};
             const sqlStats = vfsStats.sql ?? {};
             const heap = estimateSupervisorHeap(counters, {

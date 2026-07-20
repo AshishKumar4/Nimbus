@@ -32,7 +32,7 @@
  * Bind parameter forms: '?' positional only. Named parameters (':name')
  * are NOT supported (D1 itself doesn't support them).
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 export interface D1Result<T = Record<string, any>> {
     success: boolean;
     results?: T[];
@@ -57,7 +57,7 @@ export interface D1EmulatorOptions {
     /** workerd SqlStorage instance, e.g. ctx.storage.sql. */
     sqlStorage: any;
     binding: string;
-    vfs?: SqliteVFS | any;
+    vfs?: CredentialedVfs;
     root?: string;
     migrationsDir?: string;
     onLog?: (msg: string) => void;

@@ -17,7 +17,9 @@ import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { CRED_KERNEL, type VfsCred } from '../runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -142,6 +144,7 @@ const CpFacetDirectPayloadSchema = z.object({
   }),
   cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
   stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+  processPid: z.number().int().positive(),
 }).passthrough();
 
 function normalizeCpCommandName(name: string): string {
@@ -273,8 +276,10 @@ The editor opens this file in Markdown preview mode by default. Use
 export class NimbusSession extends CloudflareDurableObject {
   // this.ctx and this.env are provided by the DurableObject base class
   sqliteFs: SqliteVFS | null = null;
+  runtimeFsBridges: Map<number, SqliteRuntimeFsBridge> | null = null;
   kernel: Kernel | null = null;
   shell: Shell | null = null;
+  shellProcessPid: number | null = null;
   terminal: WebSocketTerminal | null = null;
   facetManager: FacetManager | null = null;
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
@@ -608,49 +613,64 @@ export class NimbusSession extends CloudflareDurableObject {
   // DEFECT-D1: ctx is protected and not on a public interface).
 
   // Supervisor RPC (file/log/HMR/batch)
-  async _rpcReadFile(path: string): Promise<string | null> { return _rpc._rpcReadFile(this as any, path); }
-  async _rpcReadFileBytes(path: string): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path); }
+  async _rpcReadFile(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid); }
+  async _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
-  async _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content); }
-  async _rpcStat(path: string): Promise<any> { return _rpc._rpcStat(this as any, path); }
-  async _rpcLstat(path: string): Promise<any> { return _rpc._rpcLstat(this as any, path); }
-  async _rpcHasLegacySymlinkUnder(path: string): Promise<boolean> {
-    return _rpc._rpcHasLegacySymlinkUnder(this as any, path);
+  async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content, pid); }
+  async _rpcStat(path: string, pid?: number): Promise<any> { return _rpc._rpcStat(this as any, path, pid); }
+  async _rpcLstat(path: string, pid?: number): Promise<any> { return _rpc._rpcLstat(this as any, path, pid); }
+  async _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean> {
+    return _rpc._rpcHasLegacySymlinkUnder(this as any, path, pid);
   }
-  async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
-    return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs);
+  async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void> {
+    return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs, pid);
   }
-  async _rpcChmod(path: string, mode: number): Promise<void> {
-    return _rpc._rpcChmod(this as any, path, mode);
+  async _rpcChmod(path: string, mode: number, pid?: number): Promise<void> {
+    return _rpc._rpcChmod(this as any, path, mode, pid);
   }
-  async _rpcReaddir(path: string): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path); }
-  async _rpcExists(path: string): Promise<boolean> { return _rpc._rpcExists(this as any, path); }
-  async _rpcMkdir(path: string): Promise<void> { return _rpc._rpcMkdir(this as any, path); }
-  async _rpcRmdir(path: string): Promise<void> { return _rpc._rpcRmdir(this as any, path); }
-  async _rpcRename(from: string, to: string): Promise<void> { return _rpc._rpcRename(this as any, from, to); }
-  async _rpcReadlink(path: string): Promise<string | null> { return _rpc._rpcReadlink(this as any, path); }
-  async _rpcSymlink(target: string, path: string): Promise<void> { return _rpc._rpcSymlink(this as any, target, path); }
-  async _rpcFsRevision(path?: string): Promise<number> { return _rpc._rpcFsRevision(this as any, path); }
-  async _rpcFsOpen(path: string, flags: any): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags); }
-  async _rpcFsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
-    return _rpc._rpcFsRead(this as any, handleId, offset, length);
+  async _rpcAccess(path: string, mode: number, pid?: number): Promise<void> {
+    return _rpc._rpcAccess(this as any, path, mode, pid);
   }
-  async _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-    return _rpc._rpcFsWrite(this as any, handleId, offset, bytes);
+  async _rpcChown(
+    path: string,
+    uid: number,
+    gid: number,
+    pid?: number,
+    options?: { followSymlinks?: boolean },
+  ): Promise<void> {
+    return _rpc._rpcChown(this as any, path, uid, gid, pid, options);
   }
-  async _rpcFsClose(handleId: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId); }
-  async _rpcFsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-    return _rpc._rpcFsReadRange(this as any, path, offset, length);
+  async _rpcSetUmask(mask: number, pid?: number): Promise<number> {
+    return _rpc._rpcSetUmask(this as any, mask, pid);
   }
-  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-    return _rpc._rpcFsWriteRange(this as any, path, offset, bytes);
+  async _rpcReaddir(path: string, pid?: number): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path, pid); }
+  async _rpcExists(path: string, pid?: number): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid); }
+  async _rpcMkdir(path: string, pid?: number): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid); }
+  async _rpcRmdir(path: string, pid?: number): Promise<void> { return _rpc._rpcRmdir(this as any, path, pid); }
+  async _rpcRename(from: string, to: string, pid?: number): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid); }
+  async _rpcReadlink(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid); }
+  async _rpcSymlink(target: string, path: string, pid?: number): Promise<void> { return _rpc._rpcSymlink(this as any, target, path, pid); }
+  async _rpcFsRevision(path?: string, pid?: number): Promise<number> { return _rpc._rpcFsRevision(this as any, path, pid); }
+  async _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags, pid); }
+  async _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array> {
+    return _rpc._rpcFsRead(this as any, handleId, offset, length, pid);
   }
-  async _rpcFsTruncate(path: string, size: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size); }
+  async _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
+    return _rpc._rpcFsWrite(this as any, handleId, offset, bytes, pid);
+  }
+  async _rpcFsClose(handleId: number, pid?: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId, pid); }
+  async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
+    return _rpc._rpcFsReadRange(this as any, path, offset, length, pid);
+  }
+  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
+    return _rpc._rpcFsWriteRange(this as any, path, offset, bytes, pid);
+  }
+  async _rpcFsTruncate(path: string, size: number, pid?: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size, pid); }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
-  async _rpcUnlink(path: string): Promise<void> { return _rpc._rpcUnlink(this as any, path); }
-  async _rpcWriteBatch(payload: any): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload); }
-  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string): Promise<WriteBatchStreamResult> {
-    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner);
+  async _rpcUnlink(path: string, pid?: number): Promise<void> { return _rpc._rpcUnlink(this as any, path, pid); }
+  async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
+  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult> {
+    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner, pid);
   }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
@@ -925,11 +945,18 @@ export class NimbusSession extends CloudflareDurableObject {
         // path: {command, args, env, cwd, stdin}. We dispatch through the
         // existing shell registry by resolving the command and invoking
         // it with synthesized output streams that route to hooks.
-        let payload = CpFacetDirectPayloadSchema.parse({});
+        let payload: z.infer<typeof CpFacetDirectPayloadSchema>;
         try {
           const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
-          if (parsed.success) payload = parsed.data;
-        } catch {}
+          if (!parsed.success) {
+            hooks.onStderr('child_process: facet dispatch requires a broker-assigned process pid\n');
+            return 1;
+          }
+          payload = parsed.data;
+        } catch {
+          hooks.onStderr('child_process: invalid facet dispatch payload\n');
+          return 1;
+        }
         const registry = this._cpRegistry;
         if (!registry) {
           hooks.onStderr('child_process: command registry unavailable\n');
@@ -945,11 +972,14 @@ export class NimbusSession extends CloudflareDurableObject {
         const stdoutStream = { write: (d: string) => hooks.onStdout(String(d)) };
         const stderrStream = { write: (d: string) => hooks.onStderr(String(d)) };
         const ac = new AbortController();
+        const cred = this.processes.cred(payload.processPid);
         const ctx = {
+          pid: payload.processPid,
+          cred,
           args: payload.args || [],
           env: payload.env || {},
           cwd: payload.cwd || '/home/user',
-          vfs: this.sqliteFs!,
+          vfs: this.sqliteFs!.as(cred),
           stdout: stdoutStream,
           stderr: stderrStream,
           signal: ac.signal,
@@ -958,10 +988,35 @@ export class NimbusSession extends CloudflareDurableObject {
             read: async () => null,
             readAll: async () => payload.stdin || '',
           },
+          setUmask: (mask: number) => { this.processes.setUmask(payload.processPid, mask); },
+          runAs: async (targetCred: VfsCred, argv: string[]) => {
+            if (argv.length === 0) return 0;
+            const child = this.processes.spawn(
+              argv.join(' '),
+              argv,
+              payload.cwd,
+              { parentPid: payload.processPid, cred: targetCred },
+            );
+            let exitCode = 1;
+            try {
+              exitCode = await cmdRegistryAdapter.runPureBuiltin(
+                child.pid,
+                argv[0],
+                argv.slice(1),
+                payload.env,
+                payload.cwd,
+                payload.stdin,
+                hooks,
+              );
+              return exitCode;
+            } finally {
+              this.processes.exit(child.pid, exitCode);
+            }
+          },
           __nimbusCaptureOutput: true,
         };
         try {
-          const code = await cmd(ctx as any);
+          const code = await cmd(ctx);
           return typeof code === 'number' ? code : 0;
         } catch (e: any) {
           hooks.onStderr(`${payload.command}: ${e?.message || String(e)}\n`);
@@ -996,6 +1051,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return _classifyCommand(commandName);
       },
       runPureBuiltin: async (
+        pid: number,
         name: string,
         args: string[],
         env: Record<string, string>,
@@ -1008,18 +1064,45 @@ export class NimbusSession extends CloudflareDurableObject {
         const commandName = normalizeCpCommandName(name);
         const cmd = await registry.resolve(commandName);
         if (!cmd) { hooks.onStderr(`${name}: command not found\n`); return 127; }
+        const cred = this.processes.cred(pid);
         const ac = new AbortController();
         const ctx = {
+          pid,
+          cred,
           args, env, cwd,
-          vfs: this.sqliteFs!,
+          vfs: this.sqliteFs!.as(cred),
           stdout: { write: (d: string) => hooks.onStdout(String(d)) },
           stderr: { write: (d: string) => hooks.onStderr(String(d)) },
           signal: ac.signal,
           stdin: { read: async () => null, readAll: async () => stdin },
-          __nimbusCaptureOutput: true,
+          setUmask: (mask: number) => { this.processes.setUmask(pid, mask); },
+          runAs: async (targetCred: VfsCred, argv: string[]) => {
+            if (argv.length === 0) return 0;
+            const child = this.processes.spawn(
+              argv.join(' '),
+              argv,
+              cwd,
+              { parentPid: pid, cred: targetCred },
+            );
+            let exitCode = 1;
+            try {
+              exitCode = await cmdRegistryAdapter.runPureBuiltin(
+                child.pid,
+                argv[0],
+                argv.slice(1),
+                env,
+                cwd,
+                stdin,
+                hooks,
+              );
+              return exitCode;
+            } finally {
+              this.processes.exit(child.pid, exitCode);
+            }
+          },
         };
         try {
-          const code = await cmd(ctx as any);
+          const code = await cmd(ctx);
           return typeof code === 'number' ? code : 0;
         } catch (e: any) {
           hooks.onStderr(`${name}: ${e?.message || String(e)}\n`);
@@ -1041,10 +1124,11 @@ export class NimbusSession extends CloudflareDurableObject {
     this.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processes: this.processes,
-      vfs: this.sqliteFs!,
+      vfsForProcess: (pid) => this.sqliteFs!.as(this.processes.cred(pid)),
       commandRegistry: cmdRegistryAdapter,
       shellExecutor: {
         execute: async (
+          pid: number,
           commandLine: string,
           env: Record<string, string>,
           cwd: string,
@@ -1055,13 +1139,46 @@ export class NimbusSession extends CloudflareDurableObject {
             hooks.onStderr('sh: shell unavailable\n');
             return 127;
           }
+          const cred = this.processes.cred(pid);
+          const setUmask = (mask: number) => { this.processes.setUmask(pid, mask); };
+          const runAs = async (
+            _parent: import('../substrate/lifo/commands/types.js').CommandContext,
+            targetCred: VfsCred,
+            argv: string[],
+          ): Promise<number> => {
+            if (argv.length === 0) return 0;
+            const child = this.processes.spawn(
+              argv.join(' '),
+              argv,
+              cwd,
+              { parentPid: pid, cred: targetCred },
+            );
+            let exitCode = 1;
+            try {
+              exitCode = await cmdRegistryAdapter.runPureBuiltin(
+                child.pid,
+                argv[0],
+                argv.slice(1),
+                env,
+                cwd,
+                stdin,
+                hooks,
+              );
+              return exitCode;
+            } finally {
+              this.processes.exit(child.pid, exitCode);
+            }
+          };
           const result = await this.shell.execute(String(commandLine), {
             cwd: cwd || '/home/user',
             env: { ...(this.shell as any).env, ...(env || {}) },
             onStdout: (d: string) => hooks.onStdout(String(d)),
             onStderr: (d: string) => hooks.onStderr(String(d)),
             stdin,
-          } as any);
+            isolateShellState: true,
+            commandContext: { pid, cred, setUmask },
+            runAs,
+          });
           return typeof (result as any)?.exitCode === 'number' ? (result as any).exitCode : 0;
         },
       },
@@ -1265,32 +1382,71 @@ export class NimbusSession extends CloudflareDurableObject {
   // ── Filesystem seeding ────────────────────────────────────────────────
 
   seedFilesystem() {
-    const fs = this.sqliteFs!;
+    const userCred = {
+      uid: 1000,
+      gid: 1000,
+      groups: [1000],
+      umask: 0o022,
+    } as const;
+    const fs = this.sqliteFs!.as(userCred);
+    const rootFs = this.sqliteFs!.as(CRED_KERNEL);
     const dirs = [
-      'bin', 'etc', 'home', 'home/user', 'home/user/.config',
+      'bin', 'home', 'home/user', 'home/user/.config',
       'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
       'usr/lib/node_modules', 'usr/share', 'usr/share/pkg',
       'usr/share/pkg/node_modules', 'opt',
+      // npm's global prefix (init.ts npm_config_prefix=/usr/local).
+      // S2a batch writes require existing parents; before S2a the VFS
+      // auto-created them on first global install.
+      'usr/local', 'usr/local/bin', 'usr/local/lib',
+      'usr/local/lib/node_modules',
       'home/user/projects',
     ];
     for (const dir of dirs) {
       if (!fs.exists(dir)) fs.mkdir(dir, { recursive: true });
     }
 
-    if (!fs.exists('etc/hostname')) {
-      fs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
+    if (!rootFs.exists('etc')) {
+      rootFs.mkdir('etc', { mode: 0o755 });
+    } else {
+      const etc = rootFs.stat('etc');
+      if (etc.uid !== 0 || etc.gid !== 0) rootFs.chown('etc', 0, 0);
+      if ((etc.mode & 0o7777) !== 0o755) rootFs.chmod('etc', 0o755);
     }
-    if (!fs.exists('etc/os-release')) {
-      fs.writeFile('etc/os-release',
+
+    if (!rootFs.exists('etc/hostname')) {
+      rootFs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
+      rootFs.chown('etc/hostname', userCred.uid, userCred.gid);
+    }
+    if (!rootFs.exists('etc/os-release')) {
+      rootFs.writeFile('etc/os-release',
         `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
         'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n'
       );
+      rootFs.chown('etc/os-release', userCred.uid, userCred.gid);
     }
+    const seedRootAccountFile = (path: string, content: string): void => {
+      if (!rootFs.exists(path)) rootFs.writeFile(path, content, { mode: 0o644 });
+      const stat = rootFs.stat(path);
+      if (stat.uid !== 0 || stat.gid !== 0) rootFs.chown(path, 0, 0);
+      if ((stat.mode & 0o7777) !== 0o644) rootFs.chmod(path, 0o644);
+    };
+    seedRootAccountFile(
+      'etc/passwd',
+      'root:x:0:0:root:/root:/bin/sh\n' +
+      'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n',
+    );
+    seedRootAccountFile(
+      'etc/group',
+      'root:x:0:\n' +
+      'user:x:1000:user\n',
+    );
     const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
-    if (!fs.exists('etc/profile')) {
-      fs.writeFile('etc/profile', defaultProfile);
-    } else if (dec.decode(fs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
-      fs.writeFile('etc/profile', defaultProfile);
+    if (!rootFs.exists('etc/profile')) {
+      rootFs.writeFile('etc/profile', defaultProfile);
+      rootFs.chown('etc/profile', userCred.uid, userCred.gid);
+    } else if (dec.decode(rootFs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
+      rootFs.writeFile('etc/profile', defaultProfile);
     }
     if (!fs.exists('home/user/.nimbusrc')) {
       fs.writeFile('home/user/.nimbusrc',
@@ -1303,14 +1459,18 @@ export class NimbusSession extends CloudflareDurableObject {
       // corrected version on next reconnect. Cheap (~200 bytes); no
       // user-edit collision concern (the file isn't user-owned).
       const expectedMotd = renderMotdBanner(NIMBUS_VERSION);
-      let needsWrite = !fs.exists('etc/motd');
+      const exists = rootFs.exists('etc/motd');
+      let needsWrite = !exists;
       if (!needsWrite) {
         try {
-          const existing = fs.readFileString('etc/motd');
+          const existing = rootFs.readFileString('etc/motd');
           if (existing !== expectedMotd) needsWrite = true;
         } catch { needsWrite = true; }
       }
-      if (needsWrite) fs.writeFile('etc/motd', expectedMotd);
+      if (needsWrite) {
+        rootFs.writeFile('etc/motd', expectedMotd);
+        if (!exists) rootFs.chown('etc/motd', userCred.uid, userCred.gid);
+      }
     }
     if (!fs.exists('home/user/hello.js')) {
       fs.writeFile('home/user/hello.js',
@@ -1341,7 +1501,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // Idempotent: guarded by shouldSeedProject() which checks both a
     // sentinel file and the project dir. Safe to call on every boot.
     try {
-      seedProject(fs, { log: (msg) => console.log(msg) });
+      seedProject(this.sqliteFs!, { log: (msg) => console.log(msg) });
     } catch (e: any) {
       console.error('[nimbus] seedProject failed:', e?.message || e);
     }

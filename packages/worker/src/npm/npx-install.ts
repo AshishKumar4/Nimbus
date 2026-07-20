@@ -29,7 +29,7 @@
  */
 
 import type { NpmInstaller } from './installer.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { bundleProfileForNpmBin, type FacetBundleProfile } from '../runtime/bundle-profile.js';
 
 /** Path where npx caches packages it installs. Matches the vendored substrate
@@ -197,7 +197,7 @@ function splitSpec(spec: string): { name: string; version: string | null } {
  * matching bin name is found, else null.
  */
 function findBinInPackage(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   packageDir: string,
   binName: string,
 ): string | null {
@@ -246,7 +246,7 @@ function findBinInPackage(
  * Returns the absolute path on hit, null on miss.
  */
 function locateBinary(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   pkgName: string,
   binName: string,
@@ -274,7 +274,7 @@ function locateBinary(
  * for the caller's log line).
  */
 function ensureNpxCachePackageJson(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   pkgName: string,
   pkgRange: string,
 ): void {
@@ -336,10 +336,11 @@ export interface NpxResolveResult {
  */
 export async function resolveNpxBinary(
   installer: NpmInstaller,
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   cwd: string,
   rawArgs: string[],
   log: (msg: string) => void,
+  pid?: number,
 ): Promise<NpxResolveResult> {
   const parsed = parseNpxArgs(rawArgs);
   if ('error' in parsed) {
@@ -372,6 +373,7 @@ export async function resolveNpxBinary(
   try {
     const result = await installer.install(NPX_CACHE_DIR, {
       packages: [installSpec],
+      pid,
     });
     if ((result.failed?.length || 0) > 0) {
       // Partial install — some package failed to resolve. The fix is

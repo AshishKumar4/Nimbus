@@ -39,6 +39,7 @@
 
 import type { FacetManager } from '../facets/manager.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
@@ -74,6 +75,8 @@ export interface RuntimeRunOpts {
   forceLongRunning?: boolean;
   attachedTty?: boolean;
   bundleProfile?: FacetBundleProfile;
+  /** Invoking process credentials for credential-bound runtime snapshots. */
+  cred?: VfsCred;
 }
 
 export interface RuntimeSpec {
@@ -143,6 +146,7 @@ export function buildRuntimeHandler(
   },
 ): (ctx: any) => Promise<number> {
   const { vfs, facetMgr, getEsbuild, registry } = ctx0;
+  const fs = vfs.as(CRED_KERNEL);
 
   return async function runtimeHandler(ctx: any): Promise<number> {
     const args: string[] = ctx.args || [];
@@ -210,6 +214,7 @@ export function buildRuntimeHandler(
         return 1;
       }
       const result = await spec.run(facetMgr, code, {
+        cred: ctx.cred,
         argv: args.slice(evalIdx + 2),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -249,7 +254,7 @@ export function buildRuntimeHandler(
       const c = (ctx.cwd || '/home/user').replace(/^\/+/, '');
       const pkgPath = c + '/package.json';
       try {
-        const pkg = JSON.parse(vfs.readFileString(pkgPath));
+        const pkg = JSON.parse(fs.readFileString(pkgPath));
         // bun prefers .module over .main when both exist; node uses .main.
         const main = (name === 'bun' && pkg.module) || pkg.main || 'index.js';
         resolvedPath = c + '/' + main;
@@ -271,6 +276,7 @@ export function buildRuntimeHandler(
       // `args.slice(scriptIdx + 1)` are the runner's user args (e.g.
       // [exportName, intArg1, intArg2, ...] for wasm-runner).
       const result = await spec.run(facetMgr, '', {
+        cred: ctx.cred,
         argv: args.slice(scriptIdx + 1),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -286,10 +292,10 @@ export function buildRuntimeHandler(
     }
 
     // Try common JS extensions if the file doesn't exist verbatim.
-    if (!vfs.exists(resolvedPath)) {
+    if (!fs.exists(resolvedPath)) {
       const exts = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
       for (const ext of exts) {
-        if (vfs.exists(resolvedPath + ext)) {
+        if (fs.exists(resolvedPath + ext)) {
           resolvedPath += ext;
           break;
         }
@@ -298,7 +304,7 @@ export function buildRuntimeHandler(
 
     let code: string;
     try {
-      code = vfs.readFileString(resolvedPath);
+      code = fs.readFileString(resolvedPath);
     } catch {
       ctx.stderr.write(`${name}: cannot find module '${scriptPath}'\n`);
       return 1;
@@ -346,9 +352,9 @@ export function buildRuntimeHandler(
       while (dir && !visited.has(dir)) {
         visited.add(dir);
         const pj = dir + '/package.json';
-        if (vfs.exists(pj)) {
+        if (fs.exists(pj)) {
           try {
-            const pkg = JSON.parse(vfs.readFileString(pj));
+            const pkg = JSON.parse(fs.readFileString(pj));
             return pkg && pkg.type === 'module';
           } catch {
             return false;
@@ -419,6 +425,7 @@ export function buildRuntimeHandler(
 
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(facetMgr, code, {
+      cred: ctx.cred,
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       env: ctx.env,
       cwd: ctx.cwd,

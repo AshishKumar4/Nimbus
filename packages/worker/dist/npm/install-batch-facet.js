@@ -581,13 +581,33 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             //    before crossing 4 MiB or 128 paths; the receiver's transaction
             //    limits and global credit pool remain the authoritative bounds.
             const pkgDir = spec.pkgDir;
+            const installRoot = spec.installRoot;
             // Use the shard-level inode/chunk buffer so flushes are per shard,
             // not per package. Per-package totals stay local to the result object.
             let totalFileInodes = 0;
             let totalBytesWritten = 0;
             const dirSet = new Set();
-            dirSet.add(pkgDir);
             let completionMarker = null;
+            // Stage `installRoot` and every directory down to `dirPath` (inclusive),
+            // root-to-leaf, BEFORE any file that needs them. The credentialed
+            // writeBatch authorizes each staged path's parent per flush wave, so a
+            // file cannot land in a wave ahead of its parent dir inode (which used
+            // to surface as `ENOENT: .../node_modules`). Directories above the
+            // install root are left untouched — they pre-exist and re-staging them
+            // would trip the batch write-check on user-unwritable system dirs.
+            const enqueueDirsUpTo = async (dirPath) => {
+                if (dirPath.length < installRoot.length || !dirPath.startsWith(installRoot))
+                    return;
+                const suffix = dirPath === installRoot ? '' : dirPath.slice(installRoot.length + 1);
+                const segs = suffix ? suffix.split('/') : [];
+                for (let i = 0; i <= segs.length; i++) {
+                    const d = i === 0 ? installRoot : installRoot + '/' + segs.slice(0, i).join('/');
+                    if (dirSet.has(d))
+                        continue;
+                    dirSet.add(d);
+                    await enqueueSharedDirectory(ownerId, d, spec.mtime);
+                }
+            };
             const enqueueFile = async (filePath, data) => {
                 const size = data.length;
                 await enqueueSharedFile(ownerId, filePath, data, spec.mtime, spec.chunkSize);
@@ -599,16 +619,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                     warnings.push(`skipped "${name}" (${size} bytes) — exceeds per-file cap; file not installed`);
                 }
             };
+            // Ensure the package directory (and the install root above it) are
+            // staged before any file or the completion marker — covers empty
+            // packages whose only member is package.json.
+            await enqueueDirsUpTo(pkgDir);
             // @ts-ignore — preamble symbol.
             for await (const entry of streamTarEntries(asyncIter, onSkip)) {
                 // entry.name is already canonicalized (no "."/".." segments) by
                 // the tar parser, so joining under the canonical pkgDir yields a
                 // canonical path the w7-frame writer accepts.
                 const filePath = pkgDir + '/' + entry.name;
-                const parts = filePath.split('/');
-                for (let i = 1; i < parts.length; i++) {
-                    dirSet.add(parts.slice(0, i).join('/'));
-                }
+                // Stage this file's parent-dir chain before the file itself.
+                await enqueueDirsUpTo(filePath.substring(0, filePath.lastIndexOf('/')));
                 const data = entry.data;
                 if (entry.name === 'package.json') {
                     if (completionMarker) {
@@ -622,12 +644,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             }
             // Wait for integrity verification before final flush.
             await integrityPromise;
-            // Append directory inodes to the SHARED buffer. Don't flush per-
-            // package end — let the threshold-based flush coalesce across
-            // packages. The end-of-batch flush below catches anything left.
-            for (const d of dirSet) {
-                await enqueueSharedDirectory(ownerId, d, spec.mtime);
-            }
             // package.json is the durable completion marker used by the installer
             // diff path. Hold it outside every content wave. Batch reconciliation
             // publishes it only after all of this owner's content waves succeed.

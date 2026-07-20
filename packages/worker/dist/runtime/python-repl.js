@@ -29,6 +29,7 @@
 import { ReplSession } from './repl-session.js';
 import { buildPyodidePreamble } from './python-runner.js';
 import { readPyodideRuntimeFiles } from './pyodide-runtime-assets.js';
+import { CRED_KERNEL } from './os-contracts.js';
 /**
  * Adapter that owns a NimbusLoaderPool for the lifetime of the REPL
  * session. Each push(line) is a fresh pool.submit() into the cached
@@ -112,7 +113,8 @@ class PythonReplAdapter {
     async ensurePool() {
         if (this.pool)
             return;
-        const { vfs, installRoot, facetMgr } = this.deps;
+        const { installRoot, facetMgr } = this.deps;
+        const vfs = this.deps.vfs.as(CRED_KERNEL);
         const wasmPath = `${installRoot}/share/pyodide/pyodide.asm.wasm`;
         const jsPath = `${installRoot}/share/pyodide/pyodide.asm.js`;
         const stdlibPath = `${installRoot}/share/pyodide/python_stdlib.zip`;

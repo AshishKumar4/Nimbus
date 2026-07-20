@@ -14,18 +14,16 @@
 // (next.config.ts, tsconfig.json, postcss.config.mjs, src/, public/,
 // next-env.d.ts, README, .gitignore) to the live VFS.
 //
-// Boundary (documented, not faked): create-next-app then ABORTS before
-// writing package.json with an opaque error serialized as `{"remote":
-// true}`, during the remote phase of its template/install pipeline. The
-// token "remote" appears nowhere in create-next-app's own bundle (grep
-// over dist/index.js: 0 hits), so the error originates from a remote
-// operation in a transitive/runtime path it invokes after the local
-// template files are written. The two general fetch/stream fixes this
-// wave landed (default User-Agent, web-stream pipeline) are not enough to
-// clear it; the remaining remote op is a deeper, create-next-app-specific
-// boundary. This probe scopes to the proven milestone — the template
-// files are written deterministically — and asserts the abort as the
-// honest boundary (package.json is never produced), with evidence.
+// Boundary (documented, not faked): the S2a npx credential fix moved
+// the boundary forward — the FULL template now lands, INCLUDING
+// package.json (the old `{"remote":true}` pre-package.json abort is
+// gone). create-next-app then spawns its in-scaffold `npm install`,
+// which fails ("npm install has failed." → "Aborting installation."):
+// nested package-manager child processes inside a create-* facet are
+// the remaining, create-next-app-specific boundary. This probe scopes
+// to the proven milestone — the complete template including
+// package.json — and asserts the in-scaffold install abort as the
+// honest boundary, with evidence.
 
 import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 
@@ -62,15 +60,17 @@ try {
   const tplOut = stripAnsi(tpl.output);
   a.check('create-next-app writes the local template files to the VFS (next.config.ts, tsconfig.json, src/)',
     /TPL=true/.test(tplOut), JSON.stringify(tplOut.slice(-200)));
+  a.check('create-next-app writes package.json (regression guard: the pre-S2a {"remote":true} abort landed BEFORE package.json)',
+    /PKG=true/.test(tplOut), JSON.stringify(tplOut.slice(-200)));
 
-  // The honest boundary: it aborts with {"remote":true} before producing
-  // package.json. Assert both the abort signal and the missing
-  // package.json so the boundary is meaningful, not assumed.
-  const abortedRemote = /Aborting installation/.test(createOut)
-    && /\{"remote":true\}/.test(createOut);
-  a.check('honest boundary: create-next-app aborts at a remote op ({"remote":true}) before package.json',
-    abortedRemote && /PKG=false/.test(tplOut),
-    JSON.stringify(createOut.split(/\r?\n/).filter((l) => /Aborting|remote/.test(l)).join(' | ').slice(-300)));
+  // The honest boundary: the scaffold is complete; the in-scaffold
+  // `npm install` child then fails and create-next-app aborts. Assert
+  // the abort signal so the boundary is meaningful, not assumed.
+  const abortedAtInstall = /Aborting installation/.test(createOut)
+    && /npm install has failed/.test(createOut);
+  a.check('honest boundary: create-next-app aborts at its in-scaffold npm install (after the full template)',
+    abortedAtInstall,
+    JSON.stringify(createOut.split(/\r?\n/).filter((l) => /Aborting|install/.test(l)).join(' | ').slice(-300)));
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);

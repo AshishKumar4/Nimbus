@@ -44,7 +44,7 @@
  * fallbacks but the bundle path MUST NOT use it — slice-up-front is the
  * contract.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 /**
@@ -129,11 +129,11 @@ export interface BuildSliceOptions {
      */
     maxBytes?: number;
 }
-export declare function buildSliceForSpecifier(vfs: SqliteVFS, specifier: string, nmDir: string): {
+export declare function buildSliceForSpecifier(vfs: CredentialedVfs, specifier: string, nmDir: string): {
     slice: SliceEntry[];
     totalBytes: number;
 } | null;
-export declare function buildSliceForSpecifierWithCap(vfs: SqliteVFS, specifier: string, nmDir: string, capBytes: number): {
+export declare function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, specifier: string, nmDir: string, capBytes: number): {
     slice: SliceEntry[];
     totalBytes: number;
 } | null;

@@ -372,13 +372,45 @@ const __fsMod = (() => {
     return undefined;
   }
 
+  function _metadata(absPath) {
+    const k = _strip(absPath);
+    return (typeof __vfsMetadata !== "undefined" && __vfsMetadata) ? __vfsMetadata[k] : undefined;
+  }
+
+  function _denialCode(cell) {
+    return cell && typeof cell === "object" && !(cell instanceof Uint8Array) &&
+      typeof cell.error === "string" ? cell.error : null;
+  }
+
   function _fsErr(code, syscall, p) {
     const err = new Error(code + ": " + syscall + " '" + p + "'");
     err.code = code;
-    err.errno = code === "ENOENT" ? -2 : -1;
+    const errno = Number(__constantsMod[code]);
+    err.errno = Number.isInteger(errno) ? -errno : -1;
     err.syscall = syscall;
     err.path = String(p);
     return err;
+  }
+
+  function _mapSupervisorError(error, syscall, p) {
+    if (error && typeof error === "object" && typeof error.code === "string") {
+      if (error.syscall === undefined) error.syscall = syscall;
+      if (error.path === undefined) error.path = String(p);
+      const errno = Number(__constantsMod[error.code]);
+      if (!Number.isInteger(error.errno) && Number.isInteger(errno)) error.errno = -errno;
+      return error;
+    }
+    const message = error && typeof error.message === "string" ? error.message : String(error);
+    const match = /^([A-Z][A-Z0-9]+):/.exec(message);
+    if (match && Number.isInteger(Number(__constantsMod[match[1]]))) {
+      return _fsErr(match[1], syscall, p);
+    }
+    return error;
+  }
+
+  async function _fsRpc(promise, syscall, p, use) {
+    try { return await __nimbusUseRpcResult(promise, use); }
+    catch (error) { throw _mapSupervisorError(error, syscall, p); }
   }
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
@@ -411,13 +443,18 @@ const __fsMod = (() => {
     return time;
   }
 
-  function _localStatObject(k, isDir, isSymlink, size, mode) {
+  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
     const time = _localTimes[k];
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs : Date.now();
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
     const localMode = _localModes[k];
+    const typeMode = isDir ? 0o040000 : isSymlink ? 0o120000 : 0o100000;
+    const storedMode = Number(mode);
+    const fullMode = Number.isInteger(storedMode)
+      ? ((storedMode & 0o170000) === 0 ? typeMode | storedMode : storedMode)
+      : typeMode | (isDir ? 0o755 : 0o644);
     return {
       isFile: () => !isDir && !isSymlink,
       isDirectory: () => isDir,
@@ -427,7 +464,9 @@ const __fsMod = (() => {
       mtime,
       ctime: mtime,
       birthtime: mtime,
-      mode: localMode === undefined ? mode : (isDir ? 0o040000 : 0o100000) | localMode,
+      mode: localMode === undefined ? fullMode : typeMode | localMode,
+      uid: Number(uid),
+      gid: Number(gid),
     };
   }
 
@@ -457,17 +496,17 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await supervisor.writeFile(absPath, __vfsWrites[k]);
+      await _fsRpc(supervisor.writeFile(absPath, __vfsWrites[k]), "write", absPath, () => undefined);
       delete __vfsWrites[k];
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
-      await supervisor.mkdir(absPath);
+      await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);
       _markVfsStale();
     }
     // Pending sync chmod rides along with any flush of the same path
     // (idempotent — the entry stays so local statSync remains coherent).
     if (k in _localModes && typeof supervisor.chmod === "function") {
-      await supervisor.chmod(absPath, _localModes[k]);
+      await _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, () => undefined);
       _markVfsStale();
     }
   }
@@ -504,25 +543,20 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
-  function _statObject(meta) {
+  function _statObject(meta, key) {
     const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
     const size = Number(meta?.size || 0);
     const mtime = new Date(Number(meta?.mtime || Date.now()));
     const atime = new Date(Number(meta?.atime || meta?.mtime || Date.now()));
-    const mode = Number(meta?.mode || (isDir ? 0o755 : 0o644));
-    return {
-      isFile: () => !isDir && !isSymlink,
-      isDirectory: () => isDir,
-      isSymbolicLink: () => isSymlink,
-      size,
-      atime,
-      mtime,
-      ctime: mtime,
-      birthtime: mtime,
-      mode,
-    };
+    const mode = Number(meta?.mode ?? (isDir ? 0o755 : 0o644));
+    const stat = _localStatObject(key, isDir, isSymlink, size, mode, meta?.uid, meta?.gid);
+    stat.atime = atime;
+    stat.mtime = mtime;
+    stat.ctime = new Date(Number(meta?.ctime ?? meta?.mtime ?? Date.now()));
+    stat.birthtime = stat.ctime;
+    return stat;
   }
 
   function _direntObject(name, type) {
@@ -543,7 +577,7 @@ const __fsMod = (() => {
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
 
     if (typeof supervisor.readFileBytes === "function") {
-      const bytes = await __nimbusUseRpcResult(supervisor.readFileBytes(absPath), (result) => result);
+      const bytes = await _fsRpc(supervisor.readFileBytes(absPath), "open", p, (result) => result);
       if (bytes !== null && bytes !== undefined) {
         _rememberBundle(absPath, bytes);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
@@ -551,7 +585,7 @@ const __fsMod = (() => {
     }
 
     if (typeof supervisor.readFile === "function") {
-      const text = await __nimbusUseRpcResult(supervisor.readFile(absPath), (result) => result);
+      const text = await _fsRpc(supervisor.readFile(absPath), "open", p, (result) => result);
       if (text !== null && text !== undefined) {
         _rememberBundle(absPath, text);
         return encoding ? _asString(text) : __BufferMod.from(text);
@@ -580,14 +614,14 @@ const __fsMod = (() => {
       if (e?.code !== "ENOENT") throw e;
       const supervisor = _supervisor();
       if (!supervisor || typeof supervisor.stat !== "function") throw e;
-      const meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
+      const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
       if (!meta) throw e;
       return _statObject(meta);
     }
 
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.stat === "function") {
-      const meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
+      const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
       if (meta) return _statObject(meta);
     }
     return statSync(p);
@@ -597,7 +631,7 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.lstat === "function") {
-      const meta = await __nimbusUseRpcResult(supervisor.lstat(absPath), (result) => result);
+      const meta = await _fsRpc(supervisor.lstat(absPath), "lstat", p, (result) => result);
       if (meta) return _statObject(meta);
     }
     return lstatSync(p);
@@ -608,12 +642,13 @@ const __fsMod = (() => {
     let local;
     let localError;
     try { local = readdirSync(p, opts); } catch (e) { localError = e; }
+    if (localError && localError?.code !== "ENOENT") throw localError;
     const mayBeStale = !!globalThis.__nimbusVfsMayBeStale;
     if (Array.isArray(local) && !mayBeStale && !opts?.withFileTypes) return local;
 
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.readdir === "function") {
-      const entries = await __nimbusUseRpcResult(supervisor.readdir(absPath), (result) => result);
+      const entries = await _fsRpc(supervisor.readdir(absPath), "scandir", p, (result) => result);
       if (Array.isArray(entries)) {
         if (opts?.withFileTypes) {
           const byName = new Map();
@@ -644,7 +679,7 @@ const __fsMod = (() => {
   async function _readlinkAsync(p) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.readlink === "function") {
-      const target = await supervisor.readlink(_resolve(p));
+      const target = await _fsRpc(supervisor.readlink(_resolve(p)), "readlink", p, (result) => result);
       if (target !== null && target !== undefined) return target;
     }
     throw _fsErr("EINVAL", "readlink", p);
@@ -653,7 +688,7 @@ const __fsMod = (() => {
   async function _symlinkAsync(target, path) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.symlink === "function") {
-      await supervisor.symlink(String(target), _resolve(path));
+      await _fsRpc(supervisor.symlink(String(target), _resolve(path)), "symlink", path, () => undefined);
       _markVfsStale();
       return;
     }
@@ -667,7 +702,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.writeFile === "function") {
       const cell = _writtenCell(absPath);
       if (cell !== undefined) {
-        await supervisor.writeFile(absPath, cell);
+        await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
         if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
         _markVfsStale();
       }
@@ -691,10 +726,11 @@ const __fsMod = (() => {
       // appended bytes cross the RPC boundary and only the EOF chunk is
       // rewritten; a prefix written live by another process is preserved
       // instead of clobbered by the local view.
-      const meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
+      const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
       if (meta && meta.type === "file") {
-        await __nimbusUseRpcResult(
+        await _fsRpc(
           supervisor.fsWriteRange(absPath, Number(meta.size) || 0, bytes),
+          "write", p,
           () => undefined,
         );
         if (__vfsWrites) delete __vfsWrites[k];
@@ -709,7 +745,7 @@ const __fsMod = (() => {
     // Creation (no live file) or pending local writes: flush the merged cell.
     const cell = _writtenCell(absPath);
     if (cell !== undefined) {
-      await supervisor.writeFile(absPath, cell);
+      await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
       if (__vfsWrites) delete __vfsWrites[k];
       _markVfsStale();
     }
@@ -719,7 +755,7 @@ const __fsMod = (() => {
     mkdirSync(p, opts);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.mkdir === "function") {
-      await supervisor.mkdir(_resolve(p));
+      await _fsRpc(supervisor.mkdir(_resolve(p)), "mkdir", p, () => undefined);
       _markVfsStale();
     }
   }
@@ -728,7 +764,7 @@ const __fsMod = (() => {
     unlinkSync(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.unlink === "function") {
-      await supervisor.unlink(_resolve(p));
+      await _fsRpc(supervisor.unlink(_resolve(p)), "unlink", p, () => undefined);
       _markVfsStale();
     }
   }
@@ -737,7 +773,7 @@ const __fsMod = (() => {
     rmdirSync(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.rmdir === "function") {
-      await supervisor.rmdir(_resolve(p));
+      await _fsRpc(supervisor.rmdir(_resolve(p)), "rmdir", p, () => undefined);
       _markVfsStale();
     }
   }
@@ -746,7 +782,7 @@ const __fsMod = (() => {
     renameSync(oldP, newP);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.rename === "function") {
-      await supervisor.rename(_resolve(oldP), _resolve(newP));
+      await _fsRpc(supervisor.rename(_resolve(oldP), _resolve(newP)), "rename", oldP, () => undefined);
       _markVfsStale();
     }
   }
@@ -768,7 +804,7 @@ const __fsMod = (() => {
       }
       // Live file is the source of truth — supervisor trims only the
       // boundary chunk; ENOENT propagates when it does not exist.
-      await __nimbusUseRpcResult(supervisor.fsTruncate(absPath, size), () => undefined);
+      await _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, () => undefined);
       if (localCell !== undefined) _truncateLocalCell(absPath, size);
       _markVfsStale();
       return;
@@ -802,8 +838,9 @@ const __fsMod = (() => {
     const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
     if (supervisor && typeof supervisor.utimes === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      await __nimbusUseRpcResult(
+      await _fsRpc(
         supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
+        syscall, p,
         () => undefined,
       );
       _markVfsStale();
@@ -837,6 +874,106 @@ const __fsMod = (() => {
     if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
   }
 
+  function _coerceId(value, syscall, p) {
+    const id = Number(value);
+    if (!Number.isInteger(id) || id < 0) throw _fsErr("EINVAL", syscall, p);
+    return id;
+  }
+
+  async function _chownAsync(p, uid, gid, opts, syscallOverride) {
+    const followSymlinks = !(opts && opts.followSymlinks === false);
+    const syscall = syscallOverride || (followSymlinks ? "chown" : "lchown");
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor.chown !== "function") {
+      if (!existsSync(p)) throw _fsErr("ENOENT", syscall, p);
+      throw _fsErr("ENOSYS", syscall, p);
+    }
+    const nextUid = _coerceId(uid, syscall, p);
+    const nextGid = _coerceId(gid, syscall, p);
+    await _flushLocalPathToSupervisor(absPath, supervisor);
+    await _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, () => undefined);
+    const meta = _metadata(absPath);
+    if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
+    _markVfsStale();
+  }
+
+  function _modeAllows(meta, want) {
+    if (want === 0) return true;
+    const mode = Number(meta?.mode ?? 0o644) & 0o777;
+    const currentUid = Number(cred.uid);
+    const currentGid = Number(cred.gid);
+    const groups = cred.groups.map(Number);
+    if (currentUid === 0) {
+      if ((want & 1) !== 0 && (mode & 0o111) === 0) return false;
+      return true;
+    }
+    const shift = currentUid === Number(meta?.uid ?? 1000)
+      ? 6
+      : (currentGid === Number(meta?.gid ?? 1000) || groups.includes(Number(meta?.gid ?? 1000))) ? 3 : 0;
+    const available = (mode >> shift) & 7;
+    return (available & want) === want;
+  }
+
+  function _ensureAncestorsTraversable(absPath, syscall, p) {
+    const parts = _strip(absPath).split("/").filter(Boolean);
+    for (let index = 1; index < parts.length; index++) {
+      const ancestorMeta = _metadata("/" + parts.slice(0, index).join("/"));
+      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p);
+    }
+  }
+
+  function _ensureWritable(absPath, syscall, p) {
+    _ensureAncestorsTraversable(absPath, syscall, p);
+    const cell = _bundleLookup(absPath);
+    const meta = _metadata(absPath);
+    if (meta !== undefined || cell !== undefined || existsSync(absPath)) {
+      const denial = _denialCode(cell);
+      if (denial || !_modeAllows(meta, 2)) throw _fsErr(denial || "EACCES", syscall, p);
+      return;
+    }
+
+    const parent = __pathMod.dirname(absPath);
+    const parentMeta = _metadata(parent);
+    if (parentMeta) {
+      if (parentMeta.type && parentMeta.type !== "directory") throw _fsErr("ENOTDIR", syscall, p);
+      if (!_modeAllows(parentMeta, 3)) throw _fsErr("EACCES", syscall, p);
+      return;
+    }
+
+    const parentKey = _strip(parent);
+    const parentIsLocal = parent === cwd || parent === "/" ||
+      (!!__vfsDirs && parentKey in __vfsDirs) ||
+      (!!__vfsManifest && parentKey in __vfsManifest);
+    if (parentIsLocal || _supervisor()) return;
+    throw _fsErr("ENOENT", syscall, p);
+  }
+
+  function accessSync(p, mode) {
+    const absPath = _resolve(p);
+    const cell = _bundleLookup(absPath);
+    const meta = _metadata(absPath);
+    if (cell === undefined && meta === undefined && !existsSync(p)) throw _fsErr("ENOENT", "access", p);
+    const requested = mode === undefined ? 0 : Number(mode);
+    if (!Number.isInteger(requested) || requested < 0 || (requested & ~7) !== 0) {
+      throw _fsErr("EINVAL", "access", p);
+    }
+    _ensureAncestorsTraversable(absPath, "access", p);
+    const denial = _denialCode(cell);
+    if ((requested & 4) !== 0 && denial) throw _fsErr(denial, "access", p);
+    if (!_modeAllows(meta, requested)) throw _fsErr("EACCES", "access", p);
+  }
+
+  async function _accessAsync(p, mode) {
+    const requested = mode === undefined ? 0 : Number(mode);
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.access === "function") {
+      await _fsRpc(supervisor.access(_resolve(p), requested), "access", p, () => undefined);
+      return;
+    }
+    accessSync(p, requested);
+  }
+
   // ── readFileSync ──
   // Returns a Buffer when no encoding requested, a string otherwise.
   // The cell shape (string vs Uint8Array) drives conversion:
@@ -846,13 +983,13 @@ const __fsMod = (() => {
   //   - no encoding + bytes cell → wrap bytes as Buffer (no copy)
   function readFileSync(p, opts) {
     const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "open", p);
     const content = _bundleLookup(absPath);
     if (content === undefined) {
-      const err = new Error("ENOENT: no such file or directory, open '" + p + "'");
-      err.code = "ENOENT";
-      err.errno = -2;
-      throw err;
+      throw _fsErr("ENOENT", "open", p);
     }
+    const denial = _denialCode(content);
+    if (denial) throw _fsErr(denial, "open", p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
       // text encoding requested — produce a string regardless of cell shape.
@@ -870,6 +1007,7 @@ const __fsMod = (() => {
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
     const absPath = _resolve(p);
+    _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     let cell;
     if (data instanceof Uint8Array) cell = data;
@@ -886,6 +1024,7 @@ const __fsMod = (() => {
   // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
     const absPath = _resolve(p);
+    _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const existing = _bundleLookup(absPath);
     const existingDefined = existing !== undefined;
@@ -918,6 +1057,7 @@ const __fsMod = (() => {
   function existsSync(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
+    if (_metadata(absPath) !== undefined) return true;
     if (__vfsBundle && k in __vfsBundle) return true;
     if (__vfsWrites && k in __vfsWrites) return true;
     if (__vfsDirs && k in __vfsDirs) return true;
@@ -945,14 +1085,17 @@ const __fsMod = (() => {
   // ── statSync ──
   function statSync(p, opts) {
     const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "stat", p);
     const k = _strip(absPath);
+    const metadata = _metadata(absPath);
+    if (metadata) return _statObject(metadata, k);
     // Check if it's a known directory written this exec session
     if (__vfsDirs && k in __vfsDirs) {
-      return _localStatObject(k, true, false, 0, 0o755);
+      return _localStatObject(k, true, false, 0, 0o777 & ~__processUmask, cred.uid, cred.gid);
     }
     // W2.5b: consult uncapped manifest first for directory shape.
     if (__vfsManifest && k in __vfsManifest) {
-      return _localStatObject(k, true, false, 0, 0o755);
+      return _localStatObject(k, true, false, 0, 0o755, cred.uid, cred.gid);
     }
     // File with content embedded?
     const content = _bundleLookup(absPath);
@@ -961,7 +1104,7 @@ const __fsMod = (() => {
       // (byteLength) — fixes binary writes from reporting the
       // post-corruption byte count.
       const size = _byteLen(content);
-      return _localStatObject(k, false, false, size, 0o644);
+      return _localStatObject(k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid);
     }
     // File listed in parent's manifest but content was capped out — return
     // a zero-size file stat so callers like fs.stat / fs.statSync see the
@@ -973,7 +1116,7 @@ const __fsMod = (() => {
       const name = slash >= 0 ? k.slice(slash + 1) : k;
       const sib = __vfsManifest[parent];
       if (sib && sib.indexOf(name) !== -1) {
-        return _localStatObject(k, false, false, 0, 0o644);
+        return _localStatObject(k, false, false, 0, 0o644, cred.uid, cred.gid);
       }
     }
     // Last-resort: bundle prefix scan (legacy path).
@@ -981,16 +1124,14 @@ const __fsMod = (() => {
       const prefix = k + "/";
       for (const bk in __vfsBundle) {
         if (bk.startsWith(prefix)) {
-          return _localStatObject(k, true, false, 0, 0o755);
+          return _localStatObject(k, true, false, 0, 0o755, cred.uid, cred.gid);
         }
       }
     }
     // Node's statSync honors { throwIfNoEntry: false } by returning undefined
     // for a missing path instead of throwing.
     if (opts && opts.throwIfNoEntry === false) return undefined;
-    const err = new Error("ENOENT: no such file or directory, stat '" + p + "'");
-    err.code = "ENOENT"; err.errno = -2;
-    throw err;
+    throw _fsErr("ENOENT", "stat", p);
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
@@ -1003,6 +1144,9 @@ const __fsMod = (() => {
   // is unioned with __vfsWrites so newly-written files become visible.
   function readdirSync(p, opts) {
     const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "scandir", p);
+    const metadata = _metadata(absPath);
+    if (metadata && !_modeAllows(metadata, 4)) throw _fsErr("EACCES", "scandir", p);
     const k = _strip(absPath);
     const prefix = k ? k + "/" : "";
     const names = new Set();
@@ -1117,6 +1261,10 @@ const __fsMod = (() => {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
     _writeFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
+  function appendFile(p, d, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _appendFileAsync(p, d, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
+  }
   function stat(p, cb) { _statAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
   function lstat(p, cb) { _lstatAsync(p).then((s) => cb(null, s)).catch((e) => cb(e)); }
   function readdir(p, opts, cb) {
@@ -1133,12 +1281,11 @@ const __fsMod = (() => {
   function utimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function lutimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function chmod(p, mode, cb) { _chmodAsync(p, mode).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function chown(p, uid, gid, cb) { _chownAsync(p, uid, gid).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function lchown(p, uid, gid, cb) { _chownAsync(p, uid, gid, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function access(p, mode, cb) {
     if (typeof mode === "function") { cb = mode; mode = undefined; }
-    _existsAsync(p).then((ok) => {
-      if (ok) cb(null);
-      else cb(_fsErr("ENOENT", "access", p));
-    }).catch((e) => cb(e));
+    _accessAsync(p, mode).then(() => cb(null)).catch((e) => cb(e));
   }
 
   // ── open-flag parsing for fs.promises.open ──
@@ -1170,6 +1317,8 @@ const __fsMod = (() => {
   // hibernation and partial reads/writes never move whole files. Unflushed
   // sync writes (__vfsWrites) take read precedence; the local sync view is
   // overlaid on writes so readFileSync stays coherent.
+  let __nextFileHandleFd = 3;
+  const __fileHandles = new Map();
   class __FileHandle {
     constructor(path, flagInfo, size) {
       this._path = path;
@@ -1178,7 +1327,8 @@ const __fsMod = (() => {
       this._position = 0;
       this._size = size;
       this._closed = false;
-      this.fd = 0;
+      this.fd = __nextFileHandleFd++;
+      __fileHandles.set(this.fd, this);
     }
     _assertOpen(syscall) {
       if (this._closed) throw _fsErr("EBADF", syscall, this._path);
@@ -1203,7 +1353,7 @@ const __fsMod = (() => {
       } else {
         const supervisor = _supervisor();
         if (supervisor && typeof supervisor.fsReadRange === "function") {
-          const bytes = await __nimbusUseRpcResult(supervisor.fsReadRange(this._abs, pos, want), (result) => result);
+          const bytes = await _fsRpc(supervisor.fsReadRange(this._abs, pos, want), "read", this._path, (result) => result);
           if (bytes !== null && bytes !== undefined) slice = bytes;
         }
         if (slice === null) {
@@ -1238,7 +1388,7 @@ const __fsMod = (() => {
         // Push any pending sync writes first so the ranged write lands on
         // top of them, then write only the touched range live.
         await _flushLocalPathToSupervisor(this._abs, supervisor);
-        await __nimbusUseRpcResult(supervisor.fsWriteRange(this._abs, at, bytes), () => undefined);
+        await _fsRpc(supervisor.fsWriteRange(this._abs, at, bytes), "write", this._path, () => undefined);
         _overlayLocalCell(this._abs, at, bytes);
         _markVfsStale();
       } else {
@@ -1272,8 +1422,12 @@ const __fsMod = (() => {
       await _truncateAsync(this._path, size);
       this._size = size;
     }
-    async chmod(mode) { await _chmodAsync(this._path, mode); } async chown() {} async utimes(atime, mtime) { await _utimesAsync(this._path, atime, mtime); } async sync() {} async datasync() {}
-    async close() { this._closed = true; }
+    async chmod(mode) { this._assertOpen("fchmod"); await _chmodAsync(this._path, mode); }
+    async chown(uid, gid) { this._assertOpen("fchown"); await _chownAsync(this._path, uid, gid, undefined, "fchown"); }
+    async utimes(atime, mtime) { this._assertOpen("futimes"); await _utimesAsync(this._path, atime, mtime); }
+    async sync() {}
+    async datasync() {}
+    async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); }
     [Symbol.asyncDispose]() { return this.close(); }
   }
 
@@ -1283,7 +1437,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     let liveMeta = null;
     if (supervisor && typeof supervisor.stat === "function") {
-      liveMeta = await __nimbusUseRpcResult(supervisor.stat(absPath), (result) => result);
+      liveMeta = await _fsRpc(supervisor.stat(absPath), "stat", path, (result) => result);
     }
     if (liveMeta && liveMeta.type === "directory") throw _fsErr("EISDIR", "open", path);
     let localStat = null;
@@ -1303,6 +1457,15 @@ const __fsMod = (() => {
       size = 0;
     }
     return new __FileHandle(path, fl, size);
+  }
+
+  function fchown(fd, uid, gid, cb) {
+    const handle = __fileHandles.get(Number(fd));
+    if (!handle || handle._closed) {
+      queueMicrotask(() => cb(_fsErr("EBADF", "fchown", fd)));
+      return;
+    }
+    handle.chown(uid, gid).then(() => cb(null)).catch((error) => cb(error));
   }
 
   // ── promises namespace (W3: full surface, VFS-backed) ──
@@ -1374,7 +1537,10 @@ const __fsMod = (() => {
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
     truncate: async (p, len) => { await _truncateAsync(p, len || 0); },
-    chmod: async (p, mode) => { await _chmodAsync(p, mode); }, chown: async () => {}, lchmod: async () => {}, lchown: async () => {},
+    chmod: async (p, mode) => { await _chmodAsync(p, mode); },
+    chown: async (p, uid, gid) => { await _chownAsync(p, uid, gid); },
+    lchmod: async (p, mode) => { await _chmodAsync(p, mode); },
+    lchown: async (p, uid, gid) => { await _chownAsync(p, uid, gid, { followSymlinks: false }); },
     utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
     lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
@@ -1487,8 +1653,8 @@ const __fsMod = (() => {
   const __fsExports = {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
-    realpathSync, utimesSync, lutimesSync, chmodSync,
-    readFile, writeFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, access,
+    realpathSync, utimesSync, lutimesSync, chmodSync, accessSync,
+    readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, chown, lchown, fchown, access,
     promises, constants,
     createReadStream: (p, opts) => {
       const rs = new __streamMod.Readable({
@@ -1710,7 +1876,12 @@ const __constantsMod = {
 const __osMod = {
   platform: () => "linux", arch: () => "x64", type: () => "Linux",
   release: () => "6.0.0-nimbus", tmpdir: () => "/tmp", homedir: () => "/home/user",
-  hostname: () => "nimbus", userInfo: () => ({ uid: 1000, gid: 1000, username: "user", homedir: "/home/user", shell: "/bin/sh" }),
+  hostname: () => "nimbus", userInfo: () => {
+    const uid = Number(cred.uid);
+    const gid = Number(cred.gid);
+    const root = uid === 0;
+    return { uid, gid, username: root ? "root" : "user", homedir: root ? "/root" : "/home/user", shell: "/bin/sh" };
+  },
   cpus: () => [{ model: "DO vCPU", speed: 3000, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }],
   totalmem: () => 128 * 1024 * 1024, freemem: () => 64 * 1024 * 1024,
   loadavg: () => [0, 0, 0], uptime: () => 3600,
@@ -3365,6 +3536,7 @@ function __nimbusSignalSelf(signal) {
 }
 
 const __processEvents = new __eventsMod();
+let __processUmask = Number(cred.umask) & 0o777;
 const __processMod = {
   argv: ["node", ...(argv || [])],
   env: env || {},
@@ -3410,7 +3582,27 @@ const __processMod = {
     if (n === __processMod.pid || n === 0) return __nimbusSignalSelf(signal || "SIGTERM");
     return false;
   },
-  umask: () => 0o022,
+  getuid: () => Number(cred.uid),
+  geteuid: () => Number(cred.uid),
+  getgid: () => Number(cred.gid),
+  getegid: () => Number(cred.gid),
+  getgroups: () => Array.from(cred.groups, Number),
+  umask: (mask) => {
+    const previous = __processUmask;
+    if (mask === undefined) return previous;
+    const next = typeof mask === "string" ? parseInt(mask, 8) : Number(mask);
+    if (!Number.isInteger(next) || next < 0 || next > 0o777) {
+      const error = new TypeError("The value of mask is out of range");
+      error.code = "ERR_INVALID_ARG_VALUE";
+      throw error;
+    }
+    __processUmask = next;
+    if (__supervisor && typeof __supervisor.setUmask === "function") {
+      const task = __nimbusUseRpcResult(__supervisor.setUmask(next), () => undefined);
+      if (Array.isArray(__pendingIO)) __pendingIO.push(task);
+    }
+    return previous;
+  },
   // process.binding is a deprecated internal API some bundled legacy
   // packages still read at module init (e.g. minipass, bundled by degit
   // → create-cloudflare, does process.binding('fs') for FS constants).

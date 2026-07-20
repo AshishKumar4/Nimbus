@@ -32,6 +32,7 @@ import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { RUBY_RUNNER_PREAMBLE_TAIL } from './ruby-runner.js';
+import { CRED_KERNEL } from './os-contracts.js';
 
 export interface RubyReplDeps {
   facetMgr: FacetManager;
@@ -169,7 +170,8 @@ class RubyReplAdapter implements ReplAdapter {
 
   private async ensurePool(): Promise<void> {
     if (this.pool) return;
-    const { vfs, installRoot, facetMgr } = this.deps;
+    const { installRoot, facetMgr } = this.deps;
+    const vfs = this.deps.vfs.as(CRED_KERNEL);
     const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
     if (!vfs.exists(wasmPath)) {
       throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);

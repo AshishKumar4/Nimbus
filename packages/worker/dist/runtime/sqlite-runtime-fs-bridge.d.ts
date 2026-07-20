@@ -1,11 +1,13 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
-    private readonly vfs;
+    private readonly rawVfs;
     private nextHandleId;
     private handles;
     private legacySymlinks;
-    constructor(vfs: SqliteVFS);
+    private vfs;
+    constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS);
+    updateCredential(vfs: CredentialedVfs): void;
     stat(path: string, options?: {
         followSymlinks?: boolean;
     }): Promise<RuntimeVfsStat | null>;
@@ -30,6 +32,10 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         followSymlinks?: boolean;
     }): Promise<void>;
     chmod(path: string, mode: number): Promise<void>;
+    access(path: string, mode: number): Promise<void>;
+    chown(path: string, uid: number, gid: number, options?: {
+        followSymlinks?: boolean;
+    }): Promise<void>;
     open(path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Promise<number>;

@@ -67,6 +67,7 @@ export interface SessionInternal {
   sqliteFs: SqliteVFS | null;
   kernel: Kernel | null;
   shell: Shell | null;
+  shellProcessPid: number | null;
   terminal: WebSocketTerminal | null;
   facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */

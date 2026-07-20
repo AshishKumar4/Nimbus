@@ -33,7 +33,7 @@
  * are NOT supported (D1 itself doesn't support them).
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 // ── Public types (subset of @cloudflare/workers-types D1 surface) ───────
 
@@ -62,7 +62,7 @@ export interface D1EmulatorOptions {
   /** workerd SqlStorage instance, e.g. ctx.storage.sql. */
   sqlStorage: any;
   binding: string;
-  vfs?: SqliteVFS | any;       // for reading optional migration files
+  vfs?: CredentialedVfs;
   root?: string;                // project root for migrations_dir resolution
   migrationsDir?: string;
   onLog?: (msg: string) => void;
@@ -387,7 +387,7 @@ export class D1Emulator {
   private prefixer: TablePrefixer;
   private migrationsRun = false;
   private migrationsDir?: string;
-  private vfs?: any;
+  private vfs?: CredentialedVfs;
   private root?: string;
   private onLog: (m: string) => void;
 

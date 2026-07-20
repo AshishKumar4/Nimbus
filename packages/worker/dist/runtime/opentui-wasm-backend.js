@@ -99,6 +99,7 @@ export class OpenTUIWasmBackend {
             preopens: [{ wasiPath: '/', vfsPath: 'opentui-wasi-root' }],
             files: {},
             dirs: [],
+            modes: { 'opentui-wasi-root': 0o7 },
         });
         // getMemory is late-bound: the WASI host re-reads `.buffer` on every call,
         // so a grow is transparent to it. We resolve the export after instantiation.

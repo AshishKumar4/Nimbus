@@ -14,14 +14,17 @@
  * Loop guard: `resolveSymlinkChain` follows at most 40 hops (matches
  * POSIX SYMLOOP_MAX).
  */
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { normalizeVfsPath } from './path.js';
 export const LEGACY_SYMLINK_REGISTRY_PATH = '.nimbus-symlinks.json';
 export class SymlinkRegistry {
     vfs;
+    view;
     cache = null;
     cacheRevision = -1;
     constructor(vfs) {
         this.vfs = vfs;
+        this.view = vfs.as(CRED_KERNEL);
     }
     /** Lazy-load the registry and refresh it after direct backing-file writes. */
     load() {
@@ -29,8 +32,8 @@ export class SymlinkRegistry {
         if (this.cache && this.cacheRevision === revision)
             return this.cache;
         const next = new Map();
-        if (this.vfs.exists(LEGACY_SYMLINK_REGISTRY_PATH)) {
-            const raw = this.vfs.readFileString(LEGACY_SYMLINK_REGISTRY_PATH);
+        if (this.view.exists(LEGACY_SYMLINK_REGISTRY_PATH)) {
+            const raw = this.view.readFileString(LEGACY_SYMLINK_REGISTRY_PATH);
             const parsed = JSON.parse(raw);
             if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
                 throw new Error(`[symlink-registry] invalid ${LEGACY_SYMLINK_REGISTRY_PATH}`);
@@ -51,7 +54,10 @@ export class SymlinkRegistry {
         const obj = {};
         for (const [k, v] of next)
             obj[k] = v;
-        this.vfs.writeFile(LEGACY_SYMLINK_REGISTRY_PATH, JSON.stringify(obj));
+        const created = !this.view.exists(LEGACY_SYMLINK_REGISTRY_PATH);
+        this.view.writeFile(LEGACY_SYMLINK_REGISTRY_PATH, JSON.stringify(obj));
+        if (created)
+            this.view.chown(LEGACY_SYMLINK_REGISTRY_PATH, 1000, 1000);
         this.cache = next;
         this.cacheRevision = this.vfs.revision(LEGACY_SYMLINK_REGISTRY_PATH);
     }
@@ -145,10 +151,12 @@ export class SymlinkRegistry {
  * in-memory cache, so all runtime surfaces that share one SqliteVFS must also
  * share the registry instance to avoid stale symlink reads.
  */
+const registries = new WeakMap();
 export function getSymlinkRegistry(vfs) {
-    const owner = vfs;
-    if (!owner.__nimbus_symlink_registry) {
-        owner.__nimbus_symlink_registry = new SymlinkRegistry(vfs);
-    }
-    return owner.__nimbus_symlink_registry;
+    const existing = registries.get(vfs);
+    if (existing)
+        return existing;
+    const registry = new SymlinkRegistry(vfs);
+    registries.set(vfs, registry);
+    return registry;
 }

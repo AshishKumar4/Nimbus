@@ -15,6 +15,7 @@ import { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusC
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, } from './agent-contract.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
@@ -864,20 +865,21 @@ async function runTool(self, name, args) {
         if (name === 'read_file') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user');
-            return { path: '/' + path, content: self.sqliteFs.readFileString(path) };
+            return { path: '/' + path, content: self.sqliteFs.as(CRED_KERNEL).readFileString(path) };
         }
         if (name === 'write_file') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
-            ensureParentDirs(self.sqliteFs, path);
-            self.sqliteFs.writeFile(path, String(args.content ?? ''));
+            const vfs = self.sqliteFs.as(CRED_KERNEL);
+            ensureParentDirs(vfs, path);
+            vfs.writeFile(path, String(args.content ?? ''));
             return { ok: true, path: '/' + path, bytes: String(args.content ?? '').length };
         }
         if (name === 'list_files') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user');
             const base = trimTrailingSlash(path);
-            const entries = self.sqliteFs.readdir(path).map((entry) => ({
+            const entries = self.sqliteFs.as(CRED_KERNEL).readdir(path).map((entry) => ({
                 name: entry.name,
                 type: entry.type,
                 path: '/' + base + '/' + entry.name,

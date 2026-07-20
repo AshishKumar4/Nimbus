@@ -22,6 +22,13 @@ export interface FacetPackageSpec {
   integrity: string;
   /** Absolute path inside the VFS where this package is installed. */
   pkgDir: string;
+  /**
+   * Install root (the project's node_modules) that contains pkgDir. The
+   * facet stages directory inodes from here downward — never the root's
+   * pre-existing ancestors — so the credentialed writeBatch authorizes each
+   * package's parents without tripping the write-check on system dirs.
+   */
+  installRoot: string;
   /** mtime for every inode written by this package (ms since epoch). */
   mtime: number;
   /** Chunk size used by the VFS (must match sqlite-vfs.ts CHUNK_SIZE). */

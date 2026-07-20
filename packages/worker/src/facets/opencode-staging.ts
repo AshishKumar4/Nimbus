@@ -63,12 +63,20 @@ export const OpencodeStageSpecSchema = z.object({
   mode: z.enum(['oneshot', 'attached', 'server']),
   argv: z.array(z.string()),
   env: z.record(z.string(), z.string()),
+  cred: z.object({
+    uid: z.number().int().nonnegative(),
+    gid: z.number().int().nonnegative(),
+    groups: z.array(z.number().int().nonnegative()),
+    umask: z.number().int().nonnegative(),
+  }),
   cwd: z.string(),
   stdin: z.string(),
   /** Serialized VFS snapshot bundle (`_serializeBundleForFacet` output). */
   vfsBundle: z.string(),
   /** Serialized VFS directory manifest (JSON). */
   vfsManifest: z.string(),
+  /** Serialized VFS inode metadata (JSON). */
+  vfsMetadata: z.string(),
 });
 
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
@@ -237,11 +245,13 @@ export async function assembleOpencodeFacetConfig(
   const runnerCode = generateOpencodeRunnerCode({
     argv: spec.argv,
     env: spec.env,
+    cred: spec.cred,
     cwd: spec.cwd,
     stdin: spec.stdin,
     shimsCode,
     vfsBundle: spec.vfsBundle,
     vfsManifest: spec.vfsManifest,
+    vfsMetadata: spec.vfsMetadata,
     mode: spec.mode,
   });
 

@@ -26,7 +26,7 @@ function makeShellEntrypoint(shellName, shell, vfs) {
             ctx.stdout.write('Executes commands through the Nimbus shell engine with VFS-backed stdin and scripts.\n');
             return 0;
         }
-        const program = await parseShellProgram(shellName, ctx, vfs);
+        const program = await parseShellProgram(shellName, ctx, ctx.vfs);
         if ('error' in program) {
             if (program.error)
                 ctx.stderr.write(program.error + '\n');
@@ -61,6 +61,12 @@ function makeShellEntrypoint(shellName, shell, vfs) {
                 stdout: ctx.isFdTerminal?.(1) ?? false,
                 stderr: ctx.isFdTerminal?.(2) ?? false,
             },
+            commandContext: {
+                pid: ctx.pid,
+                cred: ctx.cred,
+                setUmask: ctx.setUmask,
+            },
+            runAs: (_parent, cred, argv) => ctx.runAs(cred, argv),
         });
         writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
         writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);
@@ -119,9 +125,17 @@ async function parseShellProgram(shellName, ctx, vfs) {
 }
 function loadScript(shellName, script, args, options, cwd, vfs) {
     const path = resolveVfsPath(script, cwd || '/home/user');
-    if (!vfs.exists(path))
-        return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };
-    return { kind: 'script', path, body: vfs.readFileString(path), argv0: script, args, options };
+    try {
+        if (!vfs.exists(path))
+            return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };
+        return { kind: 'script', path, body: vfs.readFileString(path), argv0: script, args, options };
+    }
+    catch (error) {
+        if (hasErrorCode(error, 'EACCES') || hasErrorCode(error, 'EPERM')) {
+            return { error: `${shellName}: ${script}: Permission denied`, exitCode: 126 };
+        }
+        return { error: `${shellName}: ${script}: ${formatError(error)}`, exitCode: 1 };
+    }
 }
 async function readContextStdin(stdin) {
     if (typeof stdin === 'string')
@@ -191,6 +205,9 @@ function normalizeArgs(args) {
 }
 function formatError(error) {
     return error instanceof Error ? error.message : String(error);
+}
+function hasErrorCode(error, code) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 function writeUnforwarded(output, returned, forwarded) {
     if (!returned)

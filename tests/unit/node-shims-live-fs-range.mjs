@@ -9,12 +9,14 @@ import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-const bridge = new SqliteRuntimeFsBridge(vfs);
+const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+const vfs = rawVfs.as(CRED_KERNEL);
+const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
 const supervisor = {
@@ -39,11 +41,15 @@ const supervisor = {
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
-const sandbox = factory({}, {}, {}, null, supervisor, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+const sandbox = factory(
+  {}, {}, {}, {}, null, supervisor,
+  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+);
 const fsp = sandbox.fs.promises;
 const enc = new TextEncoder();
 
@@ -60,7 +66,7 @@ await assert.rejects(bridge.symlink('live.bin', '/home/user/live.bin'), /EEXIST/
 assert.equal(new TextDecoder().decode(vfs.readFile('home/user/live.bin')), '0123456789abcdef');
 
 vfs.mkdir('home/user/legacy-over-directory');
-getSymlinkRegistry(vfs).set('home/user/legacy-over-directory', 'live.bin');
+getSymlinkRegistry(rawVfs).set('home/user/legacy-over-directory', 'live.bin');
 const legacyLstat = await bridge.stat('/home/user/legacy-over-directory', { followSymlinks: false });
 assert.equal(legacyLstat.type, 'directory');
 

@@ -1,10 +1,17 @@
-/**
- * ProcessTable — PID allocation and process lifecycle state.
- *
- * Each `node script.js` invocation gets a PID. The supervisor uses this
- * to route signals (kill) and track running processes. Owned by
- * SessionProcessSupervisor; callers go through that facade.
- */
+const USER_CRED = Object.freeze({
+    uid: 1000,
+    gid: 1000,
+    groups: Object.freeze([1000]),
+    umask: 0o022,
+});
+function immutableCred(cred) {
+    return Object.freeze({
+        uid: cred.uid,
+        gid: cred.gid,
+        groups: Object.freeze([...cred.groups]),
+        umask: cred.umask,
+    });
+}
 /**
  * Pid-space stride per DO instance generation. Pids are allocated as
  * `generation * PID_GEN_STRIDE + seq`, so pid-keyed state that OUTLIVES an
@@ -35,7 +42,10 @@ export class ProcessTable {
         return this.base;
     }
     /** Allocate a PID and register a new process. */
-    spawn(command, argv, cwd) {
+    spawn(command, argv, cwd, options = {}) {
+        const inheritedCred = options.parentPid === undefined
+            ? USER_CRED
+            : this.credOf(options.parentPid);
         const pid = this.nextPid++;
         const entry = {
             pid,
@@ -46,9 +56,30 @@ export class ProcessTable {
             exitCode: null,
             startTime: Date.now(),
             endTime: null,
+            cred: immutableCred(options.cred ?? inheritedCred),
         };
         this.processes.set(pid, entry);
         return entry;
+    }
+    credOf(pid) {
+        const entry = this.processes.get(pid);
+        if (!entry)
+            throw new Error(`process pid ${pid} does not exist`);
+        return immutableCred(entry.cred);
+    }
+    cred(pid) {
+        return this.credOf(pid);
+    }
+    setUmask(pid, umask) {
+        const entry = this.processes.get(pid);
+        if (!entry)
+            throw new Error(`process pid ${pid} does not exist`);
+        if (!Number.isInteger(umask) || umask < 0 || umask > 0o777) {
+            throw new Error(`invalid umask ${umask}`);
+        }
+        const previous = entry.cred.umask;
+        entry.cred = immutableCred({ ...entry.cred, umask });
+        return previous;
     }
     /** child-process isolation: mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid) {

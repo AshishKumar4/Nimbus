@@ -205,7 +205,7 @@ export class NimbusLoaderPool {
                 // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
                 const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
                 bindings.SUPERVISOR = ctxExports.SupervisorRPC({
-                    props: { doId: supDoId, pid: 0 },
+                    props: { doId: supDoId, pid: opts?.supervisorPid ?? 0 },
                 });
             }
             else {

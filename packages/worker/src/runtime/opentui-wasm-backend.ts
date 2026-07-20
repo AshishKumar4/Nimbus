@@ -139,6 +139,7 @@ export interface WasiHost {
     preopens: Array<{ wasiPath: string; vfsPath: string }>;
     files: Record<string, string>;
     dirs: string[];
+    modes: Record<string, number>;
   }): void;
 }
 
@@ -229,6 +230,7 @@ export class OpenTUIWasmBackend {
       preopens: [{ wasiPath: '/', vfsPath: 'opentui-wasi-root' }],
       files: {},
       dirs: [],
+      modes: { 'opentui-wasi-root': 0o7 },
     });
 
     // getMemory is late-bound: the WASI host re-reads `.buffer` on every call,

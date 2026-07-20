@@ -50,7 +50,7 @@
  *   can read it even though TypeScript doesn't compile it.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 /**
  * Walk the VFS and produce a snapshot suitable for seeding the facet's
@@ -120,7 +120,7 @@ function isLikelyText(filename: string): boolean {
  * so async-first-then-cache is the natural fit.
  */
 export function buildFsSnapshot(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   projectRoot: string,
 ): {
   files: Record<string, string>;

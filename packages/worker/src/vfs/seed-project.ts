@@ -25,6 +25,7 @@ import type {
 } from './sqlite-vfs.js';
 import { CHUNK_SIZE } from '../constants.js';
 import { enc } from '../_shared/bytes.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 
 /** Sentinel: if present, seed never runs again (until user deletes it). */
 export const SEED_SENTINEL_PATH = 'home/user/.nimbus-seeded';
@@ -942,9 +943,10 @@ export const SEED_FILES: SeedFile[] = [
  *   - Project dir already exists (user has their own ~/app we must not clobber)
  */
 export function shouldSeedProject(vfs: SqliteVFS): boolean {
+  const view = vfs.as(CRED_KERNEL);
   try {
-    if (vfs.exists(SEED_SENTINEL_PATH)) return false;
-    if (vfs.exists(SEED_PROJECT_DIR)) return false;
+    if (view.exists(SEED_SENTINEL_PATH)) return false;
+    if (view.exists(SEED_PROJECT_DIR)) return false;
     return true;
   } catch {
     return false;
@@ -956,7 +958,7 @@ export function shouldSeedProject(vfs: SqliteVFS): boolean {
  * Used to gate MOTD hints about the starter app.
  */
 export function hasSeededProject(vfs: SqliteVFS): boolean {
-  try { return vfs.exists(SEED_SENTINEL_PATH); } catch { return false; }
+  try { return vfs.as(CRED_KERNEL).exists(SEED_SENTINEL_PATH); } catch { return false; }
 }
 
 /**
@@ -976,6 +978,7 @@ export function seedProject(
   opts?: { log?: (msg: string) => void },
 ): { seeded: boolean; files: number; reason?: string } {
   const log = opts?.log;
+  const view = vfs.as(CRED_KERNEL);
 
   if (!shouldSeedProject(vfs)) {
     return { seeded: false, files: 0, reason: 'already-seeded-or-present' };
@@ -1015,6 +1018,8 @@ export function seedProject(
       size,
       mtime,
       mode: 0o644,
+      uid: 1000,
+      gid: 1000,
       chunkCount,
     });
 
@@ -1043,6 +1048,8 @@ export function seedProject(
       size: 0,
       mtime,
       mode: 0o755,
+      uid: 1000,
+      gid: 1000,
       chunkCount: 0,
     });
   }
@@ -1050,7 +1057,7 @@ export function seedProject(
   let fileCount = 0;
   try {
     // Phase 1: all project files + directories in ONE transactionSync
-    const result = vfs.writeBatch({ inodes, chunks });
+    const result = view.writeBatch({ inodes, chunks });
     fileCount = SEED_FILES.length;
     log?.(`[seed] wrote ${SEED_FILES.length} files + ${dirSet.size} dirs (${result.inodes} inodes, ${result.chunks} chunks)`);
 
@@ -1063,7 +1070,7 @@ export function seedProject(
       `# Seeded at: ${new Date(mtime).toISOString()}\n` +
       `# Files: ${SEED_FILES.length}\n`,
     );
-    vfs.writeBatch({
+    view.writeBatch({
       inodes: [{
         path: SEED_SENTINEL_PATH,
         parentPath: 'home/user',
@@ -1071,6 +1078,8 @@ export function seedProject(
         size: sentinelData.length,
         mtime,
         mode: 0o644,
+        uid: 1000,
+        gid: 1000,
         chunkCount: 1,
       }],
       chunks: [{ path: SEED_SENTINEL_PATH, chunkId: 0, data: sentinelData }],

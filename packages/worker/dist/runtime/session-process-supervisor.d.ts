@@ -23,11 +23,16 @@ import { ProcessTable, type ProcessEntry } from './process-table.js';
 import { type ProcessInputPacket } from './process-input.js';
 import { ProcessLogStore, type LogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
+import type { VfsCred } from './os-contracts.js';
 export interface ProcessSpawnOptions {
     /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
     longRunning?: boolean;
     /** Output and stdin are owned by an attached process terminal, not the parent shell. */
     attachedTty?: boolean;
+    /** Inherit the parent process credential, including its current umask. */
+    parentPid?: number;
+    /** Explicit credential for a deliberate identity transition such as sudo. */
+    cred?: VfsCred;
 }
 /**
  * Controlling-terminal descriptor for a process with an open input
@@ -57,6 +62,8 @@ export declare class SessionProcessSupervisor {
     get(pid: number): ProcessEntry | undefined;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
+    cred(pid: number): VfsCred;
+    setUmask(pid: number, umask: number): number;
     /** Mark a process as exited. First terminal state wins. */
     exit(pid: number, exitCode: number): void;
     /**

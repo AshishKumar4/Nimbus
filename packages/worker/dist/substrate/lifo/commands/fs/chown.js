@@ -1,33 +1,39 @@
+import { parseChownOwnership } from '../../../../shell/unix-accounts.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 const spec = {
     recursive: { type: 'boolean', short: 'R' },
 };
 const command = async (ctx) => {
-    const { positional } = parseArgs(ctx.args, spec);
+    const { flags, positional } = parseArgs(ctx.args, spec);
     if (positional.length < 2) {
         ctx.stderr.write('chown: missing operand\n');
         return 1;
     }
-    // First positional is OWNER[:GROUP], rest are files
-    const files = positional.slice(1);
-    let exitCode = 0;
-    for (const file of files) {
-        const path = resolve(ctx.cwd, file);
-        try {
-            // Verify file exists
-            ctx.vfs.stat(path);
-            // No-op: single-user system, ownership is always user:user
+    const vfs = ctx.vfs;
+    let requested;
+    try {
+        requested = parseChownOwnership(vfs, positional[0]);
+    }
+    catch (error) {
+        ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+    }
+    const apply = (path) => {
+        if (flags.recursive && vfs.stat(path).type === 'directory') {
+            for (const child of vfs.readdir(path))
+                apply(resolve(path, child.name));
         }
-        catch (e) {
-            if (e instanceof VFSError) {
-                ctx.stderr.write(`chown: ${file}: ${e.message}\n`);
-                exitCode = 1;
-            }
-            else {
-                throw e;
-            }
+        vfs.chown(path, requested.uid, requested.gid);
+    };
+    let exitCode = 0;
+    for (const file of positional.slice(1)) {
+        try {
+            apply(resolve(ctx.cwd, file));
+        }
+        catch (error) {
+            ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+            exitCode = 1;
         }
     }
     return exitCode;

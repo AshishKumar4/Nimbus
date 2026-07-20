@@ -53,7 +53,7 @@
  * dynamically-referenced icon."
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 
@@ -101,7 +101,7 @@ export function namedImportSignature(pkgName: string, names: ReadonlySet<string>
  * ~150 KiB total source) this is single-digit ms.
  */
 export function scanNamedImports(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   projDir: string,
 ): NamedImportMap {
   const result: NamedImportMap = new Map();
@@ -242,7 +242,7 @@ export interface SyntheticEntryResult {
 }
 
 export function buildSyntheticEntry(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   nmDir: string,
   pkgName: string,
   names: ReadonlySet<string>,
@@ -449,7 +449,7 @@ export function buildSyntheticEntry(
  * icons (each pulling 1-2 transitive shared utility files).
  */
 export function buildScopedSliceForSynthetic(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   nmDir: string,
   pkgName: string,
   referencedFiles: string[],
@@ -527,7 +527,7 @@ export function buildScopedSliceForSynthetic(
  * installed or doesn't expose a JS entry.
  */
 function findPackageEsmEntry(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   nmDir: string,
   pkgName: string,
 ): string | null {

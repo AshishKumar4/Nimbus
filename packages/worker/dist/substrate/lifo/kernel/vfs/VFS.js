@@ -23,9 +23,19 @@ export class VFS {
     onChange;
     /** Content store for chunked large files. Optional -- without it all data stays inline. */
     contentStore;
+    cred;
     constructor(contentStore) {
         this.root = this.createNode('directory', '');
         this.contentStore = contentStore ?? new ContentStore();
+    }
+    as(cred) {
+        const view = new VFS(this.contentStore);
+        view.root = this.root;
+        view.mounts = this.mounts;
+        view.emitter = this.emitter;
+        view.onChange = this.onChange;
+        view.cred = cred;
+        return view;
     }
     watch(pathOrListener, maybeListener) {
         if (typeof pathOrListener === 'function') {
@@ -100,7 +110,10 @@ export class VFS {
         for (const entry of this.mounts) {
             if (abs === entry.path || abs.startsWith(entry.path + '/')) {
                 const subpath = abs === entry.path ? '/' : abs.slice(entry.path.length);
-                return { provider: entry.provider, subpath };
+                const provider = this.cred && entry.provider.as
+                    ? entry.provider.as(this.cred)
+                    : entry.provider;
+                return { provider, subpath };
             }
         }
         return null;
@@ -275,6 +288,24 @@ export class VFS {
             return false;
         }
     }
+    access(path, mode) {
+        const vp = this.getProvider(path);
+        if (vp) {
+            if (vp.provider.access) {
+                vp.provider.access(vp.subpath, mode);
+                return;
+            }
+            vp.provider.stat(vp.subpath);
+            return;
+        }
+        const node = this.resolveNode(path);
+        if (mode === 0)
+            return;
+        const granted = ((node.mode >> 6) | (node.mode >> 3) | node.mode) & 0o7;
+        if ((granted & (mode & 0o7)) !== (mode & 0o7)) {
+            throw new Error(`EACCES: '${path}': permission denied`);
+        }
+    }
     stat(path) {
         const vp = this.getProvider(path);
         if (vp)
@@ -374,6 +405,18 @@ export class VFS {
         const typeBits = node.type === 'directory' ? 0o040000 : 0o100000;
         node.mode = typeBits | (mode & 0o7777);
         this.notify({ type: 'modify', path: this.toAbsolute(path), fileType: node.type });
+    }
+    chown(path, uid, gid) {
+        const vp = this.getProvider(path);
+        if (vp) {
+            const chown = vp.provider.chown;
+            if (typeof chown === 'function') {
+                chown.call(vp.provider, vp.subpath, uid, gid);
+                return;
+            }
+            throw new VFSError(ErrorCode.EINVAL, `'${path}': chown unsupported on this filesystem`);
+        }
+        throw new VFSError(ErrorCode.EINVAL, `'${path}': chown unsupported on this filesystem`);
     }
     touch(path) {
         try {

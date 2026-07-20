@@ -18,7 +18,6 @@ import type {
   VersionSpec,
 } from 'pip-requirements-js';
 import { z } from 'zod/v4';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import {
@@ -32,6 +31,11 @@ export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages
 export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;
 
 const PYPI_API = 'https://pypi.org/pypi';
+
+interface PythonPipVfs {
+  exists(path: string): boolean;
+  readFile(path: string): Uint8Array;
+}
 
 const IGNORED_PIP_INSTALL_FLAGS = new Set([
   '--upgrade',
@@ -213,7 +217,7 @@ export async function buildPipInvocation(
   argv: string[],
   binName: string,
   cwd: string,
-  vfs: SqliteVFS,
+  vfs: PythonPipVfs,
   runtimeContext: PythonPipRuntimeContext = {},
 ): Promise<PipInvocation> {
   const wantsVersion = argv.includes('--version') || argv.includes('-V');
@@ -262,7 +266,7 @@ export async function buildPipInvocation(
 async function buildPipInstallPlan(
   argv: string[],
   cwd: string,
-  vfs: SqliteVFS,
+  vfs: PythonPipVfs,
   runtimeContext: PythonPipRuntimeContext,
 ): Promise<PipInstallPlan> {
   const roots: PackageRequirement[] = [];
@@ -400,7 +404,7 @@ function failedPlan(error: string, exitCode: number): PipInstallPlan {
 function addRequirementsFile(
   reqPath: string,
   baseDir: string,
-  vfs: SqliteVFS,
+  vfs: PythonPipVfs,
   requirements: PackageRequirement[],
   constraints: Map<string, string[]>,
   displayPackages: string[],
@@ -408,7 +412,9 @@ function addRequirementsFile(
 ): string | null {
   if (depth > 8) return 'requirements nesting exceeded 8 files';
   const abs = resolveVfsPath(reqPath, baseDir);
-  if (!vfs.exists(abs)) return `requirements file not found: ${reqPath}`;
+  const probe = probeVfsPath(vfs, abs);
+  if ('error' in probe) return `cannot read requirements file ${reqPath}: ${probe.error}`;
+  if (!probe.exists) return `requirements file not found: ${reqPath}`;
   const text = readVfsText(vfs, abs);
   if ('error' in text) return `cannot read requirements file ${reqPath}: ${text.error}`;
 
@@ -444,13 +450,15 @@ function addRequirementsFile(
 function addConstraintsFile(
   reqPath: string,
   baseDir: string,
-  vfs: SqliteVFS,
+  vfs: PythonPipVfs,
   constraints: Map<string, string[]>,
   depth: number,
 ): string | null {
   if (depth > 8) return 'constraints nesting exceeded 8 files';
   const abs = resolveVfsPath(reqPath, baseDir);
-  if (!vfs.exists(abs)) return `constraints file not found: ${reqPath}`;
+  const probe = probeVfsPath(vfs, abs);
+  if ('error' in probe) return `cannot read constraints file ${reqPath}: ${probe.error}`;
+  if (!probe.exists) return `constraints file not found: ${reqPath}`;
   const text = readVfsText(vfs, abs);
   if ('error' in text) return `cannot read constraints file ${reqPath}: ${text.error}`;
 
@@ -476,12 +484,24 @@ function addConstraintsFile(
   return null;
 }
 
-function readVfsText(vfs: SqliteVFS, path: string): { text: string } | { error: string } {
+function readVfsText(vfs: PythonPipVfs, path: string): { text: string } | { error: string } {
   try {
     return { text: new TextDecoder('utf-8').decode(vfs.readFile(path)) };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+    return { error: errorMessage(e) };
   }
+}
+
+function probeVfsPath(vfs: PythonPipVfs, path: string): { exists: boolean } | { error: string } {
+  try {
+    return { exists: vfs.exists(path) };
+  } catch (e) {
+    return { error: errorMessage(e) };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function resolveRequirements(
@@ -768,7 +788,7 @@ function unquotePythonString(value: string): string {
 function localWheelArtifact(
   rawSpec: string,
   baseDir: string,
-  vfs: SqliteVFS,
+  vfs: PythonPipVfs,
 ): { artifact: LocalWheelArtifact | null } | { error: string } {
   const pathSpec = localWheelPathSpec(rawSpec);
   if ('error' in pathSpec) return pathSpec;
@@ -780,7 +800,9 @@ function localWheelArtifact(
   if (!looksLikePath) return { artifact: null };
 
   const abs = resolveVfsPath(spec, baseDir);
-  if (!vfs.exists(abs)) return { error: `local wheel not found: ${rawSpec}` };
+  const probe = probeVfsPath(vfs, abs);
+  if ('error' in probe) return { error: `cannot access local wheel ${rawSpec}: ${probe.error}` };
+  if (!probe.exists) return { error: `local wheel not found: ${rawSpec}` };
   const fileName = abs.slice(abs.lastIndexOf('/') + 1);
   if (!fileName.endsWith('.whl')) {
     return { error: `local installs currently require a .whl file: ${rawSpec}` };

@@ -32,12 +32,17 @@ import {
   type SequencedLogChunk,
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
+import type { VfsCred } from './os-contracts.js';
 
 export interface ProcessSpawnOptions {
   /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
   longRunning?: boolean;
   /** Output and stdin are owned by an attached process terminal, not the parent shell. */
   attachedTty?: boolean;
+  /** Inherit the parent process credential, including its current umask. */
+  parentPid?: number;
+  /** Explicit credential for a deliberate identity transition such as sudo. */
+  cred?: VfsCred;
 }
 
 /**
@@ -65,7 +70,7 @@ export class SessionProcessSupervisor {
 
   /** Allocate a PID and register a new process. */
   spawn(command: string, argv: string[], cwd: string, opts: ProcessSpawnOptions = {}): ProcessEntry {
-    const entry = this.table.spawn(command, argv, cwd);
+    const entry = this.table.spawn(command, argv, cwd, opts);
     if (opts.longRunning) this.table.setLongRunning(entry.pid);
     if (opts.attachedTty) this.table.setAttachedTty(entry.pid);
     return entry;
@@ -91,6 +96,14 @@ export class SessionProcessSupervisor {
 
   getAll(): ProcessEntry[] {
     return this.table.getAll();
+  }
+
+  cred(pid: number): VfsCred {
+    return this.table.credOf(pid);
+  }
+
+  setUmask(pid: number, umask: number): number {
+    return this.table.setUmask(pid, umask);
   }
 
   /** Mark a process as exited. First terminal state wins. */

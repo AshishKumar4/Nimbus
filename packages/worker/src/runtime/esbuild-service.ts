@@ -17,7 +17,8 @@
  * facet once wasm module passing to dynamic workers is stable.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from './os-contracts.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 
@@ -814,14 +815,14 @@ export interface BuildResult {
 // ── EsbuildService ──────────────────────────────────────────────────────
 
 export class EsbuildService {
-  private vfs: SqliteVFS;
+  private vfs: CredentialedVfs;
   private initialized = false;
   private initPromise: Promise<void> | null = null;
   /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
   private _esbuild: typeof esbuild | null = null;
 
   constructor(vfs: SqliteVFS) {
-    this.vfs = vfs;
+    this.vfs = vfs.as(CRED_KERNEL);
   }
 
   /**

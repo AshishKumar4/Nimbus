@@ -7,6 +7,7 @@ import {
   MAX_TX_BLOB_BYTES,
 } from '../../packages/worker/src/constants.ts';
 import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -59,7 +60,8 @@ function instrumentChunkPulls(stream, onChunkData) {
 // has committed synchronously and returned its credit.
 {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
   const data = bytes(MAX_TX_BLOB_BYTES + CHUNK_SIZE, 11);
   const startTransactions = harness.transactionCount;
   let chunkPulls = 0;
@@ -79,7 +81,7 @@ function instrumentChunkPulls(stream, onChunkData) {
   assert.equal(result.ok, true);
   assert.equal(chunkPulls, 17);
   assert.deepEqual(vfs.readFile('boundary.bin'), data);
-  const stats = vfs.getStats().sql;
+  const stats = rawVfs.getStats().sql;
   assert.ok(stats.creditRetainedBytes.peak <= MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
   assert.equal(stats.creditRetainedBytes.current, 0);
   assert.equal(stats.retainedWriteBytes.current, 0);
@@ -90,7 +92,8 @@ function instrumentChunkPulls(stream, onChunkData) {
 // credit deadlock, and reconstruct exact file contents.
 {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
   const entries = Array.from({ length: 8 }, (_, index) => ({
     path: `concurrent-${index}.bin`,
     data: bytes(MAX_TX_BLOB_BYTES * 2 + index + 1, index * 13),
@@ -106,7 +109,7 @@ function instrumentChunkPulls(stream, onChunkData) {
   clearTimeout(timeout);
   assert.ok(results.every((result) => result.ok));
   for (const entry of entries) assert.deepEqual(vfs.readFile(entry.path), entry.data);
-  const stats = vfs.getStats().sql;
+  const stats = rawVfs.getStats().sql;
   assert.ok(stats.creditRetainedBytes.peak <= MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
   assert.equal(stats.creditRetainedBytes.current, 0);
   assert.equal(stats.retainedWriteBytes.current, 0);
@@ -156,7 +159,8 @@ function corruptFileEndCheck(frame) {
 // complete generation remains visible and every in-memory credit is released.
 {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
   const oldData = bytes(31, 2);
   const replacement = bytes(MAX_TX_BLOB_BYTES + 7, 29);
   vfs.writeFile('atomic.bin', oldData);
@@ -175,7 +179,7 @@ function corruptFileEndCheck(frame) {
   assert.equal(result.error.phase, 'decode');
   assert.match(result.error.message, /file-end check mismatch/);
   assert.deepEqual(vfs.readFile('atomic.bin'), oldData);
-  const stats = vfs.getStats().sql;
+  const stats = rawVfs.getStats().sql;
   assert.equal(stats.creditRetainedBytes.current, 0);
   assert.equal(stats.retainedWriteBytes.current, 0);
   assert.equal(stats.stagedBytes.current, 0);
@@ -186,7 +190,8 @@ function corruptFileEndCheck(frame) {
 // decoded record plus bucket credits.
 {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
   const abort = new AbortController();
   const source = encodeWriteBatchStream(payload(
     'cancelled.bin',
@@ -222,7 +227,7 @@ function corruptFileEndCheck(frame) {
   assert.equal(cancelled, true, 'decoder cancellation did not reach the producer');
   assert.equal(dataChunksPulled, 1, 'producer continued after cancellation');
   assert.equal(vfs.exists('cancelled.bin'), false);
-  const stats = vfs.getStats().sql;
+  const stats = rawVfs.getStats().sql;
   assert.equal(stats.creditRetainedBytes.current, 0);
   assert.equal(stats.creditRetainedBytes.queued, 0);
   assert.equal(stats.retainedWriteBytes.current, 0);

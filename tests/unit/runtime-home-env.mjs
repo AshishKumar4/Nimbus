@@ -9,7 +9,9 @@ const encoder = new TextEncoder();
 class RuntimeVfs {
   constructor(files) {
     this.files = new Map(Object.entries(files));
+    this.creds = [];
   }
+  as(cred) { this.creds.push(cred); return this; }
   exists(path) { return this.files.has(path); }
   isDirectory() { return false; }
   readFile(path) {
@@ -47,8 +49,9 @@ function loaderHarness() {
   return { calls, facetMgr: { env, ctx } };
 }
 
-function commandContext(env) {
+function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) {
   return {
+    cred,
     args: ['-e', 'puts ENV["HOME"]'],
     cwd: '/home/user',
     env,
@@ -93,6 +96,7 @@ function commandContext(env) {
   defaultCtx.args = ['-c', 'print(1)'];
   assert.equal(await run(defaultCtx), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/user');
+  assert.deepEqual(vfs.creds.map((cred) => cred.uid), [1000, 1000]);
 }
 
 {
@@ -113,6 +117,7 @@ function commandContext(env) {
   assert.equal(harness.calls[0].userEnv.HOME, '/home/ruby');
   assert.equal(await run(commandContext({})), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/user');
+  assert.deepEqual(vfs.creds.map((cred) => cred.uid), [0, 1000, 1000]);
 }
 
 console.log('runtime-home-env: ok');

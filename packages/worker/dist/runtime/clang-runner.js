@@ -25,13 +25,14 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps) {
-    const { facetMgr, vfs } = deps;
+    const { facetMgr } = deps;
+    const runtimeVfs = deps.vfs.as(CRED_KERNEL);
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
@@ -43,6 +44,7 @@ export function makeClangRunnerFactory(deps) {
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
         let runtimePromise = null;
         return async function clangBinHandler(ctx) {
+            const vfs = deps.vfs.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName));
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
             // Fast paths — no wasm boot.
@@ -60,11 +62,11 @@ export function makeClangRunnerFactory(deps) {
             }
             const isLinker = binKind === 'linker' || binName === 'wasm-ld';
             // Resolve bundle paths.
-            if (!memfsVfsPath || !vfs.exists(memfsVfsPath)) {
+            if (!memfsVfsPath || !runtimeVfs.exists(memfsVfsPath)) {
                 ctx.stderr.write(`${binName}: memfs.wasm missing from install (re-run 'nimbus install clang')\n`);
                 return 127;
             }
-            if (!sysrootVfsPath || !vfs.exists(sysrootVfsPath)) {
+            if (!sysrootVfsPath || !runtimeVfs.exists(sysrootVfsPath)) {
                 ctx.stderr.write(`${binName}: sysroot.tar missing from install\n`);
                 return 127;
             }
@@ -93,12 +95,17 @@ export function makeClangRunnerFactory(deps) {
             const sourceInputs = [];
             for (const input of parsed.inputPaths) {
                 const inputAbs = resolveVfsPath(input, cwd);
-                if (!vfs.exists(inputAbs)) {
-                    ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
+                try {
+                    if (!vfs.exists(inputAbs)) {
+                        ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
+                        return 1;
+                    }
+                    userSourceFiles[input] = vfs.readFile(inputAbs);
+                }
+                catch (error) {
+                    ctx.stderr.write(`${binName}: ${input}: ${errorMessage(error)}\n`);
                     return 1;
                 }
-                const inputBytes = vfs.readFile(inputAbs);
-                userSourceFiles[input] = inputBytes;
                 if (isSourceExt(input)) {
                     sourceInputs.push(input);
                 }
@@ -120,7 +127,7 @@ export function makeClangRunnerFactory(deps) {
                         lldVfsPath,
                         memfsVfsPath,
                         sysrootVfsPath,
-                        vfs,
+                        vfs: runtimeVfs,
                     });
                 }
                 runtime = await runtimePromise;
@@ -307,14 +314,20 @@ export function makeClangRunnerFactory(deps) {
             }
             // ── FLUSH OUTPUT ─────────────────────────────────────────────
             const outVfsPath = resolveVfsPath(parsed.outputPath, cwd);
-            const parent = outVfsPath.replace(/\/[^/]+$/, '');
-            if (parent && parent !== outVfsPath && !vfs.exists(parent)) {
-                vfs.mkdir(parent, { recursive: true });
+            try {
+                const parent = outVfsPath.replace(/\/[^/]+$/, '');
+                if (parent && parent !== outVfsPath && !vfs.exists(parent)) {
+                    vfs.mkdir(parent, { recursive: true });
+                }
+                vfs.writeFile(outVfsPath, wasmBytes);
+                vfs.chmod(outVfsPath, 0o755);
             }
-            vfs.writeFile(outVfsPath, wasmBytes);
+            catch (error) {
+                ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
+                return 1;
+            }
             // Real linkers chmod their output executable (+x even after a
             // prior chmod -x) — so `./a.out` runs with no manual chmod.
-            vfs.chmod(outVfsPath, 0o755);
             return 0;
         };
     };
@@ -496,6 +509,9 @@ function collectIncludeBundle(vfs, rootVfsPath, opts = {}) {
         }
     }
     return out;
+}
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
 }
 // ── ustar parser (supervisor-side) ───────────────────────────────────
 /**

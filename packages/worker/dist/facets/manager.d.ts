@@ -16,7 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
@@ -67,7 +67,7 @@ export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPr
  * per package — sub-agent §Q3 quantified the worst-case cumulative
  * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
  */
-export declare function greedyAddMainEntries(vfs: SqliteVFS, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }): {
@@ -112,7 +112,7 @@ export declare function greedyAddMainEntries(vfs: SqliteVFS, cwd: string, bundle
  * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
  * `budgetState` counter.
  */
-export declare function addStaticReadFileAssets(vfs: SqliteVFS, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function addStaticReadFileAssets(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }): {
@@ -165,7 +165,7 @@ export declare function addStaticReadFileAssets(vfs: SqliteVFS, cwd: string, bun
  * Errors are swallowed: missing assets, unreadable VFS, and
  * non-string readFile inputs are silent skips — matches Z3 posture.
  */
-export declare function addStaticReadFileDotfilesAndCompiled(vfs: SqliteVFS, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }): {
@@ -317,7 +317,7 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'vfsBundle' | 'vfsManifest' | 'shimsCode' | 'mode'> & {
+    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'shimsCode' | 'mode'> & {
         command?: string;
         attachedTty?: boolean;
     }): Promise<StagedArtifactExecResult>;

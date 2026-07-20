@@ -21,8 +21,10 @@ import type {
   CommandOutputStream,
   CommandInputStream,
   CommandContext,
+  CommandRunAsHost,
   TerminalInputStream,
 } from '../commands/types.js';
+import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, type ExpandContext } from './expander.js';
@@ -56,6 +58,32 @@ export class ExitSignal {
   constructor(public exitCode: number) {}
 }
 
+class RedirectionOpenError extends Error {
+  constructor(
+    readonly target: string,
+    readonly fsError: unknown,
+  ) {
+    super(fsError instanceof Error ? fsError.message : String(fsError));
+  }
+}
+
+function redirectionDiagnostic(error: RedirectionOpenError): string {
+  const code = typeof error.fsError === 'object' && error.fsError !== null
+    && 'code' in error.fsError && typeof error.fsError.code === 'string'
+    ? error.fsError.code
+    : /^([A-Z][A-Z0-9]+):/.exec(error.message)?.[1];
+  const reason = code === 'EACCES' || code === 'EPERM'
+    ? 'Permission denied'
+    : code === 'ENOENT'
+      ? 'No such file or directory'
+      : code === 'ENOTDIR'
+        ? 'Not a directory'
+        : code === 'EISDIR'
+          ? 'Is a directory'
+          : error.message;
+  return `sh: ${error.target}: ${reason}\n`;
+}
+
 export interface ShellOptions {
   errexit: boolean;
   nounset: boolean;
@@ -70,6 +98,7 @@ export interface TrapTable {
 }
 
 export interface BuiltinExecutionContext {
+  vfs: VFS;
   stdin?: CommandInputStream;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
@@ -133,6 +162,13 @@ type ExecutionIo = {
   positionals?: PositionalFrame;
   /** Host-supplied fields merged into each command's CommandContext. */
   commandContext?: Record<string, unknown>;
+  commandIdentity?: {
+    pid: number;
+    cred: VfsCred;
+    setUmask(mask: number): void;
+  };
+  runAs?: CommandRunAsHost;
+  vfs?: VFS;
 };
 
 export type TerminalFdState = {
@@ -217,6 +253,12 @@ export class Interpreter {
       terminalFds?: TerminalFdState;
       scriptMode?: boolean;
       commandContext?: Record<string, unknown>;
+      commandIdentity?: {
+        pid: number;
+        cred: VfsCred;
+        setUmask(mask: number): void;
+      };
+      runAs?: CommandRunAsHost;
     },
   ): Promise<number> {
     const io = this.createTerminalIo(
@@ -229,6 +271,9 @@ export class Interpreter {
     if (options?.stderr) io.stderr = options.stderr;
     if (options?.writeToTerminal) io.writeToTerminal = options.writeToTerminal;
     if (options?.commandContext) io.commandContext = options.commandContext;
+    if (options?.commandIdentity) io.commandIdentity = options.commandIdentity;
+    if (options?.runAs) io.runAs = options.runAs;
+    if (options?.commandIdentity) io.vfs = this.config.vfs.as(options.commandIdentity.cred);
     try {
       const tokens = lex(input);
       const script = parse(tokens);
@@ -257,17 +302,10 @@ export class Interpreter {
     if (list.background) {
       const abortController = new AbortController();
       const commandText = this.getListCommandText(list);
-      const backgroundIo = this.createCommandIo({
-        stdin: io.stdin,
-        stdout: io.stdout,
-        stderr: io.stderr,
-        terminalStdin: io.terminalStdin,
-        terminalFds: io.terminalFds,
-        scriptMode: io.scriptMode,
-        signal: abortController.signal,
-        registerProcess: false,
-        positionals: this.forkPositionals(io),
-      });
+      const backgroundIo = this.createCommandIo(io);
+      backgroundIo.signal = abortController.signal;
+      backgroundIo.registerProcess = false;
+      backgroundIo.positionals = this.forkPositionals(io);
 
       const promise = (async (): Promise<number> => {
         return await this.executeListEntries(list.entries, backgroundIo);
@@ -387,21 +425,18 @@ export class Interpreter {
         const isLast = i === commands.length - 1;
         const commandStdin = stdin ?? (i === 0 ? io.stdin : undefined);
         const commandStdout = stdout ?? (isLast ? io.stdout : undefined);
-        const cmdIo = this.createCommandIo({
-          stdin: commandStdin,
-          stdout: commandStdout,
-          stderr: io.stderr,
-          terminalStdin: io.terminalStdin,
-          terminalFds: {
-            stdin: stdin ? false : io.terminalFds?.stdin,
-            stdout: stdout ? false : io.terminalFds?.stdout,
-            stderr: io.terminalFds?.stderr,
-          },
-          scriptMode: io.scriptMode,
-          signal: pipelineAbortController.signal,
-          registerProcess: io.registerProcess,
-          positionals: this.forkPositionals(io),
-        });
+        const cmdIo = this.createCommandIo(io);
+        if (commandStdin) cmdIo.stdin = commandStdin;
+        else delete cmdIo.stdin;
+        if (commandStdout) cmdIo.stdout = commandStdout;
+        else delete cmdIo.stdout;
+        cmdIo.terminalFds = {
+          stdin: stdin ? false : io.terminalFds?.stdin,
+          stdout: stdout ? false : io.terminalFds?.stdout,
+          stderr: io.terminalFds?.stderr,
+        };
+        cmdIo.signal = pipelineAbortController.signal;
+        cmdIo.positionals = this.forkPositionals(io);
         const cmdPromise = (async (): Promise<number> => {
           try {
             return await this.executeCommand(cmd, cmdIo);
@@ -498,9 +533,10 @@ export class Interpreter {
       const exitCode = await evaluateDoubleBracketWords(
         node.words,
         this.createExpandContext(redirIo),
-        this.config.vfs,
+        redirIo.vfs ?? this.config.vfs,
         stderr,
         {
+          vfs: builtinIo.vfs ?? this.config.vfs,
           stdin: builtinIo.stdin,
           stdout,
           stderr,
@@ -760,7 +796,9 @@ export class Interpreter {
       await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
     } catch (error) {
       const redirStderr = fds.outputFds.get(2) ?? stderr;
-      redirStderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      redirStderr.write(error instanceof RedirectionOpenError
+        ? redirectionDiagnostic(error)
+        : `${error instanceof Error ? error.message : String(error)}\n`);
       this.lastExitCode = 1;
       return 1;
     }
@@ -803,6 +841,7 @@ export class Interpreter {
           if (builtin) {
             const builtinIo = this.createIoFromFds(io, fds);
             exitCode = await builtin(args, stdout, stderr, stdin, {
+              vfs: builtinIo.vfs ?? this.config.vfs,
               stdin,
               stdout,
               stderr,
@@ -834,12 +873,17 @@ export class Interpreter {
               unlinkShellSignal = linkAbortSignal(shellSignal, abortController);
 
               const terminalStdin = io.terminalStdin;
-              const ctx: CommandContext = {
+              const identity = io.commandIdentity;
+              if (!identity) throw new Error('shell command identity is unavailable');
+              let ctx: CommandContext;
+              ctx = {
                 ...io.commandContext,
+                pid: identity.pid,
+                cred: identity.cred,
                 args,
                 env: { ...this.config.env },
                 cwd: this.config.getCwd(),
-                vfs: this.config.vfs,
+                vfs: io.vfs ?? this.config.vfs,
                 stdout,
                 stderr,
                 signal: abortController.signal,
@@ -852,6 +896,10 @@ export class Interpreter {
                   ? () => terminalStdin.rawMode
                   : undefined,
                 isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
+                setUmask: identity.setUmask,
+                runAs: (cred, argv) => io.runAs
+                  ? io.runAs(ctx, cred, argv)
+                  : Promise.resolve(126),
               };
 
               // Register process BEFORE executing so ps can see itself
@@ -881,9 +929,14 @@ export class Interpreter {
                     return code;
                   },
                   (err) => {
-                    const code = (err instanceof Error && err.name === 'AbortError') ? 130 : 1;
                     rejectPromise?.(err);
-                    return code;
+                    if (err instanceof Error && err.name === 'AbortError') return 130;
+                    // Surface the failure: this rejection handler resolves
+                    // commandPromise to an exit code, so the catch below
+                    // never sees the error — without this write a throwing
+                    // registered command dies silently at the prompt.
+                    stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`);
+                    return 1;
                   }
                 );
               } else {
@@ -1029,6 +1082,9 @@ export class Interpreter {
     if (io.registerProcess === false) next.registerProcess = false;
     if (io.positionals) next.positionals = io.positionals;
     if (io.commandContext) next.commandContext = io.commandContext;
+    if (io.commandIdentity) next.commandIdentity = io.commandIdentity;
+    if (io.runAs) next.runAs = io.runAs;
+    if (io.vfs) next.vfs = io.vfs;
     return next;
   }
 
@@ -1052,7 +1108,7 @@ export class Interpreter {
       positionals: this.readPositionals(io),
       lastExitCode: this.lastExitCode,
       cwd: this.config.getCwd(),
-      vfs: this.config.vfs,
+      vfs: io.vfs ?? this.config.vfs,
       options: this.config.options,
       executeCapture: (input) => this.executeCapture(input, io),
     };
@@ -1147,11 +1203,11 @@ export class Interpreter {
     };
   }
 
-  private async executeWithRedirections<T>(
+  private async executeWithRedirections(
     redirections: RedirectionNode[],
     io: ExecutionIo,
-    execute: (io: ExecutionIo) => Promise<T>,
-  ): Promise<T> {
+    execute: (io: ExecutionIo) => Promise<number>,
+  ): Promise<number> {
     if (redirections.length === 0) {
       return execute(io);
     }
@@ -1160,7 +1216,15 @@ export class Interpreter {
     const stdout = io.stdout ?? this.terminalSink(io);
     const stderr = io.stderr ?? this.terminalSink(io);
     const fds = this.createCommandFds(stdout, stderr, io.stdin, io);
-    await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
+    try {
+      await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
+    } catch (error) {
+      if (!(error instanceof RedirectionOpenError)) throw error;
+      const redirStderr = fds.outputFds.get(2) ?? stderr;
+      redirStderr.write(redirectionDiagnostic(error));
+      this.lastExitCode = 1;
+      return 1;
+    }
 
     return execute(this.createIoFromFds(io, fds));
   }
@@ -1191,11 +1255,11 @@ export class Interpreter {
           this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', terminalStdin));
           break;
         case 'read':
-          this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(target, terminalStdin));
+          this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, terminalStdin));
           break;
         case 'readWrite': {
           const fd = redir.fd ?? 0;
-          this.setInputFd(fds, fd, this.openInputTarget(target, terminalStdin));
+          this.setInputFd(fds, fd, this.openInputTarget(io, target, terminalStdin));
           this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', terminalStdin));
           break;
         }
@@ -1283,43 +1347,61 @@ export class Interpreter {
       return { stream: this.terminalSink(io), terminal: true };
     }
     const targetPath = resolve(this.config.getCwd(), target);
-    if (mode === 'write') {
-      this.config.vfs.writeFile(targetPath, '');
-      return { stream: this.createFileWriter(targetPath), terminal: false };
+    const vfs = io.vfs ?? this.config.vfs;
+    try {
+      if (mode === 'write') {
+        vfs.writeFile(targetPath, '');
+        return { stream: this.createFileWriter(vfs, targetPath), terminal: false };
+      }
+      if (vfs.exists(targetPath)) {
+        const stat = vfs.stat(targetPath);
+        if (stat.type === 'directory') {
+          throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
+        }
+        vfs.access(targetPath, 0o2);
+      } else {
+        vfs.writeFile(targetPath, '');
+      }
+      return { stream: this.createFileAppender(vfs, targetPath), terminal: false };
+    } catch (error) {
+      throw new RedirectionOpenError(target, error);
     }
-    if (!this.config.vfs.exists(targetPath)) {
-      this.config.vfs.writeFile(targetPath, '');
-    }
-    return { stream: this.createFileAppender(targetPath), terminal: false };
   }
 
-  private openInputTarget(target: string, terminalStdin?: TerminalInputStream): InputTarget {
+  private openInputTarget(io: ExecutionIo, target: string, terminalStdin?: TerminalInputStream): InputTarget {
     if (target === '/dev/null') return { stream: this.createEmptyReader(), terminal: false };
     if (target === '/dev/tty') {
       if (!terminalStdin) throw new Error('/dev/tty: no controlling terminal');
       return { stream: terminalStdin, terminal: true };
     }
-    return { stream: this.createFileReader(resolve(this.config.getCwd(), target)), terminal: false };
+    try {
+      return {
+        stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
+        terminal: false,
+      };
+    } catch (error) {
+      throw new RedirectionOpenError(target, error);
+    }
   }
 
-  private createFileWriter(path: string): CommandOutputStream {
+  private createFileWriter(vfs: VFS, path: string): CommandOutputStream {
     return {
       write: (text: string) => {
-        this.config.vfs.writeFile(path, text);
+        vfs.writeFile(path, text);
       },
     };
   }
 
-  private createFileAppender(path: string): CommandOutputStream {
+  private createFileAppender(vfs: VFS, path: string): CommandOutputStream {
     return {
       write: (text: string) => {
-        this.config.vfs.appendFile(path, text);
+        vfs.appendFile(path, text);
       },
     };
   }
 
-  private createFileReader(path: string): CommandInputStream {
-    const content = this.config.vfs.readFileString(path);
+  private createFileReader(vfs: VFS, path: string): CommandInputStream {
+    const content = vfs.readFileString(path);
     return this.createStringReader(content);
   }
 

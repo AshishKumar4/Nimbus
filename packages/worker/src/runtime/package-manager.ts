@@ -27,11 +27,12 @@
  */
 
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest, type RuntimeCatalogEnv, type RuntimeCatalog, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, type RuntimePackageAbi } from './os-contracts.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, type RuntimePackageAbi } from './os-contracts.js';
+import type { CommandContext } from '../substrate/lifo/commands/types.js';
 
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
-export interface ShellCtx {
+export interface ShellCtx extends Pick<CommandContext, 'pid' | 'cred' | 'setUmask' | 'runAs'> {
   args: string[];
   env: Record<string, string>;
   cwd: string;
@@ -57,7 +58,7 @@ export type RuntimeWarmHook = (target: RuntimeWarmTarget, ctx: ShellCtx) => Prom
 
 interface RuntimeInstallDeps {
   env: RuntimeCatalogEnv;
-  vfs: SqliteVFS;
+  vfs: CredentialedVfs;
   registry: MinShellRegistry;
   getHome(): string;
   warmRuntime?: RuntimeWarmHook;
@@ -270,22 +271,29 @@ export function listInstalledManifests(
   vfs: SqliteVFS,
   homeDir: string,
 ): Array<{ root: string; manifest: RuntimeManifest }> {
+  return listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir);
+}
+
+function listInstalledManifestsView(
+  fs: CredentialedVfs,
+  homeDir: string,
+): Array<{ root: string; manifest: RuntimeManifest }> {
   const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
   const runtimesRoot = `${home}/.nimbus/runtimes`;
   const out: Array<{ root: string; manifest: RuntimeManifest }> = [];
-  if (!vfs.exists(runtimesRoot)) return out;
+  if (!fs.exists(runtimesRoot)) return out;
   // Each entry under runtimesRoot is a <name>; each entry under that
   // is a <version>; each <version> dir has a manifest.json.
-  for (const nameEntry of vfs.readdir(runtimesRoot)) {
+  for (const nameEntry of fs.readdir(runtimesRoot)) {
     if (nameEntry.type !== 'directory') continue;
     const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-    for (const verEntry of vfs.readdir(nameDir)) {
+    for (const verEntry of fs.readdir(nameDir)) {
       if (verEntry.type !== 'directory') continue;
       const verDir = `${nameDir}/${verEntry.name}`;
       const manifestPath = `${verDir}/manifest.json`;
-      if (!vfs.exists(manifestPath)) continue;
+      if (!fs.exists(manifestPath)) continue;
       try {
-        const manifest = parseRuntimeManifest(JSON.parse(vfs.readFileString(manifestPath)));
+        const manifest = parseRuntimeManifest(JSON.parse(fs.readFileString(manifestPath)));
         out.push({ root: verDir, manifest });
       } catch {
         // Malformed manifest — skip silently. Surfacing via stderr
@@ -306,8 +314,16 @@ export function rehydrateInstalledRuntimes(
   registry: MinShellRegistry,
   homeDir: string,
 ): { count: number; bins: string[] } {
+  return rehydrateInstalledRuntimesView(vfs.as(CRED_KERNEL), registry, homeDir);
+}
+
+function rehydrateInstalledRuntimesView(
+  vfs: CredentialedVfs,
+  registry: MinShellRegistry,
+  homeDir: string,
+): { count: number; bins: string[] } {
   const bins: string[] = [];
-  for (const { root, manifest } of listInstalledManifests(vfs, homeDir)) {
+  for (const { root, manifest } of listInstalledManifestsView(vfs, homeDir)) {
     for (const ep of runtimeEntrypoints(manifest)) {
       const factory = runnerFactories[ep.runner];
       if (!factory) continue; // runner not registered yet — skip
@@ -365,7 +381,12 @@ export async function installRuntimeProgrammatic(deps: {
 }, spec: string, opts: { force?: boolean } = {}): Promise<RuntimeInstallSummary> {
   const stdout: string[] = [];
   const stderr: string[] = [];
+  let programmaticCred = CRED_KERNEL;
   const ctx: ShellCtx = {
+    pid: 0,
+    get cred() { return programmaticCred; },
+    setUmask: (umask) => { programmaticCred = { ...programmaticCred, umask }; },
+    runAs: async () => 126,
     args: [],
     env: {},
     cwd: deps.getHome(),
@@ -373,7 +394,7 @@ export async function installRuntimeProgrammatic(deps: {
     stderr: { write: (s: string) => stderr.push(String(s)) },
   };
   const args = opts.force ? ['--reinstall', spec] : [spec];
-  const exitCode = await runInstall(args, ctx, deps);
+  const exitCode = await runInstall(args, ctx, { ...deps, vfs: deps.vfs.as(CRED_KERNEL) });
   return {
     spec,
     exitCode,
@@ -408,7 +429,8 @@ export function makeNimbusVerbHandler(deps: {
   getHome(): string;
   warmRuntime?: RuntimeWarmHook;
 }): (ctx: any) => Promise<number> {
-  const { env, vfs, registry, getHome, warmRuntime } = deps;
+  const { env, registry, getHome, warmRuntime } = deps;
+  const vfs = deps.vfs.as(CRED_KERNEL);
 
   return async function nimbus(ctx: ShellCtx): Promise<number> {
     const argv = ctx.args || [];
@@ -488,7 +510,7 @@ async function runInstall(
     // manifest's presence implies the install completed; we trust it.
     ctx.stdout.write(`[${name}] already installed at ${root} (use --reinstall to refetch)\n`);
     // Still re-register bins in case the registry lost them — idempotent.
-    rehydrateInstalledRuntimes(deps.vfs, deps.registry, home);
+    rehydrateInstalledRuntimesView(deps.vfs, deps.registry, home);
     let manifest: RuntimeManifest | null = null;
     try {
       manifest = parseRuntimeManifest(JSON.parse(deps.vfs.readFileString(`${root}/manifest.json`)));
@@ -629,10 +651,10 @@ async function warmRuntimeIfConfigured(
 
 async function runList(
   ctx: ShellCtx,
-  deps: { vfs: SqliteVFS; getHome(): string },
+  deps: { vfs: CredentialedVfs; getHome(): string },
 ): Promise<number> {
   const home = deps.getHome();
-  const installed = listInstalledManifests(deps.vfs, home);
+  const installed = listInstalledManifestsView(deps.vfs, home);
   if (installed.length === 0) {
     ctx.stdout.write('(no runtimes installed)\n');
     return 0;
@@ -682,7 +704,7 @@ async function runAvailable(
 async function runUninstall(
   args: string[],
   ctx: ShellCtx,
-  deps: { vfs: SqliteVFS; registry: MinShellRegistry; getHome(): string },
+  deps: { vfs: CredentialedVfs; registry: MinShellRegistry; getHome(): string },
 ): Promise<number> {
   if (args.length === 0 || args[0].startsWith('--')) {
     ctx.stderr.write('nimbus uninstall: missing runtime name\n');
@@ -694,7 +716,7 @@ async function runUninstall(
   const versionOverride = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
 
   const home = deps.getHome();
-  const installed = listInstalledManifests(deps.vfs, home);
+  const installed = listInstalledManifestsView(deps.vfs, home);
   const matches = installed.filter((x) =>
     x.manifest.name === name && (!versionOverride || x.manifest.version === versionOverride),
   );
@@ -726,7 +748,7 @@ async function runUninstall(
   return 0;
 }
 
-function rmrfVfs(vfs: SqliteVFS, path: string): void {
+function rmrfVfs(vfs: CredentialedVfs, path: string): void {
   if (!vfs.exists(path)) return;
   for (const entry of vfs.readdir(path)) {
     const child = `${path}/${entry.name}`;
@@ -739,7 +761,7 @@ function rmrfVfs(vfs: SqliteVFS, path: string): void {
   vfs.rmdir(path);
 }
 
-function cleanupEmpty(vfs: SqliteVFS, path: string): void {
+function cleanupEmpty(vfs: CredentialedVfs, path: string): void {
   if (!vfs.exists(path)) return;
   if (vfs.readdir(path).length === 0) {
     vfs.rmdir(path);

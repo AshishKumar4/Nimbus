@@ -24,10 +24,10 @@
  * for TTL probes. Production reads Date.now() / 1000.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 export interface KvEmulatorOptions {
-  vfs: SqliteVFS | any;     // any to allow the mock VFS in unit tests
+  vfs: CredentialedVfs;
   root: string;             // project root, e.g. 'home/user'
   binding: string;          // wrangler.jsonc kv_namespaces[].binding
   onLog: (msg: string) => void;
@@ -83,7 +83,7 @@ function decKey(encoded: string): string {
 // ── KvEmulator ─────────────────────────────────────────────────────────
 
 export class KvEmulator {
-  private vfs: any;
+  private vfs: CredentialedVfs;
   private dir: string;
   private metaCache = new Map<string, KvMeta>();
   private onLog: (m: string) => void;
@@ -266,7 +266,7 @@ export class KvEmulator {
       this._lazyDelete(enc);
       return null;
     }
-    const body = this.vfs.readFileBytes ? this.vfs.readFileBytes(path) : this.vfs.readFile(path);
+    const body = this.vfs.readFile(path);
     return { body, meta };
   }
 

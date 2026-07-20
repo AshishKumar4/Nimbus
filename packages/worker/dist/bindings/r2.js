@@ -312,7 +312,7 @@ export class R2Emulator {
     }
     _readBody(key) {
         const path = this.dir + '/' + encKey(key);
-        return this.vfs.readFileBytes ? this.vfs.readFileBytes(path) : this.vfs.readFile(path);
+        return this.vfs.readFile(path);
     }
     _evalConditional(side, c) {
         if (c.etagMatches != null) {

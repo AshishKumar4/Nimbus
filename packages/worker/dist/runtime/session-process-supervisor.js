@@ -31,7 +31,7 @@ export class SessionProcessSupervisor {
     // ── Lifecycle / PID authority ─────────────────────────────────────────
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, opts = {}) {
-        const entry = this.table.spawn(command, argv, cwd);
+        const entry = this.table.spawn(command, argv, cwd, opts);
         if (opts.longRunning)
             this.table.setLongRunning(entry.pid);
         if (opts.attachedTty)
@@ -54,6 +54,12 @@ export class SessionProcessSupervisor {
     }
     getAll() {
         return this.table.getAll();
+    }
+    cred(pid) {
+        return this.table.credOf(pid);
+    }
+    setUmask(pid, umask) {
+        return this.table.setUmask(pid, umask);
     }
     /** Mark a process as exited. First terminal state wins. */
     exit(pid, exitCode) {

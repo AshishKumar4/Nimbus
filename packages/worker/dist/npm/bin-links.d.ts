@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
 /**
  * A staged-artifact bin target (`nimbus-staged:<artifact>`) is a sentinel,
@@ -23,8 +23,8 @@ export interface NpmBinManifest {
 export interface NpmBinResolution extends NpmBinEntry {
     shimPath: string;
 }
-type VfsLike = Pick<SqliteVFS, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
-type WritableVfsLike = VfsLike & Pick<SqliteVFS, 'mkdir' | 'writeFile' | 'chmod'>;
+type VfsLike = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
+type WritableVfsLike = VfsLike & Pick<CredentialedVfs, 'mkdir' | 'writeFile'>;
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;
 export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest;

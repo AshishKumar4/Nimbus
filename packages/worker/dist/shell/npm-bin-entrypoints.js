@@ -15,13 +15,14 @@ const NpmBinPackageMetadataSchema = z.object({
     }).optional(),
 }).passthrough();
 export function installNpmBinFallbackResolver(registry, deps) {
+    const vfs = deps.vfs;
     const upstreamResolve = registry.resolve.bind(registry);
     registry.resolve = async function resolveWithNpmBins(name) {
         const upstream = await upstreamResolve(name);
         if (upstream)
             return upstream;
         const cwd = deps.getCwd() || '/home/user';
-        if (!resolveNpmBinForInvocation(deps.vfs, cwd, DEFAULT_PATH, name)) {
+        if (!resolveNpmBinForInvocation(vfs, cwd, DEFAULT_PATH, name)) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
@@ -41,7 +42,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
         }
         return async (ctx) => {
             const invocationCwd = ctx.cwd || '/home/user';
-            const bin = resolveNpmBinForInvocation(deps.vfs, invocationCwd, ctx.env?.PATH || DEFAULT_PATH, name);
+            const bin = resolveNpmBinForInvocation(vfs, invocationCwd, ctx.env?.PATH || DEFAULT_PATH, name);
             if (!bin) {
                 ctx.stderr.write(`${name}: command not found\n`);
                 return 127;
@@ -56,10 +57,10 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 return await runStagedArtifact(deps, name, artifact, argv, invocationCwd, ctx, disposition);
             }
             const bundleProfile = bundleProfileForNpmBin(bin);
-            const metadata = readNpmBinPackageMetadata(deps.vfs, bin.packagePath);
+            const metadata = readNpmBinPackageMetadata(vfs, bin.packagePath);
             const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
             const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
-            const runtimeName = npmBinRuntimeForTarget(deps.vfs, bin.targetPath);
+            const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
             const runtimeCmd = await upstreamResolve(runtimeName);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -67,7 +68,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             const runRuntime = runtimeCmd;
             const shellLine = `${name} ${argv.join(' ')}`.trim();
-            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty });
+            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty, parentPid: ctx.pid });
             const pid = entry.pid;
             const startedAt = Date.now();
             if (longRunning)

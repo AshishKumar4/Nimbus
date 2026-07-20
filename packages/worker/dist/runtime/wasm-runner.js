@@ -48,7 +48,7 @@
  *   - NO direct WebAssembly.instantiate(bytes) at request time —
  *     workerd CSP rejects that path.
  */
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
@@ -145,6 +145,7 @@ function hasWasiImports(bytes) {
  */
 export function makeWasmRunner(deps) {
     return async function runWasm(_facetMgr, _code, opts) {
+        const vfs = deps.vfs.as(requireVfsCred(opts.cred, 'wasm-runner'));
         // opts.filename is the resolved .wasm path (absolute, /-prefixed
         // by the registry's bypassesScriptRead path).
         // opts.argv is:
@@ -152,22 +153,22 @@ export function makeWasmRunner(deps) {
         //   direct mode: [exportName, intArg1, intArg2, ...]
         const wasmPath = (opts.filename || '').replace(/^\/+/, '');
         const argv = opts.argv || [];
-        if (!deps.vfs.exists(wasmPath)) {
-            return {
-                exitCode: 1,
-                stdout: '',
-                stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
-            };
-        }
         let bytes;
         try {
-            bytes = deps.vfs.readFile(wasmPath);
+            if (!vfs.exists(wasmPath)) {
+                return {
+                    exitCode: 1,
+                    stdout: '',
+                    stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
+                };
+            }
+            bytes = vfs.readFile(wasmPath);
         }
         catch (e) {
             return {
                 exitCode: 1,
                 stdout: '',
-                stderr: `wasm-runner: cannot read '${opts.filename}': ${e?.message || e}\n`,
+                stderr: `wasm-runner: cannot read '${opts.filename}': ${e instanceof Error ? e.message : String(e)}\n`,
             };
         }
         // Detect WASI imports BEFORE parsing argv as direct-mode integers.
@@ -294,11 +295,12 @@ export function makeWasmRunner(deps) {
                         preopens: args.wasiFs.preopens,
                         files: args.wasiFs.files,
                         dirs: args.wasiFs.dirs,
+                        modes: args.wasiFs.modes,
                     });
                 }
                 else {
                     // Minimal FS so __wasiFS isn't null when WASI fns are called.
-                    initFS({ root: '', preopens: [], files: {}, dirs: [] });
+                    initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
                 }
                 const memRef = { mem: null };
                 const wasi = mk({
@@ -436,7 +438,7 @@ export function makeWasmRunner(deps) {
         if (isWasi) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
             const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            const snap = snapshotVfs(deps.vfs, cwd);
+            const snap = snapshotVfs(vfs, cwd);
             if ('error' in snap) {
                 return {
                     exitCode: 1,
@@ -452,6 +454,7 @@ export function makeWasmRunner(deps) {
                 ],
                 files: snap.snapshot.files,
                 dirs: snap.snapshot.dirs,
+                modes: snap.snapshot.modes,
             };
             wasiFsBytes = snap.bytes;
             wasiFsFiles = snap.files;
@@ -475,7 +478,7 @@ export function makeWasmRunner(deps) {
         // ── filesystem WASI: flush mutated FS state back into SqliteFS ──
         if (outcome.mode === 'wasi' && outcome.ok && outcome.fsDiff) {
             try {
-                flushVfsDiff(deps.vfs, outcome.fsDiff);
+                flushVfsDiff(vfs, outcome.fsDiff);
             }
             catch (e) {
                 // Flush failure is non-fatal; the wasm ran, the user saw stdout.

@@ -27,7 +27,7 @@
  * every call (the body is one-shot per real-R2 contract), plus convenience
  * helpers text() / arrayBuffer() / json() / blob().
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 export interface R2HTTPMetadata {
     contentType?: string;
     contentLanguage?: string;
@@ -68,7 +68,7 @@ export interface R2ListOptions {
     include?: ('httpMetadata' | 'customMetadata')[];
 }
 export interface R2EmulatorOptions {
-    vfs: SqliteVFS | any;
+    vfs: CredentialedVfs;
     root: string;
     binding: string;
     onLog?: (msg: string) => void;

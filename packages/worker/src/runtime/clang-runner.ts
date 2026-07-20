@@ -27,10 +27,10 @@
  */
 
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 
@@ -42,7 +42,8 @@ export function makeClangRunnerFactory(deps: {
   vfs: SqliteVFS;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     (ctx: any) => Promise<number> {
-  const { facetMgr, vfs } = deps;
+  const { facetMgr } = deps;
+  const runtimeVfs = deps.vfs.as(CRED_KERNEL);
 
   return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
@@ -57,6 +58,7 @@ export function makeClangRunnerFactory(deps: {
     let runtimePromise: Promise<ClangFacetRuntime> | null = null;
 
     return async function clangBinHandler(ctx: any): Promise<number> {
+      const vfs = deps.vfs.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName));
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
 
@@ -77,11 +79,11 @@ export function makeClangRunnerFactory(deps: {
       const isLinker = binKind === 'linker' || binName === 'wasm-ld';
 
       // Resolve bundle paths.
-      if (!memfsVfsPath || !vfs.exists(memfsVfsPath)) {
+      if (!memfsVfsPath || !runtimeVfs.exists(memfsVfsPath)) {
         ctx.stderr.write(`${binName}: memfs.wasm missing from install (re-run 'nimbus install clang')\n`);
         return 127;
       }
-      if (!sysrootVfsPath || !vfs.exists(sysrootVfsPath)) {
+      if (!sysrootVfsPath || !runtimeVfs.exists(sysrootVfsPath)) {
         ctx.stderr.write(`${binName}: sysroot.tar missing from install\n`);
         return 127;
       }
@@ -112,12 +114,16 @@ export function makeClangRunnerFactory(deps: {
       const sourceInputs: string[] = [];
       for (const input of parsed.inputPaths) {
         const inputAbs = resolveVfsPath(input, cwd);
-        if (!vfs.exists(inputAbs)) {
-          ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
+        try {
+          if (!vfs.exists(inputAbs)) {
+            ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
+            return 1;
+          }
+          userSourceFiles[input] = vfs.readFile(inputAbs);
+        } catch (error) {
+          ctx.stderr.write(`${binName}: ${input}: ${errorMessage(error)}\n`);
           return 1;
         }
-        const inputBytes = vfs.readFile(inputAbs);
-        userSourceFiles[input] = inputBytes;
         if (isSourceExt(input)) {
           sourceInputs.push(input);
         } else {
@@ -139,7 +145,7 @@ export function makeClangRunnerFactory(deps: {
             lldVfsPath,
             memfsVfsPath,
             sysrootVfsPath,
-            vfs,
+            vfs: runtimeVfs,
           });
         }
         runtime = await runtimePromise;
@@ -159,7 +165,7 @@ export function makeClangRunnerFactory(deps: {
       // Size-capped (4 MiB, 200 files, depth 8) so accidental
       // huge-projects don't OOM the facet. Real C-tutorial projects
       // are vastly under the cap.
-      const userIncludeBundle = collectIncludeBundle(vfs as any, cwd.replace(/^\/+/, ''));
+      const userIncludeBundle = collectIncludeBundle(vfs, cwd.replace(/^\/+/, ''));
 
       // ── COMPILE PHASE ────────────────────────────────────────────
       // Reuse the warm clang/memfs pool and ship only the C-include
@@ -330,14 +336,19 @@ export function makeClangRunnerFactory(deps: {
 
       // ── FLUSH OUTPUT ─────────────────────────────────────────────
       const outVfsPath = resolveVfsPath(parsed.outputPath, cwd);
-      const parent = outVfsPath.replace(/\/[^/]+$/, '');
-      if (parent && parent !== outVfsPath && !vfs.exists(parent)) {
-        vfs.mkdir(parent, { recursive: true });
+      try {
+        const parent = outVfsPath.replace(/\/[^/]+$/, '');
+        if (parent && parent !== outVfsPath && !vfs.exists(parent)) {
+          vfs.mkdir(parent, { recursive: true });
+        }
+        vfs.writeFile(outVfsPath, wasmBytes);
+        vfs.chmod(outVfsPath, 0o755);
+      } catch (error) {
+        ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
+        return 1;
       }
-      vfs.writeFile(outVfsPath, wasmBytes);
       // Real linkers chmod their output executable (+x even after a
       // prior chmod -x) — so `./a.out` runs with no manual chmod.
-      vfs.chmod(outVfsPath, 0o755);
 
       return 0;
     };
@@ -452,10 +463,7 @@ function isHeaderExt(name: string): boolean {
  *   - skipDirs prunes obvious non-source directories.
  */
 function collectIncludeBundle(
-  vfs: { exists: (p: string) => boolean;
-         isDirectory: (p: string) => boolean;
-         readFile: (p: string) => Uint8Array;
-         readdir: (p: string) => { name: string; type: string }[] },
+  vfs: Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFile' | 'readdir'>,
   rootVfsPath: string,
   opts: { extraExts?: RegExp; maxFiles?: number; maxBytes?: number; maxDepth?: number } = {},
 ): Record<string, Uint8Array> {
@@ -503,6 +511,10 @@ function collectIncludeBundle(
     }
   }
   return out;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ── ustar parser (supervisor-side) ───────────────────────────────────
@@ -629,7 +641,7 @@ async function createClangFacetRuntime(
     lldVfsPath: string | null;
     memfsVfsPath: string | null;
     sysrootVfsPath: string | null;
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
   },
 ): Promise<ClangFacetRuntime> {
   if (!args.clangVfsPath || !args.lldVfsPath || !args.memfsVfsPath || !args.sysrootVfsPath) {

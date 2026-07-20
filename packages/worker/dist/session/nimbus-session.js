@@ -12,6 +12,7 @@ import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
@@ -84,6 +85,7 @@ const CpFacetDirectPayloadSchema = z.object({
     }),
     cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
     stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
+    processPid: z.number().int().positive(),
 }).passthrough();
 function normalizeCpCommandName(name) {
     const text = String(name || '').trim();
@@ -196,8 +198,10 @@ The editor opens this file in Markdown preview mode by default. Use
 export class NimbusSession extends CloudflareDurableObject {
     // this.ctx and this.env are provided by the DurableObject base class
     sqliteFs = null;
+    runtimeFsBridges = null;
     kernel = null;
     shell = null;
+    shellProcessPid = null;
     terminal = null;
     facetManager = null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
@@ -517,49 +521,58 @@ export class NimbusSession extends CloudflareDurableObject {
     // 1-line delegators that pass `this as any` (per plan §IX rec 1 +
     // DEFECT-D1: ctx is protected and not on a public interface).
     // Supervisor RPC (file/log/HMR/batch)
-    async _rpcReadFile(path) { return _rpc._rpcReadFile(this, path); }
-    async _rpcReadFileBytes(path) { return _rpc._rpcReadFileBytes(this, path); }
+    async _rpcReadFile(path, pid) { return _rpc._rpcReadFile(this, path, pid); }
+    async _rpcReadFileBytes(path, pid) { return _rpc._rpcReadFileBytes(this, path, pid); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
-    async _rpcWriteFile(path, content) { return _rpc._rpcWriteFile(this, path, content); }
-    async _rpcStat(path) { return _rpc._rpcStat(this, path); }
-    async _rpcLstat(path) { return _rpc._rpcLstat(this, path); }
-    async _rpcHasLegacySymlinkUnder(path) {
-        return _rpc._rpcHasLegacySymlinkUnder(this, path);
+    async _rpcWriteFile(path, content, pid) { return _rpc._rpcWriteFile(this, path, content, pid); }
+    async _rpcStat(path, pid) { return _rpc._rpcStat(this, path, pid); }
+    async _rpcLstat(path, pid) { return _rpc._rpcLstat(this, path, pid); }
+    async _rpcHasLegacySymlinkUnder(path, pid) {
+        return _rpc._rpcHasLegacySymlinkUnder(this, path, pid);
     }
-    async _rpcUtimes(path, atimeMs, mtimeMs) {
-        return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs);
+    async _rpcUtimes(path, atimeMs, mtimeMs, pid) {
+        return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs, pid);
     }
-    async _rpcChmod(path, mode) {
-        return _rpc._rpcChmod(this, path, mode);
+    async _rpcChmod(path, mode, pid) {
+        return _rpc._rpcChmod(this, path, mode, pid);
     }
-    async _rpcReaddir(path) { return _rpc._rpcReaddir(this, path); }
-    async _rpcExists(path) { return _rpc._rpcExists(this, path); }
-    async _rpcMkdir(path) { return _rpc._rpcMkdir(this, path); }
-    async _rpcRmdir(path) { return _rpc._rpcRmdir(this, path); }
-    async _rpcRename(from, to) { return _rpc._rpcRename(this, from, to); }
-    async _rpcReadlink(path) { return _rpc._rpcReadlink(this, path); }
-    async _rpcSymlink(target, path) { return _rpc._rpcSymlink(this, target, path); }
-    async _rpcFsRevision(path) { return _rpc._rpcFsRevision(this, path); }
-    async _rpcFsOpen(path, flags) { return _rpc._rpcFsOpen(this, path, flags); }
-    async _rpcFsRead(handleId, offset, length) {
-        return _rpc._rpcFsRead(this, handleId, offset, length);
+    async _rpcAccess(path, mode, pid) {
+        return _rpc._rpcAccess(this, path, mode, pid);
     }
-    async _rpcFsWrite(handleId, offset, bytes) {
-        return _rpc._rpcFsWrite(this, handleId, offset, bytes);
+    async _rpcChown(path, uid, gid, pid, options) {
+        return _rpc._rpcChown(this, path, uid, gid, pid, options);
     }
-    async _rpcFsClose(handleId) { return _rpc._rpcFsClose(this, handleId); }
-    async _rpcFsReadRange(path, offset, length) {
-        return _rpc._rpcFsReadRange(this, path, offset, length);
+    async _rpcSetUmask(mask, pid) {
+        return _rpc._rpcSetUmask(this, mask, pid);
     }
-    async _rpcFsWriteRange(path, offset, bytes) {
-        return _rpc._rpcFsWriteRange(this, path, offset, bytes);
+    async _rpcReaddir(path, pid) { return _rpc._rpcReaddir(this, path, pid); }
+    async _rpcExists(path, pid) { return _rpc._rpcExists(this, path, pid); }
+    async _rpcMkdir(path, pid) { return _rpc._rpcMkdir(this, path, pid); }
+    async _rpcRmdir(path, pid) { return _rpc._rpcRmdir(this, path, pid); }
+    async _rpcRename(from, to, pid) { return _rpc._rpcRename(this, from, to, pid); }
+    async _rpcReadlink(path, pid) { return _rpc._rpcReadlink(this, path, pid); }
+    async _rpcSymlink(target, path, pid) { return _rpc._rpcSymlink(this, target, path, pid); }
+    async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
+    async _rpcFsOpen(path, flags, pid) { return _rpc._rpcFsOpen(this, path, flags, pid); }
+    async _rpcFsRead(handleId, offset, length, pid) {
+        return _rpc._rpcFsRead(this, handleId, offset, length, pid);
     }
-    async _rpcFsTruncate(path, size) { return _rpc._rpcFsTruncate(this, path, size); }
+    async _rpcFsWrite(handleId, offset, bytes, pid) {
+        return _rpc._rpcFsWrite(this, handleId, offset, bytes, pid);
+    }
+    async _rpcFsClose(handleId, pid) { return _rpc._rpcFsClose(this, handleId, pid); }
+    async _rpcFsReadRange(path, offset, length, pid) {
+        return _rpc._rpcFsReadRange(this, path, offset, length, pid);
+    }
+    async _rpcFsWriteRange(path, offset, bytes, pid) {
+        return _rpc._rpcFsWriteRange(this, path, offset, bytes, pid);
+    }
+    async _rpcFsTruncate(path, size, pid) { return _rpc._rpcFsTruncate(this, path, size, pid); }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
-    async _rpcUnlink(path) { return _rpc._rpcUnlink(this, path); }
-    async _rpcWriteBatch(payload) { return _rpc._rpcWriteBatch(this, payload); }
-    async _rpcWriteBatchStream(stream, mutationOwner) {
-        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner);
+    async _rpcUnlink(path, pid) { return _rpc._rpcUnlink(this, path, pid); }
+    async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
+    async _rpcWriteBatchStream(stream, mutationOwner, pid) {
+        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner, pid);
     }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
@@ -792,13 +805,19 @@ export class NimbusSession extends CloudflareDurableObject {
                 // path: {command, args, env, cwd, stdin}. We dispatch through the
                 // existing shell registry by resolving the command and invoking
                 // it with synthesized output streams that route to hooks.
-                let payload = CpFacetDirectPayloadSchema.parse({});
+                let payload;
                 try {
                     const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
-                    if (parsed.success)
-                        payload = parsed.data;
+                    if (!parsed.success) {
+                        hooks.onStderr('child_process: facet dispatch requires a broker-assigned process pid\n');
+                        return 1;
+                    }
+                    payload = parsed.data;
                 }
-                catch { }
+                catch {
+                    hooks.onStderr('child_process: invalid facet dispatch payload\n');
+                    return 1;
+                }
                 const registry = this._cpRegistry;
                 if (!registry) {
                     hooks.onStderr('child_process: command registry unavailable\n');
@@ -814,11 +833,14 @@ export class NimbusSession extends CloudflareDurableObject {
                 const stdoutStream = { write: (d) => hooks.onStdout(String(d)) };
                 const stderrStream = { write: (d) => hooks.onStderr(String(d)) };
                 const ac = new AbortController();
+                const cred = this.processes.cred(payload.processPid);
                 const ctx = {
+                    pid: payload.processPid,
+                    cred,
                     args: payload.args || [],
                     env: payload.env || {},
                     cwd: payload.cwd || '/home/user',
-                    vfs: this.sqliteFs,
+                    vfs: this.sqliteFs.as(cred),
                     stdout: stdoutStream,
                     stderr: stderrStream,
                     signal: ac.signal,
@@ -826,6 +848,20 @@ export class NimbusSession extends CloudflareDurableObject {
                     stdin: {
                         read: async () => null,
                         readAll: async () => payload.stdin || '',
+                    },
+                    setUmask: (mask) => { this.processes.setUmask(payload.processPid, mask); },
+                    runAs: async (targetCred, argv) => {
+                        if (argv.length === 0)
+                            return 0;
+                        const child = this.processes.spawn(argv.join(' '), argv, payload.cwd, { parentPid: payload.processPid, cred: targetCred });
+                        let exitCode = 1;
+                        try {
+                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, payload.cwd, payload.stdin, hooks);
+                            return exitCode;
+                        }
+                        finally {
+                            this.processes.exit(child.pid, exitCode);
+                        }
                     },
                     __nimbusCaptureOutput: true,
                 };
@@ -868,7 +904,7 @@ export class NimbusSession extends CloudflareDurableObject {
                 }
                 return _classifyCommand(commandName);
             },
-            runPureBuiltin: async (name, args, env, cwd, stdin, hooks) => {
+            runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
                 const registry = this._cpRegistry;
                 if (!registry) {
                     hooks.onStderr('cp: registry unavailable\n');
@@ -880,15 +916,31 @@ export class NimbusSession extends CloudflareDurableObject {
                     hooks.onStderr(`${name}: command not found\n`);
                     return 127;
                 }
+                const cred = this.processes.cred(pid);
                 const ac = new AbortController();
                 const ctx = {
+                    pid,
+                    cred,
                     args, env, cwd,
-                    vfs: this.sqliteFs,
+                    vfs: this.sqliteFs.as(cred),
                     stdout: { write: (d) => hooks.onStdout(String(d)) },
                     stderr: { write: (d) => hooks.onStderr(String(d)) },
                     signal: ac.signal,
                     stdin: { read: async () => null, readAll: async () => stdin },
-                    __nimbusCaptureOutput: true,
+                    setUmask: (mask) => { this.processes.setUmask(pid, mask); },
+                    runAs: async (targetCred, argv) => {
+                        if (argv.length === 0)
+                            return 0;
+                        const child = this.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
+                        let exitCode = 1;
+                        try {
+                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
+                            return exitCode;
+                        }
+                        finally {
+                            this.processes.exit(child.pid, exitCode);
+                        }
+                    },
                 };
                 try {
                     const code = await cmd(ctx);
@@ -915,20 +967,38 @@ export class NimbusSession extends CloudflareDurableObject {
         this.facetProcessManager = new FacetProcessManager({
             facetMgr: facetMgrAdapter,
             processes: this.processes,
-            vfs: this.sqliteFs,
+            vfsForProcess: (pid) => this.sqliteFs.as(this.processes.cred(pid)),
             commandRegistry: cmdRegistryAdapter,
             shellExecutor: {
-                execute: async (commandLine, env, cwd, stdin, hooks) => {
+                execute: async (pid, commandLine, env, cwd, stdin, hooks) => {
                     if (!this.shell) {
                         hooks.onStderr('sh: shell unavailable\n');
                         return 127;
                     }
+                    const cred = this.processes.cred(pid);
+                    const setUmask = (mask) => { this.processes.setUmask(pid, mask); };
+                    const runAs = async (_parent, targetCred, argv) => {
+                        if (argv.length === 0)
+                            return 0;
+                        const child = this.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
+                        let exitCode = 1;
+                        try {
+                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
+                            return exitCode;
+                        }
+                        finally {
+                            this.processes.exit(child.pid, exitCode);
+                        }
+                    };
                     const result = await this.shell.execute(String(commandLine), {
                         cwd: cwd || '/home/user',
                         env: { ...this.shell.env, ...(env || {}) },
                         onStdout: (d) => hooks.onStdout(String(d)),
                         onStderr: (d) => hooks.onStderr(String(d)),
                         stdin,
+                        isolateShellState: true,
+                        commandContext: { pid, cred, setUmask },
+                        runAs,
                     });
                     return typeof result?.exitCode === 'number' ? result.exitCode : 0;
                 },
@@ -1121,31 +1191,69 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     // ── Filesystem seeding ────────────────────────────────────────────────
     seedFilesystem() {
-        const fs = this.sqliteFs;
+        const userCred = {
+            uid: 1000,
+            gid: 1000,
+            groups: [1000],
+            umask: 0o022,
+        };
+        const fs = this.sqliteFs.as(userCred);
+        const rootFs = this.sqliteFs.as(CRED_KERNEL);
         const dirs = [
-            'bin', 'etc', 'home', 'home/user', 'home/user/.config',
+            'bin', 'home', 'home/user', 'home/user/.config',
             'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
             'usr/lib/node_modules', 'usr/share', 'usr/share/pkg',
             'usr/share/pkg/node_modules', 'opt',
+            // npm's global prefix (init.ts npm_config_prefix=/usr/local).
+            // S2a batch writes require existing parents; before S2a the VFS
+            // auto-created them on first global install.
+            'usr/local', 'usr/local/bin', 'usr/local/lib',
+            'usr/local/lib/node_modules',
             'home/user/projects',
         ];
         for (const dir of dirs) {
             if (!fs.exists(dir))
                 fs.mkdir(dir, { recursive: true });
         }
-        if (!fs.exists('etc/hostname')) {
-            fs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
+        if (!rootFs.exists('etc')) {
+            rootFs.mkdir('etc', { mode: 0o755 });
         }
-        if (!fs.exists('etc/os-release')) {
-            fs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
+        else {
+            const etc = rootFs.stat('etc');
+            if (etc.uid !== 0 || etc.gid !== 0)
+                rootFs.chown('etc', 0, 0);
+            if ((etc.mode & 0o7777) !== 0o755)
+                rootFs.chmod('etc', 0o755);
+        }
+        if (!rootFs.exists('etc/hostname')) {
+            rootFs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
+            rootFs.chown('etc/hostname', userCred.uid, userCred.gid);
+        }
+        if (!rootFs.exists('etc/os-release')) {
+            rootFs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
                 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
+            rootFs.chown('etc/os-release', userCred.uid, userCred.gid);
         }
+        const seedRootAccountFile = (path, content) => {
+            if (!rootFs.exists(path))
+                rootFs.writeFile(path, content, { mode: 0o644 });
+            const stat = rootFs.stat(path);
+            if (stat.uid !== 0 || stat.gid !== 0)
+                rootFs.chown(path, 0, 0);
+            if ((stat.mode & 0o7777) !== 0o644)
+                rootFs.chmod(path, 0o644);
+        };
+        seedRootAccountFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\n' +
+            'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n');
+        seedRootAccountFile('etc/group', 'root:x:0:\n' +
+            'user:x:1000:user\n');
         const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
-        if (!fs.exists('etc/profile')) {
-            fs.writeFile('etc/profile', defaultProfile);
+        if (!rootFs.exists('etc/profile')) {
+            rootFs.writeFile('etc/profile', defaultProfile);
+            rootFs.chown('etc/profile', userCred.uid, userCred.gid);
         }
-        else if (dec.decode(fs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
-            fs.writeFile('etc/profile', defaultProfile);
+        else if (dec.decode(rootFs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
+            rootFs.writeFile('etc/profile', defaultProfile);
         }
         if (!fs.exists('home/user/.nimbusrc')) {
             fs.writeFile('home/user/.nimbusrc', '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n');
@@ -1156,10 +1264,11 @@ export class NimbusSession extends CloudflareDurableObject {
             // corrected version on next reconnect. Cheap (~200 bytes); no
             // user-edit collision concern (the file isn't user-owned).
             const expectedMotd = renderMotdBanner(NIMBUS_VERSION);
-            let needsWrite = !fs.exists('etc/motd');
+            const exists = rootFs.exists('etc/motd');
+            let needsWrite = !exists;
             if (!needsWrite) {
                 try {
-                    const existing = fs.readFileString('etc/motd');
+                    const existing = rootFs.readFileString('etc/motd');
                     if (existing !== expectedMotd)
                         needsWrite = true;
                 }
@@ -1167,8 +1276,11 @@ export class NimbusSession extends CloudflareDurableObject {
                     needsWrite = true;
                 }
             }
-            if (needsWrite)
-                fs.writeFile('etc/motd', expectedMotd);
+            if (needsWrite) {
+                rootFs.writeFile('etc/motd', expectedMotd);
+                if (!exists)
+                    rootFs.chown('etc/motd', userCred.uid, userCred.gid);
+            }
         }
         if (!fs.exists('home/user/hello.js')) {
             fs.writeFile('home/user/hello.js', 'console.log("Hello from Nimbus!");\n' +
@@ -1194,7 +1306,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // Idempotent: guarded by shouldSeedProject() which checks both a
         // sentinel file and the project dir. Safe to call on every boot.
         try {
-            seedProject(fs, { log: (msg) => console.log(msg) });
+            seedProject(this.sqliteFs, { log: (msg) => console.log(msg) });
         }
         catch (e) {
             console.error('[nimbus] seedProject failed:', e?.message || e);

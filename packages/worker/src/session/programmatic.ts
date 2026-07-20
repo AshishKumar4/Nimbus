@@ -18,7 +18,8 @@ import type { LogChunk, ProcessLogReadOptions } from '../runtime/process-logs.js
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry, type PortEntry } from '../runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import {
   endProcessInput,
   resizeProcess,
@@ -73,6 +74,7 @@ export interface ProgrammaticHost {
   env: RuntimeCatalogEnv;
   ctx: ProgrammaticContext;
   shell: ProgrammaticShell | null;
+  shellProcessPid: number | null;
   sqliteFs: SqliteVFS | null;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
@@ -90,7 +92,7 @@ export interface ProgrammaticHost {
   nimbusWrangler?: unknown;
   npmInstaller?: unknown;
   fetchProxyEntrypoint?: unknown;
-  runtimeFsBridge?: unknown;
+  runtimeFsBridges?: Map<number, unknown> | null;
   sessionBasePath?: string;
   sessionBasePathHydrated?: boolean;
   wranglerAliasBannerShown?: boolean;
@@ -521,16 +523,17 @@ export async function rpcDeleteFile(
 ): Promise<void> {
   await ensureProgrammaticReady(self);
   const p = String(path).replace(/^\/+/, '');
-  if (!self.sqliteFs!.exists(p)) return;
-  if (self.sqliteFs!.isDirectory(p)) {
+  const vfs = self.sqliteFs!.as(CRED_KERNEL);
+  if (!vfs.exists(p)) return;
+  if (vfs.isDirectory(p)) {
     if (!options.recursive) {
-      self.sqliteFs!.rmdir(p);
+      vfs.rmdir(p);
       return;
     }
-    rmrf(self.sqliteFs!, p);
+    rmrf(vfs, p);
     return;
   }
-  self.sqliteFs!.unlink(p);
+  vfs.unlink(p);
 }
 
 export async function rpcDestroy(
@@ -656,6 +659,7 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.sqliteFs = null;
   self.kernel = null;
   self.shell = null;
+  self.shellProcessPid = null;
   self.terminal = null;
   self.facetManager = null;
   self.facetProcessManager = null;
@@ -666,7 +670,8 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.nimbusWrangler = null;
   self.npmInstaller = null;
   self.fetchProxyEntrypoint = null;
-  self.runtimeFsBridge = null;
+  self.runtimeFsBridges?.clear();
+  self.runtimeFsBridges = null;
   self._cpRegistry = null;
   self._viteShimPid = null;
   self._viteShimPort = null;
@@ -688,7 +693,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function rmrf(vfs: SqliteVFS, path: string): void {
+function rmrf(vfs: CredentialedVfs, path: string): void {
   for (const entry of vfs.readdir(path)) {
     const child = `${path}/${entry.name}`;
     if (entry.type === 'directory') rmrf(vfs, child);

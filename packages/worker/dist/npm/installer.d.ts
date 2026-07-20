@@ -44,7 +44,8 @@ export interface NpmInstallResult {
     phases: Record<string, number>;
 }
 export declare class NpmInstaller {
-    private vfs;
+    private readonly store;
+    private readonly vfs;
     private cache;
     private esbuild;
     private ctx;
@@ -76,6 +77,7 @@ export declare class NpmInstaller {
     install(projectDir: string, opts?: {
         packages?: string[];
         production?: boolean;
+        pid?: number;
     }): Promise<NpmInstallResult>;
     private _installInner;
     /**

@@ -1,1 +1,1 @@
-{"version":3,"file":"whoami.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/system/whoami.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAE3C,QAAA,MAAM,OAAO,EAAE,OAGd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"whoami.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/system/whoami.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAG3C,QAAA,MAAM,OAAO,EAAE,OAGd,CAAC;AAEF,eAAe,OAAO,CAAC"}

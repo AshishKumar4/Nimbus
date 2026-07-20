@@ -80,7 +80,8 @@ import {
   generateWsShimModuleCode,
   generateChokidarShimModuleCode,
 } from './real-vite-hmr.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import type { VfsEventEmitter } from '../vfs/events.js';
 import type { ParsedViteConfig } from '../runtime/vite-config-parser.js';
 import { stripLeadingSlashes } from '../vfs/path.js';
@@ -589,7 +590,7 @@ export class CirrusReal {
   private port: number;
   private root: string;
   private basePath: string;
-  private vfs: SqliteVFS;
+  private vfs: CredentialedVfs;
   private vfsEvents: VfsEventEmitter | null;
   private userConfigBundle: string | null;
   private extraSyntheticFiles: Record<string, string>;
@@ -649,7 +650,7 @@ export class CirrusReal {
     this.port = opts.port;
     this.root = opts.root;
     this.basePath = opts.basePath;
-    this.vfs = opts.vfs;
+    this.vfs = opts.vfs.as(CRED_KERNEL);
     this.vfsEvents = opts.vfsEvents || null;
     this.userConfigBundle = opts.userConfigBundle || null;
     this.extraSyntheticFiles = opts.extraSyntheticFiles || {};

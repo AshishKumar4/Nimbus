@@ -27,7 +27,7 @@
  * de-quarantines it as the primary content-bundle source.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import {
   resolvePackageEntry as sharedResolvePackageEntry,
   resolveExports as sharedResolveExports,
@@ -134,7 +134,7 @@ type PkgJsonSink = (pkgJsonPath: string) => void;
  * a directory-style require (e.g. `require('./mod')` where mod has
  * main='entry.js' and no index.js).
  */
-function resolveFile(vfs: SqliteVFS, base: string, sink?: PkgJsonSink): string | null {
+function resolveFile(vfs: CredentialedVfs, base: string, sink?: PkgJsonSink): string | null {
   const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
   for (const ext of fileExts) {
     const p = normalizePath(base + ext);
@@ -230,7 +230,7 @@ interface ResolveSubpathResult {
  *      finds it through its extension-probe loop without needing
  *      a runtime-side fix.
  */
-function resolvePkgSubpathEx(vfs: SqliteVFS, pkgDir: string, subpath: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
+function resolvePkgSubpathEx(vfs: CredentialedVfs, pkgDir: string, subpath: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
   const pkgJsonPath = pkgDir + '/package.json';
   if (!vfs.exists(pkgJsonPath)) {
     // No package.json — direct probe (matches node-shims fallback).
@@ -299,7 +299,7 @@ function resolvePkgSubpathEx(vfs: SqliteVFS, pkgDir: string, subpath: string, si
  * Returns null if there's no directory match or no readable nested
  * package.json (caller falls through to its existing null return).
  */
-function tryLegacyDirectorySubpath(vfs: SqliteVFS, pkgDir: string, subpath: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
+function tryLegacyDirectorySubpath(vfs: CredentialedVfs, pkgDir: string, subpath: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
   if (subpath === '.' || !subpath.startsWith('./')) return null;
 
   const subRelative = subpath.replace(/^\.\//, '');
@@ -381,7 +381,7 @@ function relativeFrom(fromDir: string, toPath: string): string {
  * X.5-L: extended bare-spec resolver that also returns any synthetic
  * stub emitted by resolvePkgSubpathEx's legacy-directory branch.
  */
-function resolveNodeModuleEx(vfs: SqliteVFS, name: string, fromDir: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
+function resolveNodeModuleEx(vfs: CredentialedVfs, name: string, fromDir: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
   let pkgName: string;
   let subpath: string;
   if (name.startsWith('@')) {
@@ -423,7 +423,7 @@ function resolveNodeModuleEx(vfs: SqliteVFS, name: string, fromDir: string, sink
  * the legacy directory-subpath pattern. Relative paths never need
  * stubs, so for those we just return `{ resolved }` with no stub.
  */
-function resolveRequireEx(vfs: SqliteVFS, id: string, fromDir: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
+function resolveRequireEx(vfs: CredentialedVfs, id: string, fromDir: string, sink?: PkgJsonSink): ResolveSubpathResult | null {
   if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
     const base = id.startsWith('/')
       ? strip(id)
@@ -455,7 +455,7 @@ function resolveRequireEx(vfs: SqliteVFS, id: string, fromDir: string, sink?: Pk
  * if not found). Mirrors node-shims.ts:__resolveImportsField.
  */
 function resolveImportsField(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   name: string,
   fromDir: string,
   sink?: PkgJsonSink,
@@ -514,7 +514,7 @@ export interface PrefetchResult {
  * referenced (for greedy oversampling).
  */
 export function prefetchForRequire(
-  vfs: SqliteVFS,
+  vfs: CredentialedVfs,
   entryCode: string,
   cwd: string,
   entryFile?: string,

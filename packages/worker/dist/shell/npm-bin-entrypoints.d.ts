@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetManager } from '../facets/manager.js';
 type Output = {
@@ -11,7 +11,7 @@ type RuntimeCommandHint = {
     installSpec: string;
 } | null;
 export declare function installNpmBinFallbackResolver(registry: RegistryLike, deps: {
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
     getCwd(): string;
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;

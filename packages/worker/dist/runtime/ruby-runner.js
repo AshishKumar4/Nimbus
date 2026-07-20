@@ -35,6 +35,7 @@
  */
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -49,7 +50,7 @@ const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
  * registered entrypoint (`ruby`, `ruby3`).
  */
 export function makeRubyRunnerFactory(deps) {
-    const { facetMgr, vfs, registry } = deps;
+    const { facetMgr, registry } = deps;
     return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
@@ -57,7 +58,7 @@ export function makeRubyRunnerFactory(deps) {
         };
         const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
         let fsSnapshotCache = null;
-        const registerGemBins = () => {
+        const registerGemBins = (vfs) => {
             if (!registry)
                 return;
             for (const bin of installedGemBins(vfs, defaultGemHome())) {
@@ -75,12 +76,15 @@ export function makeRubyRunnerFactory(deps) {
             }
         };
         const rubyBinHandler = async function rubyBinHandler(ctx) {
+            const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
+            const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+            const vfs = deps.vfs.as(cred);
             const argv = ctx.args ?? [];
             const cwd = ctx.cwd || '/home/user';
             const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
             if (packageCommand.handled) {
                 if (packageCommand.exitCode === 0)
-                    registerGemBins();
+                    registerGemBins(vfs);
                 return packageCommand.exitCode;
             }
             const toolInvocation = buildRubyToolInvocation(binKind, binName, argv);
@@ -132,11 +136,11 @@ export function makeRubyRunnerFactory(deps) {
             }
             else if (parsed.mode === 'script') {
                 const absPath = resolveVfsPath(parsed.scriptPath, cwd);
-                if (!vfs.exists(absPath)) {
-                    ctx.stderr.write(`${binName}: No such file or directory -- ${parsed.scriptPath} (LoadError)\n`);
-                    return 1;
-                }
                 try {
+                    if (!vfs.exists(absPath)) {
+                        ctx.stderr.write(`${binName}: No such file or directory -- ${parsed.scriptPath} (LoadError)\n`);
+                        return 1;
+                    }
                     userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
                 }
                 catch (e) {
@@ -167,12 +171,13 @@ export function makeRubyRunnerFactory(deps) {
             // Per-subtree watermark over exactly what the snapshot covers (cwd +
             // gem home), so unrelated VFS writes don't evict the cache.
             const revision = Math.max(vfs.revision(cwd), vfs.revision(defaultGemHome()));
-            let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
+            let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
+                && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
                 ? fsSnapshotCache.result
                 : null;
             if (!fsSnapshot) {
                 fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [defaultGemHome()] });
-                fsSnapshotCache = { cwd, revision, result: fsSnapshot };
+                fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
             }
             if ('error' in fsSnapshot) {
                 ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
@@ -203,7 +208,7 @@ export function makeRubyRunnerFactory(deps) {
             }
             return result.exitCode;
         };
-        registerGemBins();
+        registerGemBins(deps.vfs.as(CRED_KERNEL));
         return rubyBinHandler;
     };
 }
@@ -822,6 +827,7 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 function __nimbusInstallRubyFsSnapshot(snapshot) {
   const dirs = new Set(['tmp', 'home']);
   const files = {};
+  const modes = { '': 7, tmp: 7, home: 7, ...snapshot.modes };
   for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
   for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
     files[String(path).replace(/^\\/+/, '')] = b64;
@@ -835,6 +841,7 @@ function __nimbusInstallRubyFsSnapshot(snapshot) {
     ],
     files,
     dirs: Array.from(dirs).filter(Boolean),
+    modes,
   });
 }
 
@@ -881,6 +888,7 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     ],
     files: {},
     dirs: ['tmp', 'home'],
+    modes: { '': 7, tmp: 7, home: 7 },
   });
 
   // Initial argv/env (bootstrap defaults). Per-call __rubyRun re-

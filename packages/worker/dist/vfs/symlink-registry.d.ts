@@ -18,6 +18,7 @@ import type { SqliteVFS } from './sqlite-vfs.js';
 export declare const LEGACY_SYMLINK_REGISTRY_PATH = ".nimbus-symlinks.json";
 export declare class SymlinkRegistry {
     private vfs;
+    private view;
     private cache;
     private cacheRevision;
     constructor(vfs: SqliteVFS);
@@ -55,10 +56,5 @@ export declare class SymlinkRegistry {
     }[];
     hasAtOrBelow(path: string): boolean;
 }
-/**
- * Return the session-wide registry for a VFS instance. The registry has an
- * in-memory cache, so all runtime surfaces that share one SqliteVFS must also
- * share the registry instance to avoid stale symlink reads.
- */
 export declare function getSymlinkRegistry(vfs: SqliteVFS): SymlinkRegistry;
 //# sourceMappingURL=symlink-registry.d.ts.map

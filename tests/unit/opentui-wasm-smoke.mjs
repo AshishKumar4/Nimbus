@@ -69,7 +69,13 @@ try {
 } finally {
   rmSync(preamblePath, { force: true });
 }
-preamble.__wasiInitFS({ root: 'wasi-root', preopens: [{ wasiPath: '/', vfsPath: 'wasi-root' }], files: {}, dirs: [] });
+preamble.__wasiInitFS({
+  root: 'wasi-root',
+  preopens: [{ wasiPath: '/', vfsPath: 'wasi-root' }],
+  files: {},
+  dirs: [],
+  modes: { 'wasi-root': 0o7 },
+});
 
 let memory;
 const wasi = preamble.__wasiMakeImports({ argv: ['opentui'], env: {}, getMemory: () => memory });

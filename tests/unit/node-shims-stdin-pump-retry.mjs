@@ -16,15 +16,16 @@ function makePump(cpReadStdin, reportExit) {
   };
   const code = generateShimsCode();
   const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cwd', 'argv', 'env', 'filename', 'dirname', '__ProcessExit',
+    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+    'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__ProcessExit',
     '"use strict";let stdout = ""; let stderr = "";' + code + '\n;return { process: __processMod };'
   );
   class ProcessExit extends Error {
     constructor(codeArg) { super(`process.exit(${codeArg})`); this.code = codeArg; }
   }
   const sandbox = factory(
-    {}, {}, {}, null, supervisor,
+    {}, {}, {}, {}, null, supervisor,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     '/home/user', [], { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: '42' },
     '/home/user/main.mjs', '/home/user', ProcessExit,
   );

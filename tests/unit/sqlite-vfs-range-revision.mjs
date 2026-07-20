@@ -7,11 +7,13 @@
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function makeVfs(db) {
   const harness = createSqliteVfsTestHarness(db);
-  return { harness, vfs: new SqliteVFS(harness.sql, harness.ctx) };
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  return { harness, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
 function pattern(length, seed = 0) {
@@ -25,6 +27,7 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 // ── readRange ────────────────────────────────────────────────────────────
 {
   const { harness, vfs } = makeVfs();
+  vfs.mkdir('home/user', { recursive: true });
   const data = pattern(CHUNK_SIZE * 2 + 1000);
   vfs.writeFile('home/user/big.bin', data);
 

@@ -22,7 +22,8 @@
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
@@ -1247,7 +1248,8 @@ function unwrapLayerBlocks(css: string): string {
 // ── ViteDevServer ───────────────────────────────────────────────────────
 
 export class ViteDevServer {
-  private vfs: SqliteVFS;
+  private vfs: CredentialedVfs;
+  private vfsEvents: SqliteVFS['events'];
   private esbuild: EsbuildService;
   private root: string;
   private onHmrMessage: (msg: any) => void;
@@ -1323,7 +1325,8 @@ export class ViteDevServer {
   private logSink: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void } | null = null;
 
   constructor(opts: ViteDevServerOptions) {
-    this.vfs = opts.vfs;
+    this.vfs = opts.vfs.as(CRED_KERNEL);
+    this.vfsEvents = opts.vfs.events;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
     this.logPid = (opts.pid != null) ? opts.pid : null;
@@ -1469,7 +1472,7 @@ export class ViteDevServer {
     this.moduleCache.clear();
 
     // Subscribe to VFS events for HMR
-    this.unsubVfs = this.vfs.events.on((events) => {
+    this.unsubVfs = this.vfsEvents.on((events) => {
       this.handleVfsEvents(events);
     });
   }

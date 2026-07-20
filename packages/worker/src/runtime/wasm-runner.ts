@@ -51,9 +51,10 @@
 
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import { WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
-import { flushVfsDiff, snapshotVfs, type VfsLike } from './vfs-snapshot.js';
+import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -87,6 +88,7 @@ declare const __wasiInitFS: (opts: {
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
   files: Record<string, string>;
   dirs: string[];
+  modes: Record<string, number>;
   // WASI socket and polling support B1+B3: additive optional fields.
   times?: Record<string, { mtime: string; atime: string; ctime: string }>;
   symlinks?: Record<string, string>;
@@ -201,7 +203,7 @@ function hasWasiImports(bytes: Uint8Array): boolean {
  * the runtime-registry's contract.
  */
 export function makeWasmRunner(deps: {
-  vfs: VfsLike;
+  vfs: SqliteVFS;
   env: any;
   ctx: DurableObjectState;
   processes: SessionProcessSupervisor;
@@ -211,6 +213,7 @@ export function makeWasmRunner(deps: {
     _code: string,
     opts: RuntimeRunOpts,
   ): Promise<RuntimeRunResult> {
+    const vfs = deps.vfs.as(requireVfsCred(opts.cred, 'wasm-runner'));
     // opts.filename is the resolved .wasm path (absolute, /-prefixed
     // by the registry's bypassesScriptRead path).
     // opts.argv is:
@@ -219,22 +222,21 @@ export function makeWasmRunner(deps: {
     const wasmPath = (opts.filename || '').replace(/^\/+/, '');
     const argv = opts.argv || [];
 
-    if (!deps.vfs.exists(wasmPath)) {
-      return {
-        exitCode: 1,
-        stdout: '',
-        stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
-      };
-    }
-
     let bytes: Uint8Array;
     try {
-      bytes = deps.vfs.readFile(wasmPath);
-    } catch (e: any) {
+      if (!vfs.exists(wasmPath)) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
+        };
+      }
+      bytes = vfs.readFile(wasmPath);
+    } catch (e: unknown) {
       return {
         exitCode: 1,
         stdout: '',
-        stderr: `wasm-runner: cannot read '${opts.filename}': ${e?.message || e}\n`,
+        stderr: `wasm-runner: cannot read '${opts.filename}': ${e instanceof Error ? e.message : String(e)}\n`,
       };
     }
 
@@ -355,6 +357,7 @@ export function makeWasmRunner(deps: {
           preopens: Array<{ wasiPath: string; vfsPath: string }>;
           files: Record<string, string>;
           dirs: string[];
+          modes: Record<string, number>;
         };
       },
     ): Promise<WasmCallResult> {
@@ -411,10 +414,11 @@ export function makeWasmRunner(deps: {
             preopens: args.wasiFs.preopens,
             files:    args.wasiFs.files,
             dirs:     args.wasiFs.dirs,
+            modes:    args.wasiFs.modes,
           });
         } else {
           // Minimal FS so __wasiFS isn't null when WASI fns are called.
-          initFS({ root: '', preopens: [], files: {}, dirs: [] });
+          initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
         }
         const memRef: { mem: WebAssembly.Memory | null } = { mem: null };
         const wasi = mk({
@@ -559,7 +563,7 @@ export function makeWasmRunner(deps: {
     if (isWasi) {
       // Session root = cwd of the shell invocation. Falls back to /home/user.
       const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-      const snap = snapshotVfs(deps.vfs, cwd);
+      const snap = snapshotVfs(vfs, cwd);
       if ('error' in snap) {
         return {
           exitCode: 1,
@@ -575,6 +579,7 @@ export function makeWasmRunner(deps: {
         ],
         files: snap.snapshot.files,
         dirs:  snap.snapshot.dirs,
+        modes: snap.snapshot.modes,
       };
       wasiFsBytes = snap.bytes;
       wasiFsFiles = snap.files;
@@ -609,7 +614,7 @@ export function makeWasmRunner(deps: {
     // ── filesystem WASI: flush mutated FS state back into SqliteFS ──
     if (outcome.mode === 'wasi' && outcome.ok && outcome.fsDiff) {
       try {
-        flushVfsDiff(deps.vfs, outcome.fsDiff);
+        flushVfsDiff(vfs, outcome.fsDiff);
       } catch (e: any) {
         // Flush failure is non-fatal; the wasm ran, the user saw stdout.
         // But surface a diagnostic so they know the FS didn't persist.

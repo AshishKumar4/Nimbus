@@ -33,15 +33,64 @@ import { readPyodideRuntimeFiles } from './pyodide-runtime-assets.js';
 import { buildPipInvocation, parseInstalledPyodidePackageManifest, PYTHON_PYODIDE_PACKAGE_MANIFEST, PYTHON_SITE_PACKAGES_ROOT, } from './python-pip.js';
 import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { requireVfsCred } from './os-contracts.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
+export function expandPythonEffectiveMode(effective) {
+    const bits = effective & 0o7;
+    return (bits << 6) | (bits << 3) | bits;
+}
+export function installPythonFsSnapshot(fs, snapshot, previousFiles = new Set()) {
+    // The interactive REPL boots its facet without a filesystem snapshot
+    // (python-repl.ts init dispatches __pyodideRun with no fsSnapshot).
+    // Absence means nothing to mount or unmount; keep the ledger as-is.
+    if (!snapshot)
+        return new Set(previousFiles);
+    const norm = (path) => {
+        const clean = String(path || '').replace(/^\/+/, '').replace(/\/+$/, '');
+        return clean ? `/${clean}` : '/';
+    };
+    const decode = (encoded) => {
+        const binary = atob(encoded);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++)
+            bytes[index] = binary.charCodeAt(index);
+        return bytes;
+    };
+    const directories = new Set(snapshot.dirs || []);
+    const currentFiles = new Set(Object.keys(snapshot.modes || {}).filter((path) => !directories.has(path)));
+    for (const previous of previousFiles) {
+        if (currentFiles.has(previous))
+            continue;
+        const absolute = norm(previous);
+        if (fs.analyzePath(absolute).exists)
+            fs.unlink(absolute);
+    }
+    for (const directory of [...directories].sort((a, b) => a.length - b.length)) {
+        fs.mkdirTree(norm(directory));
+    }
+    for (const path of currentFiles) {
+        const absolute = norm(path);
+        const parent = absolute.slice(0, absolute.lastIndexOf('/')) || '/';
+        fs.mkdirTree(parent);
+        const encoded = snapshot.files?.[path];
+        fs.writeFile(absolute, encoded === undefined ? new Uint8Array() : decode(encoded));
+        fs.chmod(absolute, expandPythonEffectiveMode(snapshot.modes[path]));
+    }
+    for (const directory of [...directories].sort((a, b) => b.length - a.length)) {
+        const mode = snapshot.modes?.[directory];
+        if (mode !== undefined)
+            fs.chmod(norm(directory), expandPythonEffectiveMode(mode));
+    }
+    return currentFiles;
+}
 /**
  * Build the python-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each
  * registered entrypoint (`python`, `python3`).
  */
 export function makePythonRunnerFactory(deps) {
-    const { facetMgr, vfs } = deps;
+    const { facetMgr } = deps;
     return function pythonRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
@@ -51,26 +100,23 @@ export function makePythonRunnerFactory(deps) {
         const asmJsVfs = findFile('share/pyodide/pyodide.asm.js');
         const stdlibVfs = findFile('share/pyodide/python_stdlib.zip');
         const lockfileVfs = findFile('share/pyodide/pyodide-lock.json');
-        let pipRuntimeContextCache = null;
-        const pipRuntimeContext = () => {
-            if (!pipRuntimeContextCache) {
-                pipRuntimeContextCache = {
-                    pyodideLockfileText: lockfileVfs && vfs.exists(lockfileVfs)
-                        ? new TextDecoder('utf-8').decode(vfs.readFile(lockfileVfs))
-                        : null,
-                    runtimeArtifacts: manifest.runtime_artifacts || [],
-                };
-            }
-            return pipRuntimeContextCache;
-        };
         let runtimePromise = null;
         let fsSnapshotCache = null;
         return async function pythonBinHandler(ctx) {
+            const cred = requireVfsCred(ctx.cred, binName);
+            const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+            const vfs = deps.vfs.as(cred);
+            const pipRuntimeContext = {
+                pyodideLockfileText: lockfileVfs && vfs.exists(lockfileVfs)
+                    ? new TextDecoder('utf-8').decode(vfs.readFile(lockfileVfs))
+                    : null,
+                runtimeArtifacts: manifest.runtime_artifacts || [],
+            };
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
             const pipInvocation = binKind === 'pip' || binName === 'pip' || binName === 'pip3'
-                ? await buildPipInvocation(argv, binName, cwd, vfs, pipRuntimeContext())
-                : await buildPythonModulePipInvocation(argv, cwd, vfs, pipRuntimeContext());
+                ? await buildPipInvocation(argv, binName, cwd, vfs, pipRuntimeContext)
+                : await buildPythonModulePipInvocation(argv, cwd, vfs, pipRuntimeContext);
             if (pipInvocation.error) {
                 ctx.stderr.write(`${binName}: ${pipInvocation.error}\n`);
                 return pipInvocation.exitCode;
@@ -139,15 +185,15 @@ export function makePythonRunnerFactory(deps) {
             else if (parsed.mode === 'script') {
                 // Read script from VFS, resolving relative to cwd.
                 const absPath = resolveVfsPath(parsed.scriptPath, cwd);
-                if (!vfs.exists(absPath)) {
-                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: No such file or directory\n`);
-                    return 2;
-                }
                 try {
+                    if (!vfs.exists(absPath)) {
+                        ctx.stderr.write(`${binName}: ${parsed.scriptPath}: No such file or directory\n`);
+                        return 2;
+                    }
                     userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
                 }
                 catch (e) {
-                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${e?.message || e}\n`);
+                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${e instanceof Error ? e.message : String(e)}\n`);
                     return 1;
                 }
                 progName = parsed.scriptPath;
@@ -179,12 +225,13 @@ export function makePythonRunnerFactory(deps) {
             // Per-subtree watermark over exactly what the snapshot covers (cwd +
             // site-packages), so unrelated VFS writes don't evict the cache.
             const revision = Math.max(vfs.revision(cwd), vfs.revision(PYTHON_SITE_PACKAGES_ROOT));
-            let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
+            let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
+                && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
                 ? fsSnapshotCache.result
                 : null;
             if (!fsSnapshot) {
                 fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [PYTHON_SITE_PACKAGES_ROOT] });
-                fsSnapshotCache = { cwd, revision, result: fsSnapshot };
+                fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
             }
             if ('error' in fsSnapshot) {
                 ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
@@ -218,7 +265,7 @@ export function makePythonRunnerFactory(deps) {
             // ── Dispatch the facet ───────────────────────────────────────
             let runtime;
             try {
-                const runtimeKey = sideModules.modules.map((mod) => `${mod.moduleKey}:${mod.packageId}`).sort().join('|');
+                const runtimeKey = `${credKey}|${sideModules.modules.map((mod) => `${mod.moduleKey}:${mod.packageId}`).sort().join('|')}`;
                 if (!runtimePromise || runtimePromise.key !== runtimeKey) {
                     runtimePromise = {
                         key: runtimeKey,
@@ -859,6 +906,22 @@ const __NIMBUS_PERSISTENT_SITE_PACKAGES = '/home/user/.nimbus-python/site-packag
 const __NIMBUS_PYTHON_SOCKET_SHIM = ${JSON.stringify(PYTHON_SOCKET_SHIM)};
 const __NIMBUS_PYODIDE_SIDE_MODULES = ${JSON.stringify(sideModules)};
 
+// esbuild (\`keepNames\`, via wrangler) wraps the snapshot installer's nested
+// named arrows as \`__name(fn, "fn")\`, so its \`.toString()\` body references
+// \`__name\` by bare identifier — a binding that does NOT cross into this facet
+// isolate (mirrors loader-pool's ESBUILD_RUNTIME_SHIM and opentui-facet-backend).
+// We can neither omit it (installer → "__name is not defined") nor \`const\`-declare
+// it (the inlined pyodide asm.js already declares \`__name\`/\`__defProp\` at this
+// scope → "already declared"). Provide it idempotently on globalThis: a bare
+// \`__name\` with no lexical binding resolves to this global. Unit tests import the
+// un-bundled TS source, so only the deployed, esbuild-bundled worker needs it.
+if (typeof globalThis.__name !== "function") {
+  globalThis.__name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });
+}
+
+${expandPythonEffectiveMode.toString()}
+${installPythonFsSnapshot.toString()}
+
 // Decode base64 → Uint8Array. Run at module-init time (synchronous).
 const __nimbusStdlibBytes = (function decode(b64) {
   const bin = atob(b64);
@@ -908,13 +971,6 @@ if (!globalThis.__nimbusPythonFetchStripsIntegrity && typeof globalThis.fetch ==
     return __nimbusOrigFetch(input, init);
   };
   globalThis.__nimbusPythonFetchStripsIntegrity = true;
-}
-
-function __nimbusB64ToBytes(b64) {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }
 
 function __nimbusBytesToB64(bytes) {
@@ -1001,34 +1057,6 @@ function __nimbusDisableDynamicPythonExtensions(pyodide) {
 function __nimbusNormPath(path) {
   const clean = String(path || '').replace(/^\\/+/, '').replace(/\\/+$/, '');
   return clean ? '/' + clean : '/';
-}
-
-function __nimbusInstallFsSnapshot(M, snapshot) {
-  if (!snapshot || !snapshot.root) return;
-  const currentFiles = new Set(Object.keys(snapshot.files || {}));
-  const previous = globalThis.__nimbusMountedPyFiles || new Set();
-  for (const prev of Array.from(previous)) {
-    if (currentFiles.has(prev)) continue;
-    try {
-      const abs = __nimbusNormPath(prev);
-      if (M.FS.analyzePath(abs).exists) M.FS.unlink(abs);
-    } catch {}
-  }
-  const dirs = Array.from(new Set(snapshot.dirs || [])).sort((a, b) => a.length - b.length);
-  for (const dir of dirs) {
-    try { M.FS.mkdirTree(__nimbusNormPath(dir)); } catch {}
-  }
-  for (const [path, b64] of Object.entries(snapshot.files || {})) {
-    const abs = __nimbusNormPath(path);
-    try {
-      const parent = abs.slice(0, abs.lastIndexOf('/')) || '/';
-      M.FS.mkdirTree(parent);
-      M.FS.writeFile(abs, __nimbusB64ToBytes(b64));
-    } catch (e) {
-      globalThis.__nimbusPyStderr.push('[python-runner] VFS mount failed for ' + path + ': ' + (e && e.message) + '\\n');
-    }
-  }
-  globalThis.__nimbusMountedPyFiles = currentFiles;
 }
 
 function __nimbusWalkPyFs(M, absDir, out) {
@@ -1296,24 +1324,38 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
     };
   }
   const pyodideMod = boot.mod;
+  const previousIgnorePermissions = pyodideMod.FS.ignorePermissions;
 
-  // Apply user env to MEMFS now that CPython is up. (The preRun setEnv
-  // ran with bootstrap defaults; we layer the user env on top.)
-  if (args.userEnv) {
-    try { Object.assign(pyodideMod.ENV, args.userEnv); } catch {}
-  }
   try {
-    __nimbusInstallFsSnapshot(pyodideMod, args.fsSnapshot);
+    // Pyodide owns the bootstrap filesystem. Keep setup unrestricted, then
+    // enforce the invoking credential's expanded snapshot modes for Python.
+    pyodideMod.FS.ignorePermissions = true;
+
+    // Apply user env to MEMFS now that CPython is up. (The preRun setEnv
+    // ran with bootstrap defaults; we layer the user env on top.)
+    if (args.userEnv) {
+      try { Object.assign(pyodideMod.ENV, args.userEnv); } catch {}
+    }
+    try {
+      globalThis.__nimbusMountedPyFiles = installPythonFsSnapshot(
+        pyodideMod.FS,
+        args.fsSnapshot,
+        globalThis.__nimbusMountedPyFiles || new Set(),
+      );
+    } catch (e) {
+      return {
+        exitCode: 1,
+        stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+        stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+        error: 'VFS mount failed: ' + (e && e.message),
+      };
+    }
     try {
       pyodideMod.FS.mkdirTree(__NIMBUS_PERSISTENT_SITE_PACKAGES);
       pyodideMod.API.sitePackages = __NIMBUS_PERSISTENT_SITE_PACKAGES;
     } catch {}
     const cwd = __nimbusNormPath(args.cwd || (args.userEnv && args.userEnv.HOME) || '/home/user');
     try { pyodideMod.FS.mkdirTree(cwd); } catch {}
-    try { pyodideMod.FS.chdir(cwd); } catch {}
-  } catch (e) {
-    globalThis.__nimbusPyStderr.push('[python-runner] VFS mount failed: ' + (e && e.message) + '\\n');
-  }
 
   // finalizeBootstrap returns the public Pyodide JS API (the one with
   // .runPython, .globals, .registerJsModule). It registers Python-side
@@ -1365,6 +1407,8 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
   if (!Array.isArray(__NIMBUS_PYODIDE_SIDE_MODULES) || __NIMBUS_PYODIDE_SIDE_MODULES.length === 0) {
     __nimbusDisableDynamicPythonExtensions(pyodide);
   }
+
+  pyodideMod.FS.ignorePermissions = false;
 
   try {
     pyodide.runPython(
@@ -1447,12 +1491,15 @@ globalThis.__pyodideRun = async function __pyodideRun(args) {
 
   try { userGlobals?.destroy?.(); } catch {}
 
-  return {
-    exitCode: exitCode,
-    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
-    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
-    fsDiff: __nimbusSnapshotPyDiff(pyodideMod, args.fsSnapshot),
-  };
+    return {
+      exitCode: exitCode,
+      stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+      stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+      fsDiff: __nimbusSnapshotPyDiff(pyodideMod, args.fsSnapshot),
+    };
+  } finally {
+    pyodideMod.FS.ignorePermissions = previousIgnorePermissions;
+  }
 };
 
 // ── END: python-runner preamble ───────────────────────────────────────

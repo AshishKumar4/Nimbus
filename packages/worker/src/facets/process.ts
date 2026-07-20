@@ -37,6 +37,7 @@
 import { resolveVfsPath } from '../vfs/path.js';
 import { parseShellInvocation, type ShellName } from '../shell/shell-invocation.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -104,8 +105,11 @@ export interface SpawnReq {
   stdio: ('pipe' | 'ignore' | 'inherit')[];
   detached?: boolean;
   shell?: boolean | string;
-  /** Optional explicit parent PID for log routing. */
-  parentPid?: number;
+  stdin?: string;
+  /** Supervisor-assigned invoking process PID. */
+  parentPid: number;
+  /** Broker-assigned child PID for isolated inline dispatch. */
+  processPid?: number;
 }
 
 export interface ReadOutputResult {
@@ -156,6 +160,7 @@ export interface FacetManagerLike {
 export interface CommandRegistryLike {
   resolve(name: string): { kind: CommandKind } | null;
   runPureBuiltin(
+    pid: number,
     name: string,
     args: string[],
     env: Record<string, string>,
@@ -167,6 +172,7 @@ export interface CommandRegistryLike {
 
 export interface ShellExecutorLike {
   execute(
+    pid: number,
     commandLine: string,
     env: Record<string, string>,
     cwd: string,
@@ -183,7 +189,7 @@ export interface ShellExecutorLike {
 export interface FacetProcessManagerDeps {
   facetMgr: FacetManagerLike;
   processes: SessionProcessSupervisor;
-  vfs: { exists(p: string): boolean; readFileString(p: string): string; isDirectory(p: string): boolean };
+  vfsForProcess: (pid: number) => Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
   /** Optional: ctx for facets.abort/delete in production. */
@@ -321,8 +327,16 @@ export class FacetProcessManager {
       NIMBUS_CP_DEPTH: String(depthIn + 1),
     };
 
+    if (!Number.isInteger(req.parentPid) || req.parentPid <= 0) {
+      throw new Error('child_process spawn requires a supervisor-assigned parent pid');
+    }
     const commandLine = `${req.command} ${req.args.join(' ')}`.trim();
-    const processEntry = this.deps.processes.spawn(commandLine, req.args, req.cwd);
+    const processEntry = this.deps.processes.spawn(
+      commandLine,
+      req.args,
+      req.cwd,
+      { parentPid: req.parentPid },
+    );
     const pid = processEntry.pid;
     const facetName = `cp-proc-${pid}`;
     const child: ChildEntry = {
@@ -408,6 +422,7 @@ export class FacetProcessManager {
         detached: !!req.detached,
         shell: req.shell ?? false,
         stdin,
+        processPid: child.pid,
       };
       // Register the facet-slot so kill() can find the abort handle.
       child.facetSlot = { abort: undefined, killed: false };
@@ -434,7 +449,7 @@ export class FacetProcessManager {
       const stdin = await this._drainStdinForBuiltin(child);
       try {
         const code = await this.deps.commandRegistry.runPureBuiltin(
-          req.command, req.args, child.env, req.cwd, stdin, hooks,
+          child.pid, req.command, req.args, child.env, req.cwd, stdin, hooks,
         );
         this._stampExit(child, code, null);
       } catch (e: any) {
@@ -453,6 +468,7 @@ export class FacetProcessManager {
       env: { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) },
       cwd: req.cwd,
       stdin: '',
+      processPid: child.pid,
     });
     // Register the facet-slot so kill() can find the abort handle.
     child.facetSlot = { abort: undefined, killed: false };
@@ -499,21 +515,36 @@ export class FacetProcessManager {
       ...(req.env || {}),
     };
     if (kind === 'shell-direct') {
+      if (typeof req.processPid !== 'number' || !Number.isInteger(req.processPid) || req.processPid <= 0) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'child_process: inline dispatch requires a broker-assigned process pid\n',
+        };
+      }
       try {
         const plan = this._shellPlanFor(req);
         if (!plan) {
           return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
         }
-        const stdin = typeof (req as any).stdin === 'string' ? (req as any).stdin : '';
+        const stdin = typeof req.stdin === 'string' ? req.stdin : '';
         const commandLine = this._shellCommandLineForPlan(
           plan,
           String(req.cwd || '/home/user'),
           stdin,
           hooks,
           shellNameForCommand(req.command),
+          req.processPid,
         );
         if (commandLine === null) return { exitCode: 127, stdout: stdoutBuf, stderr: stderrBuf };
-        const code = await this._runShellLine(commandLine, childEnv, String(req.cwd || '/home/user'), stdin, hooks);
+        const code = await this._runShellLine(
+          req.processPid,
+          commandLine,
+          childEnv,
+          String(req.cwd || '/home/user'),
+          stdin,
+          hooks,
+        );
         return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
       } catch (e: any) {
         stderrBuf += `shell error: ${e?.message || String(e)}\n`;
@@ -521,11 +552,18 @@ export class FacetProcessManager {
       }
     }
     if (kind === 'pure-builtin') {
+      if (typeof req.processPid !== 'number' || !Number.isInteger(req.processPid) || req.processPid <= 0) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'child_process: inline dispatch requires a broker-assigned process pid\n',
+        };
+      }
       try {
         const code = await this.deps.commandRegistry.runPureBuiltin(
-          req.command, req.args, childEnv,
+          req.processPid, req.command, req.args, childEnv,
           String(req.cwd || '/home/user'),
-          typeof (req as any).stdin === 'string' ? (req as any).stdin : '',
+          typeof req.stdin === 'string' ? req.stdin : '',
           hooks,
         );
         return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
@@ -541,6 +579,7 @@ export class FacetProcessManager {
       env: childEnv,
       cwd: String(req.cwd || '/home/user'),
       stdin: '',
+      processPid: req.processPid,
     });
     try {
       const code = await this.deps.facetMgr.execStream(
@@ -614,12 +653,13 @@ export class FacetProcessManager {
         stdin,
         hooks,
         shellNameForCommand(req.command),
+        child.pid,
       );
       if (commandLine === null) {
         this._stampExit(child, 127, null);
         return;
       }
-      const code = await this._runShellLine(commandLine, child.env, req.cwd, stdin, hooks);
+      const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
       this._appendOutput(child, 2, `shell error: ${e?.message || String(e)}\n`);
@@ -643,17 +683,19 @@ export class FacetProcessManager {
     stdin: string,
     hooks: OutputHooks,
     shellName: ShellName,
+    processPid: number,
   ): string | null {
     if (plan.kind === 'command') return plan.commandLine;
     if (plan.kind === 'stdin') return stdin;
 
     const scriptPath = resolveVfsPath(plan.path, cwd || '/home/user');
     try {
-      if (!this.deps.vfs.exists(scriptPath) || this.deps.vfs.isDirectory(scriptPath)) {
+      const vfs = this.deps.vfsForProcess(processPid);
+      if (!vfs.exists(scriptPath) || vfs.isDirectory(scriptPath)) {
         hooks.onStderr(`${shellName}: ${plan.path}: No such file or directory\n`);
         return null;
       }
-      return this.deps.vfs.readFileString(scriptPath);
+      return vfs.readFileString(scriptPath);
     } catch (e: any) {
       hooks.onStderr(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`);
       return null;
@@ -661,6 +703,7 @@ export class FacetProcessManager {
   }
 
   private async _runShellLine(
+    pid: number,
     commandLine: string,
     env: Record<string, string>,
     cwd: string,
@@ -671,7 +714,7 @@ export class FacetProcessManager {
       hooks.onStderr('sh: shell executor unavailable\n');
       return 127;
     }
-    return this.deps.shellExecutor.execute(commandLine, env, cwd || '/home/user', stdin, hooks);
+    return this.deps.shellExecutor.execute(pid, commandLine, env, cwd || '/home/user', stdin, hooks);
   }
 
   // ── stdin queue ─────────────────────────────────────────────────────────

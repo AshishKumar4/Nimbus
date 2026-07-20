@@ -1,5 +1,7 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { VfsCred } from '../runtime/os-contracts.js';
+import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
 import { type ShellInvocationOptions } from './shell-invocation.js';
 type Output = {
     write(s: string): void;
@@ -13,6 +15,11 @@ type ShellCommandContext = {
     stdin?: unknown;
     terminalStdin?: TerminalInputStream;
     isFdTerminal?: (fd: number) => boolean;
+    pid: number;
+    cred: VfsCred;
+    setUmask(mask: number): void;
+    runAs(cred: VfsCred, argv: string[]): Promise<number>;
+    vfs: VFS;
 };
 export type ShellEntrypointExecutor = {
     execute(cmd: string, options?: {
@@ -31,6 +38,8 @@ export type ShellEntrypointExecutor = {
             stdout?: boolean;
             stderr?: boolean;
         };
+        commandContext?: Record<string, unknown>;
+        runAs?: CommandRunAsHost;
     }): Promise<{
         exitCode: number;
         stdout?: string;
@@ -40,6 +49,6 @@ export type ShellEntrypointExecutor = {
 type RegistryLike = {
     register(name: string, handler: (ctx: ShellCommandContext) => Promise<number>): void;
 };
-export declare function registerShellEntrypointCommands(registry: RegistryLike, shell: ShellEntrypointExecutor, vfs: SqliteVFS): void;
+export declare function registerShellEntrypointCommands(registry: RegistryLike, shell: ShellEntrypointExecutor, vfs: CredentialedVfs): void;
 export {};
 //# sourceMappingURL=shell-entrypoints.d.ts.map

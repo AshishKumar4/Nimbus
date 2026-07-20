@@ -9,7 +9,8 @@
  * to the SqliteVFS.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { dec } from '../_shared/bytes.js';
@@ -36,7 +37,7 @@ async function getGit() {
  * isomorphic-git requires: readFile, writeFile, unlink, readdir,
  * mkdir, rmdir, stat, lstat (all as promises).
  */
-function createGitFs(vfs: SqliteVFS) {
+function createGitFs(vfs: CredentialedVfs) {
   // Path normalization is shared with esbuild-service via ./vfs-path.ts.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
@@ -152,6 +153,8 @@ function createGitFs(vfs: SqliteVFS) {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 type Ctx = {
+  pid: number;
+  cred: VfsCred;
   args: string[];
   stdout: { write(s: string): void };
   stderr: { write(s: string): void };
@@ -218,9 +221,9 @@ export function registerGitCommands(
   doCtx?: DurableObjectState,
   doEnv?: any,
 ): void {
-  const fs = createGitFs(vfs);
-
   registry.register('git', async (ctx: Ctx) => {
+    const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
+    const fs = createGitFs(credentialedVfs);
     const args = ctx.args;
     const sub = args[0];
     const subArgs = args.slice(1);
@@ -261,7 +264,7 @@ export function registerGitCommands(
             initDir = initPath.startsWith('/') ? initPath : dir + '/' + initPath;
             // Ensure the target directory exists in VFS
             const stripped = initDir.replace(/^\/+/, '');
-            if (!vfs.exists(stripped)) vfs.mkdir(stripped, { recursive: true });
+            if (!credentialedVfs.exists(stripped)) credentialedVfs.mkdir(stripped, { recursive: true });
           }
           await git.init({ fs, dir: initDir });
           ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
@@ -307,6 +310,7 @@ export function registerGitCommands(
             try {
               const result = await execGitNetwork(doCtx, doEnv, {
                 op: 'clone',
+                pid: ctx.pid,
                 dir: dest as string,
                 url,
                 depth,
@@ -502,6 +506,7 @@ export function registerGitCommands(
           ctx.stdout.write(`Fetching from ${remote}...\n`);
           const result = await execGitNetwork(doCtx, doEnv, {
             op: 'fetch',
+            pid: ctx.pid,
             dir,
             remote,
             auth: {
@@ -528,6 +533,7 @@ export function registerGitCommands(
           ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
           const result = await execGitNetwork(doCtx, doEnv, {
             op: 'pull',
+            pid: ctx.pid,
             dir,
             remote,
             ref: branch,
@@ -556,6 +562,7 @@ export function registerGitCommands(
           ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
           const result = await execGitNetwork(doCtx, doEnv, {
             op: 'push',
+            pid: ctx.pid,
             dir,
             remote,
             ref: branch,

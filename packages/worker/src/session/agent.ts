@@ -70,6 +70,8 @@ import {
   type StoredMessageStatus,
   type StoredTurnPart,
 } from './agent-contract.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
 interface AgentStorage {
   get(key: string): Promise<unknown>;
@@ -79,18 +81,9 @@ interface AgentStorage {
   deleteAlarm(): Promise<void>;
 }
 
-interface AgentVfs {
-  exists(path: string): boolean;
-  mkdir(path: string, options?: { recursive?: boolean }): void;
-  readFileString(path: string): string;
-  readdir(path: string): Array<{ name: string; type: string }>;
-  writeFile(path: string, content: string): void;
-}
-
 interface Host extends ProgrammaticHost {
   ctx: { storage: AgentStorage };
   env: ProgrammaticHost['env'] & Record<string, unknown>;
-  sqliteFs: (ProgrammaticHost['sqliteFs'] & AgentVfs) | null;
 }
 
 interface OAuthStatePayload {
@@ -983,20 +976,21 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
     if (name === 'read_file') {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user');
-      return { path: '/' + path, content: self.sqliteFs!.readFileString(path) };
+      return { path: '/' + path, content: self.sqliteFs!.as(CRED_KERNEL).readFileString(path) };
     }
     if (name === 'write_file') {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
-      ensureParentDirs(self.sqliteFs!, path);
-      self.sqliteFs!.writeFile(path, String(args.content ?? ''));
+      const vfs = self.sqliteFs!.as(CRED_KERNEL);
+      ensureParentDirs(vfs, path);
+      vfs.writeFile(path, String(args.content ?? ''));
       return { ok: true, path: '/' + path, bytes: String(args.content ?? '').length };
     }
     if (name === 'list_files') {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user');
       const base = trimTrailingSlash(path);
-      const entries = self.sqliteFs!.readdir(path).map((entry) => ({
+      const entries = self.sqliteFs!.as(CRED_KERNEL).readdir(path).map((entry) => ({
         name: entry.name,
         type: entry.type,
         path: '/' + base + '/' + entry.name,
@@ -1256,7 +1250,7 @@ function normalizeAgentVfsPath(input: unknown): string {
   return resolveVfsPath(raw, '/home/user') || 'home/user';
 }
 
-function ensureParentDirs(vfs: any, path: string): void {
+function ensureParentDirs(vfs: CredentialedVfs, path: string): void {
   const parts = path.split('/');
   for (let i = 1; i < parts.length; i++) {
     const dir = parts.slice(0, i).join('/');

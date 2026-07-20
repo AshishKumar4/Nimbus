@@ -19,6 +19,7 @@ export interface SpawnPoolReq {
     detached?: boolean;
     shell?: boolean | string;
     stdin?: string;
+    processPid: number;
 }
 export declare class ChildProcessSpawnPool {
     /**

@@ -15,6 +15,7 @@ import {
   execGitNetwork,
 } from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
@@ -428,8 +429,9 @@ export const git = {
   globalThis.__nestedParentsDurable = false;
   globalThis.__prepareDurable = false;
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  const bridge = new SqliteRuntimeFsBridge(vfs);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
+  const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
   await bridge.writeFile('/outside/existing.txt', 'outside!!');
   const supervisor = {
     async stat(path) {
@@ -442,7 +444,7 @@ export const git = {
     },
     async hasLegacySymlinkUnder(path) {
       rawCalls.legacySymlinkSubtree++;
-      return getSymlinkRegistry(vfs).hasAtOrBelow(path);
+      return getSymlinkRegistry(rawVfs).hasAtOrBelow(path);
     },
     async readdir(path) {
       rawCalls.readdir.push(path);
@@ -553,9 +555,9 @@ export const git = {
   );
   assert.equal(vfs.readFileString('repo/concurrent/file-179'), 'concurrent-179');
   assert.equal(vfs.stat('repo/executable.sh').mode, 0o755);
-  assert.equal(vfs.stat('repo/link.txt').type, 'symlink');
+  assert.equal(vfs.lstat('repo/link.txt').type, 'symlink');
   assert.equal(vfs.readlink('repo/link.txt'), 'target.txt');
-  assert.equal(vfs.stat('repo/dir-link').type, 'symlink');
+  assert.equal(vfs.lstat('repo/dir-link').type, 'symlink');
   assert.equal(vfs.readlink('repo/dir-link'), 'real-dir');
   assert.equal((await bridge.stat('repo/link.txt', { followSymlinks: false })).type, 'symlink');
   assert.equal(vfs.stat('repo/gitlink').type, 'directory');
@@ -761,7 +763,7 @@ export const git = {
 
   const cloneCallsBeforeMissingParent = globalThis.__cloneCalls;
   vfs.mkdir('workspace');
-  const missingParentLease = vfs.acquireExclusiveMutation('/workspace/new/nested/repo', {
+  const missingParentLease = rawVfs.acquireExclusiveMutation('/workspace/new/nested/repo', {
     includeMissingAncestors: true,
   });
   assert.equal(missingParentLease.root, 'workspace/new');
@@ -798,7 +800,7 @@ export const git = {
       },
     );
   } finally {
-    vfs.releaseExclusiveMutation(missingParentLease.owner);
+    rawVfs.releaseExclusiveMutation(missingParentLease.owner);
   }
   const missingParent = await missingParentResponse.json();
   assert.equal(missingParent.success, true, missingParent.error);
@@ -859,7 +861,7 @@ export const git = {
     assert.match(fileConflict.error, /already exists and is not an empty directory/);
   }
 
-  const legacySymlinks = getSymlinkRegistry(vfs);
+  const legacySymlinks = getSymlinkRegistry(rawVfs);
   legacySymlinks.set('orphan-root/injected', 'target.txt');
   const cloneCallsBeforeOrphan = globalThis.__cloneCalls;
   const orphanResponse = await worker.default.fetch(
@@ -912,6 +914,7 @@ export const git = {
       },
       {
         op: 'clone',
+        pid: 1,
         dir: `/${dir}`,
         url: 'https://example.invalid/repo.git',
         exclusiveDestination: true,
@@ -1352,6 +1355,7 @@ export const git = {
     },
     {
       op: 'clone',
+      pid: 1,
       dir: '/existing-repo',
       url: 'https://example.invalid/repo.git',
       exclusiveDestination: true,

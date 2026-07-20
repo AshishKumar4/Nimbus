@@ -236,7 +236,7 @@ export class KvEmulator {
             this._lazyDelete(enc);
             return null;
         }
-        const body = this.vfs.readFileBytes ? this.vfs.readFileBytes(path) : this.vfs.readFile(path);
+        const body = this.vfs.readFile(path);
         return { body, meta };
     }
     _readMeta(encName) {

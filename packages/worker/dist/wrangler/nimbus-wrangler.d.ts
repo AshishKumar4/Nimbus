@@ -13,10 +13,12 @@
  * The dynamic worker IS the user's Worker — running on the actual
  * Cloudflare Workers runtime, not a simulation.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
+import type { VfsEventEmitter } from '../vfs/events.js';
 export interface NimbusWranglerOptions {
-    vfs: SqliteVFS;
+    vfs: CredentialedVfs;
+    vfsEvents: VfsEventEmitter;
     esbuild: EsbuildService;
     env: any;
     /**
@@ -52,6 +54,7 @@ export interface NimbusWranglerOptions {
 export declare function rewriteLocationForOuter(location: string, outerWorkerBase: string, currentRequestUrl: string): string;
 export declare class NimbusWrangler {
     private vfs;
+    private vfsEvents;
     private esbuild;
     private loaderEnv;
     private supervisorCtx;

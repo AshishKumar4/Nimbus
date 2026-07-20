@@ -1,12 +1,19 @@
 import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
+import type { VfsCred } from './os-contracts.js';
 /**
  * Minimal VFS shape runtime bridges need. Kept separate from SqliteVFS's
  * concrete type so runtime helpers do not pull supervisor modules into facet
  * preambles or create import cycles.
  */
 export interface VfsLike {
+    readonly cred: VfsCred;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
+    stat(path: string): {
+        mode: number;
+        uid: number;
+        gid: number;
+    };
     readFile(path: string): Uint8Array;
     writeFile(path: string, content: Uint8Array | string): void;
     readdir(path: string): {

@@ -168,6 +168,7 @@ const result = await execGitNetwork(
   env,
   {
     op: 'clone',
+    pid: 1,
     dir: '/repo',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -233,6 +234,7 @@ const failed = await execGitNetwork(
   env,
   {
     op: 'clone',
+    pid: 1,
     dir: '/failure',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -259,6 +261,7 @@ const directoryLimit = await execGitNetwork(
   env,
   {
     op: 'clone',
+    pid: 1,
     dir: '/directory-limit',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -275,6 +278,7 @@ const existing = await execGitNetwork(
   env,
   {
     op: 'clone',
+    pid: 1,
     dir: '/existing',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -306,6 +310,7 @@ const timedOut = await execGitNetwork(
   { LOADER: { load: () => ({ getEntrypoint: () => lateEntrypoint }) } },
   {
     op: 'clone',
+    pid: 1,
     dir: '/timeout',
     url: 'https://example.invalid/repo.git',
     timeout: 5,
@@ -378,6 +383,7 @@ try {
     },
     {
       op: 'clone',
+      pid: 1,
       dir: '/default-budget',
       url: 'https://example.invalid/repo.git',
       exclusiveDestination: true,
@@ -407,7 +413,7 @@ const entrypointFailure = await execGitNetwork(
       },
     },
   },
-  { op: 'fetch', dir: '/repo' },
+  { op: 'fetch', pid: 1, dir: '/repo' },
 );
 assert.equal(entrypointFailure.success, false);
 assert.equal(entrypointFailure.error, 'entrypoint unavailable');
