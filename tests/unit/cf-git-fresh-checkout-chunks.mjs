@@ -608,6 +608,67 @@ try {
     assert.deepEqual(await worktreeManifest(replayRoot), await worktreeManifest(oneShotRoot));
     assert.deepEqual(await indexManifest(replayRoot), await indexManifest(oneShotRoot));
   }
+
+  // A sibling pair where walk order and index order diverge: git index
+  // ordering compares full paths, so `content.config.ts` sorts BEFORE
+  // `content/*` ('.' < '/'), but the tree walk visits the `content`
+  // directory first (plain name sort: 'content' < 'content.config.ts').
+  // When a chunk boundary lands inside `content/*`, the trailing chunk
+  // carries the earlier-sorting file — the fragment merge must produce a
+  // correctly ordered index instead of rejecting the checkout
+  // ("index fragments are not strictly ordered"; hit live by
+  // apps/docs/src/content + content.config.ts in the Nimbus repo).
+  {
+    const root = join(temp, 'repo-order-divergence');
+    const entries = [
+      {
+        path: 'src',
+        entries: [
+          {
+            path: 'content',
+            entries: Array.from({ length: 5 }, (_, index) => ({
+              path: `doc-${index}.md`,
+              content: `doc ${index}`,
+            })),
+          },
+          { path: 'content.config.ts', content: 'export default {};' },
+        ],
+      },
+    ];
+    await createRepository(root, entries);
+    let cursor = null;
+    do {
+      const result = await git.checkoutFreshChunk({
+        fs,
+        cache: {},
+        dir: root,
+        ref: 'HEAD',
+        cursor,
+        maxEntries: 2,
+        maxDecodedBytes: 1024 * 1024,
+        maxWallMs: 60_000,
+      });
+      cursor = result.nextCursor === null
+        ? null
+        : JSON.parse(JSON.stringify(result.nextCursor));
+    } while (cursor !== null);
+    assert.deepEqual(
+      await worktreeFiles(root),
+      [
+        'src/content.config.ts',
+        ...Array.from({ length: 5 }, (_, index) => `src/content/doc-${index}.md`),
+      ].sort(),
+      'divergent-order checkout materializes every file',
+    );
+    // The STAGE walk also reports directory rows; assert on the files.
+    const indexed = new Set((await indexManifest(root)).map(entry => entry.path));
+    for (const path of [
+      'src/content.config.ts',
+      ...Array.from({ length: 5 }, (_, index) => `src/content/doc-${index}.md`),
+    ]) {
+      assert.ok(indexed.has(path), `divergent-order checkout indexes ${path}`);
+    }
+  }
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

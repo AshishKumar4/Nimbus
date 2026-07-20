@@ -11,5 +11,5 @@
  * Size: 482.3 KiB
  */
 export declare const GIT_BUNDLE_CODE: string;
-export declare const GIT_BUNDLE_SIZE = 493901;
+export declare const GIT_BUNDLE_SIZE = 493906;
 //# sourceMappingURL=git-bundle.generated.d.ts.map
