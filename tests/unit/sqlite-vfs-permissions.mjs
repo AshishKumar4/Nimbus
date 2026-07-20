@@ -173,4 +173,26 @@ function errorCode(fn, expected) {
   );
 }
 
+// Boolean probes answer resolution failures as false — fs.existsSync
+// semantics. Module resolvers probe paths THROUGH files
+// (`lib.js/index.js`, `entry.js/package.json`); the legacy map-lookup
+// exists() answered false, so a throwing probe is a regression that
+// killed every barrel pre-bundle (ENOTDIR aborted the slice walk).
+// Real reads keep failing honestly, and permission denials still throw
+// so traverse enforcement cannot be masked into a quiet false.
+{
+  const { user, other } = makeVfs();
+  user.mkdir('home', { mode: 0o755 });
+  user.writeFile('home/lib.js', 'export {}');
+  assert.equal(user.exists('home/lib.js/index.js'), false, 'exists through a file answers false');
+  assert.equal(user.isDirectory('home/lib.js/index.js'), false, 'isDirectory through a file answers false');
+  assert.equal(user.isFile('home/lib.js/index.js'), false, 'isFile through a file answers false');
+  assert.equal(user.isSymlink('home/lib.js/index.js'), false, 'isSymlink through a file answers false');
+  assert.equal(user.exists('home/no-such-dir/index.js'), false, 'exists under a missing dir answers false');
+  errorCode(() => user.readFile('home/lib.js/index.js'), 'ENOTDIR');
+  user.mkdir('home/p700', { mode: 0o700 });
+  user.writeFile('home/p700/leaf', 'x');
+  errorCode(() => other.exists('home/p700/leaf'), 'EACCES');
+}
+
 console.log('sqlite-vfs-permissions: all assertions passed');

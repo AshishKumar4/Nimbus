@@ -1276,22 +1276,38 @@ export class SqliteVFS {
     if (resolved.inode?.kind !== 'directory') throw vfsError('ENOTDIR', parent);
   }
 
+  /**
+   * Shared resolver for the boolean probes (exists/isDirectory/isFile/
+   * isSymlink). Resolution-structure failures — a missing or non-directory
+   * path component — answer `undefined` (fs.existsSync semantics: module
+   * resolvers probe paths through files, e.g. `entry.js/index.js`, and
+   * expect false, not a throw). Permission denials still propagate so
+   * traverse-x enforcement cannot be masked into a quiet false.
+   */
+  private probeInode(path: string, cred: VfsCred): INode | undefined {
+    try {
+      return this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+      throw error;
+    }
+  }
+
   private exists(path: string, cred: VfsCred): boolean {
-    return this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode !== undefined;
+    return this.probeInode(path, cred) !== undefined;
   }
 
   private isDirectory(path: string, cred: VfsCred): boolean {
-    const inode = this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
-    return inode?.kind === 'directory';
+    return this.probeInode(path, cred)?.kind === 'directory';
   }
 
   private isFile(path: string, cred: VfsCred): boolean {
-    const inode = this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
-    return inode?.kind === 'file';
+    return this.probeInode(path, cred)?.kind === 'file';
   }
 
   private isSymlink(path: string, cred: VfsCred): boolean {
-    return this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode?.kind === 'symlink';
+    return this.probeInode(path, cred)?.kind === 'symlink';
   }
 
   /**
