@@ -41,6 +41,11 @@ export function expandPythonEffectiveMode(effective) {
     return (bits << 6) | (bits << 3) | bits;
 }
 export function installPythonFsSnapshot(fs, snapshot, previousFiles = new Set()) {
+    // The interactive REPL boots its facet without a filesystem snapshot
+    // (python-repl.ts init dispatches __pyodideRun with no fsSnapshot).
+    // Absence means nothing to mount or unmount; keep the ledger as-is.
+    if (!snapshot)
+        return new Set(previousFiles);
     const norm = (path) => {
         const clean = String(path || '').replace(/^\/+/, '').replace(/\/+$/, '');
         return clean ? `/${clean}` : '/';

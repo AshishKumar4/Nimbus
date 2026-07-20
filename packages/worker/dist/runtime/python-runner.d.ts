@@ -38,7 +38,7 @@ interface PythonEmscriptenFs {
     chmod(path: string, mode: number): void;
 }
 export declare function expandPythonEffectiveMode(effective: number): number;
-export declare function installPythonFsSnapshot(fs: PythonEmscriptenFs, snapshot: WasiFsSnapshot, previousFiles?: ReadonlySet<string>): Set<string>;
+export declare function installPythonFsSnapshot(fs: PythonEmscriptenFs, snapshot: WasiFsSnapshot | undefined, previousFiles?: ReadonlySet<string>): Set<string>;
 /**
  * Build the python-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each
