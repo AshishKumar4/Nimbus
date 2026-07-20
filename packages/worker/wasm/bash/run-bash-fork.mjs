@@ -14,6 +14,14 @@ const argv = ['bash', '-c', SCRIPT];
 const environ = ['PATH=/bin:/usr/bin','HOME=/root','PS1=$ ','TERM=dumb'];
 class Exit { constructor(c){ this.code=c; } }
 
+// Staged coreutils (plain WASI, no fork) — the exec targets. execve re-homes a
+// forked child onto one of these, wiring its WASI fds to the process fd table
+// (the M2 exec-into-runner mechanism, here in-process).
+import { readdirSync } from 'node:fs';
+const CU_DIR = new URL('./coreutils/', import.meta.url).pathname;
+const COREUTILS = new Map();
+try { for(const f of readdirSync(CU_DIR)) if(f.endsWith('.wasm')) COREUTILS.set(f.replace('.wasm',''), new WebAssembly.Module(readFileSync(CU_DIR+f))); } catch {}
+
 // ---- supervisor state ----
 let pidNext = 100, pipeNext = 1;
 const procs = new Map();          // pid -> proc
@@ -60,9 +68,12 @@ function makeProc(pid, ppid, fds){
     random_get:(b,l)=>{const u=U8();for(let i=0;i<l;i++)u[b+i]=(Math.random()*256)|0;return 0;},
     fd_fdstat_get:(fd,st)=>{const dv=DV();const e=proc.fds.get(fd);dv.setUint8(st, e&&e.kind==='pipe'?2:(fd<=2?2:4));dv.setUint16(st+2,0,true);dv.setBigUint64(st+8,0xffffffffffffffffn,true);dv.setBigUint64(st+16,0xffffffffffffffffn,true);return 0;},
     fd_fdstat_set_flags:()=>0,
-    fd_prestat_get:()=>8, fd_prestat_dir_name:()=>8,
+    // preopen fd 3 = "/" so wasi-libc resolves absolute paths (PATH lookup)
+    fd_prestat_get:(fd,buf)=>{ if(fd===3){ const dv=DV(); dv.setUint8(buf,0); dv.setUint32(buf+4,1,true); return 0; } return 8; },
+    fd_prestat_dir_name:(fd,path,plen)=>{ if(fd===3){ U8()[path]=0x2f; return 0; } return 8; },
     fd_filestat_get:(fd,p)=>{U8().fill(0,p,p+64);return 0;},
-    path_filestat_get:()=>44,
+    // staged coreutils appear as executable regular files so bash's PATH lookup finds them
+    path_filestat_get:(fd,flags,pathPtr,pathLen,buf)=>{ const name=td.decode(U8().subarray(pathPtr,pathPtr+pathLen)).split('/').pop(); if(COREUTILS.has(name)){ const dv=DV(); U8().fill(0,buf,buf+64); dv.setUint8(buf+16,4); dv.setBigUint64(buf+24,1n,true); dv.setBigUint64(buf+32,1024n,true); return 0; } return 44; },
     fd_read:(fd,iovs,n,nread)=>{
       // resume of a blocked pipe read: deliver the woken bytes
       if(proc.pendingRead){ proc.inst.exports.asyncify_stop_rewind(); c.rewinding=false; const {ptr,bytes,nreadPtr}=proc.pendingRead; proc.pendingRead=null; U8().set(bytes,ptr); DV().setUint32(nreadPtr,bytes.length,true); return 0; }
@@ -91,7 +102,14 @@ function makeProc(pid, ppid, fds){
     fork:()=>{ if(c.rewinding){proc.inst.exports.asyncify_stop_rewind();c.rewinding=false;return c.resume;} c.reason='fork'; initHdr(proc.MAIN_BUF,MAIN_SIZE); proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF); return 0; },
     vfork:()=>nimbus_proc.fork(),
     waitpid:(pid,statusPtr,opt)=>{ if(c.rewinding){proc.inst.exports.asyncify_stop_rewind();c.rewinding=false; if(c.waitStatusPtr!=null){DV().setInt32(c.waitStatusPtr,c.resumeStatus,true);} return c.resume;} c.reason='waitpid';c.waitTarget=pid;c.waitStatusPtr=statusPtr;initHdr(proc.MAIN_BUF,MAIN_SIZE);proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);return 0; },
-    execve:()=>{ return -2; }, // ENOENT: no external binaries staged locally (M2 covers exec)
+    execve:(pathPtr, argvFlatPtr, argvLen)=>{
+      if(c.rewinding){ proc.inst.exports.asyncify_stop_rewind(); c.rewinding=false; return c.resume; }
+      const u8=U8();
+      let e=pathPtr; while(u8[e])e++; const path=td.decode(u8.subarray(pathPtr,e));
+      const av=td.decode(u8.subarray(argvFlatPtr,argvFlatPtr+argvLen)).split('\0').filter(x=>x.length);
+      c.reason='exec'; c.execPath=path; c.execArgv=av;
+      initHdr(proc.MAIN_BUF,MAIN_SIZE); proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF); return 0;
+    },
     pipe:(fdsPtr)=>{ const id=newPipe(); const rfd=lowestFd(proc), r={kind:'pipe',pipeId:id,end:'r'}; proc.fds.set(rfd,r); const wfd=lowestFd(proc), w={kind:'pipe',pipeId:id,end:'w'}; proc.fds.set(wfd,w); const dv=DV();dv.setInt32(fdsPtr,rfd,true);dv.setInt32(fdsPtr+4,wfd,true); return 0; },
     dup:(o)=>{ const e=proc.fds.get(o); if(!e)return -9; const nf=lowestFd(proc); proc.fds.set(nf,{...e}); if(e.kind==='pipe')bumpPipe(e,1); return nf; },
     dup2:(o,n)=>{ const e=proc.fds.get(o); if(!e)return -9; if(o===n)return n; if(proc.fds.has(n))closeFd(proc,n); proc.fds.set(n,{...e}); if(e.kind==='pipe')bumpPipe(e,1); return n; },
@@ -133,7 +151,42 @@ function step(proc){
   else if(r==='fork'){ doFork(proc); }
   else if(r==='waitpid'){ doWait(proc); }
   else if(r==='piperead'){ proc.ctx.pipeReq.pp.readW.push({proc}); wakePipe(proc.ctx.pipeReq.pp); }
+  else if(r==='exec'){ doExec(proc); }
   else throw new Error('unknown reason '+r);
+}
+
+function pumpOne(){ if(!runnable.length) return false; step(runnable.shift()); return true; }
+
+// route a tool's fd write to the process fd table (pipe end -> ring, else stdout)
+function toolWrite(proc, fd, bytes){ const e=proc.fds.get(fd); if(e&&e.kind==='pipe'){ const pp=pipes.get(e.pipeId); pp.chunks.push(bytes.slice()); pp.queued+=bytes.length; wakePipe(pp); return bytes.length; } const s=td.decode(bytes); if(e&&e.kind==='stderr') process.stderr.write('[tool stderr] '+s); else if(proc.capture!==null) proc.capture.buf+=s; else OUT.buf+=s; return bytes.length; }
+
+// exec re-homes proc onto a staged plain-WASI tool bound to proc.fds; the tool's
+// blocking pipe reads synchronously pump the writer procs (M2 exec-into-runner).
+function doExec(proc){
+  const name = proc.ctx.execPath.split('/').pop();
+  const m = COREUTILS.get(name);
+  if(!m){ proc.ctx.resume=-2; proc.ctx.rewinding=true; proc.inst.exports.asyncify_start_rewind(proc.MAIN_BUF); runnable.push(proc); return; } // ENOENT -> bash prints not-found, exits 127
+  let inst2; const DV=()=>new DataView(inst2.exports.memory.buffer), U8=()=>new Uint8Array(inst2.exports.memory.buffer);
+  const tv=proc.ctx.execArgv, wstr=(p,s)=>{const b=te.encode(s);U8().set(b,p);return b.length;};
+  let code=0;
+  const w = {
+    args_sizes_get:(a,b)=>{const dv=DV();dv.setUint32(a,tv.length,true);dv.setUint32(b,tv.reduce((x,s)=>x+te.encode(s).length+1,0),true);return 0;},
+    args_get:(ptrs,buf)=>{const dv=DV();let p=buf;for(const a of tv){dv.setUint32(ptrs,p,true);ptrs+=4;p+=wstr(p,a);U8()[p++]=0;}return 0;},
+    environ_sizes_get:(a,b)=>{const dv=DV();dv.setUint32(a,0,true);dv.setUint32(b,0,true);return 0;}, environ_get:()=>0,
+    clock_time_get:(id,pr,t)=>{DV().setBigUint64(t,BigInt(Date.now())*1000000n,true);return 0;}, random_get:(b,l)=>{const u=U8();for(let i=0;i<l;i++)u[b+i]=(Math.random()*256)|0;return 0;},
+    fd_fdstat_get:(fd,st)=>{const dv=DV();const e=proc.fds.get(fd);dv.setUint8(st,e&&e.kind==='pipe'?2:(fd<=2?2:4));dv.setUint16(st+2,0,true);dv.setBigUint64(st+8,0xffffffffffffffffn,true);dv.setBigUint64(st+16,0xffffffffffffffffn,true);return 0;},
+    fd_fdstat_set_flags:()=>0, fd_prestat_get:()=>8, fd_prestat_dir_name:()=>8, fd_filestat_get:(fd,p)=>{U8().fill(0,p,p+64);return 0;}, path_filestat_get:()=>44,
+    fd_read:(fd,iovs,n,nread)=>{ const dv=DV(); const p=dv.getUint32(iovs,true), l=dv.getUint32(iovs+4,true); const e=proc.fds.get(fd);
+      if(e&&e.kind==='pipe'){ const pp=pipes.get(e.pipeId); let g=0; while(pp.queued===0&&pp.writers>0){ if(++g>2000000||!pumpOne())break; } if(pp.queued>0){const b=takeUpTo(pp,l);U8().set(b,p);dv.setUint32(nread,b.length,true);return 0;} dv.setUint32(nread,0,true); return 0; }
+      dv.setUint32(nread,0,true); return 0; },
+    fd_write:(fd,iovs,n,nw)=>{const dv=DV(),u8=U8();let x=0;for(let i=0;i<n;i++){const p=dv.getUint32(iovs+i*8,true),l=dv.getUint32(iovs+i*8+4,true);x+=toolWrite(proc,fd,u8.subarray(p,p+l));}dv.setUint32(nw,x,true);return 0;},
+    fd_seek:(fd,o,wh,no)=>{DV().setBigUint64(no,0n,true);return 70;}, fd_tell:(fd,p)=>{DV().setBigUint64(p,0n,true);return 0;}, fd_close:(fd)=>{closeFd(proc,fd);return 0;},
+    fd_readdir:()=>8, path_open:()=>44, path_readlink:()=>44, path_rename:()=>44, path_unlink_file:()=>44, poll_oneoff:(a,b,n,nev)=>{DV().setUint32(nev,0,true);return 0;}, proc_exit:(c)=>{ code=c; throw new Exit(c); },
+  };
+  const wp=new Proxy(w,{get:(t,k)=>k in t?t[k]:((...a)=>0)});
+  inst2=new WebAssembly.Instance(m,{ wasi_snapshot_preview1:wp });
+  try{ inst2.exports._start(); }catch(e){ if(e instanceof Exit) code=e.code; else throw e; }
+  finishProc(proc, code);   // the exec'd image ran to completion; pid exits with its code
 }
 
 function doFork(parent){
