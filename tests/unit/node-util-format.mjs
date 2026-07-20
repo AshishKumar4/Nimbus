@@ -14,11 +14,14 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 function makeUtil() {
   const code = generateShimsCode();
   const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
+    '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + code + '\n;return builtins.util;',
   );
-  return factory({}, {}, {}, {}, {}, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+  return factory(
+    {}, {}, {}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+  );
 }
 
 const util = makeUtil();
