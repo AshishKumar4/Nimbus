@@ -71,9 +71,13 @@ export function expandPythonEffectiveMode(effective: number): number {
 
 export function installPythonFsSnapshot(
   fs: PythonEmscriptenFs,
-  snapshot: WasiFsSnapshot,
+  snapshot: WasiFsSnapshot | undefined,
   previousFiles: ReadonlySet<string> = new Set<string>(),
 ): Set<string> {
+  // The interactive REPL boots its facet without a filesystem snapshot
+  // (python-repl.ts init dispatches __pyodideRun with no fsSnapshot).
+  // Absence means nothing to mount or unmount; keep the ledger as-is.
+  if (!snapshot) return new Set(previousFiles);
   const norm = (path: string): string => {
     const clean = String(path || '').replace(/^\/+/, '').replace(/\/+$/, '');
     return clean ? `/${clean}` : '/';

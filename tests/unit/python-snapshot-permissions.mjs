@@ -90,4 +90,17 @@ assert.throws(() => fs.open('/workspace/denied.txt', 'read'), (error) => error.c
 assert.throws(() => fs.open('/workspace/read-only.txt', 'write'), (error) => error.code === 'EACCES');
 assert.equal(new TextDecoder().decode(fs.open('/workspace/read-only.txt', 'read').bytes), 'visible');
 
+// The interactive REPL boots its facet without a filesystem snapshot
+// (python-repl.ts __pyodideRun init passes no fsSnapshot). Absence is a
+// valid state: nothing to mount, nothing to unmount, ledger unchanged.
+const replFs = new FakeEmscriptenFs();
+replFs.writeFile('/persistent.txt', new TextEncoder().encode('keep'));
+const kept = installPythonFsSnapshot(replFs, undefined, new Set(['persistent.txt']));
+assert.deepEqual([...kept], ['persistent.txt'], 'absent snapshot preserves the mounted-file ledger');
+assert.equal(
+  new TextDecoder().decode(replFs.nodes.get('/persistent.txt').bytes),
+  'keep',
+  'absent snapshot unmounts nothing',
+);
+
 console.log('python snapshot permissions: ok');
