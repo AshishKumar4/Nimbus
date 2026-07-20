@@ -10,6 +10,24 @@
 #include <sys/types.h>
 #include <stddef.h>
 
+/* ---- setjmp/longjmp — asyncify-native (PROVEN, see probe-sjlj-asyncify + the
+ * m4-sjlj node proof). We REPLACE wasi-libc's setjmp.h (which #errors without
+ * wasm-EH) so bash compiles WITHOUT -wasm-enable-sjlj, keeping the module
+ * EH-free so wasm-opt --asyncify instruments it. setjmp/longjmp are ordinary
+ * imports on the asyncify allowlist; the facet drives capture (unwind into a
+ * slot, immediately rewind) and longjmp (unwind current stack, replay the slot).
+ * The jmp_buf lives in linear memory so it rides fork's memory copy. */
+#define _SETJMP_H  /* suppress wasi-libc <setjmp.h> */
+typedef struct { int slot; int retval; int hw; } __nimbus_jmp_buf;
+typedef __nimbus_jmp_buf jmp_buf[1];
+typedef __nimbus_jmp_buf sigjmp_buf[1];
+__attribute__((returns_twice)) int  setjmp(jmp_buf);
+__attribute__((returns_twice)) int  _setjmp(jmp_buf);
+__attribute__((returns_twice)) int  sigsetjmp(sigjmp_buf, int);
+_Noreturn void longjmp(jmp_buf, int);
+_Noreturn void _longjmp(jmp_buf, int);
+_Noreturn void siglongjmp(sigjmp_buf, int);
+
 /* ---- process control (unistd gaps) ---- */
 pid_t fork(void);
 pid_t vfork(void);
@@ -52,6 +70,52 @@ pid_t wait4(pid_t, int *, int, void *);
 #define WIFCONTINUED(s) ((s) == 0xffff)
 #define WCOREDUMP(s)    ((s) & 0x80)
 #define WCOREFLAG       0x80
+
+/* ---- fcntl gap: wasi-libc has F_DUPFD_CLOEXEC but not plain F_DUPFD ---- */
+#ifndef F_DUPFD
+#define F_DUPFD 0
+#endif
+
+/* ---- signal-mask constants (wasi emulated-signal omits these) ---- */
+#ifndef SIG_BLOCK
+#define SIG_BLOCK   0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+#endif
+
+/* ---- sigaction layer (wasi-libc gates it all out; sigset_t + signal numbers
+ * remain). Handlers are stored in a table; delivery routes through
+ * nimbus_proc.kill at syscall boundaries (M4/M5). Enough for bash to install
+ * its trap/SIGCHLD handlers and compile + run non-interactively. ---- */
+#include <signal.h>
+#ifndef SA_NOCLDSTOP
+typedef struct { int si_signo, si_errno, si_code; pid_t si_pid; uid_t si_uid; int si_status; void *si_addr; } siginfo_t;
+#define SA_NOCLDSTOP 1
+#define SA_NOCLDWAIT 2
+#define SA_SIGINFO   4
+#define SA_ONSTACK   0x08000000
+#define SA_RESTART   0x10000000
+#define SA_NODEFER   0x40000000
+#define SA_RESETHAND 0x80000000
+#define SA_INTERRUPT 0x20000000
+struct sigaction {
+  union { void (*sa_handler)(int); void (*sa_sigaction)(int, siginfo_t *, void *); } __sa_handler;
+  sigset_t sa_mask;
+  int sa_flags;
+  void (*sa_restorer)(void);
+};
+#define sa_handler   __sa_handler.sa_handler
+#define sa_sigaction __sa_handler.sa_sigaction
+int sigemptyset(sigset_t *);
+int sigfillset(sigset_t *);
+int sigaddset(sigset_t *, int);
+int sigdelset(sigset_t *, int);
+int sigismember(const sigset_t *, int);
+int sigprocmask(int, const sigset_t *, sigset_t *);
+int sigaction(int, const struct sigaction *, struct sigaction *);
+int sigsuspend(const sigset_t *);
+int siginterrupt(int, int);
+#endif
 
 /* ---- rlimit (bash general.h wants rlim_t / struct rlimit) ---- */
 #ifndef RLIM_INFINITY

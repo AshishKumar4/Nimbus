@@ -91,11 +91,9 @@ pid_t wait3(int *status, int options, void *rusage) { (void)rusage; return waitp
 pid_t wait4(pid_t pid, int *status, int options, void *rusage) { (void)rusage; return waitpid(pid, status, options); }
 
 int pipe(int fds[2]) { int r = __np_pipe(fds); if (r < 0) { errno = -r; return -1; } return 0; }
-int dup2(int o, int n) { int r = __np_dup2(o, n); if (r < 0) { errno = -r; return -1; } return r; }
 int dup(int o)         { int r = __np_dup(o);     if (r < 0) { errno = -r; return -1; } return r; }
 
 int   kill(pid_t pid, int sig)    { int r = __np_kill(pid, sig); if (r < 0) { errno = -r; return -1; } return 0; }
-int   killpg(pid_t pg, int sig)   { return kill(-pg, sig); }
 pid_t getppid(void)               { return __np_getppid(); }
 int   setpgid(pid_t p, pid_t g)   { int r = __np_setpgid(p, g); if (r < 0) { errno = -r; return -1; } return 0; }
 pid_t getpgid(pid_t p)            { int r = __np_getpgid(p); if (r < 0) { errno = -r; return -1; } return r; }
@@ -124,3 +122,75 @@ void endpwent(void) {}
 
 char *ttyname(int fd) { (void)fd; return (char *)"/dev/tty"; }
 int ttyname_r(int fd, char *buf, size_t len) { (void)fd; if (len < 9) return ERANGE; memcpy(buf, "/dev/tty", 9); return 0; }
+
+/* ---- asyncify-native setjmp/longjmp (proven mechanism) ----
+ * setjmp: __np_setjmp captures the stack into a facet slot (unwind+rewind) and
+ * writes {slot,retval=0,hw} into the jmp_buf; on a later longjmp the facet
+ * replays that slot. The `returns_twice` attribute keeps the optimizer honest
+ * across the capture point. retval is read fresh from the jmp_buf each landing:
+ * 0 on capture, the injected value on longjmp. */
+IMPORT("setjmp")  extern void __np_setjmp(void *env);
+IMPORT("longjmp") extern void __np_longjmp(void *env, int val);
+
+__attribute__((returns_twice, noinline))
+int setjmp(jmp_buf env) { __np_setjmp((void *)env); return env->retval; }
+__attribute__((returns_twice, noinline))
+int _setjmp(jmp_buf env) { __np_setjmp((void *)env); return env->retval; }
+__attribute__((returns_twice, noinline))
+int sigsetjmp(sigjmp_buf env, int savesigs) { (void)savesigs; __np_setjmp((void *)env); return env->retval; }
+
+_Noreturn void longjmp(jmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
+_Noreturn void _longjmp(jmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
+_Noreturn void siglongjmp(sigjmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
+
+/* ---- termios (the RuntimeTtyOptions seam; non-interactive bash never calls
+ * these — stubbed to a sane cooked-mode default. tcget/set route to the
+ * nimbus_proc tty imports when interactive job control lands, M5). ---- */
+#include <termios.h>
+IMPORT("tcgetattr") extern int __np_tcgetattr(int fd, void *t);
+IMPORT("tcsetattr") extern int __np_tcsetattr(int fd, int act, const void *t);
+int tcgetattr(int fd, struct termios *t) {
+  if (__np_tcgetattr(fd, t) == 0) return 0;
+  memset(t, 0, sizeof *t);
+  t->c_iflag = ICRNL | IXON; t->c_oflag = OPOST | ONLCR;
+  t->c_cflag = CS8 | CREAD | CLOCAL; t->c_lflag = ISIG | ICANON | ECHO | ECHOE | IEXTEN;
+  t->c_cc[VEOF] = 4; t->c_cc[VMIN] = 1; return 0;
+}
+int tcsetattr(int fd, int act, const struct termios *t) { __np_tcsetattr(fd, act, t); return 0; }
+int tcflush(int fd, int q) { (void)fd; (void)q; return 0; }
+int tcdrain(int fd) { (void)fd; return 0; }
+int tcflow(int fd, int a) { (void)fd; (void)a; return 0; }
+int tcsendbreak(int fd, int d) { (void)fd; (void)d; return 0; }
+speed_t cfgetispeed(const struct termios *t) { return t->c_ispeed; }
+speed_t cfgetospeed(const struct termios *t) { return t->c_ospeed; }
+int cfsetispeed(struct termios *t, speed_t s) { t->c_ispeed = s; return 0; }
+int cfsetospeed(struct termios *t, speed_t s) { t->c_ospeed = s; return 0; }
+int cfsetspeed(struct termios *t, speed_t s) { t->c_ispeed = t->c_ospeed = s; return 0; }
+pid_t tcgetsid(int fd) { (void)fd; return getpgrp(); }
+
+/* ---- sigaction layer ----
+ * Handlers stored per-signal; sigaction is the install point the supervisor's
+ * pending-signal delivery (nimbus_proc.kill) will invoke at syscall boundaries.
+ * sigset ops operate on musl's sigset_t (array of unsigned long bit words). */
+#ifndef NSIG
+#define NSIG 65
+#endif
+static void (*__np_handlers[NSIG])(int);
+
+static unsigned long *__ss_words(sigset_t *s) { return (unsigned long *)s; }
+int sigemptyset(sigset_t *s) { memset(s, 0, sizeof *s); return 0; }
+int sigfillset(sigset_t *s) { memset(s, 0xff, sizeof *s); return 0; }
+int sigaddset(sigset_t *s, int sig) { if (sig < 1 || sig >= NSIG) { errno = EINVAL; return -1; } __ss_words(s)[(sig-1)/(8*sizeof(long))] |= 1UL << ((sig-1)%(8*sizeof(long))); return 0; }
+int sigdelset(sigset_t *s, int sig) { if (sig < 1 || sig >= NSIG) { errno = EINVAL; return -1; } __ss_words(s)[(sig-1)/(8*sizeof(long))] &= ~(1UL << ((sig-1)%(8*sizeof(long)))); return 0; }
+int sigismember(const sigset_t *s, int sig) { if (sig < 1 || sig >= NSIG) return 0; return (__ss_words((sigset_t*)s)[(sig-1)/(8*sizeof(long))] >> ((sig-1)%(8*sizeof(long)))) & 1; }
+int sigprocmask(int how, const sigset_t *set, sigset_t *old) { (void)how; (void)set; if (old) memset(old, 0, sizeof *old); return 0; }
+int sigsuspend(const sigset_t *m) { (void)m; errno = EINTR; return -1; }
+int siginterrupt(int sig, int f) { (void)sig; (void)f; return 0; }
+
+int sigaction(int sig, const struct sigaction *act, struct sigaction *old) {
+  if (sig < 1 || sig >= NSIG) { errno = EINVAL; return -1; }
+  if (old) { memset(old, 0, sizeof *old); old->sa_handler = __np_handlers[sig]; }
+  if (act) __np_handlers[sig] = act->sa_handler;
+  return 0;
+}
+

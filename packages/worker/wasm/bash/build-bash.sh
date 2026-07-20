@@ -15,15 +15,19 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${BASH_SRC:?set BASH_SRC to an extracted bash-5.2.x source tree}"
 CC="$WASI_SDK/bin/wasm32-wasi-clang"
 
-# The one std that keeps GCC-15/clang-19 (C23 default) from rejecting bash 5.2's
-# K&R prototypes; the SjLj lowering for setjmp/longjmp (bash's error recovery);
-# the emulated-feature libs; and the Nimbus process/rlimit/pwd overlay header.
-TARGET_CFLAGS="-std=gnu17 -mllvm -wasm-enable-sjlj -O2 \
+# -std=gnu17 keeps GCC-15/clang-19 (C23 default) from rejecting bash 5.2's K&R
+# prototypes; the emulated-feature libs; and the Nimbus overlay header, which
+# REPLACES setjmp.h with the asyncify-native setjmp/longjmp — so we do NOT use
+# clang's -wasm-enable-sjlj (its wasm-EH output is not asyncify-instrumentable;
+# proven, see BRINGUP.md). The module stays EH-free → wasm-opt --asyncify works.
+TARGET_CFLAGS="-std=gnu17 -O2 \
   -D_GNU_SOURCE -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN \
   -include $HERE/nimbus-proc.h \
   -Wno-implicit-function-declaration -Wno-incompatible-function-pointer-types \
   -Wno-incompatible-pointer-types -Wno-int-conversion"
 TARGET_LDFLAGS="-lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman"
+
+INC="-I$HERE/include"   # Nimbus termios.h overlay
 
 cd "$BASH_SRC"
 if [ ! -f config.status ]; then
@@ -32,24 +36,49 @@ if [ ! -f config.status ]; then
   CPPFLAGS="-D_GNU_SOURCE" LDFLAGS="$TARGET_LDFLAGS" \
   ./configure --host=wasm32-wasi --without-bash-malloc --disable-nls \
     --cache-file="$HERE/cross.cache"
-  # config.h fixes: wasi-libc has gethostname; struct passwd comes from the
-  # overlay (no <pwd.h> file), so keep HAVE_PWD_H off but HAVE_GETPWNAM on.
-  sed -i 's|/\* #undef HAVE_GETHOSTNAME \*/|#define HAVE_GETHOSTNAME 1|; \
-          s|/\* #undef HAVE_GETPWNAM \*/|#define HAVE_GETPWNAM 1|' config.h
+  # config.h fixes: wasi-libc HAS gethostname/tcgetattr/tcgetpgrp/termios;
+  # struct passwd comes from the overlay (no <pwd.h> file) so keep HAVE_PWD_H
+  # off but HAVE_GETPWNAM on. HAVE_TERMIOS_H + HAVE_TCGETATTR make config-bot.h
+  # pick the termios tty driver (not the absent BSD sgtty one).
+  sed -i 's|/\* #undef HAVE_GETHOSTNAME \*/|#define HAVE_GETHOSTNAME 1|;
+          s|/\* #undef HAVE_GETPWNAM \*/|#define HAVE_GETPWNAM 1|;
+          s|/\* #undef HAVE_TERMIOS_H \*/|#define HAVE_TERMIOS_H 1|;
+          s|/\* #undef HAVE_TCGETATTR \*/|#define HAVE_TCGETATTR 1|;
+          s|/\* #undef HAVE_TCGETPGRP \*/|#define HAVE_TCGETPGRP 1|' config.h
+  # Portability: readline uses the bundled termcap lib's PC/BC/UP storage
+  # (clang -fno-common default + a broken -fcommon on wasm ⇒ extern the copies).
+  sed -i '109s/^char PC, \*BC, \*UP;/extern char PC, *BC, *UP;/' lib/readline/terminal.c
 fi
 
-# Build tools NATIVE (gcc), target with the Nimbus flags. mkbuiltins et al. run
-# on the host, so they must NOT get the wasi flags or the overlay.
-make -j"$(nproc)" \
-  CC_FOR_BUILD=gcc CCFLAGS_FOR_BUILD='-std=gnu17 -O2' \
-  CFLAGS="$TARGET_CFLAGS" LOCAL_LIBS="$HERE/nimbus-proc.o" \
-  || echo "make stopped — see BRINGUP.md for the remaining orchestration items"
+TARGET_CFLAGS="$TARGET_CFLAGS $INC"
+# Build tools NATIVE (gcc -std=gnu17 for bash's K&R). Target with the Nimbus flags.
+make -j"$(nproc)" CC_FOR_BUILD='gcc -std=gnu17' CFLAGS="$TARGET_CFLAGS" LOCAL_LIBS="" \
+  || echo "make compiles all objects; final link is done explicitly below"
 
-# nimbus-proc.o: the process-ABI trap layer linked into bash.
-"$CC" -std=gnu17 -D_GNU_SOURCE -O2 -c "$HERE/nimbus-proc.c" -o "$HERE/nimbus-proc.o"
+# nimbus-proc.o: the process/setjmp/termios/signal trap layer linked into bash.
+"$CC" -std=gnu17 -D_GNU_SOURCE -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS $INC -O2 \
+  -c "$HERE/nimbus-proc.c" -o "$HERE/nimbus-proc.o"
 
-# Final link + asyncify (once bash links):
-#   wasm-opt --asyncify \
-#     --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid \
-#     bash.wasm -o bash.async.wasm
-echo "Overlay object: $HERE/nimbus-proc.o"
+# Explicit link. --no-gc-sections is REQUIRED: bash's main() is K&R 3-arg, so the
+# wasi crt's weak __main_argc_argv→main link doesn't root it under gc-sections and
+# the whole shell gets stripped to a 10-import stub. Overlay passed exactly once.
+OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o execute_cmd.o \
+  variables.o copy_cmd.o error.o expr.o flags.o jobs.o subst.o hashcmd.o hashlib.o mailcheck.o \
+  trap.o input.o unwind_prot.o pathexp.o sig.o test.o version.o alias.o array.o arrayfunc.o \
+  assoc.o braces.o bracecomp.o bashhist.o bashline.o list.o stringlib.o locale.o findcmd.o \
+  redir.o pcomplete.o pcomplib.o syntax.o xmalloc.o signames.o"
+"$CC" -O2 -o bash $OBJS \
+  -L./builtins -L./lib/readline -L./lib/glob -L./lib/tilde -L./lib/sh \
+  -lbuiltins -lglob -lsh -lreadline -lhistory ./lib/termcap/libtermcap.a -ltilde \
+  "$HERE/nimbus-proc.o" $TARGET_LDFLAGS \
+  -Wl,--export=__stack_pointer -Wl,--allow-undefined -Wl,--no-gc-sections
+
+# Asyncify: setjmp/longjmp ride the allowlist alongside the process calls — they
+# unwind (capture) / rewind (longjmp) exactly like fork/exec/wait. The binary is
+# EH-free (asyncify-native setjmp, NOT clang -wasm-enable-sjlj) so this succeeds.
+wasm-opt --asyncify \
+  --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid,nimbus_proc.setjmp,nimbus_proc.longjmp \
+  bash -o bash.async.wasm
+
+echo "Built: $BASH_SRC/bash (linked) + $BASH_SRC/bash.async.wasm (asyncified)"
+echo "Imports: 24 wasi_snapshot_preview1 + 15 nimbus_proc + 8 env (getpid/umask/setuid/setgid/dl*)"
