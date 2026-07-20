@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { getFacetManagerLoaderHost } from './ruby-runner.js';
 const BashSliceSchema = z.object({
@@ -64,7 +65,7 @@ function findScriptArgIndex(argv) {
     return -1;
 }
 export function makeBashRunnerFactory(deps) {
-    const { facetMgr, vfs } = deps;
+    const { facetMgr } = deps;
     return function bashRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
@@ -75,6 +76,11 @@ export function makeBashRunnerFactory(deps) {
             .filter((f) => f.path.startsWith('share/bash/coreutils/') && f.path.endsWith('.wasm'))
             .map((f) => ({ name: f.path.slice('share/bash/coreutils/'.length, -'.wasm'.length), vfsPath: `${installRoot}/${f.path}` }));
         return async function bashBinHandler(ctx) {
+            // All VFS access (runtime wasm reads, script probes, snapshot,
+            // fsDiff writeback) runs as the INVOKING process credential —
+            // S2a enforcement applies to bash exactly as to ruby/python.
+            const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
+            const vfs = deps.vfs.as(cred);
             const argv = [...(ctx.args ?? [])];
             const cwd = ctx.cwd || '/home/user';
             if (!bashWasmPath || !vfs.exists(bashWasmPath)) {

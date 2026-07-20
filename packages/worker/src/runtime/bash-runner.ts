@@ -29,6 +29,7 @@ import type { Command, CommandContext, CommandInputStream } from '../substrate/l
 import { z } from 'zod';
 import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { getFacetManagerLoaderHost } from './ruby-runner.js';
 
@@ -134,7 +135,7 @@ export function makeBashRunnerFactory(deps: {
   facetMgr: FacetManager;
   vfs: SqliteVFS;
 }): BashRunnerFactory {
-  const { facetMgr, vfs } = deps;
+  const { facetMgr } = deps;
 
   return function bashRunnerFactory(manifest, installRoot, binName, _binKind) {
     const findFile = (rel: string): string | null => {
@@ -147,6 +148,11 @@ export function makeBashRunnerFactory(deps: {
       .map((f) => ({ name: f.path.slice('share/bash/coreutils/'.length, -'.wasm'.length), vfsPath: `${installRoot}/${f.path}` }));
 
     return async function bashBinHandler(ctx: CommandContext): Promise<number> {
+      // All VFS access (runtime wasm reads, script probes, snapshot,
+      // fsDiff writeback) runs as the INVOKING process credential —
+      // S2a enforcement applies to bash exactly as to ruby/python.
+      const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
+      const vfs = deps.vfs.as(cred);
       const argv = [...(ctx.args ?? [])];
       const cwd = ctx.cwd || '/home/user';
 
