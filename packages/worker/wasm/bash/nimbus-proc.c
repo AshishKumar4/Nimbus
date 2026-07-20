@@ -34,6 +34,14 @@ IMPORT("getppid") extern int  __np_getppid(void);
 IMPORT("tcsetpgrp") extern int __np_tcsetpgrp(int fd, int pgid);
 IMPORT("tcgetpgrp") extern int __np_tcgetpgrp(int fd);
 
+/* bash's main() is K&R 3-arg `main(argc, argv, env)`, but the wasi crt calls a
+ * 2-arg `__main_argc_argv` (weak-aliased to main) — a wasm signature mismatch
+ * that traps. Provide a strong 2-arg entry that calls the real 3-arg main with
+ * `environ` (which wasi-libc populates from environ_get). No bash source edit. */
+extern int main(int, char **, char **);
+extern char **environ;
+int __main_argc_argv(int argc, char **argv) { return main(argc, argv, environ); }
+
 pid_t fork(void)  { int r = __np_fork();  if (r < 0) { errno = -r; return -1; } return r; }
 pid_t vfork(void) { int r = __np_vfork(); if (r < 0) { errno = -r; return -1; } return r; }
 
