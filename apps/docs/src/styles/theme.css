@@ -1,6 +1,9 @@
 @import '@fontsource/ibm-plex-mono/latin-400.css';
 @import '@fontsource/ibm-plex-mono/latin-500.css';
 @import '@fontsource/ibm-plex-mono/latin-600.css';
+@import '@fontsource/space-grotesk/latin-500.css';
+@import '@fontsource/space-grotesk/latin-600.css';
+@import '@fontsource/space-grotesk/latin-700.css';
 
 /* Nimbus docs: quiet navy chrome, one mint accent, and a terminal-first type system. */
 :root {
@@ -33,7 +36,8 @@
 	--sl-text-h2: clamp(1.75rem, 3vw, 2.2rem);
 	--sl-text-h3: clamp(1.3rem, 2vw, 1.55rem);
 
-	--nimbus-display: 'IBM Plex Mono', var(--sl-font-system-mono);
+	--nimbus-display: 'Space Grotesk', 'IBM Plex Mono', var(--sl-font-system-mono);
+	--nimbus-mono: 'IBM Plex Mono', var(--sl-font-system-mono);
 	--nimbus-terminal-bg: #071527;
 	--nimbus-terminal-bar-bg: #0b1b32;
 	--nimbus-terminal-border: #1e3a5f;
@@ -95,12 +99,13 @@ main h1#_top,
 
 main h1#_top,
 .sl-markdown-content h1:not(:where(.not-content *)) {
-	letter-spacing: -0.045em;
+	letter-spacing: -0.03em;
+	overflow-wrap: anywhere;
 }
 
 .sl-markdown-content h2:not(:where(.not-content *)) {
 	position: relative;
-	letter-spacing: -0.035em;
+	letter-spacing: -0.02em;
 }
 
 .sl-markdown-content h2:not(:where(.not-content *))::before {
@@ -108,14 +113,15 @@ main h1#_top,
 	display: inline-block;
 	margin-inline-end: 0.62rem;
 	color: var(--sl-color-text-accent);
-	font-size: 0.48em;
+	font-family: var(--nimbus-mono);
+	font-size: 0.5em;
 	font-weight: 500;
 	letter-spacing: 0;
-	vertical-align: 0.3em;
+	vertical-align: 0.32em;
 }
 
 .sl-markdown-content h3:not(:where(.not-content *)) {
-	letter-spacing: -0.025em;
+	letter-spacing: -0.015em;
 }
 
 .sl-markdown-content .sl-heading-wrapper.level-h2 {
@@ -391,8 +397,8 @@ html[data-has-hero] main > .content-panel > .sl-container {
 
 .nx-hero {
 	display: flex;
-	min-height: min(47rem, calc(100vh - var(--sl-nav-height)));
-	padding-block: clamp(6.5rem, 13vh, 10rem) clamp(5rem, 10vh, 8rem);
+	min-height: min(38rem, calc(100vh - var(--sl-nav-height) - 3rem));
+	padding-block: clamp(4rem, 9vh, 6.5rem) clamp(2.5rem, 5vh, 4rem);
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
@@ -412,12 +418,12 @@ html[data-has-hero] main > .content-panel > .sl-container {
 
 .nx-title {
 	max-width: 15ch;
-	margin: 1.45rem 0 0;
+	margin: 1.35rem 0 0;
 	font-family: var(--nimbus-display);
-	font-size: clamp(3.15rem, 8.2vw, 7.2rem);
+	font-size: clamp(3.1rem, 8vw, 6.6rem);
 	font-weight: 600;
-	letter-spacing: -0.075em;
-	line-height: 0.92;
+	letter-spacing: -0.035em;
+	line-height: 0.98;
 	text-wrap: balance;
 	color: var(--sl-color-white);
 }
@@ -432,6 +438,7 @@ html[data-has-hero] main > .content-panel > .sl-container {
 
 .nx-lede code {
 	font-size: 0.82em;
+	white-space: nowrap;
 }
 
 .nx-actions {
@@ -489,7 +496,7 @@ html[data-has-hero] main > .content-panel > .sl-container {
 .nx-stats {
 	display: grid;
 	width: min(100%, 44rem);
-	margin: clamp(3.5rem, 8vh, 5.5rem) 0 0;
+	margin: clamp(2.5rem, 5vh, 3.5rem) 0 0;
 	padding: 1.15rem 0;
 	grid-template-columns: repeat(4, 1fr);
 	border-block: 1px solid var(--sl-color-hairline);
@@ -584,6 +591,10 @@ html[data-has-hero] main > .content-panel > .sl-container {
 	color: var(--sl-color-gray-3);
 	font-size: 0.9rem;
 	line-height: 1.65;
+}
+
+.nx-paths p code {
+	white-space: nowrap;
 }
 
 .sl-markdown-content .nx-paths > a:hover,
