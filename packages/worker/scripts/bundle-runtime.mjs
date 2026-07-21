@@ -155,19 +155,20 @@ const SPECS = {
   // imports + asyncify-native setjmp) and asyncify-instrumented.
   // There is NO upstream binary channel — the artifacts are built from
   // source by packages/worker/wasm/bash/build-bash.sh (bash) and
-  // build-coreutils.sh (the plain-WASI exec targets), then staged from
-  // the local build tree via `local_base`.
+  // coreutils/build-busybox.sh (BusyBox 1.37.0, the plain-WASI multicall
+  // exec target providing ls/cat/cp/mv/rm/grep/sed/awk/find/... — see
+  // busybox.applets), then staged from the local build tree via
+  // `local_base`. The bash-runner aliases every applet name in
+  // busybox.applets onto the busybox module so bash's PATH lookup finds
+  // them in /bin and /usr/bin.
   'bash/5.2.37': {
     license: 'GPL-3.0-or-later',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',
     files: [
-      { src: 'bash.async.wasm',      vfs: 'share/bash/bash.async.wasm' },
-      { src: 'coreutils/echo.wasm',  vfs: 'share/bash/coreutils/echo.wasm' },
-      { src: 'coreutils/tr.wasm',    vfs: 'share/bash/coreutils/tr.wasm' },
-      { src: 'coreutils/cat.wasm',   vfs: 'share/bash/coreutils/cat.wasm' },
-      { src: 'coreutils/head.wasm',  vfs: 'share/bash/coreutils/head.wasm' },
-      { src: 'coreutils/sort.wasm',  vfs: 'share/bash/coreutils/sort.wasm' },
+      { src: 'bash.async.wasm',           vfs: 'share/bash/bash.async.wasm' },
+      { src: 'coreutils/busybox.wasm',    vfs: 'share/bash/coreutils/busybox.wasm' },
+      { src: 'coreutils/busybox.applets', vfs: 'share/bash/coreutils/busybox.applets' },
       { src: 'BIN_MARKER', vfs: 'bin/bash', mode: 'exec', runner: 'bash-runner', binName: 'bash' },
     ],
     synthetic_files: {

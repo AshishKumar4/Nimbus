@@ -179,6 +179,12 @@ export interface WasiFsDiff {
     symlinksCreated?: Record<string, string>;
     /** Removed symlinks. */
     symlinksDeleted?: string[];
+    /**
+     * vfsPath → permission bits requested via an in-facet chmod (busybox
+     * chmod through the nimbus_proc.chmod import). Applied durably by
+     * flushVfsDiff via vfs.chmod, where S2a ownership enforcement decides.
+     */
+    modesChanged?: Record<string, number>;
 }
 /** Names of the WASI imports implemented by this shim. */
 export declare const WASI_IMPLEMENTED_FNS: readonly string[];
