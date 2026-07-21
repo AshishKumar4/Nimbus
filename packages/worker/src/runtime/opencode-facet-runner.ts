@@ -696,8 +696,9 @@ import { WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers
 // ── sql.js wasm + glue factory (module-init scope) ─────────────────────────
 // The pre-compiled WebAssembly.Module rides in via the module map; the glue
 // factory is built with new Function at startup (request-time codegen is
-// blocked). globalThis.__nimbusInitSqlite (defined by the sqlite shim below)
-// is awaited inside fetch() before opencode opens its DB.
+// blocked). The engine itself boots lazily and synchronously on the first
+// DatabaseSync open (sqlite-shim.ts __getSQL) — the ~48 MiB engine boot must
+// not be paid by processes that never open a DB (the attach TUI client).
 import __nimbusSqliteWasmModule from "${SQLITE_WASM_MODULE_NAME}";
 globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;
 ${generateSqliteFacetPreamble()}
@@ -977,7 +978,6 @@ async function __ocRunAttachedTui() {
   const __memDiag = __startOcMemDiag();
   try {
     try {
-      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
       if (typeof __ocBundle.nimbusMain !== "function") {
         throw new Error(
@@ -1067,7 +1067,13 @@ async function __ocRunServe() {
   const __memDiag = __startOcMemDiag();
   try {
     try {
-      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
+      // Serve opens the session DB within its first requests — boot the
+      // engine eagerly to keep the proven serve boot shape (removing this
+      // live-wedged the serve handler's dynamic chunk import of
+      // server/server — the #20 shape-sensitivity; measured 2026-07-21).
+      // The attach TUI client path stays lazy: it never opens a DB, and
+      // the ~48 MiB engine boot was tipping the attach facet into OOM.
+      await globalThis.__nimbusInitSqlite();
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
       if (typeof __ocBundle.nimbusMain !== "function") {
         throw new Error(
@@ -1111,10 +1117,6 @@ async function __ocRunServe() {
 async function __ocOneShotFetch(request, workerEnv) {
     __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;
     try {
-      // Instantiate sql.js before opencode opens its DatabaseSync (the shim's
-      // constructor is synchronous and needs a ready engine). Runs in the
-      // handler, not module init (instantiation touches crypto for RNG).
-      if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
       if (argv[2] === "${OPENCODE_TREE_SITTER_DIAG_ARG}") {
         // Model-free diagnostic: drive the bundle's OWN web-tree-sitter

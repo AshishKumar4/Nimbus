@@ -2,8 +2,9 @@
 // Behavior tests for the node:sqlite shim (sql.js-backed) emitted by
 // generateSqliteShimCode(). Drives the generated __sqliteMod the same way
 // a facet does: a pre-compiled WebAssembly.Module on
-// globalThis.__nimbusSqliteWasmModule, an awaited globalThis.__nimbusInitSqlite,
-// then synchronous DatabaseSync/StatementSync use.
+// globalThis.__nimbusSqliteWasmModule, then synchronous DatabaseSync/
+// StatementSync use — the engine boots lazily and synchronously on the
+// first open (there is no eager boot step to await).
 //
 // WebAssembly.compile(bytes) is allowed here (Node/bun) — it is only
 // blocked at facet REQUEST time in workerd, which is exactly why the facet
@@ -29,10 +30,11 @@ const wasmModule = await WebAssembly.compile(wasmBytes);
 // the in-scope facet locals the shim closes over. Returns { sqlite } plus
 // the boot fn and the live flush queue so we can assert persistence.
 function makeSandbox(bundle, supervisor) {
-  // The shim attaches __nimbusInitSqlite/__nimbusSQL to globalThis; reset
-  // between sandboxes so each test boots its own engine state.
-  delete globalThis.__nimbusInitSqlite;
+  // The shim attaches __nimbusSQL (first open) and __nimbusInitSqlite
+  // (eager-boot API) to globalThis; reset between sandboxes so each test
+  // boots its own engine state.
   delete globalThis.__nimbusSQL;
+  delete globalThis.__nimbusInitSqlite;
   globalThis.__nimbusSqliteWasmModule = wasmModule;
 
   // Module-init preamble: prepares globalThis.__nimbusSqlJsFactory via
@@ -53,10 +55,15 @@ function makeSandbox(bundle, supervisor) {
 // ── Boot + in-memory CRUD, prepared statements, .all/.get/.run ──────────
 {
   const { sqlite } = makeSandbox({}, null);
-  await globalThis.__nimbusInitSqlite();
   const { DatabaseSync } = sqlite;
 
+  // Lazy boot contract: creating the sandbox must NOT boot the engine —
+  // the ~48 MiB engine boot is deferred until a DB is actually opened
+  // (processes that never open one, e.g. the attach TUI client, never pay).
+  assert.equal(globalThis.__nimbusSQL, undefined, 'engine must not boot before first open');
+
   const db = new DatabaseSync(':memory:');
+  assert.ok(globalThis.__nimbusSQL, 'first open boots the engine synchronously');
   assert.equal(db.isOpen, true);
 
   db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)');
@@ -94,7 +101,6 @@ function makeSandbox(bundle, supervisor) {
 // ── Named parameters ────────────────────────────────────────────────────
 {
   const { sqlite } = makeSandbox({}, null);
-  await globalThis.__nimbusInitSqlite();
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec('CREATE TABLE t (k TEXT, v INTEGER)');
   db.prepare('INSERT INTO t (k, v) VALUES (:k, :v)').run({ k: 'x', v: 7 });
@@ -109,7 +115,6 @@ function makeSandbox(bundle, supervisor) {
 // ── setReturnArrays + setReadBigInts ────────────────────────────────────
 {
   const { sqlite } = makeSandbox({}, null);
-  await globalThis.__nimbusInitSqlite();
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec('CREATE TABLE t (id INTEGER, label TEXT)');
   db.prepare('INSERT INTO t VALUES (?, ?)').run(100, 'hundred');
@@ -144,7 +149,6 @@ function makeSandbox(bundle, supervisor) {
     writeFile: async (path, bytes) => { flushed = { path, bytes }; },
   };
   const { sqlite, pendingIO } = makeSandbox({}, supervisor);
-  await globalThis.__nimbusInitSqlite();
 
   const db = new sqlite.DatabaseSync('/home/user/app.db');
   db.exec('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
@@ -161,7 +165,6 @@ function makeSandbox(bundle, supervisor) {
   // stores them). Reopen and prove the data persisted.
   const bundle = { 'home/user/app.db': flushed.bytes };
   const reopened = makeSandbox(bundle, null);
-  await globalThis.__nimbusInitSqlite();
   const db2 = new reopened.sqlite.DatabaseSync('/home/user/app.db');
   const row = db2.prepare('SELECT v FROM kv WHERE k = ?').get('hello');
   assert.deepEqual(row, { v: 'world' });
@@ -172,7 +175,6 @@ function makeSandbox(bundle, supervisor) {
 // ── Unsupported methods throw a clear error; never fake ─────────────────
 {
   const { sqlite } = makeSandbox({}, null);
-  await globalThis.__nimbusInitSqlite();
   const db = new sqlite.DatabaseSync(':memory:');
   assert.throws(() => db.loadExtension('x'), /node:sqlite: .* not supported/);
   assert.throws(() => db.function('f'), /node:sqlite: .* not supported/);
@@ -185,9 +187,19 @@ function makeSandbox(bundle, supervisor) {
   console.log('ok: unsupported methods throw clear errors');
 }
 
+// ── Eager boot API (__nimbusInitSqlite): for callers that will open a DB ─
+{
+  makeSandbox({}, null);
+  assert.equal(globalThis.__nimbusSQL, undefined, 'engine must not boot at shim eval');
+  const SQL = await globalThis.__nimbusInitSqlite();
+  assert.ok(globalThis.__nimbusSQL, 'eager boot instantiates the engine');
+  assert.equal(typeof SQL.Database, 'function');
+  console.log('ok: eager boot API');
+}
+
 // Clean up the globals we set so we don't leak into a shared bun process.
-delete globalThis.__nimbusInitSqlite;
 delete globalThis.__nimbusSQL;
+delete globalThis.__nimbusInitSqlite;
 delete globalThis.__nimbusSqliteWasmModule;
 delete globalThis.__nimbusSqlJsFactory;
 

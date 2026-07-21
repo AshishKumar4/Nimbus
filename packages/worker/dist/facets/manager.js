@@ -292,9 +292,9 @@ const REAL_NODE_IMPORTS = getRealNodeImportsCode();
  * Detect whether a facet bundle imports node:sqlite. When true, the
  * supervisor attaches the sql.js WebAssembly.Module to the facet's Worker
  * Loader module map (request-time WebAssembly.compile is blocked) and the
- * generated facet code statically imports it + boots the engine before
- * user code (node:sqlite's DatabaseSync constructor is synchronous, so the
- * wasm must be instantiated up front).
+ * generated facet code statically imports it + prepares the glue factory
+ * at module init; the engine itself boots lazily and synchronously on the
+ * first DatabaseSync open (sqlite-shim.ts __getSQL).
  *
  * Matches `require("node:sqlite")` / `require("sqlite")` (CJS, the
  * resolver strips the node: prefix) and `from "node:sqlite"` (ESM). The
@@ -329,12 +329,6 @@ function bundleUsesNodeSqlite(entryCode, bundle) {
 const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM_MODULE_NAME}";\n` +
     `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
     generateSqliteFacetPreamble();
-/**
- * Awaited before user code runs so the synchronous DatabaseSync
- * constructor finds an instantiated engine. No-op when sqlite isn't used
- * (the global is undefined and the expression short-circuits).
- */
-const SQLITE_FACET_BOOT = `if (globalThis.__nimbusInitSqlite) { await globalThis.__nimbusInitSqlite(); }`;
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
@@ -478,7 +472,6 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
-      ${usesSqlite ? SQLITE_FACET_BOOT : ''}
       if (__entryCompileFailure) throw new Error(__entryCompileFailure);
       if (!__compiledFn) throw new Error("entrypoint compile failed");
       const __entryPromises = __makeEntrypointPromiseTracker();
@@ -726,7 +719,6 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     try {
-      ${usesSqlite ? SQLITE_FACET_BOOT : ''}
       if (__entryCompileFailure) throw new Error(__entryCompileFailure);
       if (!__compiledFn) throw new Error("entrypoint compile failed");
       const __entryPromises = __makeEntrypointPromiseTracker();

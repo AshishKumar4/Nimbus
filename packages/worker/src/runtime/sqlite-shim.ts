@@ -5,14 +5,20 @@
  * Like streams.ts / node-shims.ts, this emits a raw JS string embedded in
  * the generated facet module. The emitted block:
  *
- *   1. Defines `globalThis.__nimbusInitSqlite()` — an idempotent async
- *      boot that evaluates the sql.js glue and instantiates the wasm via
- *      the `instantiateWasm` hook, fed the pre-compiled
+ *   1. Boots the sql.js engine LAZILY AND SYNCHRONOUSLY on the first
+ *      DatabaseSync open (`__getSQL`): it calls the prepared glue factory
+ *      with a synchronous `instantiateWasm` hook fed the pre-compiled
  *      WebAssembly.Module from `globalThis.__nimbusSqliteWasmModule`
- *      (attached by the facet module map). It stashes the ready sql.js
- *      namespace on `globalThis.__nimbusSQL`. The facet generators await
- *      this BEFORE running user code so node:sqlite's SYNCHRONOUS
- *      constructor finds an already-instantiated engine.
+ *      (attached by the facet module map) and captures the ready Module
+ *      synchronously (sql.js uses the caller's config object AS the
+ *      Emscripten Module and runs postRun in the same tick when
+ *      instantiation is synchronous). The ready namespace is stashed on
+ *      `globalThis.__nimbusSQL`. Laziness matters: the engine boot costs
+ *      ~48 MiB of facet memory (measured live 2026-07-21, #35), which a
+ *      process that never opens a DB — e.g. the opencode attach TUI
+ *      client — must not pay inside a memory-capped facet. A caller that
+ *      certainly WILL open a DB (the opencode serve facet) boots eagerly
+ *      via `globalThis.__nimbusInitSqlite()` to keep its proven boot shape.
  *
  *   2. Defines `__sqliteMod` = { DatabaseSync, ... } registered as
  *      builtins.sqlite + builtins["node:sqlite"].
@@ -86,70 +92,76 @@ export function generateSqliteShimCode(): string {
 // ── node:sqlite shim (sql.js-backed, Nimbus) ────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 
-// Idempotent sql.js boot. Returns a promise that resolves once the wasm
-// is instantiated and globalThis.__nimbusSQL holds the sql.js namespace
-// ({ Database }). The facet generators await this before user code so the
-// node:sqlite synchronous constructor has a ready engine.
-//
-// The sql.js glue is evaluated via \`new Function\` at MODULE-INIT time
-// (generateSqliteFacetPreamble, prepended to the facet) because workerd
-// disallows code-generation-from-strings at request time. By the time
-// this request-time boot runs, globalThis.__nimbusSqlJsFactory is already
-// the prepared initSqlJs factory; we only call it + instantiate the
-// pre-compiled WebAssembly.Module (both allowed at request time).
-if (!globalThis.__nimbusInitSqlite) {
-  let __sqlitePromise = null;
-  globalThis.__nimbusInitSqlite = function __nimbusInitSqlite() {
-    if (globalThis.__nimbusSQL) return Promise.resolve(globalThis.__nimbusSQL);
-    if (__sqlitePromise) return __sqlitePromise;
-    __sqlitePromise = (async () => {
-      const wasmModule = globalThis.__nimbusSqliteWasmModule;
-      if (!wasmModule) {
-        throw new Error(
-          "node:sqlite: sql.js wasm module not attached to this facet " +
-          "(internal: __nimbusSqliteWasmModule missing — module-map wiring bug)"
-        );
-      }
-      const initSqlJs = globalThis.__nimbusSqlJsFactory;
-      if (typeof initSqlJs !== "function") {
-        throw new Error(
-          "node:sqlite: sql.js factory not prepared at module init " +
-          "(internal: __nimbusSqlJsFactory missing — facet-preamble wiring bug)"
-        );
-      }
-      const SQL = await initSqlJs({
-        // Feed the pre-compiled WebAssembly.Module to sql.js so it never
-        // calls WebAssembly.compile(bytes) (blocked in facets at request
-        // time). The hook gets the imports object and a callback; we
-        // instantiate synchronously and invoke it.
-        instantiateWasm(imports, successCallback) {
-          const instance = new WebAssembly.Instance(wasmModule, imports);
-          successCallback(instance, wasmModule);
-          return instance.exports;
-        },
-      });
-      globalThis.__nimbusSQL = SQL;
-      return SQL;
-    })();
-    return __sqlitePromise;
-  };
-}
-
 const __sqliteMod = (() => {
   function __unsupported(name) {
     return new Error("node:sqlite: " + name + " not supported");
   }
 
+  // Engine boot, run lazily on the FIRST DatabaseSync open — or eagerly
+  // via __nimbusInitSqlite by a caller that KNOWS it will open a DB (the
+  // opencode serve facet: it serves sessions from the DB within its first
+  // requests, and booting eagerly there keeps its long-proven boot shape —
+  // removing the eager boot live-wedged serve's handler-time chunk import
+  // of server/server, the #20 shape-sensitivity, 2026-07-21).
+  //
+  // The sql.js glue is evaluated via \`new Function\` at MODULE-INIT time
+  // (generateSqliteFacetPreamble, prepended to the facet) because workerd
+  // disallows code-generation-from-strings at request time; by now
+  // globalThis.__nimbusSqlJsFactory is the prepared initSqlJs factory. We
+  // only call it + instantiate the pre-compiled WebAssembly.Module (both
+  // allowed at request time). Synchronicity is structural, not lucky:
+  // sql.js uses the caller's config object AS the Emscripten Module, and
+  // with a synchronous \`instantiateWasm\` hook (and no \`setStatus\`)
+  // Emscripten runs runtime init + postRun in the same tick — so the
+  // config/Module closure carries the ready { Database } namespace before
+  // this function returns, which is exactly what node:sqlite's
+  // synchronous constructor needs. Fail loud if that structure ever
+  // changes in a sql.js upgrade.
   function __getSQL() {
-    const SQL = globalThis.__nimbusSQL;
-    if (!SQL) {
+    if (globalThis.__nimbusSQL) return globalThis.__nimbusSQL;
+    const wasmModule = globalThis.__nimbusSqliteWasmModule;
+    if (!wasmModule) {
       throw new Error(
-        "node:sqlite: engine not initialized (internal: __nimbusInitSqlite " +
-        "was not awaited before this DatabaseSync open)"
+        "node:sqlite: sql.js wasm module not attached to this facet " +
+        "(internal: __nimbusSqliteWasmModule missing — module-map wiring bug)"
       );
     }
-    return SQL;
+    const initSqlJs = globalThis.__nimbusSqlJsFactory;
+    if (typeof initSqlJs !== "function") {
+      throw new Error(
+        "node:sqlite: sql.js factory not prepared at module init " +
+        "(internal: __nimbusSqlJsFactory missing — facet-preamble wiring bug)"
+      );
+    }
+    const engine = {
+      // Feed the pre-compiled WebAssembly.Module to sql.js so it never
+      // calls WebAssembly.compile(bytes) (blocked in facets at request
+      // time). The hook gets the imports object and a callback; we
+      // instantiate synchronously and invoke it.
+      instantiateWasm(imports, successCallback) {
+        const instance = new WebAssembly.Instance(wasmModule, imports);
+        successCallback(instance, wasmModule);
+        return instance.exports;
+      },
+    };
+    let ready = false;
+    engine.postRun = [() => { ready = true; }];
+    initSqlJs(engine);
+    if (!ready || typeof engine.Database !== "function") {
+      throw new Error(
+        "node:sqlite: sql.js did not complete synchronous init " +
+        "(internal: the glue's Module/postRun structure changed — see sqlite-shim.ts __getSQL)"
+      );
+    }
+    globalThis.__nimbusSQL = engine;
+    return engine;
   }
+
+  // Idempotent eager boot for callers that will certainly open a DB.
+  // Same engine, same failure modes as the lazy path — just earlier.
+  globalThis.__nimbusInitSqlite = async function __nimbusInitSqlite() {
+    return __getSQL();
+  };
 
   // Strip a leading slash so __vfsBundle keys (stored slash-stripped)
   // line up with absolute paths the user passes.

@@ -5,14 +5,20 @@
  * Like streams.ts / node-shims.ts, this emits a raw JS string embedded in
  * the generated facet module. The emitted block:
  *
- *   1. Defines `globalThis.__nimbusInitSqlite()` — an idempotent async
- *      boot that evaluates the sql.js glue and instantiates the wasm via
- *      the `instantiateWasm` hook, fed the pre-compiled
+ *   1. Boots the sql.js engine LAZILY AND SYNCHRONOUSLY on the first
+ *      DatabaseSync open (`__getSQL`): it calls the prepared glue factory
+ *      with a synchronous `instantiateWasm` hook fed the pre-compiled
  *      WebAssembly.Module from `globalThis.__nimbusSqliteWasmModule`
- *      (attached by the facet module map). It stashes the ready sql.js
- *      namespace on `globalThis.__nimbusSQL`. The facet generators await
- *      this BEFORE running user code so node:sqlite's SYNCHRONOUS
- *      constructor finds an already-instantiated engine.
+ *      (attached by the facet module map) and captures the ready Module
+ *      synchronously (sql.js uses the caller's config object AS the
+ *      Emscripten Module and runs postRun in the same tick when
+ *      instantiation is synchronous). The ready namespace is stashed on
+ *      `globalThis.__nimbusSQL`. Laziness matters: the engine boot costs
+ *      ~48 MiB of facet memory (measured live 2026-07-21, #35), which a
+ *      process that never opens a DB — e.g. the opencode attach TUI
+ *      client — must not pay inside a memory-capped facet. A caller that
+ *      certainly WILL open a DB (the opencode serve facet) boots eagerly
+ *      via `globalThis.__nimbusInitSqlite()` to keep its proven boot shape.
  *
  *   2. Defines `__sqliteMod` = { DatabaseSync, ... } registered as
  *      builtins.sqlite + builtins["node:sqlite"].

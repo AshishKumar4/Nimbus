@@ -3698,10 +3698,9 @@ builtins.querystring = __qsMod;
 builtins.string_decoder = __stringDecoderMod;
 // node:sqlite (sql.js-backed). Dual-registered like node:fs/promises; the
 // resolver strips the node: prefix but the explicit key matches the
-// constants/util-types convention. The engine is booted (wasm
-// instantiated) by globalThis.__nimbusInitSqlite, which the facet
-// generators await before user code so the synchronous DatabaseSync
-// constructor finds a ready engine.
+// constants/util-types convention. The engine boots lazily and
+// synchronously on the first DatabaseSync open (sqlite-shim.ts __getSQL) —
+// the ~48 MiB boot must not be paid by processes that never open a DB.
 builtins.sqlite = __sqliteMod;
 builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
