@@ -162,7 +162,7 @@ const SPECS = {
   // busybox.applets onto the busybox module so bash's PATH lookup finds
   // them in /bin and /usr/bin.
   'bash/5.2.37': {
-    license: 'GPL-3.0-or-later',
+    license: 'GPL-3.0-or-later AND GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',
     files: [
@@ -777,6 +777,16 @@ license text: https://www.gnu.org/licenses/gpl-3.0.txt
 Corresponding source: https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz
 plus the Nimbus build overlay (packages/worker/wasm/bash/ in the
 Nimbus repository: nimbus-proc.{h,c}, build-bash.sh, coreutils/).
+
+BusyBox 1.37.0 — GPL-2.0-only
+Copyright (C) many authors, 1998-2015. See the source distribution.
+
+The coreutils exec targets (ls, cat, grep, sed, awk, find, ...) are
+BusyBox cross-compiled to wasm32-wasi as one multicall binary. Full
+license text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+Corresponding source: https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+plus the Nimbus build overlay (packages/worker/wasm/bash/coreutils/ in
+the Nimbus repository: build-busybox.sh, wasi-shim.c, overlay/).
 `;
 }
 
