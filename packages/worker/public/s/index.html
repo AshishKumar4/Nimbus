@@ -44,37 +44,53 @@
     /* Main panel */
     .main { flex: 1; display: flex; overflow: hidden; }
 
-    /* Terminal panel */
-    .panel-terminal { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    /* Terminal panel — VS Code terminal-panel model. The view area
+       (.term-main) shows the main shell xterm OR one process view at a
+       time, full height; the process sidebar on the right lists the
+       shell + every process. */
+    .panel-terminal { flex: 1; display: flex; overflow: hidden; min-width: 0; min-height: 0; }
+    .term-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
     #terminal-container { flex: 1; padding: 4px; overflow: hidden; min-height: 0; }
+    .term-main.proc-view #terminal-container { display: none; }
+    .logs-panel-body { display: none; flex: 1; overflow: auto; background: #0d1117; position: relative; min-height: 0; }
+    .term-main.proc-view .logs-panel-body { display: block; }
 
-    /* Process log tabs panel — lives below the xterm inside .panel-terminal.
-       Hidden entirely when no tabs are open so the xterm fills the full panel. */
-    .logs-panel { display: none; flex-direction: column; border-top: 1px solid #30363d; background: #0d1117; flex-shrink: 0; max-height: 45%; min-height: 120px; }
-    .logs-panel.active { display: flex; }
-    .logs-tabbar { display: flex; align-items: stretch; background: #161b22; border-bottom: 1px solid #30363d; overflow-x: auto; scrollbar-width: thin; flex-shrink: 0; }
-    .logs-tabbar::-webkit-scrollbar { height: 4px; }
-    .logs-tabbar::-webkit-scrollbar-thumb { background: #30363d; }
-    .logs-tab { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; font-size: 11px; color: #8b949e; border-right: 1px solid #30363d; cursor: pointer; white-space: nowrap; background: #161b22; font-family: ui-monospace, Menlo, monospace; user-select: none; max-width: 240px; flex-shrink: 0; }
-    .logs-tab:hover { background: #1c2128; color: #c9d1d9; }
-    .logs-tab.active { background: #0d1117; color: #58a6ff; box-shadow: inset 0 -2px 0 #58a6ff; }
-    .logs-tab.exited { color: #6e7681; }
-    .logs-tab.exited.failed { color: #ff7b72; }
-    .logs-tab.exited.active { color: #ff9e80; }
-    .logs-tab .logs-tab-label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-    .logs-tab .logs-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; flex-shrink: 0; box-shadow: 0 0 4px #3fb950; }
-    .logs-tab.exited .logs-tab-dot { background: #6e7681; box-shadow: none; }
-    .logs-tab.exited.failed .logs-tab-dot { background: #ff7b72; box-shadow: none; }
-     .logs-tab .logs-tab-close { color: #6e7681; font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 2px; margin-left: 2px; }
-     .logs-tab .logs-tab-close:hover { color: #f85149; background: #30363d; }
-     /* Primitives wave (P11): per-tab Kill / Restart controls. Kept
-        small + monochrome so they don't compete with the close X for
-        attention. Hover state mirrors the close-X red. */
-     .logs-tab .logs-tab-action { color: #6e7681; font-size: 11px; line-height: 1; padding: 0 4px; border-radius: 2px; margin-left: 2px; cursor: pointer; user-select: none; }
-     .logs-tab .logs-tab-action:hover { color: #c9d1d9; background: #30363d; }
-     .logs-tab .logs-tab-kill:hover { color: #f85149; }
-     .logs-tab.exited .logs-tab-action { display: none; }
-    .logs-panel-body { flex: 1; overflow: auto; background: #0d1117; position: relative; min-height: 0; }
+    /* Process sidebar. Chrome surface (#161b22) like the toolbar/header;
+       hidden until the first process is seen, collapsible via the head
+       chevron or the toolbar Processes button. */
+    .proc-sidebar { display: none; flex-direction: column; width: 200px; flex-shrink: 0; background: #161b22; border-left: 1px solid #30363d; overflow: hidden; }
+    .proc-sidebar.active { display: flex; }
+    .proc-sidebar-head { display: flex; align-items: center; gap: 4px; padding: 4px 6px 4px 10px; min-height: 28px; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .proc-sidebar-title { flex: 1; font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; font-family: ui-monospace, Menlo, monospace; }
+    .proc-sidebar-head button { background: transparent; border: 1px solid transparent; color: #8b949e; padding: 2px 6px; font-size: 12px; cursor: pointer; border-radius: 3px; line-height: 1; }
+    .proc-sidebar-head button:hover { background: #30363d; color: #c9d1d9; }
+    .proc-list { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 0; }
+    .proc-list::-webkit-scrollbar { width: 8px; }
+    .proc-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    .proc-item { display: flex; align-items: center; gap: 7px; padding: 4px 8px 4px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; line-height: 18px; color: #8b949e; cursor: pointer; user-select: none; white-space: nowrap; min-width: 0; border-left: 2px solid transparent; }
+    .proc-item:hover { background: #21262d; color: #c9d1d9; }
+    .proc-item.active { background: #1f6feb2b; color: #e6edf3; border-left-color: #58a6ff; }
+    .proc-item.exited { color: #6e7681; }
+    .proc-item.exited.failed { color: #ff7b72; }
+    .proc-item .proc-icon { color: #58a6ff; font-weight: 600; flex-shrink: 0; }
+    .proc-item .proc-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; box-shadow: 0 0 4px #3fb950; flex-shrink: 0; }
+    .proc-item.exited .proc-dot { background: #6e7681; box-shadow: none; }
+    .proc-item.exited.failed .proc-dot { background: #ff7b72; }
+    .proc-item .proc-label { flex: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .proc-item .proc-pid { color: #484f58; flex-shrink: 0; }
+    /* Hover swaps the dim pid for the action cluster (VS Code style). */
+    .proc-item .proc-actions { display: none; align-items: center; gap: 2px; flex-shrink: 0; }
+    .proc-item:hover .proc-actions { display: flex; }
+    .proc-item:hover .proc-pid { display: none; }
+    .proc-item .proc-act { color: #6e7681; font-size: 11px; line-height: 1.4; padding: 0 3px; border-radius: 2px; cursor: pointer; user-select: none; }
+    .proc-item .proc-act:hover { color: #c9d1d9; background: #30363d; }
+    .proc-item .proc-act.proc-act-kill:hover, .proc-item .proc-act.proc-act-close:hover { color: #f85149; }
+    .proc-item .proc-act.proc-act-close { font-size: 13px; }
+    .proc-item.exited .proc-act-kill, .proc-item.exited .proc-act-restart { display: none; }
+    /* New spawns announce themselves with a brief flash — no focus steal. */
+    @keyframes procItemFlash { from { background: #388bfd33; } to { background: transparent; } }
+    .proc-item.fresh { animation: procItemFlash 1.4s ease-out; }
+    @media (max-width: 1100px) { .proc-sidebar { width: 156px; } }
     .logs-view { display: none; white-space: pre; font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace; font-size: 12px; line-height: 1.5; color: #c9d1d9; padding: 8px 10px; word-break: break-all; min-height: 100%; }
     .logs-view.active { display: block; }
     .logs-view.terminal-view { padding: 0; white-space: normal; overflow: hidden; }
@@ -372,7 +388,7 @@
     <button id="btnEditor" class="active" title="Editor">Editor</button>
     <button id="btnAgent" title="Agent chat">Agent</button>
     <div class="sep"></div>
-    <button id="btnProcs" title="Toggle process terminals">
+    <button id="btnProcs" title="Toggle the process sidebar">
       <span class="procs-dot"></span>
       <span>Processes</span>
       <span id="procsCount" style="color:#8b949e">0</span>
@@ -425,10 +441,21 @@
       <!-- Vertical resize handle between the top surface and terminal. -->
       <div class="vresize-handle" id="editorTerminalResizeHandle"></div>
       <div class="panel-terminal">
-        <div id="terminal-container"></div>
-        <div class="logs-panel" id="logsPanel">
-          <div class="logs-tabbar" id="logsTabBar"></div>
+        <div class="term-main" id="termMain">
+          <div id="terminal-container"></div>
           <div class="logs-panel-body" id="logsPanelBody"></div>
+        </div>
+        <div class="proc-sidebar" id="procSidebar">
+          <div class="proc-sidebar-head">
+            <span class="proc-sidebar-title">Processes</span>
+            <button id="btnProcSidebarHide" title="Hide sidebar (reopen via the Processes button)">&raquo;</button>
+          </div>
+          <div class="proc-list" id="procList">
+            <div class="proc-item shell active" id="procShellItem" title="Main terminal — the session shell">
+              <span class="proc-icon">&#10095;_</span>
+              <span class="proc-label">shell</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -2064,6 +2091,8 @@
       }
       function applyTerminalFit() {
         try { fitAddon.fit(); } catch {}
+        // A process view may own the panel instead of the shell xterm.
+        if (typeof ProcSidebar !== 'undefined') ProcSidebar.refitActive();
       }
       function applyAll() {
         // Tree width — applied as inline width on .panel-tree.
@@ -2254,13 +2283,13 @@
         if (statsTimer) clearInterval(statsTimer);
         statsTimer = setInterval(() => {
           refreshStats();
-          // Keep the process count + tab state reconciled even if a
+          // Keep the process count + sidebar state reconciled even if a
           // spawn or exit event was dropped during a reconnect or
           // brief network blip. /api/processes is cheap (in-memory).
-          if (typeof LogTabs !== 'undefined') LogTabs.hydrate();
+          if (typeof ProcSidebar !== 'undefined') ProcSidebar.hydrate();
         }, 5000);
         // Initial hydrate — DO is warm, ProcessTable populated.
-        if (typeof LogTabs !== 'undefined') LogTabs.hydrate();
+        if (typeof ProcSidebar !== 'undefined') ProcSidebar.hydrate();
       };
       ws.onmessage = (e) => {
         try {
@@ -2297,30 +2326,27 @@
               previewFrame.contentWindow.postMessage(msg.data, '*');
             }
           } else if (msg.type === 'spawn') {
-            // Auto-open a log tab for EVERY process the supervisor spawns.
+            // EVERY process the supervisor spawns gets a sidebar entry.
             // Short-lived processes (node foo.js) immediately receive an
-            // exit event and the tab flips to "exited" — kept around for
-            // 10 min so the user can read the final output. Long-running
-            // processes stream live. Gating on longRunning made the tabs
-            // panel invisible for the most common user actions (node
-            // script.js, npm run <non-dev-script>), which defeats the
-            // whole point of the panel.
-            LogTabs.openTab(msg.pid, msg.command, {
-              attach: msg.longRunning === true,
+            // exit event and the entry flips to "exited" — kept around
+            // for 10 min so the user can read the final output. The
+            // entry never steals focus from the shell; attached-TTY
+            // TUIs (the user's own foreground command) are the one
+            // exception and take the view immediately.
+            ProcSidebar.upsert(msg.pid, msg.command, {
               attachedTty: msg.attachedTty === true,
             });
           } else if (msg.type === 'exit') {
             // An exit can arrive for a pid we never saw a spawn for
             // (e.g. `node -e`, which the supervisor intentionally
             // suppresses the spawn banner for). Surface those too so
-            // the user sees SOMETHING — we open a tab on-exit, fetch
-            // the command from /api/processes if we haven't already,
-            // and mark it exited. The ring buffer keeps the output
-            // for 10 min.
-            if (!LogTabs.hasTab(msg.pid)) {
-              LogTabs.openTab(msg.pid, msg.command || ('pid ' + msg.pid));
+            // the user sees SOMETHING — we add an entry on-exit and
+            // mark it exited. The ring buffer keeps the output for
+            // 10 min.
+            if (!ProcSidebar.has(msg.pid)) {
+              ProcSidebar.upsert(msg.pid, msg.command || ('pid ' + msg.pid));
             }
-            LogTabs.markExit(msg.pid, msg.code, msg.reason);
+            ProcSidebar.markExit(msg.pid, msg.code, msg.reason);
           }
         } catch {}
       };
@@ -2335,29 +2361,44 @@
 
     term.onData(d => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'input',data:d})); });
     window.addEventListener('resize', () => {
-      fitAddon.fit();
+      // fit() can throw while the shell view is hidden behind a process
+      // view (display:none container); the resize frame still matters.
+      try { fitAddon.fit(); } catch {}
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
     });
 
-    // ── Process terminal tabs panel ────────────────────────────────────
-    // One tab per PID attached to `/api/logs/<pid>` over a WebSocket.
-    // Auto-opens on EVERY `{type:'spawn'}` from the main WS; manually
-    // closable via the ✕ on each tab, or collapsible via the toolbar
-    // "Processes" button. The ring buffer retains logs for 10 min
-    // post-exit, so a tab left open after a crash keeps showing the
-    // final output until the buffer expires (or the user closes it).
-    const LogTabs = (function() {
-      const panel = document.getElementById('logsPanel');
-      const tabBar = document.getElementById('logsTabBar');
+    // ── Process sidebar (VS Code terminal-panel model) ────────────────
+    // The shell + every process live as entries in the right-hand
+    // sidebar; the .term-main view area shows the shell xterm or ONE
+    // process view (logs / TUI) at a time, full height. Every
+    // `{type:'spawn'}` adds an entry WITHOUT stealing focus from the
+    // shell — clicking an entry attaches `/api/logs/<pid>` and swaps
+    // the view; clicking "shell" returns. Attached-TTY processes (TUIs
+    // the user launched in the foreground) are the one exception: they
+    // attach + take the view immediately, because that IS the user's
+    // foreground intent. The ring buffer retains logs for 10 min
+    // post-exit, so an entry left after a crash keeps its final output
+    // readable until the buffer expires (or the user dismisses it).
+    const ProcSidebar = (function() {
+      const sidebar = document.getElementById('procSidebar');
+      const list = document.getElementById('procList');
+      const shellItem = document.getElementById('procShellItem');
+      const termMain = document.getElementById('termMain');
       const body = document.getElementById('logsPanelBody');
       const btnProcs = document.getElementById('btnProcs');
       const procsCount = document.getElementById('procsCount');
-      /** pid -> { tabEl, viewEl, ws, exited, failed, lastPainted, label } */
-      const tabs = new Map();
+      /** pid -> { pid, itemEl, viewEl, ws, wsOpened, exited, failed, exitCode, exitReason, label, term, fit, attachedTty } */
+      const procs = new Map();
+      // pids the user dismissed with ✕ while still running — hydrate()
+      // must not resurrect them (it reconciles every 5s and would
+      // otherwise re-add, and for TUIs re-steal the view, in a loop).
+      const dismissed = new Set();
+      // null = shell view; otherwise the pid whose view fills .term-main.
       let activePid = null;
-      // User-controlled visibility. `true` = show panel when ≥1 tab open.
-      // `false` = keep panel collapsed even with tabs (toolbar button
-      // dropped down once). Defaults to true; toggled by #btnProcs.
+      // User-controlled visibility. `true` = show sidebar when ≥1 entry.
+      // `false` = collapsed (chevron or toolbar button). New spawns do
+      // NOT force a collapsed sidebar open — the toolbar badge + dot
+      // carry the signal instead.
       let userWantsVisible = true;
 
       // Minimal ANSI CSI stripper — non-terminal fallback views pass ANSI through;
@@ -2387,10 +2428,10 @@
         return display || trimmed.slice(0, 32);
       }
 
-      // Refit the xterm + push new cols/rows to the server. Called after
-      // ANY change to the panel's visibility or tab count — because the
-      // terminal's viewport just grew or shrunk and the shell needs the
-      // new size so its line-wrapping stays correct.
+      // Refit the shell xterm + push new cols/rows to the server. Called
+      // after ANY change to the sidebar's visibility or the active view —
+      // the terminal's viewport just grew or shrunk and the shell needs
+      // the new size so its line-wrapping stays correct.
       function refitTerminal() {
         try { fitAddon.fit(); } catch {}
         if (ws?.readyState === WebSocket.OPEN) {
@@ -2398,26 +2439,38 @@
         }
       }
 
-      // Single source of truth for "should the panel be visible right
-      // now?". The panel shows iff there's ≥1 tab AND the user hasn't
-      // collapsed it. The toolbar button is visible iff we've ever seen
-      // a process (so brand-new sessions don't see a useless "0 Processes"
-      // chip), and its "active" highlight tracks panel visibility.
-      function applyVisibility() {
-        const haveTabs = tabs.size > 0;
-        const shouldShow = haveTabs && userWantsVisible;
-        const wasShown = panel.classList.contains('active');
-        if (shouldShow) panel.classList.add('active');
-        else panel.classList.remove('active');
-        if (wasShown !== shouldShow) refitTerminal();
+      // Refit whichever process terminal currently owns the view. The
+      // PaneResizer calls this on drag so a TUI in the panel re-wraps
+      // just like the shell does.
+      function refitActive() {
+        const t = activePid !== null ? procs.get(activePid) : null;
+        if (!t?.fit || !t.term) return;
+        try { t.fit.fit(); } catch {}
+        sendProcessResize(t);
+      }
 
-        // Running vs total — the dot pulses when ≥1 tab is running.
+      // Single source of truth for "should the sidebar be visible right
+      // now?". It shows iff there's ≥1 entry AND the user hasn't
+      // collapsed it. Collapsing while a process view is up returns the
+      // view to the shell — a process view with no sidebar would strand
+      // the user. The toolbar button is visible iff we've ever seen a
+      // process (so brand-new sessions don't get a useless "0 Processes"
+      // chip), and its "active" highlight tracks sidebar visibility.
+      function applyVisibility() {
+        const haveProcs = procs.size > 0;
+        const shouldShow = haveProcs && userWantsVisible;
+        const wasShown = sidebar.classList.contains('active');
+        sidebar.classList.toggle('active', shouldShow);
+        if (!shouldShow && activePid !== null) setActive(null);
+        else if (wasShown !== shouldShow) { refitTerminal(); refitActive(); }
+
+        // Running vs total — the dot pulses when ≥1 entry is running.
         let running = 0;
-        for (const t of tabs.values()) if (!t.exited) running++;
+        for (const t of procs.values()) if (!t.exited) running++;
         procsCount.textContent = running > 0
-          ? (running === tabs.size ? String(running) : running + '/' + tabs.size)
-          : String(tabs.size);
-        btnProcs.classList.toggle('visible', haveTabs);
+          ? (running === procs.size ? String(running) : running + '/' + procs.size)
+          : String(procs.size);
+        btnProcs.classList.toggle('visible', haveProcs);
         btnProcs.classList.toggle('has-running', running > 0);
         btnProcs.classList.toggle('active', shouldShow);
       }
@@ -2473,13 +2526,22 @@
         appendToView(tab, div);
       }
 
+      // pid === null selects the shell; otherwise the process view fills
+      // .term-main. Both directions refit the terminal that just became
+      // visible and hand it keyboard focus.
       function setActive(pid) {
         activePid = pid;
-        for (const [p, t] of tabs) {
-          t.tabEl.classList.toggle('active', p === pid);
+        shellItem.classList.toggle('active', pid === null);
+        for (const [p, t] of procs) {
+          t.itemEl.classList.toggle('active', p === pid);
           t.viewEl.classList.toggle('active', p === pid);
         }
-        const tab = tabs.get(pid);
+        termMain.classList.toggle('proc-view', pid !== null);
+        if (pid === null) {
+          setTimeout(() => { refitTerminal(); try { term.focus(); } catch {} }, 0);
+          return;
+        }
+        const tab = procs.get(pid);
         if (tab?.fit) {
           setTimeout(() => {
             try { tab.fit.fit(); } catch {}
@@ -2487,7 +2549,7 @@
             try { tab.term?.focus(); } catch {}
           }, 0);
         }
-        if (pid !== null) body.scrollTop = body.scrollHeight;
+        body.scrollTop = body.scrollHeight;
       }
 
       function sendProcessResize(tab) {
@@ -2501,19 +2563,17 @@
         } catch {}
       }
 
-      function closeTab(pid) {
-        const t = tabs.get(pid);
+      function dismiss(pid) {
+        const t = procs.get(pid);
         if (!t) return;
         try { t.ws?.close(); } catch {}
-        t.tabEl.remove();
+        t.itemEl.remove();
         t.viewEl.remove();
-        tabs.delete(pid);
-        if (activePid === pid) {
-          // Pick any other open tab, or collapse.
-          const next = tabs.keys().next().value;
-          if (next !== undefined) setActive(next);
-          else activePid = null;
-        }
+        procs.delete(pid);
+        if (!t.exited) dismissed.add(pid);
+        // The shell is the primary surface — dismissing whatever was in
+        // view always lands back there, never on a sibling process.
+        if (activePid === pid) setActive(null);
         applyVisibility();
       }
 
@@ -2525,8 +2585,8 @@
       // DO side, competing with the shell WS for input-gate time and
       // making typing feel laggy.
       //
-      // We now defer the WS connection until the user actually clicks
-      // the tab. The tab strip still appears immediately on spawn
+      // We defer the WS connection until the user actually clicks the
+      // sidebar entry. The entry still appears immediately on spawn
       // (good UX — "I see you, here's your process") but the server
       // never ships bytes to a reader nobody's reading. The 95% of
       // short-lived processes that the user never clicks pay zero
@@ -2535,8 +2595,8 @@
       function ensureLogWs(tab) {
         if (tab.wsOpened) return;
         tab.wsOpened = true;
-        // Drop the "click this tab to attach" placeholder (if any).
-        // Backlog + live chunks will repopulate the view.
+        // Drop anything painted before attach (e.g. an exit banner);
+        // backlog + live chunks repopulate the view.
         tab.viewEl.replaceChildren();
         ensureAttachedTerminal(tab);
         const pid = tab.pid;
@@ -2566,6 +2626,9 @@
             } else {
               for (const c of chunks) renderChunk(tab, c);
             }
+            // Attaching to an already-exited process: the backlog alone
+            // has no exit marker, so restore it from the recorded exit.
+            if (tab.exited) renderExitBanner(tab, tab.exitCode ?? 0, tab.exitReason);
           } else if (msg.type === 'chunk') {
             renderChunk(tab, msg);
           } else if (msg.type === 'exit') {
@@ -2575,7 +2638,7 @@
             // "[process terminal closed]" banner on top of this one.
             tab.exited = true;
             tab.failed = false;
-            tab.tabEl.classList.add('exited');
+            tab.itemEl.classList.add('exited');
             renderBanner(tab, '[no output captured for pid ' + pid + ']', '');
           }
         };
@@ -2593,72 +2656,77 @@
         };
       }
 
-      function openTab(pid, command, options) {
-        const shouldAttach = !!(options && options.attach);
+      // Add (or update) the sidebar entry for a pid. Never steals focus
+      // from the shell — the entry appears with a brief flash and the
+      // toolbar badge ticks up. The single exception: attached-TTY
+      // processes (interactive TUIs the user just launched in the
+      // foreground) attach + take the view immediately on first sight.
+      function upsert(pid, command, options) {
         const attachedTty = !!(options && options.attachedTty);
-        if (tabs.has(pid)) {
-          const existing = tabs.get(pid);
-          if (existing && options && Object.hasOwn(options, 'attachedTty')) {
+        if (procs.has(pid)) {
+          const existing = procs.get(pid);
+          if (options && Object.hasOwn(options, 'attachedTty')) {
             existing.attachedTty = attachedTty;
           }
-          if (shouldAttach && existing) ensureLogWs(existing);
-          setActive(pid);
-          userWantsVisible = true;
-          applyVisibility();
-          if (shouldAttach) {
-            setTimeout(() => {
-              try { existing?.term?.focus(); } catch {}
-            }, 0);
+          // Spawn frame promoting a hydrated entry to TUI: attach once.
+          // View first, then the terminal — xterm must open inside a
+          // visible container or it measures 0×0 and renders nothing.
+          if (attachedTty && !existing.wsOpened && !existing.exited) {
+            userWantsVisible = true;
+            setActive(pid);
+            ensureLogWs(existing);
+            applyVisibility();
           }
           return;
         }
+        dismissed.delete(pid);
 
         const label = labelFor(command);
-        const tabEl = document.createElement('div');
-        tabEl.className = 'logs-tab';
-        tabEl.title = 'pid ' + pid + ': ' + (command || '(unknown)');
-        tabEl.innerHTML =
-          '<span class="logs-tab-dot"></span>' +
-          '<span class="logs-tab-label"></span>' +
-          '<span class="logs-tab-pid" style="color:#484f58">#' + pid + '</span>' +
-          // Primitives wave (P11): Kill (^C/SIGTERM-equivalent) and
-          // Restart per-tab. Hidden via CSS when the process has
-          // exited. The close X is unchanged — it just removes the
-          // local tab; Kill is what tears down the process.
-          '<span class="logs-tab-action logs-tab-restart" title="Restart process (kill + spawn fresh; vite only)">↻</span>' +
-          '<span class="logs-tab-action logs-tab-kill" title="Kill process">⏹</span>' +
-          '<span class="logs-tab-close" title="Close tab (process keeps running)">✕</span>';
-        tabEl.querySelector('.logs-tab-label').textContent = label;
-        tabEl.addEventListener('click', (e) => {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'proc-item';
+        itemEl.title = 'pid ' + pid + ': ' + (command || '(unknown)');
+        itemEl.innerHTML =
+          '<span class="proc-dot"></span>' +
+          '<span class="proc-label"></span>' +
+          '<span class="proc-pid">#' + pid + '</span>' +
+          // Actions surface on hover (they swap in for the pid). Kill
+          // tears the process down; Restart = kill + spawn fresh (vite
+          // only); ✕ only dismisses the local entry.
+          '<span class="proc-actions">' +
+            '<span class="proc-act proc-act-restart" title="Restart process (kill + spawn fresh; vite only)">↻</span>' +
+            '<span class="proc-act proc-act-kill" title="Kill process">⏹</span>' +
+            '<span class="proc-act proc-act-close" title="Dismiss entry (process keeps running)">✕</span>' +
+          '</span>';
+        itemEl.querySelector('.proc-label').textContent = label;
+        itemEl.addEventListener('click', (e) => {
           const target = e.target;
-          if (target.classList && (
-            target.classList.contains('logs-tab-close') ||
-            target.classList.contains('logs-tab-action')
-          )) return;
-          // User click: this is the signal that they want to read the
-          // process terminal. Open the WS if it isn't already, then activate.
-          const t = tabs.get(pid);
-          if (t) ensureLogWs(t);
+          if (target.classList && target.classList.contains('proc-act')) return;
+          // User click: the signal that they want to read the process
+          // terminal. Swap the view FIRST — xterm must open inside a
+          // visible container or it measures 0×0 and renders nothing —
+          // then open the WS if it isn't already.
           setActive(pid);
+          const t = procs.get(pid);
+          if (t) ensureLogWs(t);
         });
-        tabEl.querySelector('.logs-tab-close').addEventListener('click', (e) => {
+        itemEl.querySelector('.proc-act-close').addEventListener('click', (e) => {
           e.stopPropagation();
-          closeTab(pid);
+          dismiss(pid);
         });
         const sendAction = async (action) => {
           // POST /api/<action>/<pid>; surface failures as a banner inside
-          // the tab so the user sees WHY without hunting in network tools.
+          // the view so the user sees WHY without hunting in network tools.
           let resp;
           try {
             resp = await fetch(SESSION_PREFIX + '/api/' + action + '/' + pid, {
               method: 'POST', cache: 'no-store',
             });
           } catch (err) {
-            const t = tabs.get(pid);
+            const t = procs.get(pid);
             if (t) renderBanner(t, '[' + action + ' failed: network] ' + (err && err.message || err), 'failed');
             return;
           }
-          const t = tabs.get(pid);
+          const t = procs.get(pid);
           if (!t) return;
           if (!resp.ok) {
             let msg = '[' + action + ' failed: HTTP ' + resp.status + ']';
@@ -2671,11 +2739,11 @@
           }
           renderBanner(t, '[' + action + ' requested]', 'ok');
         };
-        tabEl.querySelector('.logs-tab-kill').addEventListener('click', (e) => {
+        itemEl.querySelector('.proc-act-kill').addEventListener('click', (e) => {
           e.stopPropagation();
           sendAction('kill');
         });
-        tabEl.querySelector('.logs-tab-restart').addEventListener('click', (e) => {
+        itemEl.querySelector('.proc-act-restart').addEventListener('click', (e) => {
           e.stopPropagation();
           sendAction('restart');
         });
@@ -2684,30 +2752,19 @@
         viewEl.className = 'logs-view';
         viewEl.dataset.pid = String(pid);
 
-        tabBar.appendChild(tabEl);
+        list.appendChild(itemEl);
         body.appendChild(viewEl);
 
-        const tab = { pid, tabEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label, term: null, fit: null, attachedTty };
-        tabs.set(pid, tab);
-        // Placeholder until the user clicks — so the active tab doesn't
-        // look broken on auto-activate. renderBanner uses the existing
-        // `.banner` styling. Replaced by real content when the WS
-        // delivers a backlog frame (ensureLogWs → onmessage).
-        renderBanner(tab, '[click this tab to attach to the process terminal]', '');
-        // Any new tab re-opens the panel if the user had collapsed it —
-        // seeing a new process spawn is a stronger signal than a stale
-        // "I don't want this right now" click. setActive is purely a
-        // UI paint here (no WS opened) so the panel and "Processes N"
-        // chip still react immediately to the spawn event.
-        userWantsVisible = true;
-        setActive(pid);
-        if (shouldAttach) ensureLogWs(tab);
-        applyVisibility();
-        if (shouldAttach) {
-          setTimeout(() => {
-            try { tab.term?.focus(); } catch {}
-          }, 0);
+        const tab = { pid, itemEl, viewEl, ws: null, wsOpened: false, exited: false, failed: false, label, term: null, fit: null, attachedTty };
+        procs.set(pid, tab);
+        itemEl.classList.add('fresh');
+        itemEl.addEventListener('animationend', () => itemEl.classList.remove('fresh'), { once: true });
+        if (attachedTty) {
+          userWantsVisible = true;
+          setActive(pid);
+          ensureLogWs(tab);
         }
+        applyVisibility();
       }
 
       function ensureAttachedTerminal(tab) {
@@ -2740,58 +2797,66 @@
       }
 
       window.addEventListener('resize', () => {
-        for (const tab of tabs.values()) {
+        for (const tab of procs.values()) {
           if (!tab.fit || !tab.term) continue;
           try { tab.fit.fit(); } catch {}
           sendProcessResize(tab);
         }
       });
 
+      function renderExitBanner(tab, code, reason) {
+        const reasonSuffix = reason ? ' (' + reason + ')' : '';
+        renderBanner(
+          tab,
+          '[process exited with code ' + code + reasonSuffix + ' — entry kept; dismiss with ✕]',
+          code === 0 ? 'ok' : 'failed',
+        );
+      }
+
       function markExit(pid, code, reason) {
-        const tab = tabs.get(pid);
+        const tab = procs.get(pid);
         if (!tab) return;
         if (tab.exited) return; // idempotent — server + log-WS may both fire
         tab.exited = true;
         tab.failed = code !== 0;
-        tab.tabEl.classList.add('exited');
-        if (tab.failed) tab.tabEl.classList.add('failed');
+        tab.exitCode = code;
+        tab.exitReason = reason;
+        tab.itemEl.classList.add('exited');
+        if (tab.failed) tab.itemEl.classList.add('failed');
         // Update the dot color via the class; append the exit banner.
-        const reasonSuffix = reason ? ' (' + reason + ')' : '';
-        renderBanner(
-          tab,
-          '[process exited with code ' + code + reasonSuffix + ' — tab kept; close with ✕]',
-          code === 0 ? 'ok' : 'failed',
-        );
+        renderExitBanner(tab, code, reason);
         // Running-count changed; refresh toolbar badge.
         applyVisibility();
       }
 
       // Restore any processes already in the DO's ring buffer / process
       // table when the page loads. Covers two cases: (a) full page
-      // refresh mid-session — the DO's process table persists, so we
-      // should re-attach to any running process; (b) main WS reconnect
-      // after a transient network blip — same table, same goal.
+      // refresh mid-session — the DO's process table persists, so the
+      // sidebar should list every running process (and a foreground TUI
+      // should re-take the view); (b) main WS reconnect after a
+      // transient network blip — same table, same goal.
       //
-      // We open tabs for ALL state='running' processes so users see
+      // Entries appear for ALL state='running' processes so users see
       // everything happening. Exited ones stay accessible via `logs
-      // <pid>` in the shell for 10 min, but we don't auto-open them
-      // here because that would clutter the UI after a handful of
-      // short-lived commands.
+      // <pid>` in the shell for 10 min, but we don't auto-add them
+      // here because that would clutter the sidebar after a handful of
+      // short-lived commands. Entries the user dismissed with ✕ stay
+      // dismissed.
       function hydrate() {
         fetch(SESSION_PREFIX + '/api/processes', { cache: 'no-store' })
           .then(r => r.ok ? r.json() : null)
           .then(data => {
             if (!data?.processes) return;
             for (const p of data.processes) {
-              if (p.state === 'running' && !tabs.has(p.pid)) {
-                openTab(p.pid, p.command, {
-                  attach: p.longRunning === true,
-                  attachedTty: p.attachedTty === true,
-                });
-              } else if (p.state !== 'running' && tabs.has(p.pid)) {
-                // Server says exited; reconcile in case our main-WS
-                // exit event got dropped during reconnect.
-                markExit(p.pid, p.exitCode ?? 0, undefined);
+              if (p.state === 'running' && !procs.has(p.pid) && !dismissed.has(p.pid)) {
+                upsert(p.pid, p.command, { attachedTty: p.attachedTty === true });
+              } else if (p.state !== 'running') {
+                dismissed.delete(p.pid);
+                if (procs.has(p.pid)) {
+                  // Server says exited; reconcile in case our main-WS
+                  // exit event got dropped during reconnect.
+                  markExit(p.pid, p.exitCode ?? 0, undefined);
+                }
               }
             }
             applyVisibility();
@@ -2799,22 +2864,27 @@
           .catch(() => {});
       }
 
-      // Toolbar button: toggle user-facing visibility. If currently
-      // shown, a click hides; if hidden, a click re-shows. Clicking
-      // with no tabs open is a no-op (the button is hidden via CSS in
-      // that state anyway).
+      // Toolbar button + head chevron: toggle user-facing visibility.
+      // Clicking with no entries is a no-op (the button is hidden via
+      // CSS in that state anyway).
       btnProcs.addEventListener('click', () => {
-        userWantsVisible = !panel.classList.contains('active');
+        userWantsVisible = !sidebar.classList.contains('active');
         applyVisibility();
       });
+      document.getElementById('btnProcSidebarHide').addEventListener('click', () => {
+        userWantsVisible = false;
+        applyVisibility();
+      });
+      shellItem.addEventListener('click', () => setActive(null));
 
       return {
-        openTab, closeTab, markExit, hydrate, applyVisibility,
-        hasTab: (pid) => tabs.has(pid),
+        upsert, markExit, hydrate, refitActive,
+        has: (pid) => procs.has(pid),
       };
     })();
-    // LogTabs.hydrate is invoked from ws.onopen above — the DO is warm
-    // and ProcessTable is populated by then, no arbitrary delay needed.
+    // ProcSidebar.hydrate is invoked from ws.onopen above — the DO is
+    // warm and ProcessTable is populated by then, no arbitrary delay
+    // needed.
 
     term.focus();
     // Restore persisted pane dims before activating layout so the first paint
