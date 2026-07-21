@@ -386,66 +386,11 @@ starlight-toc a[aria-current='true'] {
 	color: var(--sl-color-text-accent);
 }
 
-/* Landing */
-html[data-has-hero] main > .content-panel {
-	padding-block: 0 5rem;
-}
-
-html[data-has-hero] main > .content-panel > .sl-container {
-	max-width: 67.5rem;
-}
-
-.nx-hero {
-	display: flex;
-	min-height: min(38rem, calc(100vh - var(--sl-nav-height) - 3rem));
-	padding-block: clamp(4rem, 9vh, 6.5rem) clamp(2.5rem, 5vh, 4rem);
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	text-align: center;
-}
-
-.nx-kicker {
-	margin: 0;
-	font-family: var(--sl-font-system-mono);
-	font-size: clamp(0.67rem, 1.4vw, 0.76rem);
-	font-weight: 500;
-	letter-spacing: 0.13em;
-	line-height: 1.5;
-	text-transform: uppercase;
-	color: var(--sl-color-text-accent);
-}
-
-.nx-title {
-	max-width: 15ch;
-	margin: 1.35rem 0 0;
-	font-family: var(--nimbus-display);
-	font-size: clamp(3.1rem, 8vw, 6.6rem);
-	font-weight: 600;
-	letter-spacing: -0.035em;
-	line-height: 0.98;
-	text-wrap: balance;
-	color: var(--sl-color-white);
-}
-
-.nx-lede {
-	max-width: 36rem;
-	margin: 2.1rem 0 0;
-	color: var(--sl-color-gray-2);
-	font-size: clamp(1.05rem, 1.8vw, 1.22rem);
-	line-height: 1.75;
-}
-
-.nx-lede code {
-	font-size: 0.82em;
-	white-space: nowrap;
-}
-
+/* Docs home */
 .nx-actions {
 	display: flex;
-	margin-top: 2.1rem;
+	margin-top: 1.75rem;
 	flex-wrap: wrap;
-	justify-content: center;
 	gap: 0.7rem;
 }
 
@@ -493,91 +438,22 @@ html[data-has-hero] main > .content-panel > .sl-container {
 	color: #ffffff;
 }
 
-.nx-stats {
+.nx-map {
 	display: grid;
-	width: min(100%, 44rem);
-	margin: clamp(2.5rem, 5vh, 3.5rem) 0 0;
-	padding: 1.15rem 0;
-	grid-template-columns: repeat(4, 1fr);
-	border-block: 1px solid var(--sl-color-hairline);
-	list-style: none;
-}
-
-.nx-stats li {
-	display: flex;
-	min-width: 0;
-	padding-inline: 1rem;
-	flex-direction: column;
-	align-items: center;
-	gap: 0.18rem;
-}
-
-.nx-stats li + li {
-	border-inline-start: 1px solid var(--sl-color-hairline);
-}
-
-.nx-stats strong {
-	font-family: var(--sl-font-system-mono);
-	font-size: clamp(1.45rem, 3vw, 2rem);
-	font-weight: 500;
-	letter-spacing: -0.045em;
-	line-height: 1.2;
-	color: var(--sl-color-white);
-}
-
-.nx-stats span {
-	color: var(--sl-color-gray-3);
-	font-family: var(--sl-font-system-mono);
-	font-size: 0.66rem;
-	letter-spacing: 0.045em;
-	line-height: 1.35;
-	text-transform: uppercase;
-}
-
-.nx-anatomy {
-	margin-top: clamp(1rem, 4vw, 3rem);
-}
-
-.nx-anatomy .dg-frame {
-	margin-block: 0;
-}
-
-.nx-paths {
-	display: grid;
-	margin-top: 1.25rem;
-	grid-template-columns: repeat(3, minmax(0, 1fr));
+	margin-top: 1.5rem;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 0.85rem;
 }
 
-.sl-markdown-content .nx-paths > a {
-	position: relative;
-	display: block;
-	min-height: 11rem;
+.sl-markdown-content .nx-map section {
 	border: 1px solid var(--sl-color-hairline);
 	border-radius: var(--nimbus-panel-radius);
-	padding: 1.35rem 1.4rem;
+	padding: 1.25rem 1.4rem;
 	background: var(--nimbus-panel-bg);
-	color: var(--sl-color-gray-2);
-	text-decoration: none;
-	transition:
-		transform var(--nimbus-transition),
-		border-color var(--nimbus-transition),
-		background-color var(--nimbus-transition);
 }
 
-.sl-markdown-content .nx-paths > a::after {
-	content: '→';
-	position: absolute;
-	inset-block-start: 1.25rem;
-	inset-inline-end: 1.3rem;
-	color: var(--sl-color-gray-4);
-	font-family: var(--sl-font-system-mono);
-	transition: color var(--nimbus-transition);
-}
-
-.nx-paths h3 {
+.sl-markdown-content .nx-map h3 {
 	margin: 0;
-	padding-inline-end: 1.7rem;
 	color: var(--sl-color-white);
 	font-family: var(--nimbus-display);
 	font-size: 1.02rem;
@@ -586,36 +462,59 @@ html[data-has-hero] main > .content-panel > .sl-container {
 	line-height: 1.35;
 }
 
-.nx-paths p {
-	margin: 1rem 0 0;
+.sl-markdown-content .nx-map p {
+	margin: 0.55rem 0 0;
 	color: var(--sl-color-gray-3);
-	font-size: 0.9rem;
-	line-height: 1.65;
+	font-size: 0.88rem;
+	line-height: 1.6;
 }
 
-.nx-paths p code {
-	white-space: nowrap;
+.sl-markdown-content .nx-map ul {
+	margin: 0.85rem 0 0;
+	padding: 0;
+	list-style: none;
 }
 
-.sl-markdown-content .nx-paths > a:hover,
-.sl-markdown-content .nx-paths > a:focus-visible {
-	border-color: color-mix(in srgb, var(--sl-color-accent) 72%, var(--sl-color-hairline));
-	background: color-mix(in srgb, var(--sl-color-accent) 4%, var(--nimbus-panel-bg));
+.sl-markdown-content .nx-map li {
+	margin: 0;
+	padding: 0;
+}
+
+.sl-markdown-content .nx-map li + li {
+	margin-top: 0.4rem;
+}
+
+.sl-markdown-content .nx-map li a {
 	color: var(--sl-color-gray-2);
+	font-size: 0.9rem;
+	line-height: 1.55;
+	text-decoration: none;
+	transition: color var(--nimbus-transition);
 }
 
-.sl-markdown-content .nx-paths > a:hover::after,
-.sl-markdown-content .nx-paths > a:focus-visible::after {
+.sl-markdown-content .nx-map li a::before {
+	content: '→ ';
+	color: var(--sl-color-gray-4);
+	font-family: var(--sl-font-system-mono);
+	font-size: 0.82em;
+	transition: color var(--nimbus-transition);
+}
+
+.sl-markdown-content .nx-map li a:hover,
+.sl-markdown-content .nx-map li a:focus-visible {
+	color: var(--sl-color-text-accent);
+}
+
+.sl-markdown-content .nx-map li a:hover::before,
+.sl-markdown-content .nx-map li a:focus-visible::before {
 	color: var(--sl-color-text-accent);
 }
 
 .nx-footnote {
-	max-width: 38rem;
-	margin: 2rem auto 0;
+	margin: 2.5rem 0 0;
 	color: var(--sl-color-gray-3);
 	font-size: 0.78rem;
 	line-height: 1.7;
-	text-align: center;
 }
 
 /* Footer and prev/next stay typographic, not card-like. */
@@ -656,8 +555,7 @@ main footer .link-title {
 }
 
 @media (hover: hover) {
-	.card-grid > .sl-link-card:hover,
-	.sl-markdown-content .nx-paths > a:hover {
+	.card-grid > .sl-link-card:hover {
 		transform: translateY(-2px);
 	}
 }
@@ -666,32 +564,11 @@ main footer .link-title {
 	#starlight__sidebar .sidebar-content {
 		padding-top: 1.25rem;
 	}
-
-	.nx-hero {
-		min-height: auto;
-		padding-block: 5.5rem 4.5rem;
-	}
-
-	.nx-paths {
-		grid-template-columns: 1fr;
-	}
-
-	.sl-markdown-content .nx-paths > a {
-		min-height: auto;
-	}
 }
 
 @media (max-width: 36rem) {
-	html[data-has-hero] main > .content-panel {
-		padding-bottom: 3.5rem;
-	}
-
-	.nx-title {
-		font-size: clamp(2.15rem, 10vw, 4.4rem);
-	}
-
-	.nx-lede {
-		font-size: 1rem;
+	.nx-map {
+		grid-template-columns: 1fr;
 	}
 
 	.nx-actions {
@@ -701,27 +578,6 @@ main footer .link-title {
 
 	.sl-markdown-content .nx-btn {
 		width: 100%;
-	}
-
-	.nx-stats {
-		grid-template-columns: repeat(2, 1fr);
-		padding-block: 0;
-	}
-
-	.nx-stats li {
-		padding-block: 1rem;
-	}
-
-	.nx-stats li + li {
-		border-inline-start: 0;
-	}
-
-	.nx-stats li:nth-child(even) {
-		border-inline-start: 1px solid var(--sl-color-hairline);
-	}
-
-	.nx-stats li:nth-child(n + 3) {
-		border-top: 1px solid var(--sl-color-hairline);
 	}
 
 	main footer .pagination-links {
@@ -739,8 +595,7 @@ main footer .link-title {
 		animation-iteration-count: 1 !important;
 	}
 
-	.card-grid > .sl-link-card:hover,
-	.sl-markdown-content .nx-paths > a:hover {
+	.card-grid > .sl-link-card:hover {
 		transform: none;
 	}
 }

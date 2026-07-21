@@ -3,7 +3,7 @@ title: The disk
 description: A 10 GB SQLite-backed disk that survives the session lifecycle.
 ---
 
-I give each session a 10 GB SQLite-backed disk owned by its Durable Object.
+Each session has a 10 GB SQLite-backed disk owned by its Durable Object.
 It survives WebSocket drops, browser restarts, hibernation, and DO eviction.
 Facets can die and sockets can drop. The disk stays.
 
@@ -17,8 +17,8 @@ still here tomorrow
 The disk preserves arbitrary bytes, symlinks, stat metadata, and exec bits.
 `fs.writeFileSync` with arbitrary bytes is probed. `chmod +x` survives, and
 `./prog` honors it. The VFS event bus sends coalesced file changes to the
-editor and dev servers, which helps Vite HMR work. Each path has a revision
-watermark, so runtime caches know when to refresh.
+editor and dev servers, which is what keeps Vite HMR working. Each path has
+a revision watermark, so runtime caches know when to refresh.
 
 The shell, all four runtimes, the editor, `box.files` in the SDK, and the
 agent's tools see the same bytes. A compiled C program can read with
@@ -31,6 +31,6 @@ are durability boundaries. Hibernation doesn't lose committed writes.
 
 One nuance matters. Short-lived runtime paths read from bounded,
 revision-invalidated snapshots for speed. Long-running processes increasingly
-use the live bridge. I'm working toward one rule: reads see either the latest
+use the live bridge. The target is one rule: reads see either the latest
 committed state or their own unflushed write. [Inside the disk](/docs/internals/disk/)
 explains the machinery.

@@ -1,48 +1,87 @@
 ---
-title: Nimbus — open a URL, get a computer
-description: A free, open-source, POSIX-like cloud OS built on Cloudflare Durable Objects. Real shell, real toolchains, no containers anywhere.
-template: splash
+title: Nimbus documentation
+description: Nimbus is an open-source, POSIX-like sandbox that runs on Cloudflare Durable Objects — a real shell with node, python, ruby, git, npm, and clang; no containers, no VMs.
 tableOfContents: false
+prev: false
 next: false
-hero:
-  title: ''
 ---
 
-import SessionAnatomy from '../../components/diagrams/SessionAnatomy.astro';
+import NimbusSandbox from '../../components/NimbusSandbox.astro';
 
-<div class="nx-hero">
-  <p class="nx-kicker">A cloud computer on Durable Objects</p>
-  <h1 id="_top" class="nx-title">Open a URL.<br />Get a computer.</h1>
-  <p class="nx-lede">Nimbus is a free, open-source, POSIX-like cloud OS on Cloudflare Durable Objects. I built it alone in my spare time as a research project: a real shell with <code>node</code>, <code>python</code>, <code>ruby</code>, <code>git</code>, <code>npm</code>, and <code>clang</code>, with no containers or VMs anywhere.</p>
-  <div class="nx-actions">
-    <a class="nx-btn nx-btn-primary" href="/docs/start/boot/">Start a session</a>
-    <a class="nx-btn" href="/docs/internals/fabric/">See how it works</a>
-  </div>
-  <ul class="nx-stats">
-    <li><strong>~0.6 s</strong><span>median boot</span></li>
-    <li><strong>$0</strong><span>idle cost</span></li>
-    <li><strong>10 GB</strong><span>persistent disk</span></li>
-    <li><strong>0</strong><span>containers and VMs</span></li>
-  </ul>
+Nimbus is an open-source, POSIX-like sandbox that runs on Cloudflare Durable
+Objects. Each sandbox is a real shell with <code>node</code>, <code>python</code>,
+<code>ruby</code>, <code>git</code>, <code>npm</code>, and <code>clang</code> —
+no containers, no VMs. Sessions boot in ~0.6&nbsp;s median, cost nothing while
+idle, and keep a 10&nbsp;GB persistent disk.
+
+<div class="nx-actions">
+  <a class="nx-btn nx-btn-primary" href="/docs/start/quickstart/">Quickstart</a>
+  <a class="nx-btn" href="/docs/sdk/sandbox-api/">Sandbox API</a>
+  <a class="nx-btn" href="https://github.com/AshishKumar4/Nimbus">GitHub</a>
 </div>
 
-<div class="nx-anatomy">
-  <SessionAnatomy caption="One session: a supervisor Durable Object keeps what must survive; every process runs in its own isolate and is allowed to die." />
+## Live sandbox
+
+The terminal below is a live sandbox, created on demand when it scrolls into
+view — a real session on the hosted deployment, the same thing the SDK creates.
+Anonymous sessions last 10 minutes and are capacity-limited; if none are
+available, retry in a minute.
+
+<NimbusSandbox title="nimbus — live sandbox" rows={14} />
+
+## Documentation
+
+<div class="nx-map">
+  <section>
+    <h3>Getting started</h3>
+    <p>Start a session, run real commands, and see where Nimbus sits among other sandboxes.</p>
+    <ul>
+      <li><a href="/docs/start/quickstart/">Quickstart</a></li>
+      <li><a href="/docs/start/where-it-fits/">Where Nimbus fits</a></li>
+    </ul>
+  </section>
+  <section>
+    <h3>The sandbox</h3>
+    <p>What a session provides: shell, disk, toolchains, git, processes, and the session agent.</p>
+    <ul>
+      <li><a href="/docs/machine/terminal/">Terminal &amp; shell</a></li>
+      <li><a href="/docs/machine/disk/">The disk</a></li>
+      <li><a href="/docs/machine/toolchains/">Toolchains &amp; packages</a></li>
+      <li><a href="/docs/machine/git/">Git</a></li>
+      <li><a href="/docs/machine/processes/">Processes &amp; servers</a></li>
+      <li><a href="/docs/machine/agent/">The session agent</a></li>
+    </ul>
+  </section>
+  <section>
+    <h3>SDK</h3>
+    <p>Deploy Nimbus to a Cloudflare account and drive sandboxes from code.</p>
+    <ul>
+      <li><a href="/docs/sdk/embed/">Embed Nimbus in a Worker</a></li>
+      <li><a href="/docs/sdk/handler/">Configure the handler</a></li>
+      <li><a href="/docs/sdk/sandbox-api/">The sandbox API</a></li>
+      <li><a href="/docs/sdk/tokens/">Tokens &amp; auth</a></li>
+    </ul>
+  </section>
+  <section>
+    <h3>Internals</h3>
+    <p>How the system works: the supervisor and facets, the SQLite disk, processes, routing, and WASI.</p>
+    <ul>
+      <li><a href="/docs/internals/fabric/">The fabric</a></li>
+      <li><a href="/docs/internals/disk/">Inside the disk</a></li>
+      <li><a href="/docs/internals/processes/">The process fabric</a></li>
+      <li><a href="/docs/internals/network/">Ports &amp; routing</a></li>
+      <li><a href="/docs/internals/wasi/">WASI &amp; syscalls</a></li>
+    </ul>
+  </section>
+  <section>
+    <h3>Status &amp; limits</h3>
+    <p>Capability claims backed by live probes, measured benchmarks, and open research.</p>
+    <ul>
+      <li><a href="/docs/fine-print/capabilities/">Capabilities &amp; limits</a></li>
+      <li><a href="/docs/fine-print/benchmarks/">Benchmarks</a></li>
+      <li><a href="/docs/fine-print/research/">Research &amp; roadmap</a></li>
+    </ul>
+  </section>
 </div>
 
-<div class="nx-paths">
-  <a href="/docs/start/where-it-fits/">
-    <h3>Compare the tradeoffs</h3>
-    <p>See how Nimbus differs from microVMs, containers, and in-process stubs.</p>
-  </a>
-  <a href="/docs/sdk/embed/">
-    <h3>Give agents a computer</h3>
-    <p>Deploy Nimbus to your account and create a sandbox for each task with <code>@nimbus-sh/sdk</code>.</p>
-  </a>
-  <a href="/docs/fine-print/capabilities/">
-    <h3>Check what works</h3>
-    <p>See what I test live, what does not work, and what is still in progress.</p>
-  </a>
-</div>
-
-<p class="nx-footnote">Nimbus is MIT-licensed and in alpha. I test every capability claim against a live session, but this is still spare-time research and there are rough edges.</p>
+<p class="nx-footnote">Nimbus is MIT-licensed and in alpha. Every capability claim is verified against a live session by behavioral probes; <a href="/docs/fine-print/capabilities/">Capabilities &amp; limits</a> states what works, what is partial, and what is not supported.</p>

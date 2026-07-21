@@ -7,7 +7,7 @@ import ProcessLifecycle from '../../../components/diagrams/ProcessLifecycle.astr
 
 <ProcessLifecycle caption="The table lives in the DO; the work lives in facets. Anything a facet holds is reconstructible, or the process is marked dead." />
 
-I keep the process table in the supervisor DO, never in facets. A facet's
+The process table lives in the supervisor DO, never in facets. A facet's
 module state can vanish when workerd resets its isolate. `ps` still reads the
 DO. Logs and input queues are durable and bounded, and terminals use
 hibernatable WebSockets.
@@ -20,14 +20,14 @@ in a facet returns a clean, catchable RPC error, so the session survives.
 
 The supervisor stages a big app with a small spec: argv, env, and a VFS
 snapshot. The Worker-Loader cache-miss path assembles the full module map
-outside the DO. opencode's map is ~20 MB. I learned this rule live when
-assembling it inside crossed the memory cap and reset the session. workerd
-also blocks request-time WASM compilation, so WASM enters the module map
-pre-compiled.
+outside the DO. opencode's map is ~20 MB, and the rule comes from a live
+failure: assembling that map inside the DO crossed the memory cap and reset
+the session. workerd also blocks request-time WASM compilation, so WASM
+enters the module map pre-compiled.
 
 Before anything attaches, server facets pass health gates with bounded polls
 and an overall budget. The opencode pair starts the server, checks it over
 loopback, then attaches the TUI at `127.0.0.1:4096`. Their lifecycles are tied,
 so exiting one reaps the other. The serve half is solid. The TUI attach half
-now renders frames on a [thin memory
-margin](/docs/fine-print/capabilities/) I'm still hardening.
+renders frames on a [thin memory
+margin](/docs/fine-print/capabilities/) that is still being hardened.

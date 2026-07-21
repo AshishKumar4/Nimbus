@@ -1,12 +1,13 @@
 ---
-title: What works & what doesn't
-description: I list only claims proved by live probes, with each limit and workaround stated plainly. The table is filterable.
+title: Capabilities & limits
+description: Only claims proved by live probes, with each limit and workaround stated plainly. The table is filterable.
 ---
 
 import CapabilityExplorer from '../../../components/CapabilityExplorer.astro';
 
-I treat the README table as the source of truth. Black-box probes drive a
+The README capability table is the source of truth. Black-box probes drive a
 real session over `POST /new` and WebSocket; an HTTP 200 alone isn't a pass.
+Run the suite against any live deployment:
 
 ```bash
 BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
@@ -16,9 +17,9 @@ BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
 
 ## The deliberate "no" list
 
-I built Nimbus on Workers, Durable Objects, and WASM, not as a Linux VM. If
-you need one of these missing parts, use a microVM or container sandbox
-([where Nimbus fits](/docs/start/where-it-fits/)).
+Nimbus is built on Workers, Durable Objects, and WASM, not as a Linux VM. A
+workload that needs one of these missing parts belongs on a microVM or
+container sandbox ([where Nimbus fits](/docs/start/where-it-fits/)).
 
 | Not supported | |
 |---|---|
@@ -41,11 +42,11 @@ you need one of these missing parts, use a microVM or container sandbox
 | opencode TUI | serve half boots and streams SSE; attach half renders frames on a thin memory margin, still hardening |
 | Hosted demo | evaluation only — no SLA, may be reset, not for secrets |
 
-I've verified Vite + React, the Cloudflare Vite Plugin,
-single-file Workers, Workers with Static Assets, npm and git workflows,
-Python and Ruby scripts, and clang. Astro, SvelteKit, and Remix use the Vite
-path. Nuxt has Nitro caveats.
+Verified live: Vite + React, the Cloudflare Vite Plugin, single-file
+Workers, Workers with Static Assets, npm and git workflows, Python and Ruby
+scripts, and clang. Astro, SvelteKit, and Remix use the Vite path. Nuxt has
+Nitro caveats.
 
-I move the chip line one way only: a behavioral probe must prove the
-capability live. The rest stays on the
-[research frontier](/docs/fine-print/research/).
+The chip line moves one way only: a behavioral probe must prove the
+capability live. Until then it stays on the
+[research page](/docs/fine-print/research/).

@@ -5,24 +5,25 @@ description: Nimbus compared with microVM sandboxes, container platforms, and in
 
 import WhereItFits from '../../../components/diagrams/WhereItFits.astro';
 
-Before building this I looked at what already exists: microVM sandboxes
+Nimbus sits at a different point in the design space than microVM sandboxes
 like E2B and Daytona, container platforms like Cloudflare's container
-Sandbox SDK, and in-process stub filesystems. Each one asks for a trade I
-didn't want.
+Sandbox SDK, and in-process stub filesystems. Each of those buys something
+and gives something up.
 
 <WhereItFits caption="Nimbus gives up native Linux software for fast boots, $0 idle cost, and a disk that outlives each process." />
 
 MicroVMs and containers run native Linux software. Nimbus does not. In-process
 stubs stay inside the host process and do not provide real toolchains. Nimbus
 instead boots in ~0.6 s median with no warm pool, costs $0 while idle, and has
-a 10 GB disk. In my sequential test it was ~3× faster than the container
-Sandbox SDK: 0.61 s vs 1.95 s median. Vite HMR took 302 ms median. See the
-[benchmarks page](/docs/fine-print/benchmarks/) for the method and caveats.
+a 10 GB disk. In a sequential comparison it measured ~3× faster than the
+container Sandbox SDK: 0.61 s vs 1.95 s median. Vite HMR took 302 ms median.
+The [benchmarks page](/docs/fine-print/benchmarks/) has the method and caveats.
 
-Nimbus's userland began from [LIFO OS](https://github.com/lifo-sh/lifo) by Sanket Sahu: the
-shell interpreter, the coreutils, and the Node.js shim. I carried that
-userland onto Cloudflare Durable Objects, then added per-process isolates, the
+Nimbus's userland began as [LIFO OS](https://github.com/lifo-sh/lifo) by Sanket Sahu: the
+shell interpreter, the coreutils, and the Node.js shim. Nimbus carries that
+userland onto Cloudflare Durable Objects and adds per-process isolates, the
 SQLite-backed 10 GB disk, port routing, and the in-session toolchains.
 
-If you need Docker, native wheels, GPUs, or raw TCP listeners, use something
-else. The full "no" list is in [the fine print](/docs/fine-print/capabilities/).
+Workloads that need Docker, native wheels, GPUs, or raw TCP listeners belong
+somewhere else. The full "no" list is in
+[capabilities & limits](/docs/fine-print/capabilities/).

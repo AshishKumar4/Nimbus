@@ -1,18 +1,18 @@
 ---
-title: Boot your first computer
-description: A live session on Cloudflare's edge — from the browser, the SDK, or your own account.
+title: Quickstart
+description: Start a live sandbox from the browser, the SDK, or your own Cloudflare account.
 ---
 
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-<NimbusSandbox title="nimbus — first boot" rows={14} />
+<NimbusSandbox title="nimbus — quickstart" rows={14} />
 
-The terminal is live. The boot button creates a real session — the same
-thing **Launch** gives you at
+The terminal above is a live sandbox. It connects to a real session — the
+same thing **Launch** creates at
 [nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com).
-The `/s/<id>/` URL is your computer. Bookmark it. Your files persist when
-you leave, and an idle session costs nothing.
+The `/s/<id>/` URL is the session: bookmark it, and the files persist
+between visits. An idle session costs nothing.
 
 Try this first:
 
@@ -24,7 +24,7 @@ npm run dev                 # vite with HMR, previewed in the iframe
 ```
 
 The SDK can create one sandbox per task. Create to first command is ~0.6 s
-median in [my measurements](/docs/fine-print/benchmarks/).
+median ([benchmarks](/docs/fine-print/benchmarks/)).
 
 <Tabs>
 <TabItem label="Colocated (your Worker)">

@@ -3,7 +3,7 @@ title: The session agent
 description: An agent that shares the terminal's Durable Object, disk, processes, and ports.
 ---
 
-I run the agent in the same Durable Object as the terminal. They share one
+The agent runs in the same Durable Object as the terminal. They share one
 disk, shell, process table, and set of ports. When the agent edits a file, the
 editor sees it. When it starts a server, the preview tab opens.
 
@@ -11,18 +11,18 @@ It uses the AI SDK with Workers AI's OpenAI-compatible endpoint. An AI Gateway
 is optional. Replies stream into the chat pane, with thinking state and tool
 calls shown inline.
 
-You choose who pays for inference:
+Choose who pays for inference:
 
 - With user OAuth, each user connects a Cloudflare account through
   Authorization Code + PKCE and spends their own Workers AI quota. The hosted
   demo works this way.
-- With an owner token, your API token pays for everyone.
+- With an owner token, one API token pays for everyone.
 
-I never put user OAuth tokens in Durable Object storage. They live only in
+User OAuth tokens never touch Durable Object storage. They live only in
 encrypted `HttpOnly`, `Secure`, `SameSite=Lax` cookies scoped to the session
 URL.
 
-## Wiring OAuth into your deployment
+## Wiring OAuth into a deployment
 
 In Cloudflare's **Create OAuth client** form, use grant type
 `Authorization Code`, token auth method `None`, and redirect URL

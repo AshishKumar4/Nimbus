@@ -8,11 +8,11 @@ import RequestLifecycle from '../../../components/diagrams/RequestLifecycle.astr
 
 <SessionAnatomy caption="The supervisor keeps what has to survive a crash. Everything else runs in facets and is allowed to die." />
 
-I run every process in its own isolate because the platform gives me
-nothing else. The 128 MiB per-isolate limit and per-invocation CPU budgets
-are Cloudflare's published figures. Durable Objects are the only durable,
-strongly consistent home. The supervisor owns the disk, shell, process table,
-and port registry. Facets do the work and can be evicted.
+Every process runs in its own isolate because the platform offers nothing
+bigger. The 128 MiB per-isolate limit and per-invocation CPU budgets are
+Cloudflare's published figures. Durable Objects are the only durable,
+strongly consistent home, so the supervisor owns the disk, shell, process
+table, and port registry. Facets do the work and can be evicted.
 
 An app can span several isolates. That's how opencode runs as a server and
 TUI joined by loopback, with a separate budget for each half.
@@ -21,11 +21,11 @@ TUI joined by loopback, with a separate budget for each half.
 
 Writes flow one way. Facets never own files. Every mutation streams to the
 supervisor through a credit pool, so a parallel `npm install` can't flood the
-DO. Heavy staging stays outside too. I assemble opencode's ~20 MB module map
-outside the DO because assembling it inside crossed the memory cap and reset
-the session. I learned that from a live run.
+DO. Heavy staging stays outside too: opencode's ~20 MB module map is
+assembled outside the DO, because a live run proved that assembling it inside
+crossed the memory cap and reset the session.
 
-## The numbers I design against
+## Design constraints
 
 | Constraint | Cloudflare's figure | What it produced |
 |---|---|---|

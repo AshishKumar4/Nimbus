@@ -12,7 +12,8 @@ export default defineConfig({
 	outDir: './dist/docs',
 	// Retired URLs from the 2026-07 consolidation keep working.
 	redirects: {
-		'/start/tour': '/docs/start/boot/',
+		'/start/tour': '/docs/start/quickstart/',
+		'/start/boot': '/docs/start/quickstart/',
 		'/machine/tty': '/docs/machine/terminal/',
 		'/machine/packages': '/docs/machine/toolchains/',
 		'/machine/network': '/docs/machine/processes/',
@@ -27,7 +28,7 @@ export default defineConfig({
 		starlight({
 			title: 'Nimbus',
 			description:
-				"Give every agent its own computer. Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network.",
+				'Documentation for Nimbus — an open-source, POSIX-like sandbox that runs on Cloudflare Durable Objects. A real shell with node, python, ruby, git, npm, and clang; no containers, no VMs.',
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/AshishKumar4/Nimbus' },
 			],
@@ -37,7 +38,6 @@ export default defineConfig({
 			},
 			plugins: [starlightLlmsTxt()],
 			components: {
-				Hero: './src/components/LandingHero.astro',
 				ThemeProvider: './src/components/ThemeProvider.astro',
 			},
 			editLink: {
@@ -45,14 +45,14 @@ export default defineConfig({
 			},
 			sidebar: [
 				{
-					label: 'First boot',
+					label: 'Getting started',
 					items: [
-						{ label: 'Boot your first computer', slug: 'start/boot' },
+						{ label: 'Quickstart', slug: 'start/quickstart' },
 						{ label: 'Where Nimbus fits', slug: 'start/where-it-fits' },
 					],
 				},
 				{
-					label: 'The machine',
+					label: 'The sandbox',
 					items: [
 						{ label: 'Terminal & shell', slug: 'machine/terminal' },
 						{ label: 'The disk', slug: 'machine/disk' },
@@ -63,7 +63,7 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Computers for your agents',
+					label: 'SDK',
 					items: [
 						{ label: 'Embed Nimbus in a Worker', slug: 'sdk/embed' },
 						{ label: 'Configure the handler', slug: 'sdk/handler' },
@@ -82,11 +82,11 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'The fine print',
+					label: 'Status & limits',
 					items: [
-						{ label: "What works & what doesn't", slug: 'fine-print/capabilities' },
+						{ label: 'Capabilities & limits', slug: 'fine-print/capabilities' },
 						{ label: 'Benchmarks', slug: 'fine-print/benchmarks' },
-						{ label: 'Research frontier', slug: 'fine-print/research' },
+						{ label: 'Research & roadmap', slug: 'fine-print/research' },
 					],
 				},
 			],

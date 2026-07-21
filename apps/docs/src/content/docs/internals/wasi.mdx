@@ -4,13 +4,13 @@ description: 45 of 46 preview1 functions, JSPI-suspended sockets, and the gaps s
 ---
 
 Compiled binaries from `clang`, and any `wasm32-wasi` module you bring,
-run on my `wasi_snapshot_preview1` host. **45 of the 46 preview1
+run on the Nimbus `wasi_snapshot_preview1` host. **45 of the 46 preview1
 functions work.** The missing one is `sock_accept`, so WASM servers can't
 take `/port` traffic yet. Preview1 has no `sock_open`, `bind`, or `listen`;
 an inbound-socket extension is designed but not shipped.
 
-Blocking I/O uses JSPI. I wrap socket calls and `poll_oneoff` in
-`WebAssembly.Suspending`, then run `_start` under
+Blocking I/O uses JSPI. Socket calls and `poll_oneoff` are wrapped in
+`WebAssembly.Suspending`, and `_start` runs under
 `WebAssembly.promising`. This is feature-detected and has a fallback.
 Outbound TCP uses `path_open('/dev/tcp/<host>/<port>')` to open a real
 `cloudflare:sockets` connection. `poll_oneoff` can mix fd, clock, and
@@ -34,5 +34,7 @@ fails with a clear diagnostic.
 The remaining gaps are [tracked with designs](/docs/fine-print/research/).
 WASI files still use snapshot-plus-diff-flush, which fits one-shots but
 not long-running processes. stdin is EOF. There are no inbound sockets.
-I refuse `wasi-threads` at link time on purpose because a partial version
-could corrupt data; [I wrote up why](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md).
+`wasi-threads` is refused at link time on purpose: a partial version could
+corrupt data, and
+[the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
+explains why.

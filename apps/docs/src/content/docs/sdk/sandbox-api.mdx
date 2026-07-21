@@ -4,7 +4,7 @@ description: Run commands and work with files, runtimes, processes, ports, and a
 ---
 
 `Nimbus.fromEnv` uses a colocated DO binding. `Nimbus.connect` uses the
-authenticated remote API; I keep the typed sandbox the same.
+authenticated remote API. Both return the same typed sandbox.
 
 ```ts
 const box = nimbus.sandbox('job-123', {
@@ -17,7 +17,7 @@ await box.ready();      // headless boot + profile preinstalls; memoized
 await box.destroy({ reason: 'job done' });
 ```
 
-Every call awaits `ready()`; call it yourself to pay the boot cost first.
+Every call awaits `ready()`; call it directly to pay the boot cost first.
 
 ## Running things
 

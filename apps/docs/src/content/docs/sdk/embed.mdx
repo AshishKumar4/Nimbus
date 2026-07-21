@@ -17,7 +17,7 @@ dashboard and rerun. The Worker wraps `createNimbusHandler` from
 `@nimbus-sh/sdk/worker`; [configure the handler](/docs/sdk/handler/)
 lists its options.
 
-Use the SDK through your own DO binding, or connect to an authenticated
+Use the SDK through a colocated DO binding, or connect to an authenticated
 deployment.
 
 ```ts
@@ -45,7 +45,7 @@ The sandbox profile is a real policy boundary. Nimbus enforces
 
 ## From React
 
-`@nimbus-sh/react` puts the session shell in an iframe. This keeps your
+`@nimbus-sh/react` puts the session shell in an iframe. This keeps the
 page's JavaScript away from the terminal's WebSocket.
 
 ```tsx
@@ -55,11 +55,13 @@ import { NimbusTerminal } from '@nimbus-sh/react';
   onReady={() => console.log('attached')} style={{ height: 500 }} />
 ```
 
-`useNimbusSession` gives you the same flow without the component. It
+`useNimbusSession` gives the same flow without the component. It
 returns `{ sessionId, ready, error, attachUrl }` from the shell's
-`nimbus:ready` / `nimbus:error` postMessages, so you can build the iframe.
+`nimbus:ready` / `nimbus:error` postMessages, for building the iframe
+directly.
 
-Nimbus is a Worker/DO/WASM sandbox, not a Linux VM. I list the boundaries
-in [the fine print](/docs/fine-print/capabilities/). The hosted demo uses
+Nimbus is a Worker/DO/WASM sandbox, not a Linux VM. The boundaries are
+listed in [capabilities & limits](/docs/fine-print/capabilities/). The
+hosted demo uses
 [`apps/hosted-demo`](https://github.com/AshishKumar4/Nimbus/tree/main/apps/hosted-demo),
 the same embedder shape an external project can ship.

@@ -1,6 +1,6 @@
 ---
 /**
- * NimbusSandbox — the one live terminal in the docs, on the boot page.
+ * NimbusSandbox — the live terminal on the docs home and quickstart page.
  *
  * Live mode requires `PUBLIC_NIMBUS_ANON_ATTACH_URL` at build time, pointing
  * at the anonymous ephemeral-session endpoint. Two accepted shapes:
@@ -11,16 +11,24 @@
  *     and expects `{ "wsUrl": string }` back (absolute, or a path resolved
  *     against the endpoint's origin).
  *
+ * The terminal auto-connects when it scrolls into view (IntersectionObserver,
+ * so only engaged viewers spend one of the capacity-limited anonymous
+ * sessions) and reuses one session per visit: the resolved wsUrl is cached in
+ * sessionStorage while its short-lived attach token is still valid, so
+ * navigating between pages does not burn extra sessions. On 429/503 the
+ * endpoint's structured rejection maps to a clear capacity message with a
+ * retry control — never a blank or fake terminal.
+ *
  * The socket speaks the session shell protocol from
  * packages/worker/public/s/index.html: client sends
  * `{type:'input',data}` / `{type:'resize',cols,rows}`, server sends
  * `{type:'output',data}` (other frame types are ignored here). Rendering is
- * a real xterm.js instance, bundled locally, loaded only when the user
- * boots. After attach, a short first-run script is typed into the session
+ * a real xterm.js instance, bundled locally, loaded only when the terminal
+ * connects. After attach, a short first-run script is typed into the session
  * as real keystrokes, then the keyboard is handed to the reader.
  *
- * Without the env var this renders a plain "boot a computer" link to the
- * hosted app instead. There is no canned playback in either mode.
+ * Without the env var this renders a plain link to the hosted app instead.
+ * There is no canned playback in either mode.
  */
 interface Props {
 	title?: string;
@@ -45,20 +53,19 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				<span class="nsx-badge" data-role="badge" hidden />
 			</div>
 			<div class="nsx-screen" data-role="screen">
-				<div class="nsx-boot" data-role="boot">
-					<button type="button" data-role="boot-btn">Boot a computer</button>
-					<p>A real session, created for you when you press the button.</p>
+				<div class="nsx-status" data-role="status" aria-live="polite">
+					<p data-role="message">Live sandbox — connecting…</p>
+					<button type="button" data-role="retry" hidden>
+						Retry
+					</button>
 				</div>
 			</div>
 		</div>
 	) : (
 		<div class="nsx-cta">
-			<p>
-				The quickest way to see all of this is to boot a computer of your own. The hosted app
-				creates one when you open it.
-			</p>
+			<p>The hosted deployment creates a live sandbox session on open.</p>
 			<a href={appUrl} target="_blank" rel="noopener">
-				Boot a computer at nimbus.ashishkumarsingh.com →
+				Open a sandbox at nimbus.ashishkumarsingh.com →
 			</a>
 		</div>
 	)
@@ -115,7 +122,8 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 		font-size: 0.62rem;
 	}
 	.nsx-badge[data-state='connecting'],
-	.nsx-badge[data-state='ended'] {
+	.nsx-badge[data-state='ended'],
+	.nsx-badge[data-state='error'] {
 		color: var(--nimbus-terminal-muted);
 		border-color: color-mix(in srgb, var(--nimbus-terminal-muted) 42%, transparent);
 	}
@@ -128,7 +136,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	.nsx-screen :global(.xterm) {
 		height: 100%;
 	}
-	.nsx-boot {
+	.nsx-status {
 		position: absolute;
 		inset: 0;
 		display: flex;
@@ -139,32 +147,31 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 		text-align: center;
 		padding: 1rem;
 	}
-	.nsx-boot p {
+	.nsx-status p {
 		margin: 0;
+		max-width: 32rem;
 		color: var(--nimbus-terminal-muted);
+		font-family: var(--sl-font-system-mono);
 		font-size: var(--sl-text-sm);
+		line-height: 1.6;
 	}
-	.nsx-boot button {
+	.nsx-status button {
 		font: inherit;
+		font-family: var(--sl-font-system-mono);
 		font-size: var(--sl-text-sm);
-		font-weight: 600;
-		color: var(--nimbus-terminal-bg);
-		background: var(--nimbus-terminal-accent);
-		border: 1px solid var(--nimbus-terminal-accent);
+		color: var(--nimbus-terminal-accent);
+		background: transparent;
+		border: 1px solid color-mix(in srgb, var(--nimbus-terminal-accent) 42%, transparent);
 		border-radius: var(--nimbus-control-radius);
-		padding: 0.5rem 1.1rem;
+		padding: 0.35rem 1rem;
 		cursor: pointer;
 	}
-	.nsx-boot button:hover {
-		background: color-mix(in srgb, var(--nimbus-terminal-accent) 84%, white);
+	.nsx-status button:hover {
+		border-color: var(--nimbus-terminal-accent);
 	}
-	.nsx-boot button:focus-visible {
+	.nsx-status button:focus-visible {
 		outline: 2px solid var(--nimbus-terminal-accent);
 		outline-offset: 3px;
-	}
-	.nsx-boot button[disabled] {
-		opacity: 0.6;
-		cursor: default;
 	}
 
 	.nsx-cta {
@@ -192,29 +199,129 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 </style>
 
 <script>
+	// Static so the build reliably emits it into the page CSS — a dynamic
+	// stylesheet import referenced a chunk the build never wrote, which
+	// rejected the whole boot after the socket was already open.
+	import '@xterm/xterm/css/xterm.css';
+
+	// One anonymous session per visit: the resolved wsUrl is reusable only
+	// while its short-lived attach token is valid, so the cache carries a
+	// mint timestamp and expires client-side well inside the token TTL.
+	const SESSION_KEY = 'nimbus:anon-session';
+	const INTRO_KEY = 'nimbus:anon-intro';
+	const REUSE_WINDOW_MS = 90_000;
+
+	interface CachedSession {
+		wsUrl: string;
+		mintedAt: number;
+	}
+
+	class SandboxUnavailableError extends Error {
+		constructor(public status: number) {
+			super(`attach endpoint returned ${status}`);
+		}
+	}
+
+	function readCachedSession(): CachedSession | null {
+		try {
+			const raw = sessionStorage.getItem(SESSION_KEY);
+			if (!raw) return null;
+			const cached = JSON.parse(raw) as CachedSession;
+			if (typeof cached.wsUrl !== 'string' || typeof cached.mintedAt !== 'number') return null;
+			if (Date.now() - cached.mintedAt > REUSE_WINDOW_MS) return null;
+			return cached;
+		} catch {
+			return null;
+		}
+	}
+
+	function cacheSession(wsUrl: string) {
+		try {
+			sessionStorage.setItem(SESSION_KEY, JSON.stringify({ wsUrl, mintedAt: Date.now() }));
+		} catch {}
+	}
+
+	function clearCachedSession() {
+		try {
+			sessionStorage.removeItem(SESSION_KEY);
+		} catch {}
+	}
+
+	async function createSession(attachUrl: string): Promise<string> {
+		if (/^wss?:/i.test(attachUrl)) return attachUrl;
+		const res = await fetch(attachUrl, { method: 'POST' });
+		if (!res.ok) throw new SandboxUnavailableError(res.status);
+		const body = (await res.json()) as { wsUrl?: string };
+		if (!body.wsUrl) throw new Error('attach endpoint returned no wsUrl');
+		const resolved = new URL(body.wsUrl, attachUrl);
+		if (resolved.protocol === 'https:') resolved.protocol = 'wss:';
+		if (resolved.protocol === 'http:') resolved.protocol = 'ws:';
+		return resolved.href;
+	}
+
+	async function openSocket(wsUrl: string): Promise<WebSocket> {
+		const ws = new WebSocket(wsUrl);
+		await new Promise<void>((resolve, reject) => {
+			ws.addEventListener('open', () => resolve(), { once: true });
+			ws.addEventListener('error', () => reject(new Error('connection failed')), { once: true });
+		});
+		return ws;
+	}
+
+	function unavailableMessage(error: unknown): string {
+		if (error instanceof SandboxUnavailableError) {
+			if (error.status === 429) return 'Session limit for this address reached — try again in a minute.';
+			if (error.status === 503) return 'All demo sandboxes are in use right now — try again in a minute.';
+		}
+		return 'The sandbox could not be started. Check the connection and retry.';
+	}
+
 	async function boot(el: HTMLElement) {
+		if (el.dataset.booting === 'true') return;
+		el.dataset.booting = 'true';
+
 		const screen = el.querySelector<HTMLElement>('[data-role="screen"]')!;
-		const bootOverlay = el.querySelector<HTMLElement>('[data-role="boot"]')!;
-		const bootBtn = el.querySelector<HTMLButtonElement>('[data-role="boot-btn"]')!;
+		const status = el.querySelector<HTMLElement>('[data-role="status"]')!;
+		const message = el.querySelector<HTMLElement>('[data-role="message"]')!;
+		const retryBtn = el.querySelector<HTMLButtonElement>('[data-role="retry"]')!;
 		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
 		const attachUrl = el.dataset.attachUrl!;
 
-		function setState(state: 'connecting' | 'live' | 'ended', label: string) {
+		function setState(state: 'connecting' | 'live' | 'ended' | 'error', label: string) {
 			badge.hidden = false;
 			badge.dataset.state = state;
 			badge.textContent = label;
 		}
 
-		bootBtn.disabled = true;
-		setState('connecting', 'booting…');
+		retryBtn.hidden = true;
+		message.textContent = 'Creating a session…';
+		setState('connecting', 'connecting…');
 
 		try {
-			const wsUrl = await resolveWsUrl(attachUrl);
+			// Reuse the visit's session when possible; fall back to a fresh
+			// one if the cached attach URL no longer connects.
+			const cached = readCachedSession();
+			let ws: WebSocket;
+			let reused = cached !== null;
+			if (cached) {
+				try {
+					ws = await openSocket(cached.wsUrl);
+				} catch {
+					clearCachedSession();
+					reused = false;
+					const wsUrl = await createSession(attachUrl);
+					cacheSession(wsUrl);
+					ws = await openSocket(wsUrl);
+				}
+			} else {
+				const wsUrl = await createSession(attachUrl);
+				cacheSession(wsUrl);
+				ws = await openSocket(wsUrl);
+			}
+
 			const [{ Terminal }, { FitAddon }] = await Promise.all([
 				import('@xterm/xterm'),
 				import('@xterm/addon-fit'),
-				// @ts-expect-error — Vite handles the stylesheet import.
-				import('@xterm/xterm/css/xterm.css'),
 			]);
 
 			const terminalBackground = getComputedStyle(el)
@@ -240,13 +347,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			const fit = new FitAddon();
 			term.loadAddon(fit);
 
-			const ws = new WebSocket(wsUrl);
-			await new Promise<void>((resolve, reject) => {
-				ws.addEventListener('open', () => resolve(), { once: true });
-				ws.addEventListener('error', () => reject(new Error('connection failed')), { once: true });
-			});
-
-			bootOverlay.remove();
+			status.hidden = true;
 			term.open(screen);
 			fit.fit();
 			setState('live', 'live');
@@ -269,47 +370,63 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			new ResizeObserver(() => fit.fit()).observe(screen);
 
 			// First run: real keystrokes into the live session, then the
-			// keyboard is the reader's.
-			const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-			const type = async (line: string) => {
-				for (const ch of line) {
-					send({ type: 'input', data: ch });
-					await sleep(24 + Math.random() * 28);
+			// keyboard is the reader's. Skipped when reattaching to the
+			// visit's existing session.
+			let ranIntro = false;
+			try {
+				ranIntro = reused && sessionStorage.getItem(INTRO_KEY) === 'true';
+			} catch {}
+			if (!ranIntro) {
+				try {
+					sessionStorage.setItem(INTRO_KEY, 'true');
+				} catch {}
+				const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+				const type = async (line: string) => {
+					for (const ch of line) {
+						send({ type: 'input', data: ch });
+						await sleep(24 + Math.random() * 28);
+					}
+					send({ type: 'input', data: '\r' });
+				};
+				await sleep(1200);
+				for (const cmd of [
+					'uname -a',
+					'node -v',
+					`echo 'console.log("hello from a live sandbox")' > hello.js`,
+					'node hello.js',
+				]) {
+					await type(cmd);
+					await sleep(1500);
 				}
+			} else {
+				// Reattached to the visit's session: there is no scrollback
+				// replay yet, so nudge a fresh prompt.
 				send({ type: 'input', data: '\r' });
-			};
-			await sleep(1200);
-			for (const cmd of [
-				'uname -a',
-				'node -v',
-				`echo 'console.log("hello from your new computer")' > hello.js`,
-				'node hello.js',
-			]) {
-				await type(cmd);
-				await sleep(1500);
 			}
 			term.focus();
-		} catch {
-			setState('ended', 'could not boot');
-			bootBtn.disabled = false;
+		} catch (error) {
+			el.dataset.booting = 'false';
+			setState('error', 'unavailable');
+			message.textContent = unavailableMessage(error);
+			retryBtn.hidden = false;
 		}
 	}
 
-	async function resolveWsUrl(attachUrl: string): Promise<string> {
-		if (/^wss?:/i.test(attachUrl)) return attachUrl;
-		const res = await fetch(attachUrl, { method: 'POST' });
-		if (!res.ok) throw new Error(`attach endpoint returned ${res.status}`);
-		const body = (await res.json()) as { wsUrl?: string };
-		if (!body.wsUrl) throw new Error('attach endpoint returned no wsUrl');
-		const resolved = new URL(body.wsUrl, attachUrl);
-		if (resolved.protocol === 'https:') resolved.protocol = 'wss:';
-		if (resolved.protocol === 'http:') resolved.protocol = 'ws:';
-		return resolved.href;
-	}
-
 	document.querySelectorAll<HTMLElement>('[data-nimbus-sandbox]').forEach((el) => {
-		el.querySelector('[data-role="boot-btn"]')?.addEventListener('click', () => void boot(el), {
-			once: false,
-		});
+		el.querySelector('[data-role="retry"]')?.addEventListener('click', () => void boot(el));
+
+		// Auto-connect only once the terminal is actually in view, so a page
+		// load that never reaches it does not spend a capacity-limited
+		// anonymous session.
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((entry) => entry.isIntersecting)) {
+					observer.disconnect();
+					void boot(el);
+				}
+			},
+			{ threshold: 0.35 },
+		);
+		observer.observe(el);
 	});
 </script>

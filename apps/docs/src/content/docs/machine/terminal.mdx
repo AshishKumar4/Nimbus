@@ -11,12 +11,12 @@ banana
 $ chmod +x greet.sh && ./greet.sh   # a real, persisted exec bit
 ```
 
-I built a real shell, with a lexer, parser, and interpreter for POSIX-like
-syntax. It isn't a regex matcher. Pipes, redirects, heredocs, command
+The shell is a real lexer, parser, and interpreter for POSIX-like syntax.
+It isn't a regex matcher. Pipes, redirects, heredocs, command
 substitution, `set -e`, `trap`, `source`, `$?`, and 60+ coreutils work.
 Shebangs and WASM magic dispatch `./script.sh` and `./hello.wasm`.
 Full IFS splitting and complete job control aren't done. The probes in
-`tests/behavioral/shell/` are the source of truth for what I claim.
+`tests/behavioral/shell/` are the source of truth for every claim here.
 
 ## REPLs
 
@@ -30,14 +30,14 @@ Leave with <kbd>Ctrl</kbd>+<kbd>D</kbd> or `exit`.
 
 Foreground npm bins open in attached tabs. Keystrokes reach the process,
 resizes propagate, and ANSI redraws render. Pipe the same bin and it sees
-`isTTY: false`. I probe the Pi coding agent end to end through both install
-paths.
+`isTTY: false`. Behavioral probes run the Pi coding agent end to end
+through both install paths.
 
-opencode is my stress test. Its serve half boots, passes its health gate,
-and streams SSE. The TUI half now renders frames, but it sits on a thin
-memory margin that I'm still hardening, so I don't yet claim the full TUI.
-Full PTY parity, including raw and cooked modes, signals, and scrollback
-replay, is roadmap.
+opencode is the reference stress test. Its serve half boots, passes its
+health gate, and streams SSE. The TUI half renders frames but runs on a
+thin memory margin that is still being hardened, so full-TUI support is
+not yet claimed. Full PTY parity — raw and cooked modes, signals, and
+scrollback replay — is roadmap.
 
 ## Recovery
 

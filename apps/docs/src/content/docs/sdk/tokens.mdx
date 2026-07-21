@@ -14,11 +14,11 @@ const token = await issueNimbusToken(env, {
 });
 ```
 
-I use HS256 JWTs signed with `JWT_SECRET` and pure WebCrypto. There is no
-external IdP or dependency. The verifier ignores `alg` in the token
-header, as required by RFC 8725 §3.1. The server enforces scopes, tenant
-and session pins, and destroy permissions; client checks are only a
-convenience.
+Tokens are HS256 JWTs signed with `JWT_SECRET`, using pure WebCrypto.
+There is no external IdP or dependency. The verifier ignores `alg` in the
+token header, as required by RFC 8725 §3.1. The server enforces scopes,
+tenant and session pins, and destroy permissions; client checks are only
+a convenience.
 
 The six scopes are `session:create`, `session:attach`,
 `session:bootstrap`, `session:destroy`, `session:admin`, `sandbox:use`.

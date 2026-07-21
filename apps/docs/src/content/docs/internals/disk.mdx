@@ -7,10 +7,11 @@ import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
 
 <DiskLayers caption="Four layers, one owner. The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
 
-I keep inodes in a SQLite table and file contents in 64 KiB chunks. An
-LRU keeps hot chunks in memory without making memory the source of truth. I also give every path a
-revision watermark for its subtree. It changes when that path or anything
-under it changes, so an unrelated write doesn't invalidate the cache.
+Inodes live in a SQLite table and file contents in 64 KiB chunks. An
+LRU keeps hot chunks in memory without making memory the source of truth.
+Every path also carries a revision watermark for its subtree. It changes when
+that path or anything under it changes, so an unrelated write doesn't
+invalidate the cache.
 
 Facets send mutations through the supervisor's credit-pool write path. A facet
 can send only while it holds credits, and the supervisor returns them as it
@@ -19,12 +20,12 @@ can land inside 128 MiB. Each bulk write stages a new content generation and
 publishes it atomically. A crash can't expose half of the new tree.
 
 Runtimes use `RuntimeFsBridge` for stat, range reads and writes, truncate,
-directory and symlink operations, `revision(path)`, and events. I keep the
-bridge stateless so it survives supervisor hibernation. Node async fs uses the
+directory and symlink operations, `revision(path)`, and events. The bridge is
+stateless so it survives supervisor hibernation. Node async fs uses the
 live bridge. Node sync fs uses a bounded snapshot plus a local write cache.
 Python, Ruby, and WASI one-shots still use a snapshot and diff flush. Moving
 them to the live bridge is [active work](/docs/fine-print/research/).
 
 The coherence rule is simple: every read sees the latest committed revision or
-your own unflushed write. Conflicts fail loudly instead of overwriting data in
+its own unflushed write. Conflicts fail loudly instead of overwriting data in
 silence.

@@ -17,9 +17,10 @@ hello from clang on the edge
 binaries, but they aren't stubs either. `python` is Pyodide CPython 3.13.
 `ruby` is ruby.wasm 3.3. `clang` is LLVM 8 with a modern wasi-libc sysroot.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
-builds, your headers, and `fopen` against your files. I refuse `-pthread` at
-link time because partial `wasi-threads` support could corrupt data.
-[I wrote up why](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md).
+builds, user headers, and `fopen` against session files. `-pthread` is
+refused at link time because partial `wasi-threads` support could corrupt
+data — [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
+explains why.
 
 Package installers check the ABI:
 
@@ -37,5 +38,6 @@ probes run Flask and Rack apps in preview tabs. Curated source artifacts and
 declared Pyodide extension modules also work. Runtimes are packages too. Run
 `python` before installing it and the shell prints the install hint.
 
-I don't pretend native artifacts work. Manylinux wheels, native gems, `.node`
-addons, and ELF files fail before import with an exact ABI diagnostic.
+Native artifacts don't work, and don't pretend to. Manylinux wheels, native
+gems, `.node` addons, and ELF files fail before import with an exact ABI
+diagnostic.
