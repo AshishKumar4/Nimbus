@@ -25,6 +25,7 @@ export interface VfsLike {
     }): void;
     unlink(path: string): void;
     rmdir(path: string): void;
+    chmod(path: string, mode: number): void;
 }
 export interface VfsSnapshotCaps {
     maxBytes?: number;
@@ -60,5 +61,6 @@ export declare function flushVfsDiff(vfs: VfsLike, diff: WasiFsDiff): {
     rmdirs: number;
     timesTouched: number;
     symlinks: number;
+    chmods: number;
 };
 //# sourceMappingURL=vfs-snapshot.d.ts.map

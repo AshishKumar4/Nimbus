@@ -49,6 +49,8 @@ interface BashBootArgs {
   stdinData: string;
   stdinClosed: boolean;
   stdinTty: boolean;
+  /** Applet names the busybox multicall module answers to (busybox --list). */
+  busyboxApplets: string[];
 }
 
 interface BashFeedArgs {
@@ -146,6 +148,7 @@ export function makeBashRunnerFactory(deps: {
     const coreutilPaths = manifest.files
       .filter((f) => f.path.startsWith('share/bash/coreutils/') && f.path.endsWith('.wasm'))
       .map((f) => ({ name: f.path.slice('share/bash/coreutils/'.length, -'.wasm'.length), vfsPath: `${installRoot}/${f.path}` }));
+    const appletsPath = findFile('share/bash/coreutils/busybox.applets');
 
     return async function bashBinHandler(ctx: CommandContext): Promise<number> {
       // All VFS access (runtime wasm reads, script probes, snapshot,
@@ -218,6 +221,13 @@ export function makeBashRunnerFactory(deps: {
           wasmModules[`cu_${cu.name}.wasm`] = toArrayBuffer(vfs.readFile(cu.vfsPath));
         }
       }
+      // One busybox module, many names: the applet manifest (not the
+      // modules map — workerd would compile the binary once per name).
+      let busyboxApplets: string[] = [];
+      if (appletsPath && vfs.exists(appletsPath)) {
+        busyboxApplets = new TextDecoder().decode(vfs.readFile(appletsPath))
+          .split('\n').map((l) => l.trim()).filter(Boolean);
+      }
 
       const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
       const { env, ctx: doCtx } = getFacetManagerLoaderHost(facetMgr);
@@ -254,6 +264,7 @@ export function makeBashRunnerFactory(deps: {
           stdinData,
           stdinClosed,
           stdinTty: stdinIsTty,
+          busyboxApplets,
         }, { timeoutMs: 300_000 }));
 
         for (;;) {
@@ -309,7 +320,10 @@ const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // main / 256 KiB slots carry 300×/10× margin while keeping a full
 // instance ~17 MiB — several forks fit the ~180-200 MiB facet ceiling.
 const MAIN_SIZE = 8 << 20, SLOT_SIZE = 256 << 10, NSLOT = 32;
-const E = { BADF: 8, EXIST: 20, INVAL: 28, NOENT: 44, NOSYS: 52, NOTDIR: 54, SPIPE: 70 };
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70 };
+// Per-file times are not part of the VFS snapshot; every inode reports the
+// isolate boot instant (same discipline as the JSPI shim's seeded "now").
+const BOOT_NS = BigInt(Date.now()) * 1000000n;
 class Exit { constructor(c) { this.code = c; } }
 
 let S = null;  // active session state; persists across submits on the warm isolate
@@ -345,21 +359,38 @@ function newSession(args) {
   for (const key of Object.keys(wasmTable)) {
     if (key.startsWith('cu_') && key.endsWith('.wasm')) coreutils.set(key.slice(3, -5), wasmTable[key]);
   }
+  // Applet aliasing: ONE staged busybox module answers to every applet
+  // name (busybox dispatches on argv[0]), so bash's PATH lookup finds
+  // ls/cat/grep/... as executables in /bin.
+  const busybox = wasmTable['cu_busybox.wasm'];
+  if (busybox) for (const name of args.busyboxApplets || []) coreutils.set(name, busybox);
 
-  const fs = { files: new Map(), dirs: new Set(), written: new Set(), deleted: new Set(), dirsCreated: new Set() };
-  const snap = args.fsSnapshot || { files: {}, dirs: [] };
+  const fs = {
+    files: new Map(), dirs: new Set(), modes: new Map(),
+    written: new Set(), deleted: new Set(),
+    dirsCreated: new Set(), dirsDeleted: new Set(), modesChanged: new Map(),
+  };
+  const snap = args.fsSnapshot || { files: {}, dirs: [], modes: {} };
   for (const [path, b64] of Object.entries(snap.files || {})) fs.files.set(norm(path), { bytes: b64ToBytes(b64) });
   for (const d of snap.dirs || []) fs.dirs.add(norm(d));
-  for (const seed of ['etc', 'dev', 'bin', 'usr', 'usr/bin']) fs.dirs.add(seed);
+  // The snapshot's modes are the S2a projection: effective rwx per path
+  // for the invoking credential. Enforced by the WASI layer below.
+  for (const [path, m] of Object.entries(snap.modes || {})) fs.modes.set(norm(path), Number(m) & 7);
+  for (const seed of ['etc', 'dev', 'bin', 'usr', 'usr/bin']) {
+    fs.dirs.add(seed);
+    if (!fs.modes.has(seed)) fs.modes.set(seed, 5);
+  }
   // Startup rc: chdir to the session cwd (wasi-libc cwd starts at '/').
   // BASH_ENV points here for non-interactive shells; interactive shells
   // read ~/.bashrc, which is seeded to source this file when absent.
   if (!fs.files.has('etc/nimbus.bashrc')) {
     fs.files.set('etc/nimbus.bashrc', { bytes: te.encode('command cd "$' + '{NIMBUS_PWD:-/}" 2>/dev/null\n') });
+    fs.modes.set('etc/nimbus.bashrc', 4);
   }
   const home = norm((args.environ.find((e) => e.startsWith('HOME=')) || 'HOME=/home/user').slice(5));
   if (args.stdinTty && home && !fs.files.has(home + '/.bashrc')) {
     fs.files.set(home + '/.bashrc', { bytes: te.encode('. /etc/nimbus.bashrc\n') });
+    if (!fs.modes.has(home + '/.bashrc')) fs.modes.set(home + '/.bashrc', 6);
   }
 
   const cwd = norm((args.environ.find((e) => e.startsWith('NIMBUS_PWD=')) || 'NIMBUS_PWD=/').slice(11));
@@ -428,12 +459,61 @@ function isCoreutil(s, path) {
   if (!path.startsWith('bin/') && !path.startsWith('usr/bin/')) return false;
   return s.coreutils.has(path.split('/').pop());
 }
+// A modes-only inode is a file the snapshot could not read (S2a): it
+// exists, its bytes are absent, and access answers with the real bits.
+function fileExists(s, path) {
+  return s.fs.files.has(path) || (s.fs.modes.has(path) && !s.fs.dirs.has(path));
+}
+function inodeExists(s, path) {
+  return s.fs.files.has(path) || s.fs.dirs.has(path) || s.fs.modes.has(path);
+}
+// S2a effective-mode policy (mirrors the JSPI shim): a mapped mode wins;
+// an inode that exists without one is denied; an absent path is free to
+// create (the durable flush re-checks as the credential).
+function effMode(s, path) {
+  if (path === '') return 7;
+  const m = s.fs.modes.get(path);
+  if (m !== undefined) return m;
+  if (isCoreutil(s, path)) return 5;
+  return inodeExists(s, path) ? 0 : 7;
+}
+function parentOf(path) { const i = path.lastIndexOf('/'); return i < 0 ? '' : path.slice(0, i); }
+// Every ancestor dir on the way to the target needs the search (x) bit.
+function checkTraversal(s, path) {
+  const parts = path.split('/');
+  let anc = '';
+  for (let i = 0; i < parts.length - 1; i++) {
+    anc = anc ? anc + '/' + parts[i] : parts[i];
+    if (!isDir(s, anc)) return inodeExists(s, anc) ? E.NOTDIR : E.NOENT;
+    if ((effMode(s, anc) & 1) === 0) return E.ACCES;
+  }
+  return 0;
+}
+function checkParentWritable(s, path) {
+  const parent = parentOf(path);
+  if (parent && (effMode(s, parent) & 3) !== 3) return E.ACCES;
+  return 0;
+}
+function recordDirAdded(s, path) {
+  s.fs.dirs.add(path); s.fs.dirsDeleted.delete(path); s.fs.dirsCreated.add(path);
+  if (!s.fs.modes.has(path)) s.fs.modes.set(path, 7);
+}
+function recordDirRemoved(s, path) {
+  s.fs.dirs.delete(path); s.fs.modes.delete(path);
+  if (s.fs.dirsCreated.has(path)) s.fs.dirsCreated.delete(path);
+  else s.fs.dirsDeleted.add(path);
+}
+function recordFileRemoved(s, path) {
+  s.fs.files.delete(path); s.fs.written.delete(path); s.fs.modes.delete(path);
+  s.fs.deleted.add(path);
+}
 function markWritten(s, path) {
   s.fs.written.add(path); s.fs.deleted.delete(path);
+  if (!s.fs.modes.has(path)) s.fs.modes.set(path, 6);
   const parts = path.split('/');
   for (let i = 1; i < parts.length; i++) {
     const dir = parts.slice(0, i).join('/');
-    if (!s.fs.dirs.has(dir)) { s.fs.dirs.add(dir); s.fs.dirsCreated.add(dir); }
+    if (!s.fs.dirs.has(dir)) recordDirAdded(s, dir);
   }
 }
 function fileWrite(s, entry, path, pos, bytes) {
@@ -450,6 +530,9 @@ function statBuf(dv, u8, buf, filetype, size) {
   dv.setUint8(buf + 16, filetype);
   dv.setBigUint64(buf + 24, 1n, true);
   dv.setBigUint64(buf + 32, BigInt(size), true);
+  dv.setBigUint64(buf + 40, BOOT_NS, true);
+  dv.setBigUint64(buf + 48, BOOT_NS, true);
+  dv.setBigUint64(buf + 56, BOOT_NS, true);
 }
 
 // Shared WASI surface over the process fd table + file layer. The io
@@ -460,38 +543,72 @@ function statBuf(dv, u8, buf, filetype, size) {
 // freshly-exec'd tool's wasi-libc starts at '/', so its relative paths
 // arrive un-prefixed. Resolving cwd-first (then bare, recovering
 // absolute paths) reproduces POSIX cwd inheritance across exec.
-function makeWasiFs(s, proc, DV, U8, io, pathBase) {
-  const resolve = (raw) => {
+// pathBase (exec'd tools only) emulates the child's inherited cwd. The
+// tool's wasi-libc anchors everything at the '/' preopen, so cwd-relative
+// and absolute paths arrive IDENTICALLY un-prefixed — disambiguate by
+// existence: prefer the cwd-joined path, then the bare one; for paths
+// being created, prefer whichever PARENT directory exists (mkdir d1 in
+// the session cwd vs touch /tmp/x at the root).
+function makeResolve(s, pathBase) {
+  return (raw) => {
     const p = norm(raw);
     if (!pathBase) return p;
     const joined = norm(pathBase + '/' + p);
-    if (s.fs.files.has(joined) || s.fs.dirs.has(joined)) return joined;
-    return p;
+    if (inodeExists(s, joined)) return joined;
+    if (inodeExists(s, p)) return p;
+    if (isDir(s, parentOf(joined))) return joined;
+    if (isDir(s, parentOf(p))) return p;
+    return joined;
   };
+}
+function makeWasiFs(s, proc, DV, U8, io, pathBase) {
+  const resolve = makeResolve(s, pathBase);
   return {
     fd_prestat_get: (fd, buf) => { if (fd === 3) { DV().setUint8(buf, 0); DV().setUint32(buf + 4, 1, true); return 0; } return E.BADF; },
     fd_prestat_dir_name: (fd, path, _plen) => { if (fd === 3) { U8()[path] = 0x2f; return 0; } return E.BADF; },
-    path_open: (dirfd, _dirflags, pathPtr, pathLen, oflags, _rb, _ri, fdflags, retPtr) => {
+    path_open: (dirfd, _dirflags, pathPtr, pathLen, oflags, rightsBase, _ri, fdflags, retPtr) => {
       const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
       const dv = DV();
       if (path === 'dev/null' || path === 'dev/tty') {
         const fd = lowestFd(proc); proc.fds.set(fd, { kind: path === 'dev/tty' ? 'tty' : 'null' });
         dv.setUint32(retPtr, fd, true); return 0;
       }
+      const trav = checkTraversal(s, path);
+      if (trav) return trav;
       const wantDir = (oflags & 2) !== 0;
       if (isDir(s, path)) {
+        if ((effMode(s, path) & 1) === 0) return E.ACCES;
         const fd = lowestFd(proc); proc.fds.set(fd, { kind: 'dir', path });
         dv.setUint32(retPtr, fd, true); return 0;
       }
-      if (wantDir) return E.NOTDIR;
+      if (wantDir) return fileExists(s, path) ? E.NOTDIR : E.NOENT;
+      // wasi-libc encodes the open intent in the rights: fd_read is bit 1,
+      // fd_write bit 6. Enforce the S2a effective mode accordingly.
+      const rights = typeof rightsBase === 'bigint' ? rightsBase : BigInt(rightsBase >>> 0);
+      let need = 0;
+      if ((rights & 2n) !== 0n) need |= 4;
+      if ((rights & 64n) !== 0n) need |= 2;
+      if ((oflags & 8) !== 0) need |= 2;                    // O_TRUNC implies write
       let entry = fileLookup(s, path);
-      if (entry && (oflags & 4)) return E.EXIST;           // O_EXCL
-      if (!entry) {
+      const exists = entry !== null || fileExists(s, path);
+      if (exists && (oflags & 4)) return E.EXIST;           // O_EXCL
+      if (!exists) {
         if (!(oflags & 1)) return E.NOENT;                  // no O_CREAT
+        const denied = checkParentWritable(s, path);
+        if (denied) return denied;
         entry = { bytes: new Uint8Array(0) };
         s.fs.files.set(path, entry); markWritten(s, path);
-      } else if (oflags & 8) {                              // O_TRUNC
-        entry.bytes = new Uint8Array(0); markWritten(s, path);
+      } else {
+        if (need && (effMode(s, path) & need) !== need) return E.ACCES;
+        if (!entry) {
+          // Exists per the mode map but bytes were not snapshotted
+          // (write-only). Start from empty content.
+          entry = { bytes: new Uint8Array(0) };
+          s.fs.files.set(path, entry);
+        }
+        if (oflags & 8) {                                   // O_TRUNC
+          entry.bytes = new Uint8Array(0); markWritten(s, path);
+        }
       }
       const fd = lowestFd(proc);
       proc.fds.set(fd, { kind: 'file', path, pos: 0, append: (fdflags & 1) !== 0 });
@@ -508,37 +625,191 @@ function makeWasiFs(s, proc, DV, U8, io, pathBase) {
     path_filestat_get: (dirfd, _flags, pathPtr, pathLen, buf) => {
       const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
       if (path === 'dev/null' || path === 'dev/tty') { statBuf(DV(), U8(), buf, 2, 0); return 0; }
+      const trav = checkTraversal(s, path);
+      if (trav) return trav;
       const f = fileLookup(s, path);
       if (f) { statBuf(DV(), U8(), buf, 4, f.bytes.length); return 0; }
       if (isCoreutil(s, path)) { statBuf(DV(), U8(), buf, 4, 1024); return 0; }
       if (isDir(s, path)) { statBuf(DV(), U8(), buf, 3, 0); return 0; }
+      if (fileExists(s, path)) { statBuf(DV(), U8(), buf, 4, 0); return 0; }  // unreadable: size unknown
       return E.NOENT;
     },
+    path_filestat_set_times: () => 0,
     path_unlink_file: (dirfd, pathPtr, pathLen) => {
       const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
-      if (!fileLookup(s, path)) return E.NOENT;
-      s.fs.files.delete(path); s.fs.written.delete(path); s.fs.deleted.add(path);
+      const trav = checkTraversal(s, path);
+      if (trav) return trav;
+      if (isDir(s, path)) return E.ISDIR;
+      if (!fileExists(s, path)) return E.NOENT;
+      const denied = checkParentWritable(s, path);
+      if (denied) return denied;
+      recordFileRemoved(s, path);
       return 0;
     },
     path_rename: (fd1, oldPtr, oldLen, fd2, newPtr, newLen) => {
       const from = resolve(td.decode(U8().subarray(oldPtr, oldPtr + oldLen)));
       const to = resolve(td.decode(U8().subarray(newPtr, newPtr + newLen)));
+      let trav = checkTraversal(s, from);
+      if (trav) return trav;
+      trav = checkTraversal(s, to);
+      if (trav) return trav;
+      const fromIsDir = from !== '' && isDir(s, from);
       const f = fileLookup(s, from);
-      if (!f) return E.NOENT;
-      s.fs.files.delete(from); s.fs.written.delete(from); s.fs.deleted.add(from);
-      s.fs.files.set(to, f); markWritten(s, to);
+      if (!fromIsDir && !f && !fileExists(s, from)) return E.NOENT;
+      if (from === to) return 0;
+      let denied = checkParentWritable(s, from);
+      if (!denied) denied = checkParentWritable(s, to);
+      if (denied) return denied;
+      const moveMode = (a, b) => {
+        const m = s.fs.modes.get(a); s.fs.modes.delete(a);
+        if (m !== undefined) s.fs.modes.set(b, m);
+      };
+      // Atomic-overwrite destination of the matching kind.
+      if (isDir(s, to)) {
+        if (!fromIsDir) return E.ISDIR;
+        const prefix = to + '/';
+        for (const p of s.fs.files.keys()) if (p.startsWith(prefix)) return E.NOTEMPTY;
+        for (const p of s.fs.dirs) if (p.startsWith(prefix)) return E.NOTEMPTY;
+        recordDirRemoved(s, to);
+      } else if (fileExists(s, to)) {
+        if (fromIsDir) return E.NOTDIR;
+        recordFileRemoved(s, to);
+      }
+      if (fromIsDir) {
+        const mode = s.fs.modes.get(from);
+        recordDirRemoved(s, from);
+        recordDirAdded(s, to);
+        if (mode !== undefined) s.fs.modes.set(to, mode);
+        const prefix = from + '/';
+        const rebase = (key) => to + '/' + key.slice(prefix.length);
+        for (const key of [...s.fs.files.keys()]) {
+          if (!key.startsWith(prefix)) continue;
+          const nk = rebase(key);
+          const entry = s.fs.files.get(key);
+          recordFileRemoved(s, key);
+          moveMode(key, nk);
+          s.fs.files.set(nk, entry);
+          s.fs.written.add(nk); s.fs.deleted.delete(nk);
+          if (!s.fs.modes.has(nk)) s.fs.modes.set(nk, 6);
+        }
+        for (const key of [...s.fs.dirs]) {
+          if (!key.startsWith(prefix)) continue;
+          const nk = rebase(key);
+          const mode2 = s.fs.modes.get(key);
+          recordDirRemoved(s, key);
+          recordDirAdded(s, nk);
+          if (mode2 !== undefined) s.fs.modes.set(nk, mode2);
+        }
+        return 0;
+      }
+      const entry = f || { bytes: new Uint8Array(0) };
+      const mode = s.fs.modes.get(from);
+      recordFileRemoved(s, from);
+      s.fs.files.set(to, entry); markWritten(s, to);
+      if (mode !== undefined) s.fs.modes.set(to, mode);
       return 0;
     },
     path_create_directory: (dirfd, pathPtr, pathLen) => {
       const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
-      if (isDir(s, path) || fileLookup(s, path)) return E.EXIST;
-      s.fs.dirs.add(path); s.fs.dirsCreated.add(path);
+      const trav = checkTraversal(s, path);
+      if (trav) return trav;
+      if (isDir(s, path) || fileExists(s, path)) return E.EXIST;
+      const denied = checkParentWritable(s, path);
+      if (denied) return denied;
+      recordDirAdded(s, path);
       return 0;
     },
     path_readlink: () => E.INVAL,
     path_symlink: () => E.NOSYS,
-    path_remove_directory: () => E.NOSYS,
-    fd_readdir: (fd, buf, bufLen, cookie, retPtr) => { DV().setUint32(retPtr, 0, true); return 0; },
+    path_link: (fd1, _lookupFlags, oldPtr, oldLen, fd2, newPtr, newLen) => {
+      const from = resolve(td.decode(U8().subarray(oldPtr, oldPtr + oldLen)));
+      const to = resolve(td.decode(U8().subarray(newPtr, newPtr + newLen)));
+      let trav = checkTraversal(s, from);
+      if (trav) return trav;
+      trav = checkTraversal(s, to);
+      if (trav) return trav;
+      if (isDir(s, from)) return E.PERM;
+      const f = fileLookup(s, from);
+      if (!f) return fileExists(s, from) ? E.ACCES : E.NOENT;
+      if (fileExists(s, to) || isDir(s, to)) return E.EXIST;
+      const denied = checkParentWritable(s, to);
+      if (denied) return denied;
+      // Both names share ONE entry object — writes through either alias
+      // mutate the same bytes, which is real hard-link semantics here.
+      s.fs.files.set(to, f); markWritten(s, to);
+      s.fs.modes.set(to, effMode(s, from));
+      return 0;
+    },
+    path_remove_directory: (dirfd, pathPtr, pathLen) => {
+      const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
+      const trav = checkTraversal(s, path);
+      if (trav) return trav;
+      if (path === '' || path === 'etc' || path === 'dev' || path === 'bin' || path === 'usr' || path === 'usr/bin') return E.ACCES;
+      if (!isDir(s, path)) return fileExists(s, path) ? E.NOTDIR : E.NOENT;
+      const denied = checkParentWritable(s, path);
+      if (denied) return denied;
+      const prefix = path + '/';
+      for (const p of s.fs.files.keys()) if (p.startsWith(prefix)) return E.NOTEMPTY;
+      for (const p of s.fs.dirs) if (p.startsWith(prefix)) return E.NOTEMPTY;
+      for (const p of s.fs.modes.keys()) if (p.startsWith(prefix)) return E.NOTEMPTY;
+      recordDirRemoved(s, path);
+      return 0;
+    },
+    fd_renumber: (from, to) => {
+      const e = proc.fds.get(from);
+      if (!e) return E.BADF;
+      if (from !== to) {
+        closeFd(s, proc, to);
+        proc.fds.set(to, e);
+        proc.fds.delete(from);
+      }
+      return 0;
+    },
+    fd_readdir: (fd, buf, bufLen, cookie, retPtr) => {
+      const e = proc.fds.get(fd);
+      if (!e || (e.kind !== 'dir' && e.kind !== 'preopen')) return E.BADF;
+      const dir = e.kind === 'preopen' ? '' : e.path;
+      if ((effMode(s, dir) & 4) === 0) return E.ACCES;
+      const prefix = dir ? dir + '/' : '';
+      const seen = new Set(['.', '..']);
+      const children = [];
+      const push = (name, type) => { if (!seen.has(name)) { seen.add(name); children.push({ name, type }); } };
+      for (const p of s.fs.dirs) {
+        if (p !== dir && p.startsWith(prefix) && !p.slice(prefix.length).includes('/')) push(p.slice(prefix.length), 3);
+      }
+      for (const p of s.fs.files.keys()) {
+        if (p.startsWith(prefix) && !p.slice(prefix.length).includes('/')) push(p.slice(prefix.length), 4);
+      }
+      for (const p of s.fs.modes.keys()) {  // modes-only inodes (unreadable files)
+        if (p !== dir && p.startsWith(prefix) && !p.slice(prefix.length).includes('/') && !s.fs.dirs.has(p)) push(p.slice(prefix.length), 4);
+      }
+      if (dir === 'bin' || dir === 'usr/bin') for (const name of s.coreutils.keys()) push(name, 4);
+      children.sort((a, b) => (a.name < b.name ? -1 : 1));
+      const entries = [{ name: '.', type: 3 }, { name: '..', type: 3 }, ...children];
+      const dv = DV(), u8 = U8();
+      let off = 0;
+      for (let i = Number(cookie); i < entries.length; i++) {
+        const nb = te.encode(entries[i].name);
+        const need = 24 + nb.length;
+        const record = new Uint8Array(need);
+        const rdv = new DataView(record.buffer);
+        rdv.setBigUint64(0, BigInt(i + 1), true);   // d_next: cookie of the next entry
+        rdv.setBigUint64(8, 1n, true);              // d_ino
+        rdv.setUint32(16, nb.length, true);         // d_namlen
+        record[20] = entries[i].type;               // d_type
+        record.set(nb, 24);
+        const room = bufLen - off;
+        if (need > room) {                          // truncated tail: "more remain"
+          u8.set(record.subarray(0, room), buf + off);
+          off = bufLen;
+          break;
+        }
+        u8.set(record, buf + off);
+        off += need;
+      }
+      dv.setUint32(retPtr, off, true);
+      return 0;
+    },
     fd_seek: (fd, offset, whence, retPtr) => {
       const e = proc.fds.get(fd);
       if (e && e.kind === 'file') {
@@ -808,13 +1079,16 @@ function makeProc(s, pid, ppid, fds) {
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
     },
-    execve: (pathPtr, argvFlatPtr, argvLen) => {
+    execve: (pathPtr, argvFlatPtr, argvLen, envFlatPtr, envLen) => {
       if (c.rewinding) { proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false; return c.resume; }
       const u8 = U8();
       let e = pathPtr; while (u8[e]) e++;
       c.reason = 'exec';
       c.execPath = td.decode(u8.subarray(pathPtr, e));
       c.execArgv = td.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
+      // The child's REAL environment (bash's export set at exec time —
+      // PWD tracks the shell's cd, unlike the boot-time s.environ).
+      c.execEnv = td.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -945,13 +1219,22 @@ function pumpOne(s) {
 // tool's blocking pipe reads synchronously pump the writer procs.
 function doExec(s, proc) {
   const name = proc.ctx.execPath.split('/').pop();
-  const m = s.coreutils.get(name);
+  // The child inherits bash's LIVE cwd: bash keeps the exported PWD
+  // current across cd, and the execve import threads the child env.
+  const env = proc.ctx.execEnv && proc.ctx.execEnv.length ? proc.ctx.execEnv : s.environ;
+  const pwdVar = env.find((x) => x.startsWith('PWD='));
+  const childCwd = pwdVar ? norm(pwdVar.slice(4)) : s.cwd;
+  const path = makeResolve(s, childCwd)(proc.ctx.execPath);
+  // Applets dispatch only from the PATH dirs they are staged in — a user
+  // file that happens to share an applet's name (./ls) is NOT the applet.
+  const viaPath = path.startsWith('bin/') || path.startsWith('usr/bin/');
+  const m = viaPath ? s.coreutils.get(name) : null;
   if (!m) {
-    // wasi-libc errno numbering: ENOENT=44, ENOEXEC=45. An existing
-    // non-wasm file gets ENOEXEC so bash falls back to running it as
-    // a shell script (execute_disk_command's ENOEXEC path).
-    const path = norm(proc.ctx.execPath);
-    proc.ctx.resume = fileLookup(s, path) ? -45 : -44;
+    // wasi-libc errno numbering: EACCES=2, ENOENT=44, ENOEXEC=45. An
+    // existing non-wasm file gets ENOEXEC so bash falls back to running
+    // it as a shell script (execute_disk_command's ENOEXEC path); an
+    // unreadable one gets EACCES.
+    proc.ctx.resume = fileLookup(s, path) ? -45 : (fileExists(s, path) ? -2 : -44);
     proc.ctx.rewinding = true;
     proc.inst.exports.asyncify_start_rewind(proc.MAIN_BUF);
     s.runnable.push(proc);
@@ -979,17 +1262,35 @@ function doExec(s, proc) {
     write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
     poll: (_i, _o, _n, retPtr) => { DV().setUint32(retPtr, 0, true); return 0; },
   };
-  const base = makeWasiFs(s, proc, DV, U8, io, s.cwd);
+  const base = makeWasiFs(s, proc, DV, U8, io, childCwd);
   const w = {
     ...base,
     args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, tv.length, true); dv.setUint32(b, tv.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
     args_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const a of tv) { dv.setUint32(ptrs, p, true); ptrs += 4; p += wstr(p, a); U8()[p++] = 0; } return 0; },
-    environ_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, 0, true); dv.setUint32(b, 0, true); return 0; },
-    environ_get: () => 0,
+    // POSIX environment inheritance: the child env bash passed to execve.
+    environ_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, env.length, true); dv.setUint32(b, env.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
+    environ_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const v of env) { dv.setUint32(ptrs, p, true); ptrs += 4; p += wstr(p, v); U8()[p++] = 0; } return 0; },
     proc_exit: (ec) => { code = ec; throw new Exit(ec); },
   };
   const wp = new Proxy(w, { get: (t, k) => (k in t ? t[k] : (() => 0)) });
-  inst2 = new WebAssembly.Instance(m, { wasi_snapshot_preview1: wp });
+  // nimbus_proc.chmod: WASI preview1 has no mode syscall, so busybox's
+  // chmod threads through this import. In-facet the effective-mode table
+  // updates immediately (chmod +x → ./script runs); the durable, S2a
+  // ownership-checked chmod happens at fsDiff flush.
+  const chmodResolve = makeResolve(s, childCwd);
+  const nimbus_proc = {
+    chmod: (pathPtr, pathLen, mode) => {
+      const p = chmodResolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
+      const trav = checkTraversal(s, p);
+      if (trav) return trav;
+      if (!inodeExists(s, p) && !(p !== '' && isDir(s, p))) return E.NOENT;
+      const bits = mode & 0o777;
+      s.fs.modes.set(p, (bits >> 6) & 7);
+      s.fs.modesChanged.set(p, bits);
+      return 0;
+    },
+  };
+  inst2 = new WebAssembly.Instance(m, { wasi_snapshot_preview1: wp, nimbus_proc });
   s.stats.instances++;
   const mem2 = inst2.exports.memory.buffer.byteLength;
   if (mem2 > s.stats.memPeak) s.stats.memPeak = mem2;
@@ -1064,7 +1365,9 @@ function composeFsDiff(s) {
     filesWritten,
     filesDeleted: [...s.fs.deleted],
     dirsCreated: [...s.fs.dirsCreated],
-    dirsDeleted: [],
+    // Deepest-first so the flush rmdirs children before their parents.
+    dirsDeleted: [...s.fs.dirsDeleted].sort((a, b) => b.length - a.length),
+    modesChanged: Object.fromEntries(s.fs.modesChanged),
   };
 }
 

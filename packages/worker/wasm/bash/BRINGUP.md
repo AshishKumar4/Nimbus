@@ -74,7 +74,7 @@
    productionized: FdTable/OFD, PipeTable in the session DO, supervisor waitpid/
    exec re-homing), and route the exec-bit/shebang dispatch (`session/init.ts`) for
    `bash`/`#!/bin/bash` to it. Stage `bash.wasm` via the runtime catalog
-   (`nimbus install bash`) + uutils coreutils for PATH.
+   (`nimbus install bash`) + BusyBox coreutils for PATH (coreutils/build-busybox.sh).
 5. **Live-gate.** Attach a terminal to a probe session, run `bash -c 'echo hi'`,
    then `echo a | tr a b`, `( … )`, `$( … )`, and a script file; capture verbatim.
 

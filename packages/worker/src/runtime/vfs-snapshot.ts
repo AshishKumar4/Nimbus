@@ -17,6 +17,7 @@ export interface VfsLike {
   mkdir(path: string, opts?: { recursive?: boolean }): void;
   unlink(path: string): void;
   rmdir(path: string): void;
+  chmod(path: string, mode: number): void;
 }
 
 export interface VfsSnapshotCaps {
@@ -201,13 +202,14 @@ export function snapshotVfs(
 export function flushVfsDiff(
   vfs: VfsLike,
   diff: WasiFsDiff,
-): { written: number; deleted: number; mkdirs: number; rmdirs: number; timesTouched: number; symlinks: number } {
+): { written: number; deleted: number; mkdirs: number; rmdirs: number; timesTouched: number; symlinks: number; chmods: number } {
   let written = 0;
   let deleted = 0;
   let mkdirs = 0;
   let rmdirs = 0;
   let timesTouched = 0;
   let symlinks = 0;
+  let chmods = 0;
 
   for (const path of diff.dirsCreated) {
     try {
@@ -241,8 +243,15 @@ export function flushVfsDiff(
     } catch {}
   }
 
+  for (const [path, mode] of Object.entries(diff.modesChanged ?? {})) {
+    try {
+      vfs.chmod(path, mode);
+      chmods++;
+    } catch {}
+  }
+
   if (diff.timesChanged) timesTouched = Object.keys(diff.timesChanged).length;
   if (diff.symlinksCreated) symlinks = Object.keys(diff.symlinksCreated).length;
   if (diff.symlinksDeleted) symlinks += diff.symlinksDeleted.length;
-  return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks };
+  return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks, chmods };
 }

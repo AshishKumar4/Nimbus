@@ -171,6 +171,7 @@ export function flushVfsDiff(vfs, diff) {
     let rmdirs = 0;
     let timesTouched = 0;
     let symlinks = 0;
+    let chmods = 0;
     for (const path of diff.dirsCreated) {
         try {
             vfs.mkdir(path, { recursive: true });
@@ -206,11 +207,18 @@ export function flushVfsDiff(vfs, diff) {
         }
         catch { }
     }
+    for (const [path, mode] of Object.entries(diff.modesChanged ?? {})) {
+        try {
+            vfs.chmod(path, mode);
+            chmods++;
+        }
+        catch { }
+    }
     if (diff.timesChanged)
         timesTouched = Object.keys(diff.timesChanged).length;
     if (diff.symlinksCreated)
         symlinks = Object.keys(diff.symlinksCreated).length;
     if (diff.symlinksDeleted)
         symlinks += diff.symlinksDeleted.length;
-    return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks };
+    return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks, chmods };
 }
