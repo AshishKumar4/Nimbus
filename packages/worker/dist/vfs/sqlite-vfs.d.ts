@@ -92,6 +92,8 @@ export interface CredentialedVfs {
     readlink(path: string): string;
     resolveSymlink(path: string): string | null;
     readFile(path: string): Uint8Array;
+    /** Whole-file read that bypasses the LRU content cache (see SqliteVFS.readFileUncached). */
+    readFileUncached(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     truncate(path: string, size: number): void;
@@ -309,6 +311,16 @@ export declare class SqliteVFS {
     private readFile;
     private readInodeBytes;
     private requireChunk;
+    /**
+     * Read a whole file straight from SQL, bypassing the LRU content cache
+     * entirely (neither consulted nor populated). For one-shot bulk reads
+     * of large runtime binaries (e.g. the 31 MiB clang.wasm at facet
+     * warm-up) that would otherwise evict the user's hot working set and
+     * pin the file's chunks — the full 32 MiB LRU — resident in the DO heap
+     * for the whole session. Demand-paging cache semantics are wrong for a
+     * blob read once and handed to a Worker Loader module map.
+     */
+    private readFileUncached;
     /**
      * Read `length` bytes at `offset` without assembling the whole file —
      * only the chunks overlapping the range are touched. Reads past EOF

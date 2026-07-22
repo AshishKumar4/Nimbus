@@ -648,13 +648,25 @@ async function createClangFacetRuntime(
     throw new Error('installed clang manifest is missing required files');
   }
 
+  // Hand the file's own backing buffer to the loader when the Uint8Array
+  // spans it exactly (the uncached reads below always allocate a fresh
+  // whole buffer) — avoids a second 31 MiB copy of clang.wasm in the DO
+  // heap during warm-up. Falls back to a slice for sub-views.
   const toAB = (u8: Uint8Array): ArrayBuffer =>
-    u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+    (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
+      ? u8.buffer
+      : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)) as ArrayBuffer;
 
-  const memfsBytes = args.vfs.readFile(args.memfsVfsPath);
-  const clangBytes = args.vfs.readFile(args.clangVfsPath);
-  const lldBytes = args.vfs.readFile(args.lldVfsPath);
-  const sysroot = parseUstar(args.vfs.readFile(args.sysrootVfsPath));
+  // Uncached reads: these are one-shot bulk reads of large runtime blobs
+  // (clang 31 MiB, wasm-ld 18.5 MiB, sysroot 9.3 MiB). Routing them
+  // through the LRU content cache would evict the user's hot working set
+  // and pin ~32 MiB of clang chunks resident in the DO heap for the whole
+  // session — a primary cause of supervisor-DO memory pressure that tips
+  // heavy sessions into an OOM reset mid-compile.
+  const memfsBytes = args.vfs.readFileUncached(args.memfsVfsPath);
+  const clangBytes = args.vfs.readFileUncached(args.clangVfsPath);
+  const lldBytes = args.vfs.readFileUncached(args.lldVfsPath);
+  const sysroot = parseUstar(args.vfs.readFileUncached(args.sysrootVfsPath));
 
   const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
   const env = (facetMgr as any).env;
