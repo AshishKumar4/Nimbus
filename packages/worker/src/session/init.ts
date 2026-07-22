@@ -48,12 +48,6 @@ import { rewriteCirrusViteConfigBundle } from '../runtime/cirrus-vite-config-rew
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import {
-  makeWasmRunner,
-  WASM_RUNNER_VERSION,
-  WASM_RUNNER_HELP,
-  formatWasmRunnerWasiInfo,
-} from '../runtime/wasm-runner.js';
-import {
   installPathExecResolver,
 } from '../shell/exec-dispatch.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -82,10 +76,11 @@ import {
   rehydrateInstalledRuntimes,
   registerRunnerFactory,
 } from '../runtime/package-manager.js';
-import { makeClangRunnerFactory } from '../runtime/clang-runner.js';
-import { makePythonRunnerFactory } from '../runtime/python-runner.js';
-import { makeRubyRunnerFactory } from '../runtime/ruby-runner.js';
-import { makeBashRunnerFactory } from '../runtime/bash-runner.js';
+// Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
+// first-use inside their registered handlers — see the registrations below.
+// Keeping them off the top-level import graph shaves their module-eval cost
+// (zod, embedded socket-kernel/shim sources, wasm loaders) out of the
+// one-time Worker Startup Time paid on every fresh-isolate cold run.
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '../runtime/process-logs.js';
@@ -409,10 +404,15 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
-    registerRunnerFactory('clang-runner', makeClangRunnerFactory({
-      facetMgr,
-      vfs: sqliteFs,
-    }));
+    registerRunnerFactory(
+      'clang-runner',
+      (manifest, installRoot, binName, binKind) => async (ctx: any) => {
+        const { makeClangRunnerFactory } = await import('../runtime/clang-runner.js');
+        return await makeClangRunnerFactory({ facetMgr, vfs: sqliteFs })(
+          manifest, installRoot, binName, binKind,
+        )(ctx);
+      },
+    );
     // Pyodide v1 — Python 3.13 via the same R2-package-manager
     // substrate that ships clang. Manifest entrypoints `python` and
     // `python3` both bind to this factory; the runner ferries
@@ -423,36 +423,35 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // no flags that would consume args) drops into an interactive
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
-    {
-      const onePython = makePythonRunnerFactory({ facetMgr, vfs: sqliteFs });
-      const wrappedPython: typeof onePython = (manifest, installRoot, binName, binKind) => {
-        const oneShotHandler = onePython(manifest, installRoot, binName, binKind);
-        return async function pythonReplOrOneShot(ctx: any): Promise<number> {
-          const argv: string[] = ctx.args || [];
-          // No args at all → REPL session. Hand off to runPythonRepl
-          // which builds its own NimbusLoaderPool (separate from the
-          // one-shot dispatch's pool) and drives a ReplSession.
-          if (argv.length === 0 && self.terminal) {
-            const { runPythonRepl } = await import('../runtime/python-repl.js');
-            return await runPythonRepl({
-              facetMgr,
-              vfs: sqliteFs,
-              terminal: self.terminal,
-              installRoot,
-              manifest,
-              // REPL-R7-1: thread the shell so ReplSession can drain
-              // shell.pasteQueue on attach (multi-line WS frames like
-              // `python\nexit(7)` would otherwise drop the tail input).
-              shell: self.shell,
-            });
-          }
-          // Args present (one-shot mode: -c, script, -m, -). Fall
-          // through to the canonical handler.
-          return await oneShotHandler(ctx);
-        };
-      };
-      registerRunnerFactory('python-runner', wrappedPython);
-    }
+    registerRunnerFactory(
+      'python-runner',
+      (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: any): Promise<number> {
+        const argv: string[] = ctx.args || [];
+        // No args at all → REPL session. Hand off to runPythonRepl
+        // which builds its own NimbusLoaderPool (separate from the
+        // one-shot dispatch's pool) and drives a ReplSession.
+        if (argv.length === 0 && self.terminal) {
+          const { runPythonRepl } = await import('../runtime/python-repl.js');
+          return await runPythonRepl({
+            facetMgr,
+            vfs: sqliteFs,
+            terminal: self.terminal,
+            installRoot,
+            manifest,
+            // REPL-R7-1: thread the shell so ReplSession can drain
+            // shell.pasteQueue on attach (multi-line WS frames like
+            // `python\nexit(7)` would otherwise drop the tail input).
+            shell: self.shell,
+          });
+        }
+        // Args present (one-shot mode: -c, script, -m, -). Fall through
+        // to the canonical handler (imported lazily on first use).
+        const { makePythonRunnerFactory } = await import('../runtime/python-runner.js');
+        return await makePythonRunnerFactory({ facetMgr, vfs: sqliteFs })(
+          manifest, installRoot, binName, binKind,
+        )(ctx);
+      },
+    );
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
     // bootstrap runs at child-facet module-init time, per-call
@@ -462,41 +461,39 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // REPL Stream A: wrap the one-shot factory so `ruby` with NO args
     // drops into an interactive REPL. The wrap is purely additive —
     // args-bearing invocations pass through to the existing handler.
-    try {
-      const oneRuby = makeRubyRunnerFactory({ facetMgr, vfs: sqliteFs, registry });
-      const wrappedRuby: typeof oneRuby = (manifest, installRoot, binName, binKind) => {
-        const oneShotHandler = oneRuby(manifest, installRoot, binName, binKind);
-        return async function rubyReplOrOneShot(ctx: any): Promise<number> {
-          const argv: string[] = ctx.args || [];
-          if (argv.length === 0 && self.terminal) {
-            const { runRubyRepl } = await import('../runtime/ruby-repl.js');
-            return await runRubyRepl({
-              facetMgr,
-              vfs: sqliteFs,
-              terminal: self.terminal,
-              installRoot,
-            });
-          }
-          return await oneShotHandler(ctx);
-        };
-      };
-      registerRunnerFactory('ruby-runner', wrappedRuby);
-    } catch (e: any) {
-      console.error('[init] ruby-runner registration FAILED:', e?.message || e, e?.stack || '');
-    }
+    registerRunnerFactory(
+      'ruby-runner',
+      (manifest, installRoot, binName, binKind) => async function rubyReplOrOneShot(ctx: any): Promise<number> {
+        const argv: string[] = ctx.args || [];
+        if (argv.length === 0 && self.terminal) {
+          const { runRubyRepl } = await import('../runtime/ruby-repl.js');
+          return await runRubyRepl({
+            facetMgr,
+            vfs: sqliteFs,
+            terminal: self.terminal,
+            installRoot,
+          });
+        }
+        const { makeRubyRunnerFactory } = await import('../runtime/ruby-runner.js');
+        return await makeRubyRunnerFactory({ facetMgr, vfs: sqliteFs, registry })(
+          manifest, installRoot, binName, binKind,
+        )(ctx);
+      },
+    );
     // GNU bash 5.2.37 (wasm32-wasi, asyncified) — dedicated facet
     // runner driving the fork/pipe/exec/setjmp scheduler (fork M1-M3
     // mechanisms). One handler covers -c/script/stdin AND interactive
     // mode: the handler itself parks on terminal stdin between pump
     // slices, so no REPL wrap is needed.
-    try {
-      registerRunnerFactory('bash-runner', makeBashRunnerFactory({
-        facetMgr,
-        vfs: sqliteFs,
-      }));
-    } catch (e: any) {
-      console.error('[init] bash-runner registration FAILED:', e?.message || e, e?.stack || '');
-    }
+    registerRunnerFactory(
+      'bash-runner',
+      (manifest, installRoot, binName, binKind) => async (ctx: any) => {
+        const { makeBashRunnerFactory } = await import('../runtime/bash-runner.js');
+        return await makeBashRunnerFactory({ facetMgr, vfs: sqliteFs })(
+          manifest, installRoot, binName, binKind,
+        )(ctx);
+      },
+    );
     {
       // Cast registry to the minimal package-manager shape. CommandRegistry
       // CommandRegistry has register(name, handler) which matches.
@@ -761,42 +758,55 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // bypassesScriptRead: the registry skips the read-source/
     // shebang-strip/esbuild-transform flow. wasm-runner reads bytes
     // itself in spec.run() and ships via NimbusLoaderPool.
-    const wasmSpec: RuntimeSpec = {
-      name: 'wasm-runner',
-      version: WASM_RUNNER_VERSION,
-      helpText: WASM_RUNNER_HELP,
-      subcommands: {
-        '--wasi-info': async (ctx: any) => {
-          ctx.stdout.write(formatWasmRunnerWasiInfo());
-          return 0;
-        },
-      },
-      run: makeWasmRunner({
-        // filesystem WASI: extended VFS surface for WASI file-IO. The wasm-runner
-        // snapshots a session subtree into the facet, flushes the diff
-        // back via this surface after _start returns.
-        vfs: sqliteFs,
-        env: self.env,
-        ctx: self.ctx,
-        processes: self.processes,
-      }),
-      bypassesScriptRead: true,
-    };
-    registry.register(
-      'wasm-runner',
-      buildRuntimeHandler(wasmSpec, {
-        vfs: sqliteFs,
-        facetMgr,
-        getEsbuild: () => {
-          if (!self.esbuildService) {
-            self.ensureSqliteFs();
-            self.esbuildService = new EsbuildService(self.sqliteFs!);
-          }
-          return self.esbuildService!;
-        },
-        registry,
-      }),
-    );
+    //
+    // Lazy: the wasm-runner module (WASI instance preamble + snapshot
+    // machinery) is imported on first `wasm-runner` invocation and the
+    // built handler memoized, so its module-eval cost stays off the cold
+    // Worker Startup Time path.
+    {
+      let wasmHandler: ((ctx: any) => Promise<number>) | null = null;
+      registry.register('wasm-runner', async (ctx: any): Promise<number> => {
+        if (!wasmHandler) {
+          const {
+            makeWasmRunner, WASM_RUNNER_VERSION, WASM_RUNNER_HELP, formatWasmRunnerWasiInfo,
+          } = await import('../runtime/wasm-runner.js');
+          const wasmSpec: RuntimeSpec = {
+            name: 'wasm-runner',
+            version: WASM_RUNNER_VERSION,
+            helpText: WASM_RUNNER_HELP,
+            subcommands: {
+              '--wasi-info': async (c: any) => {
+                c.stdout.write(formatWasmRunnerWasiInfo());
+                return 0;
+              },
+            },
+            run: makeWasmRunner({
+              // filesystem WASI: extended VFS surface for WASI file-IO. The
+              // wasm-runner snapshots a session subtree into the facet, flushes
+              // the diff back via this surface after _start returns.
+              vfs: sqliteFs,
+              env: self.env,
+              ctx: self.ctx,
+              processes: self.processes,
+            }),
+            bypassesScriptRead: true,
+          };
+          wasmHandler = buildRuntimeHandler(wasmSpec, {
+            vfs: sqliteFs,
+            facetMgr,
+            getEsbuild: () => {
+              if (!self.esbuildService) {
+                self.ensureSqliteFs();
+                self.esbuildService = new EsbuildService(self.sqliteFs!);
+              }
+              return self.esbuildService!;
+            },
+            registry,
+          });
+        }
+        return await wasmHandler(ctx);
+      });
+    }
 
     kernel.routeLoopback = (port, request) => {
       if (!self.portRegistry.has(port)) return Promise.resolve(null);
