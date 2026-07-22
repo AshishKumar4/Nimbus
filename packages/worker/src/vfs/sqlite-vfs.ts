@@ -143,6 +143,8 @@ export interface CredentialedVfs {
   readlink(path: string): string;
   resolveSymlink(path: string): string | null;
   readFile(path: string): Uint8Array;
+  /** Whole-file read that bypasses the LRU content cache (see SqliteVFS.readFileUncached). */
+  readFileUncached(path: string): Uint8Array;
   readRange(path: string, offset: number, length: number): Uint8Array;
   writeRange(path: string, offset: number, bytes: Uint8Array): void;
   truncate(path: string, size: number): void;
@@ -1157,6 +1159,7 @@ export class SqliteVFS {
       readlink: (path) => this.readlink(path, bound),
       resolveSymlink: (path) => this.resolveSymlink(path, bound),
       readFile: (path) => this.readFile(path, bound),
+      readFileUncached: (path) => this.readFileUncached(path, bound),
       readRange: (path, offset, length) => this.readRange(path, offset, length, bound),
       writeRange: (path, offset, bytes) => this.writeRange(path, offset, bytes, bound),
       truncate: (path, size) => this.truncate(path, size, bound),
@@ -1627,6 +1630,42 @@ export class SqliteVFS {
     throw new Error(
       `EIO: ${path}: missing declared chunk ${chunkId} of ${inode.chunkCount} (size ${inode.size})`,
     );
+  }
+
+  /**
+   * Read a whole file straight from SQL, bypassing the LRU content cache
+   * entirely (neither consulted nor populated). For one-shot bulk reads
+   * of large runtime binaries (e.g. the 31 MiB clang.wasm at facet
+   * warm-up) that would otherwise evict the user's hot working set and
+   * pin the file's chunks — the full 32 MiB LRU — resident in the DO heap
+   * for the whole session. Demand-paging cache semantics are wrong for a
+   * blob read once and handed to a Worker Loader module map.
+   */
+  private readFileUncached(path: string, cred: VfsCred): Uint8Array {
+    const resolved = this.checkAccess(path, 0o4, cred);
+    const inode = resolved.inode;
+    if (!inode) throw vfsError('ENOENT', path);
+    if (inode.kind === 'directory') throw vfsError('EISDIR', resolved.path);
+    if (inode.kind !== 'file') throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+    if (inode.size === 0 || inode.chunkCount === 0) return new Uint8Array(0);
+    const result = new Uint8Array(inode.size);
+    let offset = 0;
+    for (let i = 0; i < inode.chunkCount; i++) {
+      const chunk = this.readChunkFromSql(inode, i);
+      if (!chunk) {
+        throw new Error(
+          `EIO: ${resolved.path}: missing declared chunk ${i} of ${inode.chunkCount} (size ${inode.size})`,
+        );
+      }
+      const length = Math.min(chunk.length, result.length - offset);
+      if (length <= 0) break;
+      result.set(chunk.subarray(0, length), offset);
+      offset += length;
+    }
+    if (offset < inode.size) {
+      throw new Error(`EIO: ${resolved.path}: declared size ${inode.size} exceeds chunk bytes ${offset}`);
+    }
+    return result;
   }
 
   /**
