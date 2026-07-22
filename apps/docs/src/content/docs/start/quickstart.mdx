@@ -12,17 +12,18 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 	demoId="quickstart"
 	demo={[
 		'node --version',
-		['npm install zod', 30_000],
-		[`node -e "const {z}=require('zod');console.log(z.string().parse('a real install, a real registry'))"`, 20_000],
+		[`node -e "const p=[];for(let n=2;n<60;n++){let q=1;for(let d=2;d*d<=n;d++)if(n%d===0)q=0;if(q)p.push(n)}console.log('\\x1b[36mprimes under 60:\\x1b[0m \\x1b[1;33m'+p.join(' ')+'\\x1b[0m')"`, 12_000],
+		[`node -e "const s='NIMBUS - a real computer at a URL';let o='';for(let i=0;i<s.length;i++)o+='\\x1b[38;5;'+(51+i*3)+'m'+s[i];console.log(o+'\\x1b[0m')"`, 12_000],
 	]}
 />
 
-The terminal above is a live sandbox running the commands it teaches: a
-real `npm install` against the live registry, then `node` importing what
-it installed. It connects to a real session — the same thing **Launch**
-creates at [nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com).
-The `/s/<id>/` URL is the session: bookmark it, and the files persist
-between visits. An idle session costs nothing.
+The terminal above is a live sandbox running real `node` on workerd's V8:
+a prime sieve, then a 256-color banner, both computed in the session. It
+connects to a real session — the same thing **Launch** creates at
+[nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com). The
+`/s/<id>/` URL is the session: bookmark it, and the files persist between
+visits. An idle session costs nothing. Type your own commands once the
+demo finishes — `npm install`, `git clone`, `python` all work.
 
 Try this first:
 
