@@ -5,7 +5,7 @@ description: Facet staging, keyed residents, health gates, and how fork, pipes, 
 
 import ProcessLifecycle from '../../../components/diagrams/ProcessLifecycle.astro';
 
-<ProcessLifecycle caption="The table lives in the DO; the work lives in facets. Anything a facet holds is reconstructible, or the process is marked dead." />
+<ProcessLifecycle caption="The table lives in the DO; the work lives in facets. State a facet holds is either reconstructible or the process is marked dead." />
 
 The process table lives in the supervisor DO, never in facets. A facet's
 module state can vanish when workerd resets its isolate. `ps` still reads the
@@ -19,55 +19,53 @@ makes, which is what makes [Unix permissions](/docs/internals/security/)
 enforceable at one seam.
 
 A keyed resident keeps `vite` or `opencode serve` warm across requests. Its
-route stub resolves the worker from the loader cache. It never boots one. A
-re-loaded isolate would be an empty worker with nothing listening: the silent
-zombie this rule forbids. If the facet is gone, the stub fails loudly. An OOM
-in a facet returns a clean, catchable RPC error, so the session survives.
+route stub resolves the worker from the loader cache and never boots one,
+because a re-loaded isolate is an empty worker with nothing listening. If the
+facet is gone, the stub fails loudly. An OOM in a facet returns a catchable
+RPC error, so the session survives.
 
 The supervisor stages a big app with a small spec: argv, env, and a VFS
 snapshot. The Worker-Loader cache-miss path assembles the full module map
-outside the DO. opencode's map is ~20 MB, and the rule comes from a live
-failure: assembling that map inside the DO crossed the memory cap and reset
-the session. workerd also blocks request-time WASM compilation, so WASM
-enters the module map pre-compiled.
+outside the DO. opencode's map is ~20 MB. Assembling it inside the DO crossed
+the memory cap and reset the session, so it runs outside. workerd also blocks
+request-time WASM compilation, so WASM enters the module map pre-compiled.
 
 Before anything attaches, server facets pass health gates with bounded polls
 and an overall budget. The opencode pair starts the server, checks it over
 loopback, then attaches the TUI at `127.0.0.1:4096`. Their lifecycles are tied,
-so exiting one reaps the other. The serve half is solid. The TUI attach half
-renders frames on a [thin memory
-margin](/docs/fine-print/capabilities/) that is still being hardened.
+so exiting one reaps the other. The serve half is stable. The TUI attach half
+runs on a [thin memory margin](/docs/fine-print/capabilities/) and is still
+being hardened.
 
 ## Pipes and process boundaries
 
-There are three kinds of process boundary, and each gets the cheapest
-pipe that is still correct. Shell pipelines wire commands with in-memory
-pipe channels inside one isolate — `sort file | grep -v x` never crosses
-an RPC. A spawned child (`child_process`, npm bins) gets its own facet,
-with stdio flowing over supervisor RPC and its pid registered in the DO
-before the facet boots. And inside the bash runner, WASM instances are
-connected by real byte-buffer pipes with blocking reads — the acid test
-is `echo a | tr a b` producing `b` through an actual `pipe(2)`.
+There are three kinds of process boundary, each with a different pipe.
+Shell pipelines wire commands with in-memory pipe channels inside one
+isolate; `sort file | grep -v x` never crosses an RPC. A spawned child
+(`child_process`, npm bins) gets its own facet, with stdio flowing over
+supervisor RPC and its pid registered in the DO before the facet boots.
+Inside the bash runner, WASM instances are connected by real byte-buffer
+pipes with blocking reads, so `echo a | tr a b` produces `b` through an
+actual `pipe(2)`.
 
 ## fork(), setjmp, and real bash
 
-V8 isolates have no `fork(2)`, so Nimbus built one. Asyncify — the
-instrumentation that lets WASM unwind and rewind its call stack — is
-used to snapshot a running program: the parent's linear memory is
-copied, every exported global including the stack pointer is restored
-into a sibling instance of the same module, and both sides rewind. The
-parent resumes holding the child pid; the child resumes holding 0. The
-same machinery gives asyncify-native `setjmp`/`longjmp`, which is the
-piece bash cannot live without.
+V8 isolates have no `fork(2)`, so Nimbus implements one. Asyncify — the
+instrumentation that lets WASM unwind and rewind its call stack —
+snapshots a running program: the parent's linear memory is copied, every
+exported global including the stack pointer is restored into a sibling
+instance of the same module, and both sides rewind. The parent resumes
+holding the child pid; the child resumes holding 0. The same machinery
+provides asyncify-native `setjmp`/`longjmp`, which bash requires.
 
-That is not a demo: GNU bash 5.2.37, compiled to `wasm32-wasi` and
-asyncified, runs in a dedicated facet with a scheduler that services
-fork, exec, `waitpid`, blocking pipe reads, and setjmp across multiple
-live WASM instances in one isolate. Its coreutils are BusyBox 1.37.0 —
-one multicall binary answering to every applet name — exec'd as plain
-WASI programs and pumped by the same scheduler. Copying a 16 MiB image
-on the reuse path costs ~0.5 ms; fork+exec+wait of a different image is
-~1.9 ms. The default interactive shell is still the Nimbus interpreter;
+GNU bash 5.2.37, compiled to `wasm32-wasi` and asyncified, runs in a
+dedicated facet with a scheduler that services fork, exec, `waitpid`,
+blocking pipe reads, and setjmp across multiple live WASM instances in one
+isolate. Its coreutils are BusyBox 1.37.0, one multicall binary mapped to
+every applet name, exec'd as plain WASI programs and pumped by the same
+scheduler. Copying a 16 MiB image on the reuse path costs ~0.5 ms;
+fork+exec+wait of a different image is ~1.9 ms. The default interactive
+shell is still the Nimbus interpreter;
 `bash` is installed as a program, and folding the fork machinery into
 the default process model is [tracked on the research
 page](/docs/fine-print/research/).
