@@ -1,22 +1,18 @@
 /**
- * npm-tarball.ts — tarball extraction + cache-restore payload builder.
+ * npm-tarball.ts — streaming tarball extraction (gunzip + tar).
  *
- * Phase 2 A'.1 reduced this module to:
- *   - extractTarball / extractTarballFromResponse — streaming gunzip+tar.
- *     Used by the install-batch facet (which holds the bytes inside its
- *     own 128 MiB envelope, not the supervisor's).
- *   - buildCacheRestorePayload — supervisor-side BatchWritePayload
- *     builder for the cached-tarball fast path. Runs only on a cache
- *     hit; the bytes already live in the per-DO npm cache rather than
- *     being fetched off the network.
+ * `extractTarball` / `extractTarballFromResponse` walk a gzipped tar stream
+ * entry-by-entry, holding at most one file's bytes at a time. Used by the
+ * install-batch facet (whose own 128 MiB envelope, not the supervisor's,
+ * holds the bytes) and the ruby-gems runtime.
  *
- * The legacy `fetchWaves` async generator + `buildBatchPayload` builder
- * were removed — they ran in supervisor heap and held tarball bytes long
- * enough to OOM the DO on large installs. The single batch-facet path
- * (src/npm-install-batch-facet.ts) supersedes them.
+ * The legacy supervisor-resident `fetchWaves` / `buildBatchPayload` and the
+ * `buildCacheRestorePayload` fast path were removed — they ran in supervisor
+ * heap and held tarball bytes long enough to OOM the DO on large installs.
+ * The single batch-facet path (install-batch-facet.ts) supersedes them and
+ * consults the shared L2/L3 tarball cache directly.
  */
 import { streamTarEntries, readableStreamToAsyncIterable, } from './tarball-stream.js';
-import { CHUNK_SIZE } from '../constants.js';
 // ── Tarball extraction ──────────────────────────────────────────────────
 //
 // The streaming primitives (parseTarHeader, streamTarEntries,
@@ -30,13 +26,11 @@ import { CHUNK_SIZE } from '../constants.js';
  * Pipes `resp.body` through `DecompressionStream('gzip')` (npm tarballs are
  * always gzipped) and walks the tar stream entry-by-entry. Never buffers the
  * full decompressed tarball — peak transient heap is one file's bytes plus a
- * small carry buffer. This is the path used by live installs; the cache
- * restore path (in-memory bytes from SQLite) still uses `extractTarball`.
+ * small carry buffer.
  *
- * The returned Map is per-file Uint8Arrays, same shape as the legacy
- * extractor so downstream `putTarballFiles` / `buildBatchPayload` don't care.
- * If the response has no body (unusual but possible with some proxies), we
- * fall back to `arrayBuffer()` + `extractTarball` so we still make progress.
+ * The returned Map is per-file Uint8Arrays. If the response has no body
+ * (unusual but possible with some proxies), we fall back to `arrayBuffer()`
+ * + `extractTarball` so we still make progress.
  */
 export async function extractTarballFromResponse(resp) {
     const files = new Map();
@@ -100,97 +94,4 @@ export async function extractTarball(tarball) {
         return files;
     }
     return files;
-}
-// ── Removed Phase 2 A'.1 ─────────────────────────────────────────────────
-//
-// The supervisor-resident `fetchWaves` async generator and its companion
-// `buildBatchPayload` BatchWritePayload builder were deleted when the
-// install became single-path (batch-facet only). Both ran in supervisor
-// heap and held tarball bytes in memory long enough to OOM the DO on
-// large installs. The single batch-facet path
-// (src/npm-install-batch-facet.ts) streams gunzip+tar inside a dynamic-
-// worker isolate with its own 128 MiB envelope and emits one writeBatch
-// RPC per package — the supervisor's heap only sees one inbound RPC
-// payload at a time.
-//
-// `WaveResult` is also gone (no other consumers). `FetchedPackage` is
-// retained because `extractTarballFromResponse` returns a `Files` map
-// that the cache restore path still uses.
-// ── Batch payload construction ──────────────────────────────────────────
-/**
- * Build a BatchWritePayload from the tarball cache (for packages that were
- * already cached — no fetch needed).
- */
-export function buildCacheRestorePayload(packages, hoistPlan, nodeModulesDir, cache) {
-    const inodes = [];
-    const chunks = [];
-    const dirs = new Set();
-    const mtime = Date.now();
-    for (const pkg of packages) {
-        const files = cache.getTarballFiles(pkg.name, pkg.version);
-        if (files.length === 0)
-            continue;
-        const completionMarkers = files.filter((file) => file.relPath === 'package.json');
-        if (completionMarkers.length !== 1) {
-            throw new Error(`cached package ${pkg.name}@${pkg.version} has ${completionMarkers.length} root package.json entries`);
-        }
-        const orderedFiles = [
-            ...files.filter((file) => file.relPath !== 'package.json'),
-            completionMarkers[0],
-        ];
-        const pkgDir = hoistPlan.root.has(pkg.name)
-            ? nodeModulesDir + '/' + pkg.name
-            : nodeModulesDir + '/' + pkg.name;
-        dirs.add(pkgDir);
-        // The root package.json is the installer's durable completion marker.
-        // Keep it as this package's final file mutation so a committed-prefix
-        // failure can never make an incomplete cache restore look installed.
-        for (const file of orderedFiles) {
-            const filePath = pkgDir + '/' + file.relPath;
-            const parts = filePath.split('/');
-            for (let i = 1; i < parts.length; i++) {
-                dirs.add(parts.slice(0, i).join('/'));
-            }
-            const chunkCount = file.data.length === 0 ? 0 : Math.ceil(file.data.length / CHUNK_SIZE);
-            inodes.push({
-                path: filePath,
-                parentPath: parentOf(filePath),
-                isDir: false,
-                size: file.data.length,
-                mtime,
-                mode: 0o644,
-                chunkCount,
-            });
-            if (file.data.length <= CHUNK_SIZE) {
-                if (file.data.length > 0) {
-                    chunks.push({ path: filePath, chunkId: 0, data: file.data });
-                }
-            }
-            else {
-                for (let c = 0; c < chunkCount; c++) {
-                    chunks.push({
-                        path: filePath,
-                        chunkId: c,
-                        data: file.data.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE),
-                    });
-                }
-            }
-        }
-    }
-    for (const dir of dirs) {
-        inodes.push({
-            path: dir,
-            parentPath: parentOf(dir),
-            isDir: true,
-            size: 0,
-            mtime,
-            mode: 0o755,
-            chunkCount: 0,
-        });
-    }
-    return { inodes, chunks };
-}
-// ── Helpers ─────────────────────────────────────────────────────────────
-function parentOf(path) {
-    return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
 }
