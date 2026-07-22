@@ -463,21 +463,33 @@ function statBuf(dv, u8, buf, filetype, size) {
 // Shared WASI surface over the process fd table + file layer. The io
 // argument abstracts the blocking discipline: bash instances
 // asyncify-park, exec'd plain-WASI tools synchronously pump the scheduler.
-// pathBase (exec'd coreutils only) emulates the child's inherited cwd:
-// bash's wasi-libc absolutizes its own paths against its live cwd, but a
-// freshly-exec'd tool's wasi-libc starts at '/', so its relative paths
-// arrive un-prefixed. Resolving cwd-first (then bare, recovering
-// absolute paths) reproduces POSIX cwd inheritance across exec.
-// pathBase (exec'd tools only) emulates the child's inherited cwd. The
-// tool's wasi-libc anchors everything at the '/' preopen, so cwd-relative
-// and absolute paths arrive IDENTICALLY un-prefixed — disambiguate by
-// existence: prefer the cwd-joined path, then the bare one; for paths
-// being created, prefer whichever PARENT directory exists (mkdir d1 in
-// the session cwd vs touch /tmp/x at the root).
-function makeResolve(s, pathBase) {
+//
+// pathBase (exec'd coreutils only) emulates the child's inherited cwd. An
+// exec'd tool's wasi-libc has cwd '/', so it absolutizes BOTH its own
+// relative args and absolute args against '/' — they reach path_open
+// IDENTICALLY un-prefixed (e.g. 'ls tmp' and 'ls /tmp' both arrive 'tmp';
+// 'ls' and 'ls /' both arrive ''). The lost absolute-vs-relative bit is
+// recovered from absRoots: the normalized set of absolute argv paths bash
+// passed the tool. A path that IS (or descends from) one of those is
+// absolute-origin — the arriving string is already the correct
+// root-relative target, so it is NEVER re-anchored. Everything else is
+// relative-origin (a relative arg, or a child name synthesized while
+// listing a directory): re-anchor against the inherited cwd, preferring
+// the cwd-joined path, then the bare one, then whichever parent dir
+// exists (touch newfile in the session cwd vs a '/'-listing's children).
+function isUnderAbsRoot(p, absRoots) {
+  if (!absRoots) return false;
+  for (const a of absRoots) {
+    if (p === a) return true;
+    if (a !== '' && p.startsWith(a + '/')) return true;
+  }
+  return false;
+}
+function makeResolve(s, pathBase, absRoots) {
   return (raw) => {
     const p = norm(raw);
     if (!pathBase) return p;
+    if (isUnderAbsRoot(p, absRoots)) return p;
     const joined = norm(pathBase + '/' + p);
     if (inodeExists(s, joined)) return joined;
     if (inodeExists(s, p)) return p;
@@ -486,8 +498,8 @@ function makeResolve(s, pathBase) {
     return joined;
   };
 }
-function makeWasiFs(s, proc, DV, U8, io, pathBase) {
-  const resolve = makeResolve(s, pathBase);
+function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
+  const resolve = makeResolve(s, pathBase, absRoots);
   return {
     fd_prestat_get: (fd, buf) => { if (fd === 3) { DV().setUint8(buf, 0); DV().setUint32(buf + 4, 1, true); return 0; } return E.BADF; },
     fd_prestat_dir_name: (fd, path, _plen) => { if (fd === 3) { U8()[path] = 0x2f; return 0; } return E.BADF; },
@@ -1169,6 +1181,11 @@ function doExec(s, proc) {
   const DV = () => new DataView(inst2.exports.memory.buffer);
   const U8 = () => new Uint8Array(inst2.exports.memory.buffer);
   const tv = proc.ctx.execArgv;
+  // Absolute argv paths (leading '/'), normalized to root-relative keys.
+  // These recover the absolute-vs-relative bit the tool's wasi-libc drops
+  // (see makeResolve): a path under one of these is never re-anchored.
+  const absRoots = new Set();
+  for (let i = 1; i < tv.length; i++) if (tv[i].startsWith('/')) absRoots.add(norm(tv[i]));
   const wstr = (p, str) => { const b = te.encode(str); U8().set(b, p); return b.length; };
   let code = 0;
   const io = {
@@ -1187,7 +1204,7 @@ function doExec(s, proc) {
     write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
     poll: (_i, _o, _n, retPtr) => { DV().setUint32(retPtr, 0, true); return 0; },
   };
-  const base = makeWasiFs(s, proc, DV, U8, io, childCwd);
+  const base = makeWasiFs(s, proc, DV, U8, io, childCwd, absRoots);
   const w = {
     ...base,
     args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, tv.length, true); dv.setUint32(b, tv.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
@@ -1202,7 +1219,7 @@ function doExec(s, proc) {
   // chmod threads through this import. In-facet the effective-mode table
   // updates immediately (chmod +x → ./script runs); the durable, S2a
   // ownership-checked chmod happens at fsDiff flush.
-  const chmodResolve = makeResolve(s, childCwd);
+  const chmodResolve = makeResolve(s, childCwd, absRoots);
   const nimbus_proc = {
     chmod: (pathPtr, pathLen, mode) => {
       const p = chmodResolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
