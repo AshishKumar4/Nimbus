@@ -38,7 +38,7 @@ const box = Nimbus.fromEnv(env, config).sandbox('job-123', { tenant: 'acme', sub
 const result = await box.exec('python -c "print(2 + 2)"');
 ```
 
-The sandbox profile is a real policy boundary. Nimbus enforces
+The sandbox profile is a policy boundary. Nimbus enforces
 `runtimes.allow` and the preinstall/on-demand flags before any RPC.
 `box.tools({ namespace: 'sandbox' })` is a Proteus-style tool provider;
 `@nimbus-sh/sdk/flue` adapts it to Flue's sandbox contract.

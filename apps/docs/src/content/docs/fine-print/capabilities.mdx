@@ -15,7 +15,7 @@ BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
 
 <CapabilityExplorer />
 
-## The deliberate "no" list
+## The "no" list
 
 Nimbus is built on Workers, Durable Objects, and WASM, not as a Linux VM. A
 workload that needs one of these missing parts belongs on a microVM or
@@ -29,7 +29,7 @@ container sandbox ([where Nimbus fits](/docs/start/where-it-fits/)).
 | Raw public TCP listeners | inbound is HTTP(S) through session routes |
 | Next.js dev server, `wrangler pages dev` | explicit limits today |
 | GPUs | — |
-| `wasi-threads` / `-pthread` | refused at link time, [by design](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md) |
+| `wasi-threads` / `-pthread` | refused at link time ([design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)) |
 
 ## Known constraints
 
@@ -47,6 +47,5 @@ Workers, Workers with Static Assets, npm and git workflows, Python and Ruby
 scripts, and clang. Astro, SvelteKit, and Remix use the Vite path. Nuxt has
 Nitro caveats.
 
-The chip line moves one way only: a behavioral probe must prove the
-capability live. Until then it stays on the
-[research page](/docs/fine-print/research/).
+A capability joins this list only after a behavioral probe proves it live.
+Until then it stays on the [research page](/docs/fine-print/research/).

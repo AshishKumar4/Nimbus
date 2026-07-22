@@ -7,10 +7,10 @@ import WhereItFits from '../../../components/diagrams/WhereItFits.astro';
 
 Nimbus sits at a different point in the design space than microVM sandboxes
 like E2B and Daytona, container platforms like Cloudflare's container
-Sandbox SDK, and in-process stub filesystems. Each of those buys something
-and gives something up.
+Sandbox SDK, and in-process stub filesystems. Each makes a different
+tradeoff.
 
-<WhereItFits caption="Nimbus gives up native Linux software for fast boots, $0 idle cost, and a disk that outlives each process." />
+<WhereItFits caption="No native Linux software; in return, fast boots, $0 idle cost, and a disk that persists across processes." />
 
 MicroVMs and containers run native Linux software. Nimbus does not. In-process
 stubs stay inside the host process and do not provide real toolchains. Nimbus
@@ -24,6 +24,6 @@ shell interpreter, the coreutils, and the Node.js shim. Nimbus carries that
 userland onto Cloudflare Durable Objects and adds per-process isolates, the
 SQLite-backed 10 GB disk, port routing, and the in-session toolchains.
 
-Workloads that need Docker, native wheels, GPUs, or raw TCP listeners belong
-somewhere else. The full "no" list is in
+Workloads that need Docker, native wheels, GPUs, or raw TCP listeners are
+out of scope. The full "no" list is in
 [capabilities & limits](/docs/fine-print/capabilities/).

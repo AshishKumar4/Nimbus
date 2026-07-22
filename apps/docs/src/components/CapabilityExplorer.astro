@@ -39,7 +39,7 @@ const rows: Row[] = [
 	{ area: 'Shell', status: 'works', cap: 'Binary file round-trip via fs.writeFileSync / readFileSync' },
 	{ area: 'Shell', status: 'works', cap: 'Session recovery — WebSocket drop → reconnect preserves cwd, env, files' },
 	{ area: 'Runtimes', status: 'works', cap: "WASI preview1 — 45 of 46 spec functions; outbound TCP via path_open('/dev/tcp/<host>/<port>') (JSPI); full poll_oneoff (fd / clock / socket subscriptions)" },
-	{ area: 'Runtimes', status: 'no', cap: 'wasi-threads (thread_spawn) — refused at link time, by design' },
+	{ area: 'Runtimes', status: 'no', cap: 'wasi-threads (thread_spawn) — refused at link time' },
 ];
 
 const chip: Record<Status, { label: string; kind: string }> = {
