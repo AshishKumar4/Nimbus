@@ -55,10 +55,12 @@ const {
 	rows = 14,
 	demoId = 'intro',
 	demo = [
-		'uname -a',
 		'node -v',
-		`echo 'console.log("hello from a live sandbox")' > hello.js`,
-		'node hello.js',
+		[
+			`node -e "const s='NIMBUS - a real computer at a URL';let o='';for(let i=0;i<s.length;i++)o+='\\x1b[38;5;'+(51+i*3)+'m'+s[i];console.log(o+'\\x1b[0m')"`,
+			10_000,
+		],
+		'ls',
 	],
 } = Astro.props;
 const demoSteps: [string, number][] = demo.map((step) =>
@@ -244,12 +246,28 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	// rejected the whole boot after the socket was already open.
 	import '@xterm/xterm/css/xterm.css';
 
-	// One anonymous session per visit: the resolved wsUrl is reusable only
-	// while its short-lived attach token is valid, so the cache carries a
-	// mint timestamp and expires client-side well inside the token TTL.
-	const SESSION_KEY = 'nimbus:anon-session';
+	// A stable per-browser id keys the cached session in localStorage, so a
+	// returning or refreshing visitor reattaches to the sandbox they already
+	// booted instead of cold-booting a new one. The attach token lives 120 s
+	// (ANON_ATTACH_TOKEN_TTL_MS), so the cache expires just inside that.
+	const CLIENT_ID_KEY = 'nimbus:client-id';
+	const SESSION_KEY_PREFIX = 'nimbus:anon-session:';
 	const DEMO_KEY_PREFIX = 'nimbus:anon-demo:';
-	const REUSE_WINDOW_MS = 90_000;
+	const REUSE_WINDOW_MS = 110_000;
+
+	function clientId(): string {
+		try {
+			let id = localStorage.getItem(CLIENT_ID_KEY);
+			if (!id) {
+				id = crypto.randomUUID();
+				localStorage.setItem(CLIENT_ID_KEY, id);
+			}
+			return id;
+		} catch {
+			return 'ephemeral';
+		}
+	}
+	const SESSION_KEY = SESSION_KEY_PREFIX + clientId();
 
 	interface CachedSession {
 		wsUrl: string;
@@ -264,7 +282,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 
 	function readCachedSession(): CachedSession | null {
 		try {
-			const raw = sessionStorage.getItem(SESSION_KEY);
+			const raw = localStorage.getItem(SESSION_KEY);
 			if (!raw) return null;
 			const cached = JSON.parse(raw) as CachedSession;
 			if (typeof cached.wsUrl !== 'string' || typeof cached.mintedAt !== 'number') return null;
@@ -277,13 +295,13 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 
 	function cacheSession(wsUrl: string) {
 		try {
-			sessionStorage.setItem(SESSION_KEY, JSON.stringify({ wsUrl, mintedAt: Date.now() }));
+			localStorage.setItem(SESSION_KEY, JSON.stringify({ wsUrl, mintedAt: Date.now() }));
 		} catch {}
 	}
 
 	function clearCachedSession() {
 		try {
-			sessionStorage.removeItem(SESSION_KEY);
+			localStorage.removeItem(SESSION_KEY);
 		} catch {}
 	}
 
@@ -338,6 +356,14 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 		setState('connecting', 'connecting…');
 
 		try {
+			// Load xterm while the session mints and the sandbox boots, so the
+			// bundle fetch overlaps the slow WS-attach boot instead of running
+			// after it.
+			const termModules = Promise.all([
+				import('@xterm/xterm'),
+				import('@xterm/addon-fit'),
+			]);
+
 			// Reuse the visit's session when possible; fall back to a fresh
 			// one if the cached attach URL no longer connects.
 			const cached = readCachedSession();
@@ -359,10 +385,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				ws = await openSocket(wsUrl);
 			}
 
-			const [{ Terminal }, { FitAddon }] = await Promise.all([
-				import('@xterm/xterm'),
-				import('@xterm/addon-fit'),
-			]);
+			const [{ Terminal }, { FitAddon }] = await termModules;
 
 			const terminalBackground = getComputedStyle(el)
 				.getPropertyValue('--nimbus-terminal-bg')
@@ -390,6 +413,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			status.hidden = true;
 			term.open(screen);
 			fit.fit();
+			term.focus();
 			setState('live', 'live');
 
 			const send = (frame: object) => {
@@ -397,19 +421,43 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			};
 			send({ type: 'resize', cols: term.cols, rows: term.rows });
 
-			// Rolling ANSI-stripped output tail, so the demo runner can see
-			// when the shell (or a REPL) is back at a prompt. While the demo
-			// is typing, the viewport follows the output; once the keyboard
-			// is the reader's, their scroll position is their own.
+			// Keep the session warm so typed input is always serviced. An idle
+			// hibernatable session stops acting on input frames until something
+			// wakes it, which is why a command typed after the demo could look
+			// dead; a periodic no-op resize keeps it awake. It runs only while
+			// the tab and the terminal are on screen, so a session the reader
+			// has scrolled past is free to hibernate.
+			const onScreen = () => {
+				if (document.visibilityState !== 'visible') return false;
+				const r = el.getBoundingClientRect();
+				return r.bottom > 0 && r.top < window.innerHeight;
+			};
+			const keepalive = window.setInterval(() => {
+				if (ws.readyState === WebSocket.OPEN && onScreen()) {
+					send({ type: 'resize', cols: term.cols, rows: term.rows });
+				}
+			}, 5000);
+
+			// Stick-to-bottom: new output and the reader's own keystrokes scroll
+			// the viewport to the latest line, so a typed command and its output
+			// are always in view. Scrolling up to read releases the lock until
+			// the reader returns to the bottom or types again.
+			let stickToBottom = true;
+			term.onScroll(() => {
+				const buf = term.buffer.active;
+				stickToBottom = buf.viewportY >= buf.baseY;
+			});
+
+			// Rolling ANSI-stripped output tail, so the demo runner can see when
+			// the shell (or a REPL) is back at a prompt.
 			let outputTail = '';
 			let lastOutputAt = 0;
-			let followOutput = false;
 			ws.addEventListener('message', (e) => {
 				try {
 					const msg = JSON.parse(e.data);
 					if (msg.type === 'output') {
 						term.write(msg.data, () => {
-							if (followOutput) term.scrollToBottom();
+							if (stickToBottom) term.scrollToBottom();
 						});
 						outputTail = (
 							outputTail + msg.data.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
@@ -418,9 +466,16 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					}
 				} catch {}
 			});
-			ws.addEventListener('close', () => setState('ended', 'session ended'));
+			ws.addEventListener('close', () => {
+				clearInterval(keepalive);
+				setState('ended', 'session ended');
+			});
 
-			term.onData((d) => send({ type: 'input', data: d }));
+			term.onData((d) => {
+				stickToBottom = true;
+				term.scrollToBottom();
+				send({ type: 'input', data: d });
+			});
 			term.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }));
 			new ResizeObserver(() => fit.fit()).observe(screen);
 
@@ -452,23 +507,15 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				// A shell prompt ends "$ "; REPL prompts end ">>> " or "> ".
 				// Quiescence guards against echo chunks that happen to end at
 				// a prompt boundary while a command is still producing output.
-				// The periodic no-op resize keeps input-side activity flowing
-				// while a long command runs — an input-idle session can go
-				// quiet, and a demo mid-install must not.
+				// The keepalive above keeps the session warm during long waits.
 				const waitForPrompt = async (maxMs: number) => {
 					const start = Date.now();
-					let lastKeepalive = Date.now();
 					await sleep(500);
 					while (Date.now() - start < maxMs) {
 						if (/(\$ |>>> |> )$/.test(outputTail) && Date.now() - lastOutputAt > 600) return;
-						if (Date.now() - lastKeepalive > 4000) {
-							lastKeepalive = Date.now();
-							send({ type: 'resize', cols: term.cols, rows: term.rows });
-						}
 						await sleep(200);
 					}
 				};
-				followOutput = true;
 				await sleep(reused ? 400 : 1200);
 				if (reused) send({ type: 'input', data: '\r' });
 				await waitForPrompt(8000);
@@ -478,7 +525,6 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					await waitForPrompt(maxWaitMs);
 					await sleep(700);
 				}
-				followOutput = false;
 			} else {
 				// Reattached with nothing to type: there is no scrollback
 				// replay yet, so nudge a fresh prompt.
@@ -496,9 +542,11 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	document.querySelectorAll<HTMLElement>('[data-nimbus-sandbox]').forEach((el) => {
 		el.querySelector('[data-role="retry"]')?.addEventListener('click', () => void boot(el));
 
-		// Auto-connect only once the terminal is actually in view, so a page
-		// load that never reaches it does not spend a capacity-limited
-		// anonymous session.
+		// Prewarm on approach: start the boot once the terminal is within ~one
+		// screen of the viewport, so the slow WS-attach boot overlaps the last
+		// stretch of scrolling and the terminal is usually live by the time it
+		// is reached. Still gated on the reader scrolling toward it, so a page
+		// load that never nears it does not spend a capacity-limited session.
 		const observer = new IntersectionObserver(
 			(entries) => {
 				if (entries.some((entry) => entry.isIntersecting)) {
@@ -506,7 +554,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					void boot(el);
 				}
 			},
-			{ threshold: 0.35 },
+			{ rootMargin: '800px 0px', threshold: 0 },
 		);
 		observer.observe(el);
 	});
