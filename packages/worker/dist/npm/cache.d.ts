@@ -39,11 +39,6 @@ export interface RegistryCacheEntry {
     optionalDepsJson?: string;
     fetchedAt: number;
 }
-export interface TarballCacheFile {
-    relPath: string;
-    data: Uint8Array;
-    size: number;
-}
 export interface LockfileEntry {
     name: string;
     resolvedVer: string;
@@ -119,27 +114,6 @@ export declare class NpmCache {
         written: number;
         failed: number;
     };
-    /** Check if a package version's files are cached. */
-    hasTarballCache(name: string, version: string): boolean;
-    /** Get all cached files for a package version.
-     *
-     *  L1 observability: hit when rows > 0; miss when empty. Bytes on
-     *  hit = sum of file sizes from the SIZE column (cheaper than
-     *  measuring blob lengths after decode; SIZE is the source-of-truth
-     *  stored at write time). */
-    getTarballFiles(name: string, version: string): TarballCacheFile[];
-    /** Max individual file size for tarball cache (DO SQLite blob limit). */
-    static readonly MAX_CACHEABLE_FILE = 1000000;
-    /** Max total package size for tarball cache. */
-    static readonly MAX_CACHEABLE_PACKAGE = 5000000;
-    /**
-     * Store extracted tarball files for a package version.
-     * Skips packages that exceed the SQLite blob size limit (SQLITE_TOOBIG).
-     * Large packages (date-fns, lucide-react) will be re-fetched on reinstall.
-     */
-    putTarballFiles(name: string, version: string, files: Map<string, Uint8Array>, ctx?: DurableObjectState): void;
-    /** Count cached files for a package version. */
-    getTarballFileCount(name: string, version: string): number;
     /** Read the lockfile for a project. Returns null if not found. */
     readLockfile(projectPath: string): Map<string, LockfileEntry> | null;
     /** Write/overwrite the lockfile for a project. Atomic via transaction. */
@@ -170,8 +144,6 @@ export declare class NpmCache {
     deleteUserModuleTransform(vfsPath: string): void;
     getStats(): {
         registryEntries: number;
-        cachedPackages: number;
-        cachedFiles: number;
         lockfileProjects: number;
         esmBundles: number;
         userModuleTransforms: number;
