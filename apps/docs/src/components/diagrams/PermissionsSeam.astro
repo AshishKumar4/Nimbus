@@ -12,7 +12,7 @@ const { caption } = Astro.props;
 ---
 
 <Diagram
-	label="The permissions seam: shell, runtime shims, and the WASI host all pass a uid/gid credential to one VFS choke point, which allows the write or returns EACCES"
+	label="The permissions seam: shell, runtime shims, and the WASI host all pass a uid/gid credential to one VFS seam, which allows the write or returns EACCES"
 	caption={caption}
 >
 	<svg viewBox="0 0 940 310" xmlns="http://www.w3.org/2000/svg">
@@ -50,19 +50,19 @@ const { caption } = Astro.props;
 		<line class="dgedge" x1="462" y1="146" x2="512" y2="146" marker-end="url(#ps-arr)" />
 
 		<rect class="dghero" x="520" y="114" width="200" height="64" rx="10" />
-		<text class="dgt" x="534" y="140">one VFS choke point</text>
+		<text class="dgt" x="534" y="140">one VFS seam</text>
 		<text class="dgs" x="534" y="160">every mutation passes here</text>
 
 		<path class="dgedge-accent" d="M 720,132 Q 748,124 758,96 L 764,82" marker-end="url(#ps-arr-a)" />
 		<path class="dgedge-dashed" d="M 720,160 Q 748,168 758,196 L 764,210" marker-end="url(#ps-arr)" />
 
 		<rect class="dgnode" x="756" y="26" width="168" height="56" rx="9" />
-		<text class="dgt dgaccent" x="770" y="48">write lands</text>
+		<text class="dgt dgaccent" x="770" y="48">write applied</text>
 		<text class="dgs" x="770" y="68">revision bumps</text>
 
 		<rect class="dgghost" x="756" y="212" width="168" height="56" rx="9" />
 		<text class="dgt dgdanger" x="770" y="234">EACCES / EPERM</text>
-		<text class="dgnote" x="770" y="254">honest on every runtime</text>
+		<text class="dgnote" x="770" y="254">enforced on every runtime</text>
 
 		<text class="dgs" x="282" y="230">uid, gid, and mode are durable inode columns; chmod and</text>
 		<text class="dgs" x="282" y="250">chown persist. root (uid 0) bypasses bits the way Unix does.</text>

@@ -16,7 +16,7 @@ hello from clang on the edge
 
 `node` and `bun` run on workerd's `nodejs_compat` V8 with Nimbus shims for
 `fs`, `child_process`, HTTP, and streams. They are not upstream Node or Bun
-binaries, but they aren't stubs either. `python` is Pyodide CPython 3.13.
+binaries, but they are not stubs. `python` is Pyodide CPython 3.13.
 `ruby` is ruby.wasm 3.3. `clang` is LLVM 8 with a modern wasi-libc sysroot.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
 builds, user headers, and `fopen` against session files. `-pthread` is
@@ -40,11 +40,10 @@ probes run Flask and Rack apps in preview tabs. Curated source artifacts and
 declared Pyodide extension modules also work. Runtimes are packages too. Run
 `python` before installing it and the shell prints the install hint.
 
-The terminal below is a live sandbox doing exactly that: asking for a
-runtime that isn't there, installing it with `nimbus install`, and
-opening the real CPython REPL it just fetched. The install pulls ~19 MiB
-of Pyodide from the content-addressed cache — usually seconds, up to a
-minute cold.
+The terminal below asks for a runtime that isn't installed, installs it
+with `nimbus install`, and opens the CPython REPL it just fetched. The
+install pulls ~19 MiB of Pyodide from the content-addressed cache, usually
+seconds, up to a minute cold.
 
 <NimbusSandbox
 	title="nimbus — toolchains"
@@ -59,6 +58,5 @@ minute cold.
 	]}
 />
 
-Native artifacts don't work, and don't pretend to. Manylinux wheels, native
-gems, `.node` addons, and ELF files fail before import with an exact ABI
-diagnostic.
+Native artifacts don't work. Manylinux wheels, native gems, `.node`
+addons, and ELF files fail before import with an exact ABI diagnostic.

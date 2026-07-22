@@ -4,8 +4,8 @@ description: A 10 GB SQLite-backed disk that survives the session lifecycle.
 ---
 
 Each session has a 10 GB SQLite-backed disk owned by its Durable Object.
-It survives WebSocket drops, browser restarts, hibernation, and DO eviction.
-Facets can die and sockets can drop. The disk stays.
+It survives WebSocket drops, browser restarts, hibernation, and DO
+eviction. Facets can be evicted and sockets can drop; the disk persists.
 
 ```bash
 $ echo "still here tomorrow" > /home/user/note.txt
@@ -31,8 +31,8 @@ credit, a process can't send more. That lets a parallel `npm install` or an
 84,000-file checkout fit inside a 128 MiB isolate. `fsync` and process exit
 are durability boundaries. Hibernation doesn't lose committed writes.
 
-One nuance matters. Short-lived runtime paths read from bounded,
-revision-invalidated snapshots for speed. Long-running processes increasingly
-use the live bridge. The target is one rule: reads see either the latest
-committed state or their own unflushed write. [Inside the disk](/docs/internals/disk/)
+Short-lived runtime paths read from bounded, revision-invalidated
+snapshots for speed. Long-running processes increasingly use the live
+bridge. The target is one rule: reads see either the latest committed
+state or their own unflushed write. [Inside the disk](/docs/internals/disk/)
 explains the machinery.

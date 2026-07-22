@@ -23,8 +23,8 @@ These are per-request Durable Object boots with no warm pool. All three
 runs had 100% success. In a phase run (N=15), `create()`+`ready()` took a
 545 ms median and first exec took 23 ms. Session boot is ~96% of TTI;
 after that, exec round-trips take ~20 ms. Across ~370 total sandboxes
-there was one failure — a DO storage timeout reset during a smoke
-iteration — noted here rather than hidden.
+there was one failure: a DO storage timeout reset during a smoke
+iteration.
 
 The client was a residential Linux machine, so network RTT to the edge is
 in these numbers. Nimbus is not on the official ComputeSDK leaderboard;

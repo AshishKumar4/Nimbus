@@ -1,15 +1,15 @@
 ---
 title: Ports & routing
-description: One registry, one path — loopback and previews are the same route, and everything streams.
+description: Loopback and previews share one port registry and route, and responses stream end to end.
 ---
 
 import PortRouting from '../../../components/diagrams/PortRouting.astro';
 
-<PortRouting caption="There is no second network. If the preview iframe can reach your server, so can every other process in the session." />
+<PortRouting caption="One registry, one path. The preview iframe and every other process in the session reach a port the same way." />
 
-One port registry, one route. Loopback `curl`, the port preview, and
-the default app preview all go through the supervisor. The registry is a
-map from port to owning pid and the facet stub that serves it; a facet's
+Loopback `curl`, the port preview, and the default app preview all go
+through the supervisor's port registry. The registry is a map from port
+to owning pid and the facet stub that serves it; a facet's
 `listen(port)` is an RPC that writes this map, and ports are torn down
 with their pid. Loopback exists only inside the session: the DNS shim
 resolves `localhost` and nothing else, and a connection to
@@ -18,7 +18,7 @@ resolves `localhost` and nothing else, and a connection to
 No registry entry returns `502`: no process is listening. A registered port
 whose stub isn't attached returns `501`. That state exists during the boot
 window between registration and a serving isolate. A dead port and a booting
-port are different truths, and neither hides behind a retry.
+port return different codes, and neither is masked by a retry.
 
 A routed request crosses the isolate boundary as a native Request over
 Workers RPC — not a structured-clone copy — so binary bodies pass

@@ -26,8 +26,8 @@ verifies; the URL is the auth. In enforce mode, `/new` needs a
 [attach exchange](/docs/sdk/tokens/).
 
 `sdk.remote` mounts `/api/nimbus/v1/sandboxes/<id>/rpc`; it stays off
-until enabled. Nimbus ships no token-mint endpoint on purpose. Use
-`routes` to add one behind your own user auth.
+until enabled. Nimbus ships no token-mint endpoint. Use `routes` to add
+one behind your own user auth.
 
 ```ts
 routes: async (request, env) => {

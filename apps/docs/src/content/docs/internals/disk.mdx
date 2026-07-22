@@ -5,7 +5,7 @@ description: The SQLite VFS — inodes, 64 KiB chunks, revision watermarks, and 
 
 import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
 
-<DiskLayers caption="Four layers, one owner. The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
+<DiskLayers caption="The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
 
 Inodes live in a SQLite table and file contents in 64 KiB chunks. The
 inode row carries the POSIX surface — kind, size, mtime, `mode`, `uid`,
@@ -37,8 +37,8 @@ Publication is path-atomic. A bulk write stages its chunks into a fresh
 content generation under bounded transactions (at most 1 MiB of blob
 bytes per transaction), then a single SQLite transaction swaps the
 inode's content id to the staged generation and marks the old one for
-collection. A crash mid-stream leaves a committed prefix of whole files —
-never half of a file, never half of the new tree for a published path.
+collection. A crash mid-stream leaves a committed prefix of whole files,
+not a partially-written file or a partially-published tree.
 
 Durability boundaries are `fsync` and process exit: every write returns
 only after its SQLite transaction commits, and hibernation cannot lose a
@@ -62,6 +62,6 @@ re-reading the world. Python, Ruby, bash, and WASI one-shots still use a
 snapshot plus diff flush; moving them to the live bridge is
 [active work](/docs/fine-print/research/).
 
-The coherence rule is simple: every read sees the latest committed revision or
-its own unflushed write. Conflicts fail loudly instead of overwriting data in
-silence.
+The coherence rule: every read sees the latest committed revision or its
+own unflushed write. Conflicts fail loudly rather than overwriting data
+silently.

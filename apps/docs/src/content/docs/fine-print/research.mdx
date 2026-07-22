@@ -3,10 +3,10 @@ title: Research & roadmap
 description: fork() now runs real bash. Unix permission enforcement shipped. One FD layer and inbound WASM sockets are still designs.
 ---
 
-Research stays separate from shipped features. Work here is designed,
-in progress, or proven as a mechanism. Nothing here is a capability
-claim. It moves to [capabilities &
-limits](/docs/fine-print/capabilities/) only when a probe proves it live.
+This page is separate from shipped features. The work here is designed, in
+progress, or proven as a mechanism, not a capability claim. Items move to
+[capabilities & limits](/docs/fine-print/capabilities/) only when a probe
+proves them live.
 
 ## fork() on V8 isolates — mechanism proven live
 
@@ -42,10 +42,10 @@ The S2 design shipped in July 2026. `uid`, `gid`, and `mode` are durable
 inode columns; one credential passes through a single VFS seam; denials
 are real `EACCES`/`EPERM` through every runtime, with a root bypass and
 durable `chmod`/`chown`. [Security](/docs/internals/security/) documents
-the model and proves a denial in a live sandbox. What stays on this page
-is maturity, not mechanism: enforcement coverage is weeks old, and some
-subsystems (package installation, runtime staging) intentionally act as
-a system credential.
+the model and proves a denial in a live sandbox. What remains open is
+maturity, not mechanism: enforcement coverage is weeks old, and some
+subsystems (package installation, runtime staging) run as a system
+credential.
 
 ## The rest, briefly
 

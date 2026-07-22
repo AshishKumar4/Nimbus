@@ -45,7 +45,7 @@ const { caption } = Astro.props;
 		<text class="dgs" x="46" y="328">10 GB per session · the single source of truth</text>
 
 		<text class="dgtag" x="580" y="40">what survives what</text>
-		<text class="dgs" x="580" y="72"><tspan class="dgaccent">✓</tspan> facet dies — nothing lost, facets never own files</text>
+		<text class="dgs" x="580" y="72"><tspan class="dgaccent">✓</tspan> facet evicted — nothing lost, facets never own files</text>
 		<text class="dgs" x="580" y="104"><tspan class="dgaccent">✓</tspan> websocket drops — disk intact, session resumes</text>
 		<text class="dgs" x="580" y="136"><tspan class="dgaccent">✓</tspan> DO evicted / hibernates — committed writes intact</text>
 		<text class="dgs" x="580" y="168"><tspan class="dgaccent">✓</tspan> crash mid-install — staged generation never published</text>
@@ -53,7 +53,7 @@ const { caption } = Astro.props;
 
 		<text class="dgtag" x="580" y="252">write path</text>
 		<text class="dgs" x="580" y="284">facets stream writes to the supervisor</text>
-		<text class="dgs" x="580" y="306">through a credit pool — no credits, no send.</text>
+		<text class="dgs" x="580" y="306">through a credit pool — no credit, no write.</text>
 		<text class="dgs" x="580" y="328">84,000-file checkouts cannot flood 128 MiB.</text>
 	</svg>
 </Diagram>

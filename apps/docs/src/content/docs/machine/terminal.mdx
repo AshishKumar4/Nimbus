@@ -14,16 +14,15 @@ $ chmod +x greet.sh && ./greet.sh   # a real, persisted exec bit
 ```
 
 The shell is a real lexer, parser, and interpreter for POSIX-like syntax.
-It isn't a regex matcher. Pipes, redirects, heredocs, command
-substitution, `set -e`, `trap`, `source`, `$?`, and 60+ coreutils work.
-Shebangs and WASM magic dispatch `./script.sh` and `./hello.wasm`.
-Full IFS splitting and complete job control aren't done. The probes in
-`tests/behavioral/shell/` are the source of truth for every claim here.
+Pipes, redirects, heredocs, command substitution, `set -e`, `trap`,
+`source`, `$?`, and 60+ coreutils work. Shebangs and WASM magic dispatch
+`./script.sh` and `./hello.wasm`. Full IFS splitting and complete job
+control aren't done. The probes in `tests/behavioral/shell/` are the
+source of truth for every claim here.
 
-The terminal below is a live sandbox typing exactly that kind of thing —
-a redirect, a pipe through real coreutils, and `id` showing the
-credential every command runs under. When the script finishes, the
-keyboard is yours.
+The terminal below is a live sandbox running a redirect, a pipe through
+real coreutils, and `id`, which prints the credential every command runs
+under. After the demo, you can type your own commands.
 
 <NimbusSandbox
 	title="nimbus — shell"

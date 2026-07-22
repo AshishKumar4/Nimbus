@@ -22,7 +22,7 @@ Asyncify, which can unwind a running program's call stack to memory and
 rewind it in another instance. [The process
 fabric](/docs/internals/processes/) covers what that unlocked.
 
-The smaller POSIX details matter too. `O_NOFOLLOW` and `O_APPEND` work,
+Smaller POSIX details are handled too. `O_NOFOLLOW` and `O_APPEND` work,
 symlinks survive `path_rename`, and `read(2)` on a socket fd goes to the
 socket. wasi-libc maps `read` to `fd_read` for every fd, so the host has to
 route it correctly.
@@ -40,7 +40,7 @@ fails with a clear diagnostic.
 The remaining gaps are [tracked with designs](/docs/fine-print/research/).
 WASI files still use snapshot-plus-diff-flush, which fits one-shots but
 not long-running processes. stdin is EOF. There are no inbound sockets.
-`wasi-threads` is refused at link time on purpose: a partial version could
-corrupt data, and
+`wasi-threads` is refused at link time: a partial version could corrupt
+data, and
 [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
 explains why.

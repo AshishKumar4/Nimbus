@@ -15,17 +15,17 @@ ok from another isolate
 ```
 
 That `curl` crossed an isolate boundary. Each process runs in its own V8
-isolate: the platform caps every isolate at 128 MiB, and Nimbus treats that
-cap as a segment, not the machine's ceiling. The supervisor joins processes
+isolate: the platform caps every isolate at 128 MiB, which is a per-process
+segment, not the whole machine's memory. The supervisor joins processes
 through its port registry. Start a server and it automatically becomes
 resident, with a keyed isolate and registered port. No flags are needed.
 
 One-shot processes run, stream their writes back, and exit. Residents survive
 across requests and own ports. Attached TTYs are residents with an interactive
 tab ([terminal & shell](/docs/machine/terminal/), alpha). The supervisor owns
-the process table, so `ps` stays honest after a facet eviction. If a process
-can't be restored, it is marked dead with a reason. There are no zombies. Logs
-are durable and bounded. Node supports `child_process.spawn`, `exec`, and
+the process table, so `ps` is accurate after a facet eviction. If a process
+can't be restored, it is marked dead with a reason, so there are no zombies.
+Logs are durable and bounded. Node supports `child_process.spawn`, `exec`, and
 `execFile` with piped stdio.
 
 Listening ports open and focus preview tabs. The path uses real
