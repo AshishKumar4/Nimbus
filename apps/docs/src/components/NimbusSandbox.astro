@@ -24,17 +24,46 @@
  * `{type:'input',data}` / `{type:'resize',cols,rows}`, server sends
  * `{type:'output',data}` (other frame types are ignored here). Rendering is
  * a real xterm.js instance, bundled locally, loaded only when the terminal
- * connects. After attach, a short first-run script is typed into the session
+ * connects. After attach, the embed's demo script is typed into the session
  * as real keystrokes, then the keyboard is handed to the reader.
  *
  * Without the env var this renders a plain link to the hosted app instead.
  * There is no canned playback in either mode.
  */
+/**
+ * Demo scripts: each embed may carry a page-specific command sequence,
+ * typed into the live session as real keystrokes after attach. An entry is
+ * a command string or `[command, maxWaitMs]` where maxWaitMs bounds how
+ * long the runner waits for a fresh prompt before moving on (default
+ * 15 s — a clone or an install needs more). The runner is prompt-aware:
+ * it types the next command as soon as the shell (or a REPL) shows a
+ * prompt again, so variable-duration commands never race the script.
+ * `demoId` keys a per-visit sessionStorage flag so a script runs once per
+ * visit even though the session itself is reused across pages. Keep one
+ * embed per page: a second live attach would contend for the same
+ * terminal.
+ */
+type DemoStep = string | [string, number];
 interface Props {
 	title?: string;
 	rows?: number;
+	demoId?: string;
+	demo?: DemoStep[];
 }
-const { title = 'nimbus — /home/user', rows = 14 } = Astro.props;
+const {
+	title = 'nimbus — /home/user',
+	rows = 14,
+	demoId = 'intro',
+	demo = [
+		'uname -a',
+		'node -v',
+		`echo 'console.log("hello from a live sandbox")' > hello.js`,
+		'node hello.js',
+	],
+} = Astro.props;
+const demoSteps: [string, number][] = demo.map((step) =>
+	typeof step === 'string' ? [step, 15_000] : step,
+);
 
 const attachUrl = import.meta.env.PUBLIC_NIMBUS_ANON_ATTACH_URL ?? '';
 const appUrl = 'https://nimbus.ashishkumarsingh.com';
@@ -42,7 +71,14 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 
 {
 	attachUrl ? (
-		<div class="nsx" data-nimbus-sandbox data-attach-url={attachUrl} style={`--nsx-rows:${rows}`}>
+		<div
+			class="nsx"
+			data-nimbus-sandbox
+			data-attach-url={attachUrl}
+			data-demo-id={demoId}
+			data-demo={JSON.stringify(demoSteps)}
+			style={`--nsx-rows:${rows}`}
+		>
 			<div class="nsx-bar">
 				<span class="nsx-dots" aria-hidden="true">
 					<i />
@@ -135,6 +171,10 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	}
 	.nsx-screen :global(.xterm) {
 		height: 100%;
+		/* The docs theme's prose line-height inflates xterm's DOM rows past
+		   the cell height xterm measured, double-spacing the output and
+		   clipping the bottom of the viewport. xterm owns its metrics. */
+		line-height: normal;
 	}
 	.nsx-status {
 		position: absolute;
@@ -208,7 +248,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	// while its short-lived attach token is valid, so the cache carries a
 	// mint timestamp and expires client-side well inside the token TTL.
 	const SESSION_KEY = 'nimbus:anon-session';
-	const INTRO_KEY = 'nimbus:anon-intro';
+	const DEMO_KEY_PREFIX = 'nimbus:anon-demo:';
 	const REUSE_WINDOW_MS = 90_000;
 
 	interface CachedSession {
@@ -357,10 +397,25 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			};
 			send({ type: 'resize', cols: term.cols, rows: term.rows });
 
+			// Rolling ANSI-stripped output tail, so the demo runner can see
+			// when the shell (or a REPL) is back at a prompt. While the demo
+			// is typing, the viewport follows the output; once the keyboard
+			// is the reader's, their scroll position is their own.
+			let outputTail = '';
+			let lastOutputAt = 0;
+			let followOutput = false;
 			ws.addEventListener('message', (e) => {
 				try {
 					const msg = JSON.parse(e.data);
-					if (msg.type === 'output') term.write(msg.data);
+					if (msg.type === 'output') {
+						term.write(msg.data, () => {
+							if (followOutput) term.scrollToBottom();
+						});
+						outputTail = (
+							outputTail + msg.data.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+						).slice(-80);
+						lastOutputAt = Date.now();
+					}
 				} catch {}
 			});
 			ws.addEventListener('close', () => setState('ended', 'session ended'));
@@ -369,16 +424,22 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			term.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }));
 			new ResizeObserver(() => fit.fit()).observe(screen);
 
-			// First run: real keystrokes into the live session, then the
-			// keyboard is the reader's. Skipped when reattaching to the
-			// visit's existing session.
-			let ranIntro = false;
+			// This embed's demo script: real keystrokes into the live
+			// session, then the keyboard is the reader's. Each script runs
+			// once per visit (keyed per embed), so reusing the visit's one
+			// session across pages still plays each page's own demo.
+			const demoKey = DEMO_KEY_PREFIX + (el.dataset.demoId ?? 'intro');
+			let steps: [string, number][] = [];
 			try {
-				ranIntro = reused && sessionStorage.getItem(INTRO_KEY) === 'true';
+				steps = JSON.parse(el.dataset.demo ?? '[]');
 			} catch {}
-			if (!ranIntro) {
+			let ranDemo = false;
+			try {
+				ranDemo = sessionStorage.getItem(demoKey) === 'true';
+			} catch {}
+			if (!ranDemo && steps.length > 0) {
 				try {
-					sessionStorage.setItem(INTRO_KEY, 'true');
+					sessionStorage.setItem(demoKey, 'true');
 				} catch {}
 				const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 				const type = async (line: string) => {
@@ -388,18 +449,38 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					}
 					send({ type: 'input', data: '\r' });
 				};
-				await sleep(1200);
-				for (const cmd of [
-					'uname -a',
-					'node -v',
-					`echo 'console.log("hello from a live sandbox")' > hello.js`,
-					'node hello.js',
-				]) {
+				// A shell prompt ends "$ "; REPL prompts end ">>> " or "> ".
+				// Quiescence guards against echo chunks that happen to end at
+				// a prompt boundary while a command is still producing output.
+				// The periodic no-op resize keeps input-side activity flowing
+				// while a long command runs — an input-idle session can go
+				// quiet, and a demo mid-install must not.
+				const waitForPrompt = async (maxMs: number) => {
+					const start = Date.now();
+					let lastKeepalive = Date.now();
+					await sleep(500);
+					while (Date.now() - start < maxMs) {
+						if (/(\$ |>>> |> )$/.test(outputTail) && Date.now() - lastOutputAt > 600) return;
+						if (Date.now() - lastKeepalive > 4000) {
+							lastKeepalive = Date.now();
+							send({ type: 'resize', cols: term.cols, rows: term.rows });
+						}
+						await sleep(200);
+					}
+				};
+				followOutput = true;
+				await sleep(reused ? 400 : 1200);
+				if (reused) send({ type: 'input', data: '\r' });
+				await waitForPrompt(8000);
+				for (const [cmd, maxWaitMs] of steps) {
 					await type(cmd);
-					await sleep(1500);
+					outputTail = '';
+					await waitForPrompt(maxWaitMs);
+					await sleep(700);
 				}
+				followOutput = false;
 			} else {
-				// Reattached to the visit's session: there is no scrollback
+				// Reattached with nothing to type: there is no scrollback
 				// replay yet, so nudge a fresh prompt.
 				send({ type: 'input', data: '\r' });
 			}

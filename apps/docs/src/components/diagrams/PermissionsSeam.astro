@@ -1,8 +1,8 @@
 ---
 /**
- * PermissionsSeam — the S2 permissions design: a real credential carried
- * to one VFS mutation choke point, which either lands the write or fails
- * with EACCES/EPERM. Design-stage; drawn dashed on purpose.
+ * PermissionsSeam — the shipped S2 permission seam: a real credential
+ * carried to one VFS choke point, which either lands the write or fails
+ * with EACCES/EPERM.
  */
 import Diagram from './Diagram.astro';
 interface Props {
@@ -12,7 +12,7 @@ const { caption } = Astro.props;
 ---
 
 <Diagram
-	label="Planned permissions seam: shell, runtime shims, and the WASI host all pass a uid/gid credential to one VFS choke point, which allows the write or returns EACCES"
+	label="The permissions seam: shell, runtime shims, and the WASI host all pass a uid/gid credential to one VFS choke point, which allows the write or returns EACCES"
 	caption={caption}
 >
 	<svg viewBox="0 0 940 310" xmlns="http://www.w3.org/2000/svg">
@@ -25,7 +25,7 @@ const { caption } = Astro.props;
 			</marker>
 		</defs>
 
-		<text class="dgtag dgwarn" x="14" y="20">S2 design — not shipped</text>
+		<text class="dgtag" x="14" y="20">shipped — enforced live</text>
 
 		<rect class="dgnode" x="14" y="40" width="190" height="52" rx="9" />
 		<text class="dgt" x="28" y="62">shell &amp; coreutils</text>
@@ -64,7 +64,7 @@ const { caption } = Astro.props;
 		<text class="dgt dgdanger" x="770" y="234">EACCES / EPERM</text>
 		<text class="dgnote" x="770" y="254">honest on every runtime</text>
 
-		<text class="dgs" x="282" y="230">today chown and umask are no-ops; this design replaces</text>
-		<text class="dgs" x="282" y="250">fake success with real checks. chmod (S1) already shipped.</text>
+		<text class="dgs" x="282" y="230">uid, gid, and mode are durable inode columns; chmod and</text>
+		<text class="dgs" x="282" y="250">chown persist. root (uid 0) bypasses bits the way Unix does.</text>
 	</svg>
 </Diagram>

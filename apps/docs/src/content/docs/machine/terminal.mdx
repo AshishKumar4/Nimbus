@@ -3,6 +3,8 @@ title: Terminal & shell
 description: A POSIX-like shell with stateful Python and Ruby REPLs, attached tabs, and recovery.
 ---
 
+import NimbusSandbox from '../../../components/NimbusSandbox.astro';
+
 ```bash
 $ printf 'cherry\napple\nbanana\n' > fruits.txt
 $ sort fruits.txt | head -2
@@ -17,6 +19,22 @@ substitution, `set -e`, `trap`, `source`, `$?`, and 60+ coreutils work.
 Shebangs and WASM magic dispatch `./script.sh` and `./hello.wasm`.
 Full IFS splitting and complete job control aren't done. The probes in
 `tests/behavioral/shell/` are the source of truth for every claim here.
+
+The terminal below is a live sandbox typing exactly that kind of thing —
+a redirect, a pipe through real coreutils, and `id` showing the
+credential every command runs under. When the script finishes, the
+keyboard is yours.
+
+<NimbusSandbox
+	title="nimbus — shell"
+	rows={14}
+	demoId="shell"
+	demo={[
+		String.raw`printf 'cherry\napple\nbanana\n' > fruits.txt`,
+		'sort fruits.txt | grep -v cherry',
+		'id',
+	]}
+/>
 
 ## REPLs
 

@@ -17,13 +17,61 @@ table, and port registry. Facets do the work and can be evicted.
 An app can span several isolates. That's how opencode runs as a server and
 TUI joined by loopback, with a separate budget for each half.
 
+## Why a Durable Object
+
+Workers are stateless and can run anywhere; a sandbox needs one place
+where the working directory, the process table, and the disk agree. A
+Durable Object is the only Cloudflare primitive that is both durable and
+strongly consistent: a single-threaded actor with transactional SQLite
+storage attached. One session is exactly one DO instance, addressed by
+`tenant:sessionId`, so there is no cache-coherence protocol between
+replicas — there are no replicas.
+
+The supervisor holds, in one actor:
+
+- **The disk** — the SQLite-backed VFS, 10 GB, the single source of
+  truth for every byte ([inside the disk](/docs/internals/disk/)).
+- **The process table** — pid-keyed state that survives facet resets;
+  `ps` reads the DO, never a facet. Each process carries an immutable
+  credential (uid, gid, groups, umask) assigned at spawn.
+- **The port registry** — which pid owns which port, and the facet stub
+  that serves it ([ports & routing](/docs/internals/network/)).
+- **Per-process log ring buffers and input queues** — durable and
+  bounded, so `logs <pid>` works after a facet dies.
+- **Hibernatable WebSockets** — terminals survive DO eviction, and
+  configured auto-responses answer idle pings without waking the actor.
+
+The supervisor also polices itself: it enforces a soft heap ceiling of
+64 MiB — half the platform cap — because a supervisor OOM is a session
+reset, not a process failure. Anything heavy is pushed out to facets.
+
+## Facets: the Worker Loader fabric
+
+Facets are dynamically loaded Workers created through the platform's
+Worker Loader binding. Each gets the standard `nodejs_compat` runtime, a
+128 MiB heap of its own, and exactly one injected capability: a
+`SUPERVISOR` RPC stub pointing back at its own session. Generated facet
+code cannot import supervisor modules — the RPC surface is the whole
+contract.
+
+The loader keys isolates by content hash and slot, so repeated runs of
+the same program reuse a warm isolate instead of paying instantiation
+again. Warm reuse is also a rule about failure: a route stub for an
+evicted facet fails loudly rather than re-loading the code, because a
+re-loaded isolate would be an empty worker with nothing listening.
+
+Staging is sized to the constraint. The supervisor describes a big app
+with a small spec — argv, env, a bounded VFS snapshot — and the full
+module map is assembled outside the DO, in a stateless isolate on the
+loader's cache-miss path. opencode's map is roughly 20 MB; a live
+failure proved that assembling it inside the supervisor crossed the
+memory cap and reset the session, which is why the rule exists.
+
 <RequestLifecycle caption="A preview request and an in-session curl take the same path through the registry, and the response streams the whole way." />
 
 Writes flow one way. Facets never own files. Every mutation streams to the
 supervisor through a credit pool, so a parallel `npm install` can't flood the
-DO. Heavy staging stays outside too: opencode's ~20 MB module map is
-assembled outside the DO, because a live run proved that assembling it inside
-crossed the memory cap and reset the session.
+DO ([inside the disk](/docs/internals/disk/) has the numbers).
 
 ## Design constraints
 
@@ -39,8 +87,8 @@ facet work must be split into phases. When the DO hibernates, its disk stays.
 ## Trust
 
 Isolation is deliberately boring. Nimbus inherits workerd's isolation —
-the same primitives Cloudflare runs untrusted customer code on. The CSP allows no
-runtime `eval` or request-time WASM compilation. Sessions share only read-only,
-content-addressed caches, and loopback stays inside a session. Outbound access
-is open by default because npm and git need it. Per-session egress policy is an
-honest gap on the [research page](/docs/fine-print/research/).
+the same primitives Cloudflare runs untrusted customer code on. The CSP
+allows no runtime `eval` or request-time WASM compilation. Sessions share
+only read-only, content-addressed caches, and loopback stays inside a
+session. [Security](/docs/internals/security/) walks the whole model —
+isolation, Unix permissions, tokens — including the honest gaps.

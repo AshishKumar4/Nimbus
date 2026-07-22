@@ -1,9 +1,7 @@
 ---
 title: Research & roadmap
-description: The fork() mechanism is proven live. True Unix permissions and one FD layer are still designs.
+description: fork() now runs real bash. Unix permission enforcement shipped. One FD layer and inbound WASM sockets are still designs.
 ---
-
-import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro';
 
 Research stays separate from shipped features. Work here is designed,
 in progress, or proven as a mechanism. Nothing here is a capability
@@ -31,15 +29,23 @@ facet-budget overrun is a catchable error, which maps to `fork()`
 returning `ENOMEM`. M2 is proven live too: fork + exec of a different
 wasm image + a real `waitpid` exit status, vfork and posix_spawn fast
 paths, and cross-facet placement (fork+exec+wait ~1.9 ms at 16 MiB).
-Wiring all of it into the shipped process model is the remaining work.
 
-## True Unix permissions (S2)
+The mechanism now carries a real program: GNU bash 5.2.37 and BusyBox
+1.37.0 coreutils run in a dedicated facet on this fork/pipe/setjmp
+scheduler ([the process fabric](/docs/internals/processes/)). The
+remaining work is making it the default process model rather than an
+installable program.
 
-<PermissionsSeam caption="The S2 design: one credential, one choke point, honest EACCES. Durable chmod and exec-bit dispatch (S1) already shipped." />
+## True Unix permissions — shipped
 
-Today, `chown` and `umask` are no-ops. They are scheduled to die. S2 adds
-`uid`/`gid` to the inode schema and passes one real credential through
-the VFS mutation seam, returning `EACCES` through every runtime.
+The S2 design shipped in July 2026. `uid`, `gid`, and `mode` are durable
+inode columns; one credential passes through a single VFS seam; denials
+are real `EACCES`/`EPERM` through every runtime, with a root bypass and
+durable `chmod`/`chown`. [Security](/docs/internals/security/) documents
+the model and proves a denial in a live sandbox. What stays on this page
+is maturity, not mechanism: enforcement coverage is weeks old, and some
+subsystems (package installation, runtime staging) intentionally act as
+a system credential.
 
 ## The rest, briefly
 
@@ -53,3 +59,4 @@ the VFS mutation seam, returning `EACCES` through every runtime.
 | Full POSIX PTY parity | raw/cooked modes, signals, replay — roadmap |
 | Broader Pyodide/gem artifact catalogs, fuller pip/Bundler parity | ongoing |
 | Per-session egress policy (deny-by-default outbound) | recognized gap, designed as embedder option |
+| Upstream workerd availability issue — some user-space activity can crash the shared process and reset sessions; disks survive, availability only | reproduced, reported, escalating with Cloudflare |

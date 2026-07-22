@@ -6,11 +6,21 @@ description: Start a live sandbox from the browser, the SDK, or your own Cloudfl
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-<NimbusSandbox title="nimbus — quickstart" rows={14} />
+<NimbusSandbox
+	title="nimbus — quickstart"
+	rows={16}
+	demoId="quickstart"
+	demo={[
+		'node --version',
+		['npm install zod', 30_000],
+		[`node -e "const {z}=require('zod');console.log(z.string().parse('a real install, a real registry'))"`, 20_000],
+	]}
+/>
 
-The terminal above is a live sandbox. It connects to a real session — the
-same thing **Launch** creates at
-[nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com).
+The terminal above is a live sandbox running the commands it teaches: a
+real `npm install` against the live registry, then `node` importing what
+it installed. It connects to a real session — the same thing **Launch**
+creates at [nimbus.ashishkumarsingh.com](https://nimbus.ashishkumarsingh.com).
 The `/s/<id>/` URL is the session: bookmark it, and the files persist
 between visits. An idle session costs nothing.
 

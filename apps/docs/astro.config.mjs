@@ -21,7 +21,6 @@ export default defineConfig({
 		'/sdk/cli': '/docs/sdk/handler/',
 		'/internals/git-engine': '/docs/machine/git/',
 		'/internals/budgets': '/docs/internals/fabric/',
-		'/internals/security': '/docs/internals/fabric/',
 		'/fine-print/limitations': '/docs/fine-print/capabilities/',
 	},
 	integrations: [
@@ -75,6 +74,7 @@ export default defineConfig({
 					label: 'Under the hood',
 					items: [
 						{ label: 'The fabric', slug: 'internals/fabric' },
+						{ label: 'Security', slug: 'internals/security' },
 						{ label: 'Inside the disk', slug: 'internals/disk' },
 						{ label: 'The process fabric', slug: 'internals/processes' },
 						{ label: 'Ports & routing', slug: 'internals/network' },

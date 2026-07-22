@@ -16,6 +16,12 @@ Outbound TCP uses `path_open('/dev/tcp/<host>/<port>')` to open a real
 `cloudflare:sockets` connection. `poll_oneoff` can mix fd, clock, and
 socket subscriptions.
 
+JSPI suspends a call; it cannot snapshot a stack. Programs that need
+`fork` or `setjmp` — bash above all — are additionally instrumented with
+Asyncify, which can unwind a running program's call stack to memory and
+rewind it in another instance. [The process
+fabric](/docs/internals/processes/) covers what that unlocked.
+
 The smaller POSIX details matter too. `O_NOFOLLOW` and `O_APPEND` work,
 symlinks survive `path_rename`, and `read(2)` on a socket fd goes to the
 socket. wasi-libc maps `read` to `fd_read` for every fd, so the host has to

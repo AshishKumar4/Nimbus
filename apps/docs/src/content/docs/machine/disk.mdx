@@ -16,7 +16,9 @@ still here tomorrow
 
 The disk preserves arbitrary bytes, symlinks, stat metadata, and exec bits.
 `fs.writeFileSync` with arbitrary bytes is probed. `chmod +x` survives, and
-`./prog` honors it. The VFS event bus sends coalesced file changes to the
+`./prog` honors it. Ownership is real too: every inode stores `uid`, `gid`,
+and `mode` durably, and a process without permission gets `EACCES`, not
+silent success ([security](/docs/internals/security/)). The VFS event bus sends coalesced file changes to the
 editor and dev servers, which is what keeps Vite HMR working. Each path has
 a revision watermark, so runtime caches know when to refresh.
 

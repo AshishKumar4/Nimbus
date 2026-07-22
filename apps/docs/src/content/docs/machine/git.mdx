@@ -4,6 +4,7 @@ description: HTTPS clones split into fetch, indexing, and resumable checkout pha
 ---
 
 import GitPipeline from '../../../components/diagrams/GitPipeline.astro';
+import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 
 <GitPipeline caption="A clone is three different resource profiles — network, CPU, writes. No single isolate budget covers all three, so each phase gets its own." />
 
@@ -11,6 +12,21 @@ import GitPipeline from '../../../components/diagrams/GitPipeline.astro';
 the heaviest things a session does. Fetch needs network time, `index-pack`
 needs CPU, and checkout makes many writes. Each phase gets a fresh CPU
 budget, and checkout is split into resumable chunks.
+
+The terminal below is a live sandbox cloning a real repository from
+GitHub over HTTPS — packfile negotiation, indexing, and checkout, ending
+in ordinary files on the session disk.
+
+<NimbusSandbox
+	title="nimbus — git"
+	rows={16}
+	demoId="git"
+	demo={[
+		['git clone https://github.com/octocat/Hello-World', 30_000],
+		'ls Hello-World',
+		'cat Hello-World/README',
+	]}
+/>
 
 ```bash
 git clone https://github.com/AshishKumar4/Markflow

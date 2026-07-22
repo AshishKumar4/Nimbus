@@ -8,15 +8,28 @@ import PortRouting from '../../../components/diagrams/PortRouting.astro';
 <PortRouting caption="There is no second network. If the preview iframe can reach your server, so can every other process in the session." />
 
 One port registry, one route. Loopback `curl`, the port preview, and
-the default app preview all go through the supervisor.
+the default app preview all go through the supervisor. The registry is a
+map from port to owning pid and the facet stub that serves it; a facet's
+`listen(port)` is an RPC that writes this map, and ports are torn down
+with their pid. Loopback exists only inside the session: the DNS shim
+resolves `localhost` and nothing else, and a connection to
+`127.0.0.1:<port>` is a lookup in this registry, not a network hop.
 
 No registry entry returns `502`: no process is listening. A registered port
 whose stub isn't attached returns `501`. That state exists during the boot
 window between registration and a serving isolate. A dead port and a booting
 port are different truths, and neither hides behind a retry.
 
-Responses stream end to end. The relay stays open until the body finishes;
-closing it early would kill the stream. Live probes check each SSE tick in the
+A routed request crosses the isolate boundary as a native Request over
+Workers RPC — not a structured-clone copy — so binary bodies pass
+byte-for-byte in both directions, and the request body itself streams
+into the facet.
+
+Responses stream end to end. The relay pipes the facet's body through an
+identity stream and keeps the routing call open until the body finishes;
+closing it early would kill the stream, and materializing it first —
+what an earlier version did — turned every SSE feed into one
+batch at stream-close. Live probes check each SSE tick in the
 session shell and through the preview path at ~300 ms intervals. In-session
 `curl` writes each chunk as it arrives, and <kbd>Ctrl</kbd>+<kbd>C</kbd>
 cancels the read. Abandoned readers also cancel their relay pipes.

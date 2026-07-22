@@ -1,0 +1,135 @@
+---
+title: Security
+description: The isolate boundary, enforced Unix permissions, session isolation, the token model — and the limits, stated plainly.
+---
+
+import NimbusSandbox from '../../../components/NimbusSandbox.astro';
+import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro';
+
+Every claim on this page is enforced by a mechanism you can point at,
+and the last section lists what is not enforced yet. Nothing here is
+aspirational.
+
+## The boundary is workerd's
+
+Every process in a sandbox runs in its own V8 isolate, created through
+Cloudflare's Worker Loader — the same isolate boundary the platform runs
+untrusted customer code behind. Nimbus does not implement its own
+sandboxing layer below that line, deliberately: a homegrown boundary
+would be a weaker one.
+
+One session is one supervisor Durable Object plus the facet isolates it
+spawns. A facet receives exactly one capability at birth: an RPC stub
+pointing at its own session's supervisor. Generated facet code cannot
+import supervisor modules, cannot reach another session's DO, and cannot
+mint stubs it wasn't given — the RPC surface is the entire contract.
+
+## No runtime code generation
+
+workerd's content security policy forbids `eval` and `new Function` at
+request time, and forbids compiling WASM from raw bytes at request time.
+Nimbus runs everything — including compilers and interpreters — inside
+that constraint: WASM modules enter a facet pre-compiled through the
+module map, and nothing in a session can generate and execute new
+machine code.
+
+This is why the `node` and `bun` REPLs can't keep declarations between
+submits: a REPL line is runtime code generation. It is a security
+property, not a bug, and the REPL banners say so.
+
+## Unix permissions, enforced at one seam
+
+<PermissionsSeam caption="One credential, one choke point, honest EACCES. Every filesystem call carries the calling process's uid/gid; the VFS decides at a single seam." />
+
+Every inode durably stores `mode`, `uid`, and `gid` in the session's
+SQLite disk — `chmod` and `chown` are real mutations that survive
+hibernation, not display fictions. Every process carries an immutable
+credential (uid, gid, groups, umask) assigned at spawn and inherited
+from its parent, and every filesystem operation a runtime performs is
+bound to that credential before it reaches the VFS. There is exactly one
+enforcement seam: the VFS exposes no uncredentialed mutation surface, and
+path resolution checks traverse permission on every component.
+
+Denials are honest errno: `EACCES` for access, `EPERM` for ownership
+rules, through every runtime. Root (uid 0) bypasses permission bits the
+way Unix root does; a normal user does not. The terminal below is a live
+sandbox proving it — the session's history file is owned by root, and
+the demo tries to write it as uid 1000:
+
+<NimbusSandbox
+	title="nimbus — permissions"
+	rows={14}
+	demoId="security"
+	demo={[
+		'id',
+		'ls -l .bash_history',
+		'echo overwrite >> .bash_history',
+		'touch mine.txt && chmod 600 mine.txt && ls -l mine.txt',
+	]}
+/>
+
+## Sessions don't share
+
+Loopback never leaves the session. The DNS shim resolves `localhost` and
+nothing else, and `127.0.0.1:<port>` is a lookup in the session's own
+port registry — a map inside the supervisor DO — not a network hop. If
+two sessions both listen on port 3000, they have never heard of each
+other.
+
+The only thing sessions share is read-only, content-addressed cache:
+npm tarballs keyed by `name@version` (immutable on the registry since
+2018) and runtime blobs, stored in R2. Sessions reach that cache through
+narrow supervisor RPC methods — the R2 bindings live on the Worker, not
+in any session or facet — so no session can write another session's
+view of a package. There is no cross-session filesystem, no shared
+scratch space, and no DO that serves two sessions.
+
+## Who can attach
+
+Session access is bearer tokens: HS256, verified with a constant-time
+comparison against a fixed algorithm — the verifier never reads the
+algorithm from the token header. Claims carry a tenant, a subject,
+optional scopes (`session:create`, `session:attach`, `session:destroy`,
+`sandbox:use`, …), and an optional `sid` pin that locks the token to one
+session. Attaching to a terminal requires `session:attach` and a
+matching pin; server-minted bootstrap tokens are single-use, consumed
+atomically in the DO, so a replayed bootstrap gets a 401. Secrets
+rotate with a previous-secret grace window.
+
+The hosted demo's anonymous sandboxes are the same machinery with short
+leashes: a sid-pinned attach token that expires in two minutes, a global
+cap on concurrent anonymous sessions, a per-address rate limit, and a
+fixed ten-minute session lifetime.
+
+## Faults stay small
+
+Process-per-isolate is also the fault boundary. A process that exhausts
+its 128 MiB heap produces a catchable RPC error — the shell reports it,
+the session keeps running, and the disk is untouched because facets
+never own files. The supervisor protects itself with a self-imposed
+64 MiB heap ceiling, half the platform cap, so the component whose death
+would actually cost something is the one kept furthest from the edge.
+
+## The honest limits
+
+- **Permission enforcement is new.** The durable `uid`/`gid`/`mode`
+  schema and the credentialed seam shipped in July 2026. The mechanism
+  is probed live, but its coverage is young — treat it as a correctness
+  boundary firming up, not a decades-hardened one.
+- **Some subsystems run as a system credential by design.** Package
+  installation, runtime staging, and control-plane file operations act
+  with uid 0, the way a package manager does. Root-owned files in a
+  fresh session are that, not a leak.
+- **Outbound network is open by default.** npm and git need it.
+  Per-session egress policy is designed as an embedder option and not
+  shipped — do not put a sandbox in front of secrets it shouldn't
+  exfiltrate.
+- **A known upstream availability issue.** Certain user-space activity
+  can currently crash the shared workerd process, which resets the
+  sessions on it. The blast radius is availability — sessions reconnect
+  and disks survive, and it is not a path to another tenant's data. It
+  is reproduced, reported, and being escalated with Cloudflare.
+
+The [research page](/docs/fine-print/research/) tracks all of these.
+The hosted demo carries its own caveat: it is for evaluation, has no
+SLA, and is not a place for secrets.

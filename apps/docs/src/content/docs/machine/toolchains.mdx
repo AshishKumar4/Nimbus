@@ -3,6 +3,8 @@ title: Toolchains & packages
 description: The exact runtime and package support for Node, Bun, Python, Ruby, and C.
 ---
 
+import NimbusSandbox from '../../../components/NimbusSandbox.astro';
+
 ```bash
 $ cat > hello.c <<'EOF'
 #include <stdio.h>
@@ -37,6 +39,25 @@ in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end;
 probes run Flask and Rack apps in preview tabs. Curated source artifacts and
 declared Pyodide extension modules also work. Runtimes are packages too. Run
 `python` before installing it and the shell prints the install hint.
+
+The terminal below is a live sandbox doing exactly that: asking for a
+runtime that isn't there, installing it with `nimbus install`, and
+opening the real CPython REPL it just fetched. The install pulls ~19 MiB
+of Pyodide from the content-addressed cache — usually seconds, up to a
+minute cold.
+
+<NimbusSandbox
+	title="nimbus — toolchains"
+	rows={16}
+	demoId="toolchains"
+	demo={[
+		'python --version',
+		['nimbus install python', 120_000],
+		['python', 30_000],
+		'40 + 2',
+		'exit()',
+	]}
+/>
 
 Native artifacts don't work, and don't pretend to. Manylinux wheels, native
 gems, `.node` addons, and ELF files fail before import with an exact ABI
