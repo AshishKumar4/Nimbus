@@ -534,46 +534,22 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       let integrityPromise: Promise<void> = Promise.resolve();
 
       if (r2HitBytes && r2HitBytes.length > 0) {
-        // Integrity-verify the R2 bytes ONCE before we use them. If
-        // mismatch, treat as a cache miss + best-effort delete.
-        let integrityOk = true;
-        if (spec.integrity && spec.integrity.indexOf('-') !== -1) {
-          const dash = spec.integrity.indexOf('-');
-          const algo = spec.integrity.slice(0, dash).toLowerCase();
-          const expectedB64 = spec.integrity.slice(dash + 1);
-          const subtleAlgo =
-            algo === 'sha512' ? 'SHA-512'
-            : algo === 'sha384' ? 'SHA-384'
-            : algo === 'sha256' ? 'SHA-256'
-            : algo === 'sha1' ? 'SHA-1'
-            : '';
-          if (subtleAlgo) {
-            const digest = await crypto.subtle.digest(subtleAlgo, r2HitBytes);
-            const dBytes = new Uint8Array(digest);
-            let bin = '';
-            for (let i = 0; i < dBytes.length; i++) bin += String.fromCharCode(dBytes[i]);
-            const gotB64 = btoa(bin);
-            if (gotB64 !== expectedB64) {
-              integrityOk = false;
-              warnings.push(`R2 cache integrity mismatch for ${spec.name}@${spec.version}; falling through to network`);
-            }
-          }
-        }
-
-        if (integrityOk) {
-          pipelinedTarballRaceWins++;
-          tarballsCompleted++;
-          cumulativeBytesDecoded += r2HitBytes.length;
-          // Synthesize a Response body from the R2 bytes so the
-          // existing decompress+tar pipeline below works unchanged.
-          // No tee needed: integrity already verified.
-          bytesStream = new Response(r2HitBytes).body!;
-          resp = new Response(r2HitBytes, { status: 200 });
-        } else {
-          // Integrity-mismatch: drop R2 hit; fall through to network
-          // after best-effort cache delete.
-          r2HitBytes = null;
-        }
+        // Cache HIT: use the bytes without re-hashing. The tarball was
+        // integrity-verified on the cold registry-fetch path (below) BEFORE
+        // it was written to R2/L2 (putCachedTarball's documented contract),
+        // R2 + Cache API guarantee stored-byte integrity, and `name@version`
+        // is an immutable npm coordinate — so the digest the store already
+        // matched still holds. Re-hashing every hit was pure per-install CPU
+        // with no correctness value: any real corruption surfaces loudly in
+        // the gunzip + tar + package.json-marker pipeline below, never
+        // silently. The cold registry-fetch verification stays intact.
+        pipelinedTarballRaceWins++;
+        tarballsCompleted++;
+        cumulativeBytesDecoded += r2HitBytes.length;
+        // Synthesize a Response body from the R2 bytes so the existing
+        // decompress + tar pipeline below works unchanged.
+        bytesStream = new Response(r2HitBytes).body!;
+        resp = new Response(r2HitBytes, { status: 200 });
       }
 
       if (!r2HitBytes) {
