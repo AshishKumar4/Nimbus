@@ -26,7 +26,6 @@ import { computeHoistPlan, } from './resolver.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
-import { buildCacheRestorePayload } from './tarball.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
@@ -164,7 +163,6 @@ export class NpmInstaller {
         phaseStart = Date.now();
         setInstallPhase('diff');
         const toFetch = [];
-        const toRestore = [];
         for (const [, pkg] of resolved) {
             if (!pkg.tarballUrl)
                 continue;
@@ -182,36 +180,17 @@ export class NpmInstaller {
                 }
                 catch { /* corrupt package.json — reinstall */ }
             }
-            // Check tarball cache
-            if (this.cache.hasTarballCache(pkg.name, pkg.version)) {
-                toRestore.push(pkg);
-                cachedHits++;
-            }
-            else {
-                toFetch.push(pkg);
-            }
+            // Not present in the VFS at the right version — fetch it. The batch
+            // facet consults the shared L2 (caches.default) + L3 (R2) tarball
+            // tiers itself, so a cross-DO warm cache still lands here.
+            toFetch.push(pkg);
         }
         phases['diff'] = Date.now() - phaseStart;
-        log(`To fetch: ${toFetch.length}, to restore: ${toRestore.length}, already installed: ${cachedHits - toRestore.length}`);
+        log(`To fetch: ${toFetch.length}, already installed: ${cachedHits}`);
         // ── Phase 4+5: Fetch + Write (wave-based) ───────────────────────
         phaseStart = Date.now();
         setInstallPhase('fetch');
-        // First, restore cached packages
-        if (toRestore.length > 0) {
-            log(`Restoring ${toRestore.length} packages from cache...`);
-            // Process in waves to bound memory
-            const RESTORE_WAVE = 20;
-            for (let i = 0; i < toRestore.length; i += RESTORE_WAVE) {
-                const wave = toRestore.slice(i, i + RESTORE_WAVE);
-                const payload = buildCacheRestorePayload(wave, hoistPlan, nmDir, this.cache);
-                const result = await this.writeStreamPayload(payload);
-                totalFiles += result.inodes;
-                for (const pkg of wave) {
-                    installed.push(`${pkg.name}@${pkg.version}`);
-                }
-            }
-        }
-        // Then, fetch + extract + write new packages.
+        // Fetch + extract + write new packages.
         //
         // Single fetch path: one NimbusLoaderPool isolate (the batch facet)
         // runs the entire install. The facet streams tarballs through gunzip+tar

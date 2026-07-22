@@ -1,40 +1,28 @@
 /**
- * npm-tarball.ts — tarball extraction + cache-restore payload builder.
+ * npm-tarball.ts — streaming tarball extraction (gunzip + tar).
  *
- * Phase 2 A'.1 reduced this module to:
- *   - extractTarball / extractTarballFromResponse — streaming gunzip+tar.
- *     Used by the install-batch facet (which holds the bytes inside its
- *     own 128 MiB envelope, not the supervisor's).
- *   - buildCacheRestorePayload — supervisor-side BatchWritePayload
- *     builder for the cached-tarball fast path. Runs only on a cache
- *     hit; the bytes already live in the per-DO npm cache rather than
- *     being fetched off the network.
+ * `extractTarball` / `extractTarballFromResponse` walk a gzipped tar stream
+ * entry-by-entry, holding at most one file's bytes at a time. Used by the
+ * install-batch facet (whose own 128 MiB envelope, not the supervisor's,
+ * holds the bytes) and the ruby-gems runtime.
  *
- * The legacy `fetchWaves` async generator + `buildBatchPayload` builder
- * were removed — they ran in supervisor heap and held tarball bytes long
- * enough to OOM the DO on large installs. The single batch-facet path
- * (src/npm-install-batch-facet.ts) supersedes them.
+ * The legacy supervisor-resident `fetchWaves` / `buildBatchPayload` and the
+ * `buildCacheRestorePayload` fast path were removed — they ran in supervisor
+ * heap and held tarball bytes long enough to OOM the DO on large installs.
+ * The single batch-facet path (install-batch-facet.ts) supersedes them and
+ * consults the shared L2/L3 tarball cache directly.
  */
-import type { NpmCache } from './cache.js';
-import type { ResolvedPackage, HoistPlan } from './resolver.js';
-import type { BatchWritePayload } from '../vfs/sqlite-vfs.js';
-export interface FetchedPackage {
-    pkg: ResolvedPackage;
-    files: Map<string, Uint8Array>;
-}
 /**
  * Streaming extractor driven by a `Response` body.
  *
  * Pipes `resp.body` through `DecompressionStream('gzip')` (npm tarballs are
  * always gzipped) and walks the tar stream entry-by-entry. Never buffers the
  * full decompressed tarball — peak transient heap is one file's bytes plus a
- * small carry buffer. This is the path used by live installs; the cache
- * restore path (in-memory bytes from SQLite) still uses `extractTarball`.
+ * small carry buffer.
  *
- * The returned Map is per-file Uint8Arrays, same shape as the legacy
- * extractor so downstream `putTarballFiles` / `buildBatchPayload` don't care.
- * If the response has no body (unusual but possible with some proxies), we
- * fall back to `arrayBuffer()` + `extractTarball` so we still make progress.
+ * The returned Map is per-file Uint8Arrays. If the response has no body
+ * (unusual but possible with some proxies), we fall back to `arrayBuffer()`
+ * + `extractTarball` so we still make progress.
  */
 export declare function extractTarballFromResponse(resp: Response): Promise<Map<string, Uint8Array>>;
 /**
@@ -43,9 +31,4 @@ export declare function extractTarballFromResponse(resp: Response): Promise<Map<
  * SQLite as Uint8Arrays). New install paths use `streamTarEntries` instead.
  */
 export declare function extractTarball(tarball: ArrayBuffer): Promise<Map<string, Uint8Array>>;
-/**
- * Build a BatchWritePayload from the tarball cache (for packages that were
- * already cached — no fetch needed).
- */
-export declare function buildCacheRestorePayload(packages: ResolvedPackage[], hoistPlan: HoistPlan, nodeModulesDir: string, cache: NpmCache): BatchWritePayload;
 //# sourceMappingURL=tarball.d.ts.map

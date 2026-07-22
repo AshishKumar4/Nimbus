@@ -1,12 +1,11 @@
 /**
  * npm-cache.ts — SQLite-backed package cache for Nimbus npm v2.
  *
- * Five tables:
+ * Four tables:
  *   1. pkg_registry_cache — packument metadata (avoids re-fetching full JSON)
- *   2. pkg_tarball_cache  — extracted file contents per name@version
- *   3. pkg_lockfile        — resolved dependency graph per project
- *   4. pkg_esm_bundles     — pre-bundled ESM for /@modules/ serving
- *   5. user_module_transforms — transformed user .ts/.tsx/.jsx output,
+ *   2. pkg_lockfile        — resolved dependency graph per project
+ *   3. pkg_esm_bundles     — pre-bundled ESM for /@modules/ serving
+ *   4. user_module_transforms — transformed user .ts/.tsx/.jsx output,
  *      keyed by content hash so it survives DO hibernation (the dev
  *      server's in-memory moduleCache does not) and never serves stale
  *      output after an unobserved write.
@@ -15,9 +14,9 @@
  * on first use (not at VFS init, to avoid penalizing sessions that don't npm install).
  *
  * L1 cache observability (cache metrics support):
- *   getRegistryEntry / getTarballFiles bump per-tier counters via
- *   src/_shared/cache-stats.ts. Hit = row(s) returned with size > 0;
- *   miss = empty result set. Callers fall through to L2/L3/L4 on miss.
+ *   getRegistryEntry bumps per-tier counters via src/_shared/cache-stats.ts.
+ *   Hit = row(s) returned with size > 0; miss = empty result set. Callers
+ *   fall through to L2/L3/L4 on miss.
  */
 import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '../_shared/cache-stats.js';
 // ── NpmCache ────────────────────────────────────────────────────────────
@@ -74,15 +73,6 @@ export class NpmCache {
                 }
             }
         }
-        this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_tarball_cache (
-      name     TEXT NOT NULL,
-      version  TEXT NOT NULL,
-      rel_path TEXT NOT NULL,
-      data     BLOB NOT NULL,
-      size     INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (name, version, rel_path)
-    )`);
-        this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_pkg_tarball_nv ON pkg_tarball_cache(name, version)`);
         this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_lockfile (
       project_path TEXT NOT NULL,
       name         TEXT NOT NULL,
@@ -219,97 +209,6 @@ export class NpmCache {
         }
         return { written, failed };
     }
-    // ── Tarball cache ─────────────────────────────────────────────────────
-    /** Check if a package version's files are cached. */
-    hasTarballCache(name, version) {
-        this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT 1 FROM pkg_tarball_cache WHERE name = ? AND version = ? LIMIT 1`, name, version)];
-        return rows.length > 0;
-    }
-    /** Get all cached files for a package version.
-     *
-     *  L1 observability: hit when rows > 0; miss when empty. Bytes on
-     *  hit = sum of file sizes from the SIZE column (cheaper than
-     *  measuring blob lengths after decode; SIZE is the source-of-truth
-     *  stored at write time). */
-    getTarballFiles(name, version) {
-        this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT rel_path, data, size FROM pkg_tarball_cache WHERE name = ? AND version = ?`, name, version)];
-        if (rows.length === 0) {
-            _l1RecordMiss('L1', 'tarball');
-            return [];
-        }
-        const out = rows.map(r => ({
-            relPath: String(r.rel_path),
-            data: blobToUint8Array(r.data),
-            size: Number(r.size),
-        }));
-        let totalBytes = 0;
-        for (const f of out)
-            totalBytes += f.size;
-        _l1RecordHit('L1', 'tarball', totalBytes);
-        return out;
-    }
-    /** Max individual file size for tarball cache (DO SQLite blob limit). */
-    static MAX_CACHEABLE_FILE = 1_000_000; // 1MB
-    /** Max total package size for tarball cache. */
-    static MAX_CACHEABLE_PACKAGE = 5_000_000; // 5MB
-    /**
-     * Store extracted tarball files for a package version.
-     * Skips packages that exceed the SQLite blob size limit (SQLITE_TOOBIG).
-     * Large packages (date-fns, lucide-react) will be re-fetched on reinstall.
-     */
-    putTarballFiles(name, version, files, ctx) {
-        this.ensureSchema();
-        // Check total package size — skip caching if too large
-        let totalSize = 0;
-        for (const [, data] of files)
-            totalSize += data.length;
-        if (totalSize > NpmCache.MAX_CACHEABLE_PACKAGE) {
-            console.log(`[npm-cache] skipping cache for ${name}@${version} (${(totalSize / 1e6).toFixed(1)}MB > 5MB limit)`);
-            return;
-        }
-        // Filter out individual files that exceed the blob limit
-        const entries = [...files.entries()].filter(([relPath, data]) => {
-            if (data.length > NpmCache.MAX_CACHEABLE_FILE) {
-                console.log(`[npm-cache] skipping large file ${relPath} (${(data.length / 1e6).toFixed(1)}MB)`);
-                return false;
-            }
-            return true;
-        });
-        if (entries.length === 0)
-            return;
-        const doTx = (fn) => {
-            if (ctx?.storage?.transactionSync) {
-                ctx.storage.transactionSync(fn);
-            }
-            else {
-                fn();
-            }
-        };
-        doTx(() => {
-            // Delete old entries for this package version (if re-caching)
-            this.sql.exec(`DELETE FROM pkg_tarball_cache WHERE name = ? AND version = ?`, name, version);
-            // Batch insert: DO SQLite has a low bind-parameter limit (~100 vars).
-            // 5 columns per row → max 19 rows per statement (19×5=95).
-            const BATCH = 19;
-            for (let i = 0; i < entries.length; i += BATCH) {
-                const batch = entries.slice(i, i + BATCH);
-                const placeholders = batch.map(() => '(?,?,?,?,?)').join(',');
-                const values = [];
-                for (const [relPath, data] of batch) {
-                    values.push(name, version, relPath, data, data.length);
-                }
-                this.sql.exec(`INSERT INTO pkg_tarball_cache (name, version, rel_path, data, size) VALUES ${placeholders}`, ...values);
-            }
-        });
-    }
-    /** Count cached files for a package version. */
-    getTarballFileCount(name, version) {
-        this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_tarball_cache WHERE name = ? AND version = ?`, name, version)];
-        return rows.length > 0 ? Number(rows[0].cnt) : 0;
-    }
     // ── Lockfile ──────────────────────────────────────────────────────────
     /** Read the lockfile for a project. Returns null if not found. */
     readLockfile(projectPath) {
@@ -440,29 +339,14 @@ export class NpmCache {
     getStats() {
         this.ensureSchema();
         const reg = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_registry_cache`)];
-        const pkgs = [...this.sql.exec(`SELECT COUNT(DISTINCT name || '@' || version) as cnt FROM pkg_tarball_cache`)];
-        const files = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_tarball_cache`)];
         const locks = [...this.sql.exec(`SELECT COUNT(DISTINCT project_path) as cnt FROM pkg_lockfile`)];
         const esm = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_esm_bundles`)];
         const xforms = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM user_module_transforms`)];
         return {
             registryEntries: Number(reg[0]?.cnt ?? 0),
-            cachedPackages: Number(pkgs[0]?.cnt ?? 0),
-            cachedFiles: Number(files[0]?.cnt ?? 0),
             lockfileProjects: Number(locks[0]?.cnt ?? 0),
             esmBundles: Number(esm[0]?.cnt ?? 0),
             userModuleTransforms: Number(xforms[0]?.cnt ?? 0),
         };
     }
-}
-// ── Helpers ──────────────────────────────────────────────────────────────
-function blobToUint8Array(blob) {
-    if (blob instanceof Uint8Array)
-        return blob;
-    if (blob instanceof ArrayBuffer)
-        return new Uint8Array(blob);
-    if (ArrayBuffer.isView(blob)) {
-        return new Uint8Array(blob.buffer, blob.byteOffset, blob.byteLength);
-    }
-    return new Uint8Array(0);
 }
