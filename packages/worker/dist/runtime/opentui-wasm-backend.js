@@ -268,6 +268,11 @@ export class OpenTUIWasmBackend {
             throw new Error(`opentui-wasm-backend: symbol '${name}' has unknown return type '${returns}'`);
         }
         return (...args) => {
+            // Optional per-symbol FFI diagnostic (call counts + linear-memory growth
+            // attribution). Installed by the opencode runner only when NIMBUS_DIAG_EXEC
+            // is set; a single global read on the hot path otherwise.
+            const diag = globalThis.__nimbusOtuiFfiDiag;
+            const memBefore = diag ? this.#exports.memory.buffer.byteLength : 0;
             // Claim the transient ptr() scratch allocated while zig.ts evaluated this
             // call's args. Claiming (vs. draining the shared list) scopes the frees to
             // this call, so a callback that re-enters another symbol mid-execution
@@ -321,6 +326,14 @@ export class OpenTUIWasmBackend {
                     }
                     this.#exports.nimbus_free(s.offset, s.size);
                 }
+            }
+            if (diag) {
+                let scratchBytes = 0;
+                for (const s of claimedPtr)
+                    scratchBytes += s.size;
+                for (const s of scratch)
+                    scratchBytes += s.size;
+                diag.rec(name, this.#exports.memory.buffer.byteLength - memBefore, marshaled, scratchBytes);
             }
             if (returns === 'u64' || returns === 'i64') {
                 return typeof result === 'bigint' ? result : BigInt(result);

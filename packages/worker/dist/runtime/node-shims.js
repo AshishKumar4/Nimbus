@@ -3379,6 +3379,11 @@ function __makeProcessStdin() {
         r.end();
         break;
       }
+      // Diagnostic hook (runner-installed, NIMBUS_DIAG_EXEC-gated): the pump's
+      // cpReadStdin round-trip is the one I/O yield a resident facet is
+      // guaranteed to keep making, so it paces the [oc-mem] sampler even when
+      // facet timers starve.
+      try { globalThis.__nimbusOcPumpDiag && globalThis.__nimbusOcPumpDiag(); } catch {}
     }
   }
   const seed = () => {
