@@ -16,6 +16,6 @@
  * attach time.
  */
 export const OPENTUI_WASM_VERSION = "0.3.2";
-export const OPENTUI_WASM_BUILD_ID = "24c363560adfa441";
+export const OPENTUI_WASM_BUILD_ID = "804a768bed34042e";
 export const OPENTUI_WASM_ENTRY = "/_assets/opentui/0.3.2/opentui.wasm";
-export const OPENTUI_WASM_SHA256 = "24c363560adfa44171bcf4b7c0e281a5ebce9e31e9b6ebdc4be79938aad13efb";
+export const OPENTUI_WASM_SHA256 = "804a768bed34042e0683787ad2780fdd037212182ed3bfc3b73a1c9b13336bed";
