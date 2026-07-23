@@ -1071,16 +1071,6 @@ function __ocEmitMemDiag(tag) {
         __zact = Number(__dv.getBigUint64(8, true));
       }
     } catch {}
-    // Transient headroom gauge (paced tags only, never the hot-path samplers):
-    // largest single ArrayBuffer that allocates right now, released
-    // immediately. Coarse but isolate-wide — the counters above cannot see
-    // JS-heap growth because workerd's memoryUsage reports zeros here.
-    let __hr = -1;
-    if (tag !== "f" && tag !== "ffi") {
-      for (const __mb of [96, 64, 48, 32, 24, 16, 12, 8, 4]) {
-        try { new ArrayBuffer(__mb * 1048576); __hr = __mb; break; } catch {}
-      }
-    }
     let __vfsB = 0, __vfsN = 0;
     try {
       for (const __k in __vfsWrites) {
@@ -1108,7 +1098,6 @@ function __ocEmitMemDiag(tag) {
       " ck=" + __ckSt + "/" + __ckFi +
       " nt=" + __ntC + " qm=" + __qmC +
       " fetch=" + __fetchC +
-      " hr=" + __hr +
       " chAge=" + (__rpcQc > __rpcSc && __chainSettleAt ? Date.now() - __chainSettleAt : 0) +
       " wg=" + __wgC + "/" + __wgP +
       (__wgLast ? " wgAt=" + JSON.stringify(__wgLast) : "") +
