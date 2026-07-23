@@ -263,6 +263,7 @@ globalThis.__nimbusOpenTUITtyStdout = {
     const s = typeof chunk === "string"
       ? chunk
       : __BufferMod.from(chunk).toString("latin1");
+    __ttyC += 1; __ttyB += s.length;
     process.stdout.write(s);
     const done = typeof enc === "function" ? enc : cb;
     if (typeof done === "function") done();
@@ -288,7 +289,7 @@ globalThis.__nimbusOpenTUITtyStdout = {
 const OPENTUI_CLOCK_SRC = `
 globalThis.__nimbusOpenTUIClock = {
   now: () => globalThis.performance.now(),
-  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+  setTimeout: (fn, ms) => { __ckSt += 1; return globalThis.setTimeout(() => { __ckFi += 1; fn(); }, ms); },
   clearTimeout: (h) => globalThis.clearTimeout(h),
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (h) => globalThis.clearInterval(h),
@@ -755,14 +756,34 @@ const __ocResident = __ocMode === "attached" || __ocMode === "server";
 // memory-limited facet.
 let __rpcWriteChain = Promise.resolve();
 const __pendingWrites = new Set();
+// Flow counters for the [oc-mem] diagnostic: bytes/calls queued onto the RPC
+// write chain vs settled off it. outstanding = qb - sb is the retained frame
+// backlog inside the facet (the chain closure holds each string until settle).
+let __rpcQc = 0, __rpcQb = 0, __rpcSc = 0, __rpcSb = 0;
+// Date.now() at the chain's last settle — a growing age with queued writes
+// pending means the supervisor write chain is wedged, not the event loop.
+let __chainSettleAt = 0;
+// Renderer frame-output counters (OpenTUI span-feed → TTY stdout writes).
+let __ttyC = 0, __ttyB = 0;
+// Render-clock counters: setTimeout scheduled vs fired (timer starvation probe).
+let __ckSt = 0, __ckFi = 0;
+// Microtask-churn counters: process.nextTick / queueMicrotask enqueues.
+let __ntC = 0, __qmC = 0;
+// fetch() call counter (loopback HTTP from the attach client).
+let __fetchC = 0;
+// WebAssembly.Memory.grow probe: total grows / pages, last grower's stack.
+let __wgC = 0, __wgP = 0, __wgLast = "";
 const __queueRpcWrite = (method, s) => {
   if (!__supervisor) return;
+  __rpcQc += 1; __rpcQb += s.length;
   const __task = __rpcWriteChain
     .then(() => __supervisor[method](s))
     .catch(() => {});
   __rpcWriteChain = __task.then(() => {}, () => {});
   __pendingWrites.add(__task);
-  __task.finally(() => { __pendingWrites.delete(__task); });
+  const __len = s.length;
+  __task.finally(() => { __rpcSc += 1; __rpcSb += __len; __chainSettleAt = Date.now(); __pendingWrites.delete(__task); });
+  __ocFlowDiag();
 };
 // Bounded tail mirror for the attached path: keeps enough context for a
 // teardown error tail without retaining the whole frame stream.
@@ -828,6 +849,11 @@ const __ocFmt = (...a) => a.map((x) => {
   if (typeof x === "string") return x;
   try { return JSON.stringify(x); } catch { return String(x); }
 }).join(" ");
+// workerd's real console, captured before the overrides below. The [oc-mem]
+// diagnostic mirrors its lines here: a host console call reaches the platform
+// log (wrangler tail) synchronously, without the facet's RPC write chain or
+// event loop — the only channel that still reports from a CPU-bound spin.
+const __realConsoleError = console.error.bind(console);
 if (__ocResident) {
   console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout = __ocTail(stdout, s); __queueRpcWrite("stdout", s); };
   console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr = __ocTail(stderr, s); __queueRpcWrite("stderr", s); };
@@ -857,30 +883,181 @@ async function __drainPendingIO(maxPasses = 12) {
   }
 }
 
-// Bounded 1Hz memory diagnostic for the resident TUI, gated on the existing
-// NIMBUS_DIAG_EXEC surface. Emits one line/second through the facet's bounded
-// stderr chain so the OpenTUI wasm heap (\`wasm=\`) and the I/O ledgers can be
-// watched for a flat slope while live-gating the span-feed OOM fix. Off by
-// default: returns null (no interval) so the resident path stays silent.
-function __startOcMemDiag() {
-  if (!(env && env.NIMBUS_DIAG_EXEC === "1")) return null;
-  let __t = 0;
-  return setInterval(() => {
-    __t += 1;
+// Memory/flow diagnostic for the resident TUI, gated on the existing
+// NIMBUS_DIAG_EXEC surface. Two emitters share one line format:
+//   - a paced loop (\`k=t\`) whose own stderr RPC round-trip supplies the I/O
+//     yield workerd needs to advance facet timers — the old plain setInterval
+//     starved as soon as the facet went idle and reported nothing past t=2;
+//   - a hot-path sampler (\`k=f\`) inside __queueRpcWrite, Date.now-gated to
+//     ≥500ms apart, which keeps reporting even if the paced loop is starved
+//     by a busy event loop (Date.now only advances across real I/O).
+// Off by default: __ocDiag.on false keeps the resident path silent.
+const __ocDiag = { on: !!(env && env.NIMBUS_DIAG_EXEC === "1"), stop: false, t0: Date.now(), busy: false, lastFlow: 0 };
+if (__ocDiag.on) {
+  // Microtask-churn probes: count nextTick/queueMicrotask enqueues so a
+  // CPU-bound microtask spin (which starves timers AND the paced diag loop)
+  // is visible in the counters of whichever sample does get out.
+  try {
+    const __origNextTick = process.nextTick.bind(process);
+    process.nextTick = (fn, ...a) => { __ntC += 1; return __origNextTick(fn, ...a); };
+  } catch {}
+  try {
+    const __origQm = globalThis.queueMicrotask.bind(globalThis);
+    globalThis.queueMicrotask = (fn) => { __qmC += 1; return __origQm(fn); };
+  } catch {}
+  try {
+    const __origFetch = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = (...a) => { __fetchC += 1; return __origFetch(...a); };
+  } catch {}
+  // Attribute wasm linear-memory growth: every Emscripten-style glue calls
+  // Memory.grow from JS, so the caller's stack names the growing subsystem
+  // (tree-sitter / yoga / opentui WASI) even while a sync spin blocks all
+  // other reporting — the next sample that escapes carries it.
+  try {
+    const __origGrow = WebAssembly.Memory.prototype.grow;
+    WebAssembly.Memory.prototype.grow = function (pages) {
+      __wgC += 1; __wgP += Number(pages) || 0;
+      try { __wgLast = String(new Error().stack || "").replace(/\\s+/g, " ").slice(0, 400); } catch {}
+      return __origGrow.call(this, pages);
+    };
+  } catch {}
+  // Pump-paced sampler: the shim's live stdin pump calls this after every
+  // cpReadStdin round-trip (~1Hz) — the one I/O-yield cadence a resident
+  // facet is guaranteed to keep, immune to facet timer starvation.
+  globalThis.__nimbusOcPumpDiag = () => { __ocEmitMemDiag("p"); };
+  // Per-symbol FFI stats (calls + wasm linear-memory growth attribution),
+  // consumed by opentui-wasm-backend's #bindSymbol wrapper. Every 4096 FFI
+  // calls force a diag sample — the FFI hot path keeps reporting even when
+  // the paced loop is starved.
+  globalThis.__nimbusOtuiFfiDiag = {
+    calls: 0,
+    map: Object.create(null),
+    big: [],
+    rec(n, g, a, scratch) {
+      this.calls += 1;
+      const e = this.map[n] || (this.map[n] = { c: 0, g: 0, gc: 0, gmax: 0 });
+      e.c += 1;
+      if (g > 0) { e.g += g; e.gc += 1; if (g > e.gmax) e.gmax = g; }
+      if (g > 4194304 && this.big.length < 24) {
+        this.big.push(n + ":+" + g + ":in" + (scratch || 0) + "(" + (a || []).map((x) => (typeof x === "number" ? x : String(x))).join(",") + ")");
+      }
+      if ((this.calls & 1023) === 0) __ocEmitMemDiag("ffi");
+    },
+  };
+}
+function __ocFfiTop() {
+  const d = globalThis.__nimbusOtuiFfiDiag;
+  if (!d) return "";
+  const entries = Object.entries(d.map);
+  entries.sort((a, b) => b[1].c - a[1].c);
+  const byCalls = entries.slice(0, 4).map(([n, e]) => n + ":" + e.c + (e.g ? "+" + e.g : "")).join(",");
+  entries.sort((a, b) => b[1].g - a[1].g);
+  const grow = entries.filter(([, e]) => e.g > 0).slice(0, 4)
+    .map(([n, e]) => n + ":g" + e.g + ":gc" + e.gc + ":gmax" + e.gmax).join(",");
+  const big = d.big.length ? " ffiBig=" + d.big.join(";") : "";
+  return " ffiC=" + d.calls + " ffiTop=" + byCalls + (grow ? " ffiGrow=" + grow : "") + big;
+}
+function __ocEmitMemDiag(tag) {
+  if (!__ocDiag.on || __ocDiag.busy) return;
+  __ocDiag.busy = true;
+  try {
     let __m = null;
     try { __m = __realMemUsage ? __realMemUsage() : null; } catch {}
     let __wasm = -1;
     try { __wasm = globalThis.${OPENTUI_BACKEND_GLOBAL}.memory.buffer.byteLength; } catch {}
+    // Zig-side allocator truth: global arena capacity + gpa stats (requested
+    // bytes / active allocation counts) — splits wasm growth into
+    // arena-retained vs gpa-live vs allocator waste.
+    let __zar = -1, __zreq = -1, __zact = -1;
+    try {
+      const __b = globalThis.${OPENTUI_BACKEND_GLOBAL};
+      if (!globalThis.__nimbusOcZigStats && __b) {
+        globalThis.__nimbusOcZigStats = __b.dlopen("", {
+          getArenaAllocatedBytes: { args: [], returns: "usize" },
+          getAllocatorStats: { args: ["ptr"], returns: "void" },
+        }).symbols;
+      }
+      const __z = globalThis.__nimbusOcZigStats;
+      if (__z) {
+        __zar = Number(__z.getArenaAllocatedBytes());
+        const __sb = new Uint8Array(40);
+        __z.getAllocatorStats(__b.ptr(__sb));
+        const __dv = new DataView(__sb.buffer);
+        __zreq = Number(__dv.getBigUint64(0, true));
+        __zact = Number(__dv.getBigUint64(8, true));
+      }
+    } catch {}
+    // Transient headroom gauge (paced tags only, never the hot-path samplers):
+    // largest single ArrayBuffer that allocates right now, released
+    // immediately. Coarse but isolate-wide — the counters above cannot see
+    // JS-heap growth because workerd's memoryUsage reports zeros here.
+    let __hr = -1;
+    if (tag !== "f" && tag !== "ffi") {
+      for (const __mb of [96, 64, 48, 32, 24, 16, 12, 8, 4]) {
+        try { new ArrayBuffer(__mb * 1048576); __hr = __mb; break; } catch {}
+      }
+    }
+    let __vfsB = 0, __vfsN = 0;
+    try {
+      for (const __k in __vfsWrites) {
+        __vfsN += 1;
+        const __v = __vfsWrites[__k];
+        __vfsB += typeof __v === "string" ? __v.length : (__v && __v.byteLength) || 0;
+      }
+    } catch {}
     const __line =
-      "[oc-mem] t=" + __t +
+      "[oc-mem] k=" + tag +
+      " t=" + ((Date.now() - __ocDiag.t0) / 1000).toFixed(1) +
+      " pn=" + Math.round(globalThis.performance.now()) +
       " heap=" + (__m ? __m.heapUsed : -1) +
       " ab=" + (__m ? (__m.arrayBuffers || 0) : -1) +
       " ext=" + (__m ? (__m.external || 0) : -1) +
       " wasm=" + __wasm +
+      " zar=" + __zar + " zreq=" + __zreq + " zact=" + __zact +
+      " ttyC=" + __ttyC + " ttyB=" + __ttyB +
+      " qC=" + __rpcQc + " qB=" + __rpcQb +
+      " sC=" + __rpcSc + " sB=" + __rpcSb +
+      " outB=" + (__rpcQb - __rpcSb) +
       " pend=" + __pendingWrites.size +
-      " pio=" + __pendingIO.length + "\\n";
+      " pio=" + __pendingIO.length +
+      " vfsN=" + __vfsN + " vfsB=" + __vfsB +
+      " ck=" + __ckSt + "/" + __ckFi +
+      " nt=" + __ntC + " qm=" + __qmC +
+      " fetch=" + __fetchC +
+      " hr=" + __hr +
+      " chAge=" + (__rpcQc > __rpcSc && __chainSettleAt ? Date.now() - __chainSettleAt : 0) +
+      " wg=" + __wgC + "/" + __wgP +
+      (__wgLast ? " wgAt=" + JSON.stringify(__wgLast) : "") +
+      __ocFfiTop() + "\\n";
     try { process.stderr.write(__line); } catch {}
-  }, 1000);
+    try { __realConsoleError(__line.trimEnd()); } catch {}
+    // Pump-paced samples bypass the write chain entirely: a direct supervisor
+    // RPC that lands in the process log even when the chain is wedged —
+    // discriminates a dead event loop from a wedged outbound chain.
+    if (tag === "p" && __supervisor) {
+      try { __supervisor.stderr("[oc-mem-direct]" + __line).catch(() => {}); } catch {}
+    }
+  } finally {
+    __ocDiag.busy = false;
+  }
+}
+function __ocFlowDiag() {
+  if (!__ocDiag.on || __ocDiag.busy) return;
+  const __n = Date.now();
+  if (__n - __ocDiag.lastFlow < 500) return;
+  __ocDiag.lastFlow = __n;
+  __ocEmitMemDiag("f");
+}
+async function __ocMemDiagLoop() {
+  if (!__ocDiag.on) return;
+  for (let __i = 0; __i < 900 && !__ocDiag.stop; __i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    if (__ocDiag.stop) break;
+    __ocEmitMemDiag("t");
+    // Await the chain head: the stderr RPC above is the real I/O yield that
+    // lets the next 1s timer fire even when the facet is otherwise idle.
+    try { await __rpcWriteChain; } catch {}
+  }
 }
 
 // Interactive TUI lifecycle: stream live, run opencode's createCliRenderer path,
@@ -891,7 +1068,7 @@ async function __ocRunAttachedTui() {
   // Activate the shim's raw-mode stdin pump (SUPERVISOR.cpReadStdin →
   // process.stdin, with setRawMode/resize→SIGWINCH/signal handling).
   try { process.stdin.__nimbusStartLivePump?.(); } catch {}
-  const __memDiag = __startOcMemDiag();
+  void __ocMemDiagLoop();
   try {
     try {
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
@@ -927,7 +1104,7 @@ async function __ocRunAttachedTui() {
       try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
     }
   } finally {
-    if (__memDiag) clearInterval(__memDiag);
+    __ocDiag.stop = true;
   }
 }
 
@@ -980,7 +1157,6 @@ export default NimbusOpencodeProcess;
 // we hold the process resident until it is killed (isolate teardown rejects the
 // keep-alive). On a boot error we report the exit so the supervisor surfaces it.
 async function __ocRunServe() {
-  const __memDiag = __startOcMemDiag();
   try {
     try {
       // Serve opens the session DB within its first requests — boot the
@@ -1026,7 +1202,7 @@ async function __ocRunServe() {
       try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
     }
   } finally {
-    if (__memDiag) clearInterval(__memDiag);
+    __ocDiag.stop = true;
   }
 }
 
