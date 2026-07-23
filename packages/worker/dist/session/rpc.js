@@ -30,6 +30,8 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, isolateToken, } from '../loaders/process-fabric.js';
+import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
@@ -928,6 +930,81 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         }
         catch { /* best-effort */ }
     }
+}
+// ── Process fabric: peer-DO host leg (heavy-class process scheduler) ─────
+//
+// THIS DO instance acts as a process-hosting peer for a sibling coordinator
+// session: it boots a staged process facet from its OWN env.LOADER (so the
+// facet lands in THIS DO's workerd process — an independent memory budget)
+// while the facet's SUPERVISOR binding is minted for the COORDINATOR's doId,
+// so every syscall routes back to the user's session. Same trust/routing
+// posture as _rpcFanoutExecute's INSTALL-HONESTY override. See
+// loaders/process-fabric.ts for the scheduler side.
+const HostProcessOptsSchema = z.object({
+    /** Full doId of the coordinator session (SUPERVISOR routing target). */
+    coordinatorDoId: z.string().min(1),
+    /** Supervisor-assigned pid of the process entry on the coordinator. */
+    pid: z.number().int().positive(),
+    /** Keyed dynamic-worker identity on THIS peer's loader. */
+    workerKey: z.string().min(1),
+});
+/**
+ * RPC: placement probe. Returns this peer's module-scope isolate token so
+ * the coordinator's scheduler can verify the peer landed in a distinct
+ * workerd process (same token ⇒ shared isolate/process ⇒ try the next slot).
+ */
+export function _rpcHostProcessProbe(_self) {
+    return { isolateToken: isolateToken() };
+}
+/**
+ * RPC: host a heavy-class resident process. Held open by the coordinator for
+ * the process's whole lifetime — the exact contract the coordinator's local
+ * attach path has with its loopback startProcess. Resolves on clean process
+ * exit (the facet reports its exit to the coordinator itself via SUPERVISOR);
+ * rejects on facet death, which the coordinator maps to SIGKILL semantics in
+ * its ProcessTable and may answer with a respawn on a fresh peer.
+ *
+ * If the coordinator dies, workerd cancels this inbound call; the held-open
+ * startProcess context below collapses and the facet dies with it — a
+ * process-hosting peer never outlives its parent session.
+ */
+export async function _rpcHostProcess(self, stage, opts) {
+    const hostOpts = HostProcessOptsSchema.parse(opts);
+    const spec = OpencodeStageSpecSchema.parse(stage);
+    const ctxExports = getNimbusCtxExports();
+    const startStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid }, null, hostOpts.workerKey, spec);
+    if (typeof startStub.startProcess !== 'function') {
+        disposeRpcResource(startStub);
+        throw new Error('Nimbus: hosted process entrypoint has no startProcess method');
+    }
+    const cancels = self._hostedProcessCancels;
+    cancels.set(hostOpts.workerKey, () => disposeRpcResource(startStub));
+    try {
+        await startStub.startProcess();
+        return { ok: true };
+    }
+    finally {
+        cancels.delete(hostOpts.workerKey);
+        disposeRpcResource(startStub);
+    }
+}
+/**
+ * RPC: deterministic kill of a hosted process. Disposes the peer-side
+ * startProcess stub — the same teardown FacetManager.kill applies to local
+ * facets — which severs the facet's held-open context and settles the
+ * coordinator's `_rpcHostProcess` call.
+ */
+export function _rpcCancelHostProcess(self, workerKey) {
+    const cancels = self._hostedProcessCancels;
+    const cancel = cancels.get(workerKey);
+    if (!cancel)
+        return { cancelled: false };
+    cancels.delete(workerKey);
+    try {
+        cancel();
+    }
+    catch { /* best-effort */ }
+    return { cancelled: true };
 }
 // ── Cache-observability stats forward (cache metrics support) ──────
 //

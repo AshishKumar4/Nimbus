@@ -198,6 +198,13 @@ export declare class FacetManager {
     private portRegistry;
     private vfs;
     private hooks;
+    /**
+     * The heavy/light process scheduler (loaders/process-fabric.ts). Owns the
+     * single placement policy point for resident staged processes: `light`
+     * boots the local facet exactly as before; `heavy` hosts the facet on a
+     * sibling peer DO with its own workerd process memory budget.
+     */
+    private processFabric;
     private processRpcResources;
     private timedOutProcessIds;
     private _pairedServeFacet;

@@ -47,7 +47,7 @@ export const MAX_PEER_FANOUT = 32;
  * task throw) are NOT retried — they propagate on the first hit.
  */
 export const PEER_TRANSIENT_RESET_RETRIES = 3;
-const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
+export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
 
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {

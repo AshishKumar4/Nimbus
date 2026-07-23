@@ -55,6 +55,18 @@ export const OpencodeStageSpecSchema = z.object({
     /** Serialized VFS inode metadata (JSON). */
     vfsMetadata: z.string(),
 });
+/**
+ * Memory class the staged runner modes declare to the process fabric
+ * (the runtime-spec side of the fabric's single placement policy point).
+ * The attach TUI is `heavy`: its renderer working set plus first-paint burst
+ * needs a workerd process budget of its own (defect #35 — smart placement
+ * packs the session's isolates into one memory pool), so the scheduler hosts
+ * it on a peer DO. serve + oneshot stay `light` local facets, exactly as
+ * before.
+ */
+export function stagedProcessClass(mode) {
+    return mode === 'attached' ? 'heavy' : 'light';
+}
 function requireAssets(env, what) {
     if (!env.ASSETS) {
         throw new Error(`${what} requires an env.ASSETS binding; this Nimbus deployment is ` +

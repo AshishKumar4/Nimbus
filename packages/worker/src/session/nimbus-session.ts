@@ -706,6 +706,18 @@ export class NimbusSession extends CloudflareDurableObject {
     return _rpc._rpcFanoutExecute(this as any, fnSource, args, poolOpts);
   }
 
+  // process fabric: peer-DO host leg of the heavy-class process scheduler.
+  // Cancel registry: workerKey → disposer of the held-open startProcess stub
+  // for processes THIS DO hosts on behalf of a coordinator sibling.
+  _hostedProcessCancels: Map<string, () => void> = new Map();
+  _rpcHostProcessProbe(): { isolateToken: string } { return _rpc._rpcHostProcessProbe(this as any); }
+  async _rpcHostProcess(stage: unknown, opts: unknown): Promise<{ ok: boolean }> {
+    return _rpc._rpcHostProcess(this as any, stage, opts);
+  }
+  _rpcCancelHostProcess(workerKey: string): { cancelled: boolean } {
+    return _rpc._rpcCancelHostProcess(this as any, workerKey);
+  }
+
   // W8 child_process RPC
   async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }

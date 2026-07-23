@@ -24,6 +24,7 @@
  */
 import { z } from 'zod/v4';
 import type { WorkerCode } from '../loaders/vendor/types.js';
+import type { ProcessClass } from '../loaders/process-fabric.js';
 export interface OpencodeAssetsEnv {
     ASSETS: {
         fetch(req: Request): Promise<Response>;
@@ -55,6 +56,16 @@ export declare const OpencodeStageSpecSchema: z.ZodObject<{
     vfsMetadata: z.ZodString;
 }, z.core.$strip>;
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
+/**
+ * Memory class the staged runner modes declare to the process fabric
+ * (the runtime-spec side of the fabric's single placement policy point).
+ * The attach TUI is `heavy`: its renderer working set plus first-paint burst
+ * needs a workerd process budget of its own (defect #35 — smart placement
+ * packs the session's isolates into one memory pool), so the scheduler hosts
+ * it on a peer DO. serve + oneshot stay `light` local facets, exactly as
+ * before.
+ */
+export declare function stagedProcessClass(mode: OpencodeStageSpec['mode']): ProcessClass;
 /** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */
 export declare function sqliteWasmModuleEntry(env: Partial<OpencodeAssetsEnv>, usesSqlite: boolean): Promise<Record<string, {
     wasm: ArrayBuffer;
