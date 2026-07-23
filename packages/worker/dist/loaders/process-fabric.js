@@ -13,8 +13,19 @@
  * One policy point: runtime specs declare a process class
  * (`light` | `heavy`); `startResidentProcess` places `heavy` on a peer and
  * runs `light` in a local facet exactly as before. There is no per-runtime
- * special case here — opencode's attach TUI is merely the first heavy tenant;
- * clang/wasm-ld and future heavy user programs ride the same seam.
+ * special case here.
+ *
+ * NO DEFAULT HEAVY TENANT (2026-07-23). Every shipped runtime spec declares
+ * `light`, so in production all processes flow the local path — behaviorally
+ * identical to the pre-fabric spawn. The attach TUI was the intended first
+ * heavy tenant, but its OOM (#35) was root-caused to a wasm FFI-ABI bug and
+ * fixed in the runner itself; with that fix attach is stable as a local
+ * facet, and peer placement would only add ~0.5 s of peer-DO cold-create
+ * latency per spawn. The `heavy` path stays fully implemented, unit-tested,
+ * and live-gate-proven (peer placement, syscall routing, OOM containment,
+ * bounded respawn, deterministic kill) as the substrate for the
+ * swap/durability layer (#18) and heavy multi-process workloads
+ * (clang/wasm-ld batches, serve-as-tenant with a routed-HTTP peer leg).
  *
  * Peer topology
  * ─────────────

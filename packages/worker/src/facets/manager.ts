@@ -2984,12 +2984,12 @@ export class FacetManager {
     let handle: ResidentProcessHandle | undefined;
     try {
       // Keyed, stage-carrying resident process through the fabric's single
-      // placement policy point. The attach TUI declares `heavy`
-      // (stagedProcessClass), so the fabric hosts the facet on a sibling
-      // peer DO — its own workerd process memory budget — with the
-      // SUPERVISOR binding minted for THIS coordinator; the held-open
-      // startProcess RPC chain stays open for the process lifetime exactly
-      // as before.
+      // placement policy point. Attach declares `light` (stagedProcessClass)
+      // — a local facet, exactly the pre-fabric boot; a future `heavy`
+      // declaration would host the facet on a sibling peer DO with its own
+      // workerd process memory budget, SUPERVISOR still minted for THIS
+      // coordinator. The held-open startProcess RPC chain stays open for
+      // the process lifetime exactly as before.
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
       handle = await this.processFabric.startResidentProcess({
         processClass: stagedProcessClass(stageSpec.mode),

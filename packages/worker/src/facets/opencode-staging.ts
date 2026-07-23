@@ -85,14 +85,16 @@ export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 /**
  * Memory class the staged runner modes declare to the process fabric
  * (the runtime-spec side of the fabric's single placement policy point).
- * The attach TUI is `heavy`: its renderer working set plus first-paint burst
- * needs a workerd process budget of its own (defect #35 — smart placement
- * packs the session's isolates into one memory pool), so the scheduler hosts
- * it on a peer DO. serve + oneshot stay `light` local facets, exactly as
- * before.
+ * All staged modes are `light` local facets today: the attach TUI's OOM
+ * (#35) turned out to be a wasm FFI-ABI bug fixed in the runner itself, so
+ * attach no longer needs a peer-process budget — and `heavy` placement costs
+ * ~0.5 s of peer-DO cold-create on every spawn. `heavy` remains the
+ * live-proven substrate for future multi-process tenants (see
+ * loaders/process-fabric.ts).
  */
 export function stagedProcessClass(mode: OpencodeStageSpec['mode']): ProcessClass {
-  return mode === 'attached' ? 'heavy' : 'light';
+  void mode;
+  return 'light';
 }
 
 function requireAssets(env: Partial<OpencodeAssetsEnv>, what: string): OpencodeAssetsEnv {
