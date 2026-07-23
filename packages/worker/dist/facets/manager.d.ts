@@ -205,6 +205,8 @@ export declare class FacetManager {
      * sibling peer DO with its own workerd process memory budget.
      */
     private processFabric;
+    /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
+    private debugEnabled;
     private processRpcResources;
     private timedOutProcessIds;
     private _pairedServeFacet;
