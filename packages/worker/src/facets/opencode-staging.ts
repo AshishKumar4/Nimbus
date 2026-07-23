@@ -48,6 +48,7 @@ import {
   YOGA_WASM_MODULE_NAME,
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
+import type { ProcessClass } from '../loaders/process-fabric.js';
 import { CF_COMPAT_DATE } from '../constants.js';
 
 export interface OpencodeAssetsEnv {
@@ -80,6 +81,19 @@ export const OpencodeStageSpecSchema = z.object({
 });
 
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
+
+/**
+ * Memory class the staged runner modes declare to the process fabric
+ * (the runtime-spec side of the fabric's single placement policy point).
+ * The attach TUI is `heavy`: its renderer working set plus first-paint burst
+ * needs a workerd process budget of its own (defect #35 — smart placement
+ * packs the session's isolates into one memory pool), so the scheduler hosts
+ * it on a peer DO. serve + oneshot stay `light` local facets, exactly as
+ * before.
+ */
+export function stagedProcessClass(mode: OpencodeStageSpec['mode']): ProcessClass {
+  return mode === 'attached' ? 'heavy' : 'light';
+}
 
 function requireAssets(env: Partial<OpencodeAssetsEnv>, what: string): OpencodeAssetsEnv {
   if (!env.ASSETS) {

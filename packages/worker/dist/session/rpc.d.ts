@@ -315,6 +315,38 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
 }): Promise<{
     results: unknown[];
 }>;
+/**
+ * RPC: placement probe. Returns this peer's module-scope isolate token so
+ * the coordinator's scheduler can verify the peer landed in a distinct
+ * workerd process (same token ⇒ shared isolate/process ⇒ try the next slot).
+ */
+export declare function _rpcHostProcessProbe(_self: RpcHost): {
+    isolateToken: string;
+};
+/**
+ * RPC: host a heavy-class resident process. Held open by the coordinator for
+ * the process's whole lifetime — the exact contract the coordinator's local
+ * attach path has with its loopback startProcess. Resolves on clean process
+ * exit (the facet reports its exit to the coordinator itself via SUPERVISOR);
+ * rejects on facet death, which the coordinator maps to SIGKILL semantics in
+ * its ProcessTable and may answer with a respawn on a fresh peer.
+ *
+ * If the coordinator dies, workerd cancels this inbound call; the held-open
+ * startProcess context below collapses and the facet dies with it — a
+ * process-hosting peer never outlives its parent session.
+ */
+export declare function _rpcHostProcess(self: RpcHost, stage: unknown, opts: unknown): Promise<{
+    ok: boolean;
+}>;
+/**
+ * RPC: deterministic kill of a hosted process. Disposes the peer-side
+ * startProcess stub — the same teardown FacetManager.kill applies to local
+ * facets — which severs the facet's held-open context and settles the
+ * coordinator's `_rpcHostProcess` call.
+ */
+export declare function _rpcCancelHostProcess(self: RpcHost, workerKey: string): {
+    cancelled: boolean;
+};
 import { type CacheTier, type CacheKind } from '../_shared/cache-stats.js';
 export type CacheStatEvent = {
     kind: 'hit';

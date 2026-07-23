@@ -32,7 +32,15 @@ import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
-import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
+import { sqliteWasmModuleEntry, stagedProcessClass, type OpencodeStageSpec } from './opencode-staging.js';
+import {
+  createLoadedWorkerEntrypoint,
+  getNimbusCtxExports,
+  peerNamespaceFromEnv,
+  ProcessFabric,
+  type LoadedWorkerEntrypointStub,
+  type ResidentProcessHandle,
+} from '../loaders/process-fabric.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
@@ -131,12 +139,6 @@ function _reviveVfsWriteCell(v: unknown): string | Uint8Array {
 // gate). The codegen functions take it as the `shims` parameter; the async
 // exec/spawn callers await the memoized fetch.
 
-interface LoadedWorkerEntrypointStub {
-  startProcess?: (args?: unknown) => Promise<unknown>;
-  handleHttpRequest?: (request: Request) => Promise<Response>;
-  fetch?(request: Request): Promise<Response>;
-}
-
 interface LoadedWorkerStub {
   getEntrypoint(): LoadedWorkerEntrypointStub;
 }
@@ -161,28 +163,6 @@ interface FacetManagerEnv {
 interface ProcessRpcResources {
   readonly resources: unknown[];
   readonly releaseOnReportExit: boolean;
-}
-
-interface NimbusCtxExports {
-  SupervisorRPC?: (options: { props: { doId: string; pid: number } }) => unknown;
-  NimbusLoadedEntrypoint?: (options: {
-    props: {
-      key: string;
-      name: string | null;
-      depth: number;
-      code: unknown;
-      supervisor: { doId: string; pid: number };
-      stage?: OpencodeStageSpec;
-    };
-  }) => LoadedWorkerEntrypointStub;
-}
-
-function getNimbusCtxExports(): NimbusCtxExports {
-  const ctxExports = getCtxExports();
-  if (!ctxExports || typeof ctxExports !== 'object') {
-    throw new Error('Nimbus: ctx.exports unavailable');
-  }
-  return ctxExports as NimbusCtxExports;
 }
 
 function errorMessage(error: unknown): string {
@@ -211,29 +191,6 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
       ? (assetsCandidate as { fetch(req: Request): Promise<Response> })
       : undefined;
   return { LOADER: loader, ASSETS: assets };
-}
-
-async function createLoadedWorkerEntrypoint(
-  ctxExports: NimbusCtxExports,
-  code: unknown,
-  supervisor: { doId: string; pid: number },
-  name: string | null = null,
-  key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
-  stage?: OpencodeStageSpec,
-): Promise<LoadedWorkerEntrypointStub> {
-  if (!ctxExports.NimbusLoadedEntrypoint) {
-    throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
-  }
-  return await ctxExports.NimbusLoadedEntrypoint({
-    props: {
-      key,
-      name,
-      depth: 0,
-      code,
-      supervisor,
-      ...(stage ? { stage } : {}),
-    },
-  });
 }
 
 // `await` on a promise created inside an async entrypoint bypasses the
@@ -2427,6 +2384,13 @@ export class FacetManager {
   private portRegistry: PortRegistry;
   private vfs: SqliteVFS | null = null;
   private hooks: FacetManagerHooks;
+  /**
+   * The heavy/light process scheduler (loaders/process-fabric.ts). Owns the
+   * single placement policy point for resident staged processes: `light`
+   * boots the local facet exactly as before; `heavy` hosts the facet on a
+   * sibling peer DO with its own workerd process memory budget.
+   */
+  private processFabric: ProcessFabric;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -2484,6 +2448,7 @@ export class FacetManager {
     this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
+    this.processFabric = new ProcessFabric(ctx, peerNamespaceFromEnv(env));
   }
 
   setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
@@ -3010,29 +2975,32 @@ export class FacetManager {
     command: string,
     stageSpec: OpencodeStageSpec,
   ): Promise<StagedArtifactExecResult> {
-    let startStub: LoadedWorkerEntrypointStub | undefined;
+    let handle: ResidentProcessHandle | undefined;
     try {
-      // Keyed, stage-carrying NimbusLoadedEntrypoint, exactly like the
-      // long-running node path (spawnNode) but with the module map assembled
-      // in the stateless entrypoint isolate; the startProcess RPC below stays
-      // open for the process lifetime (its context owns the facet's
-      // SUPERVISOR binding).
+      // Keyed, stage-carrying resident process through the fabric's single
+      // placement policy point. The attach TUI declares `heavy`
+      // (stagedProcessClass), so the fabric hosts the facet on a sibling
+      // peer DO — its own workerd process memory budget — with the
+      // SUPERVISOR binding minted for THIS coordinator; the held-open
+      // startProcess RPC chain stays open for the process lifetime exactly
+      // as before.
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-      const ctxExports = getNimbusCtxExports();
-      startStub = await createLoadedWorkerEntrypoint(
-        ctxExports, undefined, { doId: this.ctx.id.toString(), pid }, null, workerKey, stageSpec,
-      );
-      if (typeof startStub.startProcess !== 'function') {
-        throw new Error('Nimbus: opencode runner entrypoint has no startProcess method');
-      }
+      handle = await this.processFabric.startResidentProcess({
+        processClass: stagedProcessClass(stageSpec.mode),
+        pid,
+        workerKey,
+        stage: stageSpec,
+        // Respawn (fresh peer = new machine lottery) only while the process
+        // is still expected to run — never after kill/session teardown.
+        shouldRespawn: () => this.processes.get(pid)?.state === 'running',
+      });
       this.trackProcessRpcResources(
         pid,
-        [startStub],
+        [handle],
         { releaseOnReportExit: false },
       );
-      const startPromise = startStub.startProcess();
       this.ctx.waitUntil(
-        startPromise
+        handle.done
           .catch((e: unknown) => {
             // A pid that is already terminal (killed by session teardown, or
             // exited via its own reportExit) rejects the held-open call as a
@@ -3052,7 +3020,7 @@ export class FacetManager {
       return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
     } catch (e) {
       this.releaseProcessRpcResources(pid);
-      disposeRpcResource(startStub);
+      handle?.kill();
       this.processes.exit(pid, 1);
       throw e;
     }
@@ -3147,18 +3115,11 @@ export class FacetManager {
     const { pid, stageSpec } = staged;
     const ctxExports = getNimbusCtxExports();
     const supervisor = { doId: this.ctx.id.toString(), pid };
-    let startStub: LoadedWorkerEntrypointStub | undefined;
+    let handle: ResidentProcessHandle | undefined;
     let routeStub: LoadedWorkerEntrypointStub | undefined;
     let resourcesTracked = false;
     try {
       const workerKey = `nimbus-process:${supervisor.doId}:${pid}`;
-      // Stage-carrying start stub: NimbusLoadedEntrypoint assembles the ~23 MB
-      // module map in ITS stateless isolate on the Worker-Loader cache-miss
-      // path (with SUPERVISOR bound to the held-open startProcess context) —
-      // the supervisor DO never materializes the artifact sources.
-      startStub = await createLoadedWorkerEntrypoint(
-        ctxExports, undefined, supervisor, null, workerKey, stageSpec,
-      );
       // A re-resolvable, CODE-FREE NimbusLoadedEntrypoint route stub (keyed on
       // workerKey): the serve facet's port must resolve to a handler that can
       // be re-entered from a LATER routing request's context. It resolves the
@@ -3167,23 +3128,30 @@ export class FacetManager {
       // listening. A poll racing the initial load simply errors (502) and is
       // retried by the readiness gate.
       routeStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, workerKey);
-      this.trackProcessRpcResources(
-        pid,
-        [routeStub, startStub],
-        { releaseOnReportExit: false },
-      );
-      resourcesTracked = true;
       // Bind the route stub for the pid BEFORE boot so the shim's
       // listen()→SUPERVISOR.registerPort resolves against it; also reserve the
       // known port explicitly (belt-and-suspenders with the in-facet listen()).
       this.portRegistry.bindFacetStub(pid, routeStub);
 
-      if (typeof startStub.startProcess !== 'function') {
-        throw new Error('Nimbus: opencode serve runner entrypoint has no startProcess method');
-      }
-      const startPromise = startStub.startProcess();
+      // Stage-carrying resident process through the fabric (serve declares
+      // `light` → local facet, exactly the pre-fabric boot): the module map
+      // is assembled in the stateless NimbusLoadedEntrypoint isolate on the
+      // Worker-Loader cache-miss path, and the held-open startProcess RPC
+      // owns the facet's SUPERVISOR binding for the process lifetime.
+      handle = await this.processFabric.startResidentProcess({
+        processClass: stagedProcessClass(stageSpec.mode),
+        pid,
+        workerKey,
+        stage: stageSpec,
+      });
+      this.trackProcessRpcResources(
+        pid,
+        [routeStub, handle],
+        { releaseOnReportExit: false },
+      );
+      resourcesTracked = true;
       this.ctx.waitUntil(
-        startPromise
+        handle.done
           .catch((e: unknown) => {
             const current = this.processes.get(pid);
             if (!current || current.state !== 'running') return;
@@ -3201,7 +3169,10 @@ export class FacetManager {
     } catch (e) {
       this.portRegistry.unregisterByPid(pid);
       if (resourcesTracked) this.releaseProcessRpcResources(pid);
-      else disposeRpcResources([routeStub, startStub]);
+      else {
+        disposeRpcResource(routeStub);
+        handle?.kill();
+      }
       this.processes.exit(pid, 1);
       const reason = 'opencode serve boot failed: ' + errorMessage(e);
       this._w5RecordTermination(pid, 1, 'facet', reason);

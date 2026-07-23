@@ -290,6 +290,16 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }): Promise<{
         results: unknown[];
     }>;
+    _hostedProcessCancels: Map<string, () => void>;
+    _rpcHostProcessProbe(): {
+        isolateToken: string;
+    };
+    _rpcHostProcess(stage: unknown, opts: unknown): Promise<{
+        ok: boolean;
+    }>;
+    _rpcCancelHostProcess(workerKey: string): {
+        cancelled: boolean;
+    };
     _rpcCpSpawn(req: any): Promise<{
         childPid: number;
     }>;
