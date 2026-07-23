@@ -33,10 +33,24 @@ index 2dd0586a..3cd7b5ee 100644
      }
  }
 diff --git a/packages/core/src/zig/lib.zig b/packages/core/src/zig/lib.zig
-index 5f33e48b..3d919a33 100644
+index 5f33e48b..146aabb5 100644
 --- a/packages/core/src/zig/lib.zig
 +++ b/packages/core/src/zig/lib.zig
-@@ -72,6 +72,29 @@ const globalAllocator = gpa.allocator();
+@@ -68,10 +68,42 @@ var gpa: std.heap.GeneralPurposeAllocator(.{
+     .enable_memory_limit = build_options.gpa_safe_stats,
+     .safety = build_options.gpa_safe_stats,
+ }) = .{};
+-const globalAllocator = gpa.allocator();
++/// On wasm the GPA's backing page allocator can never unmap: every freed
++/// large allocation and emptied bucket page is linear memory lost forever,
++/// so alloc/free churn grows the module until the host's memory cap
++/// (measured: a ~180-byte styled-text set grew linear memory ~50 MB). Use
++/// std.heap.wasm_allocator — its size-class freelists reuse freed memory —
++/// as the global backing allocator on wasm; native keeps the GPA unchanged.
++const globalAllocator = if (@import("builtin").target.cpu.arch.isWasm())
++    std.heap.wasm_allocator
++else
++    gpa.allocator();
  var arena = std.heap.ArenaAllocator.init(globalAllocator);
  const globalArena = arena.allocator();
  
@@ -66,6 +80,21 @@ index 5f33e48b..3d919a33 100644
  pub const ExternalBuildOptions = extern struct {
      gpa_safe_stats: bool,
      gpa_memory_limit_tracking: bool,
+@@ -600,10 +632,12 @@ pub const ExternalCapabilities = extern struct {
+     explicit_cursor_positioning: bool,
+     remote: bool,
+     multiplexer: u8,
++    // Sized u64 to match the host FFI packer's 64-bit usize assumption on
++    // wasm (see text-buffer.zig StyledChunk); native keeps usize.
+     term_name_ptr: [*]const u8,
+-    term_name_len: usize,
++    term_name_len: if (@import("builtin").target.cpu.arch.isWasm()) u64 else usize,
+     term_version_ptr: [*]const u8,
+-    term_version_len: usize,
++    term_version_len: if (@import("builtin").target.cpu.arch.isWasm()) u64 else usize,
+     term_from_xtversion: bool,
+ };
+ 
 diff --git a/packages/core/src/zig/logger.zig b/packages/core/src/zig/logger.zig
 index b9b72c07..fae1f755 100644
 --- a/packages/core/src/zig/logger.zig
@@ -177,3 +206,78 @@ index 9ffd9212..2ba38928 100644
          }
      }
  };
+diff --git a/packages/core/src/zig/text-buffer.zig b/packages/core/src/zig/text-buffer.zig
+index 870238ae..8041fe34 100644
+--- a/packages/core/src/zig/text-buffer.zig
++++ b/packages/core/src/zig/text-buffer.zig
+@@ -40,15 +40,21 @@ pub const TextBuffer = UnifiedTextBuffer;
+ /// The color pointers point to 4 consecutive u16 values in the packed RGBA
+ /// format defined by ansi.zig. Use utils.ptrToRGBA to read them.
+ pub const StyledChunk = extern struct {
++    /// The host FFI struct packer sizes these length fields as u64 (every
++    /// Bun-native target is 64-bit, so upstream's JS declares them "u64").
++    /// The wasm32 reactor must match that host ABI or every later field is
++    /// read shifted — link_len then lands on the packed link POINTER, and a
++    /// ~18 MB garbage "URL" gets copied into the link pool per styled-text
++    /// set. Native keeps usize (identical layout on 64-bit).
+     text_ptr: [*]const u8,
+-    text_len: usize,
++    text_len: if (@import("builtin").target.cpu.arch.isWasm()) u64 else usize,
+     /// Optional foreground color as 4 packed u16 values (see ansi.RGBA).
+     fg_ptr: ?[*]const u16,
+     /// Optional background color as 4 packed u16 values (see ansi.RGBA).
+     bg_ptr: ?[*]const u16,
+     attributes: u32,
+     link_ptr: ?[*]const u8 = null,
+-    link_len: usize = 0,
++    link_len: if (@import("builtin").target.cpu.arch.isWasm()) u64 else usize = 0,
+ };
+ 
+ pub const UnifiedTextBuffer = struct {
+@@ -1088,7 +1094,7 @@ pub const UnifiedTextBuffer = struct {
+         // Calculate total text length
+         var total_len: usize = 0;
+         for (chunks) |chunk| {
+-            total_len += chunk.text_len;
++            total_len += @as(usize, @intCast(chunk.text_len));
+         }
+ 
+         if (total_len == 0) {
+@@ -1117,10 +1123,11 @@ pub const UnifiedTextBuffer = struct {
+ 
+         var offset: usize = 0;
+         for (chunks) |chunk| {
+-            if (chunk.text_len > 0) {
+-                const chunk_text = chunk.text_ptr[0..chunk.text_len];
+-                @memcpy(full_text[offset .. offset + chunk.text_len], chunk_text);
+-                offset += chunk.text_len;
++            const text_len: usize = @intCast(chunk.text_len);
++            if (text_len > 0) {
++                const chunk_text = chunk.text_ptr[0..text_len];
++                @memcpy(full_text[offset .. offset + text_len], chunk_text);
++                offset += text_len;
+             }
+         }
+ 
+@@ -1142,7 +1149,7 @@ pub const UnifiedTextBuffer = struct {
+ 
+             var char_pos: u32 = 0;
+             for (chunks, 0..) |chunk, i| {
+-                const chunk_text = chunk.text_ptr[0..chunk.text_len];
++                const chunk_text = chunk.text_ptr[0..@as(usize, @intCast(chunk.text_len))];
+                 const chunk_len = self.measureText(chunk_text);
+ 
+                 if (chunk_len > 0) {
+@@ -1151,9 +1158,10 @@ pub const UnifiedTextBuffer = struct {
+ 
+                     var attributes = chunk.attributes;
+                     if (chunk.link_ptr) |link_ptr| {
+-                        if (chunk.link_len > 0) {
++                        const link_len: usize = @intCast(chunk.link_len);
++                        if (link_len > 0) {
+                             const tracker = self.getLinkTracker();
+-                            const url = link_ptr[0..chunk.link_len];
++                            const url = link_ptr[0..link_len];
+                             const link_id = tracker.pool.alloc(url) catch 0;
+                             if (link_id != 0) {
+                                 const maybe_seen = seen_link_ids.getOrPut(self.global_allocator, link_id) catch null;

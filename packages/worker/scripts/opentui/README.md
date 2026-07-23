@@ -62,6 +62,27 @@ pins) with **Zig 0.15.2** (the exact version `build.zig` enforces).
   linear memory, so it allocates scratch through these, writes arguments in,
   calls the FFI, reads results back, and frees.
 
+  Two further wasm-gated changes, both root-caused live on the attach-TUI
+  OOM (2026-07-23; see scratchpad/opencode-tui-leak.md):
+
+  - **Global allocator = `std.heap.wasm_allocator` on wasm.** Upstream's
+    GPA is backed by the page allocator, which on wasm can never unmap:
+    every freed large allocation and emptied bucket page is linear memory
+    lost forever, so alloc/free churn grows the module monotonically until
+    the host's memory cap. `wasm_allocator`'s size-class freelists reuse
+    freed memory. Native keeps the GPA (and its stats exports) unchanged.
+  - **FFI-boundary `usize` fields are `u64` on wasm.** @opentui/core's JS
+    struct packer sizes `usize`-shaped length fields as `u64` (every
+    Bun-native target is 64-bit). On wasm32 `usize` is 4 bytes, so every
+    field after the first length was read shifted — `StyledChunk.link_len`
+    landed on the packed link *pointer* value, and each styled-text set
+    copied an ~18 MB garbage "URL" into the link pool (~50 MB of permanent
+    growth per home-screen text node; the isolate died mid-mount).
+    `StyledChunk.text_len`/`link_len` and
+    `ExternalCapabilities.term_name_len`/`term_version_len` are the four
+    such fields across the packed-struct surface (all others are explicit
+    u32/u64 or pointer-typed, which the packer already sizes per target).
+
 ## FFI ABI (what the host wires up)
 
 Imports the host must provide (module `"opentui"`); `token` is the value the

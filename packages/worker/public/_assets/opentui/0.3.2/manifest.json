@@ -12,17 +12,17 @@
     },
     {
       "file": "nimbus-wasm-ffi-abi.patch",
-      "sha256": "27d059261ef3540b4e40d2a67a4ef8e9127eae7ab7486d20502d771736c5adf2"
+      "sha256": "ede6ce5ad53abdd3d0f4d7abdcfba70a8fef1d4b4a70237894f11c82d67e830c"
     }
   ],
   "wasmOpt": "wasm-opt version 112 (version_112)",
   "artifact": {
     "file": "opentui.wasm",
-    "sha256": "24c363560adfa44171bcf4b7c0e281a5ebce9e31e9b6ebdc4be79938aad13efb",
-    "size": 487536,
-    "gzipSize": 122060,
-    "preWasmOptSha256": "b958463e590d8adea0af4088e4f27bb1a67736074525184107fac48fd94261df",
-    "preWasmOptSize": 529273
+    "sha256": "804a768bed34042e0683787ad2780fdd037212182ed3bfc3b73a1c9b13336bed",
+    "size": 484630,
+    "gzipSize": 120725,
+    "preWasmOptSha256": "305bb91d770dbee4cdda3c211de6fa1b441228d6eed98ad2cafd1eb9432394a0",
+    "preWasmOptSize": 526145
   },
   "imports": {
     "wasi_snapshot_preview1": [
