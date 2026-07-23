@@ -2696,6 +2696,14 @@ export class FacetManager {
                 // Respawn (fresh peer = new machine lottery) only while the process
                 // is still expected to run — never after kill/session teardown.
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
+                // Peer-death recovery is never silent: the process log (the channel
+                // `logs <pid>` and the log-tail diagnostics read) records it.
+                onRespawn: (cause) => {
+                    try {
+                        this.processes.appendOutput(pid, 'stderr', `[nimbus] process host died (${errorMessage(cause)}); respawning on a fresh peer\n`);
+                    }
+                    catch { /* best-effort */ }
+                },
             });
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             this.ctx.waitUntil(handle.done
