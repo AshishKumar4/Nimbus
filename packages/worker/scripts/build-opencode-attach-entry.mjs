@@ -66,12 +66,58 @@ function attachSeedChunks(entry) {
 }
 
 /**
+ * Strip the embedded models.dev catalog literal from the ModelsDev chunk for
+ * the ATTACH build. The ~2.8 MB literal lives inside an Effect thunk
+ * (`g=e.sync(()=>({...}))`) that only `ModelsDev.populate` — server-side code
+ * the attach TUI client never runs — would evaluate; models reach the client
+ * from the opencode server's API. Carrying the literal costs the attach
+ * facet ~3 MB of retained source plus parse work at boot, which matters on
+ * memory-tight placed machines (#35). The thunk body becomes a fail-loud
+ * throw, so an unforeseen client-side evaluation surfaces as a clear error,
+ * never silent empty data. Anchor-matched against the staged build; if the
+ * shape changes in a future opencode, the literal is KEPT (correctness over
+ * optimization) with a loud build warning.
+ */
+function stripEmbeddedModelsCatalog(pack) {
+  const ANCHOR = ',a=e.fn("ModelsDev.fetchAndWrite")';
+  const OPEN = '=e.sync(()=>({';
+  for (const [name, src] of Object.entries(pack)) {
+    const end = src.indexOf(ANCHOR);
+    if (end < 0) continue;
+    const start = src.lastIndexOf(OPEN, end);
+    if (start < 0 || end - start < 1024 * 1024) {
+      console.warn(
+        `[build-opencode-attach-entry] WARNING: ModelsDev anchor found in ${name} but the ` +
+          'embedded-catalog shape did not match — keeping the literal (no size win)',
+      );
+      return pack;
+    }
+    const replacement =
+      '=e.sync(()=>{throw new Error("Nimbus attach entry: the embedded models.dev catalog ' +
+      'is stripped from the attach client (models come from the opencode server API); ' +
+      'client-side ModelsDev.populate is not expected to run")})';
+    const stripped = src.slice(0, start) + replacement + src.slice(end);
+    console.log(
+      `[build-opencode-attach-entry] stripped embedded models catalog from ${name}: ` +
+        `${((end - start) / 1024 / 1024).toFixed(2)} MiB of source removed`,
+    );
+    return { ...pack, [name]: stripped };
+  }
+  console.warn(
+    '[build-opencode-attach-entry] WARNING: no chunk carries the ModelsDev.fetchAndWrite ' +
+      'anchor — embedded-catalog strip skipped (no size win)',
+  );
+  return pack;
+}
+
+/**
  * Build the attach entry text from in-memory sources.
  * @param entry index.js source text.
  * @param pack chunk name → source map (the chunks.json content).
  * @returns the bundled index-attach.js text.
  */
-export async function buildOpencodeAttachEntryFromSources(entry, pack) {
+export async function buildOpencodeAttachEntryFromSources(entry, packInput) {
+  const pack = stripEmbeddedModelsCatalog(packInput);
   const seeds = attachSeedChunks(entry);
   for (const seed of seeds) {
     if (!pack[seed]) {
