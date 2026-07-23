@@ -269,6 +269,12 @@ export interface ResidentProcessSpawn {
    * killed or torn-down process must not respawn.
    */
   shouldRespawn?: () => boolean;
+  /**
+   * Invoked after a peer death when a respawn WILL be attempted, with the
+   * error that killed the previous peer. Callers surface it to the process
+   * log so a peer-death-plus-recovery is never silent.
+   */
+  onRespawn?: (cause: unknown) => void;
 }
 
 interface PeerPlacementInternal {
@@ -387,6 +393,7 @@ export class ProcessFabric {
         const wanted = spawn.shouldRespawn ? spawn.shouldRespawn() : true;
         if (killed || !wanted || respawnsLeft <= 0) throw e;
         respawnsLeft--;
+        try { spawn.onRespawn?.(e); } catch { /* observability must not break the lifecycle */ }
       } finally {
         this.tokensInUse.delete(spawn.pid);
         disposeRpcResource(placement.stub);

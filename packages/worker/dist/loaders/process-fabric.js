@@ -259,6 +259,10 @@ export class ProcessFabric {
                 if (killed || !wanted || respawnsLeft <= 0)
                     throw e;
                 respawnsLeft--;
+                try {
+                    spawn.onRespawn?.(e);
+                }
+                catch { /* observability must not break the lifecycle */ }
             }
             finally {
                 this.tokensInUse.delete(spawn.pid);
