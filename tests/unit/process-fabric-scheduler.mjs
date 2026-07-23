@@ -24,7 +24,7 @@ import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts'
 import { stagedProcessClass } from '../../packages/worker/src/facets/opencode-staging.ts';
 
 // ── Runtime-spec policy declaration ─────────────────────────────────────
-assert.equal(stagedProcessClass('attached'), 'heavy', 'attach TUI declares heavy');
+assert.equal(stagedProcessClass('attached'), 'light', 'attach TUI declares light (leak-fixed local facet; no default heavy tenant)');
 assert.equal(stagedProcessClass('server'), 'light', 'serve declares light');
 assert.equal(stagedProcessClass('oneshot'), 'light', 'oneshot declares light');
 
