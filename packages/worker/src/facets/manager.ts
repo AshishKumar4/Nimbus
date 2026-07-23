@@ -2391,6 +2391,8 @@ export class FacetManager {
    * sibling peer DO with its own workerd process memory budget.
    */
   private processFabric: ProcessFabric;
+  /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
+  private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -2449,6 +2451,10 @@ export class FacetManager {
     this.portRegistry = portRegistry;
     this.hooks = hooks;
     this.processFabric = new ProcessFabric(ctx, peerNamespaceFromEnv(env));
+    const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+      ? Reflect.get(env, 'NIMBUS_DEBUG')
+      : undefined;
+    this.debugEnabled = debugVar === '1' || debugVar === 'true';
   }
 
   setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
@@ -3005,6 +3011,18 @@ export class FacetManager {
           } catch { /* best-effort */ }
         },
       });
+      if (this.debugEnabled && handle.placement.kind === 'peer') {
+        // Deterministic live evidence (log-tail channel) that the heavy
+        // spawn actually took the peer branch, with its verified placement.
+        try {
+          this.processes.appendOutput(
+            pid,
+            'stderr',
+            `[nimbus-debug] heavy process placed on peer slot=${handle.placement.slot} ` +
+              `peer=${handle.placement.peerName.slice(-12)} token=${handle.placement.isolateToken.slice(0, 8)}\n`,
+          );
+        } catch { /* best-effort */ }
+      }
       this.trackProcessRpcResources(
         pid,
         [handle],
