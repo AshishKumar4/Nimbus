@@ -1,76 +1,99 @@
 /**
- * process-fabric.ts — the general heavy-process scheduler (peer-DO placement).
+ * process-fabric.ts — the resident-process scheduler (peer-DO placement).
  *
- * The kernel already owns a ProcessTable, a fork/exec fabric, a SupervisorRPC
- * syscall channel, and a peer-DO fanout for short idempotent batch work
- * (fanout-pool.ts). This module adds the last step: scheduling LONG-LIVED,
- * MEMORY-HEAVY resident processes onto sibling NimbusSession DOs, because peer
- * Durable Objects have INDEPENDENT workerd process memory budgets — proven
- * live on the prod shape (placement:smart + D1), 8 peers × 150 MiB facets =
- * 1.2 GiB held concurrently, blast radius contained 12/12
- * (scratchpad/ARCHITECTURE-NEXTGEN.md §1).
+ * Every long-lived process Nimbus runs — node servers, python/ruby socket
+ * servers, the opencode TUI and its headless server — is a Worker Loader
+ * facet. This module owns WHICH workerd process that facet lands in, and it
+ * is the only place in the kernel that knows the answer.
  *
- * One policy point: runtime specs declare a process class
- * (`light` | `heavy`); `startResidentProcess` places `heavy` on a peer and
- * runs `light` in a local facet exactly as before. There is no per-runtime
- * special case here.
+ *   local  — the facet is minted from the coordinator session DO's own
+ *            env.LOADER, so it shares the coordinator's workerd process
+ *            memory envelope with the DO and every other local facet.
+ *   peer   — the facet is minted from a sibling DO's loader
+ *            (`${coordinatorDoId}:proc:${slot}`), so it gets an INDEPENDENT
+ *            workerd memory budget. Proven live on the prod shape: 8 peers ×
+ *            ~150 MiB held concurrently, blast radius contained 12/12
+ *            (scratchpad/ARCHITECTURE-NEXTGEN.md §1).
  *
- * NO DEFAULT HEAVY TENANT (2026-07-23). Every shipped runtime spec declares
- * `light`, so in production all processes flow the local path — behaviorally
- * identical to the pre-fabric spawn. The attach TUI was the intended first
- * heavy tenant, but its OOM (#35) was root-caused to a wasm FFI-ABI bug and
- * fixed in the runner itself; with that fix attach is stable as a local
- * facet, and peer placement would only add ~0.5 s of peer-DO cold-create
- * latency per spawn. The `heavy` path stays fully implemented, unit-tested,
- * and live-gate-proven (peer placement, syscall routing, OOM containment,
- * bounded respawn, deterministic kill) as the substrate for the
- * swap/durability layer (#18) and heavy multi-process workloads
- * (clang/wasm-ld batches, serve-as-tenant with a routed-HTTP peer leg).
+ * In BOTH cases the facet's SUPERVISOR binding is minted for the COORDINATOR's
+ * doId, so every syscall — VFS read/write, stdout/stderr frames, stdin pump,
+ * registerPort, loopback HTTP — lands on the user's session DO. The disk and
+ * the terminal never move. Peer placement changes only which workerd process
+ * runs the compute and holds the resident memory.
+ *
+ * Placement is INVISIBLE above this module. A `ResidentProcessHandle` exposes
+ * the same three things for either placement — `start()` to boot the runner,
+ * `routeTarget` for inbound HTTP, `done` for death, `kill()` for teardown — so
+ * PortRegistry, the process table, stdio, the shell and the SDK never learn
+ * where a process runs.
+ *
+ * Policy
+ * ──────
+ * One field, one policy point. Each launch primitive DECLARES a
+ * `processClass` where it is defined, and `startResidentProcess` is the only
+ * consumer. There is no command-name or argv matching anywhere in this file:
+ * the classification follows the primitive's intrinsic residency (a resident
+ * process accumulates memory over its lifetime and is worth a whole workerd
+ * process; a one-shot command returns promptly and never reaches this module
+ * at all).
+ *
+ * Boot specs
+ * ──────────
+ * A resident process boots from one of two specs, both small enough to cross
+ * the placement boundary:
+ *
+ *   staged — an OpencodeStageSpec. The ~23 MB artifact module map is
+ *            assembled by the HOST inside a stateless NimbusLoadedEntrypoint
+ *            isolate on the Worker-Loader cache-miss path, never in a session
+ *            DO (which OOM-reset at the isolate cap when it did).
+ *   code   — a generated module map (node / python / ruby runners). Module
+ *            TEXT rides inline; wasm sidecars ride BY VFS PATH and are
+ *            materialized by the HOST from the coordinator's disk. A ruby
+ *            server's `ruby+stdlib.wasm` alone is 34.3 MiB — past workerd's
+ *            32 MiB RPC argument limit — so shipping bytes was never an
+ *            option, and resolving them host-side keeps them out of the
+ *            coordinator's isolate entirely.
  *
  * Peer topology
  * ─────────────
  * Peers are sibling NimbusSession DOs named `${coordinatorDoId}:proc:${slot}`
- * (same posture as the fanout's `nbf:` siblings — the existing DO namespace
- * binding, no new worker, no config change). A heavy spawn:
+ * (the same posture as the fanout's `nbf:` siblings — the existing DO
+ * namespace binding, no new worker, no config change). A peer spawn:
  *
  *   1. Probes the candidate peer for its module-scope isolate token
  *      (`_rpcHostProcessProbe`, one RPC, 2–11 ms warm). Two DOs reporting the
  *      same token share one isolate/process; on collision with the
  *      coordinator's own token or another in-use peer token, the scheduler
- *      moves to the next slot (probe-proven trick; co-location is rare —
- *      1 pair in 24 fresh peers). If every probed slot co-locates (e.g.
- *      single-process `wrangler dev`), the last candidate is used anyway:
- *      placement verification is an isolation OPTIMIZATION; lifecycle and
- *      routing semantics do not depend on it.
- *   2. Calls `_rpcHostProcess(stage, …)` on the peer and holds the RPC open
- *      for the process lifetime. The peer boots the process facet from ITS
- *      OWN env.LOADER — so the facet lands in the peer's workerd process —
- *      with the SUPERVISOR binding minted for the COORDINATOR's doId
- *      (`supervisor.doId` override, the same INSTALL-HONESTY routing the npm
- *      fanout ships). Every syscall (VFS read/write, stdout/stderr frames,
- *      stdin pump, port registry) lands on the coordinator: the disk and the
- *      terminal never move.
+ *      moves to the next slot (co-location is rare — 1 pair in 24 fresh
+ *      peers). If every probed slot co-locates (e.g. single-process
+ *      `wrangler dev`), the last candidate is used anyway: placement
+ *      verification is an isolation OPTIMIZATION; lifecycle and routing
+ *      semantics do not depend on it.
+ *   2. Holds `_rpcHostProcess` open for the process lifetime. The peer boots
+ *      the facet from ITS OWN env.LOADER and retains the facet's resources
+ *      for as long as that call is open.
  *
  * Failure model
  * ─────────────
- * Peer OOM / silent facet reset severs the held-open RPC, which rejects on
- * the coordinator — identical surface to a local facet death. The scheduler
- * MAY respawn the process on a FRESH slot (a new machine lottery, impossible
- * when the facet is pinned to the session DO's process); respawn budget
- * defaults to 1 and is gated on the caller's `shouldRespawn` (a killed /
- * torn-down process never respawns).
+ * A peer OOM or silent facet reset severs the held-open RPC, which rejects on
+ * the coordinator — the identical surface to a local facet death. The
+ * scheduler MAY respawn the process on a FRESH slot (a new machine lottery,
+ * impossible when the facet is pinned to the session DO's process); the
+ * respawn budget defaults to 1, is gated on the caller's `shouldRespawn`, and
+ * is always surfaced through `onRespawn` so a peer death is never silent.
+ * A peer death is a PROCESS death, never a session death.
  *
  * Lifecycle
  * ─────────
  * The coordinator holds `_rpcHostProcess` open; if the coordinator DO dies,
- * workerd cancels the inbound call on the peer, the peer's held-open
- * startProcess context collapses, and the facet dies with it — a
- * process-hosting peer cannot outlive its parent. Peers store nothing beyond
- * the NimbusSession constructor's isolate-gen counter (the `nbf:` fanout
- * siblings' accepted posture) and idle-evict when their process exits.
+ * workerd cancels the inbound call on the peer, the peer disposes the facet's
+ * retained resources, and the facet dies with it — a process-hosting peer
+ * cannot outlive its parent. Peers store nothing beyond the NimbusSession
+ * constructor's isolate-gen counter (the `nbf:` fanout siblings' accepted
+ * posture) and idle-evict when their process exits.
  */
 import { getCtxExports } from '../session/ctx-exports.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { BindingError } from './vendor/errors.js';
 import { isTransientDoReset } from '../observability/oom-classify.js';
 import { PEER_TRANSIENT_RESET_RETRIES, PEER_RETRY_BACKOFF_MS } from './fanout-pool.js';
@@ -108,7 +131,7 @@ export function getNimbusCtxExports() {
  * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. The
  * `supervisor` identity controls where the facet's SUPERVISOR binding routes:
  * a peer host passes the COORDINATOR's doId so every syscall lands on the
- * user's session DO, not the peer (the INSTALL-HONESTY posture).
+ * user's session DO, not the peer.
  */
 export async function createLoadedWorkerEntrypoint(ctxExports, code, supervisor, name = null, key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`, stage) {
     if (!ctxExports.NimbusLoadedEntrypoint) {
@@ -124,6 +147,116 @@ export async function createLoadedWorkerEntrypoint(ctxExports, code, supervisor,
             ...(stage ? { stage } : {}),
         },
     });
+}
+function loaderBindingFromEnv(env) {
+    const loader = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+        ? Reflect.get(env, 'LOADER')
+        : undefined;
+    if ((typeof loader !== 'object' && typeof loader !== 'function') || loader === null)
+        return undefined;
+    return typeof Reflect.get(loader, 'get') === 'function' ? loader : undefined;
+}
+/**
+ * Materialize the spec's by-reference wasm sidecars from the coordinator's
+ * disk. This is the one step that must run on the HOST: the bytes (34.3 MiB
+ * for ruby's interpreter+stdlib image alone) exceed workerd's RPC argument
+ * limit, so they can never ride inside a boot spec.
+ */
+async function materializeWasmModules(spec, read, pid) {
+    const out = {};
+    for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
+        const bytes = await read(path, pid);
+        out[moduleName] = {
+            wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        };
+    }
+    return out;
+}
+/**
+ * Boot a resident process's facet on THIS host. Identical code runs on the
+ * coordinator (local placement) and on a peer DO (peer placement) — the only
+ * difference is whose `loader` and `ctxExports` are handed in.
+ *
+ * The two spec kinds differ only in where the module map comes from:
+ *   staged — the stage rides the entrypoint props and the map is assembled
+ *            inside the stateless NimbusLoadedEntrypoint isolate; its
+ *            held-open startProcess call is what keeps the facet's SUPERVISOR
+ *            binding context alive, so the runner contract is `lifetime`.
+ *   code   — the map is completed here (wasm materialized from the
+ *            coordinator's disk) and loaded through the host DO's own loader
+ *            with a DO-minted SUPERVISOR binding, which outlives the request
+ *            that created it. The facet is pinned by the retained resources,
+ *            so a `boot`-contract runner may return from startProcess.
+ */
+export async function hostResidentProcess(host, boot) {
+    const route = await createRouteTarget(host);
+    if (boot.kind === 'staged') {
+        const startStub = await createLoadedWorkerEntrypoint(host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot.stage);
+        if (typeof startStub.startProcess !== 'function') {
+            disposeRpcResources([startStub, route]);
+            throw new Error('Nimbus: resident process entrypoint has no startProcess method');
+        }
+        return {
+            start: (args) => startStub.startProcess(args),
+            route,
+            dispose: onceDisposed([startStub, route]),
+        };
+    }
+    const spec = boot.code;
+    const supervisorBinding = host.ctxExports.SupervisorRPC
+        ? host.ctxExports.SupervisorRPC({ props: host.supervisor })
+        : undefined;
+    let worker;
+    let startStub;
+    try {
+        const wasmModules = await materializeWasmModules(spec, host.readProcessFile, host.supervisor.pid);
+        worker = host.loader.get(host.workerKey, async () => ({
+            compatibilityDate: spec.compatibilityDate,
+            compatibilityFlags: spec.compatibilityFlags,
+            mainModule: spec.mainModule,
+            modules: { ...spec.modules, ...wasmModules },
+            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+        }));
+        startStub = worker.getEntrypoint();
+        if (typeof startStub.startProcess !== 'function') {
+            throw new Error('Nimbus: resident process entrypoint has no startProcess method');
+        }
+        const started = startStub.startProcess.bind(startStub);
+        return {
+            start: (args) => started(args),
+            route,
+            dispose: onceDisposed([route, startStub, worker, supervisorBinding]),
+        };
+    }
+    catch (e) {
+        disposeRpcResources([route, startStub, worker, supervisorBinding]);
+        throw e;
+    }
+}
+/** Disposal is idempotent: kill, host-call teardown and respawn can all fire. */
+function onceDisposed(resources) {
+    let done = false;
+    return () => {
+        if (done)
+            return;
+        done = true;
+        disposeRpcResources(resources);
+    };
+}
+/**
+ * A CODE-FREE, re-resolvable route target for the facet, keyed on workerKey.
+ * Inbound HTTP arrives in a LATER request context than the boot, so the
+ * target must re-resolve the already-loaded worker in the caller's context —
+ * and fail loud if it was evicted, rather than silently booting a fresh
+ * isolate whose server never called listen().
+ */
+async function createRouteTarget(host) {
+    const stub = await createLoadedWorkerEntrypoint(host.ctxExports, undefined, host.supervisor, null, host.workerKey);
+    if (typeof stub.handleHttpRequest !== 'function') {
+        disposeRpcResource(stub);
+        throw new Error('Nimbus: resident process entrypoint has no HTTP request handler');
+    }
+    return stub;
 }
 function isPeerNamespace(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null)
@@ -148,29 +281,44 @@ function processPeerStub(value, peerName) {
     }
     return value;
 }
+function describePlacement(placement) {
+    if (placement.kind === 'local')
+        return 'local facet (coordinator process)';
+    return `peer slot=${placement.slot} peer=${placement.peerName.slice(-12)} `
+        + `token=${placement.isolateToken.slice(0, 8)}`;
+}
 /**
- * Resource handle for one resident process. `done` settles when the process
- * lifecycle ends (clean exit resolves; facet/peer death rejects). The handle
- * is disposable so FacetManager's existing process-resource tracking kills
- * the process the same way it kills local facets: disposal severs the
- * held-open RPC chain (local: the loopback startProcess; peer: the
- * `_rpcHostProcess` call, plus an explicit cancel RPC so the peer tears its
- * facet down deterministically) and blocks any pending respawn.
+ * Resource handle for one resident process — the whole surface the kernel
+ * above this module sees. It is deliberately placement-free: `start`,
+ * `routeTarget`, `done` and `kill` behave identically whether the facet runs
+ * in the coordinator's workerd process or a sibling's.
+ *
+ * `done` settles when the process's HOST context ends: for a `lifetime`
+ * runner that is the process exiting (resolve) or dying (reject); for a
+ * `boot` runner it is the facet dying under it, which locally is only
+ * observable at kill time and on a peer is the severed host RPC.
+ *
+ * The handle is disposable so FacetManager's existing per-pid resource
+ * tracking kills a hosted process exactly the way it kills a local facet.
  */
 export class ResidentProcessHandle {
     done;
     processClass;
-    /** Current placement; a heavy respawn moves it to the fresh peer. */
-    placement;
+    /** Inbound-HTTP target for PortRegistry; follows the process across respawns. */
+    routeTarget;
     /** Peer respawns consumed (heavy only). */
     respawns = 0;
+    #booted;
     #kill;
     #killed = false;
-    constructor(processClass, placement, done, kill) {
-        this.processClass = processClass;
-        this.placement = placement;
-        this.done = done;
-        this.#kill = kill;
+    #placement;
+    constructor(init) {
+        this.processClass = init.processClass;
+        this.#placement = init.placement;
+        this.done = init.done;
+        this.#booted = init.booted;
+        this.routeTarget = init.routeTarget;
+        this.#kill = init.kill;
         // Symbol.dispose may be absent from older lib targets; wire defensively
         // so disposeRpcResource() (which probes for it) finds the disposer.
         const disposeSym = Symbol.dispose;
@@ -178,8 +326,23 @@ export class ResidentProcessHandle {
             Object.defineProperty(this, disposeSym, { value: () => this.kill() });
         }
     }
+    /**
+     * The runner's startProcess payload. The runner is started as part of the
+     * spawn, so this is a handle on that one boot — awaiting it twice is safe
+     * and never re-starts anything. For a `lifetime` runner it settles at exit.
+     */
+    booted() {
+        return this.#booted();
+    }
     get killed() {
         return this.#killed;
+    }
+    /**
+     * Human-readable placement, for the NIMBUS_DEBUG process-log line. Callers
+     * log the string; they never branch on it — placement stays in here.
+     */
+    describePlacement() {
+        return describePlacement(this.#placement());
     }
     /** Idempotent: sever the process's RPC chain and block respawn. */
     kill() {
@@ -192,47 +355,81 @@ export class ResidentProcessHandle {
         catch { /* best-effort teardown */ }
     }
 }
+/** A promise that settles only when the process is killed. */
+function heldUntilKilled() {
+    let release = () => { };
+    const promise = new Promise((resolve) => { release = resolve; });
+    return { promise, release };
+}
 export class ProcessFabric {
     ctx;
     ns;
+    loader;
+    readProcessFile;
     coordDoId;
     /** pid → isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
     /** Monotonic slot counter: respawns and new spawns land on fresh peers. */
     nextSlot = 0;
-    constructor(ctx, ns) {
+    constructor(ctx, env, readProcessFile) {
         this.ctx = ctx;
-        this.ns = ns;
+        this.ns = peerNamespaceFromEnv(env);
+        this.loader = loaderBindingFromEnv(env);
+        this.readProcessFile = readProcessFile;
         this.coordDoId = ctx.id.toString();
     }
     /**
-     * Boot a resident staged process and invoke its held-open startProcess.
-     * Resolves once the lifecycle is RUNNING (the returned handle's `done`
-     * carries the lifecycle promise); rejects on boot/placement failure.
+     * Boot a resident process and return its placement-free handle. Resolves
+     * once the facet is hosted and the runner has been started; rejects on
+     * boot/placement failure, matching a local boot failure's surface.
+     *
+     * THE policy point: one field read, no matching of any kind.
      */
     async startResidentProcess(spawn) {
-        if (spawn.processClass === 'light') {
-            return this._startLocal(spawn);
-        }
-        return this._startPeer(spawn);
+        return spawn.processClass === 'light'
+            ? this._startLocal(spawn)
+            : this._startPeer(spawn);
     }
-    // ── light: local facet, exactly as before ─────────────────────────────
+    // ── light: the facet lands in the coordinator's own workerd process ───
     async _startLocal(spawn) {
-        const ctxExports = getNimbusCtxExports();
-        const startStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, { doId: this.coordDoId, pid: spawn.pid }, null, spawn.workerKey, spawn.stage);
-        if (typeof startStub.startProcess !== 'function') {
-            disposeRpcResource(startStub);
-            throw new Error('Nimbus: resident process entrypoint has no startProcess method');
-        }
-        const done = startStub.startProcess().then(() => { disposeRpcResource(startStub); }, (e) => { disposeRpcResource(startStub); throw e; });
-        return new ResidentProcessHandle('light', { kind: 'local' }, done, () => disposeRpcResource(startStub));
+        const hosted = await hostResidentProcess(this._localHost(spawn), spawn.boot);
+        const started = hosted.start(spawn.startArgs);
+        const held = heldUntilKilled();
+        // `lifetime`: the runner's startProcess IS the process, so its settlement
+        // is the lifecycle — exactly the pre-fabric boot. `boot`: the runner
+        // returns once it is up and the facet stays pinned by `hosted`, so
+        // residency ends only when the pin is released (kill) or the boot failed.
+        const done = spawn.startContract === 'lifetime'
+            ? started.then(() => undefined)
+            : started.then(() => held.promise);
+        return new ResidentProcessHandle({
+            processClass: 'light',
+            placement: () => ({ kind: 'local' }),
+            done: done.finally(() => hosted.dispose()),
+            booted: () => started,
+            routeTarget: hosted.route,
+            kill: () => { held.release(); hosted.dispose(); },
+        });
     }
-    // ── heavy: peer-DO placement ──────────────────────────────────────────
+    _localHost(spawn) {
+        if (!this.loader) {
+            throw new BindingError('ProcessFabric: env.LOADER binding missing or invalid. Resident processes '
+                + 'require the Worker Loader binding.');
+        }
+        return {
+            ctxExports: getNimbusCtxExports(),
+            loader: this.loader,
+            supervisor: { doId: this.coordDoId, pid: spawn.pid },
+            workerKey: spawn.workerKey,
+            readProcessFile: this.readProcessFile,
+        };
+    }
+    // ── heavy: the facet lands in a sibling DO's workerd process ──────────
     _requireNs() {
         if (!this.ns) {
-            throw new BindingError('ProcessFabric: env.NIMBUS_SESSION binding missing or invalid. ' +
-                'Heavy-class processes require the peer-DO namespace. ' +
-                'Add the binding via durable_objects.bindings in wrangler.jsonc.');
+            throw new BindingError('ProcessFabric: env.NIMBUS_SESSION binding missing or invalid. '
+                + 'Heavy-class processes require the peer-DO namespace. '
+                + 'Add the binding via durable_objects.bindings in wrangler.jsonc.');
         }
         return this.ns;
     }
@@ -241,8 +438,30 @@ export class ProcessFabric {
         // spawn itself (matching the local path's boot-failure surface).
         const first = await this._placeDistinctPeer();
         const state = { current: first, handle: undefined };
+        // The route target follows the process across respawns by reading the
+        // live placement on every request — PortRegistry keeps one binding.
+        const routeTarget = {
+            handleHttpRequest: (request) => state.current.stub._rpcRouteHostedHttp(spawn.workerKey, request),
+        };
         const done = this._runPeerLifecycle(spawn, state);
-        const handle = new ResidentProcessHandle('heavy', { kind: 'peer', slot: first.slot, peerName: first.peerName, isolateToken: first.isolateToken }, done, () => this._cancelPeer(spawn.workerKey, state.current.peerName));
+        const handle = new ResidentProcessHandle({
+            processClass: 'heavy',
+            placement: () => ({
+                kind: 'peer',
+                slot: state.current.slot,
+                peerName: state.current.peerName,
+                isolateToken: state.current.isolateToken,
+            }),
+            done,
+            // The peer starts the runner as part of hosting it; this reads back the
+            // one boot payload (and rejects with a boot failure) without re-running
+            // anything, so `booted()` means the same thing at either placement.
+            booted: () => state.current.stub
+                ._rpcAwaitHostedBoot(spawn.workerKey)
+                .then((r) => r.payload),
+            routeTarget,
+            kill: () => this._cancelPeer(spawn.workerKey, state.current.peerName),
+        });
         state.handle = handle;
         return handle;
     }
@@ -257,10 +476,12 @@ export class ProcessFabric {
             const placement = state.current;
             this.tokensInUse.set(spawn.pid, placement.isolateToken);
             try {
-                await placement.stub._rpcHostProcess(spawn.stage, {
+                await placement.stub._rpcHostProcess(spawn.boot, {
                     coordinatorDoId: this.coordDoId,
                     pid: spawn.pid,
                     workerKey: spawn.workerKey,
+                    startContract: spawn.startContract,
+                    startArgs: spawn.startArgs,
                 });
                 return; // clean lifecycle end — the facet reported its own exit
             }
@@ -279,17 +500,11 @@ export class ProcessFabric {
                 this.tokensInUse.delete(spawn.pid);
                 disposeRpcResource(placement.stub);
             }
-            // Respawn: fresh slot, re-verified placement, updated handle metadata.
+            // Respawn: fresh slot, re-verified placement. The handle's route target
+            // and start() read `state.current`, so both re-point automatically.
             state.current = await this._placeDistinctPeer();
-            if (state.handle) {
+            if (state.handle)
                 state.handle.respawns++;
-                state.handle.placement = {
-                    kind: 'peer',
-                    slot: state.current.slot,
-                    peerName: state.current.peerName,
-                    isolateToken: state.current.isolateToken,
-                };
-            }
         }
     }
     /**
@@ -346,10 +561,10 @@ export class ProcessFabric {
     }
     /**
      * Deterministic peer kill: a fresh stub to the hosting peer fires
-     * `_rpcCancelHostProcess`, which disposes the peer's held-open startProcess
-     * stub — the exact teardown FacetManager.kill applies to local facets. The
-     * severed RPC then settles the coordinator-side lifecycle, whose respawn
-     * gate sees `handle.killed` and stops.
+     * `_rpcCancelHostProcess`, which disposes the peer's retained facet
+     * resources — the exact teardown a local facet gets. The severed RPC then
+     * settles the coordinator-side lifecycle, whose respawn gate sees
+     * `handle.killed` and stops.
      */
     _cancelPeer(workerKey, peerName) {
         const ns = this.ns;

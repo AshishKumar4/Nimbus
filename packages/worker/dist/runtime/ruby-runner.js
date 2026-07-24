@@ -185,6 +185,7 @@ export function makeRubyRunnerFactory(deps) {
             }
             const facetArgs = {
                 wasmBytes,
+                wasmVfsPath: wasmVfs,
                 userCode,
                 rbArgv,
                 userEnv,
@@ -500,20 +501,23 @@ async function spawnRubySocketProcess(facetMgr, args, command) {
     const workerCode = buildRubySocketProcessWorker(buildRubyPreamble());
     const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
         compatibilityFlags: ['nodejs_compat'],
-        modules: {
-            'ruby+stdlib.wasm': { wasm: toArrayBuffer(args.wasmBytes) },
+        // By path, not by value: the image is 34.3 MiB — more than a single RPC
+        // value may carry — so whichever host runs this process reads it itself.
+        vfsWasmModules: { 'ruby+stdlib.wasm': args.wasmVfsPath },
+        startArgs: {
+            userCode: args.userCode,
+            rbArgv: args.rbArgv,
+            userEnv: args.userEnv,
+            progName: args.progName,
+            cwd: args.cwd,
+            fsSnapshot: args.fsSnapshot,
+            rubyPrelude: RUBY_SOCKET_SHIM,
         },
-    });
-    const bootPayload = await spawned.facetStub.startProcess({
-        userCode: args.userCode,
-        rbArgv: args.rbArgv,
-        userEnv: args.userEnv,
-        progName: args.progName,
-        cwd: args.cwd,
-        fsSnapshot: args.fsSnapshot,
-        rubyPrelude: RUBY_SOCKET_SHIM,
     }).catch(() => null);
-    const parsed = RubySocketProcessBootResponseSchema.safeParse(bootPayload);
+    if (!spawned) {
+        return { exitCode: 1, stdout: '', stderr: 'ruby process boot failed\n' };
+    }
+    const parsed = RubySocketProcessBootResponseSchema.safeParse(spawned.boot);
     if (!parsed.success) {
         facetMgr.finishProcess(spawned.pid, 1, 'ruby process boot failed');
         return {
@@ -524,8 +528,8 @@ async function spawnRubySocketProcess(facetMgr, args, command) {
     }
     const boot = parsed.data;
     if (boot.state === 'listening' && typeof boot.port === 'number' && boot.port > 0) {
-        facetMgr.registerPort(spawned.pid, Number(boot.port), spawned.facetStub);
-        const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid, spawned.facetStub);
+        facetMgr.registerPort(spawned.pid, Number(boot.port));
+        const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid);
         const routeablePort = routeablePorts.includes(Number(boot.port)) ? Number(boot.port) : routeablePorts[0];
         if (!routeablePort) {
             facetMgr.kill(spawned.pid);
@@ -543,7 +547,7 @@ async function spawnRubySocketProcess(facetMgr, args, command) {
             port: routeablePort,
         };
     }
-    const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid, spawned.facetStub);
+    const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid);
     if (reservedPorts.length > 0) {
         return {
             exitCode: 0,

@@ -1,82 +1,150 @@
 /**
- * process-fabric.ts — the general heavy-process scheduler (peer-DO placement).
+ * process-fabric.ts — the resident-process scheduler (peer-DO placement).
  *
- * The kernel already owns a ProcessTable, a fork/exec fabric, a SupervisorRPC
- * syscall channel, and a peer-DO fanout for short idempotent batch work
- * (fanout-pool.ts). This module adds the last step: scheduling LONG-LIVED,
- * MEMORY-HEAVY resident processes onto sibling NimbusSession DOs, because peer
- * Durable Objects have INDEPENDENT workerd process memory budgets — proven
- * live on the prod shape (placement:smart + D1), 8 peers × 150 MiB facets =
- * 1.2 GiB held concurrently, blast radius contained 12/12
- * (scratchpad/ARCHITECTURE-NEXTGEN.md §1).
+ * Every long-lived process Nimbus runs — node servers, python/ruby socket
+ * servers, the opencode TUI and its headless server — is a Worker Loader
+ * facet. This module owns WHICH workerd process that facet lands in, and it
+ * is the only place in the kernel that knows the answer.
  *
- * One policy point: runtime specs declare a process class
- * (`light` | `heavy`); `startResidentProcess` places `heavy` on a peer and
- * runs `light` in a local facet exactly as before. There is no per-runtime
- * special case here.
+ *   local  — the facet is minted from the coordinator session DO's own
+ *            env.LOADER, so it shares the coordinator's workerd process
+ *            memory envelope with the DO and every other local facet.
+ *   peer   — the facet is minted from a sibling DO's loader
+ *            (`${coordinatorDoId}:proc:${slot}`), so it gets an INDEPENDENT
+ *            workerd memory budget. Proven live on the prod shape: 8 peers ×
+ *            ~150 MiB held concurrently, blast radius contained 12/12
+ *            (scratchpad/ARCHITECTURE-NEXTGEN.md §1).
  *
- * NO DEFAULT HEAVY TENANT (2026-07-23). Every shipped runtime spec declares
- * `light`, so in production all processes flow the local path — behaviorally
- * identical to the pre-fabric spawn. The attach TUI was the intended first
- * heavy tenant, but its OOM (#35) was root-caused to a wasm FFI-ABI bug and
- * fixed in the runner itself; with that fix attach is stable as a local
- * facet, and peer placement would only add ~0.5 s of peer-DO cold-create
- * latency per spawn. The `heavy` path stays fully implemented, unit-tested,
- * and live-gate-proven (peer placement, syscall routing, OOM containment,
- * bounded respawn, deterministic kill) as the substrate for the
- * swap/durability layer (#18) and heavy multi-process workloads
- * (clang/wasm-ld batches, serve-as-tenant with a routed-HTTP peer leg).
+ * In BOTH cases the facet's SUPERVISOR binding is minted for the COORDINATOR's
+ * doId, so every syscall — VFS read/write, stdout/stderr frames, stdin pump,
+ * registerPort, loopback HTTP — lands on the user's session DO. The disk and
+ * the terminal never move. Peer placement changes only which workerd process
+ * runs the compute and holds the resident memory.
+ *
+ * Placement is INVISIBLE above this module. A `ResidentProcessHandle` exposes
+ * the same three things for either placement — `start()` to boot the runner,
+ * `routeTarget` for inbound HTTP, `done` for death, `kill()` for teardown — so
+ * PortRegistry, the process table, stdio, the shell and the SDK never learn
+ * where a process runs.
+ *
+ * Policy
+ * ──────
+ * One field, one policy point. Each launch primitive DECLARES a
+ * `processClass` where it is defined, and `startResidentProcess` is the only
+ * consumer. There is no command-name or argv matching anywhere in this file:
+ * the classification follows the primitive's intrinsic residency (a resident
+ * process accumulates memory over its lifetime and is worth a whole workerd
+ * process; a one-shot command returns promptly and never reaches this module
+ * at all).
+ *
+ * Boot specs
+ * ──────────
+ * A resident process boots from one of two specs, both small enough to cross
+ * the placement boundary:
+ *
+ *   staged — an OpencodeStageSpec. The ~23 MB artifact module map is
+ *            assembled by the HOST inside a stateless NimbusLoadedEntrypoint
+ *            isolate on the Worker-Loader cache-miss path, never in a session
+ *            DO (which OOM-reset at the isolate cap when it did).
+ *   code   — a generated module map (node / python / ruby runners). Module
+ *            TEXT rides inline; wasm sidecars ride BY VFS PATH and are
+ *            materialized by the HOST from the coordinator's disk. A ruby
+ *            server's `ruby+stdlib.wasm` alone is 34.3 MiB — past workerd's
+ *            32 MiB RPC argument limit — so shipping bytes was never an
+ *            option, and resolving them host-side keeps them out of the
+ *            coordinator's isolate entirely.
  *
  * Peer topology
  * ─────────────
  * Peers are sibling NimbusSession DOs named `${coordinatorDoId}:proc:${slot}`
- * (same posture as the fanout's `nbf:` siblings — the existing DO namespace
- * binding, no new worker, no config change). A heavy spawn:
+ * (the same posture as the fanout's `nbf:` siblings — the existing DO
+ * namespace binding, no new worker, no config change). A peer spawn:
  *
  *   1. Probes the candidate peer for its module-scope isolate token
  *      (`_rpcHostProcessProbe`, one RPC, 2–11 ms warm). Two DOs reporting the
  *      same token share one isolate/process; on collision with the
  *      coordinator's own token or another in-use peer token, the scheduler
- *      moves to the next slot (probe-proven trick; co-location is rare —
- *      1 pair in 24 fresh peers). If every probed slot co-locates (e.g.
- *      single-process `wrangler dev`), the last candidate is used anyway:
- *      placement verification is an isolation OPTIMIZATION; lifecycle and
- *      routing semantics do not depend on it.
- *   2. Calls `_rpcHostProcess(stage, …)` on the peer and holds the RPC open
- *      for the process lifetime. The peer boots the process facet from ITS
- *      OWN env.LOADER — so the facet lands in the peer's workerd process —
- *      with the SUPERVISOR binding minted for the COORDINATOR's doId
- *      (`supervisor.doId` override, the same INSTALL-HONESTY routing the npm
- *      fanout ships). Every syscall (VFS read/write, stdout/stderr frames,
- *      stdin pump, port registry) lands on the coordinator: the disk and the
- *      terminal never move.
+ *      moves to the next slot (co-location is rare — 1 pair in 24 fresh
+ *      peers). If every probed slot co-locates (e.g. single-process
+ *      `wrangler dev`), the last candidate is used anyway: placement
+ *      verification is an isolation OPTIMIZATION; lifecycle and routing
+ *      semantics do not depend on it.
+ *   2. Holds `_rpcHostProcess` open for the process lifetime. The peer boots
+ *      the facet from ITS OWN env.LOADER and retains the facet's resources
+ *      for as long as that call is open.
  *
  * Failure model
  * ─────────────
- * Peer OOM / silent facet reset severs the held-open RPC, which rejects on
- * the coordinator — identical surface to a local facet death. The scheduler
- * MAY respawn the process on a FRESH slot (a new machine lottery, impossible
- * when the facet is pinned to the session DO's process); respawn budget
- * defaults to 1 and is gated on the caller's `shouldRespawn` (a killed /
- * torn-down process never respawns).
+ * A peer OOM or silent facet reset severs the held-open RPC, which rejects on
+ * the coordinator — the identical surface to a local facet death. The
+ * scheduler MAY respawn the process on a FRESH slot (a new machine lottery,
+ * impossible when the facet is pinned to the session DO's process); the
+ * respawn budget defaults to 1, is gated on the caller's `shouldRespawn`, and
+ * is always surfaced through `onRespawn` so a peer death is never silent.
+ * A peer death is a PROCESS death, never a session death.
  *
  * Lifecycle
  * ─────────
  * The coordinator holds `_rpcHostProcess` open; if the coordinator DO dies,
- * workerd cancels the inbound call on the peer, the peer's held-open
- * startProcess context collapses, and the facet dies with it — a
- * process-hosting peer cannot outlive its parent. Peers store nothing beyond
- * the NimbusSession constructor's isolate-gen counter (the `nbf:` fanout
- * siblings' accepted posture) and idle-evict when their process exits.
+ * workerd cancels the inbound call on the peer, the peer disposes the facet's
+ * retained resources, and the facet dies with it — a process-hosting peer
+ * cannot outlive its parent. Peers store nothing beyond the NimbusSession
+ * constructor's isolate-gen counter (the `nbf:` fanout siblings' accepted
+ * posture) and idle-evict when their process exits.
  */
 import type { OpencodeStageSpec } from '../facets/opencode-staging.js';
+import type { RouteableFacetTarget } from '../runtime/port-registry.js';
 /**
- * Memory class of a resident process. Declared by the runtime spec that
- * defines the process kind (e.g. facets/opencode-staging.ts for the staged
- * opencode modes); consumed by exactly one policy point —
- * `ProcessFabric.startResidentProcess`.
+ * Memory class of a resident process. Declared by the launch primitive that
+ * defines the process kind (`facets/opencode-staging.ts` for the staged
+ * opencode modes, `facets/manager.ts` for the node/worker spawn primitives);
+ * consumed by exactly one policy point — `ProcessFabric.startResidentProcess`.
  */
 export type ProcessClass = 'light' | 'heavy';
+/**
+ * Runner contract for `startProcess()`. A property of the generated runner,
+ * not of placement:
+ *
+ *   lifetime — the call is held open for the process's whole life and settles
+ *              only at exit (opencode attached + server, attached-TTY node).
+ *   boot     — the call returns a boot payload once the process is up and the
+ *              facet stays resident behind its retained resources (node
+ *              servers, the python/ruby socket runners).
+ */
+export type StartContract = 'lifetime' | 'boot';
+/**
+ * A generated module map in the form that crosses a placement boundary.
+ * Module TEXT is inline; wasm sidecars are named by VFS path and materialized
+ * by the host (see the module header).
+ */
+export interface ResidentCodeSpec {
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    mainModule: string;
+    /**
+     * Inline modules: generated source text, plus small wasm sidecars the host
+     * cannot resolve for itself (they come from the worker's own ASSETS).
+     */
+    modules: Record<string, string | {
+        wasm: ArrayBuffer;
+    }>;
+    /**
+     * Module name → absolute VFS path of a wasm image the HOST materializes.
+     * This is how the big user-installed runtimes travel: ruby's
+     * interpreter+stdlib image alone is 34.3 MiB, past workerd's 32 MiB RPC
+     * argument limit, so its bytes can never ride inside a boot spec.
+     */
+    vfsWasmModules?: Record<string, string>;
+}
+export type ResidentBootSpec = {
+    kind: 'staged';
+    stage: OpencodeStageSpec;
+} | {
+    kind: 'code';
+    code: ResidentCodeSpec;
+};
+/** Reads one of the process's files from the COORDINATOR's disk. */
+export type ProcessFileReader = (path: string, pid: number) => Promise<Uint8Array>;
 /**
  * Distinct peer slots probed before accepting a co-located peer. Co-location
  * is rare (probe: 1 shared pair in 24 fresh peers), so 4 attempts make an
@@ -126,19 +194,73 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
  * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. The
  * `supervisor` identity controls where the facet's SUPERVISOR binding routes:
  * a peer host passes the COORDINATOR's doId so every syscall lands on the
- * user's session DO, not the peer (the INSTALL-HONESTY posture).
+ * user's session DO, not the peer.
  */
 export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, code: unknown, supervisor: {
     doId: string;
     pid: number;
 }, name?: string | null, key?: string, stage?: OpencodeStageSpec): Promise<LoadedWorkerEntrypointStub>;
+/** The Worker Loader binding surface the `code` boot spec needs. */
+interface WorkerLoaderBinding {
+    get(key: string, load: () => Promise<unknown>): {
+        getEntrypoint(): LoadedWorkerEntrypointStub;
+    };
+}
+/** Everything a host needs to boot one resident process. */
+export interface ResidentHost {
+    ctxExports: NimbusCtxExports;
+    /** The HOSTING DO's own loader — this is what decides the workerd process. */
+    loader: WorkerLoaderBinding;
+    /** Always the COORDINATOR's identity, whichever DO is hosting. */
+    supervisor: {
+        doId: string;
+        pid: number;
+    };
+    workerKey: string;
+    /** Resolves `code.wasmModules` paths against the coordinator's disk. */
+    readProcessFile: ProcessFileReader;
+}
+/** A booted facet, owned by its host. */
+export interface HostedResidentProcess {
+    /** Invoke the runner's startProcess; see StartContract. */
+    start(args: unknown): Promise<unknown>;
+    /** Re-resolvable inbound-HTTP target for the facet, on the HOST's loader. */
+    route: RouteableFacetTarget;
+    /** Release the resources pinning the facet — the facet dies with them. */
+    dispose(): void;
+}
+/**
+ * Boot a resident process's facet on THIS host. Identical code runs on the
+ * coordinator (local placement) and on a peer DO (peer placement) — the only
+ * difference is whose `loader` and `ctxExports` are handed in.
+ *
+ * The two spec kinds differ only in where the module map comes from:
+ *   staged — the stage rides the entrypoint props and the map is assembled
+ *            inside the stateless NimbusLoadedEntrypoint isolate; its
+ *            held-open startProcess call is what keeps the facet's SUPERVISOR
+ *            binding context alive, so the runner contract is `lifetime`.
+ *   code   — the map is completed here (wasm materialized from the
+ *            coordinator's disk) and loaded through the host DO's own loader
+ *            with a DO-minted SUPERVISOR binding, which outlives the request
+ *            that created it. The facet is pinned by the retained resources,
+ *            so a `boot`-contract runner may return from startProcess.
+ */
+export declare function hostResidentProcess(host: ResidentHost, boot: ResidentBootSpec): Promise<HostedResidentProcess>;
+/** Options the coordinator hands a hosting peer. */
+export interface HostProcessOpts {
+    coordinatorDoId: string;
+    pid: number;
+    workerKey: string;
+    startContract: StartContract;
+    startArgs?: unknown;
+}
 interface PeerNamespace {
     idFromName(name: string): unknown;
     get(id: unknown): unknown;
 }
 /** Extract the NIMBUS_SESSION peer namespace from a raw env, if present. */
 export declare function peerNamespaceFromEnv(env: unknown): PeerNamespace | undefined;
-export type ProcessPlacement = {
+type ProcessPlacement = {
     kind: 'local';
 } | {
     kind: 'peer';
@@ -147,65 +269,97 @@ export type ProcessPlacement = {
     isolateToken: string;
 };
 /**
- * Resource handle for one resident process. `done` settles when the process
- * lifecycle ends (clean exit resolves; facet/peer death rejects). The handle
- * is disposable so FacetManager's existing process-resource tracking kills
- * the process the same way it kills local facets: disposal severs the
- * held-open RPC chain (local: the loopback startProcess; peer: the
- * `_rpcHostProcess` call, plus an explicit cancel RPC so the peer tears its
- * facet down deterministically) and blocks any pending respawn.
+ * Resource handle for one resident process — the whole surface the kernel
+ * above this module sees. It is deliberately placement-free: `start`,
+ * `routeTarget`, `done` and `kill` behave identically whether the facet runs
+ * in the coordinator's workerd process or a sibling's.
+ *
+ * `done` settles when the process's HOST context ends: for a `lifetime`
+ * runner that is the process exiting (resolve) or dying (reject); for a
+ * `boot` runner it is the facet dying under it, which locally is only
+ * observable at kill time and on a peer is the severed host RPC.
+ *
+ * The handle is disposable so FacetManager's existing per-pid resource
+ * tracking kills a hosted process exactly the way it kills a local facet.
  */
 export declare class ResidentProcessHandle {
     #private;
     readonly done: Promise<void>;
     readonly processClass: ProcessClass;
-    /** Current placement; a heavy respawn moves it to the fresh peer. */
-    placement: ProcessPlacement;
+    /** Inbound-HTTP target for PortRegistry; follows the process across respawns. */
+    readonly routeTarget: RouteableFacetTarget;
     /** Peer respawns consumed (heavy only). */
     respawns: number;
-    constructor(processClass: ProcessClass, placement: ProcessPlacement, done: Promise<void>, kill: () => void);
+    constructor(init: {
+        processClass: ProcessClass;
+        placement: () => ProcessPlacement;
+        done: Promise<void>;
+        booted: () => Promise<unknown>;
+        routeTarget: RouteableFacetTarget;
+        kill: () => void;
+    });
+    /**
+     * The runner's startProcess payload. The runner is started as part of the
+     * spawn, so this is a handle on that one boot — awaiting it twice is safe
+     * and never re-starts anything. For a `lifetime` runner it settles at exit.
+     */
+    booted(): Promise<unknown>;
     get killed(): boolean;
+    /**
+     * Human-readable placement, for the NIMBUS_DEBUG process-log line. Callers
+     * log the string; they never branch on it — placement stays in here.
+     */
+    describePlacement(): string;
     /** Idempotent: sever the process's RPC chain and block respawn. */
     kill(): void;
 }
 export interface ResidentProcessSpawn {
-    /** Declared by the runtime spec (e.g. stagedProcessClass). */
+    /** Declared by the launch primitive that defines this process kind. */
     processClass: ProcessClass;
+    /** Declared by the runner the primitive generates. */
+    startContract: StartContract;
     /** Supervisor-assigned pid of the process entry on the coordinator. */
     pid: number;
     /** Keyed dynamic-worker identity (`nimbus-process:${doId}:${pid}`). */
     workerKey: string;
-    /** Staged-artifact spec the facet boots from. */
-    stage: OpencodeStageSpec;
+    /** What the facet boots from. */
+    boot: ResidentBootSpec;
+    /** Forwarded verbatim to the runner's startProcess, and replayed on respawn. */
+    startArgs?: unknown;
     /**
-     * Consulted before a heavy respawn: return true only while the process is
-     * still expected to run (e.g. its ProcessTable entry is 'running'). A
-     * killed or torn-down process must not respawn.
+     * Consulted before a respawn: return true only while the process is still
+     * expected to run (e.g. its ProcessTable entry is 'running'). A killed or
+     * torn-down process must not respawn.
      */
     shouldRespawn?: () => boolean;
     /**
-     * Invoked after a peer death when a respawn WILL be attempted, with the
-     * error that killed the previous peer. Callers surface it to the process
-     * log so a peer-death-plus-recovery is never silent.
+     * Invoked after a host death when a respawn WILL be attempted, with the
+     * error that killed the previous host. Callers surface it to the process
+     * log so a death-plus-recovery is never silent.
      */
     onRespawn?: (cause: unknown) => void;
 }
 export declare class ProcessFabric {
     private readonly ctx;
     private readonly ns;
+    private readonly loader;
+    private readonly readProcessFile;
     private readonly coordDoId;
     /** pid → isolate token of the peer currently hosting that process. */
     private readonly tokensInUse;
     /** Monotonic slot counter: respawns and new spawns land on fresh peers. */
     private nextSlot;
-    constructor(ctx: DurableObjectState, ns: PeerNamespace | undefined);
+    constructor(ctx: DurableObjectState, env: unknown, readProcessFile: ProcessFileReader);
     /**
-     * Boot a resident staged process and invoke its held-open startProcess.
-     * Resolves once the lifecycle is RUNNING (the returned handle's `done`
-     * carries the lifecycle promise); rejects on boot/placement failure.
+     * Boot a resident process and return its placement-free handle. Resolves
+     * once the facet is hosted and the runner has been started; rejects on
+     * boot/placement failure, matching a local boot failure's surface.
+     *
+     * THE policy point: one field read, no matching of any kind.
      */
     startResidentProcess(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle>;
     private _startLocal;
+    private _localHost;
     private _requireNs;
     private _startPeer;
     /**
@@ -230,10 +384,10 @@ export declare class ProcessFabric {
     private _probePeer;
     /**
      * Deterministic peer kill: a fresh stub to the hosting peer fires
-     * `_rpcCancelHostProcess`, which disposes the peer's held-open startProcess
-     * stub — the exact teardown FacetManager.kill applies to local facets. The
-     * severed RPC then settles the coordinator-side lifecycle, whose respawn
-     * gate sees `handle.killed` and stops.
+     * `_rpcCancelHostProcess`, which disposes the peer's retained facet
+     * resources — the exact teardown a local facet gets. The severed RPC then
+     * settles the coordinator-side lifecycle, whose respawn gate sees
+     * `handle.killed` and stops.
      */
     private _cancelPeer;
 }
