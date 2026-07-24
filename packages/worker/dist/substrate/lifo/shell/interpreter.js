@@ -7,6 +7,21 @@ import { exitCodeForAbortSignal } from './signals.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
+/**
+ * Bytes a file-backed descriptor holds before committing. Matches the stream
+ * chunk size used elsewhere and keeps a line-at-a-time producer from paying a
+ * store write per line.
+ */
+const FILE_WRITE_BLOCK_BYTES = 64 * 1024;
+function concatBytes(parts, total) {
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) {
+        out.set(part, at);
+        at += part.length;
+    }
+    return out;
+}
 // ─── Signal classes for control flow ───
 export class BreakSignal {
     levels;
@@ -352,7 +367,7 @@ export class Interpreter {
             const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
             const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
             const builtinIo = this.createIoFromFds(redirIo, fds);
-            const exitCode = await evaluateDoubleBracketWords(node.words, this.createExpandContext(redirIo), redirIo.vfs ?? this.config.vfs, stderr, {
+            const exitCode = await this.withFdFlush(fds, () => evaluateDoubleBracketWords(node.words, this.createExpandContext(redirIo), redirIo.vfs ?? this.config.vfs, stderr, {
                 vfs: builtinIo.vfs ?? this.config.vfs,
                 stdin: builtinIo.stdin,
                 stdout,
@@ -368,7 +383,7 @@ export class Interpreter {
                 getPositionals: () => this.readPositionals(builtinIo),
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                 executeInline: (input, options) => this.executeInline(input, builtinIo, options),
-            });
+            }));
             this.lastExitCode = exitCode;
             return exitCode;
         });
@@ -760,6 +775,7 @@ export class Interpreter {
             }
         }
         finally {
+            this.flushFds(fds);
             // Restore env from per-command assignments
             for (const [key, val] of Object.entries(savedEnv)) {
                 if (val === undefined) {
@@ -999,7 +1015,7 @@ export class Interpreter {
             this.lastExitCode = 1;
             return 1;
         }
-        return execute(this.createIoFromFds(io, fds));
+        return this.withFdFlush(fds, () => execute(this.createIoFromFds(io, fds)));
     }
     async applyRedirections(redirections, fds, expandCtx, io, terminalStdin) {
         for (const redir of redirections) {
@@ -1168,16 +1184,48 @@ export class Interpreter {
      */
     createFileWriter(vfs, path, startOffset) {
         let offset = startOffset;
-        const advance = (bytes) => {
+        let pending = [];
+        let pendingBytes = 0;
+        const flush = () => {
+            if (pendingBytes === 0)
+                return;
+            const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
+            pending = [];
+            pendingBytes = 0;
+            vfs.writeRange(path, offset, block);
+            offset += block.length;
+        };
+        const push = (bytes) => {
             if (bytes.length === 0)
                 return;
-            vfs.writeRange(path, offset, bytes);
-            offset += bytes.length;
+            pending.push(bytes);
+            pendingBytes += bytes.length;
+            if (pendingBytes >= FILE_WRITE_BLOCK_BYTES)
+                flush();
         };
         return {
-            write: (text) => advance(encode(text)),
-            writeBytes: (bytes) => advance(bytes),
+            write: (text) => push(encode(text)),
+            writeBytes: (bytes) => push(bytes),
+            flush,
         };
+    }
+    /**
+     * Run `body` and commit every file-backed descriptor it wrote through,
+     * whether it returned or threw. This is the close(2) side of the buffering
+     * in createFileWriter: buffered bytes must reach the store before the next
+     * command can read the file.
+     */
+    async withFdFlush(fds, body) {
+        try {
+            return await body();
+        }
+        finally {
+            this.flushFds(fds);
+        }
+    }
+    flushFds(fds) {
+        for (const stream of fds.outputFds.values())
+            stream.flush?.();
     }
     createFileReader(vfs, path) {
         const content = vfs.readFileString(path);

@@ -190,6 +190,14 @@ export declare class Interpreter {
      * everything before it.
      */
     private createFileWriter;
+    /**
+     * Run `body` and commit every file-backed descriptor it wrote through,
+     * whether it returned or threw. This is the close(2) side of the buffering
+     * in createFileWriter: buffered bytes must reach the store before the next
+     * command can read the file.
+     */
+    private withFdFlush;
+    private flushFds;
     private createFileReader;
     private createStringReader;
     private resolveOutputFd;
