@@ -41,7 +41,7 @@
  */
 
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
-import { resolveLongRunningPort } from './long-running-handle.js';
+import { parsePortFromArgv } from './long-running-handle.js';
 import type { FacetBundleProfile } from './bundle-profile.js';
 
 /**
@@ -157,14 +157,16 @@ export async function runFresh(
   const command = opts.command || `node ${opts.filename || '<script>'}`;
   const cwd = opts.cwd || '/home/user';
   let spawned: { pid: number; facetStub: any };
-  // Only reserve a port the invocation actually ASKED for (--port / $PORT).
-  // Reserving a guessed default instead meant every long-running `node x.js`
-  // claimed port 3000 whatever it really bound, so a second server silently
-  // took over the first one's port: `/port/3000` answered from the newest
-  // process while the one the user started kept running, unreachable. The
-  // port a program truly binds registers itself through the http shim's
-  // listen() -> SUPERVISOR.registerPort, which needs no guess from here.
-  const port = resolveLongRunningPort({ argv: args, env: opts.env, fallback: 0 }) || undefined;
+  // Pre-reserve ONLY a port this invocation named on argv. $PORT does not
+  // qualify: the session exports PORT=3000 by default so Express-style scripts
+  // find it, which meant every long-running `node x.js` reserved 3000 whatever
+  // it really bound — so the second server started in a session took over the
+  // first one's port, and /port/3000 answered from the newest process while
+  // the one the user started kept running, unreachable. A port a program
+  // truly binds registers itself through the http shim's listen() ->
+  // SUPERVISOR.registerPort, which is where the honest registration comes
+  // from (and how a script that does honour $PORT still gets routed).
+  const port = parsePortFromArgv(args) ?? undefined;
   try {
     spawned = await facetMgr.spawnNode(code, {
       argv: args,
