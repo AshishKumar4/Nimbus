@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
 import { VFSError } from '../../kernel/vfs/index.js';
+import { encode } from '../../utils/encoding.js';
 import { SinkWriter, streamRange } from '../../../../_shared/byte-stream.js';
 const command = async (ctx) => {
     let lines = 10;
@@ -41,8 +42,24 @@ const command = async (ctx) => {
             ctx.stderr.write('head: missing file operand\n');
             return 1;
         }
-        const text = await ctx.stdin.readAll();
-        ctx.stdout.write(bytes === undefined ? headLines(text, lines) : text.slice(0, bytes));
+        if (bytes === undefined) {
+            ctx.stdout.write(headLines(await ctx.stdin.readAll(), lines));
+            return 0;
+        }
+        // -c counts bytes, so pull bounded chunks rather than draining the
+        // producer and slicing characters off the end.
+        const writer = new SinkWriter(ctx.stdout);
+        let copied = 0;
+        while (copied < bytes) {
+            const want = bytes - copied;
+            const chunk = ctx.stdin.readBytes ? await ctx.stdin.readBytes(want) : await ctx.stdin.read();
+            if (chunk === null)
+                break;
+            const encoded = encode(chunk).subarray(0, want);
+            writer.write(encoded);
+            copied += encoded.length;
+        }
+        writer.end();
         return 0;
     }
     let exitCode = 0;

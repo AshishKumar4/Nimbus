@@ -1168,11 +1168,10 @@ function parseByteCount(value: string): number | null {
  * so byte counts hold for any N and character devices such as /dev/zero,
  * which have no stored content to read whole, work like they do on Unix.
  */
-function headBytes(ctx: Ctx, files: string[], limit: number): number {
+async function headBytes(ctx: Ctx, files: string[], limit: number): Promise<number> {
   const writer = new SinkWriter(ctx.stdout);
   if (files.length === 0 || (files.length === 1 && files[0] === '-')) {
-    const stdin = typeof ctx.stdin === 'string' ? ctx.stdin : '';
-    writer.write(enc.encode(stdin).subarray(0, limit));
+    await streamStdinBytes(ctx, writer, limit);
     writer.end();
     return 0;
   }
@@ -1193,6 +1192,31 @@ function headBytes(ctx: Ctx, files: string[], limit: number): number {
   }
   writer.end();
   return exit;
+}
+
+/**
+ * Pull at most `limit` bytes from stdin, whether the shell handed us an
+ * already-drained string or a live pipe reader. Reading only the string form
+ * would make `producer | head -c N` emit nothing at all.
+ */
+async function streamStdinBytes(ctx: Ctx, writer: SinkWriter, limit: number): Promise<void> {
+  const stdin: unknown = ctx.stdin;
+  if (typeof stdin === 'string') {
+    writer.write(enc.encode(stdin).subarray(0, limit));
+    return;
+  }
+  const reader = stdin as { read?: () => Promise<string | null>; readBytes?: (n: number) => Promise<string | null> };
+  if (typeof reader?.read !== 'function') return;
+
+  let copied = 0;
+  while (copied < limit) {
+    const want = limit - copied;
+    const chunk = reader.readBytes ? await reader.readBytes(want) : await reader.read();
+    if (chunk === null) break;
+    const bytes = enc.encode(chunk).subarray(0, want);
+    writer.write(bytes);
+    copied += bytes.length;
+  }
 }
 
 /** Absolute, mount-aware path — `ctx.vfs` resolves virtual mounts like /dev. */
