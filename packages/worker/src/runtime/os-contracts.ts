@@ -186,6 +186,7 @@ export type RuntimePackageAbi =
   | typeof NATIVE_UNSUPPORTED_ABI;
 
 export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = Object.freeze({
+  bash: NIMBUS_ABI_TARGET,
   clang: NIMBUS_ABI_TARGET,
   python: 'pyodide',
   ruby: 'ruby-wasm',

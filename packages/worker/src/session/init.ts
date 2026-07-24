@@ -66,6 +66,7 @@ import {
 import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { registerShellEntrypointCommands, type ShellEntrypointExecutor } from '../shell/shell-entrypoints.js';
+import { makeChshCommand } from '../substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { parseNpmInstallInvocation } from '../npm/install-args.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
@@ -73,6 +74,7 @@ import { registerGitCommands } from '../git/commands.js';
 import {
   makeNimbusVerbHandler,
   createRuntimeCommandHintResolver,
+  listInstalledRuntimes,
   rehydrateInstalledRuntimes,
   registerRunnerFactory,
 } from '../runtime/package-manager.js';
@@ -390,6 +392,10 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
     // ── Unix commands (30+ real implementations) ──
     registerUnixCommands(registry, sqliteFs);
+    registry.register('chsh', makeChshCommand({
+      isBashInstalled: (home) =>
+        listInstalledRuntimes(sqliteFs, home).some((runtime) => runtime.name === 'bash'),
+    }));
 
     // ── Git integration (isomorphic-git) ──
     // ctx + env are passed for clone/fetch/pull which run in a facet to avoid
@@ -482,12 +488,29 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     );
     // GNU bash 5.2.37 (wasm32-wasi, asyncified) — dedicated facet
     // runner driving the fork/pipe/exec/setjmp scheduler (fork M1-M3
-    // mechanisms). One handler covers -c/script/stdin AND interactive
-    // mode: the handler itself parks on terminal stdin between pump
-    // slices, so no REPL wrap is needed.
+    // mechanisms). Interactive terminal invocations use the shared
+    // ReplSession line editor; -c, scripts, and piped stdin retain the
+    // canonical one-shot handler.
     registerRunnerFactory(
       'bash-runner',
-      (manifest, installRoot, binName, binKind) => async (ctx: any) => {
+      (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
+        const argv = ctx.args || [];
+        const explicitInteractive = argv.includes('-i');
+        const terminalStdin = ctx.isFdTerminal?.(0) ?? !ctx.stdin;
+        if (self.terminal && (explicitInteractive || (argv.length === 0 && terminalStdin))) {
+          const { runBashRepl } = await import('../runtime/bash-repl.js');
+          return await runBashRepl({
+            facetMgr,
+            vfs: sqliteFs,
+            terminal: self.terminal,
+            installRoot,
+            manifest,
+            cred: ctx.cred,
+            env: ctx.env,
+            cwd: ctx.cwd || '/home/user',
+            shell: self.shell ?? undefined,
+          });
+        }
         const { makeBashRunnerFactory } = await import('../runtime/bash-runner.js');
         return await makeBashRunnerFactory({ facetMgr, vfs: sqliteFs })(
           manifest, installRoot, binName, binKind,

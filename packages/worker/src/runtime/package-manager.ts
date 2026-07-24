@@ -144,6 +144,10 @@ export interface RuntimeCommandHint {
  * tests/unit/runtime-command-aliases.mjs.
  */
 export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>> = {
+  bash: [
+    { binName: '/bin/bash', runner: 'bash-runner', args: [] },
+    { binName: '/usr/bin/bash', runner: 'bash-runner', args: [] },
+  ],
   python: [
     { binName: 'pip', runner: 'python-runner', kind: 'pip', args: [] },
     { binName: 'pip3', runner: 'python-runner', kind: 'pip', args: [] },

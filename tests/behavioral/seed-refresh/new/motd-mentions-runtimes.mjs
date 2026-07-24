@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // seed-refresh/new/motd-mentions-runtimes — the etc/motd banner that
-// prints on every shell boot MUST list clang/python/ruby in the
-// runtime line, and MUST mention REPLs + `nimbus install` in the
-// capability line. Pre-fix the banner advertised only
+// prints on every shell boot MUST list clang/python/ruby/bash in the
+// runtime line, and MUST mention REPLs, Unix permissions, and
+// coreutils in the capability line. Pre-fix the banner advertised only
 // `node · npm · esbuild · vite · wrangler dev` and
 // `10 GB VFS · Dynamic Workers · HMR`.
 //
@@ -26,8 +26,10 @@ const out = stripAnsi(output);
 a.check('motd lists clang', /\bclang\b/.test(out), out.slice(-500));
 a.check('motd lists python', /\bpython\b/.test(out), out.slice(-500));
 a.check('motd lists ruby',   /\bruby\b/.test(out),   out.slice(-500));
-a.check('motd mentions REPLs',          /REPLs/.test(out),          out.slice(-500));
-a.check('motd mentions `nimbus install`',/nimbus install/.test(out), out.slice(-500));
+a.check('motd lists bash',   /\bbash\b/.test(out),   out.slice(-500));
+a.check('motd mentions REPLs', /REPLs/.test(out), out.slice(-500));
+a.check('motd mentions Unix permissions', /Unix perms/.test(out), out.slice(-500));
+a.check('motd mentions coreutils', /coreutils/.test(out), out.slice(-500));
 
 // Regression — still mentions the core JS toolchain.
 a.check('motd still lists node', /\bnode\b/.test(out), out.slice(-500));

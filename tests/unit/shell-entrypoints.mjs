@@ -26,8 +26,8 @@ function makeVfs(files = {}) {
   };
 }
 
-function makeHarness(files = {}) {
-  const commands = new Map();
+function makeHarness(files = {}, existingCommands = new Map()) {
+  const commands = new Map(existingCommands);
   const calls = [];
   const vfs = makeVfs(files);
   const identity = {
@@ -38,7 +38,10 @@ function makeHarness(files = {}) {
     async runAs() { return 0; },
   };
   registerShellEntrypointCommands(
-    { register: (name, handler) => commands.set(name, (ctx) => handler({ ...identity, ...ctx })) },
+    {
+      has: (name) => commands.has(name),
+      register: (name, handler) => commands.set(name, (ctx) => handler({ ...identity, ...ctx })),
+    },
     {
       async execute(body, options) {
         calls.push({ body, options });
@@ -49,6 +52,22 @@ function makeHarness(files = {}) {
     vfs,
   );
   return { commands, calls };
+}
+
+{
+  const realBash = async () => 23;
+  const { commands } = makeHarness({}, new Map([
+    ['bash', realBash],
+    ['/bin/bash', realBash],
+    ['/usr/bin/bash', realBash],
+  ]));
+
+  for (const name of ['bash', '/bin/bash', '/usr/bin/bash']) {
+    assert.equal(commands.get(name), realBash, `${name} must not be overwritten by the lifo fallback`);
+  }
+  for (const name of ['sh', '/bin/sh', '/usr/bin/sh']) {
+    assert.equal(typeof commands.get(name), 'function', `${name} must retain the lifo fallback`);
+  }
 }
 
 {
