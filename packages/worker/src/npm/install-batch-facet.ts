@@ -241,7 +241,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // and the bytes are identical. Without this the first shed permanently
   // failed every package that contributed to the wave, which is how a
   // 119-package install came back with 88 packages.
-  const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000];
+  // ~42s of absorption. The coordinator's own verdict is "requests queued
+  // for too long", so the schedule has to outlast a queue that deep; the
+  // whole-batch timeout is 10 minutes, which bounds it.
+  const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000, 12000, 20000];
   const isSheddableWaveError = (message: string): boolean => {
     const m = message.toLowerCase();
     return m.includes('overloaded')
