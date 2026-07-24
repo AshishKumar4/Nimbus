@@ -115,13 +115,16 @@ const config = defineNimbusConfig({
         allow: ['node', 'python', 'ruby', 'shell'],
       },
     },
-    hostname: {
-      preview: { hostSuffix: 'nimbus-os.dev' },
-    },
+    hostname: {},
   },
 });
 
-const nimbus = Nimbus.fromEnv({ NIMBUS_SESSION: ns }, config);
+// The preview host suffix is a property of the DEPLOYMENT, so it comes off
+// the bindings — never restated per profile, where it could drift.
+const nimbus = Nimbus.fromEnv(
+  { NIMBUS_SESSION: ns, NIMBUS_PREVIEW_HOST_SUFFIX: 'nimbus-os.dev' },
+  config,
+);
 const box = nimbus.sandbox('agent-1', { profile: 'proteus', tenant: 'acme', subject: 'alice' });
 
 const exec = await box.exec('node -e "console.log(4)"');
@@ -147,14 +150,18 @@ a.check('runtimes.list exposes available runtime ABI',
   JSON.stringify(runtimeList.available[0] ?? null));
 
 const port = await box.ports.expose(3000);
-a.check('exposePort returns path-style URL', port.url === 'https://nimbus-os.dev/s/agent-1/port/3000/');
+a.check('exposePort honours the profile pathStyle opt-out', port.url === 'https://nimbus-os.dev/s/agent-1/port/3000/');
 
 const hostnameBox = nimbus.sandbox('host-safe-1', { profile: 'hostname' });
-a.check('ports.url prefers a configured preview hostname for a host-safe sid',
+a.check('ports.url uses the deployment preview host for a host-safe sid',
   hostnameBox.ports.url(4173) === 'https://4173--host-safe-1.nimbus-os.dev/');
 const unsafeHostnameBox = nimbus.sandbox('sdk.sandbox', { profile: 'hostname' });
 a.check('ports.url keeps the path form for a DNS-unsafe sid',
   unsafeHostnameBox.ports.url(4173) === 'https://nimbus-os.dev/s/sdk.sandbox/port/4173/');
+
+const remote = Nimbus.fromEnv({ NIMBUS_SESSION: ns }, config).sandbox('host-safe-1', { profile: 'hostname' });
+a.check('ports.url keeps the path form when the deployment has no preview host',
+  remote.ports.url(4173) === 'https://nimbus-os.dev/s/host-safe-1/port/4173/');
 
 const provider = box.tools();
 a.check('tools namespace from profile', provider.name === 'sandbox' && provider.kind === 'sandbox');
