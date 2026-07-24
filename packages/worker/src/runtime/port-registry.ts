@@ -59,12 +59,15 @@ export class PortRegistry {
     this.notifyPortWaiters(pid);
   }
 
-  /** Register a facet as listening on a port. */
-  register(port: number, pid: number, facetStub: unknown): void {
-    const routeableStub =
-      routeableFacetTarget(this.facetStubsByPid.get(pid)) ||
-      routeableFacetTarget(facetStub);
-    this.ports.set(port, { port, pid, facetStub: routeableStub, registeredAt: Date.now() });
+  /**
+   * Register a process as listening on a port. The route target comes from
+   * the pid's binding — one target per process, owned by whoever started it —
+   * so a port announced by the facet itself and one reserved by the spawn
+   * resolve to the same handler.
+   */
+  register(port: number, pid: number): void {
+    const target = this.facetStubsByPid.get(pid) ?? null;
+    this.ports.set(port, { port, pid, facetStub: target, registeredAt: Date.now() });
     this.notifyPortWaiters(pid);
   }
 
@@ -109,8 +112,7 @@ export class PortRegistry {
       .map((entry) => entry.port);
   }
 
-  async waitForRouteablePortsByPid(pid: number, facetStub: unknown, timeoutMs: number): Promise<number[]> {
-    this.bindFacetStub(pid, facetStub);
+  async waitForRouteablePortsByPid(pid: number, timeoutMs: number): Promise<number[]> {
     const immediate = this.getRouteablePortsByPid(pid);
     if (immediate.length > 0) return immediate;
     await this.waitForPidPortChange(pid, timeoutMs);

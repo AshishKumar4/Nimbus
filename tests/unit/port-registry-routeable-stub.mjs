@@ -55,8 +55,8 @@ function makeHandleStub(bodyText) {
 
   // FacetManager._execViaLoader binds the entrypoint before the script runs.
   reg.bindFacetStub(pid, stub);
-  // The http shim's listen() → SUPERVISOR.registerPort → register(port,pid,null).
-  reg.register(port, pid, null);
+  // The http shim's listen() → SUPERVISOR.registerPort → register(port, pid).
+  reg.register(port, pid);
 
   const entry = reg.get(port);
   assert.ok(entry, 'port entry exists after registerPort');
@@ -76,7 +76,7 @@ function makeHandleStub(bodyText) {
 // ── 2. null reservation with NO bound stub → honest 501 ──────────────────────
 {
   const reg = new PortRegistry();
-  reg.register(3000, 7, null); // reserved, but no facet stub bound for pid 7
+  reg.register(3000, 7); // reserved, but no route target bound for pid 7
 
   const res = await reg.routeRequest(3000, new Request('http://s/port/3000/'), '/');
   assert.equal(res.status, 501, 'null-stub reservation returns 501, not a bogus route');
@@ -85,11 +85,12 @@ function makeHandleStub(bodyText) {
   assert.equal(body.port, 3000);
 }
 
-// ── 3. explicit routeable stub (vite / long-running node) routes ─────────────
+// ── 3. an in-DO routeable target (vite) routes through the same binding ──────
 {
   const reg = new PortRegistry();
   const stub = makeHandleStub('vite-body');
-  reg.register(5173, 11, stub);
+  reg.bindFacetStub(11, stub);
+  reg.register(5173, 11);
 
   const res = await reg.routeRequest(5173, new Request('http://s/port/5173/@vite/client'), '/@vite/client');
   assert.equal(res.status, 200);
@@ -102,7 +103,7 @@ function makeHandleStub(bodyText) {
   const reg = new PortRegistry();
   const stub = makeFetchStub('body');
   reg.bindFacetStub(9, stub);
-  reg.register(8080, 9, null);
+  reg.register(8080, 9);
   assert.ok(reg.get(8080), 'registered before teardown');
 
   const dropped = reg.unregisterByPid(9);
@@ -121,8 +122,8 @@ function makeHandleStub(bodyText) {
   const reg = new PortRegistry();
   const stub = makeFetchStub('late-bind');
   // register lands before the stub is bound (race: shim listen() beats bind).
-  reg.register(4321, 5, null);
-  assert.ok(!reg.get(4321).facetStub, 'no stub yet');
+  reg.register(4321, 5);
+  assert.ok(!reg.get(4321).facetStub, 'no route target yet');
   reg.bindFacetStub(5, stub); // attachFacetStubByPid backfills reserved ports
   assert.ok(reg.get(4321).facetStub, 'late bindFacetStub backfilled the reserved port');
 
@@ -131,7 +132,7 @@ function makeHandleStub(bodyText) {
   assert.equal(await res.text(), 'late-bind');
 }
 
-// ── 6. waiting normalizes the supplied route stub only once ─────────────
+// ── 6. waiting resolves once the pid's port becomes routeable ────────────────
 {
   const reg = new PortRegistry();
   let fetchReads = 0;
@@ -141,10 +142,11 @@ function makeHandleStub(bodyText) {
       return async () => new Response('waited-route');
     },
   };
-  const waiting = reg.waitForRouteablePortsByPid(17, stub, 100);
-  queueMicrotask(() => reg.register(4170, 17, null));
+  reg.bindFacetStub(17, stub);
+  const waiting = reg.waitForRouteablePortsByPid(17, 100);
+  queueMicrotask(() => reg.register(4170, 17));
   assert.deepEqual(await waiting, [4170]);
-  assert.equal(fetchReads, 1, 'wait must not normalize and bind the same stub twice');
+  assert.equal(fetchReads, 1, 'the route target is normalized exactly once, at bind');
 }
 
 console.log('port-registry-routeable-stub: ok');
