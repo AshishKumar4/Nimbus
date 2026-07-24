@@ -167,4 +167,40 @@ const sid = 'nimble-otter-4271';
   assert.equal(response.status, 404);
 }
 
+// Airtight host handling: with the suffix CONFIGURED, the wildcard route now
+// catches every subdomain, so any host that is NOT a `<port>--<sid>` preview
+// must fall through to normal handling — never misparsed as a preview, never
+// forwarded to a port, never 500. Covers the apex, the legacy custom domain,
+// the versioned `<prefix>-nimbus-os.dev` preview_urls shape, a bare non-preview
+// subdomain, and the versioned `<prefix>-nimbus.<suffix>` subdomain shape.
+{
+  const nonPreviewHosts = [
+    `https://${suffix}/`,                       // apex
+    'https://www.nimbus-os.dev/',               // bare non-preview subdomain
+    'https://nimbus.ashishkumarsingh.com/',     // legacy custom domain (other zone)
+    'https://1a2b3c4d-nimbus-os.dev/',          // versioned preview_urls host (ends `-suffix`, not `.suffix`)
+    'https://1a2b3c4d-nimbus.nimbus-os.dev/',   // versioned subdomain (label has no `\d+--`)
+    `https://sid.extra.${suffix}/`,             // multi-label under suffix
+  ];
+  for (const mode of ['enforce', 'legacy']) {
+    const env = {
+      JWT_SECRET: 'preview-router-secret',
+      NIMBUS_PREVIEW_HOST_SUFFIX: suffix,
+      NIMBUS_SESSION: new FakeNamespace(),
+    };
+    const handler = createNimbusHandler({ auth: { mode } });
+    for (const host of nonPreviewHosts) {
+      const response = await handler.fetch(new Request(host), env, ctx);
+      assert.notEqual(response.status, 500, `${host} (${mode}) must not 500`);
+      assert.equal(response.status, 404, `${host} (${mode}) must fall through to 404`);
+    }
+    // None of the non-preview hosts may reach the session DO as a port proxy.
+    assert.equal(
+      env.NIMBUS_SESSION.requests.length,
+      0,
+      `non-preview hosts (${mode}) must not be forwarded to a session`,
+    );
+  }
+}
+
 console.log('preview-host-router: ok');
