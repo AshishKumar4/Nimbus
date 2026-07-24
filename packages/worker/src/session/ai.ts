@@ -32,6 +32,7 @@
  */
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import type { LanguageModel } from 'ai';
 import { z } from 'zod/v4';
 import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
 import {
@@ -306,7 +307,7 @@ export async function sessionAiAccountIsAvailable(self: SessionAiHost, accountId
  * over the network, so credential minting, the gateway header, the base URL and
  * the default model have exactly one implementation between them.
  */
-export function createSessionAiModel(self: SessionAiHost) {
+export function createSessionAiModel(self: SessionAiHost): LanguageModel {
   const provider = createOpenAICompatible({
     name: 'nimbus',
     apiKey: SESSION_AI_PLACEHOLDER_KEY,
