@@ -24,12 +24,6 @@ export interface NimbusAgentOAuthCookie {
   tenantSegment: string;
 }
 
-export interface NimbusAgentAuthCookieResult {
-  auth: NimbusAgentOAuthCookie | null;
-  setCookie?: string;
-  clearCookie?: string;
-}
-
 export const NIMBUS_AGENT_AUTH_COOKIE = 'nimbus_agent_oauth';
 export const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = 'nimbus-agent-oauth-auth';
@@ -167,6 +161,31 @@ export function clearNimbusAgentOAuthCookie(basePathOrRequest: string | Request)
     path: nimbusAgentAuthCookiePath(basePathOrRequest),
     maxAge: 0,
   });
+}
+
+export interface NimbusAgentOAuthConfig {
+  oauthClientId: string;
+  oauthClientSecret: string;
+  oauthScopes: string[];
+  redirectUri: string;
+}
+
+/**
+ * The Cloudflare OAuth client configuration for this deployment. Read here
+ * rather than at each call site so the login dance and the credential-refresh
+ * path can never disagree about which client they are talking to.
+ */
+export function readNimbusAgentOAuthConfig(
+  env: Record<string, unknown>,
+  origin: string,
+): NimbusAgentOAuthConfig {
+  return {
+    oauthClientId: envString(env, 'NIMBUS_CF_OAUTH_CLIENT_ID'),
+    oauthClientSecret: envString(env, 'NIMBUS_CF_OAUTH_CLIENT_SECRET'),
+    oauthScopes: envString(env, 'NIMBUS_CF_OAUTH_SCOPES').split(/\s+/).filter(Boolean),
+    redirectUri: envString(env, 'NIMBUS_CF_OAUTH_REDIRECT_URI')
+      || (origin ? `${origin}/api/nimbus/oauth/callback` : ''),
+  };
 }
 
 export function readNimbusAgentCookieSecret(env: Record<string, unknown>): string {

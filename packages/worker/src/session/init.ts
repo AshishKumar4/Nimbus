@@ -99,6 +99,8 @@ import {
   type ShellStateSnapshot,
 } from './state-store.js';
 import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
+import { sessionAiEnv } from './ai.js';
+import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
 import type { SessionInternal } from './internal.js';
 
@@ -831,10 +833,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       });
     }
 
-    kernel.routeLoopback = (port, request) => {
-      if (!self.portRegistry.has(port)) return Promise.resolve(null);
-      return self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
-    };
+    kernel.routeLoopback = (port, request) => routeSessionLoopback(self as any, port, request);
 
     try {
       registry.register('curl', createCurlCommand(kernel));
@@ -1823,6 +1822,12 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       PORT: '3000',
       HOST: '0.0.0.0',
       NIMBUS_SESSION_ID: '', // patched after Shell ctor — see below.
+      // The session AI gateway (session/ai.ts). Any OpenAI-compatible tool —
+      // pi, opencode, a user's own script, curl — discovers the session's
+      // models from these without being configured. The key is a placeholder,
+      // not a secret: the endpoint is loopback-only and ignores it. A user who
+      // exports their own OPENAI_BASE_URL still wins, via the persisted spread.
+      ...sessionAiEnv(),
       // Persisted env keys win over defaults — the user's `export FOO=bar`
       // survives reconnect.
       ...(persisted.env || {}),
