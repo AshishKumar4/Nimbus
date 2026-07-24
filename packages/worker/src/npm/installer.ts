@@ -666,10 +666,16 @@ export class NpmInstaller {
         throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`);
       }
 
-      // Stitch per-package results into supervisor state.
-      for (let i = 0; i < results.length; i++) {
+      // Stitch per-package results into supervisor state. The dispatched
+      // layer — not the returned array — drives the loop, so a result the
+      // fanout failed to deliver is recorded instead of skipped.
+      for (let i = 0; i < layer.length; i++) {
         const res = results[i];
         const [taskName] = layer[i];
+        if (!res) {
+          unresolved.set(taskName, `resolver fanout returned no result at layer ${layerN}`);
+          continue;
+        }
 
         // Forward messages + events.
         for (const m of res.messages) log(m);
@@ -990,7 +996,9 @@ export class NpmInstaller {
 
       let okCount = 0;
       let failCount = 0;
+      const reported = new Set<string>();
       for (const r of result.perPackage) {
+        reported.add(`${r.name}@${r.version}`);
         if (r.errorText) {
           failed.push(`${r.name}@${r.version}`);
           log(`  [warn] ${r.name}@${r.version}: ${r.errorText}`);
@@ -1005,6 +1013,17 @@ export class NpmInstaller {
           }
         }
         okCount++;
+      }
+
+      // Every dispatched spec must come back with a verdict. A shard that
+      // returns short would otherwise leave its packages in neither list,
+      // which is the same silent partial one layer down.
+      for (const s of specs) {
+        const id = `${s.name}@${s.version}`;
+        if (reported.has(id)) continue;
+        failed.push(id);
+        failCount++;
+        log(`  [warn] ${id}: install shard returned no result for this package`);
       }
 
       // Fold facet counters into the supervisor's diagnostic state.

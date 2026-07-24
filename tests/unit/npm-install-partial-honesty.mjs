@@ -85,7 +85,7 @@ function unresolvedResult(reason) {
  * already holds `preinstalled` at the given versions, so the fetch phase
  * has nothing to do and the run exercises resolve → diff → report only.
  */
-function makeInstaller(deps, preinstalled, resultFor) {
+function makeInstaller(deps, preinstalled, resultFor, installShard) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
@@ -105,6 +105,12 @@ function makeInstaller(deps, preinstalled, resultFor) {
       get() {
         return {
           async _rpcFanoutExecute(_fnSource, args) {
+            // The same RPC carries both fanouts; the argument shape says
+            // which one. Resolve tasks are one package, install tasks are
+            // a shard of packages.
+            if (args[0] && Array.isArray(args[0].packages)) {
+              return { results: args.map((shard) => installShard(shard)) };
+            }
             return { results: args.map((spec) => resultFor(spec.name)) };
           },
         };
@@ -232,6 +238,52 @@ function makeInstaller(deps, preinstalled, resultFor) {
   assert.ok(/\[skip\] native-shard-0/.test(output), `the optional skip is still surfaced:\n${output}`);
   assert.ok(/\bDone!/.test(output), `an install with only optional skips still succeeds:\n${output}`);
   console.log('  case4: optional dep skip stays a skip');
+}
+
+// ── Case 5: an install shard that returns short ──────────────────────────
+//
+// The supervisor folded `perPackage` into installed/failed by iterating
+// what came back, so a package a shard never reported on landed in
+// neither list — the same silent partial, one phase later.
+{
+  const deps = Object.fromEntries(
+    ['pkg-a', 'pkg-b', 'pkg-c', 'pkg-d', 'pkg-e', 'pkg-lost'].map((n) => [n, '1.0.0']),
+  );
+  const { installer, log } = makeInstaller(
+    deps,
+    {}, // nothing pre-installed, so every package goes through the fetch fanout
+    (name) => resolvedResult(name, '1.0.0'),
+    (shard) => ({
+      // Drop `pkg-lost` from the shard's verdicts, keeping every other one.
+      perPackage: shard.packages
+        .filter((p) => p.name !== 'pkg-lost')
+        .map((p) => ({
+          name: p.name, version: p.version, fileCount: 3,
+          bytesWritten: 100, elapsed: 1, warnings: [],
+        })),
+      elapsed: 1,
+      facetCounters: {
+        tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1,
+        pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0,
+      },
+      cacheStatEvents: [],
+    }),
+  );
+
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.ok(
+    result.failed.some((entry) => entry.startsWith('pkg-lost@')),
+    `a package no shard reported on must be failed (failed=${JSON.stringify(result.failed)})`,
+  );
+  assert.equal(result.installed.length, 5, 'the reported packages still install');
+  assert.ok(
+    /pkg-lost@1\.0\.0: install shard returned no result/.test(output),
+    `the failure must name the package and the reason:\n${output}`,
+  );
+  assert.ok(!/\bDone!/.test(output), `a partial install must not print the success line:\n${output}`);
+  console.log('  case5: unreported package reported instead of dropped');
 }
 
 console.log('npm-install-partial-honesty: all assertions passed');
