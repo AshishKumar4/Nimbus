@@ -1056,6 +1056,15 @@ export function assembleGitNetworkFacetSource(): string {
 
 function generateGitNetworkFacetCode(): string {
   return `
+// esbuild keepNames (via wrangler) wraps createRetryingGitHttp's nested named
+// arrows as __name(fn, "fn"), so the .toString() embed below executes __name(...)
+// in this facet isolate, which has no such binding (mirrors python-runner.ts and
+// opentui-facet-backend.ts). Define it idempotently on globalThis BEFORE the embed
+// evaluates; a bare __name with no lexical binding resolves to this global.
+if (typeof globalThis.__name !== "function") {
+  globalThis.__name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });
+}
+
 // CHUNK_SIZE is provided by the W7 frame preamble (from constants.ts),
 // prepended to this facet worker — do not redeclare it here.
 const WAVE_PATHS = ${W7_MAX_PATHS_PER_BATCH - 8};
