@@ -202,7 +202,7 @@ function okResult(decoded) {
     throw new Error('Durable Object is overloaded.');
   });
 
-  assert.ok(attempts >= 5, `the retry budget must be bounded and spent (attempts=${attempts})`);
+  assert.ok(attempts >= 7, `the retry budget must be bounded and spent (attempts=${attempts})`);
   assert.ok(attempts < 40, `the retry budget must be BOUNDED (attempts=${attempts})`);
   for (const pkg of result.perPackage) {
     assert.match(
