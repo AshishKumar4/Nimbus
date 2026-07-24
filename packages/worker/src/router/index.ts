@@ -469,6 +469,12 @@ export function createNimbusHandler(
         });
       }
 
+      // Not a Nimbus route. Embedders that ship static assets run the Worker
+      // first (host-based preview routing needs every request), so unclaimed
+      // paths are served from the assets binding here rather than by the
+      // edge short-circuiting the Worker.
+      if (env.ASSETS) return env.ASSETS.fetch(request);
+
       return new Response('Not found', { status: 404 });
     },
   };
