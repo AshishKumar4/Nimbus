@@ -393,9 +393,23 @@ export interface HostedHttpResponse {
  * RPC: inbound HTTP for a port owned by a process this peer hosts. The
  * coordinator's PortRegistry holds one route target per pid and cannot tell
  * this apart from a local facet: the same code-free NimbusLoadedEntrypoint
- * resolves the running facet, here on the PEER's loader, and the Request and
- * Response cross with their bodies streaming — no buffering is introduced by
- * the extra hop.
+ * resolves the running facet, here on the PEER's loader.
+ *
+ * KNOWN BROKEN (local workerd, 2026-07-24). Calling the resolved facet's
+ * handler throws DataCloneError — "Entrypoints to dynamically-loaded workers
+ * cannot be transferred to other Workers" — but ONLY when the entrypoint is
+ * driven from a sibling DO. The identical build with the identical code path
+ * serves the same request, byte-exact at 200 KB, when the process is placed
+ * locally. Ruled out by experiment, not by reasoning: it is not the
+ * Request/Response objects (this leg carries their parts), not the response
+ * body's provenance (fully buffering into peer-owned bytes fails the same
+ * way), and not a stale held route stub (minting one per routing call fails
+ * the same way). The throw is inside the peer's own
+ * NimbusLoadedEntrypoint.handleHttpRequest, before anything crosses back.
+ * Whatever workerd treats as the dynamic worker's owning Worker is therefore
+ * tied to the DO that loaded it, so a peer-hosted port cannot be served this
+ * way. Next: have the COORDINATOR's NimbusLoadedEntrypoint resolve a facet
+ * the peer loaded, or give the peer a forwarding entrypoint of its own.
  */
 export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
 /**
