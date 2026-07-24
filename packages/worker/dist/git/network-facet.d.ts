@@ -126,10 +126,31 @@ export interface GitCloneBudgetDiagnostic {
     elapsedMs: number;
     limitMs: number;
 }
+interface GitHttpRequest {
+    url: unknown;
+    method?: string;
+    body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
+    [key: string]: unknown;
+}
+interface GitHttpResponse {
+    statusCode: number;
+    body?: {
+        cancel?: () => unknown;
+    } | null;
+    [key: string]: unknown;
+}
+interface GitHttp {
+    request(req: GitHttpRequest): Promise<GitHttpResponse>;
+}
+interface GitHttpRetryOptions {
+    maxAttempts?: number;
+    backoffMs?: readonly number[];
+}
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: GitNetworkOpts): Promise<GitNetworkResult>;
+export declare function createRetryingGitHttp(baseHttp: GitHttp, opts?: GitHttpRetryOptions): GitHttp;
 /**
  * Generate the dynamic worker code for the git network facet.
  *
@@ -138,4 +159,5 @@ export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: 
  * fs adapter, and flushes writes through W7 v3.
  */
 export declare function assembleGitNetworkFacetSource(): string;
+export {};
 //# sourceMappingURL=network-facet.d.ts.map

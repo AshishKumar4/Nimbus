@@ -658,6 +658,59 @@ export async function execGitNetwork(ctx, env, opts) {
         };
     }
 }
+export function createRetryingGitHttp(baseHttp, opts) {
+    const transientStatuses = new Set([502, 503, 504, 522, 523, 524, 525]);
+    const maxAttempts = Math.max(1, Math.floor(opts?.maxAttempts ?? 3));
+    const backoffMs = opts?.backoffMs?.length ? opts.backoffMs : [400, 1200];
+    const waitBeforeRetry = async (attempt) => {
+        const baseMs = backoffMs[Math.min(attempt, backoffMs.length - 1)] ?? 0;
+        const span = baseMs * 0.25;
+        const delayMs = Math.max(0, Math.round(baseMs + (Math.random() * 2 - 1) * span));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+    };
+    const collectBody = async (body) => {
+        const chunks = [];
+        for await (const chunk of body)
+            chunks.push(chunk);
+        return chunks;
+    };
+    return {
+        async request(req) {
+            const method = req.method ?? 'GET';
+            const idempotent = method === 'GET' || String(req.url).includes('git-upload-pack');
+            const body = idempotent && method !== 'GET' && req.body
+                ? await collectBody(req.body)
+                : undefined;
+            const request = body ? { ...req, body } : req;
+            let attempt = 0;
+            while (true) {
+                const lastAttempt = attempt + 1 >= maxAttempts;
+                let response;
+                try {
+                    response = await baseHttp.request(request);
+                }
+                catch (error) {
+                    if (!idempotent || lastAttempt)
+                        throw error;
+                    await waitBeforeRetry(attempt);
+                    attempt++;
+                    continue;
+                }
+                if (!idempotent || !transientStatuses.has(response.statusCode) || lastAttempt) {
+                    return response;
+                }
+                try {
+                    if (response.body && typeof response.body.cancel === 'function') {
+                        await response.body.cancel();
+                    }
+                }
+                catch { }
+                await waitBeforeRetry(attempt);
+                attempt++;
+            }
+        },
+    };
+}
 /**
  * Generate the dynamic worker code for the git network facet.
  *
@@ -689,6 +742,8 @@ const CLONE_JOB_MARKER = 'nimbus-clone-job';
 const cloneJobs = new Map();
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const protocolTextEncoder = new TextEncoder();
+
+${createRetryingGitHttp.toString()}
 
 function protocolError(message) {
   return new Error('git clone protocol: ' + message);
@@ -2113,7 +2168,7 @@ export default {
       // http/web has both { request } named and { default: { request } };
       // the namespace bundle.gitHttp exposes request directly, which is
       // what isomorphic-git looks for.
-      http = bundle.gitHttp;
+      http = createRetryingGitHttp(bundle.gitHttp);
     } catch (e) {
       return respond(false, {
         error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),
