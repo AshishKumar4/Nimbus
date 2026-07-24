@@ -30,8 +30,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { getNimbusCtxExports, hostResidentProcess, isolateToken, } from '../loaders/process-fabric.js';
-import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, hostResidentProcess, isolateToken, ResidentBootSpecSchema, } from '../loaders/process-fabric.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
@@ -952,56 +951,6 @@ const HostProcessOptsSchema = z.object({
     /** Opaque arguments forwarded to the runner's startProcess. */
     startArgs: z.unknown().optional(),
 });
-const ResidentCodeSpecSchema = z.object({
-    compatibilityDate: z.string().min(1),
-    compatibilityFlags: z.array(z.string()),
-    mainModule: z.string().min(1),
-    /** Inline module source text, or a small wasm sidecar carried by value. */
-    modules: z.record(z.string(), z.union([z.string(), z.object({ wasm: z.instanceof(ArrayBuffer) })])),
-    /** Module name → VFS path of a wasm image THIS peer must materialize. */
-    vfsWasmModules: z.record(z.string(), z.string()).optional(),
-});
-const ResidentBootSpecSchema = z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('staged'), stage: OpencodeStageSpecSchema }),
-    z.object({ kind: z.literal('code'), code: ResidentCodeSpecSchema }),
-]);
-/** Range size for pulling a process's wasm sidecars off the coordinator's disk. */
-const HOSTED_READ_RANGE_BYTES = 4 * 1024 * 1024;
-/**
- * Read one of the coordinator's files from this peer, with the process's own
- * credential (the coordinator resolves `pid` against its process table). Reads
- * are ranged because the blobs this exists for — a ruby interpreter+stdlib
- * image is 34.3 MiB — exceed what a single RPC value may carry.
- */
-function coordinatorFileReader(self, coordinatorDoId) {
-    return async (path, pid) => {
-        const ns = self.env?.NIMBUS_SESSION;
-        if (!ns)
-            throw new Error('Nimbus: peer host has no NIMBUS_SESSION binding to reach its coordinator');
-        const stub = ns.get(ns.idFromString(coordinatorDoId));
-        try {
-            const stat = await stub._rpcStat(path, pid);
-            const size = Number(stat?.size);
-            if (!Number.isSafeInteger(size) || size < 0) {
-                throw new Error(`Nimbus: coordinator reported no size for '${path}'`);
-            }
-            const out = new Uint8Array(size);
-            for (let offset = 0; offset < size;) {
-                const want = Math.min(HOSTED_READ_RANGE_BYTES, size - offset);
-                const chunk = await stub._rpcFsReadRange(path, offset, want, pid);
-                if (!chunk || chunk.byteLength === 0) {
-                    throw new Error(`Nimbus: coordinator returned no bytes for '${path}' at ${offset}`);
-                }
-                out.set(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk), offset);
-                offset += chunk.byteLength;
-            }
-            return out;
-        }
-        finally {
-            disposeRpcResource(stub);
-        }
-    };
-}
 /**
  * How long a boot-payload or routed-HTTP leg waits for its process's host
  * record. Normally zero: the coordinator issues `_rpcHostProcess` first and it
@@ -1083,15 +1032,16 @@ export async function _rpcHostProcess(self, boot, opts) {
     // runtime from reporting them as unhandled while the process is healthy.
     hosted.catch(() => { });
     booted.catch(() => { });
-    registerHostedRecord(self, workerKey, { hosted, booted, cancelled, cancel });
+    registerHostedRecord(self, workerKey, {
+        supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+        hosted, booted, cancelled, cancel,
+    });
     let facet;
     try {
         facet = await hostResidentProcess({
             ctxExports: getNimbusCtxExports(),
-            loader: self.env.LOADER,
             supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
             workerKey,
-            readProcessFile: coordinatorFileReader(self, hostOpts.coordinatorDoId),
         }, spec);
         settleHosted(facet);
         const live = facet;
@@ -1143,10 +1093,31 @@ export async function _rpcAwaitHostedBoot(self, workerKey) {
  * Response cross with their bodies streaming — no buffering is introduced by
  * the extra hop.
  */
-export async function _rpcRouteHostedHttp(self, workerKey, request) {
+export async function _rpcRouteHostedHttp(self, workerKey, wire) {
     const record = await awaitHostedRecord(self, workerKey);
-    const facet = await record.hosted;
-    return facet.route.handleHttpRequest(request);
+    await record.hosted; // the facet must be loaded before it can be re-entered
+    // A route target must be minted in the context that USES it: a
+    // NimbusLoadedEntrypoint stub held from the host call belongs to that call's
+    // I/O context, and re-entering it from here reads as transferring a
+    // dynamically-loaded worker's entrypoint, which workerd refuses.
+    const route = await createLoadedWorkerEntrypoint(getNimbusCtxExports(), undefined, record.supervisor, null, workerKey);
+    const headers = new Headers();
+    for (const [k, v] of wire.headers)
+        headers.append(k, v);
+    const init = { method: wire.method, headers };
+    if (wire.body) {
+        init.body = wire.body;
+        init.duplex = 'half';
+    }
+    const response = await route.handleHttpRequest(new Request(wire.url, init));
+    const responseHeaders = [];
+    response.headers.forEach((v, k) => { responseHeaders.push([k, v]); });
+    return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+        body: response.body,
+    };
 }
 /**
  * RPC: deterministic kill of a hosted process. Releases the resources pinning

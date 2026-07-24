@@ -2460,7 +2460,7 @@ export class FacetManager {
     this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
-    this.processFabric = new ProcessFabric(ctx, env, (path, pid) => this._readProcessFile(path, pid));
+    this.processFabric = new ProcessFabric(ctx, env);
     const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
@@ -2468,16 +2468,6 @@ export class FacetManager {
   }
 
   setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
-
-  /**
-   * Read one of a process's files with its own credential. The fabric uses it
-   * to resolve a boot spec's wasm sidecars wherever the facet is hosted — a
-   * peer pulls the same bytes back over the coordinator's fs RPC.
-   */
-  private _readProcessFile(path: string, pid: number): Promise<Uint8Array> {
-    if (!this.vfs) throw new Error(`Nimbus: cannot read '${path}' — no filesystem on this session`);
-    return Promise.resolve(this.vfs.as(this.processes.cred(pid)).readFile(path));
-  }
   /**
    * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
    * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -2889,7 +2879,8 @@ export class FacetManager {
     let entrypoint: LoadedWorkerEntrypointStub | undefined;
     try {
       entrypoint = await createLoadedWorkerEntrypoint(
-        ctxExports, undefined, supervisor, null, undefined, staged.stageSpec,
+        ctxExports, undefined, supervisor, null, undefined,
+        { kind: 'staged', stage: staged.stageSpec },
       );
       if (typeof entrypoint.fetch !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no fetch method');

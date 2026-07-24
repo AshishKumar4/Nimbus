@@ -250,12 +250,6 @@ export declare class FacetManager {
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
-     * Read one of a process's files with its own credential. The fabric uses it
-     * to resolve a boot spec's wasm sidecars wherever the facet is hosted — a
-     * peer pulls the same bytes back over the coordinator's fs RPC.
-     */
-    private _readProcessFile;
-    /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
      * for the user-shell `node` runtime; sharing avoids paying init twice.

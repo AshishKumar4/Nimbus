@@ -92,7 +92,8 @@
  * constructor's isolate-gen counter (the `nbf:` fanout siblings' accepted
  * posture) and idle-evict when their process exits.
  */
-import type { OpencodeStageSpec } from '../facets/opencode-staging.js';
+import { z } from 'zod/v4';
+import { type OpencodeStageSpec } from '../facets/opencode-staging.js';
 import type { RouteableFacetTarget } from '../runtime/port-registry.js';
 /**
  * Memory class of a resident process. Declared by the launch primitive that
@@ -114,37 +115,54 @@ export type ProcessClass = 'light' | 'heavy';
 export type StartContract = 'lifetime' | 'boot';
 /**
  * A generated module map in the form that crosses a placement boundary.
- * Module TEXT is inline; wasm sidecars are named by VFS path and materialized
- * by the host (see the module header).
+ * Module TEXT rides inline; wasm images are named by VFS path and read by the
+ * NimbusLoadedEntrypoint that loads the facet — never by a session DO.
  */
-export interface ResidentCodeSpec {
-    compatibilityDate: string;
-    compatibilityFlags: string[];
-    mainModule: string;
-    /**
-     * Inline modules: generated source text, plus small wasm sidecars the host
-     * cannot resolve for itself (they come from the worker's own ASSETS).
-     */
-    modules: Record<string, string | {
-        wasm: ArrayBuffer;
-    }>;
-    /**
-     * Module name → absolute VFS path of a wasm image the HOST materializes.
-     * This is how the big user-installed runtimes travel: ruby's
-     * interpreter+stdlib image alone is 34.3 MiB, past workerd's 32 MiB RPC
-     * argument limit, so its bytes can never ride inside a boot spec.
-     */
-    vfsWasmModules?: Record<string, string>;
-}
-export type ResidentBootSpec = {
-    kind: 'staged';
-    stage: OpencodeStageSpec;
-} | {
-    kind: 'code';
-    code: ResidentCodeSpec;
-};
-/** Reads one of the process's files from the COORDINATOR's disk. */
-export type ProcessFileReader = (path: string, pid: number) => Promise<Uint8Array>;
+export declare const ResidentCodeSpecSchema: z.ZodObject<{
+    compatibilityDate: z.ZodString;
+    compatibilityFlags: z.ZodArray<z.ZodString>;
+    mainModule: z.ZodString;
+    modules: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
+        wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
+    }, z.core.$strip>]>>;
+    vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+}, z.core.$strip>;
+export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
+export declare const ResidentBootSpecSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    kind: z.ZodLiteral<"staged">;
+    stage: z.ZodObject<{
+        mode: z.ZodEnum<{
+            oneshot: "oneshot";
+            attached: "attached";
+            server: "server";
+        }>;
+        argv: z.ZodArray<z.ZodString>;
+        env: z.ZodRecord<z.ZodString, z.ZodString>;
+        cred: z.ZodObject<{
+            uid: z.ZodNumber;
+            gid: z.ZodNumber;
+            groups: z.ZodArray<z.ZodNumber>;
+            umask: z.ZodNumber;
+        }, z.core.$strip>;
+        cwd: z.ZodString;
+        stdin: z.ZodString;
+        vfsBundle: z.ZodString;
+        vfsManifest: z.ZodString;
+        vfsMetadata: z.ZodString;
+    }, z.core.$strip>;
+}, z.core.$strip>, z.ZodObject<{
+    kind: z.ZodLiteral<"code">;
+    code: z.ZodObject<{
+        compatibilityDate: z.ZodString;
+        compatibilityFlags: z.ZodArray<z.ZodString>;
+        mainModule: z.ZodString;
+        modules: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
+            wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
+        }, z.core.$strip>]>>;
+        vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    }, z.core.$strip>;
+}, z.core.$strip>], "kind">;
+export type ResidentBootSpec = z.infer<typeof ResidentBootSpecSchema>;
 /**
  * Distinct peer slots probed before accepting a co-located peer. Co-location
  * is rare (probe: 1 shared pair in 24 fresh peers), so 4 attempts make an
@@ -186,6 +204,7 @@ export interface NimbusCtxExports {
                 pid: number;
             };
             stage?: OpencodeStageSpec;
+            residentCode?: ResidentCodeSpec;
         };
     }) => LoadedWorkerEntrypointStub;
 }
@@ -199,51 +218,43 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
 export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, code: unknown, supervisor: {
     doId: string;
     pid: number;
-}, name?: string | null, key?: string, stage?: OpencodeStageSpec): Promise<LoadedWorkerEntrypointStub>;
-/** The Worker Loader binding surface the `code` boot spec needs. */
-interface WorkerLoaderBinding {
-    get(key: string, load: () => Promise<unknown>): {
-        getEntrypoint(): LoadedWorkerEntrypointStub;
-    };
-}
+}, name?: string | null, key?: string, boot?: ResidentBootSpec): Promise<LoadedWorkerEntrypointStub>;
 /** Everything a host needs to boot one resident process. */
 export interface ResidentHost {
+    /**
+     * The HOSTING DO's own ctx.exports — this is what decides which workerd
+     * process the facet lands in.
+     */
     ctxExports: NimbusCtxExports;
-    /** The HOSTING DO's own loader — this is what decides the workerd process. */
-    loader: WorkerLoaderBinding;
     /** Always the COORDINATOR's identity, whichever DO is hosting. */
     supervisor: {
         doId: string;
         pid: number;
     };
     workerKey: string;
-    /** Resolves `code.wasmModules` paths against the coordinator's disk. */
-    readProcessFile: ProcessFileReader;
 }
 /** A booted facet, owned by its host. */
 export interface HostedResidentProcess {
     /** Invoke the runner's startProcess; see StartContract. */
     start(args: unknown): Promise<unknown>;
-    /** Re-resolvable inbound-HTTP target for the facet, on the HOST's loader. */
+    /** Re-resolvable inbound-HTTP target for the running facet. */
     route: RouteableFacetTarget;
     /** Release the resources pinning the facet — the facet dies with them. */
     dispose(): void;
 }
 /**
  * Boot a resident process's facet on THIS host. Identical code runs on the
- * coordinator (local placement) and on a peer DO (peer placement) — the only
- * difference is whose `loader` and `ctxExports` are handed in.
+ * coordinator (local placement) and on a peer DO (peer placement); the only
+ * difference is whose `ctx.exports` — and therefore whose workerd process —
+ * is handed in.
  *
- * The two spec kinds differ only in where the module map comes from:
- *   staged — the stage rides the entrypoint props and the map is assembled
- *            inside the stateless NimbusLoadedEntrypoint isolate; its
- *            held-open startProcess call is what keeps the facet's SUPERVISOR
- *            binding context alive, so the runner contract is `lifetime`.
- *   code   — the map is completed here (wasm materialized from the
- *            coordinator's disk) and loaded through the host DO's own loader
- *            with a DO-minted SUPERVISOR binding, which outlives the request
- *            that created it. The facet is pinned by the retained resources,
- *            so a `boot`-contract runner may return from startProcess.
+ * Both spec kinds take the SAME route: the module map is completed inside the
+ * stateless NimbusLoadedEntrypoint that loads it, never in a session DO. That
+ * is a workerd requirement as much as a memory one — a dynamic worker loaded
+ * directly from a Durable Object cannot be re-entered from a later request
+ * ("the system does not know how to reload this Worker from scratch; have the
+ * parent Worker expose an entrypoint which constructs the dynamic worker"), so
+ * a DO-loaded facet could never serve its registered port.
  */
 export declare function hostResidentProcess(host: ResidentHost, boot: ResidentBootSpec): Promise<HostedResidentProcess>;
 /** Options the coordinator hands a hosting peer. */
@@ -342,14 +353,12 @@ export interface ResidentProcessSpawn {
 export declare class ProcessFabric {
     private readonly ctx;
     private readonly ns;
-    private readonly loader;
-    private readonly readProcessFile;
     private readonly coordDoId;
     /** pid → isolate token of the peer currently hosting that process. */
     private readonly tokensInUse;
     /** Monotonic slot counter: respawns and new spawns land on fresh peers. */
     private nextSlot;
-    constructor(ctx: DurableObjectState, env: unknown, readProcessFile: ProcessFileReader);
+    constructor(ctx: DurableObjectState, env: unknown);
     /**
      * Boot a resident process and return its placement-free handle. Resolves
      * once the facet is hosted and the runner has been started; rejects on
