@@ -95,7 +95,7 @@ const inodePaths = [];
 const env = {
   SUPERVISOR: {
     async getCachedTarball() {
-      return tarball.slice();
+      return { bytes: tarball.slice(), events: [] };
     },
     async writeBatchStream(stream) {
       const decoded = await decodeWave(stream);
@@ -139,7 +139,7 @@ const successfulWaves = [];
 const success = await installPackagesInFacet({ packages, concurrency: 2 }, {
   SUPERVISOR: {
     async getCachedTarball() {
-      return tarball.slice();
+      return { bytes: tarball.slice(), events: [] };
     },
     async writeBatchStream(stream) {
       const decoded = await decodeWave(stream);
@@ -197,7 +197,7 @@ for (const name of ['a', 'b']) {
   const result = await installPackagesInFacet({ packages: manyPackages, concurrency: 10 }, {
     SUPERVISOR: {
       async getCachedTarball() {
-        return tarball.slice();
+        return { bytes: tarball.slice(), events: [] };
       },
       async writeBatchStream(stream) {
         active++;
