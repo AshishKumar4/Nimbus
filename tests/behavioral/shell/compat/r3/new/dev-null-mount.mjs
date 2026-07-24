@@ -51,14 +51,25 @@ a.check(
   `body=${JSON.stringify(body(r3.output))}`,
 );
 
-// Probe 4: cat /dev/zero produces non-empty content (we cap at 64KiB
-// so the read returns 65536 NUL bytes — `wc -c` counts them).
-const r4 = await t.run('wc -c < /dev/zero 2>&1 || cat /dev/zero | wc -c', 8_000);
+// Probe 4: /dev/zero is a character device — a bounded read gets exactly the
+// bytes it asked for. (An unbounded read has no answer and must not invent
+// one; probe 5 covers that.)
+const r4 = await t.run('head -c 65536 /dev/zero | wc -c', 15_000);
 const out4 = body(r4.output);
 a.check(
-  '/dev/zero reads return non-empty content (capped)',
-  /\b65536\b/.test(out4) || /\b\d{4,}\b/.test(out4),
+  'head -c 65536 /dev/zero reads exactly 65536 bytes',
+  /\b65536\b/.test(out4),
   `body=${JSON.stringify(out4)}`,
+);
+
+// Probe 5: an unbounded read of /dev/zero fails loudly rather than silently
+// returning whatever one buffer happened to hold.
+const r5 = await t.run('cat /dev/zero > /tmp/zeros; echo RC=$?', 15_000);
+const out5 = body(r5.output);
+a.check(
+  'cat /dev/zero fails instead of truncating silently',
+  /RC=[1-9]/.test(out5),
+  `body=${JSON.stringify(out5)}`,
 );
 
 await t.close();
