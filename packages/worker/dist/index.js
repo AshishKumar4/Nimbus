@@ -38,6 +38,9 @@ export { createNimbusHandler } from './router/index.js';
 // from the dedicated auth subpath for application callers.
 export { issueNimbusToken, verifyNimbusToken, NimbusAuthError, } from './auth/index.js';
 export { generateSessionId, isValidSessionId, } from './_shared/session-id.js';
+// Embedders that run their own route table ahead of the Nimbus handler MUST
+// test this first — see the doc comment on `isPreviewHostRequest`.
+export { isPreviewHostRequest } from './_shared/preview-host.js';
 export { base64Utf8, base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, sha256Base64Url, unsealJson, } from './_shared/crypto.js';
 export { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, nimbusAgentAuthCookiePath, nimbusAgentRouteContext, NIMBUS_AGENT_AUTH_COOKIE, NIMBUS_AGENT_AUTH_COOKIE_PURPOSE, NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CF_OAUTH_TOKEN_URL, NIMBUS_CF_OAUTH_USERINFO_URL, NIMBUS_CLOUDFLARE_API, readNimbusAgentCookieSecret, readNimbusCookie, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './session/agent-oauth.js';
 // W6.5: install the default registry-event sink at module top so events

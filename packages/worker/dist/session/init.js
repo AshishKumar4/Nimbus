@@ -66,6 +66,8 @@ import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, D
 import { enc } from '../_shared/bytes.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
 import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
+import { sessionAiEnv } from './ai.js';
+import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
 function resolveNpmPrefix(prefix, cwd) {
     return prefix.startsWith('/')
@@ -764,11 +766,7 @@ export function initSession(self, ws) {
             return await wasmHandler(ctx);
         });
     }
-    kernel.routeLoopback = (port, request) => {
-        if (!self.portRegistry.has(port))
-            return Promise.resolve(null);
-        return self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
-    };
+    kernel.routeLoopback = (port, request) => routeSessionLoopback(self, port, request);
     try {
         registry.register('curl', createCurlCommand(kernel));
     }
@@ -1702,6 +1700,12 @@ export function initSession(self, ws) {
         PORT: '3000',
         HOST: '0.0.0.0',
         NIMBUS_SESSION_ID: '', // patched after Shell ctor — see below.
+        // The session AI gateway (session/ai.ts). Any OpenAI-compatible tool —
+        // pi, opencode, a user's own script, curl — discovers the session's
+        // models from these without being configured. The key is a placeholder,
+        // not a secret: the endpoint is loopback-only and ignores it. A user who
+        // exports their own OPENAI_BASE_URL still wins, via the persisted spread.
+        ...sessionAiEnv(),
         // Persisted env keys win over defaults — the user's `export FOO=bar`
         // survives reconnect.
         ...(persisted.env || {}),

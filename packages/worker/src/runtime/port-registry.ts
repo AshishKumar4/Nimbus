@@ -27,7 +27,7 @@
  *   to the outer fetch as-is; its body is streamed directly.
  */
 
-import { NIMBUS_TOKEN_COOKIE } from '../auth/middleware.js';
+import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
 
 export interface RouteableFacetTarget {
   handleHttpRequest(request: Request): Promise<Response>;
@@ -190,25 +190,7 @@ export class PortRegistry {
       // if a body is supplied on those methods.
       const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
       const headers = new Headers(request.headers);
-      for (const name of [...headers.keys()]) {
-        if (name.toLowerCase().startsWith('x-nimbus-')) headers.delete(name);
-      }
-      headers.delete('Authorization');
-
-      const cookie = headers.get('Cookie');
-      if (cookie) {
-        const remaining = cookie
-          .split(';')
-          .map((entry) => entry.trim())
-          .filter((entry) => {
-            if (!entry) return false;
-            const separator = entry.indexOf('=');
-            const name = separator === -1 ? entry : entry.slice(0, separator).trim();
-            return name !== NIMBUS_TOKEN_COOKIE;
-          });
-        if (remaining.length > 0) headers.set('Cookie', remaining.join('; '));
-        else headers.delete('Cookie');
-      }
+      sanitizeUntrustedHeaders(headers);
 
       headers.set('X-Nimbus-Port', String(port));
       // `duplex: 'half'` is required by workerd when body is a

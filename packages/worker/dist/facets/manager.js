@@ -3138,10 +3138,6 @@ export class FacetManager {
         const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
         const ctxExports = getNimbusCtxExports();
         const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: supervisor })
-            : undefined;
-        let worker;
         let startStub;
         let routeStub;
         let resourcesTracked = false;
@@ -3152,19 +3148,22 @@ export class FacetManager {
                 compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
                 mainModule: 'worker.js',
                 modules: { 'worker.js': workerCode, ...sqliteModules },
-                ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
             };
-            const routeConfig = {
-                compatibilityDate: CF_COMPAT_DATE,
-                compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-                mainModule: 'worker.js',
-                modules: { 'worker.js': workerCode, ...sqliteModules },
-            };
-            const loadedWorker = this.env.LOADER.get(workerKey, async () => workerConfig);
-            worker = loadedWorker;
-            startStub = loadedWorker.getEntrypoint();
-            routeStub = await createLoadedWorkerEntrypoint(ctxExports, routeConfig, supervisor, null, workerKey);
-            this.trackProcessRpcResources(entry.pid, [routeStub, startStub, worker, supervisorBinding], { releaseOnReportExit: !opts.attachedTty });
+            // The facet is loaded by the ENTRYPOINT, not by this DO: a dynamic
+            // worker a Durable Object loaded for itself cannot be re-entered later
+            // (workerd: "the system does not know how to reload this Worker from
+            // scratch... have the parent Worker expose an entrypoint which
+            // constructs the dynamic worker and forwards to it"). The entrypoint
+            // also mints the facet's SUPERVISOR binding, so it is no longer this
+            // DO's job to create and retain one.
+            startStub = await createLoadedWorkerEntrypoint(ctxExports, workerConfig, supervisor, null, workerKey);
+            // CODE-FREE route stub: it resolves the RUNNING facet, or fails loud if
+            // that facet was evicted. It must never carry the program, or a routed
+            // request arriving after an eviction silently boots a SECOND copy of the
+            // user's script — a fresh module scope answering 200 while the process
+            // the user started sits idle with its own state.
+            routeStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, workerKey);
+            this.trackProcessRpcResources(entry.pid, [routeStub, startStub], { releaseOnReportExit: !opts.attachedTty });
             resourcesTracked = true;
             this.portRegistry.bindFacetStub(entry.pid, routeStub);
             if (typeof startStub.startProcess !== 'function') {
@@ -3212,7 +3211,7 @@ export class FacetManager {
             if (resourcesTracked)
                 this.releaseProcessRpcResources(entry.pid);
             else
-                disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+                disposeRpcResources([routeStub, startStub]);
             this.processes.exit(entry.pid, 1);
             const reason = 'long-running node boot failed: ' + errorMessage(e);
             this._w5RecordTermination(entry.pid, 1, 'facet', reason);
@@ -3247,33 +3246,21 @@ export class FacetManager {
         catch { }
         const ctxExports = getNimbusCtxExports();
         const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: supervisor })
-            : undefined;
         const workerKey = `nimbus-process:${supervisor.doId}:${supervisor.pid}`;
         const workerConfig = {
             compatibilityDate: CF_COMPAT_DATE,
             compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
             mainModule: 'worker.js',
             modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
-            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
         };
-        const routeConfig = {
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
-            mainModule: 'worker.js',
-            modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
-        };
-        let worker;
         let startStub;
         let routeStub;
         let resourcesTracked = false;
         try {
-            const loadedWorker = this.env.LOADER.get(workerKey, async () => workerConfig);
-            worker = loadedWorker;
-            startStub = loadedWorker.getEntrypoint();
-            routeStub = await createLoadedWorkerEntrypoint(ctxExports, routeConfig, supervisor, null, workerKey);
-            this.trackProcessRpcResources(entry.pid, [routeStub, startStub, worker, supervisorBinding]);
+            // Loaded by the entrypoint, routed by a code-free stub — see spawnNode.
+            startStub = await createLoadedWorkerEntrypoint(ctxExports, workerConfig, supervisor, null, workerKey);
+            routeStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, workerKey);
+            this.trackProcessRpcResources(entry.pid, [routeStub, startStub]);
             resourcesTracked = true;
             this.portRegistry.bindFacetStub(entry.pid, routeStub);
             if (opts.port && opts.port > 0 && opts.port < 65536) {
@@ -3286,7 +3273,7 @@ export class FacetManager {
             if (resourcesTracked)
                 this.releaseProcessRpcResources(entry.pid);
             else
-                disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+                disposeRpcResources([routeStub, startStub]);
             this.processes.exit(entry.pid, 1);
             const reason = 'long-running worker boot failed: ' + errorMessage(e);
             this._w5RecordTermination(entry.pid, 1, 'facet', reason);

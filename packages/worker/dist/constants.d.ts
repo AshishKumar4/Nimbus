@@ -35,6 +35,7 @@ export declare const DEFAULT_VITE_PORT = 5173;
 export declare const DEFAULT_PREVIEW_BASE = "/preview";
 export declare const DEFAULT_WORKER_BASE = "/worker";
 export declare const WRANGLER_DEBOUNCE_MS = 250;
+export declare const NIMBUS_AI_GATEWAY_PORT = 8790;
 export declare const CF_COMPAT_DATE = "2026-04-01";
 export declare const SUPERVISOR_HEAP_CEILING_BYTES: number;
 export declare const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES: number;

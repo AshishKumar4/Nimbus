@@ -39,13 +39,14 @@ export interface NimbusSandboxProfile {
   };
   preview?: {
     baseUrl?: string;
-    hostSuffix?: string;
     pathStyle?: boolean;
   };
 }
 
 export interface NimbusConfig {
   endpoint?: string;
+  /** Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`. See the SDK's `NimbusConfig`. */
+  previewHostSuffix?: string;
   sandboxes?: Record<string, NimbusSandboxProfile>;
 }
 
