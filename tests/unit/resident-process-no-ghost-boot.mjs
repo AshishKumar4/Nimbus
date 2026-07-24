@@ -127,4 +127,23 @@ assert.equal(afterEviction.status, 502, 'an evicted facet surfaces an error to t
 assert.match((await afterEviction.json()).error, /no longer loaded/, 'the error names the real cause');
 assert.equal(world.boots.length, 1, 'eviction booted NO replacement — the ghost never happens');
 
+// ── 4. a spawn never claims a port it was not asked for ────────────────────
+// `runFresh` used to reserve a guessed default (3000) for every long-running
+// node invocation, so the second server started in a session took over the
+// first one's port: /port/3000 answered from the newest process while the one
+// the user started kept running, unreachable. A port a program really binds
+// arrives through the http shim's listen() -> SUPERVISOR.registerPort.
+{
+  const before = portRegistry.getAll().map((e) => `${e.port}:${e.pid}`).sort();
+  const second = await fm.spawnNode('http.createServer(...).listen(4200)', {
+    command: 'node b.js', filename: '/home/user/b.js', cwd: '/home/user',
+  });
+  const after = portRegistry.getAll().map((e) => `${e.port}:${e.pid}`).sort();
+  assert.deepEqual(after, before, 'a spawn with no requested port reserves nothing');
+  const stillA = portRegistry.get(3000);
+  assert.ok(stillA && stillA.pid === spawned.pid,
+    "port 3000 still belongs to the process that asked for it, not the newest spawn");
+  assert.notEqual(second.pid, spawned.pid);
+}
+
 console.log('resident-process-no-ghost-boot: ok');

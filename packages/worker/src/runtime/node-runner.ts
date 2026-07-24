@@ -157,11 +157,14 @@ export async function runFresh(
   const command = opts.command || `node ${opts.filename || '<script>'}`;
   const cwd = opts.cwd || '/home/user';
   let spawned: { pid: number; facetStub: any };
-  const port = resolveLongRunningPort({
-    argv: args,
-    env: opts.env,
-    fallback: 3000,
-  });
+  // Only reserve a port the invocation actually ASKED for (--port / $PORT).
+  // Reserving a guessed default instead meant every long-running `node x.js`
+  // claimed port 3000 whatever it really bound, so a second server silently
+  // took over the first one's port: `/port/3000` answered from the newest
+  // process while the one the user started kept running, unreachable. The
+  // port a program truly binds registers itself through the http shim's
+  // listen() -> SUPERVISOR.registerPort, which needs no guess from here.
+  const port = resolveLongRunningPort({ argv: args, env: opts.env, fallback: 0 }) || undefined;
   try {
     spawned = await facetMgr.spawnNode(code, {
       argv: args,
