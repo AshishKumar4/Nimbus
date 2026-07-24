@@ -259,17 +259,10 @@
       // treats ONLY `^(\d+)--(.+)$` hosts as previews (see
       // src/_shared/preview-host.ts) — the apex, the legacy custom domain, the
       // versioned preview_urls host, and any other subdomain fall through to
-      // normal handling. Dormant until the feature is turned on:
-      //   OWNER STEP 1 (dashboard): add a proxied wildcard DNS record — Type
-      //     AAAA, Name `*`, Content `100::`, Proxied (orange-cloud). Our
-      //     Workers-scoped API token can't create DNS records.
-      //   OWNER STEP 2 (after DNS is live): set the worker var
-      //     NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev. Until it is set the code
-      //     is fully off (shell/SDK keep using the `/s/<sid>/port/<n>/` form),
-      //     so deploying this route before the DNS record + var is harmless —
-      //     the route simply never fires.
-      // Universal SSL already covers `*.nimbus-os.dev` (first-level wildcard),
-      // so no certificate step is needed for this scheme.
+      // normal handling. Active: the proxied `*` AAAA record is live on the
+      // zone and NIMBUS_PREVIEW_HOST_SUFFIX (below) turns the feature on across
+      // worker + shell + SDK. Universal SSL covers `*.nimbus-os.dev`
+      // (first-level wildcard), so no certificate step is needed.
       "routes": [
         { "pattern": "nimbus-os.dev", "custom_domain": true },
         { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true },
@@ -288,7 +281,8 @@
 	        "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
 	        "DEMO_CLEANUP_BATCH_SIZE": "100",
 	        "DEMO_ANON_TTL_SECONDS": "600",
-	        "DEMO_ANON_MAX_ACTIVE": "10"
+	        "DEMO_ANON_MAX_ACTIVE": "10",
+	        "NIMBUS_PREVIEW_HOST_SUFFIX": "nimbus-os.dev"
 	      },
       "ratelimits": [
         {
