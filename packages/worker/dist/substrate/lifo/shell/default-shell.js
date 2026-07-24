@@ -1,6 +1,6 @@
 export function defaultShellPath(home) {
     const normalizedHome = (home || '/home/user').replace(/\/+$/, '');
-    return `${normalizedHome}/.nimbus/shell`;
+    return `${normalizedHome}/.config/nimbus/shell`;
 }
 export function readDefaultShell(vfs, home) {
     try {
