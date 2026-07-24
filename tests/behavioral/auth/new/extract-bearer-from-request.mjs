@@ -25,19 +25,19 @@ const { extractBearerToken } = await import('../../../../packages/worker/src/aut
 }
 // 4. Cookie.
 {
-  const r = new Request('https://x/y', { headers: { Cookie: 'nimbus_token=ctok; other=z' } });
+  const r = new Request('https://x/y', { headers: { Cookie: '__Host-nimbus_token=ctok; other=z' } });
   a.check('cookie → token', extractBearerToken(r) === 'ctok');
 }
 // 5. Precedence: header beats query beats cookie.
 {
   const r = new Request('https://x/y?nimbus_token=qtok', {
-    headers: { Authorization: 'Bearer htok', Cookie: 'nimbus_token=ctok' },
+    headers: { Authorization: 'Bearer htok', Cookie: '__Host-nimbus_token=ctok' },
   });
   a.check('header beats query+cookie', extractBearerToken(r) === 'htok');
 }
 {
   const r = new Request('https://x/y?nimbus_token=qtok', {
-    headers: { Cookie: 'nimbus_token=ctok' },
+    headers: { Cookie: '__Host-nimbus_token=ctok' },
   });
   a.check('query beats cookie', extractBearerToken(r) === 'qtok');
 }
@@ -48,7 +48,7 @@ const { extractBearerToken } = await import('../../../../packages/worker/src/aut
 }
 // 7. URL-encoded cookie value.
 {
-  const r = new Request('https://x/y', { headers: { Cookie: 'nimbus_token=ab%2B%2Fcd' } });
+  const r = new Request('https://x/y', { headers: { Cookie: '__Host-nimbus_token=ab%2B%2Fcd' } });
   a.check('url-encoded cookie decoded', extractBearerToken(r) === 'ab+/cd');
 }
 // 8. Empty Authorization → fall through.
