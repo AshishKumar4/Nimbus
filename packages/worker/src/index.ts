@@ -69,6 +69,9 @@ export {
   generateSessionId,
   isValidSessionId,
 } from './_shared/session-id.js';
+// Embedders that run their own route table ahead of the Nimbus handler MUST
+// test this first — see the doc comment on `isPreviewHostRequest`.
+export { isPreviewHostRequest } from './_shared/preview-host.js';
 export {
   base64Utf8,
   base64Url,
