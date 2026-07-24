@@ -23,10 +23,38 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
+import type { WasiFsDiff } from './wasi-instance.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+export interface BashSlice {
+    state: 'need-input' | 'exited' | 'error';
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    error?: string;
+    fsDiff?: WasiFsDiff;
+    stats?: Record<string, unknown>;
+}
+export interface BashFacetSession {
+    readonly initial: BashSlice;
+    push(data: string, eof?: boolean): Promise<BashSlice>;
+    close(): Promise<void>;
+}
+export declare function createBashFacetSession(deps: {
+    facetMgr: FacetManager;
+    vfs: CredentialedVfs;
+    manifest: RuntimeManifest;
+    installRoot: string;
+    argv: string[];
+    env: Record<string, string>;
+    cwd: string;
+    stdinData?: string;
+    stdinClosed: boolean;
+    stdinTty: boolean;
+    extraRoots?: string[];
+}): Promise<BashFacetSession>;
 export declare function makeBashRunnerFactory(deps: {
     facetMgr: FacetManager;
     vfs: SqliteVFS;

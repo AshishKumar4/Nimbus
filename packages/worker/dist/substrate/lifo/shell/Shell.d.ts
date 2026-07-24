@@ -7,6 +7,7 @@ import type { TerminalInputStream } from '../commands/types.js';
 import { type ShellOptions, type TerminalFdState } from './interpreter.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
+export declare function formatShellPrompt(env: Record<string, string>, cwd: string): string;
 export interface ExecuteOptions {
     cwd?: string;
     env?: Record<string, string>;
