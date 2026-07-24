@@ -518,29 +518,79 @@ const __fsMod = (() => {
     };
   }
 
+  // Largest single ranged read issued against the supervisor. Every live
+  // read path (read streams, whole-file async reads) is expressed as a
+  // sequence of reads this size, so neither side ever allocates a whole
+  // multi-MB file for one RPC frame.
+  const READ_STREAM_CHUNK_BYTES = 65536;
+
+  // Live reads are cached back into the local sync view only while they are
+  // small. Without a bound, serving a directory of multi-MB assets grows
+  // __vfsBundle by the size of everything ever read and the process dies.
+  const LIVE_READ_CACHE_MAX_BYTES = 256 * 1024;
+
+  /**
+   * Read `want` bytes at `pos`. Resident bundle content answers directly;
+   * anything else is a live stateless ranged read against the VFS.
+   * Returns null at EOF, throws ENOENT when the path does not exist.
+   */
+  async function _readRangeAt(absPath, displayPath, pos, want) {
+    const cell = _writtenCell(absPath);
+    if (cell !== undefined) {
+      const denial = _denialCode(cell);
+      if (denial) throw _fsErr(denial, "read", displayPath);
+      const bytes = _asBytes(cell);
+      if (pos >= bytes.byteLength) return null;
+      return bytes.slice(pos, Math.min(bytes.byteLength, pos + want));
+    }
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.fsReadRange === "function") {
+      const bytes = await _fsRpc(supervisor.fsReadRange(absPath, pos, want), "read", displayPath, (r) => r);
+      if (bytes === null || bytes === undefined) throw _fsErr("ENOENT", "open", displayPath);
+      return bytes.byteLength === 0 ? null : bytes;
+    }
+    throw _fsErr("ENOENT", "open", displayPath);
+  }
+
   async function _liveReadFile(p, opts) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
 
-    if (typeof supervisor.readFileBytes === "function") {
-      const bytes = await _fsRpc(supervisor.readFileBytes(absPath), "open", p, (result) => result);
-      if (bytes !== null && bytes !== undefined) {
-        _rememberBundle(absPath, bytes);
-        return encoding ? _asString(bytes) : __BufferMod.from(bytes);
+    if (typeof supervisor.fsReadRange === "function") {
+      // Chunked: the caller wants the whole file, but nothing upstream has
+      // to hold it all at once to produce it.
+      const parts = [];
+      let total = 0;
+      for (;;) {
+        const chunk = await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
+        if (chunk === null) break;
+        parts.push(chunk);
+        total += chunk.byteLength;
+        if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
       }
+      const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
+      if (total <= LIVE_READ_CACHE_MAX_BYTES) _rememberBundle(absPath, bytes);
+      return encoding ? _asString(bytes) : __BufferMod.from(bytes);
     }
 
     if (typeof supervisor.readFile === "function") {
       const text = await _fsRpc(supervisor.readFile(absPath), "open", p, (result) => result);
       if (text !== null && text !== undefined) {
-        _rememberBundle(absPath, text);
+        if (_byteLen(text) <= LIVE_READ_CACHE_MAX_BYTES) _rememberBundle(absPath, text);
         return encoding ? _asString(text) : __BufferMod.from(text);
       }
     }
 
     throw _fsErr("ENOENT", "open", p);
+  }
+
+  function _concatBytes(parts, total) {
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const part of parts) { out.set(part, off); off += part.byteLength; }
+    return out;
   }
 
   async function _readFileAsync(p, opts) {
@@ -1556,16 +1606,48 @@ const __fsMod = (() => {
   let __WriteStreamClass = null;
   function __getReadStream() {
     if (__ReadStreamClass) return __ReadStreamClass;
+    /**
+     * ONE read-stream implementation, behind both `fs.createReadStream`
+     * and the exported `fs.ReadStream` class.
+     *
+     * Each `_read()` pulls exactly one bounded chunk, so a multi-MB asset
+     * streams to the consumer without the facet — or the supervisor — ever
+     * materialising the whole file, and `.pipe()` backpressure actually
+     * throttles the source. A file the prefetch bundle does not carry is
+     * read live from the VFS via the same stateless ranged RPC that
+     * FileHandle.read uses: the bundle is a cache, the VFS is the truth.
+     */
     __ReadStreamClass = class ReadStream extends __streamMod.Readable {
-      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._done = false; }
+      constructor(path, opts) {
+        const options = typeof opts === "string" ? { encoding: opts } : (opts || {});
+        super({
+          encoding: options.encoding || null,
+          highWaterMark: options.highWaterMark || READ_STREAM_CHUNK_BYTES,
+        });
+        this.path = path;
+        this.bytesRead = 0;
+        this._abs = _resolve(path);
+        this._pos = Number.isFinite(options.start) ? Math.max(0, Math.trunc(options.start)) : 0;
+        // Node's `end` option is INCLUSIVE.
+        this._last = Number.isFinite(options.end) ? Math.trunc(options.end) : Infinity;
+      }
       _read() {
-        if (this._done) return;
-        this._done = true;
-        try { this.push(readFileSync(this.path, this._opts)); this.push(null); }
-        catch (e) { this.destroy(e); }
+        // The base class guarantees one outstanding _read at a time, so the
+        // position cursor advances sequentially without extra locking.
+        this._pull().catch((e) => this.destroy(e));
+      }
+      async _pull() {
+        if (this._pos > this._last) { this.push(null); return; }
+        const want = Math.min(READ_STREAM_CHUNK_BYTES, this._last - this._pos + 1);
+        const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
+        if (chunk === null) { this.push(null); return; }
+        this._pos += chunk.byteLength;
+        this.bytesRead += chunk.byteLength;
+        this.push(chunk);
+        if (chunk.byteLength < want) this.push(null);
       }
       open() {}
-      close(cb) { if (cb) cb(); }
+      close(cb) { this.destroy(); if (cb) cb(); }
     };
     return __ReadStreamClass;
   }
@@ -1604,20 +1686,7 @@ const __fsMod = (() => {
     realpathSync, utimesSync, lutimesSync, chmodSync, accessSync,
     readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, chown, lchown, fchown, access,
     promises, constants,
-    createReadStream: (p, opts) => {
-      const rs = new __streamMod.Readable({
-        read() {
-          try {
-            const data = readFileSync(p, opts);
-            this.push(data);
-            this.push(null);
-          } catch (e) {
-            this.destroy(e);
-          }
-        },
-      });
-      return rs;
-    },
+    createReadStream: (p, opts) => new (__getReadStream())(p, opts),
     createWriteStream: (p, opts) => {
       // binary-fs: chunks may arrive as Uint8Array OR string. Keep
       // each chunk in its native shape; on final, if any chunk is
@@ -1956,8 +2025,20 @@ const __eventsMod = (() => {
 const __streamMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
+  const _Decoder = TextDecoder;
 
   // ── Readable ────────────────────────────────────────────────────────
+  //
+  // Node's read machinery is a PULL: the consumer's demand is what causes
+  // `_read()` to be called. Two consumer idioms create demand implicitly —
+  // attaching a 'data' listener and `.pipe()` — and both put the stream in
+  // flowing mode. Honouring that is not cosmetic: a source whose `_read()`
+  // is never called produces nothing at all, so
+  // `fs.createReadStream(f).on('data', …)` and `.pipe(res)` hang forever
+  // (every static file server, and the doom-web asset serve, are exactly
+  // this shape). `_flow` below is the single pump used by flowing mode,
+  // `read()`, and the async iterator, so a source that pushes
+  // ASYNCHRONOUSLY (a live VFS range read) works through all three.
   class Readable extends __eventsMod {
     constructor(opts) {
       super();
@@ -1966,6 +2047,11 @@ const __streamMod = (() => {
         ended: false,
         endEmitted: false,
         flowing: null,
+        // reading — a _read() call is outstanding: no push() and no EOF has
+        // landed since. Keeps the pump from stacking redundant _read calls
+        // while an async source is in flight.
+        reading: false,
+        pumping: false,
         highWaterMark: opts?.highWaterMark ?? 16384,
         encoding: opts?.encoding || null,
         objectMode: opts?.objectMode ?? false,
@@ -1978,17 +2064,70 @@ const __streamMod = (() => {
 
     _read(size) { /* override in subclass */ }
 
+    /** Ask the source for more, unless it already owes us a push or is done. */
+    _maybeRead() {
+      const state = this._readableState;
+      if (state.reading || state.ended || state.destroyed) return;
+      state.reading = true;
+      try { this._read(state.highWaterMark); }
+      catch (err) { state.reading = false; this.destroy(err); }
+    }
+
+    _shift() {
+      const state = this._readableState;
+      const chunk = state.buffer.shift();
+      state.readableLength -= (chunk?.length || 0);
+      return this._decode(chunk);
+    }
+
+    _decode(chunk) {
+      const enc = this._readableState.encoding;
+      if (!enc || enc === 'buffer' || !(chunk instanceof Uint8Array)) return chunk;
+      try { return new _Decoder(enc === 'binary' ? 'latin1' : enc).decode(chunk); }
+      catch { return chunk; }
+    }
+
+    _maybeEmitEnd() {
+      const state = this._readableState;
+      if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
+        state.endEmitted = true;
+        this.readable = false;
+        this.emit('end');
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * Drain buffered chunks to 'data' listeners while flowing, then ask the
+     * source for more. Deferred to a microtask so a synchronous `push()`
+     * from inside `_read()` cannot recurse into the stack.
+     */
+    _flow() {
+      const state = this._readableState;
+      if (state.pumping) return;
+      state.pumping = true;
+      queueMicrotask(() => {
+        state.pumping = false;
+        while (state.flowing && state.buffer.length > 0 && !state.destroyed) {
+          this.emit('data', this._shift());
+        }
+        if (this._maybeEmitEnd()) return;
+        if (state.flowing && !state.destroyed) this._maybeRead();
+      });
+    }
+
     read(size) {
       const state = this._readableState;
       if (state.buffer.length === 0) {
         if (state.ended) return null;
-        this._read(size || state.highWaterMark);
-        return state.buffer.length > 0 ? state.buffer.shift() : null;
+        this._maybeRead();
+        if (state.buffer.length === 0) return null;
       }
-      const chunk = state.buffer.shift();
-      state.readableLength -= (chunk?.length || 0);
+      const chunk = this._shift();
       if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
         state.endEmitted = true;
+        this.readable = false;
         queueMicrotask(() => this.emit('end'));
       }
       return chunk;
@@ -1996,10 +2135,13 @@ const __streamMod = (() => {
 
     push(chunk, encoding) {
       const state = this._readableState;
+      state.reading = false;
       if (chunk === null) {
         state.ended = true;
-        if (state.buffer.length === 0 && !state.endEmitted) {
+        if (state.flowing) this._flow();
+        else if (state.buffer.length === 0 && !state.endEmitted) {
           state.endEmitted = true;
+          this.readable = false;
           queueMicrotask(() => this.emit('end'));
         }
         return false;
@@ -2009,25 +2151,18 @@ const __streamMod = (() => {
       }
       state.buffer.push(chunk);
       state.readableLength += (chunk?.length || 0);
-      if (state.flowing) {
-        queueMicrotask(() => {
-          while (state.buffer.length > 0 && state.flowing) {
-            const c = state.buffer.shift();
-            state.readableLength -= (c?.length || 0);
-            this.emit('data', c);
-          }
-          // After draining, fire 'end' if push(null) was queued but
-          // deferred because the buffer was non-empty at the time.
-          // Guarded by endEmitted so a concurrent .read() drain doesn't
-          // double-fire (W8 fix: real Node uses an endEmitted flag).
-          if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-            state.endEmitted = true;
-            this.emit('end');
-          }
-        });
-      }
+      if (state.flowing) this._flow();
       return state.readableLength < state.highWaterMark;
     }
+
+    // Node switches to flowing mode when a 'data' listener is attached,
+    // unless the consumer explicitly called pause().
+    on(event, listener) {
+      const result = super.on(event, listener);
+      if (event === 'data' && this._readableState.flowing !== false) this.resume();
+      return result;
+    }
+    addListener(event, listener) { return this.on(event, listener); }
 
     pipe(dest, opts) {
       this.on('data', (chunk) => {
@@ -2051,19 +2186,9 @@ const __streamMod = (() => {
 
     resume() {
       const state = this._readableState;
-      if (!state.flowing) {
+      if (state.flowing !== true) {
         state.flowing = true;
-        queueMicrotask(() => {
-          while (state.buffer.length > 0 && state.flowing) {
-            const chunk = state.buffer.shift();
-            state.readableLength -= (chunk?.length || 0);
-            this.emit('data', chunk);
-          }
-          if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-            state.endEmitted = true;
-            this.emit('end');
-          }
-        });
+        this._flow();
       }
       return this;
     }
@@ -2081,30 +2206,53 @@ const __streamMod = (() => {
     destroy(err) {
       if (this._readableState.destroyed) return this;
       this._readableState.destroyed = true;
+      this.readable = false;
       if (err) this.emit('error', err);
       this.emit('close');
       return this;
     }
 
-    get readableEnded() { return this._readableState.ended; }
+    get readableEnded() { return this._readableState.endEmitted; }
     get readableLength() { return this._readableState.readableLength; }
     get readableFlowing() { return this._readableState.flowing; }
 
+    // One chunk per tick: resume, take the next 'data', pause again. Uses
+    // the same pump as flowing mode, so an asynchronous source works here
+    // too (the old implementation called read() once and then waited for a
+    // 'data' event that nothing would ever emit in paused mode).
     [Symbol.asyncIterator]() {
       const self = this;
-      return {
+      const state = self._readableState;
+      const iterator = {
         next() {
-          return new Promise((resolve) => {
-            const chunk = self.read();
-            if (chunk !== null) return resolve({ value: chunk, done: false });
-            if (self._readableState.ended) return resolve({ value: undefined, done: true });
-            const onData = (c) => { self.off('end', onEnd); resolve({ value: c, done: false }); };
-            const onEnd = () => { self.off('data', onData); resolve({ value: undefined, done: true }); };
+          return new Promise((resolve, reject) => {
+            if (state.buffer.length > 0) {
+              const chunk = self._shift();
+              self._maybeEmitEnd();
+              return resolve({ value: chunk, done: false });
+            }
+            if (state.ended || state.destroyed) return resolve({ value: undefined, done: true });
+            const cleanup = () => {
+              self.off('data', onData);
+              self.off('end', onEnd);
+              self.off('error', onError);
+            };
+            const onData = (c) => { cleanup(); self.pause(); resolve({ value: c, done: false }); };
+            const onEnd = () => { cleanup(); resolve({ value: undefined, done: true }); };
+            const onError = (e) => { cleanup(); reject(e); };
             self.once('data', onData);
             self.once('end', onEnd);
+            self.once('error', onError);
+            self.resume();
           });
         },
+        return() {
+          self.destroy();
+          return Promise.resolve({ value: undefined, done: true });
+        },
+        [Symbol.asyncIterator]() { return iterator; },
       };
+      return iterator;
     }
   }
 
@@ -3353,44 +3501,13 @@ const __childProcessMod = (() => {
   const HAS_SUPERVISOR = !!(__supervisor && typeof __supervisor.cpSpawn === "function");
 
   /**
-   * Create a workerd-PassThrough that auto-resumes when a 'data' listener
-   * is attached. Nimbus's __streamMod.Readable does NOT auto-resume on
-   * addListener('data') the way real Node does, so we patch in the
-   * behaviour by overriding addListener/on for 'data'. Without this,
-   * cross-spawn-style consumers that call .on('data', cb) never see
-   * chunks (the Readable buffer fills, flowing stays null).
+   * Child stdout/stderr. Defaults to utf8 so consumers see strings (the
+   * common cross-spawn / husky pattern); callers override via
+   * .setEncoding('hex'), .setEncoding(null), etc. Flowing-mode resumption
+   * and encoding are the Readable base class's job — see streams.ts.
    */
   function _makeReadable() {
-    const r = new __streamMod.PassThrough();
-    // Default encoding to utf8 so consumers see strings (matches the
-    // common cross-spawn / husky pattern of reading text). Callers can
-    // override via .setEncoding('hex'), .setEncoding(null), etc.
-    let _encoding = "utf8";
-    r.setEncoding = function(enc) { _encoding = enc; return r; };
-    const origOn = r.on.bind(r);
-    function patched(event, listener) {
-      // Wrap data listener to decode bytes per current encoding.
-      if (event === "data" && typeof listener === "function") {
-        const wrapped = (chunk) => {
-          let out = chunk;
-          if (_encoding && (chunk instanceof Uint8Array)) {
-            try { out = new TextDecoder(_encoding === "buffer" ? "utf-8" : _encoding).decode(chunk); }
-            catch { out = chunk; }
-          }
-          return listener(out);
-        };
-        wrapped.__orig = listener;
-        const result = origOn("data", wrapped);
-        if (typeof r.resume === "function") {
-          try { r.resume(); } catch {}
-        }
-        return result;
-      }
-      return origOn(event, listener);
-    }
-    r.on = patched;
-    r.addListener = patched;
-    return r;
+    return new __streamMod.PassThrough({ encoding: "utf8" });
   }
 
   /**

@@ -14,6 +14,7 @@ export interface NimbusSandboxProfile {
     };
     preview?: {
         baseUrl?: string;
+        hostSuffix?: string;
         pathStyle?: boolean;
     };
 }

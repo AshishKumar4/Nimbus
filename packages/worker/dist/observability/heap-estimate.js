@@ -36,6 +36,7 @@
  * recovery_event ring, separate from this module.
  */
 import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_HEAP_CEILING_BYTES, } from '../constants.js';
+import { readSupervisorAllocationBudget, } from './heavy-alloc-coord.js';
 /**
  * Five labelled workerd eviction reasons. Surfaced as a constant
  * taxonomy in /api/_diag/memory so any consumer can count observed
@@ -99,27 +100,35 @@ export function estimatePreBundleSliceBytes(c) {
 /**
  * Build a heap estimate from runtime counters + VFS inputs.
  *
- * Pure function — no I/O, microsecond cost. Called from the
- * /api/_diag/memory request handler.
+ * Deterministic and I/O-free. Called from the /api/_diag/memory request
+ * handler; the allocation-budget snapshot is process-local state.
  */
 export function estimateSupervisorHeap(c, vfs) {
+    const allocationBudget = readSupervisorAllocationBudget();
+    const preBundleSliceBytes = estimatePreBundleSliceBytes(c);
+    const transientAttributedBytes = vfs.inFlightWriteBytes +
+        preBundleSliceBytes +
+        c.inFlightRpcPayloadBytes;
     const breakdown = {
         supervisorBaselineBytes: SUPERVISOR_BASELINE_BYTES,
         vfsLruBytes: vfs.cacheHotBytes,
         vfsInFlightBytes: vfs.inFlightWriteBytes,
-        preBundleSliceBytes: estimatePreBundleSliceBytes(c),
+        preBundleSliceBytes,
         streamingBuffersBytes: c.inFlightRpcPayloadBytes,
+        unattributedReservationBytes: Math.max(0, allocationBudget.current - transientAttributedBytes),
     };
     const estimatedBytes = breakdown.supervisorBaselineBytes +
         breakdown.vfsLruBytes +
         breakdown.vfsInFlightBytes +
         breakdown.preBundleSliceBytes +
-        breakdown.streamingBuffersBytes;
+        breakdown.streamingBuffersBytes +
+        breakdown.unattributedReservationBytes;
     const percentOfCeiling = Math.round((estimatedBytes / SUPERVISOR_HEAP_CEILING_BYTES) * 1000) / 10;
     return {
         estimatedBytes,
         ceilingBytes: SUPERVISOR_HEAP_CEILING_BYTES,
         percentOfCeiling,
         breakdown,
+        allocationBudget,
     };
 }
