@@ -363,7 +363,7 @@ export async function handleSessionAiRequest(self: SessionAiHost, request: Reque
   const config = readSessionAiConfig(self.env);
 
   return route === 'models'
-    ? listModels(resolution.credential, config)
+    ? listModels(resolution.credential, config, request.signal)
     : proxyUpstream(resolution.credential, config, route, request);
 }
 
@@ -393,7 +393,11 @@ function normalizeAiPath(pathname: string): string {
  * catalogue is enumerated from the Workers AI model search API and mapped into
  * OpenAI's shape. The list is the account's, never a hardcoded one.
  */
-async function listModels(credential: ResolvedAiCredential, config: SessionAiConfig): Promise<Response> {
+async function listModels(
+  credential: ResolvedAiCredential,
+  config: SessionAiConfig,
+  signal: AbortSignal,
+): Promise<Response> {
   const cached = modelCache.get(credential.accountId);
   const now = Date.now();
   if (cached && cached.expiresAt > now) return modelListResponse(cached.models, config);
@@ -406,6 +410,7 @@ async function listModels(credential: ResolvedAiCredential, config: SessionAiCon
     url.searchParams.set('page', String(page));
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${credential.accessToken}`, Accept: 'application/json' },
+      signal,
     });
     if (!response.ok) return translateUpstreamError(response);
     const parsed = ModelSearchResponseSchema.safeParse(await response.json().catch(() => null));
@@ -461,7 +466,10 @@ async function proxyUpstream(
 
   const upstream = await fetch(
     `${NIMBUS_CLOUDFLARE_API}/accounts/${encodeURIComponent(credential.accountId)}/ai/v1${path}`,
-    { method: request.method, headers, body: request.body, duplex: 'half' } as RequestInit,
+    // The caller's signal is forwarded, so a client that stops mid-stream (the
+    // agent's Stop button, a tool that gives up) also stops the upstream turn
+    // instead of leaving it running and billing against the account.
+    { method: request.method, headers, body: request.body, duplex: 'half', signal: request.signal } as RequestInit,
   );
   if (!upstream.ok) return translateUpstreamError(upstream);
 
