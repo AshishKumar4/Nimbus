@@ -22,6 +22,14 @@ export interface NimbusSandboxProfile {
 }
 export interface NimbusConfig {
     endpoint?: string;
+    /**
+     * The deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling the
+     * `<port>--<sid>.<suffix>` preview origin. `Nimbus.fromEnv` reads it off
+     * the bindings, so in-Worker callers never restate it; remote clients
+     * (`Nimbus.connect`) have no bindings and must supply it to get host-form
+     * preview URLs.
+     */
+    previewHostSuffix?: string;
     sandboxes?: Record<string, NimbusSandboxProfile>;
 }
 export interface NimbusFromEnvOptions {
@@ -481,6 +489,15 @@ export declare class NimbusSandbox {
     capabilities(): string[];
     private execOptions;
     private assertRuntimeAllowed;
+    /**
+     * Browser-facing URL for an exposed port, or undefined when the deployment
+     * is not addressable (no `endpoint`, no configured preview base).
+     *
+     * The URL carries NO credential. On a deployment with auth enforced it is
+     * the destination, not the ticket: the session mints a single-use attach
+     * token for it at `GET /s/<id>/api/preview-url?port=<n>`, which is what the
+     * session shell opens and what an embedder should hand to a browser.
+     */
     private portUrl;
     private rpc;
 }
