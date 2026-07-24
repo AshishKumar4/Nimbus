@@ -34,8 +34,11 @@ import { createLoadedWorkerEntrypoint, getNimbusCtxExports, isolateToken, } from
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import { acquireSupervisorAllocation, } from '../observability/heavy-alloc-coord.js';
+import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
@@ -85,9 +88,38 @@ function runtimeFs(self, pid) {
     }
     return bridge;
 }
+function checkedReadPayloadBytes(bytes) {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+        throw new RangeError(`filesystem RPC read size must be a non-negative safe integer: ${bytes}`);
+    }
+    if (bytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
+        throw new RangeError(`filesystem RPC read payload ${bytes} exceeds the ${MAX_RPC_SAFE_PAYLOAD_BYTES}-byte limit`);
+    }
+    return bytes;
+}
+async function withReadAllocation(bytes, read) {
+    const payloadBytes = checkedReadPayloadBytes(bytes);
+    if (payloadBytes === 0)
+        return read();
+    const lease = await acquireSupervisorAllocation(payloadBytes);
+    rpcPayloadStart(payloadBytes);
+    try {
+        return await read();
+    }
+    finally {
+        rpcPayloadEnd(payloadBytes);
+        lease.release();
+    }
+}
 export async function _rpcReadFile(self, path, pid) {
-    const bytes = await runtimeFs(self, pid).readFile(path);
-    return bytes ? dec.decode(bytes) : null;
+    const fs = runtimeFs(self, pid);
+    const stat = await fs.stat(path);
+    if (!stat)
+        return null;
+    return withReadAllocation(stat.size, async () => {
+        const bytes = await fs.readFile(path);
+        return bytes ? dec.decode(bytes) : null;
+    });
 }
 /**
  * Read a file as raw bytes (Uint8Array). Used by git network facet for
@@ -95,7 +127,11 @@ export async function _rpcReadFile(self, path, pid) {
  * round-tripping through readFile (string) would corrupt bytes.
  */
 export async function _rpcReadFileBytes(self, path, pid) {
-    return runtimeFs(self, pid).readFile(path);
+    const fs = runtimeFs(self, pid);
+    const stat = await fs.stat(path);
+    if (!stat)
+        return null;
+    return withReadAllocation(stat.size, () => fs.readFile(path));
 }
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
@@ -234,7 +270,7 @@ export async function _rpcFsRevision(self, path, pid) {
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid) {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    return runtimeFs(self, pid).readRange(args.path, args.offset, args.length);
+    return withReadAllocation(args.length, () => runtimeFs(self, pid).readRange(args.path, args.offset, args.length));
 }
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
@@ -248,7 +284,7 @@ export async function _rpcFsOpen(self, path, flags, pid) {
     return runtimeFs(self, pid).open(path, flags || {});
 }
 export async function _rpcFsRead(self, handleId, offset, length, pid) {
-    return runtimeFs(self, pid).read(handleId, offset, length);
+    return withReadAllocation(length, () => runtimeFs(self, pid).read(handleId, offset, length));
 }
 export async function _rpcFsWrite(self, handleId, offset, bytes, pid) {
     let data;

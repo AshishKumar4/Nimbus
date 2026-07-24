@@ -75,10 +75,13 @@ export declare function requireSessionPin(verified: VerifiedNimbusToken, attempt
  *     page. Set + read happen under the same top-level site, so a
  *     partitioned jar is exactly right. Requires Secure, so omitted on
  *     plain-HTTP local dev.
- *   - Path: scoped to `/s/` so non-session paths don't see the cookie.
+ *   - Path: `/s` by default; preview hosts use `/` because the app lives at
+ *     the host root.
  *   - Max-Age: matches the token's remaining lifetime.
  */
-export declare function setNimbusTokenCookie(token: string, expSec: number): string;
+export declare function setNimbusTokenCookie(token: string, expSec: number, opts?: {
+    path?: string;
+}): string;
 /**
  * Map a NimbusAuthError to a `Response` suitable for the embedder's
  * `fetch` handler to return. JSON body with `{ error, code }`.

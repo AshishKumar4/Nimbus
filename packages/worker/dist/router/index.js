@@ -32,6 +32,7 @@
  *     "ship-Nimbus-as-is" case — exactly what `apps/hosted-demo/` does.
  */
 import { generateSessionId, isValidSessionId, } from '../_shared/session-id.js';
+import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, } from '../_shared/preview-host.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
 import { issueNimbusToken, verifyNimbusToken, verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { setCtxExports } from '../session/ctx-exports.js';
@@ -110,6 +111,39 @@ export function createNimbusHandler(options = {}) {
                     basePath: `${SESSION_ROUTE_PREFIX}/${payload.sessionId}`,
                 }, env, { tenantSegment: payload.tenantSegment });
             }
+            const previewSuffix = env?.NIMBUS_PREVIEW_HOST_SUFFIX;
+            const preview = parsePreviewHost(url.host, previewSuffix);
+            if (preview) {
+                if (!isValidSessionId(preview.sid)) {
+                    return new Response(renderInvalidSessionHtml(preview.sid), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'text/html; charset=utf-8',
+                            'Cache-Control': 'no-store',
+                        },
+                    });
+                }
+                if (request.method === 'GET'
+                    && request.headers.get('Upgrade') !== 'websocket'
+                    && url.searchParams.get(NIMBUS_TOKEN_QUERY)
+                    && resolveAuthMode(env, explicitMode) === 'enforce') {
+                    return handleAttachExchange(url, preview.sid, env, {
+                        redirectPath: '/',
+                        cookiePath: '/',
+                    });
+                }
+                const auth = await resolveNimbusRouteAuth(request, env, explicitMode, {
+                    requiredScopes: ['session:attach'],
+                    sessionId: preview.sid,
+                });
+                if (auth instanceof Response)
+                    return auth;
+                return forwardToSession(request, {
+                    sessionId: preview.sid,
+                    innerPath: `/port/${preview.port}${url.pathname === '/' ? '/' : url.pathname}`,
+                    basePath: '',
+                }, env, { tenantSegment: auth.tenantSegment });
+            }
             // ── /new — spawn a fresh session and redirect ───────────────────
             if (url.pathname === '/new') {
                 if (request.method !== 'POST' && request.method !== 'GET') {
@@ -166,7 +200,10 @@ export function createNimbusHandler(options = {}) {
                     && request.headers.get('Upgrade') !== 'websocket'
                     && url.searchParams.get(NIMBUS_TOKEN_QUERY)
                     && resolveAuthMode(env, explicitMode) === 'enforce') {
-                    return handleAttachExchange(url, route.sessionId, env);
+                    return handleAttachExchange(url, route.sessionId, env, {
+                        redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
+                        cookiePath: '/s',
+                    });
                 }
                 // Resolve tenant segment per auth mode and enforce session attach
                 // semantics. In enforced mode a sid-pinned token can only attach
@@ -178,6 +215,30 @@ export function createNimbusHandler(options = {}) {
                 if (auth instanceof Response)
                     return auth;
                 const tenantSegment = auth.tenantSegment;
+                if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
+                    const rawPort = url.searchParams.get('port');
+                    const port = rawPort && /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
+                    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                        return Response.json({ error: 'Invalid port' }, {
+                            status: 400,
+                            headers: { 'Cache-Control': 'no-store' },
+                        });
+                    }
+                    if (!previewSuffix || !isPreviewHostSafeSid(route.sessionId)) {
+                        return Response.json({ url: null, reason: 'unavailable' }, { headers: { 'Cache-Control': 'no-store' } });
+                    }
+                    let previewUrl = `https://${buildPreviewHost(route.sessionId, port, previewSuffix)}/`;
+                    if (auth.verified) {
+                        const token = await issueNimbusToken(env, {
+                            tn: auth.verified.claims.tn,
+                            ...(auth.verified.claims.sub !== undefined && { sub: auth.verified.claims.sub }),
+                            scopes: ['session:attach'],
+                            sid: route.sessionId,
+                        }, { ttlMs: ATTACH_BOOTSTRAP_TTL_MS });
+                        previewUrl += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: token })}`;
+                    }
+                    return Response.json({ url: previewUrl }, { headers: { 'Cache-Control': 'no-store' } });
+                }
                 // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
                 if (route.innerPath === '/' || route.innerPath === '') {
                     if (env.ASSETS) {
@@ -276,8 +337,8 @@ async function resolveNimbusRouteAuth(request, env, explicitMode, options = {}) 
     }
 }
 /**
- * Exchange a `?nimbus_token=` query token on the session shell URL for the
- * session cookie, then 302 to the clean `/s/<id>/` URL.
+ * Exchange a `?nimbus_token=` query token for a host-scoped session cookie,
+ * then redirect to the configured clean path on the same host.
  *
  * Accepts two token kinds:
  *   - Server-minted bootstrap tokens (`jti` present, `session:bootstrap`
@@ -291,7 +352,7 @@ async function resolveNimbusRouteAuth(request, env, explicitMode, options = {}) 
  * never persisted browser-side. Bootstrap exchanges get the default session
  * cookie lifetime; embedder tokens keep their own remaining lifetime.
  */
-async function handleAttachExchange(url, sessionId, env) {
+async function handleAttachExchange(url, sessionId, env, options) {
     const token = url.searchParams.get(NIMBUS_TOKEN_QUERY);
     try {
         const verified = await verifyNimbusToken(env, token);
@@ -323,12 +384,14 @@ async function handleAttachExchange(url, sessionId, env) {
         const cookieExpSec = Math.floor(Date.now() / 1000) + Math.floor(cookieTtlMs / 1000);
         const clean = new URL(url);
         clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
-        clean.pathname = `${SESSION_ROUTE_PREFIX}/${sessionId}/`;
+        clean.pathname = options.redirectPath;
         return new Response(null, {
             status: 302,
             headers: {
                 Location: clean.pathname + clean.search,
-                'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
+                'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec, {
+                    path: options.cookiePath,
+                }),
                 'Cache-Control': 'no-store',
             },
         });
