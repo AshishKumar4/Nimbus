@@ -7,6 +7,7 @@
  * connected user can spend their own Workers AI quota instead of the
  * Nimbus deployment owner quota.
  */
+import { type SessionAiHost } from './ai.js';
 import { type ProgrammaticHost } from './programmatic.js';
 interface AgentStorage {
     get(key: string): Promise<unknown>;
@@ -15,7 +16,7 @@ interface AgentStorage {
     deleteAll(): Promise<void>;
     deleteAlarm(): Promise<void>;
 }
-interface Host extends ProgrammaticHost {
+interface Host extends ProgrammaticHost, SessionAiHost {
     ctx: {
         storage: AgentStorage;
     };

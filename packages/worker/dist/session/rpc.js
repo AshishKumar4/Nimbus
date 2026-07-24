@@ -35,6 +35,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observabilit
 import { classifyError } from '../observability/oom-classify.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { routeSessionLoopback } from './loopback.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
@@ -701,11 +702,8 @@ export async function _rpcUnregisterPort(self, port) {
 export async function _rpcRouteLoopback(self, port, request) {
     // In-session loopback routing for a facet's outbound fetch — the same policy
     // as kernel.routeLoopback (session/init.ts) used by the shell curl/node path.
-    if (!self.portRegistry.has(port)) {
-        return new Response(JSON.stringify({ error: 'connection refused (no server listening)', port }), { status: 502, headers: { 'Content-Type': 'application/json' } });
-    }
-    const res = await self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
-    return res ?? new Response(null, { status: 502 });
+    const res = await routeSessionLoopback(self, port, request);
+    return res ?? new Response(JSON.stringify({ error: 'connection refused (no server listening)', port }), { status: 502, headers: { 'Content-Type': 'application/json' } });
 }
 export async function _rpcTransform(self, code, loader) {
     if (!self.esbuildService) {

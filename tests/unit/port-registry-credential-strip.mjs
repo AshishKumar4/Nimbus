@@ -16,7 +16,19 @@ const response = await registry.routeRequest(
   new Request('https://nimbus-os.dev/s/nimble-otter-4271/port/3000/', {
     headers: {
       Authorization: 'Bearer nimbus-secret',
-      Cookie: 'theme=dark; nimbus_token=secret.jwt; nimbus_token_extra=user-value; session=user',
+      'Proxy-Authorization': 'Basic nimbus-secret',
+      // Every platform cookie must be stripped, not just `nimbus_token`:
+      // `nimbus_agent_oauth` and `__Host-nimbus_demo_auth` seal the user's
+      // Cloudflare OAuth access/refresh tokens.
+      Cookie: [
+        'theme=dark',
+        'nimbus_token=secret.jwt',
+        'nimbus_agent_oauth=sealed.cf.oauth',
+        '__Host-nimbus_demo_auth=sealed.demo.auth',
+        '__Host-nimbus_demo_state=state',
+        'nimbus_token_extra=reserved-namespace',
+        'session=user',
+      ].join('; '),
       'X-Nimbus-Base': '/s/nimble-otter-4271',
       'X-Nimbus-Tenant': 'acme:alice',
       'X-Nimbus-Custom': 'internal',
@@ -31,13 +43,16 @@ assert.equal(response.status, 200);
 const received = await response.json();
 
 assert.equal(received.authorization, undefined);
+assert.equal(received['proxy-authorization'], undefined);
 assert.equal(received['x-nimbus-base'], undefined);
 assert.equal(received['x-nimbus-tenant'], undefined);
 assert.equal(received['x-nimbus-custom'], undefined);
-assert.equal(
-  received.cookie,
-  'theme=dark; nimbus_token_extra=user-value; session=user',
-);
+// `nimbus_` / `__Host-nimbus` / `__Secure-nimbus` is a namespace RESERVED for
+// the platform, deliberately matched by prefix rather than by an enumerated
+// list: an exact list fails open (it named one cookie of five and leaked the
+// sealed OAuth cookies to user code), and this package cannot import the
+// embedder's cookie names. A user app must not name its own cookie `nimbus_*`.
+assert.equal(received.cookie, 'theme=dark; session=user');
 assert.equal(received['x-user-header'], 'preserved');
 assert.equal(received['x-nimbus-port'], '3000');
 

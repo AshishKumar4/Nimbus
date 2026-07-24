@@ -14,11 +14,6 @@ export interface NimbusAgentOAuthCookie {
     sessionId: string;
     tenantSegment: string;
 }
-export interface NimbusAgentAuthCookieResult {
-    auth: NimbusAgentOAuthCookie | null;
-    setCookie?: string;
-    clearCookie?: string;
-}
 export declare const NIMBUS_AGENT_AUTH_COOKIE = "nimbus_agent_oauth";
 export declare const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS: number;
 export declare const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = "nimbus-agent-oauth-auth";
@@ -42,6 +37,18 @@ export declare function fetchNimbusCloudflareAccounts(accessToken: string): Prom
 export declare function createNimbusAgentOAuthCookie(auth: NimbusAgentOAuthCookie, secret: string, basePathOrRequest: string | Request): Promise<string>;
 export declare function loadNimbusAgentOAuthFromRequest(request: Request, secret: string): Promise<NimbusAgentOAuthCookie | null>;
 export declare function clearNimbusAgentOAuthCookie(basePathOrRequest: string | Request): string;
+export interface NimbusAgentOAuthConfig {
+    oauthClientId: string;
+    oauthClientSecret: string;
+    oauthScopes: string[];
+    redirectUri: string;
+}
+/**
+ * The Cloudflare OAuth client configuration for this deployment. Read here
+ * rather than at each call site so the login dance and the credential-refresh
+ * path can never disagree about which client they are talking to.
+ */
+export declare function readNimbusAgentOAuthConfig(env: Record<string, unknown>, origin: string): NimbusAgentOAuthConfig;
 export declare function readNimbusAgentCookieSecret(env: Record<string, unknown>): string;
 export declare function nimbusAgentAuthCookiePath(basePathOrRequest: string | Request): string;
 export declare function nimbusAgentRouteContext(request: Request): {
