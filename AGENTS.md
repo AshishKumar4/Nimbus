@@ -17,7 +17,7 @@ The repo is a Bun workspace monorepo:
 
 | Path | What |
 |---|---|
-| `apps/hosted-demo/` | Live demo / canonical embedder. Deployed at `https://nimbus.ashishkumarsingh.com`. |
+| `apps/hosted-demo/` | Live demo / canonical embedder. Deployed at `https://nimbus-os.dev`. |
 | `packages/worker/` | `@nimbus-sh/worker`: runtime, `NimbusSession` DO, router, VFS, runtimes, facets, static assets. |
 | `packages/sdk/` | `@nimbus-sh/sdk`: Worker embedder exports, token/session helpers, and programmatic sandbox SDK. |
 | `packages/react/` | `@nimbus-sh/react`: iframe wrapper component and headless hook. |
@@ -231,8 +231,8 @@ Useful commands:
 |---|---|
 | Typecheck | `bun run typecheck` |
 | Build packages | `bun run --cwd packages/worker build` |
-| All live probes | `BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral` |
-| One live probe | `BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/<path>.mjs` |
+| All live probes | `BASE=https://nimbus-os.dev bun test:behavioral` |
+| One live probe | `BASE=https://nimbus-os.dev bun tests/behavioral/<path>.mjs` |
 | Limit runner scope | `NIMBUS_PROBE_ONLY=<path-fragment> BASE=... bun test:behavioral` |
 
 Probes should assert user-visible behavior, not static strings or HTTP 200

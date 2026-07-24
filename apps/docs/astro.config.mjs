@@ -6,7 +6,7 @@ import starlightLlmsTxt from 'starlight-llms-txt';
 // The docs site serves under /docs from the hosted-demo Worker's assets
 // binding (apps/hosted-demo/scripts/build-assets.mjs mounts the build there).
 export default defineConfig({
-	site: 'https://nimbus.ashishkumarsingh.com',
+	site: 'https://nimbus-os.dev',
 	base: '/docs',
 	// Serve from a /docs subtree so the assets-only Worker maps URLs 1:1.
 	outDir: './dist/docs',

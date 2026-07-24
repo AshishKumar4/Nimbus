@@ -2,7 +2,7 @@
 // keybindings/run-all — drive every keybinding probe sequentially.
 //
 // Usage:
-//   BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/keybindings/run-all.mjs
+//   BASE=https://nimbus-os.dev bun tests/behavioral/keybindings/run-all.mjs
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';

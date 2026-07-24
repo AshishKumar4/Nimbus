@@ -32,7 +32,7 @@ the upstream license files and notices with the redistributed artifacts.
 
 ## Hosted alpha demo
 
-The hosted demo at `https://nimbus.ashishkumarsingh.com` is a public hobby
+The hosted demo at `https://nimbus-os.dev` is a public hobby
 alpha for trying Nimbus. It is not a managed service, does not carry an SLA,
 and should not be used to store secrets or production data. For real use,
 self-host Nimbus in your own Cloudflare account.

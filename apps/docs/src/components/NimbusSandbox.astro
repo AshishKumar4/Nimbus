@@ -65,7 +65,7 @@ const demoSteps: [string, number][] = demo.map((step) =>
 );
 
 const attachUrl = import.meta.env.PUBLIC_NIMBUS_ANON_ATTACH_URL ?? '';
-const appUrl = 'https://nimbus.ashishkumarsingh.com';
+const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev';
 ---
 
 {
@@ -99,7 +99,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 		<div class="nsx-cta">
 			<p>The hosted deployment creates a live sandbox session on open.</p>
 			<a href={appUrl} target="_blank" rel="noopener">
-				Open a sandbox at nimbus.ashishkumarsingh.com →
+				Open a sandbox at nimbus-os.dev →
 			</a>
 		</div>
 	)

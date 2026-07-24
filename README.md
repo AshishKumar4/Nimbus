@@ -4,7 +4,7 @@
 
 **Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network — instant, effectively unlimited, isolate-native sandboxes. Open a URL (or call the SDK) and get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands. No Docker. No containers. No VMs. No image pull.
 
-🌐 **Try it now:** https://nimbus.ashishkumarsingh.com
+🌐 **Try it now:** https://nimbus-os.dev
 
 ![Demo](docs/demo.gif)
 
@@ -13,7 +13,7 @@
 Nimbus is an MIT-licensed hobby alpha. The repo, SDK, Worker runtime, React
 bindings, CLI, and config helpers are public and self-hostable.
 
-The hosted demo at https://nimbus.ashishkumarsingh.com is free for evaluation.
+The hosted demo at https://nimbus-os.dev is free for evaluation.
 It is not a managed service, has no SLA, may be rate-limited or reset, and
 should not be used for secrets or production data. For real workloads, deploy
 Nimbus to your own Cloudflare account with `npx create-nimbus-app`.
@@ -122,7 +122,7 @@ Nimbus is under active development. Current framework support is:
 ### Try the live demo
 
 ```
-1. Visit https://nimbus.ashishkumarsingh.com
+1. Visit https://nimbus-os.dev
 2. Click "Launch" — you'll be redirected to /s/<your-session-id>/
 3. The URL is now your dev environment. Bookmark it.
 ```
@@ -280,7 +280,7 @@ listeners.
 | [`create-nimbus-app`](packages/create-nimbus-app) | `npx create-nimbus-app` scaffold wrapper. |
 | [`@nimbus-sh/config`](packages/config) | Typed `defineNimbusConfig()` and `buildNimbusWranglerConfig()` helpers. |
 
-The live demo at https://nimbus.ashishkumarsingh.com runs from
+The live demo at https://nimbus-os.dev runs from
 [`apps/hosted-demo`](apps/hosted-demo) and is the canonical reference embedder:
 the same shape any external project ships.
 
@@ -426,13 +426,13 @@ which exercise both SDK transports against the deployed app.
 Run them all against the live deploy:
 
 ```bash
-BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
+BASE=https://nimbus-os.dev bun test:behavioral
 ```
 
 Or just one probe:
 
 ```bash
-BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/clang-stdio/new/multi-printf-no-fflush.mjs
+BASE=https://nimbus-os.dev bun tests/behavioral/clang-stdio/new/multi-printf-no-fflush.mjs
 ```
 
 ## License and credits

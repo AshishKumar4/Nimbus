@@ -32,7 +32,7 @@ concurrency:
 
 env:
   # The authenticated probe deployment (apps/probe). The public hosted
-  # demo at nimbus.ashishkumarsingh.com stays behind interactive
+  # demo at nimbus-os.dev stays behind interactive
   # Cloudflare login; CI authenticates here with a freshly minted JWT
   # (see the "Mint probe token" step).
   BASE: https://nimbus-probe.ashishkmr472.workers.dev

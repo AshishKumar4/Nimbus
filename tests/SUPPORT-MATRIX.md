@@ -4,7 +4,7 @@ This matrix is cross-checked against the current code and probe tree. Run the
 listed probes against prod for the current live verdict:
 
 ```bash
-BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
+BASE=https://nimbus-os.dev bun test:behavioral
 ```
 
 The runner discovers probes recursively. It skips helper files whose basename
