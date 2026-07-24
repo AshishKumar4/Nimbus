@@ -735,7 +735,15 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // from its own origin; no cross-origin reader is intended. If
       // future embeds need cross-origin reads, add an explicit origin
       // allowlist — not a wildcard.
-      return Response.json({ ...vfsStats, processes: processStats, logStore: logStoreStats, ports: portStats, vite: viteStats, wrangler: wranglerStats });
+      return Response.json({
+        ...vfsStats,
+        processes: processStats,
+        logStore: logStoreStats,
+        ports: portStats,
+        vite: viteStats,
+        wrangler: wranglerStats,
+        previewHostSuffix: self.env?.NIMBUS_PREVIEW_HOST_SUFFIX ?? null,
+      });
     }
 
     // ── File write API: bypasses shell for fast bulk seeding ──
