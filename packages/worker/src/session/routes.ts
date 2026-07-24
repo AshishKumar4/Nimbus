@@ -26,6 +26,7 @@
 
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { replicasSuspended as _w12ReplicasSuspended } from '../replica/suspension.js';
+import { sanitizeUntrustedRequest } from '../_shared/untrusted-request.js';
 import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
 } from '../runtime/process-logs-api.js';
@@ -941,7 +942,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           return new Response(null, { status: 101, webSocket: client, headers: respHeaders });
         }
 
-        return self.cirrusReal.handleRequest(request, previewPath);
+        return self.cirrusReal.handleRequest(sanitizeUntrustedRequest(request), previewPath);
       }
 
       // Lazy-init: if DO hibernated and ViteDevServer was GC'd, reconstruct from saved config
@@ -1071,7 +1072,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       // outer URL rather than a bare /s/<inner>/ path that would spawn
       // a different outer session.
       const outerWorkerBase = (self.sessionBasePath || '') + innerPrefix;
-      const resp = await self.nimbusWrangler.handleRequest(request, workerPath, outerWorkerBase);
+      const resp = await self.nimbusWrangler.handleRequest(sanitizeUntrustedRequest(request), workerPath, outerWorkerBase);
       if (isLegacyWorkerPath) {
         // Surface the deprecation in headers without rewriting body —
         // unobtrusive for browsers, visible to tooling.
