@@ -86,9 +86,8 @@
   // gateway⇄DO RTT for warm tenants. DOs themselves don't move
   // (CF research §J.9). Trade-off: ASSETS-binding fetches for the session
   // shell (`/s/<id>/index.html`) happen at the placed location, which
-  // could slow shell loads for users far from the placement. Mitigation:
-  // the bare landing page `/` is excluded from `run_worker_first` and is
-  // served direct-from-edge regardless. See W12-plan.md §4.3.
+  // could slow shell loads for users far from the placement.
+  // See W12-plan.md §4.3.
   // `placement` is an inheritable key — env.production picks it up
   // automatically from the top level.
   "placement": { "mode": "smart" },
@@ -125,15 +124,20 @@
     // dist/assets is assembled by scripts/build-assets.mjs (run by the
     // predev/predeploy hooks): the @nimbus-sh/worker/public shell assets
     // plus the apps/docs build mounted at /docs. A Worker gets exactly one
-    // assets binding, so both ship as one directory. /docs/* is not in
-    // run_worker_first, so docs pages serve direct-from-edge.
+    // assets binding, so both ship as one directory.
     "directory": "dist/assets",
     "binding": "ASSETS",
-    // Invoke the Worker for all session-scoped paths so it can forward to the
-    // right Durable Object (or serve the xterm UI shell for `/s/<id>/`). The
-    // landing page at `/` is still served directly from ./public/index.html
-    // without a Worker invocation (fast path).
-	    "run_worker_first": ["/api/*", "/s/*", "/new", "/login", "/logout"]
+    // The Worker sees every request and decides: a port-preview host
+    // (`<port>--<sid>.<suffix>`) forwards to the session, session routes
+    // forward to the DO, everything else falls through to env.ASSETS.
+    // `run_worker_first` only matches PATHS, and a previewed app owns its
+    // whole path space — with a path allowlist an app's `/`, `/favicon.ico`
+    // or `/assets/*` would be shadowed by this Worker's own static files
+    // (the landing page was served instead of the app, so the preview
+    // token exchange at `/` never ran). Host-based routing therefore
+    // requires worker-first for everything; the router's final fallthrough
+    // serves assets explicitly.
+	    "run_worker_first": true
 	  },
   "alias": {
     // Hosted demo runs from a Bun workspace app. These dependencies are
