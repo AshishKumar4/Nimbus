@@ -433,6 +433,16 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					term.options.fontFamily = TERMINAL_FONT_FAMILY;
 				}
 				fit.fit();
+				const renderedRow = screen.querySelector<HTMLElement>('.xterm-rows > div');
+				const viewport = screen.querySelector<HTMLElement>('.xterm-viewport');
+				const renderedRowHeight = renderedRow?.offsetHeight ?? 0;
+				const viewportClientHeight = viewport?.clientHeight ?? 0;
+				if (renderedRowHeight > 0 && viewportClientHeight > 0) {
+					const maxRows = Math.floor(viewportClientHeight / renderedRowHeight);
+					if (maxRows >= 1 && term.rows > maxRows) {
+						term.resize(term.cols, maxRows);
+					}
+				}
 				send({ type: 'resize', cols: term.cols, rows: term.rows });
 			};
 
