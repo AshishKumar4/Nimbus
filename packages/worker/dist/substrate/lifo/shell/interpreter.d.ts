@@ -188,6 +188,12 @@ export declare class Interpreter {
      * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
      * line-at-a-time filter) persist only its final write and silently drop
      * everything before it.
+     *
+     * Writes buffer to a block, as stdio does, so a line-at-a-time producer
+     * costs one store write per block rather than one per line. `mode`
+     * distinguishes `>` (a plain offset from the truncation point) from `>>`,
+     * which is O_APPEND: every block lands at whatever the current end is, so
+     * two descriptors appending to one file cannot overwrite each other.
      */
     private createFileWriter;
     /**

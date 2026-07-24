@@ -82,6 +82,13 @@ await sh('cat /tmp/f1 /tmp/f2 >> /tmp/six');
 check('`>>` appends without rewriting the file', size('tmp/six') === 3 * MB,
   `got ${size('tmp/six')}`);
 
+// O_APPEND: a second descriptor opened on the same file lands after the first,
+// it does not overwrite from a stale offset.
+await sh('printf one > /tmp/app; printf two >> /tmp/app; printf three >> /tmp/app');
+check('successive `>>` descriptors each land at the end',
+  new TextDecoder().decode(bytes('tmp/app')) === 'onetwothree',
+  JSON.stringify(new TextDecoder().decode(bytes('tmp/app'))));
+
 // ── line-at-a-time producers keep every line ───────────────────────────────
 // `seq` writes one stdout call per line. Before, each call replaced the whole
 // file, so `seq 1 N > f` left a file holding only the last number.

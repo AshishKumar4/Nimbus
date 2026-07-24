@@ -1136,18 +1136,18 @@ export class Interpreter {
         try {
             if (mode === 'write') {
                 vfs.writeFile(targetPath, '');
-                return { stream: this.createFileWriter(vfs, targetPath, 0), terminal: false };
+                return { stream: this.createFileWriter(vfs, targetPath, 'truncate'), terminal: false };
             }
             if (vfs.exists(targetPath)) {
-                const stat = vfs.stat(targetPath);
-                if (stat.type === 'directory') {
+                if (vfs.stat(targetPath).type === 'directory') {
                     throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
                 }
                 vfs.access(targetPath, 0o2);
-                return { stream: this.createFileWriter(vfs, targetPath, stat.size), terminal: false };
             }
-            vfs.writeFile(targetPath, '');
-            return { stream: this.createFileWriter(vfs, targetPath, 0), terminal: false };
+            else {
+                vfs.writeFile(targetPath, '');
+            }
+            return { stream: this.createFileWriter(vfs, targetPath, 'append'), terminal: false };
         }
         catch (error) {
             throw new RedirectionOpenError(target, error);
@@ -1181,19 +1181,27 @@ export class Interpreter {
      * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
      * line-at-a-time filter) persist only its final write and silently drop
      * everything before it.
+     *
+     * Writes buffer to a block, as stdio does, so a line-at-a-time producer
+     * costs one store write per block rather than one per line. `mode`
+     * distinguishes `>` (a plain offset from the truncation point) from `>>`,
+     * which is O_APPEND: every block lands at whatever the current end is, so
+     * two descriptors appending to one file cannot overwrite each other.
      */
-    createFileWriter(vfs, path, startOffset) {
-        let offset = startOffset;
+    createFileWriter(vfs, path, mode) {
+        let offset = 0;
         let pending = [];
         let pendingBytes = 0;
+        const endOfFile = () => (vfs.exists(path) ? vfs.stat(path).size : 0);
         const flush = () => {
             if (pendingBytes === 0)
                 return;
             const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
             pending = [];
             pendingBytes = 0;
-            vfs.writeRange(path, offset, block);
-            offset += block.length;
+            const at = mode === 'append' ? endOfFile() : offset;
+            vfs.writeRange(path, at, block);
+            offset = at + block.length;
         };
         const push = (bytes) => {
             if (bytes.length === 0)
