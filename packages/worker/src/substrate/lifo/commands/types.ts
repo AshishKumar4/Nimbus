@@ -9,6 +9,13 @@ export interface CommandOutputStream {
    * they have no way to carry a byte that is not text.
    */
   writeBytes?(bytes: Uint8Array): void;
+  /**
+   * Commit anything the sink is holding. File-backed descriptors buffer, the
+   * way stdio does, so a line-at-a-time producer costs one store write per
+   * block rather than one per line. The shell flushes every descriptor once
+   * the command that owns it finishes.
+   */
+  flush?(): void;
 }
 
 export interface CommandInputStream {

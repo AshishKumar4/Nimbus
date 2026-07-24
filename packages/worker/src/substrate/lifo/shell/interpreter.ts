@@ -37,6 +37,20 @@ import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 
+/**
+ * Bytes a file-backed descriptor holds before committing. Matches the stream
+ * chunk size used elsewhere and keeps a line-at-a-time producer from paying a
+ * store write per line.
+ */
+const FILE_WRITE_BLOCK_BYTES = 64 * 1024;
+
+function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) { out.set(part, at); at += part.length; }
+  return out;
+}
+
 // ─── Signal classes for control flow ───
 
 export class BreakSignal {
@@ -531,7 +545,7 @@ export class Interpreter {
       const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
       const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
       const builtinIo = this.createIoFromFds(redirIo, fds);
-      const exitCode = await evaluateDoubleBracketWords(
+      const exitCode = await this.withFdFlush(fds, () => evaluateDoubleBracketWords(
         node.words,
         this.createExpandContext(redirIo),
         redirIo.vfs ?? this.config.vfs,
@@ -553,7 +567,7 @@ export class Interpreter {
           setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
           executeInline: (input, options) => this.executeInline(input, builtinIo, options),
         },
-      );
+      ));
       this.lastExitCode = exitCode;
       return exitCode;
     });
@@ -965,6 +979,7 @@ export class Interpreter {
         }
       }
     } finally {
+      this.flushFds(fds);
       // Restore env from per-command assignments
       for (const [key, val] of Object.entries(savedEnv)) {
         if (val === undefined) {
@@ -1227,7 +1242,7 @@ export class Interpreter {
       return 1;
     }
 
-    return execute(this.createIoFromFds(io, fds));
+    return this.withFdFlush(fds, () => execute(this.createIoFromFds(io, fds)));
   }
 
   private async applyRedirections(
@@ -1407,15 +1422,48 @@ export class Interpreter {
    */
   private createFileWriter(vfs: VFS, path: string, startOffset: number): CommandOutputStream {
     let offset = startOffset;
-    const advance = (bytes: Uint8Array): void => {
+    let pending: Uint8Array[] = [];
+    let pendingBytes = 0;
+
+    const flush = (): void => {
+      if (pendingBytes === 0) return;
+      const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
+      pending = [];
+      pendingBytes = 0;
+      vfs.writeRange(path, offset, block);
+      offset += block.length;
+    };
+
+    const push = (bytes: Uint8Array): void => {
       if (bytes.length === 0) return;
-      vfs.writeRange(path, offset, bytes);
-      offset += bytes.length;
+      pending.push(bytes);
+      pendingBytes += bytes.length;
+      if (pendingBytes >= FILE_WRITE_BLOCK_BYTES) flush();
     };
+
     return {
-      write: (text: string) => advance(encode(text)),
-      writeBytes: (bytes: Uint8Array) => advance(bytes),
+      write: (text: string) => push(encode(text)),
+      writeBytes: (bytes: Uint8Array) => push(bytes),
+      flush,
     };
+  }
+
+  /**
+   * Run `body` and commit every file-backed descriptor it wrote through,
+   * whether it returned or threw. This is the close(2) side of the buffering
+   * in createFileWriter: buffered bytes must reach the store before the next
+   * command can read the file.
+   */
+  private async withFdFlush<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
+    try {
+      return await body();
+    } finally {
+      this.flushFds(fds);
+    }
+  }
+
+  private flushFds(fds: FdState): void {
+    for (const stream of fds.outputFds.values()) stream.flush?.();
   }
 
   private createFileReader(vfs: VFS, path: string): CommandInputStream {

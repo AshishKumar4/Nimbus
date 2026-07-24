@@ -82,6 +82,22 @@ await sh('cat /tmp/f1 /tmp/f2 >> /tmp/six');
 check('`>>` appends without rewriting the file', size('tmp/six') === 3 * MB,
   `got ${size('tmp/six')}`);
 
+// ── line-at-a-time producers keep every line ───────────────────────────────
+// `seq` writes one stdout call per line. Before, each call replaced the whole
+// file, so `seq 1 N > f` left a file holding only the last number.
+r = await sh('seq 1 20000 > /tmp/seq');
+check('seq 1 20000 > f exits 0', r.exitCode === 0, `stderr=${r.stderr}`);
+{
+  const expected = Array.from({ length: 20000 }, (_, i) => i + 1).join('\n') + '\n';
+  const actual = new TextDecoder().decode(bytes('tmp/seq'));
+  check('seq writes every line, in order', actual === expected,
+    `${actual.length} bytes vs ${expected.length}`);
+}
+
+r = await sh('seq 1 5 > /tmp/seq5; cat /tmp/seq5');
+check('a buffered redirect is visible to the next command',
+  r.stdout === '1\n2\n3\n4\n5\n', JSON.stringify(r.stdout));
+
 // ── a 25 MB copy streams rather than buffering ─────────────────────────────
 root.writeFile('tmp/big', 'x'.repeat(25 * MB), { mode: 0o644 });
 r = await sh('cat /tmp/big > /tmp/big-copy');
