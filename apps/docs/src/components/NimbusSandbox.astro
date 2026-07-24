@@ -14,7 +14,7 @@
  * The terminal auto-connects when it scrolls into view (IntersectionObserver,
  * so only engaged viewers spend one of the capacity-limited anonymous
  * sessions) and reuses one session per visit: the resolved wsUrl is cached in
- * sessionStorage while its short-lived attach token is still valid, so
+ * localStorage while its short-lived attach token is still valid, so
  * navigating between pages does not burn extra sessions. On 429/503 the
  * endpoint's structured rejection maps to a clear capacity message with a
  * retry control — never a blank or fake terminal.
@@ -38,22 +38,19 @@
  * 15 s — a clone or an install needs more). The runner is prompt-aware:
  * it types the next command as soon as the shell (or a REPL) shows a
  * prompt again, so variable-duration commands never race the script.
- * `demoId` keys a per-visit sessionStorage flag so a script runs once per
- * visit even though the session itself is reused across pages. Keep one
- * embed per page: a second live attach would contend for the same
- * terminal.
+ * The page's script runs on every terminal boot, including when the
+ * underlying session is reused. Keep one embed per page: a second live
+ * attach would contend for the same terminal.
  */
 type DemoStep = string | [string, number];
 interface Props {
 	title?: string;
 	rows?: number;
-	demoId?: string;
 	demo?: DemoStep[];
 }
 const {
 	title = 'nimbus — /home/user',
 	rows = 14,
-	demoId = 'intro',
 	demo = [
 		'node -v',
 		[
@@ -77,7 +74,6 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			class="nsx"
 			data-nimbus-sandbox
 			data-attach-url={attachUrl}
-			data-demo-id={demoId}
 			data-demo={JSON.stringify(demoSteps)}
 			style={`--nsx-rows:${rows}`}
 		>
@@ -173,10 +169,6 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	}
 	.nsx-screen :global(.xterm) {
 		height: 100%;
-		/* The docs theme's prose line-height inflates xterm's DOM rows past
-		   the cell height xterm measured, double-spacing the output and
-		   clipping the bottom of the viewport. xterm owns its metrics. */
-		line-height: normal;
 	}
 	.nsx-status {
 		position: absolute;
@@ -252,8 +244,9 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	// (ANON_ATTACH_TOKEN_TTL_MS), so the cache expires just inside that.
 	const CLIENT_ID_KEY = 'nimbus:client-id';
 	const SESSION_KEY_PREFIX = 'nimbus:anon-session:';
-	const DEMO_KEY_PREFIX = 'nimbus:anon-demo:';
 	const REUSE_WINDOW_MS = 110_000;
+	const TERMINAL_FONT_SIZE = 13;
+	const TERMINAL_FONT_FAMILY = "'JetBrains Mono', 'Fira Code', Menlo, monospace";
 
 	function clientId(): string {
 		try {
@@ -334,6 +327,13 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 		return 'The sandbox could not be started. Check the connection and retry.';
 	}
 
+	async function waitForTerminalFont(): Promise<void> {
+		try {
+			await document.fonts.load(`${TERMINAL_FONT_SIZE}px 'JetBrains Mono'`);
+		} catch {}
+		await document.fonts.ready;
+	}
+
 	async function boot(el: HTMLElement) {
 		if (el.dataset.booting === 'true') return;
 		el.dataset.booting = 'true';
@@ -345,7 +345,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
 		const attachUrl = el.dataset.attachUrl!;
 
-		function setState(state: 'connecting' | 'live' | 'ended' | 'error', label: string) {
+		function setState(state: 'connecting' | 'running' | 'live' | 'ended' | 'error', label: string) {
 			badge.hidden = false;
 			badge.dataset.state = state;
 			badge.textContent = label;
@@ -363,6 +363,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				import('@xterm/xterm'),
 				import('@xterm/addon-fit'),
 			]);
+			const terminalFontReady = waitForTerminalFont();
 
 			// Reuse the visit's session when possible; fall back to a fresh
 			// one if the cached attach URL no longer connects.
@@ -386,6 +387,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			}
 
 			const [{ Terminal }, { FitAddon }] = await termModules;
+			await terminalFontReady;
 
 			const terminalBackground = getComputedStyle(el)
 				.getPropertyValue('--nimbus-terminal-bg')
@@ -393,8 +395,8 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			const term = new Terminal({
 				cursorBlink: true,
 				cursorStyle: 'bar',
-				fontSize: 13,
-				fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+				fontSize: TERMINAL_FONT_SIZE,
+				fontFamily: TERMINAL_FONT_FAMILY,
 				theme: {
 					background: terminalBackground,
 					foreground: '#c9d1d9',
@@ -409,17 +411,27 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			});
 			const fit = new FitAddon();
 			term.loadAddon(fit);
-
-			status.hidden = true;
-			term.open(screen);
-			fit.fit();
-			term.focus();
-			setState('live', 'live');
-
 			const send = (frame: object) => {
 				if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
 			};
-			send({ type: 'resize', cols: term.cols, rows: term.rows });
+			const fitTerminal = (refreshMetrics = false) => {
+				if (screen.offsetWidth === 0 || screen.offsetHeight === 0) return;
+				if (refreshMetrics) {
+					// xterm ignores same-value option assignments, so toggle
+					// through its fallback before fitting to remeasure the cell.
+					term.options.fontFamily = 'monospace';
+					term.options.fontFamily = TERMINAL_FONT_FAMILY;
+				}
+				fit.fit();
+				send({ type: 'resize', cols: term.cols, rows: term.rows });
+			};
+
+			status.hidden = true;
+			term.open(screen);
+			fitTerminal();
+			await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+			fitTerminal(true);
+			term.focus();
 
 			// Keep the session warm so typed input is always serviced. An idle
 			// hibernatable session stops acting on input frames until something
@@ -443,10 +455,46 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 			// are always in view. Scrolling up to read releases the lock until
 			// the reader returns to the bottom or types again.
 			let stickToBottom = true;
+			let userScrollGesture = false;
+			const atBottom = () => {
+				const buffer = term.buffer.active;
+				return buffer.viewportY >= buffer.baseY;
+			};
+			const pinToBottom = () => {
+				term.scrollToBottom();
+				stickToBottom = true;
+			};
 			term.onScroll(() => {
-				const buf = term.buffer.active;
-				stickToBottom = buf.viewportY >= buf.baseY;
+				if (atBottom()) {
+					stickToBottom = true;
+				} else if (userScrollGesture) {
+					stickToBottom = false;
+				}
 			});
+			const viewport = screen.querySelector<HTMLElement>('.xterm-viewport')!;
+			const userScrollListeners = new AbortController();
+			const trackUserScroll = () => {
+				userScrollGesture = true;
+				requestAnimationFrame(() => {
+					stickToBottom = atBottom();
+					userScrollGesture = false;
+				});
+			};
+			const gestureOptions = {
+				capture: true,
+				signal: userScrollListeners.signal,
+			};
+			viewport.addEventListener('wheel', trackUserScroll, { ...gestureOptions, passive: true });
+			viewport.addEventListener('touchmove', trackUserScroll, { ...gestureOptions, passive: true });
+			screen.addEventListener('keydown', trackUserScroll, gestureOptions);
+			viewport.addEventListener('pointerdown', () => {
+				userScrollGesture = true;
+			}, gestureOptions);
+			const endUserScroll = () => {
+				userScrollGesture = false;
+			};
+			window.addEventListener('pointerup', endUserScroll, gestureOptions);
+			window.addEventListener('pointercancel', endUserScroll, gestureOptions);
 
 			// Rolling ANSI-stripped output tail, so the demo runner can see when
 			// the shell (or a REPL) is back at a prompt.
@@ -457,7 +505,7 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					const msg = JSON.parse(e.data);
 					if (msg.type === 'output') {
 						term.write(msg.data, () => {
-							if (stickToBottom) term.scrollToBottom();
+							if (stickToBottom) pinToBottom();
 						});
 						outputTail = (
 							outputTail + msg.data.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
@@ -466,36 +514,30 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 					}
 				} catch {}
 			});
-			ws.addEventListener('close', () => {
-				clearInterval(keepalive);
-				setState('ended', 'session ended');
-			});
-
-			term.onData((d) => {
-				stickToBottom = true;
-				term.scrollToBottom();
-				send({ type: 'input', data: d });
-			});
-			term.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }));
-			new ResizeObserver(() => fit.fit()).observe(screen);
-
-			// This embed's demo script: real keystrokes into the live
-			// session, then the keyboard is the reader's. Each script runs
-			// once per visit (keyed per embed), so reusing the visit's one
-			// session across pages still plays each page's own demo.
-			const demoKey = DEMO_KEY_PREFIX + (el.dataset.demoId ?? 'intro');
 			let steps: [string, number][] = [];
 			try {
 				steps = JSON.parse(el.dataset.demo ?? '[]');
 			} catch {}
-			let ranDemo = false;
-			try {
-				ranDemo = sessionStorage.getItem(demoKey) === 'true';
-			} catch {}
-			if (!ranDemo && steps.length > 0) {
-				try {
-					sessionStorage.setItem(demoKey, 'true');
-				} catch {}
+			let readerInputEnabled = steps.length === 0;
+			setState(readerInputEnabled ? 'live' : 'running', readerInputEnabled ? 'live' : 'running…');
+
+			term.onData((d) => {
+				if (!readerInputEnabled) return;
+				pinToBottom();
+				send({ type: 'input', data: d });
+			});
+			const resizeObserver = new ResizeObserver(() => fitTerminal(true));
+			resizeObserver.observe(screen);
+			ws.addEventListener('close', () => {
+				clearInterval(keepalive);
+				userScrollListeners.abort();
+				resizeObserver.disconnect();
+				setState('ended', 'session ended');
+			});
+
+			// This embed's demo script: real keystrokes into the live
+			// session, then the keyboard is the reader's.
+			if (steps.length > 0) {
 				const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 				const type = async (line: string) => {
 					for (const ch of line) {
@@ -508,11 +550,15 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				// Quiescence guards against echo chunks that happen to end at
 				// a prompt boundary while a command is still producing output.
 				// The keepalive above keeps the session warm during long waits.
-				const waitForPrompt = async (maxMs: number) => {
+				// Bounded so a prompt-regex miss can never leave the reader's
+				// keyboard blocked forever — input is handed back either way.
+				const waitForPrompt = async (maxMs = 15_000): Promise<void> => {
 					const start = Date.now();
 					await sleep(500);
 					while (Date.now() - start < maxMs) {
-						if (/(\$ |>>> |> )$/.test(outputTail) && Date.now() - lastOutputAt > 600) return;
+						if (/(\$ |>>> |> )$/.test(outputTail) && Date.now() - lastOutputAt > 600) {
+							return;
+						}
 						await sleep(200);
 					}
 				};
@@ -520,16 +566,20 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 				if (reused) send({ type: 'input', data: '\r' });
 				await waitForPrompt(8000);
 				for (const [cmd, maxWaitMs] of steps) {
-					await type(cmd);
 					outputTail = '';
+					await type(cmd);
 					await waitForPrompt(maxWaitMs);
 					await sleep(700);
 				}
+				await waitForPrompt();
+				readerInputEnabled = true;
+				if (ws.readyState === WebSocket.OPEN) setState('live', 'live');
 			} else {
 				// Reattached with nothing to type: there is no scrollback
 				// replay yet, so nudge a fresh prompt.
 				send({ type: 'input', data: '\r' });
 			}
+			pinToBottom();
 			term.focus();
 		} catch (error) {
 			el.dataset.booting = 'false';
