@@ -145,6 +145,13 @@ export const CF_COMPAT_DATE = '2026-04-01';
 // writes, pre-bundle slices, and streaming RPC buffers.
 export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 
+// Shared allowance for transient allocations in the supervisor DO. With the
+// VFS LRU shrunk to 8 MiB during an active reservation, 40 MiB of admitted
+// payload plus the 9 MiB bundle baseline stays below the 64 MiB soft ceiling
+// with 7 MiB left for metadata, structured-clone overhead, and runtime state.
+// This is 31.25% of the platform's 128 MiB hard isolate ceiling.
+export const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES = 40 * 1024 * 1024;
+
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';
 export const DEFAULT_HOME = '/home/user';

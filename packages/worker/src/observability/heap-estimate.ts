@@ -42,6 +42,10 @@ import {
   SUPERVISOR_HEAP_CEILING_BYTES,
 } from '../constants.js';
 import type { DiagCounters } from './diag-counters.js';
+import {
+  readSupervisorAllocationBudget,
+  type SupervisorAllocationBudgetStats,
+} from './heavy-alloc-coord.js';
 
 /**
  * Five labelled workerd eviction reasons. Surfaced as a constant
@@ -70,6 +74,12 @@ export interface HeapEstimate {
   percentOfCeiling: number;
   /** Per-source byte attribution. */
   breakdown: HeapBreakdown;
+  /**
+   * Shared transient-allocation budget occupancy. Named contributors overlap
+   * this total; any otherwise-unattributed occupancy is included in
+   * breakdown.unattributedReservationBytes.
+   */
+  allocationBudget: SupervisorAllocationBudgetStats;
 }
 
 export interface HeapBreakdown {
@@ -86,18 +96,23 @@ export interface HeapBreakdown {
   /**
    * In-flight supervisor RPC payload bytes (Phase 2 A'.2).
    *
-   * Sum of bytes claimed by RPC handlers in src/session/supervisor-rpc.ts
-   * between RPC entry and exit — writeBatch / writeBatchStream /
-   * putRegistryEntries / R2 cache RPC return values. Tracked by
-   * `inFlightRpcPayloadBytes` in src/observability/diag-counters.ts; bumped at
-   * RPC entry, debited in `finally`.
+   * Sum of bytes claimed by DO-side byte-returning filesystem RPC handlers
+   * between payload allocation and exit. Tracked by
+   * `inFlightRpcPayloadBytes` in src/observability/diag-counters.ts; bumped
+   * after shared-budget admission and debited in `finally`.
    *
    * At idle this is 0. Under load it should stay bounded by the
-   * largest single in-flight RPC's payload (~few MiB for writeBatch).
+   * shared allocation budget.
    * Persistent non-zero readings here mean an RPC handler isn't
    * decrementing on its failure path — a leak worth fixing.
    */
   streamingBuffersBytes: number;
+  /**
+   * Shared-budget occupancy not already represented by the named transient
+   * counters. This covers full-budget owners and keeps cross-DO module-local
+   * reservations visible without double-counting read/write payloads.
+   */
+  unattributedReservationBytes: number;
 }
 
 /**
@@ -164,19 +179,29 @@ export function estimatePreBundleSliceBytes(c: DiagCounters): number {
 /**
  * Build a heap estimate from runtime counters + VFS inputs.
  *
- * Pure function — no I/O, microsecond cost. Called from the
- * /api/_diag/memory request handler.
+ * Deterministic and I/O-free. Called from the /api/_diag/memory request
+ * handler; the allocation-budget snapshot is process-local state.
  */
 export function estimateSupervisorHeap(
   c: DiagCounters,
   vfs: VfsHeapInputs,
 ): HeapEstimate {
+  const allocationBudget = readSupervisorAllocationBudget();
+  const preBundleSliceBytes = estimatePreBundleSliceBytes(c);
+  const transientAttributedBytes =
+    vfs.inFlightWriteBytes +
+    preBundleSliceBytes +
+    c.inFlightRpcPayloadBytes;
   const breakdown: HeapBreakdown = {
     supervisorBaselineBytes: SUPERVISOR_BASELINE_BYTES,
     vfsLruBytes: vfs.cacheHotBytes,
     vfsInFlightBytes: vfs.inFlightWriteBytes,
-    preBundleSliceBytes: estimatePreBundleSliceBytes(c),
+    preBundleSliceBytes,
     streamingBuffersBytes: c.inFlightRpcPayloadBytes,
+    unattributedReservationBytes: Math.max(
+      0,
+      allocationBudget.current - transientAttributedBytes,
+    ),
   };
 
   const estimatedBytes =
@@ -184,7 +209,8 @@ export function estimateSupervisorHeap(
     breakdown.vfsLruBytes +
     breakdown.vfsInFlightBytes +
     breakdown.preBundleSliceBytes +
-    breakdown.streamingBuffersBytes;
+    breakdown.streamingBuffersBytes +
+    breakdown.unattributedReservationBytes;
 
   const percentOfCeiling = Math.round(
     (estimatedBytes / SUPERVISOR_HEAP_CEILING_BYTES) * 1000,
@@ -195,5 +221,6 @@ export function estimateSupervisorHeap(
     ceilingBytes: SUPERVISOR_HEAP_CEILING_BYTES,
     percentOfCeiling,
     breakdown,
+    allocationBudget,
   };
 }
