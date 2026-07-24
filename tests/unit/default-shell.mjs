@@ -44,7 +44,9 @@ function commandContext(vfs, args = []) {
   const vfs = new VFS();
   vfs.mkdir('/home', { recursive: true });
   vfs.mkdir('/home/user', { recursive: true });
-  assert.equal(defaultShellPath('/home/user'), '/home/user/.nimbus/shell');
+  vfs.mkdir('/home/user/.config', { recursive: true });
+  assert.equal(defaultShellPath('/home/user'), '/home/user/.config/nimbus/shell');
+  assert.equal(vfs.exists('/home/user/.config/nimbus'), false);
   assert.equal(readDefaultShell(vfs, '/home/user'), 'lifo');
 
   const chsh = makeChshCommand({ isBashInstalled: () => false });
@@ -56,6 +58,7 @@ function commandContext(vfs, args = []) {
   const installedChsh = makeChshCommand({ isBashInstalled: () => true });
   const setBash = commandContext(vfs, ['-s', 'bash']);
   assert.equal(await installedChsh(setBash), 0);
+  assert.equal(vfs.exists('/home/user/.config/nimbus'), true);
   assert.equal(readDefaultShell(vfs, '/home/user'), 'bash');
   assert.equal(vfs.readFileString(defaultShellPath('/home/user')), 'bash\n');
 
@@ -77,8 +80,9 @@ async function startShell(defaultShell) {
   vfs.mkdir('/home', { recursive: true });
   vfs.mkdir('/home/user', { recursive: true });
   if (defaultShell) {
-    vfs.mkdir('/home/user/.nimbus', { recursive: true });
-    vfs.writeFile(defaultShellPath('/home/user'), `${defaultShell}\n`);
+    const path = defaultShellPath('/home/user');
+    vfs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    vfs.writeFile(path, `${defaultShell}\n`);
   }
 
   const registry = createDefaultRegistry();
