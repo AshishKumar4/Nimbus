@@ -28,7 +28,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry, stagedProcessClass } from './opencode-staging.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, peerNamespaceFromEnv, ProcessFabric, } from '../loaders/process-fabric.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, ProcessFabric, } from '../loaders/process-fabric.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '../runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
@@ -2199,10 +2199,10 @@ export class FacetManager {
     vfs = null;
     hooks;
     /**
-     * The heavy/light process scheduler (loaders/process-fabric.ts). Owns the
-     * single placement policy point for resident staged processes: `light`
-     * boots the local facet exactly as before; `heavy` hosts the facet on a
-     * sibling peer DO with its own workerd process memory budget.
+     * The resident-process scheduler (loaders/process-fabric.ts). Every
+     * long-lived process — staged opencode, node servers, python/ruby socket
+     * servers — is booted through it, and it is the only code that knows which
+     * workerd process a facet landed in.
      */
     processFabric;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
@@ -2252,13 +2252,23 @@ export class FacetManager {
         this.processes = processes;
         this.portRegistry = portRegistry;
         this.hooks = hooks;
-        this.processFabric = new ProcessFabric(ctx, peerNamespaceFromEnv(env));
+        this.processFabric = new ProcessFabric(ctx, env, (path, pid) => this._readProcessFile(path, pid));
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
             : undefined;
         this.debugEnabled = debugVar === '1' || debugVar === 'true';
     }
     setVfs(vfs) { this.vfs = vfs; }
+    /**
+     * Read one of a process's files with its own credential. The fabric uses it
+     * to resolve a boot spec's wasm sidecars wherever the facet is hosted — a
+     * peer pulls the same bytes back over the coordinator's fs RPC.
+     */
+    _readProcessFile(path, pid) {
+        if (!this.vfs)
+            throw new Error(`Nimbus: cannot read '${path}' — no filesystem on this session`);
+        return Promise.resolve(this.vfs.as(this.processes.cred(pid)).readFile(path));
+    }
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -2687,39 +2697,22 @@ export class FacetManager {
         let handle;
         try {
             // Keyed, stage-carrying resident process through the fabric's single
-            // placement policy point. Attach declares `light` (stagedProcessClass)
-            // — a local facet, exactly the pre-fabric boot; a future `heavy`
-            // declaration would host the facet on a sibling peer DO with its own
-            // workerd process memory budget, SUPERVISOR still minted for THIS
-            // coordinator. The held-open startProcess RPC chain stays open for
-            // the process lifetime exactly as before.
+            // placement policy point. The opencode runner holds its startProcess
+            // open for the process's whole life, so the held RPC chain IS the
+            // lifecycle — the same contract at either placement.
             const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
             handle = await this.processFabric.startResidentProcess({
                 processClass: stagedProcessClass(stageSpec.mode),
+                startContract: 'lifetime',
                 pid,
                 workerKey,
-                stage: stageSpec,
-                // Respawn (fresh peer = new machine lottery) only while the process
+                boot: { kind: 'staged', stage: stageSpec },
+                // Respawn (a fresh host = new machine lottery) only while the process
                 // is still expected to run — never after kill/session teardown.
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
-                // Peer-death recovery is never silent: the process log (the channel
-                // `logs <pid>` and the log-tail diagnostics read) records it.
-                onRespawn: (cause) => {
-                    try {
-                        this.processes.appendOutput(pid, 'stderr', `[nimbus] process host died (${errorMessage(cause)}); respawning on a fresh peer\n`);
-                    }
-                    catch { /* best-effort */ }
-                },
+                onRespawn: (cause) => this._noteHostRespawn(pid, cause),
             });
-            if (this.debugEnabled && handle.placement.kind === 'peer') {
-                // Deterministic live evidence (log-tail channel) that the heavy
-                // spawn actually took the peer branch, with its verified placement.
-                try {
-                    this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] heavy process placed on peer slot=${handle.placement.slot} ` +
-                        `peer=${handle.placement.peerName.slice(-12)} token=${handle.placement.isolateToken.slice(0, 8)}\n`);
-                }
-                catch { /* best-effort */ }
-            }
+            this._noteProcessPlacement(pid, handle);
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             this.ctx.waitUntil(handle.done
                 .catch((e) => {
@@ -2834,37 +2827,29 @@ export class FacetManager {
     }
     async _runOpencodeServerFacet(staged, port) {
         const { pid, stageSpec } = staged;
-        const ctxExports = getNimbusCtxExports();
-        const supervisor = { doId: this.ctx.id.toString(), pid };
         let handle;
-        let routeStub;
         let resourcesTracked = false;
         try {
-            const workerKey = `nimbus-process:${supervisor.doId}:${pid}`;
-            // A re-resolvable, CODE-FREE NimbusLoadedEntrypoint route stub (keyed on
-            // workerKey): the serve facet's port must resolve to a handler that can
-            // be re-entered from a LATER routing request's context. It resolves the
-            // already-loaded worker from the loader cache and fails loud on eviction
-            // — re-loading from code would boot an empty isolate whose server isn't
-            // listening. A poll racing the initial load simply errors (502) and is
-            // retried by the readiness gate.
-            routeStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, workerKey);
-            // Bind the route stub for the pid BEFORE boot so the shim's
-            // listen()→SUPERVISOR.registerPort resolves against it; also reserve the
-            // known port explicitly (belt-and-suspenders with the in-facet listen()).
-            this.portRegistry.bindFacetStub(pid, routeStub);
-            // Stage-carrying resident process through the fabric (serve declares
-            // `light` → local facet, exactly the pre-fabric boot): the module map
-            // is assembled in the stateless NimbusLoadedEntrypoint isolate on the
-            // Worker-Loader cache-miss path, and the held-open startProcess RPC
-            // owns the facet's SUPERVISOR binding for the process lifetime.
+            const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
+            // Stage-carrying resident process through the fabric: the module map is
+            // assembled in a stateless NimbusLoadedEntrypoint isolate on the
+            // Worker-Loader cache-miss path, and the held-open startProcess RPC owns
+            // the facet's SUPERVISOR binding for the process lifetime.
             handle = await this.processFabric.startResidentProcess({
                 processClass: stagedProcessClass(stageSpec.mode),
+                startContract: 'lifetime',
                 pid,
                 workerKey,
-                stage: stageSpec,
+                boot: { kind: 'staged', stage: stageSpec },
+                shouldRespawn: () => this.processes.get(pid)?.state === 'running',
+                onRespawn: (cause) => this._noteHostRespawn(pid, cause),
             });
-            this.trackProcessRpcResources(pid, [routeStub, handle], { releaseOnReportExit: false });
+            this._noteProcessPlacement(pid, handle);
+            // The handle's route target resolves the RUNNING facet wherever it is
+            // hosted; binding it for the pid before the port is announced is what
+            // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
+            this.portRegistry.bindFacetStub(pid, handle.routeTarget);
+            this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             resourcesTracked = true;
             this.ctx.waitUntil(handle.done
                 .catch((e) => {
@@ -2888,17 +2873,15 @@ export class FacetManager {
                 .finally(() => {
                 this.releaseProcessRpcResources(pid);
             }));
-            this.portRegistry.register(port, pid, routeStub);
+            this.portRegistry.register(port, pid);
             return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
         }
         catch (e) {
             this.portRegistry.unregisterByPid(pid);
             if (resourcesTracked)
                 this.releaseProcessRpcResources(pid);
-            else {
-                disposeRpcResource(routeStub);
+            else
                 handle?.kill();
-            }
             this.processes.exit(pid, 1);
             const reason = 'opencode serve boot failed: ' + errorMessage(e);
             this._w5RecordTermination(pid, 1, 'facet', reason);
@@ -2908,6 +2891,47 @@ export class FacetManager {
             catch { }
             throw e;
         }
+    }
+    /**
+     * NIMBUS_DEBUG live evidence (log-tail channel) of where a resident process
+     * was scheduled. The manager logs an opaque description; only the fabric
+     * knows what a placement is.
+     */
+    _noteProcessPlacement(pid, handle) {
+        if (!this.debugEnabled)
+            return;
+        try {
+            this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] process hosted on ${handle.describePlacement()}\n`);
+        }
+        catch { /* best-effort */ }
+    }
+    /**
+     * The one way this manager boots a resident process. Both spawn primitives
+     * declare `heavy` — they exist precisely to run something that stays
+     * resident, binds ports and grows memory — and everything after this call
+     * treats the returned handle identically regardless of where it landed.
+     */
+    async _startResidentProcess(pid, spec) {
+        const handle = await this.processFabric.startResidentProcess({
+            processClass: 'heavy',
+            pid,
+            workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
+            shouldRespawn: () => this.processes.get(pid)?.state === 'running',
+            onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+            ...spec,
+        });
+        this._noteProcessPlacement(pid, handle);
+        return handle;
+    }
+    /**
+     * A host death that the fabric recovered from is never silent: it lands in
+     * the process log the user reads with `logs <pid>`.
+     */
+    _noteHostRespawn(pid, cause) {
+        try {
+            this.processes.appendOutput(pid, 'stderr', `[nimbus] process host died (${errorMessage(cause)}); respawning on a fresh peer\n`);
+        }
+        catch { /* best-effort */ }
     }
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     _allocateLoopbackPort() {
@@ -3081,6 +3105,11 @@ export class FacetManager {
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
+     *
+     * A resident primitive: the process outlives the call, may bind a port, and
+     * accumulates memory for as long as it runs — so it declares `heavy` and the
+     * fabric gives it its own workerd process. Where it lands is the fabric's
+     * business; nothing below this line knows or asks.
      */
     async spawnNode(code, opts = {}) {
         this.processes.reap();
@@ -3136,43 +3165,28 @@ export class FacetManager {
             fetchNodeShimsCode(this.env),
         ]);
         const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
-        const ctxExports = getNimbusCtxExports();
-        const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: supervisor })
-            : undefined;
-        let worker;
-        let startStub;
-        let routeStub;
+        let handle;
         let resourcesTracked = false;
         try {
-            const workerKey = `nimbus-process:${supervisor.doId}:${supervisor.pid}`;
-            const workerConfig = {
-                compatibilityDate: CF_COMPAT_DATE,
-                compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-                mainModule: 'worker.js',
-                modules: { 'worker.js': workerCode, ...sqliteModules },
-                ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-            };
-            const routeConfig = {
-                compatibilityDate: CF_COMPAT_DATE,
-                compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-                mainModule: 'worker.js',
-                modules: { 'worker.js': workerCode, ...sqliteModules },
-            };
-            const loadedWorker = this.env.LOADER.get(workerKey, async () => workerConfig);
-            worker = loadedWorker;
-            startStub = loadedWorker.getEntrypoint();
-            routeStub = await createLoadedWorkerEntrypoint(ctxExports, routeConfig, supervisor, null, workerKey);
-            this.trackProcessRpcResources(entry.pid, [routeStub, startStub, worker, supervisorBinding], { releaseOnReportExit: !opts.attachedTty });
+            handle = await this._startResidentProcess(entry.pid, {
+                // The attached-TTY runner holds startProcess open for the process's
+                // life; the server/watch runner returns once it is up.
+                startContract: opts.attachedTty ? 'lifetime' : 'boot',
+                boot: {
+                    kind: 'code',
+                    code: {
+                        compatibilityDate: CF_COMPAT_DATE,
+                        compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+                        mainModule: 'worker.js',
+                        modules: { 'worker.js': workerCode, ...sqliteModules },
+                    },
+                },
+            });
+            this.trackProcessRpcResources(entry.pid, [handle], { releaseOnReportExit: !opts.attachedTty });
             resourcesTracked = true;
-            this.portRegistry.bindFacetStub(entry.pid, routeStub);
-            if (typeof startStub.startProcess !== 'function') {
-                throw new Error('Nimbus: long-running node entrypoint has no startProcess method');
-            }
-            const startPromise = startStub.startProcess();
+            this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
             if (opts.attachedTty) {
-                this.ctx.waitUntil(startPromise
+                this.ctx.waitUntil(handle.done
                     .catch((e) => {
                     // Teardown echo guard (same as the staged-artifact path): a pid
                     // that is already terminal rejects the held-open call as an
@@ -3200,19 +3214,19 @@ export class FacetManager {
                 }));
             }
             else {
-                await startPromise;
+                await handle.booted();
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
-                this.portRegistry.register(opts.port, entry.pid, routeStub);
+                this.portRegistry.register(opts.port, entry.pid);
             }
-            return { pid: entry.pid, facetStub: startStub };
+            return { pid: entry.pid };
         }
         catch (e) {
             this.portRegistry.unregisterByPid(entry.pid);
             if (resourcesTracked)
                 this.releaseProcessRpcResources(entry.pid);
             else
-                disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+                handle?.kill();
             this.processes.exit(entry.pid, 1);
             const reason = 'long-running node boot failed: ' + errorMessage(e);
             this._w5RecordTermination(entry.pid, 1, 'facet', reason);
@@ -3224,12 +3238,13 @@ export class FacetManager {
         }
     }
     /**
-     * Spawn a long-running dynamic Worker and register its routeable port.
+     * Spawn a long-running dynamic Worker, boot it, and return its boot payload.
      *
-     * This is the shared primitive for any runtime that exposes
-     * handleHttpRequest(Request): Node facets, Vite adapters, Python virtual
-     * sockets, and future WASI socket servers should use
-     * this path instead of each owning process-table and PortRegistry plumbing.
+     * The shared primitive for any runtime that serves over
+     * handleHttpRequest(Request) — the python and ruby socket servers today.
+     * Like every resident primitive it declares `heavy`: the runtime image it
+     * carries is exactly the memory that should not sit in the coordinator's
+     * workerd process.
      */
     async spawnWorker(workerCode, command, cwd, opts = {}) {
         this.processes.reap();
@@ -3245,48 +3260,39 @@ export class FacetManager {
             this.hooks.onSpawn?.(entry.pid, command, true);
         }
         catch { }
-        const ctxExports = getNimbusCtxExports();
-        const supervisor = { doId: this.ctx.id.toString(), pid: entry.pid };
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: supervisor })
-            : undefined;
-        const workerKey = `nimbus-process:${supervisor.doId}:${supervisor.pid}`;
-        const workerConfig = {
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
-            mainModule: 'worker.js',
-            modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
-            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-        };
-        const routeConfig = {
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
-            mainModule: 'worker.js',
-            modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
-        };
-        let worker;
-        let startStub;
-        let routeStub;
+        let handle;
         let resourcesTracked = false;
         try {
-            const loadedWorker = this.env.LOADER.get(workerKey, async () => workerConfig);
-            worker = loadedWorker;
-            startStub = loadedWorker.getEntrypoint();
-            routeStub = await createLoadedWorkerEntrypoint(ctxExports, routeConfig, supervisor, null, workerKey);
-            this.trackProcessRpcResources(entry.pid, [routeStub, startStub, worker, supervisorBinding]);
+            handle = await this._startResidentProcess(entry.pid, {
+                // These runners answer startProcess with a boot payload (listening
+                // port, or a completed non-server run) and stay resident after it.
+                startContract: 'boot',
+                startArgs: opts.startArgs,
+                boot: {
+                    kind: 'code',
+                    code: {
+                        compatibilityDate: CF_COMPAT_DATE,
+                        compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
+                        mainModule: 'worker.js',
+                        modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
+                        vfsWasmModules: opts.vfsWasmModules,
+                    },
+                },
+            });
+            this.trackProcessRpcResources(entry.pid, [handle]);
             resourcesTracked = true;
-            this.portRegistry.bindFacetStub(entry.pid, routeStub);
+            this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
             if (opts.port && opts.port > 0 && opts.port < 65536) {
-                this.portRegistry.register(opts.port, entry.pid, routeStub);
+                this.portRegistry.register(opts.port, entry.pid);
             }
-            return { pid: entry.pid, facetStub: startStub };
+            return { pid: entry.pid, boot: await handle.booted() };
         }
         catch (e) {
             this.portRegistry.unregisterByPid(entry.pid);
             if (resourcesTracked)
                 this.releaseProcessRpcResources(entry.pid);
             else
-                disposeRpcResources([routeStub, startStub, worker, supervisorBinding]);
+                handle?.kill();
             this.processes.exit(entry.pid, 1);
             const reason = 'long-running worker boot failed: ' + errorMessage(e);
             this._w5RecordTermination(entry.pid, 1, 'facet', reason);
@@ -3297,13 +3303,13 @@ export class FacetManager {
             throw e;
         }
     }
-    registerPort(pid, port, facetStub) {
+    registerPort(pid, port) {
         if (port > 0 && port < 65536) {
-            this.portRegistry.register(port, pid, facetStub);
+            this.portRegistry.register(port, pid);
         }
     }
-    waitForRouteablePorts(pid, facetStub, timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS) {
-        return this.portRegistry.waitForRouteablePortsByPid(pid, facetStub, timeoutMs);
+    waitForRouteablePorts(pid, timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS) {
+        return this.portRegistry.waitForRouteablePortsByPid(pid, timeoutMs);
     }
     finishProcess(pid, exitCode, reason = 'exited') {
         this.portRegistry.unregisterByPid(pid);

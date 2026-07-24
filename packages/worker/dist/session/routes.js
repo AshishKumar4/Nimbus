@@ -828,7 +828,8 @@ export async function handleFetch(self, request) {
             self.viteDevServer.start();
             try {
                 const apiViteStub = makeLongRunningPortStub(self.viteDevServer);
-                self.portRegistry.register(apiVitePort, apiViteEntry.pid, apiViteStub);
+                self.portRegistry.bindFacetStub(apiViteEntry.pid, apiViteStub);
+                self.portRegistry.register(apiVitePort, apiViteEntry.pid);
                 self._viteShimPid = apiViteEntry.pid;
                 self._viteShimPort = apiVitePort;
             }
@@ -978,7 +979,8 @@ export async function handleFetch(self, request) {
                     // across hibernation cycles.
                     try {
                         const rehydratedStub = makeLongRunningPortStub(self.viteDevServer);
-                        self.portRegistry.register(rehydratedPort, rehydratedEntry.pid, rehydratedStub);
+                        self.portRegistry.bindFacetStub(rehydratedEntry.pid, rehydratedStub);
+                        self.portRegistry.register(rehydratedPort, rehydratedEntry.pid);
                         self._viteShimPid = rehydratedEntry.pid;
                         self._viteShimPort = rehydratedPort;
                     }

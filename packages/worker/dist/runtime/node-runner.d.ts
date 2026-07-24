@@ -16,8 +16,8 @@
  *           awaits and returns the consolidated {exitCode, stdout,
  *           stderr}. The facet is deleted at completion.
  *
- *   long  — `facetMgr.spawnNode(code, opts)`. Fire-and-
- *           forget LOADER.load(). Returns {pid, facetStub} immediately;
+ *   long  — `facetMgr.spawnNode(code, opts)`. Boots a resident
+ *           process through the fabric. Returns {pid} immediately;
  *           the shell prints a `[started (long-running): pid=N
  *           cmd=...]` notice and returns. The facet outlives the
  *           supervisor RPC until killed or evicted.
