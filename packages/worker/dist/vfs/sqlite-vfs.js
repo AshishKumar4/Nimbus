@@ -3155,6 +3155,9 @@ export class SqliteVFSProvider {
     }
     readFile(sub) { return this.vfs.readFile(this.resolve(sub)); }
     readFileString(sub) { return this.vfs.readFileString(this.resolve(sub)); }
+    readRange(sub, offset, length) {
+        return this.vfs.readRange(this.resolve(sub), offset, length);
+    }
     writeFile(sub, content) {
         const fp = this.resolve(sub);
         const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
@@ -3162,6 +3165,14 @@ export class SqliteVFSProvider {
             this.vfs.mkdir(pp, { recursive: true });
         this.vfs.writeFile(fp, content);
     }
+    writeRange(sub, offset, bytes) {
+        const fp = this.resolve(sub);
+        const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
+        if (pp && !this.vfs.exists(pp))
+            this.vfs.mkdir(pp, { recursive: true });
+        this.vfs.writeRange(fp, offset, bytes);
+    }
+    truncate(sub, size) { this.vfs.truncate(this.resolve(sub), size); }
     exists(sub) { return this.vfs.exists(this.resolve(sub)); }
     access(sub, mode) { this.vfs.access(this.resolve(sub), mode); }
     stat(sub) { return this.vfs.stat(this.resolve(sub)); }

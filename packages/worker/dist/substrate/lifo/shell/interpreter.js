@@ -5,6 +5,7 @@ import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { PipeChannel } from './pipe.js';
 import { exitCodeForAbortSignal } from './signals.js';
 import { resolve } from '../utils/path.js';
+import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 // ─── Signal classes for control flow ───
 export class BreakSignal {
@@ -1013,22 +1014,22 @@ export class Interpreter {
             const target = await expandWord(redir.target, expandCtx);
             switch (redir.operator) {
                 case 'write':
-                    this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'write', terminalStdin));
+                    this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'write', fds, terminalStdin));
                     break;
                 case 'append':
-                    this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', terminalStdin));
+                    this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', fds, terminalStdin));
                     break;
                 case 'read':
-                    this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, terminalStdin));
+                    this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, fds, terminalStdin));
                     break;
                 case 'readWrite': {
                     const fd = redir.fd ?? 0;
-                    this.setInputFd(fds, fd, this.openInputTarget(io, target, terminalStdin));
-                    this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', terminalStdin));
+                    this.setInputFd(fds, fd, this.openInputTarget(io, target, fds, terminalStdin));
+                    this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', fds, terminalStdin));
                     break;
                 }
                 case 'writeAll': {
-                    const writer = this.openOutputTarget(io, target, 'write', terminalStdin);
+                    const writer = this.openOutputTarget(io, target, 'write', fds, terminalStdin);
                     this.setOutputFd(fds, 1, writer);
                     this.setOutputFd(fds, 2, writer);
                     break;
@@ -1100,7 +1101,7 @@ export class Interpreter {
         fds.inputFds.set(fd, resolved.stream);
         setMembership(fds.terminalInputFds, fd, resolved.terminal);
     }
-    openOutputTarget(io, target, mode, terminalStdin) {
+    openOutputTarget(io, target, mode, fds, terminalStdin) {
         if (target === '/dev/null')
             return { stream: this.createNullWriter(), terminal: false };
         if (target === '/dev/tty') {
@@ -1108,12 +1109,18 @@ export class Interpreter {
                 throw new Error('/dev/tty: no controlling terminal');
             return { stream: this.terminalSink(io), terminal: true };
         }
+        // /dev/stdout and /dev/stderr name the process's own descriptors, not
+        // files. Writing them into the device provider would silently discard.
+        if (target === '/dev/stdout')
+            return this.resolveOutputFd('1', fds.outputFds, fds.terminalOutputFds);
+        if (target === '/dev/stderr')
+            return this.resolveOutputFd('2', fds.outputFds, fds.terminalOutputFds);
         const targetPath = resolve(this.config.getCwd(), target);
         const vfs = io.vfs ?? this.config.vfs;
         try {
             if (mode === 'write') {
                 vfs.writeFile(targetPath, '');
-                return { stream: this.createFileWriter(vfs, targetPath), terminal: false };
+                return { stream: this.createFileWriter(vfs, targetPath, 0), terminal: false };
             }
             if (vfs.exists(targetPath)) {
                 const stat = vfs.stat(targetPath);
@@ -1121,17 +1128,16 @@ export class Interpreter {
                     throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
                 }
                 vfs.access(targetPath, 0o2);
+                return { stream: this.createFileWriter(vfs, targetPath, stat.size), terminal: false };
             }
-            else {
-                vfs.writeFile(targetPath, '');
-            }
-            return { stream: this.createFileAppender(vfs, targetPath), terminal: false };
+            vfs.writeFile(targetPath, '');
+            return { stream: this.createFileWriter(vfs, targetPath, 0), terminal: false };
         }
         catch (error) {
             throw new RedirectionOpenError(target, error);
         }
     }
-    openInputTarget(io, target, terminalStdin) {
+    openInputTarget(io, target, fds, terminalStdin) {
         if (target === '/dev/null')
             return { stream: this.createEmptyReader(), terminal: false };
         if (target === '/dev/tty') {
@@ -1139,6 +1145,8 @@ export class Interpreter {
                 throw new Error('/dev/tty: no controlling terminal');
             return { stream: terminalStdin, terminal: true };
         }
+        if (target === '/dev/stdin')
+            return this.resolveInputFd('0', fds.inputFds, fds.terminalInputFds);
         try {
             return {
                 stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
@@ -1149,18 +1157,26 @@ export class Interpreter {
             throw new RedirectionOpenError(target, error);
         }
     }
-    createFileWriter(vfs, path) {
-        return {
-            write: (text) => {
-                vfs.writeFile(path, text);
-            },
+    /**
+     * A file-backed descriptor: an open file plus a write offset.
+     *
+     * Each write lands at the offset and advances it, the way write(2) does.
+     * Restating the whole file per write — which is what this used to do —
+     * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
+     * line-at-a-time filter) persist only its final write and silently drop
+     * everything before it.
+     */
+    createFileWriter(vfs, path, startOffset) {
+        let offset = startOffset;
+        const advance = (bytes) => {
+            if (bytes.length === 0)
+                return;
+            vfs.writeRange(path, offset, bytes);
+            offset += bytes.length;
         };
-    }
-    createFileAppender(vfs, path) {
         return {
-            write: (text) => {
-                vfs.appendFile(path, text);
-            },
+            write: (text) => advance(encode(text)),
+            writeBytes: (bytes) => advance(bytes),
         };
     }
     createFileReader(vfs, path) {
@@ -1222,7 +1238,7 @@ export class Interpreter {
         return Number.parseInt(target, 10);
     }
     createNullWriter() {
-        return { write: () => { } };
+        return { write: () => { }, writeBytes: () => { } };
     }
     createEmptyReader() {
         return { read: async () => null, readAll: async () => '', readLine: async () => null };

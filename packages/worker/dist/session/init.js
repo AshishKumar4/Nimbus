@@ -28,7 +28,6 @@ import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenc
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { CRED_KERNEL, requireVfsCred } from '../runtime/os-contracts.js';
-import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -63,7 +62,6 @@ import { hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '../runtime/process-logs.js';
 import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, DEFAULT_PATH, } from '../constants.js';
-import { enc } from '../_shared/bytes.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
 import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
@@ -174,41 +172,6 @@ export function initSession(self, ws) {
         persistKernelMounts(self.ctx, mountPoints);
     }
     catch { /* fail-soft */ }
-    // shell compatibility (2026-05-11): mount a virtual /dev provider.
-    // Pre-fix `cmd > /dev/null` and `cmd 2>/dev/null` errored with
-    // `ENOENT: '/dev': no such file or directory`. This provider
-    // synthesizes /dev/null, /dev/zero, /dev/random, /dev/urandom,
-    // /dev/full, /dev/{stdin,stdout,stderr,tty}. Read/write surface
-    // matches MountProvider so the redirect machinery sees
-    // valid targets. Not persisted — recreated fresh each init.
-    try {
-        self.kernel.vfs.mount('/dev', new DevProvider());
-    }
-    catch (e) {
-        console.error('[init] /dev mount failed:', e?.message || e);
-    }
-    // ── Monkey-patch appendFile to go through mount provider ──
-    const vfs = self.kernel.vfs;
-    const originalAppendFile = vfs.appendFile.bind(vfs);
-    vfs.appendFile = (path, content) => {
-        const prov = vfs.getProvider?.(path);
-        if (prov) {
-            try {
-                const existing = prov.provider.readFile(prov.subpath);
-                const nc = typeof content === 'string' ? enc.encode(content) : content;
-                const combined = new Uint8Array(existing.length + nc.length);
-                combined.set(existing, 0);
-                combined.set(nc, existing.length);
-                prov.provider.writeFile(prov.subpath, combined);
-            }
-            catch {
-                prov.provider.writeFile(prov.subpath, content);
-            }
-        }
-        else {
-            originalAppendFile(path, content);
-        }
-    };
     // ── Create command registry ──
     const registry = createDefaultRegistry();
     const kernel = self.kernel;

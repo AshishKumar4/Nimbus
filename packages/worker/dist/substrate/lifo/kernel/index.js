@@ -77,9 +77,6 @@ export class Kernel {
         }
         // 2. Initialize standard dirs (idempotent)
         this.initFilesystem();
-        // 3. Register virtual providers
-        this.vfs.registerProvider('/proc', new ProcProvider());
-        this.vfs.registerProvider('/dev', new DevProvider());
         if (persist) {
             // 4. Hook persistence via watch events
             this.vfs.watch(() => {
@@ -88,6 +85,12 @@ export class Kernel {
         }
     }
     initFilesystem() {
+        // /proc and /dev are synthesised, never persisted. They belong to the
+        // filesystem tree itself, so they are registered here rather than in
+        // boot() — sessions that build the kernel by hand call initFilesystem()
+        // directly and must get the same namespace.
+        this.vfs.registerProvider('/proc', new ProcProvider());
+        this.vfs.registerProvider('/dev', new DevProvider());
         const dirs = [
             '/bin',
             '/etc',
