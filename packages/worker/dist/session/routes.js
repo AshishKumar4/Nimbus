@@ -747,7 +747,6 @@ export async function handleFetch(self, request) {
             ports: portStats,
             vite: viteStats,
             wrangler: wranglerStats,
-            previewHostSuffix: self.env?.NIMBUS_PREVIEW_HOST_SUFFIX ?? null,
         });
     }
     // ── File write API: bypasses shell for fast bulk seeding ──

@@ -28,6 +28,7 @@ import { getCtxExports } from '../session/ctx-exports.js';
 import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
+import { ESBUILD_NAME_GLOBAL_SHIM } from '../_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '../_shared/w7-frame.js';
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
@@ -723,14 +724,8 @@ export function assembleGitNetworkFacetSource() {
 }
 function generateGitNetworkFacetCode() {
     return `
-// esbuild keepNames (via wrangler) wraps createRetryingGitHttp's nested named
-// arrows as __name(fn, "fn"), so the .toString() embed below executes __name(...)
-// in this facet isolate, which has no such binding (mirrors python-runner.ts and
-// opentui-facet-backend.ts). Define it idempotently on globalThis BEFORE the embed
-// evaluates; a bare __name with no lexical binding resolves to this global.
-if (typeof globalThis.__name !== "function") {
-  globalThis.__name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });
-}
+// Must precede the .toString() embeds below, whose bodies call __name(...).
+${ESBUILD_NAME_GLOBAL_SHIM}
 
 // CHUNK_SIZE is provided by the W7 frame preamble (from constants.ts),
 // prepended to this facet worker — do not redeclare it here.
