@@ -26,6 +26,7 @@
  *   prefetch(cwd, entryCode) → Record<string, string>
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
 /**
@@ -192,29 +193,24 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     putCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean>;
     /**
-     * Look up a packument in the R2 cross-tenant cache. Returns
-     * { cached, events } where:
-     *   - cached: { json, ageMs, expired } on hit, null on miss/no-binding
-     *   - events: L2/L3 hit/miss tuples captured during this lookup
+     * Resolve one package's corgi packument: cross-tenant cache read, and
+     * on a miss the registry fetch plus the cache fill.
      *
-     * Caller MUST honour the `cached.expired` flag (only treat as a
-     * hot-path hit when expired === false). Events are recorded
-     * regardless of expiration — an expired L2 hit is still recorded as
-     * 'hit' at the L2 tier; the staleness is a separate axis.
+     * Fetch and fill live inside R2CacheClient, not in the resolve facet,
+     * and that is a security boundary rather than a layering preference.
+     * The packument bucket is shared by every tenant and a packument
+     * dictates the tarball URL and integrity digest for everyone who reads
+     * it, so a caller-supplied `put` would be a cross-tenant
+     * code-execution primitive for anyone holding a supervisor stub. No
+     * such RPC exists: the only bytes that reach `pc/<name>.json` are the
+     * ones registry.npmjs.org served for that exact name.
      */
-    getCachedPackument(name: string): Promise<{
-        cached: {
-            json: string;
-            ageMs: number;
-            expired: boolean;
-        } | null;
+    getPackument(name: string, options?: {
+        retries?: number;
+        timeoutMs?: number;
+    }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    /**
-     * Store a packument in the R2 cross-tenant cache with a TTL stamp.
-     * Best-effort. Returns true on success.
-     */
-    putCachedPackument(name: string, json: string): Promise<boolean>;
     /**
      * Admin: purge a single tarball from R2 by content address. Used in
      * incident response.

@@ -96,6 +96,10 @@ export const R2_CACHE_PREFIX = 'v2';
  *  No data migration; existing R2 packument entries' customMetadata
  *  .expiresAt stamps remain valid against either TTL. */
 export const PACKUMENT_TTL_MS = 60 * 60_000;
+/** npm registry origin. The only host the packument cache is filled from. */
+const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
+/** Jittered backoff between packument fetch attempts. */
+const PACKUMENT_BACKOFF_MS = [500, 1500, 4500];
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
  *  framing + the call's own arg bytes. Tarballs above this size skip
@@ -517,8 +521,95 @@ export class R2CacheClient {
         return { json, ageMs, expired };
     }
     /**
+     * Resolve a packument through the whole stack: cache read, and on a
+     * miss (or an expired entry) the registry fetch plus the cache fill.
+     *
+     * This is the ONLY thing that fills the cross-tenant packument cache,
+     * and that is a security property, not a layering preference. A
+     * packument dictates the tarball URL and integrity digest for every
+     * tenant that later reads it, so accepting caller-supplied bytes would
+     * hand anyone who can reach this client the ability to redirect other
+     * tenants' installs at an arbitrary URL with a matching digest — the
+     * content-addressed tarball store cannot catch that, because the
+     * attacker would be choosing the address too. Here, the only bytes
+     * that reach `pc/<name>.json` are the ones registry.npmjs.org served
+     * for that exact name, one line below the fetch that produced them.
+     *
+     * `status` is set when the registry answered 4xx (no such package);
+     * `failure` when every attempt failed. Both leave `json` null.
+     */
+    async readThroughPackument(name, options) {
+        const cached = await this.getPackument(name);
+        if (cached && !cached.expired && cached.json) {
+            return { json: cached.json, source: 'r2-cache' };
+        }
+        const safeName = name.startsWith('@')
+            ? '@' + encodeURIComponent(name.slice(1))
+            : encodeURIComponent(name);
+        const url = `${NPM_REGISTRY_ORIGIN}/${safeName}`;
+        const retries = Math.max(0, options?.retries ?? 3);
+        const timeoutMs = options?.timeoutMs ?? 15_000;
+        let lastErr;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const ctl = new AbortController();
+                const timer = setTimeout(() => ctl.abort(), timeoutMs);
+                let resp;
+                try {
+                    // Corgi (abbreviated) packument — up to ~17x smaller than the
+                    // full doc (vite: 38MB→2.2MB). Carries every field the resolver
+                    // reads (dependencies/peer/peerMeta/optional/dist/bin/os/cpu/
+                    // libc). It omits `exports`; that is read from the tarball's
+                    // package.json in the VFS at require time, where the resolver's
+                    // packument copy is `?? null` anyway.
+                    resp = await fetch(url, {
+                        headers: { Accept: 'application/vnd.npm.install-v1+json' },
+                        signal: ctl.signal,
+                    });
+                }
+                finally {
+                    clearTimeout(timer);
+                }
+                if (resp.ok) {
+                    const json = await resp.text();
+                    this._recordHit('L4', 'packument', json.length);
+                    // Best-effort fill, awaited so a follow-up read in the same
+                    // install sees it.
+                    await this.putPackument(name, json);
+                    return { json, source: 'network' };
+                }
+                if (resp.status >= 400 && resp.status < 500) {
+                    // No such package. Not retryable, and not an error.
+                    return { json: null, source: 'network', status: resp.status };
+                }
+                try {
+                    await resp.body?.cancel();
+                }
+                catch { /* best-effort */ }
+                lastErr = new Error(`HTTP ${resp.status}`);
+            }
+            catch (e) {
+                lastErr = e;
+            }
+            if (attempt < retries) {
+                const base = PACKUMENT_BACKOFF_MS[Math.min(attempt, PACKUMENT_BACKOFF_MS.length - 1)];
+                const jitter = Math.round(base + (Math.random() * 2 - 1) * base * 0.25);
+                await new Promise((rs) => setTimeout(rs, Math.max(0, jitter)));
+            }
+        }
+        return {
+            json: null,
+            source: 'network',
+            failure: lastErr instanceof Error ? lastErr.message : String(lastErr),
+        };
+    }
+    /**
      * Write a packument JSON to R2 with a TTL stamp in customMetadata.
      * No-op if the bucket binding is missing.
+     *
+     * Only `readThroughPackument` (and the debug bench seeder) call this:
+     * it is a storage primitive, never an RPC. See readThroughPackument
+     * for why that matters.
      *
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).

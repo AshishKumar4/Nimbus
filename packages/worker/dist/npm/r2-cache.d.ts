@@ -121,6 +121,17 @@ export declare const PACKUMENT_TTL_MS: number;
  *  the R2 path and go straight to the network — they're the long tail
  *  for which W7 (streams over RPC) will close the gap. */
 export declare const MAX_R2_TARBALL_BYTES: number;
+/** Outcome of `R2CacheClient.readThroughPackument`. */
+export interface PackumentReadThrough {
+    /** Corgi packument JSON text, or null when `status`/`failure` is set. */
+    json: string | null;
+    /** Which tier answered. */
+    source: 'r2-cache' | 'network';
+    /** Registry 4xx — no such package. */
+    status?: number;
+    /** Every fetch attempt failed; this is the last error's message. */
+    failure?: string;
+}
 export interface CachedPackument {
     /** Raw packument JSON text. JSON.parse at call-site (caller already
      *  pays the parse cost on the network path; mirroring keeps the
@@ -297,8 +308,34 @@ export declare class R2CacheClient {
      */
     getPackument(name: string): Promise<CachedPackument | null>;
     /**
+     * Resolve a packument through the whole stack: cache read, and on a
+     * miss (or an expired entry) the registry fetch plus the cache fill.
+     *
+     * This is the ONLY thing that fills the cross-tenant packument cache,
+     * and that is a security property, not a layering preference. A
+     * packument dictates the tarball URL and integrity digest for every
+     * tenant that later reads it, so accepting caller-supplied bytes would
+     * hand anyone who can reach this client the ability to redirect other
+     * tenants' installs at an arbitrary URL with a matching digest — the
+     * content-addressed tarball store cannot catch that, because the
+     * attacker would be choosing the address too. Here, the only bytes
+     * that reach `pc/<name>.json` are the ones registry.npmjs.org served
+     * for that exact name, one line below the fetch that produced them.
+     *
+     * `status` is set when the registry answered 4xx (no such package);
+     * `failure` when every attempt failed. Both leave `json` null.
+     */
+    readThroughPackument(name: string, options?: {
+        retries?: number;
+        timeoutMs?: number;
+    }): Promise<PackumentReadThrough>;
+    /**
      * Write a packument JSON to R2 with a TTL stamp in customMetadata.
      * No-op if the bucket binding is missing.
+     *
+     * Only `readThroughPackument` (and the debug bench seeder) call this:
+     * it is a storage primitive, never an RPC. See readThroughPackument
+     * for why that matters.
      *
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
