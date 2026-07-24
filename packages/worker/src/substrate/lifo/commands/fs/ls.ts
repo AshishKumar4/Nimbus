@@ -2,7 +2,7 @@ import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { BOLD, BLUE, RESET } from '../../utils/colors.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { VFSError, fileTypeChar } from '../../kernel/vfs/index.js';
 
 const spec = {
   long: { type: 'boolean' as const, short: 'l' },
@@ -11,7 +11,7 @@ const spec = {
 };
 
 function formatMode(mode: number, isDir: boolean): string {
-  const d = isDir ? 'd' : '-';
+  const d = fileTypeChar(mode, isDir ? 'directory' : 'file');
   const perms = [
     (mode & 0o400) ? 'r' : '-',
     (mode & 0o200) ? 'w' : '-',
