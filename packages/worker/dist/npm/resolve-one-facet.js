@@ -270,8 +270,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
         messages.push(`[resolve-one] ${effName}: env.SUPERVISOR.getPackument missing`);
         return out(null, 0, 'network', {
-            type: 'fetch-exhausted',
-            message: 'env.SUPERVISOR.getPackument missing',
+            type: 'unresolved',
+            reason: 'env.SUPERVISOR.getPackument missing',
         });
     }
     {
@@ -305,12 +305,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         }
         if (result.json === null) {
             if (result.status !== undefined) {
-                // 4xx — package doesn't exist. Treat as null.
+                // 4xx — the registry has no such package.
                 messages.push(`[resolve-one] ${effName}: HTTP ${result.status}`);
-                return out(null, 0, 'network');
+                return out(null, 0, 'network', {
+                    type: 'unresolved',
+                    reason: `registry returned HTTP ${result.status} for ${effName}`,
+                });
             }
             messages.push(`[resolve-one] ${effName}: fetch exhausted: ${result.failure}`);
-            return out(null, 0, 'network', { type: 'fetch-exhausted', message: String(result.failure) });
+            return out(null, 0, 'network', {
+                type: 'unresolved',
+                reason: `registry fetch failed for ${effName}: ${result.failure}`,
+            });
         }
         packumentText = result.json;
         packumentSource = result.source === 'r2-cache' ? 'r2-cache' : 'network';
@@ -322,10 +328,16 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
     catch (e) {
         messages.push(`[resolve-one] ${effName}: malformed packument: ${e?.message ?? e}`);
-        return out(null, bytes, packumentSource);
+        return out(null, bytes, packumentSource, {
+            type: 'unresolved',
+            reason: `malformed packument for ${effName}: ${e?.message ?? e}`,
+        });
     }
     if (!data || !data.versions) {
-        return out(null, bytes, packumentSource);
+        return out(null, bytes, packumentSource, {
+            type: 'unresolved',
+            reason: `packument for ${effName} carries no versions`,
+        });
     }
     // 6. Pick version.
     let version = null;
@@ -341,7 +353,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
     if (!version || !data.versions[version]) {
         messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
-        return out(null, bytes, packumentSource);
+        return out(null, bytes, packumentSource, {
+            type: 'unresolved',
+            reason: `no published version of ${effName} satisfies ${request.range}`,
+        });
     }
     // 7. Materialise ResolvedPackage.
     const vData = data.versions[version];
