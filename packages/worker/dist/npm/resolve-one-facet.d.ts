@@ -146,8 +146,21 @@ export interface ResolveOneResult {
         cacheKind: 'packument';
     }>;
     /**
-     * Registry reject. The supervisor inspects this and either propagates it
-     * or silent-skips best-effort optional-peer paths.
+     * Why this task produced no package.
+     *
+     * `w6-reject` is a registry-policy verdict: the supervisor either
+     * propagates it as a hard install failure or silent-skips it on a
+     * best-effort optional-peer path.
+     *
+     * `unresolved` is a resolution FAILURE — the registry said no, the
+     * fetch never succeeded, or the packument carried no usable version.
+     * It exists so the supervisor can tell a failure apart from a
+     * deliberate policy skip: without it both arrive as `pkg: null` and a
+     * required dependency (plus its whole subtree) disappears from the
+     * install while the command still reports success.
+     *
+     * A null `pkg` with no `error` means a deliberate skip, and those
+     * always carry `packumentSource: 'skipped'`.
      */
     error?: {
         type: 'w6-reject';
@@ -155,8 +168,8 @@ export interface ResolveOneResult {
         reason: string;
         suggest?: string;
     } | {
-        type: 'fetch-exhausted';
-        message: string;
+        type: 'unresolved';
+        reason: string;
     };
 }
 /**
