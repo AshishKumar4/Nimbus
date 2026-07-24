@@ -112,9 +112,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     const ownerWaves = new Map();
     const ownersWithCompletionMarker = new Set();
     const completionMarkers = new Map();
-    // Mutex: only one flush runs at a time. Concurrent installs awaiting
-    // flush() will line up behind this promise and resolve in arrival
-    // order — the W7 frame is opaque to ordering so this is safe.
     // A wave RPC that workerd shed rather than ran is re-sendable: the
     // coordinator's input gate rejected it because its queue was too deep or
     // the object was reset mid-request, so none of the wave's writes landed.
@@ -130,6 +127,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             || m.includes('starting up durable object storage')
             || (m.includes('storage operation') && m.includes('reset'));
     };
+    // Mutex: only one flush runs at a time. Concurrent installs awaiting
+    // flush() will line up behind this promise and resolve in arrival
+    // order — the W7 frame is opaque to ordering so this is safe.
     let sharedFlushInFlight = null;
     let sharedMutationInFlight = Promise.resolve();
     const withSharedMutation = async (action) => {
