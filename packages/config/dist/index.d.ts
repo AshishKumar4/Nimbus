@@ -41,6 +41,12 @@ export interface NimbusSandboxProfile {
 }
 export interface NimbusConfig {
     endpoint?: string;
+    /**
+     * Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling `<port>--<sid>.<suffix>`
+     * preview origins. Only remote clients need to state it — `Nimbus.fromEnv`
+     * reads it straight off the bindings.
+     */
+    previewHostSuffix?: string;
     runtimeCache?: 'shared' | 'byoa' | {
         mode: 'shared' | 'byoa';
         bucket?: string;

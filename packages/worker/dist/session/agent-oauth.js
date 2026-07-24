@@ -121,6 +121,20 @@ export function clearNimbusAgentOAuthCookie(basePathOrRequest) {
         maxAge: 0,
     });
 }
+/**
+ * The Cloudflare OAuth client configuration for this deployment. Read here
+ * rather than at each call site so the login dance and the credential-refresh
+ * path can never disagree about which client they are talking to.
+ */
+export function readNimbusAgentOAuthConfig(env, origin) {
+    return {
+        oauthClientId: envString(env, 'NIMBUS_CF_OAUTH_CLIENT_ID'),
+        oauthClientSecret: envString(env, 'NIMBUS_CF_OAUTH_CLIENT_SECRET'),
+        oauthScopes: envString(env, 'NIMBUS_CF_OAUTH_SCOPES').split(/\s+/).filter(Boolean),
+        redirectUri: envString(env, 'NIMBUS_CF_OAUTH_REDIRECT_URI')
+            || (origin ? `${origin}/api/nimbus/oauth/callback` : ''),
+    };
+}
 export function readNimbusAgentCookieSecret(env) {
     const secret = envString(env, 'NIMBUS_AGENT_COOKIE_SECRET') || envString(env, 'JWT_SECRET');
     if (!secret || secret.length < 32) {
