@@ -127,6 +127,21 @@ assert.equal(afterEviction.status, 502, 'an evicted facet surfaces an error to t
 assert.match((await afterEviction.json()).error, /no longer loaded/, 'the error names the real cause');
 assert.equal(world.boots.length, 1, 'eviction booted NO replacement — the ghost never happens');
 
+// ── 4b. $PORT is a hint to the program, not a claim on the port ────────────
+// The session exports PORT=3000 by default so Express-style scripts find it.
+// A long-running spawn must NOT read that as "this process owns 3000", or the
+// second server started in a session takes over the first one's port.
+{
+  const { runFresh } = await import('../../packages/worker/src/runtime/node-runner.ts');
+  const owner = portRegistry.get(3000)?.pid;
+  await runFresh(fm, 'http.createServer(...).listen(4200)', {
+    argv: [], env: { PORT: '3000' }, cwd: '/home/user', filename: '/home/user/c.js',
+    command: 'node c.js', forceLongRunning: true,
+  });
+  assert.equal(portRegistry.get(3000)?.pid, owner,
+    'a spawn that merely inherited $PORT did not seize port 3000');
+}
+
 // ── 4. a spawn never claims a port it was not asked for ────────────────────
 // `runFresh` used to reserve a guessed default (3000) for every long-running
 // node invocation, so the second server started in a session took over the
