@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // seed-refresh/new/welcome-mentions-runtimes — `~/welcome.md` MUST
-// document clang/python/ruby + `nimbus install` so new users can
+// document clang/python/ruby/bash + `nimbus install` so new users can
 // discover the multi-runtime story without leaving the terminal.
 //
 // Pre-fix the welcome only mentioned node/npm/esbuild/vite/wrangler/df —
@@ -31,11 +31,22 @@ a.check('welcome.md mentions `nimbus install python`', /nimbus install python/.t
   out.slice(-400));
 a.check('welcome.md mentions `nimbus install ruby`', /nimbus install ruby/.test(out),
   out.slice(-400));
+a.check('welcome.md mentions `nimbus install bash`', /nimbus install bash/.test(out),
+  out.slice(-400));
 a.check('welcome.md shows the clang hello.c demo line', /clang hello\.c -o hello/.test(out),
   out.slice(-400));
 a.check('welcome.md mentions REPLs (Pyodide / ruby.wasm)', /Pyodide/.test(out) && /ruby\.wasm/.test(out),
   out.slice(-400));
 a.check('welcome.md mentions `nimbus install --list` discovery flag', /nimbus install --list/.test(out),
+  out.slice(-400));
+a.check('welcome.md documents interactive bash + default-shell switching',
+  /bash -i/.test(out) && /chsh -s bash/.test(out) && /chsh -s lifo/.test(out),
+  out.slice(-400));
+a.check('welcome.md documents Unix permissions + coreutils',
+  /chmod/.test(out) && /umask/.test(out) && /rwx permission bits are enforced/.test(out) && /coreutils/.test(out),
+  out.slice(-400));
+a.check('welcome.md documents attached agent CLIs',
+  /pi\.dev/.test(out) && /opencode/.test(out) && /long-running attached processes/.test(out),
   out.slice(-400));
 
 // Regression — pre-existing entries preserved.

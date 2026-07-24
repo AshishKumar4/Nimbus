@@ -135,8 +135,8 @@ export function renderMotdBanner(version) {
     const INNER_WIDTH = 48; // columns between the two ║
     const lines = [
         `Nimbus v${version} — Cloud Dev Environment`,
-        'node · npm · vite · clang · python · ruby',
-        '10 GB VFS · REPLs · nimbus install · HMR',
+        'node·npm·vite·clang·python·ruby·bash',
+        '10GB VFS · Unix perms · coreutils · REPLs',
     ];
     const padLine = (content) => {
         // 2-space left margin inside the box, then content, then trailing
@@ -176,6 +176,7 @@ Nimbus installs language runtimes on demand:
 nimbus install clang       # then: clang hello.c -o hello && ./hello
 nimbus install python      # then: python -c 'print("hi")'
 nimbus install ruby        # then: ruby -e 'puts "hi"'
+nimbus install bash        # GNU bash 5.2 + coreutils
 \`\`\`
 
 \`python3\`, \`ruby3\`, and \`wasm-ld\` are command aliases. If an
@@ -188,6 +189,24 @@ installable command is missing, Nimbus prints the matching install command.
 | Python | \`python\` or \`python3\` - Pyodide CPython 3.13 |
 | Ruby | \`ruby\` or \`ruby3\` - ruby.wasm 3.3 |
 | Node | \`node\` - workerd Node compatibility runtime |
+
+## Shell
+
+| Task | Command |
+| --- | --- |
+| Start interactive GNU bash | \`bash -i\` |
+| Make bash the default terminal shell | \`chsh -s bash\` |
+| Restore the lifo shell | \`chsh -s lifo\` |
+| Run one command | \`bash -c '<cmd>'\` |
+| Run a shell script | \`bash script.sh\` |
+
+\`nimbus install bash\` installs GNU bash 5.2 and coreutils including
+\`ls\`, \`cat\`, \`grep\`, \`sed\`, and \`awk\`. \`chmod\`, \`umask\`, and
+rwx permission bits are enforced.
+
+## Agent CLIs
+
+\`pi\` from pi.dev and \`opencode\` run as long-running attached processes.
 
 ## System Commands
 

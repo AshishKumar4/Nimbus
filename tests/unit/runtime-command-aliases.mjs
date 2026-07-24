@@ -36,6 +36,11 @@ import { NIMBUS_RUNTIME_ABIS } from '../../packages/worker/src/runtime/os-contra
       assert.deepEqual(ep.args, [], `extra command '${ep.binName}' must not inject args`);
     }
   }
+  assert.deepEqual(
+    RUNTIME_EXTRA_ENTRYPOINTS.bash?.map((entrypoint) => entrypoint.binName),
+    ['/bin/bash', '/usr/bin/bash'],
+    'the real bash runtime must own every absolute bash alias',
+  );
 }
 
 // ── 2. Catalog-driven alias resolution against a fake catalog ──────────

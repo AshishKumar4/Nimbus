@@ -9,6 +9,26 @@ import { complete } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
+import { readDefaultShell } from './default-shell.js';
+function shellPromptParts(env, cwd) {
+    const home = env['HOME'] ?? '/home/user';
+    let displayPath = cwd;
+    if (cwd === home) {
+        displayPath = '~';
+    }
+    else if (cwd.startsWith(home + '/')) {
+        displayPath = '~' + cwd.slice(home.length);
+    }
+    return {
+        displayPath,
+        user: env['USER'] ?? 'user',
+        host: env['HOSTNAME'] ?? 'lifo',
+    };
+}
+export function formatShellPrompt(env, cwd) {
+    const { displayPath, user, host } = shellPromptParts(env, cwd);
+    return `${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `;
+}
 export class Shell {
     terminal;
     vfs;
@@ -278,8 +298,14 @@ export class Shell {
         this.env['$'] = String(pid);
         this.terminal.onData((data) => this.handleInput(data));
         // Source rc files on startup (like bash/zsh)
-        this.sourceRcFiles().then(() => {
-            this.printPrompt();
+        this.sourceRcFiles().then(async () => {
+            const home = this.env['HOME'] ?? '/home/user';
+            if (readDefaultShell(this.vfs, home) === 'bash') {
+                await this.executeLine('bash -i');
+            }
+            else {
+                this.printPrompt();
+            }
         });
     }
     async sourceRcFiles() {
@@ -308,17 +334,7 @@ export class Shell {
         // Collect and reap zombie processes from ProcessRegistry
         this.processRegistry.collectZombies();
         // Zombies are already logged by JobTable above, so no need to log again
-        const home = this.env['HOME'] ?? '/home/user';
-        let displayPath = this.cwd;
-        if (this.cwd === home) {
-            displayPath = '~';
-        }
-        else if (this.cwd.startsWith(home + '/')) {
-            displayPath = '~' + this.cwd.slice(home.length);
-        }
-        const user = this.env['USER'] ?? 'user';
-        const host = this.env['HOSTNAME'] ?? 'lifo';
-        this.terminal.write(`${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
+        this.terminal.write(formatShellPrompt(this.env, this.cwd));
     }
     handleInput(data) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly
@@ -650,14 +666,7 @@ export class Shell {
         this.redrawLine();
     }
     getPromptWidth() {
-        const home = this.env['HOME'] ?? '/home/user';
-        let displayPath = this.cwd;
-        if (this.cwd === home)
-            displayPath = '~';
-        else if (this.cwd.startsWith(home + '/'))
-            displayPath = '~' + this.cwd.slice(home.length);
-        const user = this.env['USER'] ?? 'user';
-        const host = this.env['HOSTNAME'] ?? 'lifo';
+        const { displayPath, user, host } = shellPromptParts(this.env, this.cwd);
         // "user@host:path$ " — count visible chars only (no ANSI codes)
         return user.length + 1 + host.length + 1 + displayPath.length + 2;
     }
@@ -673,17 +682,7 @@ export class Shell {
         // Clear from here to end of screen
         this.terminal.write('\x1b[J');
         // Rewrite prompt + buffer
-        const home = this.env['HOME'] ?? '/home/user';
-        let displayPath = this.cwd;
-        if (this.cwd === home) {
-            displayPath = '~';
-        }
-        else if (this.cwd.startsWith(home + '/')) {
-            displayPath = '~' + this.cwd.slice(home.length);
-        }
-        const user = this.env['USER'] ?? 'user';
-        const host = this.env['HOSTNAME'] ?? 'lifo';
-        this.terminal.write(`${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
+        this.terminal.write(formatShellPrompt(this.env, this.cwd));
         this.terminal.write(this.lineBuffer);
         // After writing all content, figure out which row the cursor is on.
         // If content exactly fills N rows, the terminal auto-wraps cursor to the next row.

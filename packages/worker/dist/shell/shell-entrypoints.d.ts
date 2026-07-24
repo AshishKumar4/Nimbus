@@ -47,6 +47,7 @@ export type ShellEntrypointExecutor = {
     }>;
 };
 type RegistryLike = {
+    has(name: string): boolean;
     register(name: string, handler: (ctx: ShellCommandContext) => Promise<number>): void;
 };
 export declare function registerShellEntrypointCommands(registry: RegistryLike, shell: ShellEntrypointExecutor, vfs: CredentialedVfs): void;
