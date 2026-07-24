@@ -163,8 +163,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         const wave = (async () => {
             for (let attempt = 0;; attempt++) {
                 try {
+                    // Each attempt encodes its OWN bytes. The encoder hands chunk
+                    // buffers straight to a byte stream and workerd transfers them on
+                    // enqueue, so `chunksNow` would be detached after the first send —
+                    // a retry re-encoding it fails validation ("chunk 0 must contain N
+                    // bytes") instead of re-sending the wave.
                     // @ts-ignore — preamble symbol.
-                    const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
+                    const stream = encodeWriteBatchStream({
+                        inodes: inodesNow,
+                        chunks: chunksNow.map((c) => ({ ...c, data: c.data.slice() })),
+                    });
                     // A typed non-ok result is the storage layer's verdict on these
                     // exact bytes, so it is returned as-is: only a shed RPC retries.
                     return await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), (result) => {

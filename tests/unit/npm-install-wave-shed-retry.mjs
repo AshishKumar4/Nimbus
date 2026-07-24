@@ -28,7 +28,24 @@ import {
 
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
-globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
+// Workerd hands each enqueued chunk buffer to the RPC byte stream by
+// transfer, so the caller's arrays are detached once the stream has been
+// read. Model that here: the encoder records the payload it was given and
+// `detachLastPayload()` (called by the fake RPC after it drains the
+// stream) detaches exactly what a real send would have taken. Without it
+// this test would pass on code that cannot actually re-send a wave.
+let lastEncodedPayload = null;
+globalThis.encodeWriteBatchStream = (payload) => {
+  lastEncodedPayload = payload;
+  return encodeWriteBatchStream(payload);
+};
+function detachLastPayload() {
+  for (const chunk of lastEncodedPayload?.chunks ?? []) {
+    const buffer = chunk.data.buffer;
+    if (buffer.byteLength === 0) continue;
+    structuredClone(buffer, { transfer: [buffer] });
+  }
+}
 globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 globalThis.DecompressionStream = class DecompressionStream {
   readable;
@@ -142,11 +159,11 @@ function okResult(decoded) {
   let attempts = 0;
   const result = await runBatch(async (stream) => {
     attempts++;
-    if (attempts === 1) {
-      await stream.cancel();
-      throw new Error('Durable Object is overloaded.');
-    }
-    return okResult(await decodeWave(stream));
+    // Drain first: a shed happens after workerd has taken the bytes.
+    const decoded = await decodeWave(stream);
+    detachLastPayload();
+    if (attempts === 1) throw new Error('Durable Object is overloaded.');
+    return okResult(decoded);
   });
 
   assert.ok(attempts >= 2, `the shed wave must be re-sent (attempts=${attempts})`);
@@ -165,11 +182,10 @@ function okResult(decoded) {
   let attempts = 0;
   const result = await runBatch(async (stream) => {
     attempts++;
-    if (attempts === 1) {
-      await stream.cancel();
-      throw new Error('Durable Object reset because its code was updated.');
-    }
-    return okResult(await decodeWave(stream));
+    const decoded = await decodeWave(stream);
+    detachLastPayload();
+    if (attempts === 1) throw new Error('Durable Object reset because its code was updated.');
+    return okResult(decoded);
   });
 
   assert.ok(result.perPackage.every((pkg) => !pkg.errorText), 'a reset wave is re-sent too');
@@ -181,7 +197,8 @@ function okResult(decoded) {
   let attempts = 0;
   const result = await runBatch(async (stream) => {
     attempts++;
-    await stream.cancel();
+    await decodeWave(stream);
+    detachLastPayload();
     throw new Error('Durable Object is overloaded.');
   });
 
@@ -203,6 +220,7 @@ function okResult(decoded) {
   const result = await runBatch(async (stream) => {
     attempts++;
     const decoded = await decodeWave(stream);
+    detachLastPayload();
     return {
       ok: false,
       committedGroupSequence: 1,
