@@ -13,15 +13,26 @@
  * canonical embed shape for `<NimbusTerminal>` and browsers don't let
  * cross-origin iframes carry custom request headers on the initial
  * navigation request. The router's attach exchange consumes the query
- * token on the first session-shell GET: it sets a sid-pinned attach
- * cookie via `setNimbusTokenCookie` and redirects to the clean
- * `/s/<id>/` URL, so every subsequent HTML/WS/API request inside the
- * iframe authenticates via the cookie alone.
+ * token, sets a sid-pinned attach cookie via `setNimbusTokenCookie`, and
+ * redirects to the clean URL, so every subsequent HTML/WS/API request
+ * authenticates via the cookie alone. It runs at two entry points:
+ *   - `/s/<id>/` — the session shell, on the shell path only.
+ *   - `<port>--<sid>.<suffix>/<any path>` — a port preview, where the
+ *     previewed app owns the path space so the requested path is kept.
  */
 import { type NimbusAuthEnv } from './token.js';
 import { type VerifiedNimbusToken } from './types.js';
-/** Cookie name used for in-iframe token persistence. */
-export declare const NIMBUS_TOKEN_COOKIE = "nimbus_token";
+/**
+ * Cookie name used for in-iframe token persistence.
+ *
+ * The `__Host-` prefix is load-bearing, not decoration: it makes the browser
+ * refuse any `Set-Cookie` for this name that carries a `Domain` or a `Path`
+ * other than `/`. Port previews serve untrusted user code on a subdomain of
+ * this registrable domain, and without the prefix that code could set
+ * `nimbus_token=<its own>; Domain=<apex>; Path=/s/` and shadow the real
+ * cookie for the whole app (first match wins in the Cookie header).
+ */
+export declare const NIMBUS_TOKEN_COOKIE = "__Host-nimbus_token";
 /** Query parameter name. */
 export declare const NIMBUS_TOKEN_QUERY = "nimbus_token";
 /**
@@ -75,13 +86,13 @@ export declare function requireSessionPin(verified: VerifiedNimbusToken, attempt
  *     page. Set + read happen under the same top-level site, so a
  *     partitioned jar is exactly right. Requires Secure, so omitted on
  *     plain-HTTP local dev.
- *   - Path: `/s` by default; preview hosts use `/` because the app lives at
- *     the host root.
+ *   - Path=/ and no Domain: mandated by the `__Host-` prefix, which is what
+ *     keeps a preview subdomain from shadowing this cookie. One shape for
+ *     both entry points — the preview host serves the app at its root, and
+ *     the session shell's own paths are all under the same host anyway.
  *   - Max-Age: matches the token's remaining lifetime.
  */
-export declare function setNimbusTokenCookie(token: string, expSec: number, opts?: {
-    path?: string;
-}): string;
+export declare function setNimbusTokenCookie(token: string, expSec: number): string;
 /**
  * Map a NimbusAuthError to a `Response` suitable for the embedder's
  * `fetch` handler to return. JSON body with `{ error, code }`.

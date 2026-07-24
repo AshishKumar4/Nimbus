@@ -424,20 +424,27 @@ Required behavior:
 - Remote operation schemas are centralized or mechanically checked so SDK and
   server cannot drift.
 - Enforced-auth embeds keep authorization across HTML, WebSocket, and API
-  requests through the attach exchange: a `?nimbus_token=` on the session shell
-  URL (embedder iframe token or `/new` bootstrap token) is exchanged for a
-  freshly minted sid-pinned `session:attach` cookie (`HttpOnly`,
-  `SameSite=None`, `Secure` + `Partitioned`) and the browser is redirected to
-  the clean `/s/<id>/` URL. `POST /new` with a verified Bearer token redirects
-  to an attach URL carrying a short-lived (90 s), single-use,
-  `session:bootstrap`-scoped token whose `jti` is consumed set-if-absent in the
-  session DO's storage; replays return 401. Long-lived tokens travel only in
-  `Authorization` headers, never in URLs. Implemented in
+  requests through the attach exchange: a `?nimbus_token=` in the URL is
+  exchanged for a freshly minted sid-pinned `session:attach` cookie
+  (`__Host-nimbus_token`; `HttpOnly`, `SameSite=None`, `Secure` +
+  `Partitioned`) and the browser is redirected to the same URL without the
+  token. Two entry points accept it: the session shell `/s/<id>/`, and a port
+  preview `<port>--<sid>.<suffix>` at whatever path was requested (the
+  previewed app owns its path space). `POST /new` and
+  `GET /s/<id>/api/preview-url?port=<n>` each mint a short-lived (90 s),
+  single-use token — `session:bootstrap` and `session:preview` respectively —
+  whose `jti` is consumed set-if-absent in the session DO's storage; replays
+  return 401, and neither scope authenticates anything but its own exchange.
+  Long-lived tokens travel only in `Authorization` headers, never in URLs.
+  The `__Host-` prefix is required, not cosmetic: previews serve untrusted
+  code on a sibling subdomain, and without it that code could set a shadowing
+  cookie for the parent domain. Implemented in
   `packages/worker/src/router/index.ts` and `packages/worker/src/auth/`;
-  covered by `tests/behavioral/auth/new/router-session-scope-and-pin.mjs`.
-  Known limit: the exchange stores one sid-pinned `nimbus_token` cookie per
-  browser partition, so two concurrently embedded sessions on one page evict
-  each other's cookie; concurrent multi-session embeds in enforce mode need a
+  covered by `tests/behavioral/auth/new/router-session-scope-and-pin.mjs` and
+  `tests/unit/preview-host-router.mjs`.
+  Known limit: the exchange stores one sid-pinned cookie per browser
+  partition, so two concurrently embedded sessions on one page evict each
+  other's cookie; concurrent multi-session embeds in enforce mode need a
   per-session cookie design (follow-up).
 - The public shell emits `nimbus:ready` and `nimbus:error` messages that the
   React package actually receives. The shell emits both, and

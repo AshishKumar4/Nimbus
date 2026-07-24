@@ -34,6 +34,8 @@
  *   - Single source of truth: this module owns the `/s/<id>/` mapping.
  */
 
+import { NIMBUS_TOKEN_QUERY } from '../auth/middleware.js';
+
 /** Prefix for all session-scoped routes. Centralized for future refactors. */
 export const SESSION_ROUTE_PREFIX = '/s';
 
@@ -140,11 +142,13 @@ export function forwardToSession(
   const headers = new Headers(request.headers);
   headers.set(BASE_PATH_HEADER, route.basePath);
   headers.set(TENANT_HEADER, opts.tenantSegment);
-  // Defense in depth: strip any user-supplied `nimbus_token` query param
-  // BEFORE forwarding so it doesn't end up in inner-DO logs / referrers.
-  // The DO has its own header-based auth model post-router (none today,
-  // but this future-proofs the surface).
-  innerUrl.searchParams.delete('nimbus_token');
+  // Load-bearing, not hygiene: the query is a first-class auth channel
+  // (`extractBearerToken` reads it), so anything forwarded with the token
+  // still attached would carry a live credential into inner-DO logs, the
+  // referrers of whatever the session serves, and — on the port-preview
+  // path — into the user's own untrusted server. Strip it here, once, on
+  // the single edge every session request crosses.
+  innerUrl.searchParams.delete(NIMBUS_TOKEN_QUERY);
 
   // Build the forwarded Request. Preserve body + method. For GETs/HEADs,
   // body is undefined (Request constructor rejects bodies there anyway).

@@ -751,7 +751,6 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         ports: portStats,
         vite: viteStats,
         wrangler: wranglerStats,
-        previewHostSuffix: self.env?.NIMBUS_PREVIEW_HOST_SUFFIX ?? null,
       });
     }
 
