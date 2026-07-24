@@ -517,17 +517,11 @@
       if (!value || value.length < min || value.length > max) return false;
       return Array.from(value).every((ch) => ch >= 'a' && ch <= 'z');
     }
-    function isPreviewHostSafeSid(value) {
-      return typeof value === 'string' &&
-        value.length <= 56 &&
-        /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(value);
-    }
     const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
                    '//' + location.host + SESSION_PREFIX + '/ws';
     const STATS_URL = SESSION_PREFIX + '/api/stats';
     const VITE_URL = SESSION_PREFIX + '/preview/';
     const WORKER_URL = SESSION_PREFIX + '/worker/';
-    let previewHostSuffix = null;
     // The iframe starts pointing at /preview/ which handles its own
     // "no dev server running" placeholder. When the user spawns a
     // wrangler dev (via `wrangler dev` in the terminal), stats polling
@@ -1811,9 +1805,12 @@
       return kind === 'worker' ? WORKER_URL : VITE_URL;
     }
 
+    // `/api/preview-url` is the single authority on whether this deployment
+    // serves hostname-per-port previews and whether this session qualifies;
+    // it answers `{url:null}` when it doesn't, and we fall back to the path
+    // form. Mirroring its preconditions here would only let them drift.
     async function portPreviewUrl(port) {
       const pathUrl = SESSION_PREFIX + '/port/' + Number(port) + '/';
-      if (!previewHostSuffix || !isPreviewHostSafeSid(SESSION_ID)) return pathUrl;
       try {
         const response = await fetch(
           SESSION_PREFIX + '/api/preview-url?port=' + Number(port),
@@ -2267,7 +2264,6 @@
         // wrangler deliberately (vs. vite which auto-starts on certain
         // workflows). If neither is running, we still point at the
         // vite /preview/ URL so its placeholder page renders.
-        previewHostSuffix = s.previewHostSuffix || null;
         let kind = 'none';
         if (s.wrangler?.running) kind = 'worker';
         else if (s.vite?.running) kind = 'vite';
