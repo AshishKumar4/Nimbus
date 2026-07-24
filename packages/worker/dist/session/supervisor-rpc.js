@@ -317,24 +317,25 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return new R2CacheClient(tar, pkm);
     }
     /**
-     * Look up a tarball in the R2 cross-tenant cache. Returns
+     * Look up a tarball in the R2 cross-tenant cache by its content
+     * address (the resolved npm integrity string). Returns
      * { bytes, events } where:
      *   - bytes: Uint8Array on hit, null on miss/oversize/no-binding
      *   - events: L2/L3 hit/miss tuples captured during this lookup
      *
-     * cache-obs-2: return-shape change from `Uint8Array | null` to
-     * `{ bytes, events }`. Facets propagate events into their result
-     * for installer.ts to fold into the DO singleton (mirroring the
-     * recordR2RaceCounters pattern). Without this enrichment the
-     * L2/L3 distinction is supervisor-side knowledge only.
+     * Facets propagate events into their result for installer.ts to fold
+     * into the DO singleton (mirroring the recordR2RaceCounters pattern).
+     * Without this enrichment the L2/L3 distinction is supervisor-side
+     * knowledge only. The events list is structured-clone-safe (plain
+     * objects + strings + numbers).
      *
-     * The caller is responsible for integrity-verifying bytes before
-     * unpacking — same posture as the network-fetch path. The events
-     * list is structured-clone-safe (plain objects + strings + numbers).
+     * Returned bytes have already been re-hashed against `integrity` by
+     * R2CacheClient — the cross-tenant bucket is untrusted storage, so
+     * verification happens at the storage boundary and nowhere else.
      */
-    async getCachedTarball(name, version) {
+    async getCachedTarball(integrity) {
         const r2 = this._r2();
-        const bytes = await r2.getTarball(name, version);
+        const bytes = await r2.getTarball(integrity);
         const events = _drainCacheEvents(r2);
         if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
             return { bytes, events };
@@ -342,54 +343,35 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return { bytes: null, events };
     }
     /**
-     * Store a tarball in the R2 cross-tenant cache. Best-effort: on R2
-     * write failure, returns false but the install pipeline continues
-     * unaffected. Caller passes the bytes already verified against the
-     * resolver's integrity hash.
+     * Store a tarball in the R2 cross-tenant cache under its content
+     * address. Best-effort: on R2 write failure, returns false but the
+     * install pipeline continues unaffected. Bytes that do not hash to
+     * `integrity` are rejected by R2CacheClient.
      */
-    async putCachedTarball(name, version, bytes) {
+    async putCachedTarball(integrity, bytes) {
         // L4 hits are captured FACET-SIDE in cache-obs-2 — the facet did
         // the registry fetch, so it can push the L4 event directly into
         // its own cacheStatEvents list before calling putCachedTarball.
         // This RPC remains a one-way write (returns bool); the L4 event
         // does NOT flow through this return path.
         const r2 = this._r2();
-        return r2.putTarball(name, version, bytes);
+        return r2.putTarball(integrity, bytes);
     }
-    /**
-     * Look up a packument in the R2 cross-tenant cache. Returns
-     * { json, ageMs, expired } or null on miss / missing binding.
-     *
-     * Caller MUST honour the `expired` flag: only treat as a hot-path
-     * hit when expired === false. Stale data is returned only for
-     * stale-while-error fallback semantics.
-     */
     /**
      * Look up a packument in the R2 cross-tenant cache. Returns
      * { cached, events } where:
      *   - cached: { json, ageMs, expired } on hit, null on miss/no-binding
      *   - events: L2/L3 hit/miss tuples captured during this lookup
      *
-     * cache-obs-2: return-shape change from
-     *   `{json, ageMs, expired} | null` to
-     *   `{ cached: {json,ageMs,expired} | null, events: ... }`.
-     *
-     * Caller MUST honour the `cached.expired` flag the same as v1
-     * (only treat as hot-path hit when expired === false). Events are
-     * recorded regardless of expiration — an expired L2 hit is still
-     * recorded as 'hit' at the L2 tier; the staleness is a separate axis.
+     * Caller MUST honour the `cached.expired` flag (only treat as a
+     * hot-path hit when expired === false). Events are recorded
+     * regardless of expiration — an expired L2 hit is still recorded as
+     * 'hit' at the L2 tier; the staleness is a separate axis.
      */
     async getCachedPackument(name) {
         const r2 = this._r2();
         const cached = await r2.getPackument(name);
-        const events = _drainCacheEvents(r2);
-        if (cached && !cached.expired) {
-            return { cached, events };
-        }
-        if (cached && cached.expired) {
-            return { cached, events };
-        }
-        return { cached: null, events };
+        return { cached, events: _drainCacheEvents(r2) };
     }
     /**
      * Store a packument in the R2 cross-tenant cache with a TTL stamp.
@@ -402,11 +384,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return r2.putPackument(name, json);
     }
     /**
-     * Admin: purge a single tarball from R2. Used in incident response.
+     * Admin: purge a single tarball from R2 by content address. Used in
+     * incident response.
      */
-    async purgeCachedTarball(name, version) {
+    async purgeCachedTarball(integrity) {
         const r2 = this._r2();
-        return r2.deleteTarball(name, version);
+        return r2.deleteTarball(integrity);
     }
     /**
      * Admin: purge a single packument from R2.
