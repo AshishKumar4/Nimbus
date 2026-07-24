@@ -137,17 +137,22 @@ export function requireSessionPin(
  *     page. Set + read happen under the same top-level site, so a
  *     partitioned jar is exactly right. Requires Secure, so omitted on
  *     plain-HTTP local dev.
- *   - Path: scoped to `/s/` so non-session paths don't see the cookie.
+ *   - Path: `/s` by default; preview hosts use `/` because the app lives at
+ *     the host root.
  *   - Max-Age: matches the token's remaining lifetime.
  */
-export function setNimbusTokenCookie(token: string, expSec: number): string {
+export function setNimbusTokenCookie(
+  token: string,
+  expSec: number,
+  opts: { path?: string } = {},
+): string {
   const nowSec = Math.floor(Date.now() / 1000);
   const maxAge = Math.max(0, expSec - nowSec);
   // Always Secure: browsers reject SameSite=None cookies without it,
   // and Secure cookies are accepted on http://localhost dev origins.
   return [
     `${NIMBUS_TOKEN_COOKIE}=${encodeURIComponent(token)}`,
-    'Path=/s',
+    `Path=${opts.path ?? '/s'}`,
     `Max-Age=${maxAge}`,
     'SameSite=None',
     'HttpOnly',

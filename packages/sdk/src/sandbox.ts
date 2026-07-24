@@ -2,6 +2,10 @@
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
 
+import {
+  buildPreviewHost,
+  isPreviewHostSafeSid,
+} from '@nimbus-sh/worker/preview-host';
 import { z } from 'zod/v4';
 
 export type RuntimeSpec = string;
@@ -31,6 +35,7 @@ export interface NimbusSandboxProfile {
   };
   preview?: {
     baseUrl?: string;
+    hostSuffix?: string;
     pathStyle?: boolean;
   };
 }
@@ -854,6 +859,10 @@ export class NimbusSandbox {
   }
 
   private portUrl(port: number): string | undefined {
+    const hostSuffix = this.profile.preview?.hostSuffix;
+    if (hostSuffix && isPreviewHostSafeSid(this.id)) {
+      return `https://${buildPreviewHost(this.id, port, hostSuffix)}/`;
+    }
     const explicit = this.profile.preview?.baseUrl;
     if (explicit) {
       const base = trimTrailingSlashes(explicit.replace('{sessionId}', encodeURIComponent(this.id)));

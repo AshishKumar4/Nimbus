@@ -517,11 +517,17 @@
       if (!value || value.length < min || value.length > max) return false;
       return Array.from(value).every((ch) => ch >= 'a' && ch <= 'z');
     }
+    function isPreviewHostSafeSid(value) {
+      return typeof value === 'string' &&
+        value.length <= 56 &&
+        /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(value);
+    }
     const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
                    '//' + location.host + SESSION_PREFIX + '/ws';
     const STATS_URL = SESSION_PREFIX + '/api/stats';
     const VITE_URL = SESSION_PREFIX + '/preview/';
     const WORKER_URL = SESSION_PREFIX + '/worker/';
+    let previewHostSuffix = null;
     // The iframe starts pointing at /preview/ which handles its own
     // "no dev server running" placeholder. When the user spawns a
     // wrangler dev (via `wrangler dev` in the terminal), stats polling
@@ -1805,8 +1811,19 @@
       return kind === 'worker' ? WORKER_URL : VITE_URL;
     }
 
-    function portPreviewUrl(port) {
-      return SESSION_PREFIX + '/port/' + Number(port) + '/';
+    async function portPreviewUrl(port) {
+      const pathUrl = SESSION_PREFIX + '/port/' + Number(port) + '/';
+      if (!previewHostSuffix || !isPreviewHostSafeSid(SESSION_ID)) return pathUrl;
+      try {
+        const response = await fetch(
+          SESSION_PREFIX + '/api/preview-url?port=' + Number(port),
+        );
+        if (!response.ok) return pathUrl;
+        const result = await response.json();
+        return typeof result?.url === 'string' && result.url ? result.url : pathUrl;
+      } catch {
+        return pathUrl;
+      }
     }
 
     function absolutePreviewUrl(url) {
@@ -1923,7 +1940,7 @@
       return ports;
     }
 
-    function syncPortPreviewTabs(portStats, canonicalPort, canonicalTabId) {
+    async function syncPortPreviewTabs(portStats, canonicalPort, canonicalTabId) {
       const ports = normalizePortStats(portStats);
       const hiddenPort = Number.isInteger(canonicalPort) && canonicalPort > 0 ? canonicalPort : null;
       const visiblePorts = hiddenPort == null
@@ -1953,7 +1970,7 @@
           pid: entry.pid,
           label: ':' + entry.port,
           title: 'Port ' + entry.port,
-          url: portPreviewUrl(entry.port),
+          url: await portPreviewUrl(entry.port),
           running: true,
         }, { focusNew: !existed });
       }
@@ -2021,7 +2038,7 @@
       return Number.isInteger(n) && n > 0 ? n : null;
     }
 
-    function applyPreviewTarget(kind, stats) {
+    async function applyPreviewTarget(kind, stats) {
       const previousKind = previewBackendKind;
       previewBackendKind = kind === 'worker' || kind === 'vite' ? kind : 'none';
       const appKind = previewBackendKind === 'worker' ? 'worker' : 'vite';
@@ -2029,7 +2046,11 @@
       const shouldFocusApp = previousKind !== previewBackendKind && previewBackendKind !== 'none';
       if (shouldFocusApp) activatePreviewTab(appTab.id);
       if (!activePreviewTabId) activatePreviewTab(appTab.id);
-      syncPortPreviewTabs(stats?.ports, previewBackendPort(previewBackendKind, stats), appTab.id);
+      await syncPortPreviewTabs(
+        stats?.ports,
+        previewBackendPort(previewBackendKind, stats),
+        appTab.id,
+      );
     }
 
     function reloadPreview() {
@@ -2048,7 +2069,7 @@
       }
     }
 
-    applyPreviewTarget('none', null);
+    applyPreviewTarget('none', null).catch(() => {});
 
     // ── Pane resize manager ──
     //
@@ -2234,7 +2255,7 @@
       return b+' B';
     }
     function refreshStats() {
-      fetch(STATS_URL).then(r => r.json()).then(s => {
+      fetch(STATS_URL).then(r => r.json()).then(async s => {
         document.getElementById('stFiles').textContent = s.files + ' files, ' + s.directories + ' dirs';
         document.getElementById('stSize').textContent = fmtB(s.usedBytes);
         if (s.cache) {
@@ -2246,10 +2267,11 @@
         // wrangler deliberately (vs. vite which auto-starts on certain
         // workflows). If neither is running, we still point at the
         // vite /preview/ URL so its placeholder page renders.
+        previewHostSuffix = s.previewHostSuffix || null;
         let kind = 'none';
         if (s.wrangler?.running) kind = 'worker';
         else if (s.vite?.running) kind = 'vite';
-        applyPreviewTarget(kind, s);
+        await applyPreviewTarget(kind, s);
 
         if (s.wrangler?.running) {
           viteStatus.textContent = 'worker running (' + (s.wrangler.name || '?') + ')';

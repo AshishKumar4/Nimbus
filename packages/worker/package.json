@@ -43,6 +43,11 @@
       "types": "./dist/_shared/session-id.d.ts",
       "import": "./dist/_shared/session-id.js"
     },
+    "./preview-host": {
+      "workspace": "./src/_shared/preview-host.ts",
+      "types": "./dist/_shared/preview-host.d.ts",
+      "import": "./dist/_shared/preview-host.js"
+    },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
     "./public/*": "./public/*",
     "./package.json": "./package.json"
