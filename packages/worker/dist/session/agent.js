@@ -7,11 +7,11 @@
  * connected user can spend their own Workers AI quota instead of the
  * Nimbus deployment owner quota.
  */
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateText, isLoopFinished, jsonSchema, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '../_shared/crypto.js';
-import { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CLOUDFLARE_API, readNimbusCookie, readNimbusAgentCookieSecret, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
+import { clearNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, isNimbusCloudflareAccountId, isNimbusTenantSegment, NIMBUS_CF_OAUTH_AUTH_URL, readNimbusCookie, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
+import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, } from './agent-contract.js';
@@ -22,8 +22,6 @@ const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_STORED_MESSAGES = 80;
 const MAX_TOOL_RESULT_CHARS = 8000;
-const DEFAULT_MODEL = '@cf/zai-org/glm-5.2';
-const DEFAULT_GATEWAY_ID = 'default';
 const STREAMING_TEXT_FLUSH_MS = 500;
 const STREAMING_TEXT_FLUSH_BYTES = 1024;
 const activeAssistantMessages = new WeakMap();
@@ -47,6 +45,9 @@ export async function handleAgentRequest(self, request, url) {
         return oauthCallback(self, request, url);
     }
     if (path === '/api/agent/oauth/logout' && request.method === 'POST') {
+        await clearSessionAiCredential(self);
+        // The browser copy goes too: it is the transport that would otherwise
+        // re-seed the session on the very next request.
         const headers = new Headers();
         appendCookie(headers, clearAuthCookie(request));
         appendCookie(headers, clearStateCookie());
@@ -82,23 +83,12 @@ export function parseAgentOAuthStateParam(state) {
     return payload;
 }
 async function agentStatus(self, request, url) {
-    const config = readConfig(self, url);
-    const authResult = await loadFreshAuth(self, request);
-    const auth = authResult.auth;
-    let user = null;
-    let accounts = [];
-    if (auth?.accessToken) {
-        [user, accounts] = await Promise.all([
-            fetchNimbusCloudflareUserInfo(auth.accessToken).catch((e) => ({ error: String(e?.message || e) })),
-            fetchNimbusCloudflareAccounts(auth.accessToken).catch(() => []),
-        ]);
-    }
+    const config = readSessionAiConfig(self.env);
+    const oauthConfig = readNimbusAgentOAuthConfig(self.env, url.origin);
+    const connection = await describeSessionAiConnection(self);
     const ownerTokenPresent = !!(config.ownerAccountId && config.ownerToken);
     const ownerConfigured = !config.requireUserOAuth && ownerTokenPresent;
-    const oauthConfigured = !!config.oauthClientId;
-    const connected = !!auth?.accessToken || ownerConfigured;
-    const headers = new Headers();
-    applyAuthCookieResult(headers, authResult);
+    const oauthConfigured = !!oauthConfig.oauthClientId;
     const payload = {
         ok: true,
         configured: oauthConfigured || ownerConfigured,
@@ -106,20 +96,20 @@ async function agentStatus(self, request, url) {
         gatewayId: config.gatewayId,
         oauth: {
             configured: oauthConfigured,
-            connected: !!auth?.accessToken,
-            clientId: oauthConfigured ? config.oauthClientId : null,
-            scopes: config.oauthScopes,
-            user,
-            accounts,
-            accountId: auth?.accountId ?? null,
-            expiresAt: auth?.expiresAt ?? null,
+            connected: connection.connected,
+            clientId: oauthConfigured ? oauthConfig.oauthClientId : null,
+            scopes: oauthConfig.oauthScopes,
+            user: connection.user,
+            accounts: connection.accounts,
+            accountId: connection.accountId,
+            expiresAt: connection.expiresAt,
         },
         ownerToken: {
             configured: ownerConfigured,
             accountId: ownerConfigured ? config.ownerAccountId : null,
             disabledByUserOAuthRequired: config.requireUserOAuth && ownerTokenPresent,
         },
-        connected,
+        connected: connection.connected || ownerConfigured,
         capabilities: [
             'chat',
             'exec',
@@ -129,10 +119,10 @@ async function agentStatus(self, request, url) {
             'ports',
         ],
     };
-    return json(payload, 200, headers);
+    return json(payload);
 }
 async function oauthStart(self, request, url) {
-    const config = readConfig(self, url);
+    const config = readNimbusAgentOAuthConfig(self.env, url.origin);
     if (!config.oauthClientId) {
         return json({
             error: 'Cloudflare OAuth is not configured',
@@ -204,20 +194,17 @@ async function oauthCallback(self, request, url) {
         if (!accessToken)
             throw new Error('Cloudflare did not return an access token');
         const accounts = await fetchNimbusCloudflareAccounts(accessToken).catch(() => []);
-        const auth = {
-            mode: 'oauth',
+        // Straight into the session, not into a cookie: this callback is already
+        // being served by the session itself, and the session is what needs the
+        // credential in order to answer in-session inference.
+        await storeSessionAiCredential(self, {
             accessToken,
             refreshToken: token.refresh_token ? String(token.refresh_token) : undefined,
-            tokenType: token.token_type ? String(token.token_type) : 'Bearer',
-            expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
-            connectedAt: Date.now(),
             accountId: accounts[0]?.id ?? null,
-            sessionId: payload.sessionId,
-            tenantSegment: payload.tenantSegment,
-        };
+            expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
+        });
         const headers = new Headers();
         appendCookie(headers, clearStateCookie());
-        appendCookie(headers, await sealAuthCookie(self, request, auth));
         return oauthResultHtml(true, 'Cloudflare connected.', payload.sessionId, headers);
     }
     catch (e) {
@@ -231,19 +218,12 @@ async function selectAccount(self, request) {
     const accountId = String(body?.accountId || '');
     if (!isNimbusCloudflareAccountId(accountId))
         return json({ error: 'invalid account id' }, 400);
-    const authResult = await loadFreshAuth(self, request);
-    const auth = authResult.auth;
-    if (!auth)
-        return json({ error: 'not connected' }, 409);
-    const accounts = await fetchNimbusCloudflareAccounts(auth.accessToken).catch(() => []);
-    if (!accounts.some((a) => a.id === accountId)) {
+    if (!await sessionAiAccountIsAvailable(self, accountId)) {
         return json({ error: 'account is not available for this OAuth token' }, 400);
     }
-    const next = { ...auth, accountId };
-    const headers = new Headers();
-    applyAuthCookieResult(headers, authResult);
-    appendCookie(headers, await sealAuthCookie(self, request, next));
-    return json({ ok: true, accountId }, 200, headers);
+    if (!await setSessionAiAccount(self, accountId))
+        return json({ error: 'not connected' }, 409);
+    return json({ ok: true, accountId });
 }
 async function agentChat(self, request, url) {
     const body = await readJson(request);
@@ -251,16 +231,13 @@ async function agentChat(self, request, url) {
     const text = String(body?.message || '').trim();
     if (!retry && !text)
         return json({ error: 'message is required' }, 400);
-    const credentialResult = await loadAiCredentials(self, request, url);
-    if (!credentialResult.credentials) {
-        const headers = new Headers();
-        applyAuthCookieResult(headers, credentialResult.authResult);
+    const resolution = await resolveSessionAiCredential(self);
+    if (!resolution.ok) {
         return json({
-            error: 'Connect Cloudflare or configure an owner API token before chatting.',
+            error: resolution.reason.message,
             code: 'E_AGENT_AI_NOT_CONFIGURED',
-        }, 409, headers);
+        }, 409);
     }
-    const config = readConfig(self, url);
     const messages = await loadMessages(self);
     let userMessage;
     if (retry) {
@@ -281,42 +258,36 @@ async function agentChat(self, request, url) {
         await saveMessages(self, messages);
     }
     if (body?.stream === false) {
-        return agentChatJson(self, config, credentialResult, messages);
+        return agentChatJson(self, messages);
     }
-    return agentChatStream(self, config, credentialResult, messages, userMessage);
+    return agentChatStream(self, messages, userMessage);
 }
-async function agentChatJson(self, config, credentialResult, messages) {
+async function agentChatJson(self, messages) {
     try {
-        const result = await runAiSdkTurn(self, config, credentialResult.credentials, messages);
+        const result = await runAiSdkTurn(self, messages);
         const assistantMessage = makeMessage('assistant', result.text || 'Done.');
         assistantMessage.parts = result.parts;
         assistantMessage.status = 'complete';
         const nextMessages = [...messages, assistantMessage];
         await saveMessages(self, nextMessages);
-        const headers = new Headers();
-        applyAuthCookieResult(headers, credentialResult.authResult);
         return json({
             ok: true,
             message: assistantMessage,
             messages: trimMessagesForClient(nextMessages),
-        }, 200, headers);
+        });
     }
     catch (e) {
-        const headers = new Headers();
-        applyAuthCookieResult(headers, credentialResult.authResult);
         return json({
             error: e?.message || String(e),
             code: 'E_AGENT_TURN_FAILED',
             messages: trimMessagesForClient(messages),
-        }, 502, headers);
+        }, 502);
     }
 }
-function agentChatStream(self, config, credentialResult, messages, userMessage) {
+function agentChatStream(self, messages, userMessage) {
     const headers = new Headers();
     headers.set('Cache-Control', 'no-store');
     headers.set('Content-Type', 'application/x-ndjson; charset=utf-8');
-    applyAuthCookieResult(headers, credentialResult.authResult);
-    const credentials = credentialResult.credentials;
     // Client cancel (Stop button, closed tab) aborts the model turn and
     // persists the partial assistant message so history stays truthful.
     const abort = new AbortController();
@@ -410,7 +381,7 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
             emit({ type: 'assistant-start', messageId: assistantMessageId, createdAt: assistantCreatedAt });
             try {
                 const result = streamText({
-                    model: createCloudflareModel(config, credentials),
+                    model: createSessionAiModel(self),
                     system: SYSTEM_PROMPT,
                     messages: buildModelMessages(messages),
                     tools: createAiSdkTools(self),
@@ -558,10 +529,9 @@ function agentChatStream(self, config, credentialResult, messages, userMessage) 
     });
     return new Response(stream, { status: 200, headers });
 }
-async function runAiSdkTurn(self, config, credentials, messages) {
-    const model = createCloudflareModel(config, credentials);
+async function runAiSdkTurn(self, messages) {
     const result = await generateText({
-        model,
+        model: createSessionAiModel(self),
         system: SYSTEM_PROMPT,
         messages: buildModelMessages(messages),
         tools: createAiSdkTools(self),
@@ -573,18 +543,6 @@ async function runAiSdkTurn(self, config, credentials, messages) {
         text: textFromParts(parts) || String(result.text || '').trim(),
         parts,
     };
-}
-function createCloudflareModel(config, credentials) {
-    const headers = {};
-    if (config.gatewayId)
-        headers['cf-aig-gateway-id'] = config.gatewayId;
-    const provider = createOpenAICompatible({
-        name: 'nimbusCloudflare',
-        apiKey: credentials.accessToken,
-        baseURL: `${NIMBUS_CLOUDFLARE_API}/accounts/${encodeURIComponent(credentials.accountId)}/ai/v1`,
-        headers,
-    });
-    return provider.chatModel(config.model);
 }
 function buildModelMessages(messages) {
     const modelMessages = [];
@@ -920,77 +878,14 @@ async function runTool(self, name, args) {
         return { error: e instanceof Error ? e.message : String(e) };
     }
 }
-async function loadAiCredentials(self, request, url) {
-    const config = readConfig(self, url);
-    const authResult = await loadFreshAuth(self, request);
-    const auth = authResult.auth;
-    if (auth?.accessToken && auth.accountId) {
-        return {
-            authResult,
-            credentials: {
-                mode: 'oauth',
-                accessToken: auth.accessToken,
-                accountId: auth.accountId,
-            },
-        };
-    }
-    if (!config.requireUserOAuth && config.ownerToken && config.ownerAccountId) {
-        return {
-            authResult,
-            credentials: {
-                mode: 'owner-token',
-                accessToken: config.ownerToken,
-                accountId: config.ownerAccountId,
-            },
-        };
-    }
-    return { credentials: null, authResult };
-}
-async function loadFreshAuth(self, request) {
-    const auth = await loadAuth(self, request);
-    if (!auth)
-        return { auth: null };
-    if (!auth.expiresAt || auth.expiresAt > Date.now() + 60_000)
-        return { auth };
-    if (!auth.refreshToken) {
-        return { auth: null, clearCookie: clearAuthCookie(request) };
-    }
-    try {
-        const token = await refreshToken(self, auth.refreshToken);
-        const next = {
-            ...auth,
-            accessToken: String(token.access_token || auth.accessToken),
-            refreshToken: token.refresh_token ? String(token.refresh_token) : auth.refreshToken,
-            tokenType: token.token_type ? String(token.token_type) : auth.tokenType,
-            expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : auth.expiresAt,
-        };
-        return {
-            auth: next,
-            setCookie: await sealAuthCookie(self, request, next),
-        };
-    }
-    catch {
-        return { auth: null, clearCookie: clearAuthCookie(request) };
-    }
-}
 async function exchangeCode(self, code, codeVerifier, redirectUri) {
-    const config = readConfig(self, new URL(redirectUri));
+    const config = readNimbusAgentOAuthConfig(self.env, new URL(redirectUri).origin);
     return requestNimbusCloudflareOAuthToken(config, {
         grant_type: 'authorization_code',
         code,
         redirect_uri: redirectUri,
         code_verifier: codeVerifier,
     });
-}
-async function refreshToken(self, refreshTokenValue) {
-    const config = readConfig(self, null);
-    return requestNimbusCloudflareOAuthToken(config, {
-        grant_type: 'refresh_token',
-        refresh_token: refreshTokenValue,
-    });
-}
-async function loadAuth(self, request) {
-    return loadNimbusAgentOAuthFromRequest(request, cookieSecret(self));
 }
 async function loadStateCookie(self, request) {
     const value = readNimbusCookie(request, STATE_COOKIE);
@@ -1011,22 +906,11 @@ async function sealStateCookie(self, state) {
         maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
     });
 }
-async function sealAuthCookie(self, request, auth) {
-    return createNimbusAgentOAuthCookie(auth, cookieSecret(self), request);
-}
 function clearStateCookie() {
     return serializeNimbusCookie(STATE_COOKIE, '', { path: '/', maxAge: 0 });
 }
 function clearAuthCookie(request) {
     return clearNimbusAgentOAuthCookie(request);
-}
-function applyAuthCookieResult(headers, result) {
-    if (!result)
-        return;
-    if (result.clearCookie)
-        appendCookie(headers, result.clearCookie);
-    if (result.setCookie)
-        appendCookie(headers, result.setCookie);
 }
 function appendCookie(headers, cookie) {
     headers.append('Set-Cookie', cookie);
@@ -1076,49 +960,6 @@ function makeMessage(role, content, name) {
         createdAt: Date.now(),
         ...(name ? { name } : {}),
     };
-}
-function readConfig(self, url) {
-    const env = self.env;
-    const origin = url?.origin || '';
-    const redirectUri = envString(env, 'NIMBUS_CF_OAUTH_REDIRECT_URI')
-        || (origin ? `${origin}/api/nimbus/oauth/callback` : '');
-    return {
-        oauthClientId: envString(env, 'NIMBUS_CF_OAUTH_CLIENT_ID'),
-        oauthClientSecret: envString(env, 'NIMBUS_CF_OAUTH_CLIENT_SECRET'),
-        oauthScopes: splitWords(envString(env, 'NIMBUS_CF_OAUTH_SCOPES')),
-        redirectUri,
-        ownerAccountId: envString(env, 'NIMBUS_CLOUDFLARE_ACCOUNT_ID'),
-        ownerToken: envString(env, 'NIMBUS_CLOUDFLARE_API_TOKEN'),
-        requireUserOAuth: envBool(env, 'NIMBUS_AGENT_REQUIRE_USER_OAUTH'),
-        model: envString(env, 'NIMBUS_AGENT_MODEL') || DEFAULT_MODEL,
-        gatewayId: envString(env, 'NIMBUS_AGENT_GATEWAY_ID') || DEFAULT_GATEWAY_ID,
-    };
-}
-function envString(env, key) {
-    const value = env?.[key];
-    return typeof value === 'string' ? value.trim() : '';
-}
-function envBool(env, key) {
-    const value = envString(env, key).toLowerCase();
-    return value === '1' || value === 'true' || value === 'yes';
-}
-function splitWords(value) {
-    const out = [];
-    let cur = '';
-    for (let i = 0; i < value.length; i++) {
-        const ch = value[i];
-        if (ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r') {
-            if (cur)
-                out.push(cur);
-            cur = '';
-        }
-        else {
-            cur += ch;
-        }
-    }
-    if (cur)
-        out.push(cur);
-    return out;
 }
 function stringProp(description) {
     return { type: 'string', description };

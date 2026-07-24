@@ -1,0 +1,29 @@
+/**
+ * session/loopback.ts — where an in-session request to 127.0.0.1:<port> goes.
+ *
+ * Both loopback entrypoints route through here: `kernel.routeLoopback`
+ * (session/init.ts — the shell's curl and the in-DO node client) and
+ * `_rpcRouteLoopback` (session/rpc.ts — a facet's patched global fetch). They
+ * were the same lookup written twice; now the policy lives once.
+ *
+ * The policy is: the supervisor's own services answer first, then the port
+ * registry. Today the only supervisor-served port is the AI gateway, and it is
+ * deliberately NOT a PortRegistry entry — the registry also backs the external
+ * `/port/<n>`, `/preview/?port=N` and the shareable `<port>--<sid>` preview
+ * hostname, so registering it would publish a credential-backed inference
+ * endpoint to the internet. Serving it here keeps it reachable only from
+ * inside the session.
+ */
+import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
+import { handleSessionAiRequest } from './ai.js';
+/**
+ * Resolve one loopback request. Returns null when nothing is listening on the
+ * port, which callers render as a connection refusal.
+ */
+export async function routeSessionLoopback(self, port, request) {
+    if (port === NIMBUS_AI_GATEWAY_PORT)
+        return handleSessionAiRequest(self, request);
+    if (!self.portRegistry.has(port))
+        return null;
+    return self.portRegistry.routeRequest(port, request, new URL(request.url).pathname);
+}
