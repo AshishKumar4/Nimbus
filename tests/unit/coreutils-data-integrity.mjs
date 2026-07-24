@@ -130,6 +130,9 @@ check('head -c accepts a size suffix', size('tmp/hk') === 1024, `got ${size('tmp
 r = await sh('head -n 1 /tmp/abc');
 check('head -n still works', r.stdout === 'ABCDEFGH\n', JSON.stringify(r.stdout));
 
+r = await sh('cat /tmp/abc | head -c 3');
+check('head -c reads from a pipe', r.stdout === 'ABC', JSON.stringify(r.stdout));
+
 // ── /dev nodes are character devices ───────────────────────────────────────
 r = await sh('ls -la /dev');
 check('ls -l renders /dev entries as character devices',
