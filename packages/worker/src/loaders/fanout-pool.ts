@@ -18,7 +18,7 @@ import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { NimbusLoaderPool } from './loader-pool.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { isTransientDoReset } from '../observability/oom-classify.js';
+import { isDoOverloaded, isTransientDoReset } from '../observability/oom-classify.js';
 
 /**
  * Threshold at which routing switches from coordinator-local loaders to
@@ -43,11 +43,20 @@ export const MAX_PEER_FANOUT = 32;
  * (packument resolution, tarball materialisation) is idempotent, so
  * re-running a shard is safe. Budget mirrors the resolve-facet's own
  * per-fetch retry policy so a single flaky cold start no longer fails a
- * whole install. Non-transient rejections (OOM, count mismatch, genuine
+ * whole install. The same budget covers an overloaded peer, on the longer
+ * schedule below. Non-transient rejections (OOM, count mismatch, genuine
  * task throw) are NOT retried — they propagate on the first hit.
  */
 export const PEER_TRANSIENT_RESET_RETRIES = 3;
 export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
+
+/**
+ * Backoff for a shard whose peer DO was shed as overloaded. The object is
+ * alive and the shard never ran; what it needs is time for the input-gate
+ * queue to drain, so the schedule is an order of magnitude longer than the
+ * reset schedule. A whole-batch abort here used to fail an entire install.
+ */
+export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
 
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {
@@ -363,8 +372,11 @@ export class NimbusFanoutPool {
             }
             return;
           } catch (err) {
-            if (attempt < PEER_TRANSIENT_RESET_RETRIES && isTransientDoReset(err)) {
-              const backoff = PEER_RETRY_BACKOFF_MS[Math.min(attempt, PEER_RETRY_BACKOFF_MS.length - 1)];
+            const schedule = isTransientDoReset(err) ? PEER_RETRY_BACKOFF_MS
+              : isDoOverloaded(err) ? PEER_OVERLOAD_BACKOFF_MS
+              : null;
+            if (schedule && attempt < PEER_TRANSIENT_RESET_RETRIES) {
+              const backoff = schedule[Math.min(attempt, schedule.length - 1)];
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
