@@ -44,6 +44,7 @@ import { createDemoAgentAuthCookie } from './demo-agent-auth.js';
 import { handleAnonSessionCreate } from './demo-anon.js';
 import { cleanupExpiredDemoSessions } from './demo-cleanup.js';
 import { demoSandboxPrincipal, issueDemoSandboxToken, withInternalNimbusAuth } from './demo-nimbus.js';
+import { legacyHostRedirect } from './legacy-redirect.js';
 import {
   ANON_USER_ID,
   createDemoSession,
@@ -110,6 +111,8 @@ async function handleHostedDemoRequest(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url);
+  const legacy = legacyHostRedirect(url, request.method);
+  if (legacy) return legacy;
 
   if (url.pathname === '/login') return startDemoLogin(request, env);
   if (url.pathname === '/logout') return logoutDemo(request);

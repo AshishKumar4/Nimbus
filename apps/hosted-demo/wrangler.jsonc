@@ -253,7 +253,8 @@
       "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
       "routes": [
-        { "pattern": "nimbus-os.dev", "custom_domain": true }
+        { "pattern": "nimbus-os.dev", "custom_domain": true },
+        { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true }
       ],
 	      "vars": {
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
