@@ -33,6 +33,7 @@ import { setLastRpcFrame } from '../observability/oom-discriminator.js';
 import { rpcPayloadStart, rpcPayloadEnd } from '../observability/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
+import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { W7_MAX_RECORD_BYTES } from '../_shared/w7-frame.js';
@@ -431,36 +432,25 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /**
-   * Look up a packument in the R2 cross-tenant cache. Returns
-   * { cached, events } where:
-   *   - cached: { json, ageMs, expired } on hit, null on miss/no-binding
-   *   - events: L2/L3 hit/miss tuples captured during this lookup
+   * Resolve one package's corgi packument: cross-tenant cache read, and
+   * on a miss the registry fetch plus the cache fill.
    *
-   * Caller MUST honour the `cached.expired` flag (only treat as a
-   * hot-path hit when expired === false). Events are recorded
-   * regardless of expiration — an expired L2 hit is still recorded as
-   * 'hit' at the L2 tier; the staleness is a separate axis.
+   * Fetch and fill live inside R2CacheClient, not in the resolve facet,
+   * and that is a security boundary rather than a layering preference.
+   * The packument bucket is shared by every tenant and a packument
+   * dictates the tarball URL and integrity digest for everyone who reads
+   * it, so a caller-supplied `put` would be a cross-tenant
+   * code-execution primitive for anyone holding a supervisor stub. No
+   * such RPC exists: the only bytes that reach `pc/<name>.json` are the
+   * ones registry.npmjs.org served for that exact name.
    */
-  async getCachedPackument(
+  async getPackument(
     name: string,
-  ): Promise<{
-    cached: { json: string; ageMs: number; expired: boolean } | null;
-    events: SupervisorCacheStatEvent[];
-  }> {
+    options?: { retries?: number; timeoutMs?: number },
+  ): Promise<PackumentReadThrough & { events: SupervisorCacheStatEvent[] }> {
     const r2 = this._r2();
-    const cached = await r2.getPackument(name);
-    return { cached, events: _drainCacheEvents(r2) };
-  }
-
-  /**
-   * Store a packument in the R2 cross-tenant cache with a TTL stamp.
-   * Best-effort. Returns true on success.
-   */
-  async putCachedPackument(name: string, json: string): Promise<boolean> {
-    // L4 hit captured facet-side (the facet did the registry fetch).
-    // This RPC is one-way write.
-    const r2 = this._r2();
-    return r2.putPackument(name, json);
+    const result = await r2.readThroughPackument(name, options);
+    return { ...result, events: _drainCacheEvents(r2) };
   }
 
   /**
