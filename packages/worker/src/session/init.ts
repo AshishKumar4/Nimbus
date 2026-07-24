@@ -2337,6 +2337,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             )
           : null;
         self.ensureSqliteFs();
+        if (globalPrefix) self.ensureGlobalPrefixDirs(globalPrefix);
         const installCwd = globalPrefix ? `${globalPrefix}/lib` : cwdKey;
 
         // Ensure package.json exists for bare `npm install`

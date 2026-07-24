@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/worker/src/substrate/lifo/commands/registry.ts';
+import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -97,6 +98,70 @@ try {
   userVfs.writeFile('usr/local/lib/node_modules/.write-probe', 'ok');
   assert.equal(userVfs.readFileString('usr/local/lib/node_modules/.write-probe'), 'ok');
   userVfs.unlink('usr/local/lib/node_modules/.write-probe');
+
+  // A non-default `npm --prefix` (pi uses /home/user/.local) is not pre-seeded.
+  // Under S2a the credentialed install batch requires an existing parent chain,
+  // so a global install must materialize `<prefix>/lib/node_modules` first or
+  // the very first write ENOENTs on the missing parent (the pi regression).
+  const customPrefix = 'home/user/.local';
+  const installRoot = `${customPrefix}/lib/node_modules`;
+  const packageDir = `${installRoot}/fixture`;
+  const packageJsonPath = `${packageDir}/package.json`;
+  const packageJson = new TextEncoder().encode('{"name":"fixture","version":"1.0.0"}\n');
+  const runInstallBatch = () => userVfs.writeStream(encodeWriteBatchStream({
+    inodes: [
+      { path: installRoot, parentPath: `${customPrefix}/lib`, isDir: true, size: 0, mtime: Date.now(), mode: 0o755, chunkCount: 0 },
+      { path: packageDir, parentPath: installRoot, isDir: true, size: 0, mtime: Date.now(), mode: 0o755, chunkCount: 0 },
+      { path: packageJsonPath, parentPath: packageDir, isDir: false, size: packageJson.length, mtime: Date.now(), mode: 0o644, chunkCount: 1 },
+    ],
+    chunks: [{ path: packageJsonPath, chunkId: 0, data: packageJson }],
+  }));
+
+  assert.equal(rootVfs.exists(customPrefix), false, 'non-default npm prefixes are created on demand');
+  const preSeedResult = await runInstallBatch();
+  assert.equal(
+    preSeedResult.ok,
+    false,
+    'without the prefix chain the credentialed install batch ENOENTs on the missing parent',
+  );
+
+  session.ensureGlobalPrefixDirs(customPrefix);
+
+  const customPrefixDirs = [
+    customPrefix,
+    `${customPrefix}/lib`,
+    installRoot,
+    `${customPrefix}/bin`,
+  ];
+  for (const prefixDir of customPrefixDirs) {
+    const stat = rootVfs.stat(prefixDir);
+    assert.deepEqual(
+      { uid: stat.uid, gid: stat.gid, mode: stat.mode & 0o7777 },
+      { uid: 1000, gid: 1000, mode: 0o755 },
+      `${prefixDir} is user-owned and umask-correct`,
+    );
+  }
+
+  const prefixRevision = userVfs.revision(customPrefix);
+  session.ensureGlobalPrefixDirs(customPrefix);
+  assert.equal(
+    userVfs.revision(customPrefix),
+    prefixRevision,
+    'ensuring an existing global prefix is idempotent',
+  );
+
+  const installResult = await runInstallBatch();
+  assert.equal(
+    installResult.ok,
+    true,
+    installResult.ok ? undefined : `custom-prefix install batch failed: ${installResult.error.message}`,
+  );
+  assert.equal(userVfs.readFileString(packageJsonPath), new TextDecoder().decode(packageJson));
+  assert.deepEqual(
+    { uid: rootVfs.stat(packageDir).uid, gid: rootVfs.stat(packageDir).gid },
+    { uid: 1000, gid: 1000 },
+    'the credentialed install batch commits user-owned package paths',
+  );
 
   const registry = createDefaultRegistry();
   registerUnixCommands(registry, rawVfs);

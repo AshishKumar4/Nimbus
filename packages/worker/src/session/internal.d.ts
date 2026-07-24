@@ -155,6 +155,7 @@ export interface SessionInternal {
   _envFlagDefaultOn(name: string): boolean;
   _setCpRegistry(r: any): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
+  ensureGlobalPrefixDirs(prefix: string): void;
   seedFilesystem(): void;
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).
