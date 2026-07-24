@@ -5,6 +5,7 @@
 import {
   buildPreviewHost,
   isPreviewHostSafeSid,
+  readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import { z } from 'zod/v4';
 
@@ -35,13 +36,20 @@ export interface NimbusSandboxProfile {
   };
   preview?: {
     baseUrl?: string;
-    hostSuffix?: string;
     pathStyle?: boolean;
   };
 }
 
 export interface NimbusConfig {
   endpoint?: string;
+  /**
+   * The deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling the
+   * `<port>--<sid>.<suffix>` preview origin. `Nimbus.fromEnv` reads it off
+   * the bindings, so in-Worker callers never restate it; remote clients
+   * (`Nimbus.connect`) have no bindings and must supply it to get host-form
+   * preview URLs.
+   */
+  previewHostSuffix?: string;
   sandboxes?: Record<string, NimbusSandboxProfile>;
 }
 
@@ -432,6 +440,9 @@ export class Nimbus {
     return new Nimbus({ kind: 'binding', namespace: binding }, {
       ...config,
       endpoint: options.endpoint ?? config.endpoint,
+      // The binding is the deployment's own answer for whether port previews
+      // have a host suffix, so in-Worker callers never restate it in config.
+      previewHostSuffix: readPreviewHostSuffix(env) ?? config.previewHostSuffix,
     });
   }
 
@@ -858,9 +869,18 @@ export class NimbusSandbox {
     }
   }
 
+  /**
+   * Browser-facing URL for an exposed port, or undefined when the deployment
+   * is not addressable (no `endpoint`, no configured preview base).
+   *
+   * The URL carries NO credential. On a deployment with auth enforced it is
+   * the destination, not the ticket: the session mints a single-use attach
+   * token for it at `GET /s/<id>/api/preview-url?port=<n>`, which is what the
+   * session shell opens and what an embedder should hand to a browser.
+   */
   private portUrl(port: number): string | undefined {
-    const hostSuffix = this.profile.preview?.hostSuffix;
-    if (hostSuffix && isPreviewHostSafeSid(this.id)) {
+    const hostSuffix = this.config.previewHostSuffix;
+    if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
       return `https://${buildPreviewHost(this.id, port, hostSuffix)}/`;
     }
     const explicit = this.profile.preview?.baseUrl;

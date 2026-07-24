@@ -38,6 +38,7 @@ import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { ESBUILD_NAME_GLOBAL_SHIM } from '../_shared/esbuild-facet-shim.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { PYTHON_SOCKET_SHIM } from './python-socket-shim.js';
 import { readPyodideRuntimeFiles, type PyodideRuntimeAssetPaths } from './pyodide-runtime-assets.js';
@@ -1101,18 +1102,8 @@ const __NIMBUS_PERSISTENT_SITE_PACKAGES = '/home/user/.nimbus-python/site-packag
 const __NIMBUS_PYTHON_SOCKET_SHIM = ${JSON.stringify(PYTHON_SOCKET_SHIM)};
 const __NIMBUS_PYODIDE_SIDE_MODULES = ${JSON.stringify(sideModules)};
 
-// esbuild (\`keepNames\`, via wrangler) wraps the snapshot installer's nested
-// named arrows as \`__name(fn, "fn")\`, so its \`.toString()\` body references
-// \`__name\` by bare identifier — a binding that does NOT cross into this facet
-// isolate (mirrors loader-pool's ESBUILD_RUNTIME_SHIM and opentui-facet-backend).
-// We can neither omit it (installer → "__name is not defined") nor \`const\`-declare
-// it (the inlined pyodide asm.js already declares \`__name\`/\`__defProp\` at this
-// scope → "already declared"). Provide it idempotently on globalThis: a bare
-// \`__name\` with no lexical binding resolves to this global. Unit tests import the
-// un-bundled TS source, so only the deployed, esbuild-bundled worker needs it.
-if (typeof globalThis.__name !== "function") {
-  globalThis.__name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });
-}
+// Must precede the .toString() embeds below, whose bodies call __name(...).
+${ESBUILD_NAME_GLOBAL_SHIM}
 
 ${expandPythonEffectiveMode.toString()}
 ${installPythonFsSnapshot.toString()}
