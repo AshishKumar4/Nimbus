@@ -20,7 +20,8 @@
  *
  *   where `request.url` is the inner URL the user's HTTP server
  *   expects (pathname + search, absolute against a synthetic origin),
- *   `request.method`/`headers` mirror the outer request, and
+ *   `request.method` and application headers mirror the outer request,
+ *   Nimbus credentials/internal headers are removed, and
  *   `request.body` is a ReadableStream (or null for GET/HEAD) that
  *   the facet can consume once. The returned Response is returned
  *   to the outer fetch as-is; its body is streamed directly.
@@ -71,8 +72,10 @@ export declare class PortRegistry {
      * is the inner path (without the `/port/<n>` prefix) and whose origin
      * matches the outer request, so user code reading `request.url`
      * sees a URL shape consistent with "my server is running at this
-     * port". Headers and body are forwarded unchanged; the body is a
-     * ReadableStream so binary payloads aren't materialised in memory.
+     * port". Application headers and the body are forwarded; Nimbus
+     * credentials and internal routing headers are removed before crossing
+     * the user-code trust boundary. The body remains a ReadableStream so
+     * binary payloads aren't materialised in memory.
      *
      * Binary safety: Workers RPC transfers Request/Response values with
      * their streaming bodies; it does not structured-clone them. No UTF-8
