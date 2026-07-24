@@ -107,7 +107,6 @@ export {
   serializeNimbusCookie,
 } from './session/agent-oauth.js';
 export type {
-  NimbusAgentAuthCookieResult,
   NimbusAgentOAuthCookie,
   NimbusCloudflareAccount,
 } from './session/agent-oauth.js';

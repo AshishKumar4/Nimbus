@@ -70,7 +70,6 @@ export type {
   AuthMode,
   NimbusAuthConfig,
   NimbusAuthEnv,
-  NimbusAgentAuthCookieResult,
   NimbusAgentOAuthCookie,
   NimbusCloudflareAccount,
   NimbusTokenClaims,

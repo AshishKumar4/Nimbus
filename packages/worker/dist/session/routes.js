@@ -40,6 +40,7 @@ import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
+import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 // CLN-1 (2026-05-11): also import R2_CACHE_PREFIX + L2_KEY_HOST so the
 // cache-purge helpers below don't hardcode the synthetic key shape.
@@ -118,6 +119,12 @@ export async function handleFetch(self, request) {
     // served app's module URLs, HMR paths, <base href>, and router basename
     // all resolve under `/s/<id>/preview/...`.
     await self.hydrateSessionBasePath(request);
+    // Adopt the Cloudflare credential the browser is carrying, before any
+    // route can return. The nimbus_agent_oauth cookie is scoped to /s/<sid>,
+    // so the session's first page load hands it over and in-session inference
+    // works from then on — no need to open the agent panel first. Costs a
+    // header read when there is nothing new to adopt. See session/ai.ts.
+    await captureSessionAiCredential(self, request);
     // ── W12 — DO read replica preflight ─────────────────────────────────
     //
     // If THIS isolate is a replica AND the route policy says delegate, we
