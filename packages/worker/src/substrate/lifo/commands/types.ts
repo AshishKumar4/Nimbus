@@ -3,6 +3,12 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 
 export interface CommandOutputStream {
   write(text: string): void;
+  /**
+   * Present on sinks that store bytes verbatim (files, `/dev/null`). Textual
+   * sinks — the terminal, shell pipes — omit it and take decoded text, since
+   * they have no way to carry a byte that is not text.
+   */
+  writeBytes?(bytes: Uint8Array): void;
 }
 
 export interface CommandInputStream {

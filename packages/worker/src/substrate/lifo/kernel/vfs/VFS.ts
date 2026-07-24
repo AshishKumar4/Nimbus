@@ -23,6 +23,33 @@ interface MountEntry {
   provider: VirtualProvider | MountProvider;
 }
 
+function sliceRange(source: Uint8Array, offset: number, length: number): Uint8Array {
+  const start = Math.min(offset, source.length);
+  return source.subarray(start, Math.min(source.length, start + length));
+}
+
+/** `source` with `bytes` overwritten at `offset`, zero-filling any gap. */
+function spliceRange(source: Uint8Array, offset: number, bytes: Uint8Array): Uint8Array {
+  const end = offset + bytes.length;
+  if (end <= source.length) {
+    const merged = new Uint8Array(source);
+    merged.set(bytes, offset);
+    return merged;
+  }
+  const merged = new Uint8Array(end);
+  merged.set(source.subarray(0, Math.min(source.length, offset)), 0);
+  merged.set(bytes, offset);
+  return merged;
+}
+
+function resizeBytes(source: Uint8Array, size: number): Uint8Array {
+  if (size === source.length) return source;
+  if (size < source.length) return source.slice(0, size);
+  const grown = new Uint8Array(size);
+  grown.set(source, 0);
+  return grown;
+}
+
 export class VFS {
   private root: INode;
   /**
@@ -287,39 +314,106 @@ export class VFS {
     }
   }
 
+  /**
+   * Read at most `length` bytes at `offset`. Short reads are legal; an empty
+   * result means EOF. Streams (`/dev/*`) and chunked backing stores serve the
+   * slice directly, so bounded readers never materialise a whole file.
+   */
+  readRange(path: string, offset: number, length: number): Uint8Array {
+    const start = Math.max(0, Math.trunc(offset));
+    const want = Math.max(0, Math.trunc(length));
+    if (want === 0) return new Uint8Array(0);
+
+    const vp = this.getProvider(path);
+    if (vp) {
+      if (vp.provider.readRange) return vp.provider.readRange(vp.subpath, start, want);
+      return sliceRange(vp.provider.readFile(vp.subpath), start, want);
+    }
+    return sliceRange(this.readFile(path), start, want);
+  }
+
+  /**
+   * Write `bytes` at `offset`, growing the file (zero-filling any gap) as
+   * needed. This is the single write primitive behind sequential writers —
+   * shell redirections, `dd`, and appends all advance an offset through it
+   * instead of rewriting the file per chunk.
+   */
+  writeRange(path: string, offset: number, bytes: Uint8Array): void {
+    const start = Math.max(0, Math.trunc(offset));
+    const provider = this.mountProvider(path);
+    if (provider?.provider.writeRange) {
+      provider.provider.writeRange(provider.subpath, start, bytes);
+      return;
+    }
+    this.rewriteFile(path, (existing) => spliceRange(existing, start, bytes));
+  }
+
+  /** Shrink or zero-extend a file to exactly `size` bytes. */
+  truncate(path: string, size: number): void {
+    const target = Math.max(0, Math.trunc(size));
+    const provider = this.mountProvider(path);
+    if (provider?.provider.truncate) {
+      provider.provider.truncate(provider.subpath, target);
+      return;
+    }
+    this.rewriteFile(path, (existing) => resizeBytes(existing, target));
+  }
+
+  private mountProvider(path: string): { provider: MountProvider; subpath: string } | null {
+    const vp = this.getProvider(path);
+    return vp ? { provider: vp.provider as MountProvider, subpath: vp.subpath } : null;
+  }
+
+  /**
+   * Replace a file's bytes with `transform(current)`. The read-modify-write
+   * shape is what a backing store without positional writes forces; providers
+   * that do have them never reach here.
+   */
+  private rewriteFile(path: string, transform: (existing: Uint8Array) => Uint8Array): void {
+    const vp = this.mountProvider(path);
+    if (vp) {
+      if (!vp.provider.writeFile) {
+        throw new VFSError(ErrorCode.EINVAL, `'${path}': read-only virtual filesystem`);
+      }
+      const existing = vp.provider.exists(vp.subpath)
+        ? vp.provider.readFile(vp.subpath)
+        : new Uint8Array(0);
+      vp.provider.writeFile(vp.subpath, transform(existing));
+      return;
+    }
+
+    let node: INode;
+    try {
+      node = this.resolveNode(path);
+    } catch (e) {
+      if (!(e instanceof VFSError) || e.code !== 'ENOENT') throw e;
+      this.writeFile(path, transform(new Uint8Array(0)));
+      return;
+    }
+    if (node.type === 'directory') {
+      throw new VFSError(ErrorCode.EISDIR, `'${path}': is a directory`);
+    }
+    const existing = node.chunks
+      ? this.contentStore.loadChunked(node.chunks) ?? new Uint8Array(0)
+      : node.data;
+    const next = transform(existing);
+    if (node.chunks) this.contentStore.deleteChunked(node.chunks);
+    this.applyFileContent(node, next);
+    node.mtime = Date.now();
+    this.notify({ type: 'modify', path: this.toAbsolute(path), fileType: 'file' });
+  }
+
   appendFile(path: string, content: string | Uint8Array): void {
     const data = typeof content === 'string' ? encode(content) : content;
-    try {
-      const node = this.resolveNode(path);
-      if (node.type === 'directory') {
+    let size = 0;
+    if (this.exists(path)) {
+      const st = this.stat(path);
+      if (st.type === 'directory') {
         throw new VFSError(ErrorCode.EISDIR, `'${path}': is a directory`);
       }
-
-      if (node.chunks) {
-        // Chunked file: read existing, concatenate, re-chunk
-        const existing = this.contentStore.loadChunked(node.chunks) ?? new Uint8Array(0);
-        const merged = new Uint8Array(existing.byteLength + data.byteLength);
-        merged.set(existing, 0);
-        merged.set(data, existing.byteLength);
-        this.contentStore.deleteChunked(node.chunks);
-        this.applyFileContent(node, merged);
-      } else {
-        // Inline file: concatenate, possibly promote to chunked
-        const merged = new Uint8Array(node.data.length + data.length);
-        merged.set(node.data, 0);
-        merged.set(data, node.data.length);
-        this.applyFileContent(node, merged);
-      }
-
-      node.mtime = Date.now();
-      this.notify({ type: 'modify', path: this.toAbsolute(path), fileType: 'file' });
-    } catch (e) {
-      if (e instanceof VFSError && e.code === 'ENOENT') {
-        this.writeFile(path, data);
-      } else {
-        throw e;
-      }
+      size = st.size;
     }
+    this.writeRange(path, size, data);
   }
 
   exists(path: string): boolean {
