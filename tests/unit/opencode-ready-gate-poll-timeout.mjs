@@ -17,6 +17,12 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import {
+  _rpcHostProcessProbe,
+  _rpcHostProcess,
+  _rpcRouteHostedHttp,
+  _rpcCancelHostProcess,
+} from '../../packages/worker/src/session/rpc.ts';
 
 // setCtxExports is first-write-wins, so install ONE dispatcher and key the
 // per-facet route stubs on the worker key the manager resolves with. The
@@ -45,11 +51,29 @@ const routeStub = {
   },
 };
 
+const failingLoader = {
+  load() { throw new Error('no session DO may load the facet directly'); },
+  get(_key, _cb) { throw new Error('no session DO may load the facet directly'); },
+};
+
+// `opencode serve` is resident, so it declares heavy and the facet is hosted on
+// a sibling DO — through the REAL peer legs, so the readiness gate is exercised
+// over the routed-HTTP path a peer-hosted server actually uses.
+const peerSelf = {
+  _hostedProcesses: new Map(),
+  _hostedProcessWaiters: new Map(),
+  env: { LOADER: failingLoader },
+};
+const peerStub = {
+  _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
+  _rpcHostProcess: (boot, opts) => _rpcHostProcess(peerSelf, boot, opts),
+  _rpcRouteHostedHttp: (key, request) => _rpcRouteHostedHttp(peerSelf, key, request),
+  _rpcCancelHostProcess: async (key) => _rpcCancelHostProcess(peerSelf, key),
+};
+
 const env = {
-  LOADER: {
-    load() { throw new Error('the DO must not load the facet directly'); },
-    get(_key, _cb) { throw new Error('the DO must not load the facet directly'); },
-  },
+  LOADER: failingLoader,
+  NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => peerStub },
   ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
 };
 const ctx = { id: { toString: () => 'do-test' }, waitUntil: (_p) => {} };
@@ -59,7 +83,8 @@ const fm = new FacetManager(ctx, env, processes, portRegistry, {});
 
 const makeStageSpec = (portArg) => ({
   mode: 'server', argv: ['serve', '--port', String(portArg)], env: {}, cwd: '/home/user',
-  stdin: '', vfsBundle: '{}', vfsManifest: '{}',
+  cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  stdin: '', vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
 });
 
 const entry = processes.spawn('opencode serve --port 4096', ['opencode', 'serve'], '/home/user');

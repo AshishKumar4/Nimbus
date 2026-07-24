@@ -83,18 +83,19 @@ export const OpencodeStageSpecSchema = z.object({
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 
 /**
- * Memory class the staged runner modes declare to the process fabric
- * (the runtime-spec side of the fabric's single placement policy point).
- * All staged modes are `light` local facets today: the attach TUI's OOM
- * (#35) turned out to be a wasm FFI-ABI bug fixed in the runner itself, so
- * attach no longer needs a peer-process budget — and `heavy` placement costs
- * ~0.5 s of peer-DO cold-create on every spawn. `heavy` remains the
- * live-proven substrate for future multi-process tenants (see
- * loaders/process-fabric.ts).
+ * Memory class each staged mode declares to the process fabric — the
+ * runtime-spec side of its single placement policy point.
+ *
+ * `attached` and `server` are RESIDENT: they hold a facet open for as long as
+ * the user's session lasts, and their memory grows with the conversation and
+ * the project they have loaded. Those are exactly the processes worth a
+ * workerd process of their own, and the ones whose OOM must not be able to
+ * reset the session. `oneshot` buffers a single run and returns, so it stays
+ * local — it would pay the ~0.5 s peer-DO cold-create for nothing (and it
+ * takes the one-shot fetch path, which never reaches the fabric at all).
  */
 export function stagedProcessClass(mode: OpencodeStageSpec['mode']): ProcessClass {
-  void mode;
-  return 'light';
+  return mode === 'oneshot' ? 'light' : 'heavy';
 }
 
 function requireAssets(env: Partial<OpencodeAssetsEnv>, what: string): OpencodeAssetsEnv {

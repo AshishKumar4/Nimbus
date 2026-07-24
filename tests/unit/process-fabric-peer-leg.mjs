@@ -1,18 +1,24 @@
 #!/usr/bin/env bun
-// process-fabric-peer-leg — the peer-DO host leg of the heavy-process
+// process-fabric-peer-leg — the peer-DO host leg of the resident-process
 // scheduler must:
 //   (1) answer the placement probe with the module-scope isolate token;
-//   (2) boot the staged process from the PEER's NimbusLoadedEntrypoint with
-//       the SUPERVISOR routed to the COORDINATOR's doId (never the peer's),
-//       holding the RPC open until the process lifecycle ends;
-//   (3) validate the host opts / stage spec at the RPC trust boundary;
-//   (4) tear the hosted facet down on _rpcCancelHostProcess (the peer-side
-//       equivalent of FacetManager.kill's stub disposal).
+//   (2) boot a staged process from the PEER's own loader with the SUPERVISOR
+//       routed to the COORDINATOR's doId (never the peer's), holding the RPC
+//       open until the process lifecycle ends;
+//   (3) boot a code process the same way, pulling its by-path wasm image off
+//       the coordinator's disk in RPC-safe ranges, and keep holding after the
+//       runner returns its boot payload;
+//   (4) serve inbound HTTP for a hosted process, and hand back the boot
+//       payload, without either leg racing the host leg;
+//   (5) validate opts / boot spec at the RPC trust boundary;
+//   (6) tear the hosted facet down on _rpcCancelHostProcess.
 
 import assert from 'node:assert/strict';
 import {
   _rpcHostProcessProbe,
   _rpcHostProcess,
+  _rpcAwaitHostedBoot,
+  _rpcRouteHostedHttp,
   _rpcCancelHostProcess,
 } from '../../packages/worker/src/session/rpc.ts';
 import { isolateToken } from '../../packages/worker/src/loaders/process-fabric.ts';
@@ -29,32 +35,85 @@ const STAGE = {
   vfsManifest: '{}',
   vfsMetadata: '{}',
 };
-const OPTS = { coordinatorDoId: 'coordinator-do-id', pid: 21, workerKey: 'nimbus-process:coordinator-do-id:21' };
+const STAGED_BOOT = { kind: 'staged', stage: STAGE };
+const OPTS = {
+  coordinatorDoId: 'coordinator-do-id',
+  pid: 21,
+  workerKey: 'nimbus-process:coordinator-do-id:21',
+  startContract: 'lifetime',
+};
 
-// Peer-side NimbusLoadedEntrypoint mock: startProcess resolves when the test
+// Peer-side ctx.exports mock: the staged startProcess resolves when the test
 // releases it; the stub's Symbol.dispose (what disposeRpcResource invokes)
 // rejects it — mirroring workerd severing a held-open loopback RPC.
 const boots = [];
 setCtxExports({
+  SupervisorRPC(options) {
+    const binding = { props: options.props, disposed: false, [Symbol.dispose]() { binding.disposed = true; } };
+    return binding;
+  },
   NimbusLoadedEntrypoint(options) {
     const boot = { props: options.props, disposed: false };
     boot.lifecycle = new Promise((resolve, reject) => {
       boot.resolve = resolve;
       boot.rejectAsDisposed = () => reject(new Error('stub disposed'));
     });
+    boot.lifecycle.catch(() => {});
     boots.push(boot);
     return {
-      startProcess: () => boot.lifecycle,
+      startProcess: () => { boot.running = true; return boot.lifecycle; },
+      handleHttpRequest: (request) => Promise.resolve(new Response(`hosted ${new URL(request.url).pathname}`)),
       [Symbol.dispose]() {
         boot.disposed = true;
-        boot.rejectAsDisposed();
+        // Only a stub whose held-open call is outstanding can be severed;
+        // disposing an idle route stub must not manufacture a failure.
+        if (boot.running) boot.rejectAsDisposed();
       },
     };
   },
 });
 
-function makeSelf() {
-  return { _hostedProcessCancels: new Map() };
+const IMAGE = new Uint8Array(9).fill(7);
+
+/** Coordinator DO mock: the peer reaches it for ranged reads of the user's disk. */
+function makeSelf(coordinator = {}) {
+  const reads = [];
+  const loaded = [];
+  return {
+    reads,
+    loaded,
+    _hostedProcesses: new Map(),
+    _hostedProcessWaiters: new Map(),
+    env: {
+      NIMBUS_SESSION: {
+        idFromString: (id) => ({ id }),
+        get: () => ({
+          async _rpcStat(path, pid) { reads.push(`stat:${path}:${pid}`); return { size: IMAGE.byteLength }; },
+          async _rpcFsReadRange(path, offset, length, pid) {
+            reads.push(`range:${path}:${offset}:${length}:${pid}`);
+            return IMAGE.subarray(offset, offset + length);
+          },
+          ...coordinator,
+        }),
+      },
+      LOADER: {
+        get(key, load) {
+          const entry = { key, config: undefined };
+          loaded.push(entry);
+          const configPromise = load().then((c) => { entry.config = c; return c; });
+          return {
+            getEntrypoint: () => ({
+              async startProcess(args) {
+                await configPromise;
+                entry.startArgs = args;
+                return { state: 'listening', port: 8080 };
+              },
+            }),
+          };
+        },
+      },
+    },
+  };
 }
 
 // ── (1) probe returns the module-scope isolate token ────────────────────
@@ -65,10 +124,10 @@ function makeSelf() {
   console.log('  case1: placement probe returns the stable isolate token');
 }
 
-// ── (2) host: peer boots the facet, SUPERVISOR routed to the coordinator ─
+// ── (2) staged: peer boots the facet, SUPERVISOR routed to coordinator ──
 {
   const self = makeSelf();
-  const hosted = _rpcHostProcess(self, STAGE, OPTS);
+  const hosted = _rpcHostProcess(self, STAGED_BOOT, OPTS);
   await new Promise((r) => setTimeout(r, 0));
   const boot = boots.at(-1);
   assert.deepEqual(
@@ -78,40 +137,90 @@ function makeSelf() {
   );
   assert.equal(boot.props.key, OPTS.workerKey);
   assert.deepEqual(boot.props.stage, STAGE, 'validated stage spec forwarded to the assembler');
-  assert.equal(self._hostedProcessCancels.size, 1, 'cancel hook registered while hosting');
+  assert.equal(self._hostedProcesses.size, 1, 'host record registered while hosting');
   let settled = false;
   hosted.then(() => { settled = true; }, () => { settled = true; });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(settled, false, 'RPC held open while the process runs');
   boot.resolve({ ok: true });
   assert.deepEqual(await hosted, { ok: true });
-  assert.equal(self._hostedProcessCancels.size, 0, 'cancel hook cleared on exit');
-  console.log('  case2: hosted facet boots with coordinator-routed SUPERVISOR, RPC held open');
+  assert.equal(self._hostedProcesses.size, 0, 'host record cleared on exit');
+  console.log('  case2: staged facet boots with coordinator-routed SUPERVISOR, RPC held open');
 }
 
-// ── (3) trust boundary: malformed opts / stage rejected before any boot ─
-{
-  const before = boots.length;
-  await assert.rejects(_rpcHostProcess(makeSelf(), STAGE, { coordinatorDoId: '', pid: 1, workerKey: 'k' }));
-  await assert.rejects(_rpcHostProcess(makeSelf(), STAGE, { coordinatorDoId: 'c', pid: 0, workerKey: 'k' }));
-  await assert.rejects(_rpcHostProcess(makeSelf(), { mode: 'attached' }, OPTS)); // truncated stage
-  assert.equal(boots.length, before, 'no facet boot on invalid input');
-  console.log('  case3: RPC trust boundary validates opts + stage');
-}
-
-// ── (4) cancel: disposes the held startProcess stub → RPC settles ───────
+// ── (3) code: image pulled in ranges, residency outlives the boot ───────
 {
   const self = makeSelf();
-  const hosted = _rpcHostProcess(self, STAGE, { ...OPTS, workerKey: 'k-cancel' });
+  const codeBoot = {
+    kind: 'code',
+    code: {
+      compatibilityDate: '2025-01-01',
+      compatibilityFlags: ['nodejs_compat'],
+      mainModule: 'worker.js',
+      modules: { 'worker.js': 'export default {}' },
+      vfsWasmModules: { 'ruby+stdlib.wasm': '/opt/ruby/ruby+stdlib.wasm' },
+    },
+  };
+  const opts = { ...OPTS, workerKey: 'k-code', startContract: 'boot', startArgs: { userCode: 'puts 1' } };
+  const hosted = _rpcHostProcess(self, codeBoot, opts);
+  assert.deepEqual(await _rpcAwaitHostedBoot(self, 'k-code'), { payload: { state: 'listening', port: 8080 } });
+  assert.deepEqual(
+    self.reads,
+    ['stat:/opt/ruby/ruby+stdlib.wasm:21', `range:/opt/ruby/ruby+stdlib.wasm:0:${IMAGE.byteLength}:21`],
+    'the image is pulled off the coordinator disk in ranges, with the process credential',
+  );
+  const entry = self.loaded.find((l) => l.key === 'k-code');
+  assert.equal(entry.config.modules['ruby+stdlib.wasm'].wasm.byteLength, IMAGE.byteLength);
+  assert.deepEqual(entry.config.env.SUPERVISOR.props, { doId: 'coordinator-do-id', pid: 21 });
+  assert.deepEqual(entry.startArgs, { userCode: 'puts 1' });
+  let settled = false;
+  hosted.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(settled, false, 'a boot-contract runner stays resident behind the held RPC');
+  const routed = await _rpcRouteHostedHttp(self, 'k-code', new Request('http://x/doc'));
+  assert.equal(await routed.text(), 'hosted /doc', 'inbound HTTP resolves the running facet on this peer');
+  assert.equal(_rpcCancelHostProcess(self, 'k-code').cancelled, true);
+  assert.deepEqual(await hosted, { ok: true }, 'cancel ends the residency cleanly');
+  console.log('  case3: code facet pulls its image in ranges and stays resident past boot');
+}
+
+// ── (4) boot/route legs wait for the host leg rather than race it ───────
+{
+  const self = makeSelf();
+  const routed = _rpcRouteHostedHttp(self, 'k-late', new Request('http://x/early'));
+  const hosted = _rpcHostProcess(self, STAGED_BOOT, { ...OPTS, workerKey: 'k-late' });
+  assert.equal(await (await routed).text(), 'hosted /early', 'a request that beat the host leg is served, not dropped');
+  _rpcCancelHostProcess(self, 'k-late');
+  await assert.rejects(hosted, /stub disposed/);
+  console.log('  case4: boot/route legs never race the host leg');
+}
+
+// ── (5) trust boundary: malformed opts / boot spec rejected before boot ─
+{
+  const before = boots.length;
+  await assert.rejects(_rpcHostProcess(makeSelf(), STAGED_BOOT, { ...OPTS, coordinatorDoId: '' }));
+  await assert.rejects(_rpcHostProcess(makeSelf(), STAGED_BOOT, { ...OPTS, pid: 0 }));
+  await assert.rejects(_rpcHostProcess(makeSelf(), STAGED_BOOT, { ...OPTS, startContract: 'whenever' }));
+  await assert.rejects(_rpcHostProcess(makeSelf(), { kind: 'staged', stage: { mode: 'attached' } }, OPTS));
+  await assert.rejects(_rpcHostProcess(makeSelf(), { kind: 'code', code: { mainModule: 'worker.js' } }, OPTS));
+  await assert.rejects(_rpcHostProcess(makeSelf(), { kind: 'elsewhere' }, OPTS));
+  assert.equal(boots.length, before, 'no facet boot on invalid input');
+  console.log('  case5: RPC trust boundary validates opts + boot spec');
+}
+
+// ── (6) cancel: releases the facet's resources → held RPC settles ───────
+{
+  const self = makeSelf();
+  const hosted = _rpcHostProcess(self, STAGED_BOOT, { ...OPTS, workerKey: 'k-cancel' });
   await new Promise((r) => setTimeout(r, 0));
   const boot = boots.at(-1);
   assert.equal(_rpcCancelHostProcess(self, 'unknown-key').cancelled, false);
   assert.equal(_rpcCancelHostProcess(self, 'k-cancel').cancelled, true);
-  assert.equal(boot.disposed, true, 'peer-side startProcess stub disposed');
   await assert.rejects(hosted, /stub disposed/, 'held RPC settles so the coordinator observes the kill');
-  assert.equal(self._hostedProcessCancels.size, 0);
+  assert.equal(boot.disposed, true, 'peer-side facet resources released');
+  assert.equal(self._hostedProcesses.size, 0);
   assert.equal(_rpcCancelHostProcess(self, 'k-cancel').cancelled, false, 'cancel is idempotent');
-  console.log('  case4: cancel tears the hosted facet down deterministically');
+  console.log('  case6: cancel tears the hosted facet down deterministically');
 }
 
 console.log('process-fabric-peer-leg: all cases passed');
