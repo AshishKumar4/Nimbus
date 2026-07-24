@@ -211,15 +211,6 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    /**
-     * Admin: purge a single tarball from R2 by content address. Used in
-     * incident response.
-     */
-    purgeCachedTarball(integrity: string): Promise<boolean>;
-    /**
-     * Admin: purge a single packument from R2.
-     */
-    purgeCachedPackument(name: string): Promise<boolean>;
     stdout(data: string): Promise<void>;
     stderr(data: string): Promise<void>;
     /**

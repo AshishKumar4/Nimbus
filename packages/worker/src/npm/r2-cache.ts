@@ -38,8 +38,10 @@
  *   1. Time-based, packuments only — TTL encoded in customMetadata.expiresAt
  *   2. Schema bump — bump R2_CACHE_PREFIX to invalidate everything atomically.
  *      Stale data is left in place; bucket lifecycle policy can sweep it.
- *   3. Manual delete — deleteTarball / deletePackument; useful in incident
- *      response (a poisoned cache key needs purging).
+ *   3. Out-of-band delete (wrangler / the R2 dashboard). Nothing inside
+ *      the worker deletes cache entries: a delete reachable from a
+ *      session would be a cross-tenant eviction primitive, and content
+ *      addressing means a poisoned key cannot exist to need purging.
  *
  * Graceful degrade:
  *   If env.NPM_TARBALL_CACHE / NPM_PACKUMENT_CACHE bindings are missing
@@ -517,18 +519,6 @@ export class R2CacheClient {
     }
   }
 
-  /** Delete a single tarball cache entry. Idempotent. */
-  async deleteTarball(integrity: string): Promise<boolean> {
-    if (!this.tarballBucket) return false;
-    const address = parseTarballAddress(integrity);
-    if (!address) return false;
-    try {
-      await this.tarballBucket.delete(tarballKey(address));
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   /**
    * Get a cached packument with its TTL state.
@@ -734,16 +724,6 @@ export class R2CacheClient {
     }
   }
 
-  /** Delete a single packument cache entry. Idempotent. */
-  async deletePackument(name: string): Promise<boolean> {
-    if (!this.packumentBucket) return false;
-    try {
-      await this.packumentBucket.delete(packumentKey(name));
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   /** Lightweight feature-detection for callers that want to log path. */
   hasTarballBucket(): boolean {

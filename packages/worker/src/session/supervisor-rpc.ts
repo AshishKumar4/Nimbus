@@ -453,23 +453,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return { ...result, events: _drainCacheEvents(r2) };
   }
 
-  /**
-   * Admin: purge a single tarball from R2 by content address. Used in
-   * incident response.
-   */
-  async purgeCachedTarball(integrity: string): Promise<boolean> {
-    const r2 = this._r2();
-    return r2.deleteTarball(integrity);
-  }
-
-  /**
-   * Admin: purge a single packument from R2.
-   */
-  async purgeCachedPackument(name: string): Promise<boolean> {
-    const r2 = this._r2();
-    return r2.deletePackument(name);
-  }
-
   // ── Process I/O ───────────────────────────────────────────────────────
 
   async stdout(data: string): Promise<void> {
