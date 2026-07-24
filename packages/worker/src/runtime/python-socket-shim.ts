@@ -17,9 +17,11 @@ from pyodide.ffi import run_sync, to_js
 from nimbus_sockets import accept_now as _nimbus_accept_now
 from nimbus_sockets import close as _nimbus_close
 from nimbus_sockets import close_listener as _nimbus_close_listener
+from nimbus_sockets import connect as _nimbus_connect
 from nimbus_sockets import listen as _nimbus_listen
 from nimbus_sockets import pending as _nimbus_pending
 from nimbus_sockets import recv as _nimbus_recv
+from nimbus_sockets import recv_async as _nimbus_recv_async
 from nimbus_sockets import send as _nimbus_send
 from nimbus_sockets import sleep as _nimbus_sleep
 
@@ -98,6 +100,26 @@ def _port_from_address(address):
         return int(address[1])
     return int(address)
 
+_LOOPBACK_HOSTS = frozenset((
+    "127.0.0.1", "localhost", "0.0.0.0", "::1", "[::1]", "::ffff:127.0.0.1", "",
+))
+
+def _host_from_address(address):
+    if isinstance(address, tuple) and address:
+        return str(address[0])
+    return str(address)
+
+def _connect_loopback(address):
+    host = _host_from_address(address)
+    port = _port_from_address(address)
+    if host not in _LOOPBACK_HOSTS:
+        raise OSError(
+            111,
+            "Nimbus sockets reach in-session loopback ports only (127.0.0.1/localhost); "
+            "cannot connect to %s:%d" % (host, port),
+        )
+    return int(_nimbus_connect(port)), port
+
 def _cooperative_sleep(seconds):
     if seconds is None:
         seconds = 0.01
@@ -131,8 +153,12 @@ def setdefaulttimeout(value):
     global _default_timeout
     _default_timeout = value
 
-def create_connection(address, timeout=None, source_address=None):
-    raise OSError("Nimbus Python virtual sockets currently support loopback server sockets only")
+def create_connection(address, timeout=_GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, all_errors=False):
+    sock = socket(AF_INET, SOCK_STREAM)
+    if timeout is not _GLOBAL_DEFAULT_TIMEOUT:
+        sock.settimeout(timeout)
+    sock.connect(address)
+    return sock
 
 class socket:
     family = AF_INET
@@ -152,6 +178,9 @@ class socket:
         self._address = _address or ("127.0.0.1", 0)
         self._fd = int(fileno) if fileno is not None else _alloc_fd(self)
         self._inheritable = False
+        # Client connections carry a loopback request/response exchange and
+        # must suspend on read; accepted connections are already buffered.
+        self._client = False
 
     def bind(self, address):
         self._port = _port_from_address(address)
@@ -196,7 +225,18 @@ class socket:
         if self.type == SOCK_DGRAM:
             self._address = address if isinstance(address, tuple) else (str(address), 0)
             return None
-        raise OSError("Nimbus Python virtual sockets currently support loopback server sockets only")
+        conn_id, port = _connect_loopback(address)
+        self._conn_id = conn_id
+        self._client = True
+        self._address = ("127.0.0.1", port)
+        return None
+
+    def connect_ex(self, address):
+        try:
+            self.connect(address)
+        except OSError as exc:
+            return exc.errno or 111
+        return 0
 
     def fileno(self):
         return self._fd
@@ -236,6 +276,9 @@ class socket:
     def recv(self, bufsize, flags=0):
         if self._conn_id is None:
             return b""
+        if self._client:
+            # JSPI: suspend Python until the loopback response delivers bytes.
+            return _bytes_from_js(run_sync(_nimbus_recv_async(self._conn_id, int(bufsize))))
         return _bytes_from_js(_nimbus_recv(self._conn_id, int(bufsize)))
 
     def recv_into(self, buffer, nbytes=0, flags=0):
