@@ -44,6 +44,7 @@ export const PYODIDE_PACKAGE_ABI = 'pyodide-emscripten-2025_0-wasm32';
  *  wheels/gems). */
 export const NATIVE_UNSUPPORTED_ABI = 'native-unsupported';
 export const NIMBUS_RUNTIME_ABIS = Object.freeze({
+    bash: NIMBUS_ABI_TARGET,
     clang: NIMBUS_ABI_TARGET,
     python: 'pyodide',
     ruby: 'ruby-wasm',

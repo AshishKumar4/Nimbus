@@ -7,10 +7,14 @@ const SHELL_ALIASES = {
 export function registerShellEntrypointCommands(registry, shell, vfs) {
     const sh = makeShellEntrypoint('sh', shell, vfs);
     const bash = makeShellEntrypoint('bash', shell, vfs);
-    for (const name of SHELL_ALIASES.sh)
-        registry.register(name, sh);
-    for (const name of SHELL_ALIASES.bash)
-        registry.register(name, bash);
+    for (const name of SHELL_ALIASES.sh) {
+        if (!registry.has(name))
+            registry.register(name, sh);
+    }
+    for (const name of SHELL_ALIASES.bash) {
+        if (!registry.has(name))
+            registry.register(name, bash);
+    }
 }
 function makeShellEntrypoint(shellName, shell, vfs) {
     return async (ctx) => {

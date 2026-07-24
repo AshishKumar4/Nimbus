@@ -46,6 +46,7 @@ export type ShellEntrypointExecutor = {
 };
 
 type RegistryLike = {
+  has(name: string): boolean;
   register(name: string, handler: (ctx: ShellCommandContext) => Promise<number>): void;
 };
 
@@ -68,8 +69,12 @@ export function registerShellEntrypointCommands(
 ): void {
   const sh = makeShellEntrypoint('sh', shell, vfs);
   const bash = makeShellEntrypoint('bash', shell, vfs);
-  for (const name of SHELL_ALIASES.sh) registry.register(name, sh);
-  for (const name of SHELL_ALIASES.bash) registry.register(name, bash);
+  for (const name of SHELL_ALIASES.sh) {
+    if (!registry.has(name)) registry.register(name, sh);
+  }
+  for (const name of SHELL_ALIASES.bash) {
+    if (!registry.has(name)) registry.register(name, bash);
+  }
 }
 
 function makeShellEntrypoint(

@@ -25,6 +25,31 @@ import { complete, type CompletionContext } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
+import { readDefaultShell } from './default-shell.js';
+
+function shellPromptParts(env: Record<string, string>, cwd: string): {
+  displayPath: string;
+  user: string;
+  host: string;
+} {
+  const home = env['HOME'] ?? '/home/user';
+  let displayPath = cwd;
+  if (cwd === home) {
+    displayPath = '~';
+  } else if (cwd.startsWith(home + '/')) {
+    displayPath = '~' + cwd.slice(home.length);
+  }
+  return {
+    displayPath,
+    user: env['USER'] ?? 'user',
+    host: env['HOSTNAME'] ?? 'lifo',
+  };
+}
+
+export function formatShellPrompt(env: Record<string, string>, cwd: string): string {
+  const { displayPath, user, host } = shellPromptParts(env, cwd);
+  return `${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `;
+}
 
 export interface ExecuteOptions {
   cwd?: string;
@@ -366,8 +391,13 @@ export class Shell {
     this.terminal.onData((data) => this.handleInput(data));
 
     // Source rc files on startup (like bash/zsh)
-    this.sourceRcFiles().then(() => {
-      this.printPrompt();
+    this.sourceRcFiles().then(async () => {
+      const home = this.env['HOME'] ?? '/home/user';
+      if (readDefaultShell(this.vfs, home) === 'bash') {
+        await this.executeLine('bash -i');
+      } else {
+        this.printPrompt();
+      }
     });
   }
 
@@ -403,17 +433,7 @@ export class Shell {
     this.processRegistry.collectZombies();
     // Zombies are already logged by JobTable above, so no need to log again
 
-    const home = this.env['HOME'] ?? '/home/user';
-    let displayPath = this.cwd;
-    if (this.cwd === home) {
-      displayPath = '~';
-    } else if (this.cwd.startsWith(home + '/')) {
-      displayPath = '~' + this.cwd.slice(home.length);
-    }
-
-    const user = this.env['USER'] ?? 'user';
-    const host = this.env['HOSTNAME'] ?? 'lifo';
-    this.terminal.write(`${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
+    this.terminal.write(formatShellPrompt(this.env, this.cwd));
   }
 
   handleInput(data: string): void {
@@ -747,12 +767,7 @@ export class Shell {
   }
 
   private getPromptWidth(): number {
-    const home = this.env['HOME'] ?? '/home/user';
-    let displayPath = this.cwd;
-    if (this.cwd === home) displayPath = '~';
-    else if (this.cwd.startsWith(home + '/')) displayPath = '~' + this.cwd.slice(home.length);
-    const user = this.env['USER'] ?? 'user';
-    const host = this.env['HOSTNAME'] ?? 'lifo';
+    const { displayPath, user, host } = shellPromptParts(this.env, this.cwd);
     // "user@host:path$ " — count visible chars only (no ANSI codes)
     return user.length + 1 + host.length + 1 + displayPath.length + 2;
   }
@@ -772,16 +787,7 @@ export class Shell {
     this.terminal.write('\x1b[J');
 
     // Rewrite prompt + buffer
-    const home = this.env['HOME'] ?? '/home/user';
-    let displayPath = this.cwd;
-    if (this.cwd === home) {
-      displayPath = '~';
-    } else if (this.cwd.startsWith(home + '/')) {
-      displayPath = '~' + this.cwd.slice(home.length);
-    }
-    const user = this.env['USER'] ?? 'user';
-    const host = this.env['HOSTNAME'] ?? 'lifo';
-    this.terminal.write(`${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
+    this.terminal.write(formatShellPrompt(this.env, this.cwd));
     this.terminal.write(this.lineBuffer);
 
     // After writing all content, figure out which row the cursor is on.

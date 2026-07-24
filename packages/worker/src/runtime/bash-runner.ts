@@ -23,7 +23,7 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
@@ -61,7 +61,7 @@ interface BashFeedArgs {
 
 type BashStepArgs = BashBootArgs | BashFeedArgs;
 
-interface BashSlice {
+export interface BashSlice {
   state: 'need-input' | 'exited' | 'error';
   exitCode: number;
   stdout: string;
@@ -106,6 +106,146 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+async function bashFacetStep(args: BashStepArgs): Promise<unknown> {
+  const boot = Reflect.get(globalThis, '__bashBoot');
+  const feed = Reflect.get(globalThis, '__bashFeed');
+  if (typeof boot !== 'function' || typeof feed !== 'function') {
+    return {
+      state: 'error',
+      exitCode: 127,
+      stdout: '',
+      stderr: '',
+      error: 'bash-runner preamble missing (__bashBoot/__bashFeed not in scope)',
+    };
+  }
+  return args.op === 'boot' ? boot(args) : feed(args);
+}
+
+export interface BashFacetSession {
+  readonly initial: BashSlice;
+  push(data: string, eof?: boolean): Promise<BashSlice>;
+  close(): Promise<void>;
+}
+
+export async function createBashFacetSession(deps: {
+  facetMgr: FacetManager;
+  vfs: CredentialedVfs;
+  manifest: RuntimeManifest;
+  installRoot: string;
+  argv: string[];
+  env: Record<string, string>;
+  cwd: string;
+  stdinData?: string;
+  stdinClosed: boolean;
+  stdinTty: boolean;
+  extraRoots?: string[];
+}): Promise<BashFacetSession> {
+  const findFile = (relativePath: string): string | null => {
+    const entry = deps.manifest.files.find((file) => file.path === relativePath);
+    return entry ? `${deps.installRoot}/${entry.path}` : null;
+  };
+  const bashWasmPath = findFile('share/bash/bash.async.wasm');
+  if (!bashWasmPath || !deps.vfs.exists(bashWasmPath)) {
+    throw new Error("bash.async.wasm missing (re-run 'nimbus install bash')");
+  }
+
+  const userEnv: Record<string, string> = { ...deps.env };
+  userEnv.HOME ||= '/home/user';
+  userEnv.PATH ||= '/bin:/usr/bin';
+  userEnv.TERM ||= 'dumb';
+  userEnv.NIMBUS_PWD = deps.cwd;
+  userEnv.BASH_ENV ||= '/etc/nimbus.bashrc';
+  userEnv.PWD = deps.cwd;
+
+  const extraRoots = [...(deps.extraRoots ?? [])];
+  if (userEnv.HOME !== '/home/user') extraRoots.push(userEnv.HOME);
+  const fsSnapshot = snapshotVfs(deps.vfs, deps.cwd, { extraRoots });
+  if ('error' in fsSnapshot) throw new Error(fsSnapshot.error);
+
+  const wasmModules: Record<string, ArrayBuffer> = {
+    'bash.async.wasm': toArrayBuffer(deps.vfs.readFile(bashWasmPath)),
+  };
+  for (const file of deps.manifest.files) {
+    const prefix = 'share/bash/coreutils/';
+    if (!file.path.startsWith(prefix) || !file.path.endsWith('.wasm')) continue;
+    const name = file.path.slice(prefix.length, -'.wasm'.length);
+    const vfsPath = `${deps.installRoot}/${file.path}`;
+    if (deps.vfs.exists(vfsPath)) {
+      wasmModules[`cu_${name}.wasm`] = toArrayBuffer(deps.vfs.readFile(vfsPath));
+    }
+  }
+
+  const appletsPath = findFile('share/bash/coreutils/busybox.applets');
+  const busyboxApplets = appletsPath && deps.vfs.exists(appletsPath)
+    ? new TextDecoder().decode(deps.vfs.readFile(appletsPath))
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+    : [];
+
+  const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+  const { env, ctx } = getFacetManagerLoaderHost(deps.facetMgr);
+  const pool = new NimbusLoaderPool(env, ctx, {
+    tag: 'bash-runner',
+    concurrency: 1,
+    omitSupervisor: true,
+    preamble: BASH_RUNNER_PREAMBLE,
+    wasmModules,
+  });
+
+  let active = true;
+  let closed = false;
+  const submit = async (args: BashStepArgs): Promise<BashSlice> => {
+    const slice = normalizeSlice(
+      await pool.submit<BashStepArgs, unknown>(bashFacetStep, args, { timeoutMs: 300_000 }),
+    );
+    if (!slice) throw new Error('facet returned an invalid payload');
+    if (slice.state === 'exited') {
+      if (slice.fsDiff) flushVfsDiff(deps.vfs, slice.fsDiff);
+      active = false;
+    } else if (slice.state === 'error') {
+      active = false;
+    }
+    return slice;
+  };
+
+  try {
+    const initial = await submit({
+      op: 'boot',
+      argv: deps.argv,
+      environ: Object.entries(userEnv).map(([key, value]) => `${key}=${value}`),
+      cwd: deps.cwd,
+      fsSnapshot: fsSnapshot.snapshot,
+      stdinData: deps.stdinData ?? '',
+      stdinClosed: deps.stdinClosed,
+      stdinTty: deps.stdinTty,
+      busyboxApplets,
+    });
+    return {
+      initial,
+      push(data, eof = false) {
+        if (closed) throw new Error('bash facet session is closed');
+        return submit({ op: 'feed', data, eof });
+      },
+      async close() {
+        if (closed) return;
+        try {
+          if (active) await submit({ op: 'feed', data: '', eof: true });
+        } catch {
+          // Session teardown is best-effort; the owning command already
+          // reports dispatch failures from boot/push.
+        } finally {
+          closed = true;
+          pool.dispose();
+        }
+      },
+    };
+  } catch (error: unknown) {
+    pool.dispose();
+    throw error;
+  }
+}
+
 /** bash flags that consume the following argv element. */
 const BASH_OPT_WITH_ARG = new Set(['-c', '-o', '+o', '--rcfile', '--init-file']);
 
@@ -137,19 +277,7 @@ export function makeBashRunnerFactory(deps: {
   facetMgr: FacetManager;
   vfs: SqliteVFS;
 }): BashRunnerFactory {
-  const { facetMgr } = deps;
-
   return function bashRunnerFactory(manifest, installRoot, binName, _binKind) {
-    const findFile = (rel: string): string | null => {
-      const entry = manifest.files.find((f) => f.path === rel);
-      return entry ? `${installRoot}/${entry.path}` : null;
-    };
-    const bashWasmPath = findFile('share/bash/bash.async.wasm');
-    const coreutilPaths = manifest.files
-      .filter((f) => f.path.startsWith('share/bash/coreutils/') && f.path.endsWith('.wasm'))
-      .map((f) => ({ name: f.path.slice('share/bash/coreutils/'.length, -'.wasm'.length), vfsPath: `${installRoot}/${f.path}` }));
-    const appletsPath = findFile('share/bash/coreutils/busybox.applets');
-
     return async function bashBinHandler(ctx: CommandContext): Promise<number> {
       // All VFS access (runtime wasm reads, script probes, snapshot,
       // fsDiff writeback) runs as the INVOKING process credential —
@@ -158,11 +286,6 @@ export function makeBashRunnerFactory(deps: {
       const vfs = deps.vfs.as(cred);
       const argv = [...(ctx.args ?? [])];
       const cwd = ctx.cwd || '/home/user';
-
-      if (!bashWasmPath || !vfs.exists(bashWasmPath)) {
-        ctx.stderr.write(`${binName}: bash.async.wasm missing (re-run 'nimbus install bash')\n`);
-        return 127;
-      }
 
       // Resolve a relative script path against the session cwd.
       const scriptIdx = findScriptArgIndex(argv);
@@ -195,87 +318,27 @@ export function makeBashRunnerFactory(deps: {
         stdinData = await ctx.stdin.readAll();
       }
 
-      const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      userEnv.HOME ||= '/home/user';
-      userEnv.PATH ||= '/bin:/usr/bin';
-      userEnv.TERM ||= 'dumb';
-      // The facet's wasi-libc cwd starts at '/'; the synthesized
-      // /etc/nimbus.bashrc (BASH_ENV + rc default) chdirs here.
-      userEnv.NIMBUS_PWD = cwd;
-      userEnv.BASH_ENV ||= '/etc/nimbus.bashrc';
-      userEnv.PWD = cwd;
-      const environ = Object.entries(userEnv).map(([k, v]) => `${k}=${v}`);
-
-      if (userEnv.HOME !== '/home/user') extraRoots.push(userEnv.HOME);
-      const fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots });
-      if ('error' in fsSnapshot) {
-        ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
-        return 1;
-      }
-
-      const wasmModules: Record<string, ArrayBuffer> = {
-        'bash.async.wasm': toArrayBuffer(vfs.readFile(bashWasmPath)),
-      };
-      for (const cu of coreutilPaths) {
-        if (vfs.exists(cu.vfsPath)) {
-          wasmModules[`cu_${cu.name}.wasm`] = toArrayBuffer(vfs.readFile(cu.vfsPath));
-        }
-      }
-      // One busybox module, many names: the applet manifest (not the
-      // modules map — workerd would compile the binary once per name).
-      let busyboxApplets: string[] = [];
-      if (appletsPath && vfs.exists(appletsPath)) {
-        busyboxApplets = new TextDecoder().decode(vfs.readFile(appletsPath))
-          .split('\n').map((l) => l.trim()).filter(Boolean);
-      }
-
-      const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-      const { env, ctx: doCtx } = getFacetManagerLoaderHost(facetMgr);
-      const pool = new NimbusLoaderPool(env, doCtx, {
-        tag: 'bash-runner',
-        concurrency: 1,
-        omitSupervisor: true,
-        preamble: BASH_RUNNER_PREAMBLE,
-        wasmModules,
-      });
-
-      // ONE dispatch function for boot AND feed. The loader pool keys
-      // warm-slot reuse on the function source hash, so boot and feed
-      // MUST share a function to land on the SAME isolate — otherwise
-      // the feed runs in a fresh isolate where the boot's session state
-      // (globalThis __nimbusBashSession) does not exist. `op` selects
-      // boot vs feed inside the shared body.
-      const stepFn = async function bashFacetStep(a: BashStepArgs): Promise<unknown> {
-        const boot = Reflect.get(globalThis, '__bashBoot');
-        const feed = Reflect.get(globalThis, '__bashFeed');
-        if (typeof boot !== 'function' || typeof feed !== 'function') {
-          return { state: 'error', exitCode: 127, stdout: '', stderr: '', error: 'bash-runner preamble missing (__bashBoot/__bashFeed not in scope)' };
-        }
-        return a.op === 'boot' ? boot(a) : feed(a);
-      };
-
+      let session: BashFacetSession | null = null;
       try {
-        let slice = normalizeSlice(await pool.submit<BashStepArgs, unknown>(stepFn, {
-          op: 'boot',
+        session = await createBashFacetSession({
+          facetMgr: deps.facetMgr,
+          vfs,
+          manifest,
+          installRoot,
           argv: [binName, ...argv],
-          environ,
+          env: ctx.env || {},
           cwd,
-          fsSnapshot: fsSnapshot.snapshot,
           stdinData,
           stdinClosed,
           stdinTty: stdinIsTty,
-          busyboxApplets,
-        }, { timeoutMs: 300_000 }));
+          extraRoots,
+        });
+        let slice = session.initial;
 
         for (;;) {
-          if (!slice) {
-            ctx.stderr.write(`${binName}: facet returned an invalid payload\n`);
-            return 1;
-          }
           if (slice.stdout) ctx.stdout.write(slice.stdout);
           if (slice.stderr) ctx.stderr.write(slice.stderr);
           if (slice.state === 'exited') {
-            if (slice.fsDiff) flushVfsDiff(vfs, slice.fsDiff);
             return slice.exitCode;
           }
           if (slice.state === 'error') {
@@ -289,11 +352,13 @@ export function makeBashRunnerFactory(deps: {
             const chunk = await feedStream.read();
             if (!ctx.signal.aborted) { data = chunk === null ? '' : chunk.replace(/\r\n?/g, '\n'); eof = chunk === null; }
           }
-          slice = normalizeSlice(await pool.submit<BashStepArgs, unknown>(stepFn, { op: 'feed', data, eof }, { timeoutMs: 300_000 }));
+          slice = await session.push(data, eof);
         }
       } catch (e: unknown) {
         ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
         return 1;
+      } finally {
+        await session?.close();
       }
     };
   };
