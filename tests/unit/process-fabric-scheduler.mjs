@@ -52,12 +52,13 @@ const CODE_BOOT = {
 };
 
 // ── Local ctx.exports mock ──────────────────────────────────────────────
+// A host boots a facet ONLY through NimbusLoadedEntrypoint: the module map is
+// completed inside that stateless entrypoint, never in a session DO (workerd
+// refuses to re-enter a dynamic worker a DO loaded for itself).
 const localBoots = [];
-const supervisorBindings = [];
 setCtxExports({
   SupervisorRPC(options) {
     const binding = { props: options.props, disposed: false, [Symbol.dispose]() { binding.disposed = true; } };
-    supervisorBindings.push(binding);
     return binding;
   },
   NimbusLoadedEntrypoint(options) {
@@ -67,41 +68,15 @@ setCtxExports({
       startProcess(args) {
         boot.started = true;
         boot.startArgs = args;
-        return Promise.resolve({ ok: true, from: 'staged' });
+        return Promise.resolve({ ok: true, port: 8080 });
       },
       handleHttpRequest: (request) => Promise.resolve(new Response(`routed ${new URL(request.url).pathname}`)),
     };
   },
 });
 
-const WASM_BYTES = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 1, 2, 3, 4]);
-const reads = [];
-const readProcessFile = async (path, pid) => { reads.push({ path, pid }); return WASM_BYTES; };
-
 function makeEnv(peerNs) {
-  const loaded = [];
-  return {
-    loaded,
-    env: {
-      ...(peerNs ? { NIMBUS_SESSION: peerNs } : {}),
-      LOADER: {
-        get(key, load) {
-          const entry = { key, config: undefined };
-          loaded.push(entry);
-          const configPromise = load().then((c) => { entry.config = c; return c; });
-          return {
-            getEntrypoint: () => ({
-              async startProcess(args) {
-                await configPromise;
-                entry.startArgs = args;
-                return { ok: true, port: 8080 };
-              },
-            }),
-          };
-        },
-      },
-    },
-  };
+  return { env: peerNs ? { NIMBUS_SESSION: peerNs } : {} };
 }
 
 function makeCtx() {
@@ -153,7 +128,7 @@ function makePeerNs(peerFor, log) {
 // ── (1) light + staged: local facet, supervisor = coordinator ───────────
 {
   const { env } = makeEnv();
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'light', startContract: 'lifetime',
     pid: 42, workerKey: 'nimbus-process:coord-do-id:42', boot: STAGED_BOOT,
@@ -169,25 +144,22 @@ function makePeerNs(peerFor, log) {
   console.log('  case1: light staged process boots the local facet path');
 }
 
-// ── (2) light + code: host resolves by-path wasm, never ships bytes ─────
+// ── (2) light + code: the spec rides the entrypoint, bytes never do ────
 {
-  reads.length = 0;
-  const { env, loaded } = makeEnv();
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const { env } = makeEnv();
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'light', startContract: 'boot',
     pid: 43, workerKey: 'k43', boot: CODE_BOOT, startArgs: { userCode: 'puts 1' },
   });
   assert.deepEqual(await handle.booted(), { ok: true, port: 8080 }, 'boot payload surfaces to the caller');
-  assert.deepEqual(reads, [{ path: '/opt/ruby/share/ruby/ruby+stdlib.wasm', pid: 43 }],
-    'the wasm image is read by the HOST from the process credential');
-  const entry = loaded.find((l) => l.key === 'k43');
-  assert.ok(entry.config.modules['ruby+stdlib.wasm'].wasm instanceof ArrayBuffer,
-    'the image is materialized into the module map here, not carried in the spec');
-  assert.equal(entry.config.modules['worker.js'], 'export default {}');
-  assert.deepEqual(entry.startArgs, { userCode: 'puts 1' }, 'startArgs reach the runner');
-  assert.deepEqual(entry.config.env.SUPERVISOR.props, { doId: 'coord-do-id', pid: 43 },
-    'syscalls route to the coordinator');
+  const boot = localBoots.find((b) => b.props.residentCode);
+  assert.deepEqual(boot.props.residentCode.vfsWasmModules, CODE_BOOT.code.vfsWasmModules,
+    'the wasm image travels as a path; the DO never reads or carries its bytes');
+  assert.equal(boot.props.residentCode.modules['ruby+stdlib.wasm'], undefined);
+  assert.equal(boot.props.key, 'k43');
+  assert.deepEqual(boot.props.supervisor, { doId: 'coord-do-id', pid: 43 }, 'syscalls route to the coordinator');
+  assert.deepEqual(boot.startArgs, { userCode: 'puts 1' }, 'startArgs reach the runner');
   assert.equal((await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'))).status, 200);
   // A `boot` runner stays resident after its payload: `done` must not settle.
   let settled = false;
@@ -196,7 +168,7 @@ function makePeerNs(peerFor, log) {
   assert.equal(settled, false, 'residency outlives the boot payload');
   handle.kill();
   await handle.done;
-  console.log('  case2: light code process resolves by-path wasm on the host');
+  console.log('  case2: light code process ships a spec, not an image');
 }
 
 // ── (3) heavy: distinct-token peer accepted; collision skips a slot ─────
@@ -207,7 +179,7 @@ function makePeerNs(peerFor, log) {
     token: name.endsWith(':proc:0') ? isolateToken() : `distinct-${name}`,
   }), log);
   const { env } = makeEnv(peers.ns);
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime',
     pid: 7, workerKey: 'k7', boot: STAGED_BOOT,
@@ -232,7 +204,7 @@ function makePeerNs(peerFor, log) {
     host: () => new Promise((res) => { releaseHost = res; }),
   }), log);
   const { env } = makeEnv(peers.ns);
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'boot',
     pid: 44, workerKey: 'k44', boot: CODE_BOOT, startArgs: { a: 1 },
@@ -255,7 +227,7 @@ function makePeerNs(peerFor, log) {
   const log = [];
   const peers = makePeerNs(() => ({ token: isolateToken() }), log); // every peer co-located
   const { env } = makeEnv(peers.ns);
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime', pid: 8, workerKey: 'k8', boot: STAGED_BOOT,
   });
@@ -279,7 +251,7 @@ function makePeerNs(peerFor, log) {
   }), log);
   const { env } = makeEnv(peers.ns);
   const respawnCauses = [];
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime', pid: 9, workerKey: 'k9', boot: STAGED_BOOT,
     shouldRespawn: () => true,
@@ -306,7 +278,7 @@ function makePeerNs(peerFor, log) {
     host: () => { throw new Error('Worker exceeded memory limit.'); },
   }), []);
   const { env } = makeEnv(peers.ns);
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime', pid: 10, workerKey: 'k10', boot: STAGED_BOOT,
     shouldRespawn: () => true,
@@ -324,7 +296,7 @@ function makePeerNs(peerFor, log) {
     host: () => { throw new Error('facet died'); },
   }), log);
   const { env } = makeEnv(peers.ns);
-  const fabric = new ProcessFabric(makeCtx(), env, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime', pid: 11, workerKey: 'k11', boot: STAGED_BOOT,
     shouldRespawn: () => false,
@@ -344,7 +316,7 @@ function makePeerNs(peerFor, log) {
   }), log);
   const { env } = makeEnv(peers.ns);
   const ctx = makeCtx();
-  const fabric = new ProcessFabric(ctx, env, readProcessFile);
+  const fabric = new ProcessFabric(ctx, env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime', pid: 12, workerKey: 'k12', boot: STAGED_BOOT,
     shouldRespawn: () => true, // pid still "running" — kill must still win
@@ -361,23 +333,16 @@ function makePeerNs(peerFor, log) {
   console.log('  case7: kill() cancels on the peer and blocks respawn');
 }
 
-// ── (8) missing bindings fail loud ──────────────────────────────────────
+// ── (8) a missing peer namespace fails loud ────────────────────────────
 {
-  const fabric = new ProcessFabric(makeCtx(), { LOADER: {} }, readProcessFile);
+  const fabric = new ProcessFabric(makeCtx(), {});
   await assert.rejects(
     fabric.startResidentProcess({
       processClass: 'heavy', startContract: 'lifetime', pid: 13, workerKey: 'k13', boot: STAGED_BOOT,
     }),
     /NIMBUS_SESSION/,
   );
-  const noLoader = new ProcessFabric(makeCtx(), {}, readProcessFile);
-  await assert.rejects(
-    noLoader.startResidentProcess({
-      processClass: 'light', startContract: 'boot', pid: 14, workerKey: 'k14', boot: CODE_BOOT,
-    }),
-    /LOADER/,
-  );
-  console.log('  case8: missing peer/loader bindings fail loud');
+  console.log('  case8: heavy without the peer namespace fails loud');
 }
 
 console.log('process-fabric-scheduler: all cases passed');

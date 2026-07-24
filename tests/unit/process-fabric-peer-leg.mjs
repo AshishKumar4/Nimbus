@@ -5,8 +5,8 @@
 //   (2) boot a staged process from the PEER's own loader with the SUPERVISOR
 //       routed to the COORDINATOR's doId (never the peer's), holding the RPC
 //       open until the process lifecycle ends;
-//   (3) boot a code process the same way, pulling its by-path wasm image off
-//       the coordinator's disk in RPC-safe ranges, and keep holding after the
+//   (3) boot a code process the same way, forwarding its by-path wasm image
+//       for the loading entrypoint to resolve, and keep holding after the
 //       runner returns its boot payload;
 //   (4) serve inbound HTTP for a hosted process, and hand back the boot
 //       payload, without either leg racing the host leg;
@@ -61,7 +61,7 @@ setCtxExports({
     boot.lifecycle.catch(() => {});
     boots.push(boot);
     return {
-      startProcess: () => { boot.running = true; return boot.lifecycle; },
+      startProcess: (args) => { boot.running = true; boot.startArgs = args; return boot.lifecycle; },
       handleHttpRequest: (request) => Promise.resolve(new Response(`hosted ${new URL(request.url).pathname}`)),
       [Symbol.dispose]() {
         boot.disposed = true;
@@ -73,46 +73,11 @@ setCtxExports({
   },
 });
 
-const IMAGE = new Uint8Array(9).fill(7);
-
-/** Coordinator DO mock: the peer reaches it for ranged reads of the user's disk. */
-function makeSelf(coordinator = {}) {
-  const reads = [];
-  const loaded = [];
+/** Peer DO mock: nothing but the hosted-process registry the legs use. */
+function makeSelf() {
   return {
-    reads,
-    loaded,
     _hostedProcesses: new Map(),
     _hostedProcessWaiters: new Map(),
-    env: {
-      NIMBUS_SESSION: {
-        idFromString: (id) => ({ id }),
-        get: () => ({
-          async _rpcStat(path, pid) { reads.push(`stat:${path}:${pid}`); return { size: IMAGE.byteLength }; },
-          async _rpcFsReadRange(path, offset, length, pid) {
-            reads.push(`range:${path}:${offset}:${length}:${pid}`);
-            return IMAGE.subarray(offset, offset + length);
-          },
-          ...coordinator,
-        }),
-      },
-      LOADER: {
-        get(key, load) {
-          const entry = { key, config: undefined };
-          loaded.push(entry);
-          const configPromise = load().then((c) => { entry.config = c; return c; });
-          return {
-            getEntrypoint: () => ({
-              async startProcess(args) {
-                await configPromise;
-                entry.startArgs = args;
-                return { state: 'listening', port: 8080 };
-              },
-            }),
-          };
-        },
-      },
-    },
   };
 }
 
@@ -148,7 +113,7 @@ function makeSelf(coordinator = {}) {
   console.log('  case2: staged facet boots with coordinator-routed SUPERVISOR, RPC held open');
 }
 
-// ── (3) code: image pulled in ranges, residency outlives the boot ───────
+// ── (3) code: spec forwarded to the loader, residency outlives the boot ─
 {
   const self = makeSelf();
   const codeBoot = {
@@ -163,33 +128,40 @@ function makeSelf(coordinator = {}) {
   };
   const opts = { ...OPTS, workerKey: 'k-code', startContract: 'boot', startArgs: { userCode: 'puts 1' } };
   const hosted = _rpcHostProcess(self, codeBoot, opts);
+  await new Promise((r) => setTimeout(r, 0));
+  const boot = boots.at(-1);
+  boot.resolve({ state: 'listening', port: 8080 });
   assert.deepEqual(await _rpcAwaitHostedBoot(self, 'k-code'), { payload: { state: 'listening', port: 8080 } });
   assert.deepEqual(
-    self.reads,
-    ['stat:/opt/ruby/ruby+stdlib.wasm:21', `range:/opt/ruby/ruby+stdlib.wasm:0:${IMAGE.byteLength}:21`],
-    'the image is pulled off the coordinator disk in ranges, with the process credential',
+    boot.props.residentCode.vfsWasmModules,
+    codeBoot.code.vfsWasmModules,
+    'the image travels as a path for the loading entrypoint to resolve, not as bytes',
   );
-  const entry = self.loaded.find((l) => l.key === 'k-code');
-  assert.equal(entry.config.modules['ruby+stdlib.wasm'].wasm.byteLength, IMAGE.byteLength);
-  assert.deepEqual(entry.config.env.SUPERVISOR.props, { doId: 'coordinator-do-id', pid: 21 });
-  assert.deepEqual(entry.startArgs, { userCode: 'puts 1' });
+  assert.deepEqual(boot.props.supervisor, { doId: 'coordinator-do-id', pid: 21 });
   let settled = false;
   hosted.then(() => { settled = true; }, () => { settled = true; });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(settled, false, 'a boot-contract runner stays resident behind the held RPC');
-  const routed = await _rpcRouteHostedHttp(self, 'k-code', new Request('http://x/doc'));
-  assert.equal(await routed.text(), 'hosted /doc', 'inbound HTTP resolves the running facet on this peer');
+  const routed = await _rpcRouteHostedHttp(self, 'k-code', {
+    method: 'GET', url: 'http://x/doc', headers: [['accept', '*/*']], body: null,
+  });
+  assert.equal(routed.status, 200);
+  assert.equal(await new Response(routed.body).text(), 'hosted /doc',
+    'inbound HTTP resolves the running facet on this peer, body streamed as parts');
   assert.equal(_rpcCancelHostProcess(self, 'k-code').cancelled, true);
   assert.deepEqual(await hosted, { ok: true }, 'cancel ends the residency cleanly');
-  console.log('  case3: code facet pulls its image in ranges and stays resident past boot');
+  console.log('  case3: code facet forwards its spec and stays resident past boot');
 }
 
 // ── (4) boot/route legs wait for the host leg rather than race it ───────
 {
   const self = makeSelf();
-  const routed = _rpcRouteHostedHttp(self, 'k-late', new Request('http://x/early'));
+  const routed = _rpcRouteHostedHttp(self, 'k-late', {
+    method: 'GET', url: 'http://x/early', headers: [], body: null,
+  });
   const hosted = _rpcHostProcess(self, STAGED_BOOT, { ...OPTS, workerKey: 'k-late' });
-  assert.equal(await (await routed).text(), 'hosted /early', 'a request that beat the host leg is served, not dropped');
+  assert.equal(await new Response((await routed).body).text(), 'hosted /early',
+    'a request that beat the host leg is served, not dropped');
   _rpcCancelHostProcess(self, 'k-late');
   await assert.rejects(hosted, /stub disposed/);
   console.log('  case4: boot/route legs never race the host leg');

@@ -93,7 +93,8 @@
  * posture) and idle-evict when their process exits.
  */
 
-import type { OpencodeStageSpec } from '../facets/opencode-staging.js';
+import { z } from 'zod/v4';
+import { OpencodeStageSpecSchema, type OpencodeStageSpec } from '../facets/opencode-staging.js';
 import type { RouteableFacetTarget } from '../runtime/port-registry.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
@@ -123,33 +124,35 @@ export type StartContract = 'lifetime' | 'boot';
 
 /**
  * A generated module map in the form that crosses a placement boundary.
- * Module TEXT is inline; wasm sidecars are named by VFS path and materialized
- * by the host (see the module header).
+ * Module TEXT rides inline; wasm images are named by VFS path and read by the
+ * NimbusLoadedEntrypoint that loads the facet — never by a session DO.
  */
-export interface ResidentCodeSpec {
-  compatibilityDate: string;
-  compatibilityFlags: string[];
-  mainModule: string;
+export const ResidentCodeSpecSchema = z.object({
+  compatibilityDate: z.string().min(1),
+  compatibilityFlags: z.array(z.string()),
+  mainModule: z.string().min(1),
   /**
-   * Inline modules: generated source text, plus small wasm sidecars the host
-   * cannot resolve for itself (they come from the worker's own ASSETS).
+   * Inline modules: generated source text, plus small wasm sidecars that come
+   * from the worker's own ASSETS rather than the user's disk.
    */
-  modules: Record<string, string | { wasm: ArrayBuffer }>;
+  modules: z.record(z.string(), z.union([z.string(), z.object({ wasm: z.instanceof(ArrayBuffer) })])),
   /**
-   * Module name → absolute VFS path of a wasm image the HOST materializes.
+   * Module name → absolute VFS path of a wasm image to materialize at load.
    * This is how the big user-installed runtimes travel: ruby's
    * interpreter+stdlib image alone is 34.3 MiB, past workerd's 32 MiB RPC
    * argument limit, so its bytes can never ride inside a boot spec.
    */
-  vfsWasmModules?: Record<string, string>;
-}
+  vfsWasmModules: z.record(z.string(), z.string()).optional(),
+});
 
-export type ResidentBootSpec =
-  | { kind: 'staged'; stage: OpencodeStageSpec }
-  | { kind: 'code'; code: ResidentCodeSpec };
+export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
 
-/** Reads one of the process's files from the COORDINATOR's disk. */
-export type ProcessFileReader = (path: string, pid: number) => Promise<Uint8Array>;
+export const ResidentBootSpecSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('staged'), stage: OpencodeStageSpecSchema }),
+  z.object({ kind: z.literal('code'), code: ResidentCodeSpecSchema }),
+]);
+
+export type ResidentBootSpec = z.infer<typeof ResidentBootSpecSchema>;
 
 /**
  * Distinct peer slots probed before accepting a co-located peer. Co-location
@@ -197,6 +200,7 @@ export interface NimbusCtxExports {
       code: unknown;
       supervisor: { doId: string; pid: number };
       stage?: OpencodeStageSpec;
+      residentCode?: ResidentCodeSpec;
     };
   }) => LoadedWorkerEntrypointStub;
 }
@@ -221,7 +225,7 @@ export async function createLoadedWorkerEntrypoint(
   supervisor: { doId: string; pid: number },
   name: string | null = null,
   key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
-  stage?: OpencodeStageSpec,
+  boot?: ResidentBootSpec,
 ): Promise<LoadedWorkerEntrypointStub> {
   if (!ctxExports.NimbusLoadedEntrypoint) {
     throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
@@ -233,134 +237,67 @@ export async function createLoadedWorkerEntrypoint(
       depth: 0,
       code,
       supervisor,
-      ...(stage ? { stage } : {}),
+      ...(boot?.kind === 'staged' ? { stage: boot.stage } : {}),
+      ...(boot?.kind === 'code' ? { residentCode: boot.code } : {}),
     },
   });
 }
 
 // ── Host-side boot (runs on the coordinator OR on a peer, identically) ──────
 
-/** The Worker Loader binding surface the `code` boot spec needs. */
-interface WorkerLoaderBinding {
-  get(key: string, load: () => Promise<unknown>): { getEntrypoint(): LoadedWorkerEntrypointStub };
-}
-
 /** Everything a host needs to boot one resident process. */
 export interface ResidentHost {
+  /**
+   * The HOSTING DO's own ctx.exports — this is what decides which workerd
+   * process the facet lands in.
+   */
   ctxExports: NimbusCtxExports;
-  /** The HOSTING DO's own loader — this is what decides the workerd process. */
-  loader: WorkerLoaderBinding;
   /** Always the COORDINATOR's identity, whichever DO is hosting. */
   supervisor: { doId: string; pid: number };
   workerKey: string;
-  /** Resolves `code.wasmModules` paths against the coordinator's disk. */
-  readProcessFile: ProcessFileReader;
 }
 
 /** A booted facet, owned by its host. */
 export interface HostedResidentProcess {
   /** Invoke the runner's startProcess; see StartContract. */
   start(args: unknown): Promise<unknown>;
-  /** Re-resolvable inbound-HTTP target for the facet, on the HOST's loader. */
+  /** Re-resolvable inbound-HTTP target for the running facet. */
   route: RouteableFacetTarget;
   /** Release the resources pinning the facet — the facet dies with them. */
   dispose(): void;
 }
 
-function loaderBindingFromEnv(env: unknown): WorkerLoaderBinding | undefined {
-  const loader = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-    ? Reflect.get(env, 'LOADER')
-    : undefined;
-  if ((typeof loader !== 'object' && typeof loader !== 'function') || loader === null) return undefined;
-  return typeof Reflect.get(loader, 'get') === 'function' ? loader as WorkerLoaderBinding : undefined;
-}
-
-/**
- * Materialize the spec's by-reference wasm sidecars from the coordinator's
- * disk. This is the one step that must run on the HOST: the bytes (34.3 MiB
- * for ruby's interpreter+stdlib image alone) exceed workerd's RPC argument
- * limit, so they can never ride inside a boot spec.
- */
-async function materializeWasmModules(
-  spec: ResidentCodeSpec,
-  read: ProcessFileReader,
-  pid: number,
-): Promise<Record<string, { wasm: ArrayBuffer }>> {
-  const out: Record<string, { wasm: ArrayBuffer }> = {};
-  for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
-    const bytes = await read(path, pid);
-    out[moduleName] = {
-      wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-    };
-  }
-  return out;
-}
-
 /**
  * Boot a resident process's facet on THIS host. Identical code runs on the
- * coordinator (local placement) and on a peer DO (peer placement) — the only
- * difference is whose `loader` and `ctxExports` are handed in.
+ * coordinator (local placement) and on a peer DO (peer placement); the only
+ * difference is whose `ctx.exports` — and therefore whose workerd process —
+ * is handed in.
  *
- * The two spec kinds differ only in where the module map comes from:
- *   staged — the stage rides the entrypoint props and the map is assembled
- *            inside the stateless NimbusLoadedEntrypoint isolate; its
- *            held-open startProcess call is what keeps the facet's SUPERVISOR
- *            binding context alive, so the runner contract is `lifetime`.
- *   code   — the map is completed here (wasm materialized from the
- *            coordinator's disk) and loaded through the host DO's own loader
- *            with a DO-minted SUPERVISOR binding, which outlives the request
- *            that created it. The facet is pinned by the retained resources,
- *            so a `boot`-contract runner may return from startProcess.
+ * Both spec kinds take the SAME route: the module map is completed inside the
+ * stateless NimbusLoadedEntrypoint that loads it, never in a session DO. That
+ * is a workerd requirement as much as a memory one — a dynamic worker loaded
+ * directly from a Durable Object cannot be re-entered from a later request
+ * ("the system does not know how to reload this Worker from scratch; have the
+ * parent Worker expose an entrypoint which constructs the dynamic worker"), so
+ * a DO-loaded facet could never serve its registered port.
  */
 export async function hostResidentProcess(
   host: ResidentHost,
   boot: ResidentBootSpec,
 ): Promise<HostedResidentProcess> {
   const route = await createRouteTarget(host);
-  if (boot.kind === 'staged') {
-    const startStub = await createLoadedWorkerEntrypoint(
-      host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot.stage,
-    );
-    if (typeof startStub.startProcess !== 'function') {
-      disposeRpcResources([startStub, route]);
-      throw new Error('Nimbus: resident process entrypoint has no startProcess method');
-    }
-    return {
-      start: (args) => startStub.startProcess!(args),
-      route,
-      dispose: onceDisposed([startStub, route]),
-    };
+  const startStub = await createLoadedWorkerEntrypoint(
+    host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot,
+  );
+  if (typeof startStub.startProcess !== 'function') {
+    disposeRpcResources([startStub, route]);
+    throw new Error('Nimbus: resident process entrypoint has no startProcess method');
   }
-
-  const spec = boot.code;
-  const supervisorBinding = host.ctxExports.SupervisorRPC
-    ? host.ctxExports.SupervisorRPC({ props: host.supervisor })
-    : undefined;
-  let worker: { getEntrypoint(): LoadedWorkerEntrypointStub } | undefined;
-  let startStub: LoadedWorkerEntrypointStub | undefined;
-  try {
-    const wasmModules = await materializeWasmModules(spec, host.readProcessFile, host.supervisor.pid);
-    worker = host.loader.get(host.workerKey, async () => ({
-      compatibilityDate: spec.compatibilityDate,
-      compatibilityFlags: spec.compatibilityFlags,
-      mainModule: spec.mainModule,
-      modules: { ...spec.modules, ...wasmModules },
-      ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-    }));
-    startStub = worker.getEntrypoint();
-    if (typeof startStub.startProcess !== 'function') {
-      throw new Error('Nimbus: resident process entrypoint has no startProcess method');
-    }
-    const started = startStub.startProcess.bind(startStub);
-    return {
-      start: (args) => started(args),
-      route,
-      dispose: onceDisposed([route, startStub, worker, supervisorBinding]),
-    };
-  } catch (e) {
-    disposeRpcResources([route, startStub, worker, supervisorBinding]);
-    throw e;
-  }
+  return {
+    start: (args) => startStub.startProcess!(args),
+    route,
+    dispose: onceDisposed([startStub, route]),
+  };
 }
 
 /** Disposal is idempotent: kill, host-call teardown and respawn can all fire. */
@@ -375,10 +312,10 @@ function onceDisposed(resources: unknown[]): () => void {
 
 /**
  * A CODE-FREE, re-resolvable route target for the facet, keyed on workerKey.
- * Inbound HTTP arrives in a LATER request context than the boot, so the
- * target must re-resolve the already-loaded worker in the caller's context —
- * and fail loud if it was evicted, rather than silently booting a fresh
- * isolate whose server never called listen().
+ * Inbound HTTP arrives in a LATER request context than the boot, so the target
+ * must re-resolve the already-loaded worker in the caller's context — and fail
+ * loud if it was evicted, rather than silently booting a fresh isolate whose
+ * server never called listen().
  */
 async function createRouteTarget(host: ResidentHost): Promise<RouteableFacetTarget> {
   const stub = await createLoadedWorkerEntrypoint(
@@ -402,12 +339,55 @@ export interface HostProcessOpts {
   startArgs?: unknown;
 }
 
+/**
+ * Inbound HTTP for a peer-hosted process travels as PARTS, not as a
+ * Request/Response pair: workerd refuses to transfer an object owned by a
+ * dynamically-loaded worker across a sibling-DO hop. Bodies are plain
+ * ReadableStreams, which RPC carries with flow control, so nothing is
+ * buffered and a live SSE body still streams.
+ */
+interface HostedHttpWire {
+  method: string;
+  url: string;
+  headers: [string, string][];
+  body: ReadableStream | null;
+}
+
+interface HostedHttpResult {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: ReadableStream | null;
+}
+
 interface ProcessPeerStub {
   _rpcHostProcessProbe(): Promise<{ isolateToken: string }>;
   _rpcHostProcess(boot: ResidentBootSpec, opts: HostProcessOpts): Promise<{ ok: boolean }>;
   _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }>;
-  _rpcRouteHostedHttp(workerKey: string, request: Request): Promise<Response>;
+  _rpcRouteHostedHttp(workerKey: string, request: HostedHttpWire): Promise<HostedHttpResult>;
   _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }>;
+}
+
+async function routeThroughPeer(
+  stub: ProcessPeerStub,
+  workerKey: string,
+  request: Request,
+): Promise<Response> {
+  const headers: [string, string][] = [];
+  request.headers.forEach((value, key) => { headers.push([key, value]); });
+  const result = await stub._rpcRouteHostedHttp(workerKey, {
+    method: request.method,
+    url: request.url,
+    headers,
+    body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
+  });
+  const responseHeaders = new Headers();
+  for (const [key, value] of result.headers) responseHeaders.append(key, value);
+  return new Response(result.body, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: responseHeaders,
+  });
 }
 
 interface PeerNamespace {
@@ -575,19 +555,15 @@ function heldUntilKilled(): { promise: Promise<void>; release: () => void } {
 export class ProcessFabric {
   private readonly ctx: DurableObjectState;
   private readonly ns: PeerNamespace | undefined;
-  private readonly loader: WorkerLoaderBinding | undefined;
-  private readonly readProcessFile: ProcessFileReader;
   private readonly coordDoId: string;
   /** pid → isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
   /** Monotonic slot counter: respawns and new spawns land on fresh peers. */
   private nextSlot = 0;
 
-  constructor(ctx: DurableObjectState, env: unknown, readProcessFile: ProcessFileReader) {
+  constructor(ctx: DurableObjectState, env: unknown) {
     this.ctx = ctx;
     this.ns = peerNamespaceFromEnv(env);
-    this.loader = loaderBindingFromEnv(env);
-    this.readProcessFile = readProcessFile;
     this.coordDoId = ctx.id.toString();
   }
 
@@ -628,18 +604,10 @@ export class ProcessFabric {
   }
 
   private _localHost(spawn: ResidentProcessSpawn): ResidentHost {
-    if (!this.loader) {
-      throw new BindingError(
-        'ProcessFabric: env.LOADER binding missing or invalid. Resident processes '
-          + 'require the Worker Loader binding.',
-      );
-    }
     return {
       ctxExports: getNimbusCtxExports(),
-      loader: this.loader,
       supervisor: { doId: this.coordDoId, pid: spawn.pid },
       workerKey: spawn.workerKey,
-      readProcessFile: this.readProcessFile,
     };
   }
 
@@ -665,7 +633,7 @@ export class ProcessFabric {
     // live placement on every request — PortRegistry keeps one binding.
     const routeTarget: RouteableFacetTarget = {
       handleHttpRequest: (request: Request) =>
-        state.current.stub._rpcRouteHostedHttp(spawn.workerKey, request),
+        routeThroughPeer(state.current.stub, spawn.workerKey, request),
     };
     const done = this._runPeerLifecycle(spawn, state);
     const handle = new ResidentProcessHandle({

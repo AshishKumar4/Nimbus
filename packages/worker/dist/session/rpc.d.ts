@@ -323,6 +323,11 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
  * find the record and simply await it.
  */
 export interface HostedProcessRecord {
+    /** Coordinator identity every leg mints its own stubs against. */
+    supervisor: {
+        doId: string;
+        pid: number;
+    };
     hosted: Promise<HostedResidentProcess>;
     booted: Promise<unknown>;
     /** Settles when the coordinator cancels or the process is torn down. */
@@ -362,6 +367,29 @@ export declare function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): P
     payload: unknown;
 }>;
 /**
+ * Inbound HTTP for a peer-hosted process, on the wire.
+ *
+ * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
+ * rejects it with "Entrypoints to dynamically-loaded workers cannot be
+ * transferred to other Workers", because the object belongs to the
+ * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
+ * body is a plain ReadableStream, which RPC transfers with flow control. So
+ * the leg carries the parts and rebuilds the object on each side: no
+ * buffering, no size ceiling, and an SSE or chunked body still flows live.
+ */
+export interface HostedHttpRequest {
+    method: string;
+    url: string;
+    headers: [string, string][];
+    body: ReadableStream | null;
+}
+export interface HostedHttpResponse {
+    status: number;
+    statusText: string;
+    headers: [string, string][];
+    body: ReadableStream | null;
+}
+/**
  * RPC: inbound HTTP for a port owned by a process this peer hosts. The
  * coordinator's PortRegistry holds one route target per pid and cannot tell
  * this apart from a local facet: the same code-free NimbusLoadedEntrypoint
@@ -369,7 +397,7 @@ export declare function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): P
  * Response cross with their bodies streaming — no buffering is introduced by
  * the extra hop.
  */
-export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, request: Request): Promise<Response>;
+export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
 /**
  * RPC: deterministic kill of a hosted process. Releases the resources pinning
  * the facet — the same teardown FacetManager.kill applies to a local facet —
