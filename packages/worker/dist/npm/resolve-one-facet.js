@@ -47,15 +47,15 @@
  *   2. Apply swap / warn-skip / reject-fail registry policy.
  *   3. Try in-task cache from `cachedHit` (one entry shipped from
  *      supervisor's NpmCache).
- *   4. R2 packument cache race (250 ms timeout) via env.SUPERVISOR
- *      bindings.
- *   5. Fetch packument with retry/backoff if no cache hit.
- *   6. Pick version via preamble's RESOLVE_VERSION.
- *   7. Materialise ResolvedPackage shape (versionToResolved-style).
- *   8. Stage cache writes for this version + top-5 recent versions.
+ *   4. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
+ *      registry and filling the cross-tenant cache are supervisor-side;
+ *      the facet only reads.
+ *   5. Pick version via preamble's RESOLVE_VERSION.
+ *   6. Materialise ResolvedPackage shape (versionToResolved-style).
+ *   7. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   9. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
+ *   8. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
  */
@@ -69,7 +69,7 @@
  *
  * `env` is the loader-isolate env supplied by NimbusFanoutPool.
  * `env.SUPERVISOR` is the supervisor-rpc binding (putRegistryEntries,
- * getCachedPackument, putCachedPackument).
+ * getPackument).
  */
 export const resolveOnePackumentInFacet = async function resolveOnePackumentInFacet(spec, env) {
     const messages = [];
@@ -258,131 +258,62 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             return nativeReject;
         return out(pkgFromCache, 0, 'cache-hit');
     }
-    // 4 + 5. R2 race + network fetch.
-    const NPM_REGISTRY = 'https://registry.npmjs.org';
-    const safeName = effName.startsWith('@')
-        ? '@' + encodeURIComponent(effName.slice(1))
-        : encodeURIComponent(effName);
-    const url = NPM_REGISTRY + '/' + safeName;
-    const R2_RACE_MS = 250;
-    const totalRetries = Math.max(0, spec.retries ?? 3);
-    const fetchTimeoutMs = spec.fetchTimeoutMs ?? 15_000;
-    // [W4 + cache-obs-2] R2 race. Adapts to either supervisor return
-    // shape: v1 bare `{json, ageMs, expired} | null` OR v2 envelope
-    // `{ cached, events }`.
+    // 4 + 5. Packument, via the supervisor's npm-metadata seam.
+    //
+    // The facet does NOT fetch the registry and does NOT write the shared
+    // packument cache. Both live in SupervisorRPC.getPackument, because a
+    // packument dictates the tarball URL and integrity digest for every
+    // tenant that reads it — a facet-supplied cache write would be a
+    // cross-tenant code-execution primitive.
     let packumentText = null;
     let packumentSource = 'network';
-    if (env?.SUPERVISOR && typeof env.SUPERVISOR.getCachedPackument === 'function') {
-        try {
-            const r2P = Promise.race([
-                __nimbusUseRpcResult(env.SUPERVISOR.getCachedPackument(effName), (result) => result),
-                new Promise((rs) => setTimeout(() => rs(null), R2_RACE_MS)),
-            ]).catch(() => null);
-            const r2Raw = await r2P;
-            // Adapt to BOTH shapes.
-            let cachedEntry = null;
-            if (r2Raw && typeof r2Raw === 'object') {
-                if ('cached' in r2Raw && 'events' in r2Raw) {
-                    // v2 envelope
-                    cachedEntry = r2Raw.cached;
-                    // Splice supervisor's L2/L3 events into our accumulator.
-                    const supEvents = r2Raw.events;
-                    if (Array.isArray(supEvents)) {
-                        for (const e of supEvents) {
-                            if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
-                                continue;
-                            if (e.tier !== 'L2' && e.tier !== 'L3')
-                                continue;
-                            if (e.cacheKind !== 'packument')
-                                continue;
-                            if (e.kind === 'hit') {
-                                cacheStatEvents.push({
-                                    kind: 'hit',
-                                    tier: e.tier,
-                                    cacheKind: 'packument',
-                                    bytes: typeof e.bytes === 'number' ? e.bytes : 0,
-                                });
-                            }
-                            else {
-                                cacheStatEvents.push({ kind: 'miss', tier: e.tier, cacheKind: 'packument' });
-                            }
-                        }
-                    }
-                }
-                else if ('json' in r2Raw) {
-                    // v1 bare shape
-                    cachedEntry = r2Raw;
-                }
-            }
-            if (cachedEntry && !cachedEntry.expired && cachedEntry.json) {
-                packumentText = cachedEntry.json;
-                packumentSource = 'r2-cache';
-            }
-        }
-        catch { /* best-effort, fall through */ }
+    if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
+        messages.push(`[resolve-one] ${effName}: env.SUPERVISOR.getPackument missing`);
+        return out(null, 0, 'network', {
+            type: 'fetch-exhausted',
+            message: 'env.SUPERVISOR.getPackument missing',
+        });
     }
-    if (packumentText === null) {
-        const BACKOFF = [500, 1500, 4500];
-        let lastErr;
-        for (let attempt = 0; attempt <= totalRetries; attempt++) {
-            try {
-                const ctl = new AbortController();
-                const t = setTimeout(() => ctl.abort(), fetchTimeoutMs);
-                let resp;
-                try {
-                    // Corgi (abbreviated) packument — up to ~17x smaller than the full
-                    // doc (vite: 38MB→2.2MB). Carries every field the resolver reads
-                    // (dependencies/peer/peerMeta/optional/dist/bin/os/cpu/libc). It omits
-                    // `exports`; that is read from the tarball's package.json in the VFS at
-                    // require time, where the resolver's packument copy is `?? null` anyway.
-                    resp = await fetch(url, { headers: { Accept: 'application/vnd.npm.install-v1+json' }, signal: ctl.signal });
-                }
-                finally {
-                    clearTimeout(t);
-                }
-                if (resp.ok) {
-                    packumentText = await resp.text();
-                    // cache-obs-2: record the L4 hit. byte count is the
-                    // packument JSON length (authoritative, post-read).
+    {
+        const result = await __nimbusUseRpcResult(env.SUPERVISOR.getPackument(effName, {
+            retries: Math.max(0, spec.retries ?? 3),
+            timeoutMs: spec.fetchTimeoutMs ?? 15_000,
+        }), (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }));
+        // Splice the supervisor's per-tier events into our accumulator.
+        // Filter to known tiers/kinds so a future schema change cannot
+        // poison the result.
+        if (Array.isArray(result.events)) {
+            for (const e of result.events) {
+                if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
+                    continue;
+                if (e.tier !== 'L2' && e.tier !== 'L3' && e.tier !== 'L4')
+                    continue;
+                if (e.cacheKind !== 'packument')
+                    continue;
+                if (e.kind === 'hit') {
                     cacheStatEvents.push({
                         kind: 'hit',
-                        tier: 'L4',
+                        tier: e.tier,
                         cacheKind: 'packument',
-                        bytes: packumentText.length,
+                        bytes: typeof e.bytes === 'number' ? e.bytes : 0,
                     });
-                    // [W4] Best-effort R2 write-back. Awaited per W4-plan §11.
-                    if (env?.SUPERVISOR && typeof env.SUPERVISOR.putCachedPackument === 'function') {
-                        try {
-                            await __nimbusUseRpcResult(env.SUPERVISOR.putCachedPackument(effName, packumentText), () => undefined);
-                        }
-                        catch { /* swallow */ }
-                    }
-                    break;
                 }
-                if (resp.status >= 400 && resp.status < 500) {
-                    // 4xx — package or version doesn't exist. Treat as null.
-                    messages.push(`[resolve-one] ${effName}: HTTP ${resp.status}`);
-                    return out(null, 0, 'network');
+                else {
+                    cacheStatEvents.push({ kind: 'miss', tier: e.tier, cacheKind: 'packument' });
                 }
-                try {
-                    await resp.body?.cancel();
-                }
-                catch { }
-                lastErr = new Error('HTTP ' + resp.status);
-            }
-            catch (e) {
-                lastErr = e;
-            }
-            if (attempt < totalRetries) {
-                const base = BACKOFF[Math.min(attempt, BACKOFF.length - 1)];
-                const jitter = Math.round(base + (Math.random() * 2 - 1) * base * 0.25);
-                await new Promise((r) => setTimeout(r, Math.max(0, jitter)));
             }
         }
-        if (packumentText === null) {
-            messages.push(`[resolve-one] ${effName}: fetch exhausted: ${lastErr?.message ?? lastErr}`);
-            return out(null, 0, 'network', { type: 'fetch-exhausted', message: String(lastErr?.message ?? lastErr) });
+        if (result.json === null) {
+            if (result.status !== undefined) {
+                // 4xx — package doesn't exist. Treat as null.
+                messages.push(`[resolve-one] ${effName}: HTTP ${result.status}`);
+                return out(null, 0, 'network');
+            }
+            messages.push(`[resolve-one] ${effName}: fetch exhausted: ${result.failure}`);
+            return out(null, 0, 'network', { type: 'fetch-exhausted', message: String(result.failure) });
         }
+        packumentText = result.json;
+        packumentSource = result.source === 'r2-cache' ? 'r2-cache' : 'network';
     }
     const bytes = packumentText.length;
     let data;

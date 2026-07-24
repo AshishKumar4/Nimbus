@@ -47,15 +47,15 @@
  *   2. Apply swap / warn-skip / reject-fail registry policy.
  *   3. Try in-task cache from `cachedHit` (one entry shipped from
  *      supervisor's NpmCache).
- *   4. R2 packument cache race (250 ms timeout) via env.SUPERVISOR
- *      bindings.
- *   5. Fetch packument with retry/backoff if no cache hit.
- *   6. Pick version via preamble's RESOLVE_VERSION.
- *   7. Materialise ResolvedPackage shape (versionToResolved-style).
- *   8. Stage cache writes for this version + top-5 recent versions.
+ *   4. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
+ *      registry and filling the cross-tenant cache are supervisor-side;
+ *      the facet only reads.
+ *   5. Pick version via preamble's RESOLVE_VERSION.
+ *   6. Materialise ResolvedPackage shape (versionToResolved-style).
+ *   7. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   9. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
+ *   8. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
  */
@@ -66,9 +66,8 @@ import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
  *
  * cachedHit (optional): a FacetCachedEntry the supervisor already has
  * for this name. The task uses it to short-circuit the fetch when
- * it satisfies the requested range. If null/missing, the task fetches
- * the packument directly (or hits the R2 packument cache via the
- * env binding).
+ * it satisfies the requested range. If null/missing, the task asks the
+ * supervisor for the packument.
  */
 export interface ResolveOneSpec {
     name: string;
@@ -126,9 +125,8 @@ export interface ResolveOneResult {
      * cache-obs-2: per-tier cache events captured during this resolve.
      *
      * Each entry records a single L2/L3/L4 hit-or-miss observed when
-     * fetching the packument. L2/L3 events flow from the supervisor RPC
-     * return (getCachedPackument.events). L4 events are pushed when the
-     * resolver itself fetches from registry.npmjs.org.
+     * fetching the packument. All of them flow from the supervisor RPC
+     * return (getPackument.events) — the facet observes no tier itself.
      *
      * Folded into the DO-side cache-stats singleton by installer.ts via
      * recordCacheStatEvents on the fanout return path (same pattern as
@@ -171,20 +169,21 @@ export interface ResolveOneResult {
  *
  * `env` is the loader-isolate env supplied by NimbusFanoutPool.
  * `env.SUPERVISOR` is the supervisor-rpc binding (putRegistryEntries,
- * getCachedPackument, putCachedPackument).
+ * getPackument).
  */
 export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
     SUPERVISOR: {
-        getCachedPackument?: (name: string) => Promise<{
-            json: string;
-            ageMs: number;
-            expired: boolean;
-        } | null | {
-            cached: {
-                json: string;
-                ageMs: number;
-                expired: boolean;
-            } | null;
+        /**
+         * The npm-metadata seam: cross-tenant cache read, registry fetch on
+         * a miss, and the cache fill — all supervisor-side. The facet reads
+         * packuments and never writes them.
+         */
+        getPackument: (name: string, options: {
+            retries: number;
+            timeoutMs: number;
+        }) => Promise<{
+            json: string | null;
+            source: "r2-cache" | "network";
             events: Array<{
                 kind: "hit";
                 tier: string;
@@ -195,8 +194,9 @@ export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
                 tier: string;
                 cacheKind: string;
             }>;
+            status?: number;
+            failure?: string;
         }>;
-        putCachedPackument?: (name: string, json: string) => Promise<boolean>;
     };
 }) => Promise<ResolveOneResult>;
 //# sourceMappingURL=resolve-one-facet.d.ts.map

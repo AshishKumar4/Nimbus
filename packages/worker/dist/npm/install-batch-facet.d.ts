@@ -97,7 +97,7 @@ export interface InstallBatchResult {
 export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
     SUPERVISOR: {
         writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<WriteBatchStreamResult>;
-        getCachedTarball?: (name: string, version: string) => Promise<Uint8Array | null | {
+        getCachedTarball?: (integrity: string) => Promise<{
             bytes: Uint8Array | null;
             events: Array<{
                 kind: "hit";
@@ -110,7 +110,7 @@ export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
                 cacheKind: string;
             }>;
         }>;
-        putCachedTarball?: (name: string, version: string, bytes: Uint8Array | ArrayBuffer) => Promise<boolean>;
+        putCachedTarball?: (integrity: string, bytes: Uint8Array | ArrayBuffer) => Promise<boolean>;
     };
 }) => Promise<InstallBatchResult>;
 //# sourceMappingURL=install-batch-facet.d.ts.map
